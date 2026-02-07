@@ -6,7 +6,7 @@ services:
     container_name: wheelsai-postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "5434:5432"
     environment:
       POSTGRES_USER: wheelsai
       POSTGRES_PASSWORD: wheelsai
@@ -24,7 +24,7 @@ services:
     container_name: wheelsai-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:

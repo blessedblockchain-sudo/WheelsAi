@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@wheelsai/types": "workspace:*"
+    "@wheelsai/types": "*"
   },
   "devDependencies": {
     "typescript": "^5.3.3"

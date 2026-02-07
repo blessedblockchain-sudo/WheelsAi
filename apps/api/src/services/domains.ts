@@ -1,5 +1,5 @@
-import { prisma } from "@wheels-ai/db";
-import type { Prisma } from "@wheels-ai/db";
+import { prisma } from "@wheelsai/db";
+import type { Prisma } from "@wheelsai/db";
 import crypto from "crypto";
 import dns from "dns/promises";
 

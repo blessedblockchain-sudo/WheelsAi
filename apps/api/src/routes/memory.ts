@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { requireAuth } from "../middleware/auth.js";
 import {
   createConversation,
   getConversations,
@@ -22,16 +23,16 @@ import {
 export const memoryRoutes: FastifyPluginAsync = async (app) => {
   // Get conversation statistics
   app.get("/stats", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { agentId } = request.query as { agentId?: string };
-      return getConversationStats(request.user.id, agentId);
+      return getConversationStats(request.auth!.orgId, agentId);
     },
   });
 
   // List conversations
   app.get("/conversations", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const query = request.query as {
         agentId?: string;
@@ -41,7 +42,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
         offset?: string;
       };
 
-      return getConversations(request.user.id, {
+      return getConversations(request.auth!.orgId, {
         agentId: query.agentId,
         deploymentId: query.deploymentId,
         isActive: query.isActive === "true" ? true : query.isActive === "false" ? false : undefined,
@@ -53,7 +54,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Create conversation
   app.post("/conversations", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const body = request.body as {
         agentId: string;
@@ -62,18 +63,18 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
         metadata?: Record<string, unknown>;
       };
 
-      return createConversation(request.user.id, body);
+      return createConversation(request.auth!.orgId, body);
     },
   });
 
   // Get conversation by external ID
   app.get("/conversations/external/:externalId", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { externalId } = request.params as { externalId: string };
       const conversation = await getConversationByExternalId(
         externalId,
-        request.user.id
+        request.auth!.orgId
       );
 
       if (!conversation) {
@@ -86,12 +87,12 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Get conversation details
   app.get("/conversations/:id", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        return await getConversation(id, request.user.id);
+        return await getConversation(id, request.auth!.orgId);
       } catch (error) {
         if ((error as Error).message === "Conversation not found") {
           return app.httpErrors.notFound("Conversation not found");
@@ -103,7 +104,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Update conversation
   app.patch("/conversations/:id", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as {
@@ -114,7 +115,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await updateConversation(id, request.user.id, body);
+        return await updateConversation(id, request.auth!.orgId, body);
       } catch (error) {
         if ((error as Error).message === "Conversation not found") {
           return app.httpErrors.notFound("Conversation not found");
@@ -126,12 +127,12 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Delete conversation
   app.delete("/conversations/:id", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        return await deleteConversation(id, request.user.id);
+        return await deleteConversation(id, request.auth!.orgId);
       } catch (error) {
         if ((error as Error).message === "Conversation not found") {
           return app.httpErrors.notFound("Conversation not found");
@@ -143,7 +144,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Get messages in conversation
   app.get("/conversations/:id/messages", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const query = request.query as {
@@ -153,7 +154,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await getMessages(id, request.user.id, {
+        return await getMessages(id, request.auth!.orgId, {
           limit: query.limit ? parseInt(query.limit) : undefined,
           before: query.before ? new Date(query.before) : undefined,
           after: query.after ? new Date(query.after) : undefined,
@@ -169,7 +170,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Add message to conversation
   app.post("/conversations/:id/messages", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as {
@@ -182,7 +183,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await addMessage(id, request.user.id, body);
+        return await addMessage(id, request.auth!.orgId, body);
       } catch (error) {
         if ((error as Error).message === "Conversation not found") {
           return app.httpErrors.notFound("Conversation not found");
@@ -194,7 +195,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Delete message
   app.delete("/conversations/:id/messages/:messageId", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id, messageId } = request.params as {
         id: string;
@@ -202,7 +203,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await deleteMessage(messageId, id, request.user.id);
+        return await deleteMessage(messageId, id, request.auth!.orgId);
       } catch (error) {
         const msg = (error as Error).message;
         if (msg === "Conversation not found" || msg === "Message not found") {
@@ -215,7 +216,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Get memory contexts for conversation
   app.get("/conversations/:id/memory", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const query = request.query as {
@@ -225,7 +226,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await getMemoryContexts(id, request.user.id, {
+        return await getMemoryContexts(id, request.auth!.orgId, {
           contextTypes: query.contextTypes?.split(","),
           minImportance: query.minImportance
             ? parseFloat(query.minImportance)
@@ -243,7 +244,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Add memory context
   app.post("/conversations/:id/memory", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as {
@@ -256,7 +257,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await addMemoryContext(id, request.user.id, {
+        return await addMemoryContext(id, request.auth!.orgId, {
           ...body,
           expiresAt: body.expiresAt ? new Date(body.expiresAt) : undefined,
         });
@@ -271,7 +272,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Update memory context
   app.patch("/conversations/:id/memory/:contextId", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id, contextId } = request.params as {
         id: string;
@@ -285,7 +286,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await updateMemoryContext(contextId, id, request.user.id, {
+        return await updateMemoryContext(contextId, id, request.auth!.orgId, {
           ...body,
           expiresAt:
             body.expiresAt === null
@@ -309,7 +310,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Delete memory context
   app.delete("/conversations/:id/memory/:contextId", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id, contextId } = request.params as {
         id: string;
@@ -317,7 +318,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await deleteMemoryContext(contextId, id, request.user.id);
+        return await deleteMemoryContext(contextId, id, request.auth!.orgId);
       } catch (error) {
         const msg = (error as Error).message;
         if (
@@ -333,7 +334,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Get relevant memory for inference
   app.get("/conversations/:id/context", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const query = request.query as {
@@ -343,7 +344,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await getRelevantMemory(id, request.user.id, {
+        return await getRelevantMemory(id, request.auth!.orgId, {
           contextTypes: query.contextTypes?.split(","),
           minImportance: query.minImportance
             ? parseFloat(query.minImportance)
@@ -361,13 +362,13 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Summarize conversation
   app.post("/conversations/:id/summarize", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as { summary: string };
 
       try {
-        return await summarizeConversation(id, request.user.id, body.summary);
+        return await summarizeConversation(id, request.auth!.orgId, body.summary);
       } catch (error) {
         if ((error as Error).message === "Conversation not found") {
           return app.httpErrors.notFound("Conversation not found");
@@ -379,7 +380,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
 
   // Extract facts from conversation
   app.post("/conversations/:id/extract", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as {
@@ -392,7 +393,7 @@ export const memoryRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        return await extractFacts(id, request.user.id, body.facts);
+        return await extractFacts(id, request.auth!.orgId, body.facts);
       } catch (error) {
         if ((error as Error).message === "Conversation not found") {
           return app.httpErrors.notFound("Conversation not found");

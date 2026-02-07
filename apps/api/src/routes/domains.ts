@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { requireAuth } from "../middleware/auth.js";
 import {
   createCustomDomain,
   getCustomDomains,
@@ -17,16 +18,16 @@ import {
 export const domainsRoutes: FastifyPluginAsync = async (app) => {
   // Get domain statistics
   app.get("/stats", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
-      const stats = await getDomainStats(request.user.orgId);
+      const stats = await getDomainStats(request.auth!.orgId);
       return { success: true, data: stats };
     },
   });
 
   // List custom domains
   app.get("/", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const query = request.query as {
         targetType?: string;
@@ -36,7 +37,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
         offset?: string;
       };
 
-      const result = await getCustomDomains(request.user.orgId, {
+      const result = await getCustomDomains(request.auth!.orgId, {
         targetType: query.targetType,
         targetId: query.targetId,
         isActive:
@@ -51,7 +52,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Create custom domain
   app.post("/", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const body = request.body as {
         domain: string;
@@ -62,7 +63,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        const domain = await createCustomDomain(request.user.orgId, body);
+        const domain = await createCustomDomain(request.auth!.orgId, body);
         return { success: true, data: domain, message: "Domain created successfully" };
       } catch (error) {
         const msg = (error as Error).message;
@@ -81,12 +82,12 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Get single domain
   app.get("/:id", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        const domain = await getCustomDomain(id, request.user.orgId);
+        const domain = await getCustomDomain(id, request.auth!.orgId);
         return { success: true, data: domain };
       } catch (error) {
         if ((error as Error).message === "Domain not found") {
@@ -99,7 +100,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Update domain
   app.patch("/:id", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as {
@@ -109,7 +110,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        const domain = await updateCustomDomain(id, request.user.orgId, body);
+        const domain = await updateCustomDomain(id, request.auth!.orgId, body);
         return { success: true, data: domain, message: "Domain updated successfully" };
       } catch (error) {
         if ((error as Error).message === "Domain not found") {
@@ -122,12 +123,12 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Delete domain
   app.delete("/:id", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        await deleteCustomDomain(id, request.user.orgId);
+        await deleteCustomDomain(id, request.auth!.orgId);
         return { success: true, message: "Domain deleted successfully" };
       } catch (error) {
         if ((error as Error).message === "Domain not found") {
@@ -140,12 +141,12 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Verify domain ownership
   app.post("/:id/verify", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        const result = await verifyDomain(id, request.user.orgId);
+        const result = await verifyDomain(id, request.auth!.orgId);
         return { success: true, data: result };
       } catch (error) {
         if ((error as Error).message === "Domain not found") {
@@ -158,12 +159,12 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Re-verify domain (get new token)
   app.post("/:id/reverify", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        const result = await reverifyDomain(id, request.user.orgId);
+        const result = await reverifyDomain(id, request.auth!.orgId);
         return {
           success: true,
           data: result,
@@ -180,13 +181,13 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Toggle domain active status
   app.post("/:id/toggle", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as { isActive: boolean };
 
       try {
-        const domain = await toggleDomain(id, request.user.orgId, body.isActive);
+        const domain = await toggleDomain(id, request.auth!.orgId, body.isActive);
         return {
           success: true,
           data: domain,
@@ -210,12 +211,12 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Get SSL status
   app.get("/:id/ssl", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        const status = await checkSslStatus(id, request.user.orgId);
+        const status = await checkSslStatus(id, request.auth!.orgId);
         return { success: true, data: status };
       } catch (error) {
         if ((error as Error).message === "Domain not found") {
@@ -228,12 +229,12 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Renew SSL certificate
   app.post("/:id/ssl/renew", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
       try {
-        const result = await renewSsl(id, request.user.orgId);
+        const result = await renewSsl(id, request.auth!.orgId);
         return { success: true, data: result };
       } catch (error) {
         const msg = (error as Error).message;
@@ -250,7 +251,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Get domain events
   app.get("/:id/events", {
-    onRequest: [app.authenticate],
+    preHandler: [requireAuth],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const query = request.query as {
@@ -259,7 +260,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        const result = await getDomainEvents(id, request.user.orgId, {
+        const result = await getDomainEvents(id, request.auth!.orgId, {
           limit: query.limit ? parseInt(query.limit) : undefined,
           offset: query.offset ? parseInt(query.offset) : undefined,
         });

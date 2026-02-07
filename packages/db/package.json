@@ -21,7 +21,8 @@
     "db:push": "prisma db push"
   },
   "dependencies": {
-    "@prisma/client": "^5.8.0"
+    "@prisma/client": "^5.8.0",
+    "styled-jsx": "^5.1.7"
   },
   "devDependencies": {
     "prisma": "^5.8.0",

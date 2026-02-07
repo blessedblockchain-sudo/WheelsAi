@@ -3,9 +3,6 @@ const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
   transpilePackages: ["@wheelsai/shared", "@wheelsai/types"],
-  experimental: {
-    serverActions: true,
-  },
   async headers() {
     return [
       {

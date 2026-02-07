@@ -1,6 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
-import { authMiddleware } from "../middleware/auth";
-import { prisma } from "../lib/prisma";
+import { requireAuth } from "../middleware/auth.js";
+import { prisma } from "../lib/prisma.js";
 
 interface CheckoutBody {
   amount: number;
@@ -8,7 +8,7 @@ interface CheckoutBody {
 
 export const billingRoutes: FastifyPluginAsync = async (fastify) => {
   // Apply auth middleware to all billing routes
-  fastify.addHook("preHandler", authMiddleware);
+  fastify.addHook("preHandler", requireAuth);
 
   // Get credit balance
   fastify.get("/balance", async (request) => {

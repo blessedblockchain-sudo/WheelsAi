@@ -260,3 +260,7 @@ export function clearAuthCookie(reply: FastifyReply) {
     path: "/",
   });
 }
+
+// Aliases for backward compatibility
+export const authenticate = requireAuth;
+export const authMiddleware = requireAuth;

@@ -1,5 +1,5 @@
 import { FastifyPluginAsync } from "fastify";
-import { authMiddleware } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma";
 import { hashPassword, verifyPassword } from "../services/auth";
 
@@ -28,7 +28,7 @@ interface UpdateSettingsBody {
 
 export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // Apply auth middleware to all settings routes
-  fastify.addHook("preHandler", authMiddleware);
+  fastify.addHook("preHandler", requireAuth);
 
   // Get user profile
   fastify.get("/profile", async (request) => {

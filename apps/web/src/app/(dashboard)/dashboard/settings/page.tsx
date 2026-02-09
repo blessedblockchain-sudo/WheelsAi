@@ -310,7 +310,9 @@ export default function SettingsPage() {
                           Use an authenticator app to generate one-time codes
                         </p>
                       </div>
-                      <Button variant="outline">Enable</Button>
+                      <a href="/dashboard/settings/security">
+                        <Button variant="outline">Configure 2FA</Button>
+                      </a>
                     </div>
                   </CardContent>
                 </Card>

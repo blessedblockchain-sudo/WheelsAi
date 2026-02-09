@@ -27,6 +27,7 @@ model User {
 
   ownedOrganizations Organization[] @relation("OrgOwner")
   memberships        OrgMember[]
+  twoFactorAuth      TwoFactorAuth?
 
   @@map("users")
 }
@@ -1534,4 +1535,396 @@ model DomainEvent {
   @@index([domainId, createdAt])
   @@index([domainId, eventType])
   @@map("domain_events")
+}
+
+// ============================================
+// Scheduled Tasks / Cron Jobs (Phase 5)
+// ============================================
+
+model ScheduledTask {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  agentId       String   @map("agent_id") @db.Uuid
+  name          String
+  description   String?
+
+  // Schedule configuration
+  scheduleType  String   @map("schedule_type") // 'cron', 'interval', 'once'
+  cronExpression String? @map("cron_expression")
+  intervalSeconds Int?   @map("interval_seconds")
+  scheduledAt   DateTime? @map("scheduled_at")
+  timezone      String   @default("UTC")
+
+  // Task configuration
+  taskType      String   @map("task_type") // 'inference', 'webhook', 'custom'
+  payload       Json     @default("{}")
+  timeout       Int      @default(300000)
+  maxRetries    Int      @default(3) @map("max_retries")
+
+  // Status
+  isEnabled     Boolean  @default(true) @map("is_enabled")
+  status        String   @default("active") // 'active', 'paused', 'completed', 'failed', 'disabled'
+
+  // Execution tracking
+  lastRunAt     DateTime? @map("last_run_at")
+  lastRunStatus String?  @map("last_run_status")
+  lastRunDurationMs Int? @map("last_run_duration_ms")
+  lastError     String?  @map("last_error")
+  nextRunAt     DateTime? @map("next_run_at")
+  totalRuns     Int      @default(0) @map("total_runs")
+  successfulRuns Int     @default(0) @map("successful_runs")
+  failedRuns    Int      @default(0) @map("failed_runs")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  executions    TaskExecution[]
+
+  @@unique([orgId, name])
+  @@index([orgId, isEnabled])
+  @@index([nextRunAt, isEnabled])
+  @@index([status])
+  @@map("scheduled_tasks")
+}
+
+model TaskExecution {
+  id            String   @id @default(uuid()) @db.Uuid
+  taskId        String   @map("task_id") @db.Uuid
+
+  status        String   @default("pending") // 'pending', 'running', 'success', 'failed', 'timeout', 'cancelled'
+  startedAt     DateTime? @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  durationMs    Int?     @map("duration_ms")
+
+  input         Json?
+  output        Json?
+  error         String?
+  logs          String?  @db.Text
+
+  attempt       Int      @default(1)
+  nextRetryAt   DateTime? @map("next_retry_at")
+
+  triggeredBy   String   @default("scheduler") @map("triggered_by")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  task          ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, status])
+  @@index([taskId, createdAt])
+  @@map("task_executions")
+}
+
+// ============================================
+// RAG / Knowledge Base (Phase 5)
+// ============================================
+
+model KnowledgeBase {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  name          String
+  description   String?
+
+  embeddingModel String  @default("text-embedding-ada-002") @map("embedding_model")
+  chunkSize     Int      @default(512) @map("chunk_size")
+  chunkOverlap  Int      @default(50) @map("chunk_overlap")
+
+  status        String   @default("active")
+
+  totalDocuments Int     @default(0) @map("total_documents")
+  totalChunks   Int      @default(0) @map("total_chunks")
+  totalSizeBytes BigInt  @default(0) @map("total_size_bytes")
+
+  agentIds      String[] @default([]) @map("agent_ids")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  documents     KnowledgeDocument[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("knowledge_bases")
+}
+
+model KnowledgeDocument {
+  id              String   @id @default(uuid()) @db.Uuid
+  knowledgeBaseId String   @map("knowledge_base_id") @db.Uuid
+
+  title           String
+  fileName        String?  @map("file_name")
+  mimeType        String?  @map("mime_type")
+  sourceUrl       String?  @map("source_url")
+  sourceType      String   @map("source_type")
+
+  rawContent      String?  @map("raw_content") @db.Text
+  sizeBytes       BigInt   @default(0) @map("size_bytes")
+
+  status          String   @default("pending")
+  processingError String?  @map("processing_error")
+  processedAt     DateTime? @map("processed_at")
+
+  chunkCount      Int      @default(0) @map("chunk_count")
+
+  metadata        Json?
+  tags            String[] @default([])
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  knowledgeBase   KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  chunks          DocumentChunk[]
+
+  @@index([knowledgeBaseId, status])
+  @@map("knowledge_documents")
+}
+
+model DocumentChunk {
+  id              String   @id @default(uuid()) @db.Uuid
+  documentId      String   @map("document_id") @db.Uuid
+
+  content         String   @db.Text
+  chunkIndex      Int      @map("chunk_index")
+
+  embedding       Bytes?
+  embeddingModel  String?  @map("embedding_model")
+
+  metadata        Json?
+  tokenCount      Int      @default(0) @map("token_count")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  document        KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, chunkIndex])
+  @@map("document_chunks")
+}
+
+// ============================================
+// Multi-Agent Orchestration (Phase 5)
+// ============================================
+
+model Orchestration {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  name          String
+  description   String?
+
+  executionMode String   @map("execution_mode") // 'sequential', 'parallel', 'conditional', 'pipeline'
+  maxConcurrency Int     @default(5) @map("max_concurrency")
+  timeout       Int      @default(600000)
+  retryPolicy   Json?    @map("retry_policy")
+
+  inputSchema   Json?    @map("input_schema")
+  outputSchema  Json?    @map("output_schema")
+
+  isEnabled     Boolean  @default(true) @map("is_enabled")
+
+  totalRuns     Int      @default(0) @map("total_runs")
+  successfulRuns Int     @default(0) @map("successful_runs")
+  failedRuns    Int      @default(0) @map("failed_runs")
+  avgDurationMs Int?     @map("avg_duration_ms")
+  lastRunAt     DateTime? @map("last_run_at")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  steps         OrchestrationStep[]
+  executions    OrchestrationExecution[]
+
+  @@unique([orgId, name])
+  @@index([orgId])
+  @@map("orchestrations")
+}
+
+model OrchestrationStep {
+  id              String   @id @default(uuid()) @db.Uuid
+  orchestrationId String   @map("orchestration_id") @db.Uuid
+
+  name            String
+  stepOrder       Int      @map("step_order")
+  agentId         String   @map("agent_id") @db.Uuid
+
+  inputMapping    Json?    @map("input_mapping")
+  outputMapping   Json?    @map("output_mapping")
+
+  condition       Json?
+
+  onError         String   @default("fail") @map("on_error")
+  fallbackAgentId String?  @map("fallback_agent_id") @db.Uuid
+  maxRetries      Int      @default(0) @map("max_retries")
+  timeoutMs       Int?     @map("timeout_ms")
+
+  dependsOn       String[] @default([]) @map("depends_on")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  orchestration   Orchestration @relation(fields: [orchestrationId], references: [id], onDelete: Cascade)
+
+  @@unique([orchestrationId, name])
+  @@unique([orchestrationId, stepOrder])
+  @@index([orchestrationId])
+  @@map("orchestration_steps")
+}
+
+model OrchestrationExecution {
+  id              String   @id @default(uuid()) @db.Uuid
+  orchestrationId String   @map("orchestration_id") @db.Uuid
+
+  status          String   @default("pending")
+  progress        Int      @default(0)
+
+  input           Json?
+  output          Json?
+  context         Json?
+
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  durationMs      Int?      @map("duration_ms")
+
+  triggeredBy     String   @default("manual") @map("triggered_by")
+  triggeredById   String?  @map("triggered_by_id") @db.Uuid
+
+  error           String?
+  failedStepId    String?  @map("failed_step_id") @db.Uuid
+
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  orchestration   Orchestration @relation(fields: [orchestrationId], references: [id], onDelete: Cascade)
+  stepResults     OrchestrationStepResult[]
+
+  @@index([orchestrationId, status])
+  @@index([orchestrationId, createdAt])
+  @@map("orchestration_executions")
+}
+
+model OrchestrationStepResult {
+  id            String   @id @default(uuid()) @db.Uuid
+  executionId   String   @map("execution_id") @db.Uuid
+  stepId        String   @map("step_id") @db.Uuid
+  stepName      String   @map("step_name")
+
+  status        String   @default("pending")
+  agentId       String   @map("agent_id") @db.Uuid
+
+  input         Json?
+  output        Json?
+  error         String?
+
+  startedAt     DateTime? @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  durationMs    Int?      @map("duration_ms")
+
+  attempt       Int       @default(1)
+
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  execution     OrchestrationExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@index([executionId, stepId])
+  @@map("orchestration_step_results")
+}
+
+// ============================================
+// Agent Templates / Starter Kits (Phase 5)
+// ============================================
+
+model AgentTemplate {
+  id            String   @id @default(uuid()) @db.Uuid
+
+  name          String   @unique
+  slug          String   @unique
+  title         String
+  description   String   @db.Text
+  longDescription String? @map("long_description") @db.Text
+
+  category      String
+  difficulty    String   @default("beginner")
+  tags          String[] @default([])
+  framework     String
+
+  systemPrompt  String?  @map("system_prompt") @db.Text
+  tools         Json     @default("[]")
+  modelConfig   Json     @map("model_config")
+  sourceType    String   @map("source_type") @default("inline")
+  sourceCode    String?  @map("source_code") @db.Text
+  sourceUrl     String?  @map("source_url")
+  env           Json     @default("{}")
+
+  graphNodes    Json?    @map("graph_nodes")
+  graphEdges    Json?    @map("graph_edges")
+
+  iconUrl       String?  @map("icon_url")
+  screenshots   String[] @default([])
+  readme        String?  @db.Text
+
+  usageCount    Int      @default(0) @map("usage_count")
+  avgRating     Float    @default(0) @map("avg_rating")
+
+  isPublished   Boolean  @default(true) @map("is_published")
+  isFeatured    Boolean  @default(false) @map("is_featured")
+
+  authorName    String   @map("author_name")
+  authorUrl     String?  @map("author_url")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([category, isPublished])
+  @@index([framework, isPublished])
+  @@index([difficulty, isPublished])
+  @@index([isFeatured, isPublished])
+  @@index([usageCount])
+  @@map("agent_templates")
+}
+
+// ============================================
+// Two-Factor Authentication (Phase 5)
+// ============================================
+
+model TwoFactorAuth {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @unique @map("user_id") @db.Uuid
+
+  secret        Bytes
+  algorithm     String   @default("SHA1")
+  digits        Int      @default(6)
+  period        Int      @default(30)
+
+  isEnabled     Boolean  @default(false) @map("is_enabled")
+  isVerified    Boolean  @default(false) @map("is_verified")
+
+  backupCodes   Bytes?   @map("backup_codes")
+  backupCodesUsed Int    @default(0) @map("backup_codes_used")
+  backupCodesTotal Int   @default(10) @map("backup_codes_total")
+
+  recoveryEmail String?  @map("recovery_email")
+
+  lastUsedAt    DateTime? @map("last_used_at")
+  lastMethod    String?   @map("last_method")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("two_factor_auth")
+}
+
+model TwoFactorChallenge {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+
+  token         String   @unique
+
+  isUsed        Boolean  @default(false) @map("is_used")
+
+  expiresAt     DateTime @map("expires_at")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("two_factor_challenges")
 }

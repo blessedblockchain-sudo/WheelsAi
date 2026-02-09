@@ -20,6 +20,11 @@ import {
   FlaskConical,
   Brain,
   Globe,
+  Clock,
+  Database,
+  GitBranch,
+  FileCode,
+  Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +40,10 @@ const navigation = [
   { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
   { name: "Memory", href: "/dashboard/memory", icon: Brain },
   { name: "Domains", href: "/dashboard/domains", icon: Globe },
+  { name: "Scheduler", href: "/dashboard/scheduler", icon: Clock },
+  { name: "Knowledge", href: "/dashboard/knowledge", icon: Database },
+  { name: "Orchestration", href: "/dashboard/orchestrations", icon: GitBranch },
+  { name: "Templates", href: "/dashboard/templates", icon: FileCode },
   { name: "Models", href: "/dashboard/models", icon: Cpu },
   { name: "Playground", href: "/dashboard/playground", icon: MessageSquare },
   { name: "API Keys", href: "/dashboard/keys", icon: Key },

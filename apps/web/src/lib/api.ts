@@ -2942,4 +2942,308 @@ export const domainsApi = {
   },
 };
 
+// ============================================
+// Scheduled Tasks API (Phase 5)
+// ============================================
+
+export interface ScheduledTask {
+  id: string;
+  orgId: string;
+  agentId: string;
+  name: string;
+  description?: string;
+  scheduleType: string;
+  cronExpression?: string;
+  intervalSeconds?: number;
+  scheduledAt?: string;
+  timezone: string;
+  taskType: string;
+  payload: Record<string, any>;
+  timeout: number;
+  maxRetries: number;
+  isEnabled: boolean;
+  status: string;
+  lastRunAt?: string;
+  lastRunStatus?: string;
+  lastRunDurationMs?: number;
+  lastError?: string;
+  nextRunAt?: string;
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  createdAt: string;
+}
+
+export interface TaskExecution {
+  id: string;
+  taskId: string;
+  status: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  input?: any;
+  output?: any;
+  error?: string;
+  attempt: number;
+  triggeredBy: string;
+  createdAt: string;
+}
+
+export interface SchedulerStats {
+  totalTasks: number;
+  activeTasks: number;
+  pausedTasks: number;
+  totalRunsToday: number;
+  successRateToday: number;
+  failedRunsToday: number;
+  upcomingRuns: Array<{ taskId: string; taskName: string; nextRunAt: string }>;
+}
+
+export const schedulerApi = {
+  getStats: () => api<SchedulerStats>("/api/scheduler/stats"),
+  list: (params?: { agentId?: string; status?: string; isEnabled?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.agentId) sp.set("agentId", params.agentId);
+    if (params?.status) sp.set("status", params.status);
+    if (params?.isEnabled) sp.set("isEnabled", params.isEnabled);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ tasks: ScheduledTask[]; total: number }>(`/api/scheduler${q ? `?${q}` : ""}`);
+  },
+  get: (id: string) => api<ScheduledTask>(`/api/scheduler/${id}`),
+  create: (data: Partial<ScheduledTask>) => api<ScheduledTask>("/api/scheduler", { method: "POST", body: data }),
+  update: (id: string, data: Partial<ScheduledTask>) => api<ScheduledTask>(`/api/scheduler/${id}`, { method: "PATCH", body: data }),
+  delete: (id: string) => api<void>(`/api/scheduler/${id}`, { method: "DELETE" }),
+  toggle: (id: string, isEnabled: boolean) => api<ScheduledTask>(`/api/scheduler/${id}/toggle`, { method: "POST", body: { isEnabled } }),
+  trigger: (id: string) => api<TaskExecution>(`/api/scheduler/${id}/trigger`, { method: "POST" }),
+  getExecutions: (taskId: string, params?: { status?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.status) sp.set("status", params.status);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ executions: TaskExecution[]; total: number }>(`/api/scheduler/${taskId}/executions${q ? `?${q}` : ""}`);
+  },
+};
+
+// ============================================
+// Knowledge Base / RAG API (Phase 5)
+// ============================================
+
+export interface KnowledgeBase {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string;
+  embeddingModel: string;
+  chunkSize: number;
+  chunkOverlap: number;
+  status: string;
+  totalDocuments: number;
+  totalChunks: number;
+  totalSizeBytes: number;
+  agentIds: string[];
+  createdAt: string;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  knowledgeBaseId: string;
+  title: string;
+  fileName?: string;
+  mimeType?: string;
+  sourceUrl?: string;
+  sourceType: string;
+  sizeBytes: number;
+  status: string;
+  chunkCount: number;
+  tags: string[];
+  createdAt: string;
+}
+
+export interface SearchResult {
+  chunkId: string;
+  documentId: string;
+  documentTitle: string;
+  content: string;
+  score: number;
+  chunkIndex: number;
+}
+
+export const knowledgeApi = {
+  getStats: () => api<{ totalBases: number; totalDocuments: number; totalChunks: number }>("/api/knowledge/stats"),
+  list: (params?: { status?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.status) sp.set("status", params.status);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ knowledgeBases: KnowledgeBase[]; total: number }>(`/api/knowledge${q ? `?${q}` : ""}`);
+  },
+  get: (id: string) => api<KnowledgeBase & { documents: KnowledgeDocument[] }>(`/api/knowledge/${id}`),
+  create: (data: Partial<KnowledgeBase>) => api<KnowledgeBase>("/api/knowledge", { method: "POST", body: data }),
+  update: (id: string, data: Partial<KnowledgeBase>) => api<KnowledgeBase>(`/api/knowledge/${id}`, { method: "PATCH", body: data }),
+  delete: (id: string) => api<void>(`/api/knowledge/${id}`, { method: "DELETE" }),
+  search: (id: string, query: string, limit?: number) => api<{ results: SearchResult[]; query: string; totalChunksSearched: number }>(`/api/knowledge/${id}/search`, { method: "POST", body: { query, limit } }),
+  addDocument: (kbId: string, data: { title: string; content: string; sourceType: string; tags?: string[] }) => api<KnowledgeDocument>(`/api/knowledge/${kbId}/documents`, { method: "POST", body: data }),
+  getDocuments: (kbId: string, params?: { limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ documents: KnowledgeDocument[]; total: number }>(`/api/knowledge/${kbId}/documents${q ? `?${q}` : ""}`);
+  },
+  deleteDocument: (kbId: string, docId: string) => api<void>(`/api/knowledge/${kbId}/documents/${docId}`, { method: "DELETE" }),
+};
+
+// ============================================
+// Orchestration API (Phase 5)
+// ============================================
+
+export interface Orchestration {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string;
+  executionMode: string;
+  maxConcurrency: number;
+  timeout: number;
+  isEnabled: boolean;
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  avgDurationMs?: number;
+  lastRunAt?: string;
+  createdAt: string;
+  steps?: OrchestrationStep[];
+}
+
+export interface OrchestrationStep {
+  id: string;
+  orchestrationId: string;
+  name: string;
+  stepOrder: number;
+  agentId: string;
+  onError: string;
+  maxRetries: number;
+  dependsOn: string[];
+}
+
+export interface OrchestrationExecution {
+  id: string;
+  orchestrationId: string;
+  status: string;
+  progress: number;
+  input?: any;
+  output?: any;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  triggeredBy: string;
+  error?: string;
+  createdAt: string;
+}
+
+export const orchestrationApi = {
+  getStats: () => api<{ totalOrchestrations: number; activeOrchestrations: number; totalExecutions: number }>("/api/orchestrations/stats"),
+  list: (params?: { isEnabled?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.isEnabled) sp.set("isEnabled", params.isEnabled);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ orchestrations: Orchestration[]; total: number }>(`/api/orchestrations${q ? `?${q}` : ""}`);
+  },
+  get: (id: string) => api<Orchestration>(`/api/orchestrations/${id}`),
+  create: (data: any) => api<Orchestration>("/api/orchestrations", { method: "POST", body: data }),
+  update: (id: string, data: Partial<Orchestration>) => api<Orchestration>(`/api/orchestrations/${id}`, { method: "PATCH", body: data }),
+  delete: (id: string) => api<void>(`/api/orchestrations/${id}`, { method: "DELETE" }),
+  execute: (id: string, input?: Record<string, any>) => api<OrchestrationExecution>(`/api/orchestrations/${id}/execute`, { method: "POST", body: { input } }),
+  getExecutions: (orchId: string, params?: { status?: string; limit?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.status) sp.set("status", params.status);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    const q = sp.toString();
+    return api<{ executions: OrchestrationExecution[]; total: number }>(`/api/orchestrations/${orchId}/executions${q ? `?${q}` : ""}`);
+  },
+  getExecution: (orchId: string, execId: string) => api<OrchestrationExecution>(`/api/orchestrations/${orchId}/executions/${execId}`),
+};
+
+// ============================================
+// Templates API (Phase 5)
+// ============================================
+
+export interface AgentTemplate {
+  id: string;
+  name: string;
+  slug: string;
+  title: string;
+  description: string;
+  longDescription?: string;
+  category: string;
+  difficulty: string;
+  tags: string[];
+  framework: string;
+  iconUrl?: string;
+  screenshots: string[];
+  usageCount: number;
+  avgRating: number;
+  isPublished: boolean;
+  isFeatured: boolean;
+  authorName: string;
+  authorUrl?: string;
+  createdAt: string;
+}
+
+export const templateApi = {
+  list: (params?: { category?: string; framework?: string; difficulty?: string; search?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.category) sp.set("category", params.category);
+    if (params?.framework) sp.set("framework", params.framework);
+    if (params?.difficulty) sp.set("difficulty", params.difficulty);
+    if (params?.search) sp.set("search", params.search);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ templates: AgentTemplate[]; total: number }>(`/api/templates${q ? `?${q}` : ""}`);
+  },
+  get: (idOrSlug: string) => api<AgentTemplate>(`/api/templates/${idOrSlug}`),
+  getCategories: () => api<{ categories: string[] }>("/api/templates/categories"),
+  getStats: () => api<{ total: number; published: number; featured: number; totalUsage: number }>("/api/templates/stats"),
+  use: (templateId: string, data: { name: string; slug: string; description?: string }) => api<any>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
+};
+
+// ============================================
+// Two-Factor Auth API (Phase 5)
+// ============================================
+
+export interface TwoFactorStatus {
+  isEnabled: boolean;
+  isVerified: boolean;
+  lastUsedAt?: string;
+  lastMethod?: string;
+  backupCodesRemaining?: number;
+  recoveryEmail?: string;
+}
+
+export interface TwoFactorSetup {
+  id: string;
+  secret: string;
+  otpauthUrl: string;
+  qrCodeUrl: string;
+  backupCodes: string[];
+}
+
+export const twoFactorApi = {
+  getStatus: () => api<TwoFactorStatus>("/api/2fa/status"),
+  setup: () => api<TwoFactorSetup>("/api/2fa/setup", { method: "POST" }),
+  verifySetup: (token: string) => api<{ success: boolean; message: string }>("/api/2fa/verify-setup", { method: "POST", body: { token } }),
+  disable: (token: string) => api<{ success: boolean; message: string }>("/api/2fa/disable", { method: "POST", body: { token } }),
+  regenerateBackupCodes: (token: string) => api<{ backupCodes: string[] }>("/api/2fa/backup-codes/regenerate", { method: "POST", body: { token } }),
+  setRecoveryEmail: (email: string) => api<{ success: boolean }>("/api/2fa/recovery-email", { method: "POST", body: { email } }),
+  createChallenge: (userId: string) => api<{ required: boolean; challengeToken?: string; expiresAt?: string }>("/api/2fa/challenge", { method: "POST", body: { userId } }),
+  verifyChallenge: (challengeToken: string, token: string) => api<{ userId: string; valid: boolean }>("/api/2fa/challenge/verify", { method: "POST", body: { challengeToken, token } }),
+};
+
 export { ApiError };

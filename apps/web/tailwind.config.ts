@@ -27,6 +27,19 @@ const config: Config = {
           border: "#1e1e2e",
         },
 
+        // Navy palette
+        navy: {
+          950: "#040a18",
+          900: "#0a1628",
+          800: "#0f1d35",
+          700: "#1a2744",
+          600: "#243352",
+          500: "#2e4068",
+          400: "#3b82f6",
+          300: "#60a5fa",
+          200: "#93c5fd",
+        },
+
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
@@ -161,6 +174,8 @@ const config: Config = {
         "glow-lg": "0 0 30px rgba(0, 255, 0, 0.6), 0 0 60px rgba(0, 255, 0, 0.4)",
         "glow-cyan": "0 0 20px rgba(0, 212, 255, 0.4), 0 0 40px rgba(0, 212, 255, 0.2)",
         "glow-purple": "0 0 20px rgba(168, 85, 247, 0.4), 0 0 40px rgba(168, 85, 247, 0.2)",
+        "glow-navy": "0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.2)",
+        "glow-navy-lg": "0 0 30px rgba(59, 130, 246, 0.5), 0 0 60px rgba(59, 130, 246, 0.3)",
       },
     },
   },

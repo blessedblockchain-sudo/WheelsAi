@@ -150,6 +150,51 @@
   .gradient-text {
     @apply bg-clip-text text-transparent bg-gradient-to-r from-[#00ff00] via-[#00d4ff] to-[#a855f7];
   }
+
+  /* Navy gradient text - blue to cyan to purple */
+  .gradient-text-navy {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-[#3b82f6] via-[#00d4ff] to-[#a855f7];
+  }
+
+  /* Navy glow card */
+  .glow-card-navy {
+    @apply relative rounded-xl bg-navy-800 border border-navy-600 p-6 transition-all duration-300;
+  }
+
+  .glow-card-navy:hover {
+    border-color: rgba(59, 130, 246, 0.4);
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.15), inset 0 0 20px rgba(59, 130, 246, 0.05);
+  }
+
+  /* Navy grid background */
+  .grid-bg-navy {
+    background-image:
+      linear-gradient(rgba(59, 130, 246, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(59, 130, 246, 0.04) 1px, transparent 1px);
+    background-size: 50px 50px;
+  }
+
+  /* Navy glow button */
+  .btn-glow-navy {
+    @apply inline-flex items-center justify-center h-12 px-8 py-3 font-bold text-white bg-navy-400 rounded-lg transition-all duration-300;
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.4), 0 0 40px rgba(59, 130, 246, 0.2);
+  }
+
+  .btn-glow-navy:hover {
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.6), 0 0 60px rgba(59, 130, 246, 0.4);
+    transform: translateY(-2px);
+  }
+
+  /* Blue text glow */
+  .text-glow-blue {
+    text-shadow: 0 0 10px rgba(59, 130, 246, 0.5), 0 0 20px rgba(59, 130, 246, 0.3);
+  }
+
+  /* Pricing popular tier */
+  .pricing-popular {
+    @apply relative rounded-xl bg-navy-800 border-2 border-navy-400 p-8 transition-all duration-300;
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.3), 0 0 60px rgba(59, 130, 246, 0.15);
+  }
 }
 
 /* Custom Animations */

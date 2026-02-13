@@ -40,9 +40,11 @@ export async function getTemplates(options: {
 }
 
 export async function getTemplate(idOrSlug: string) {
+  // UUID v4 regex to distinguish ID from slug
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
   const template = await prisma.agentTemplate.findFirst({
     where: {
-      OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+      ...(isUuid ? { id: idOrSlug } : { slug: idOrSlug }),
       isPublished: true,
     },
   });

@@ -3,7 +3,7 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 interface ApiOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
 }
@@ -309,6 +309,81 @@ export interface UsageSummary {
   tokensCost: number;
 }
 
+export interface X402Alert {
+  code: string;
+  severity: "warning" | "critical";
+  message: string;
+  value: number;
+  threshold: number;
+}
+
+export interface X402WorkerMetrics {
+  enabled: boolean;
+  running: boolean;
+  startedAt: string | null;
+  lastTickAt: string | null;
+  lastTickDurationMs: number | null;
+  lastError: string | null;
+  ticks: number;
+  processed: number;
+  settled: number;
+  failed: number;
+  retried: number;
+  skipped: number;
+}
+
+export interface X402MetricsResponse {
+  worker: X402WorkerMetrics;
+  thresholds: {
+    maxPending: number;
+    maxFailed: number;
+    maxRetriable: number;
+    maxFailureRatePercent: number;
+    maxOldestPendingMinutes: number;
+  };
+  alerts: X402Alert[];
+  payments: {
+    total: number;
+    pending: number;
+    verified: number;
+    settled: number;
+    failed: number;
+    retriable: number;
+    failureRatePercent: number;
+    oldestPendingMinutes: number | null;
+  };
+  recentFailures: Array<{
+    id: string;
+    requestId: string;
+    txSignature: string | null;
+    retryCount: number;
+    failureReason: string | null;
+    updatedAt: string;
+  }>;
+}
+
+export interface X402MetricsHistoryPoint {
+  timestamp: string;
+  totalPayments: number;
+  pendingPayments: number;
+  verifiedPayments: number;
+  settledPayments: number;
+  failedPayments: number;
+  retriablePayments: number;
+  failureRatePercent: number;
+  oldestPendingMinutes: number | null;
+  alertCount: number;
+  alerts: X402Alert[];
+  worker: {
+    ticks: number;
+    processed: number;
+    settled: number;
+    failed: number;
+    retried: number;
+    skipped: number;
+  };
+}
+
 export const billingApi = {
   getBalance: () =>
     api<{ balance: CreditBalance }>("/api/billing/balance"),
@@ -324,6 +399,15 @@ export const billingApi = {
       method: "POST",
       body: { amount },
     }),
+
+  getX402Metrics: () =>
+    api<X402MetricsResponse>("/api/x402/metrics"),
+
+  getX402MetricsHistory: (hours = 24, limit = 120) =>
+    api<{
+      history: X402MetricsHistoryPoint[];
+      query: { hours: number; limit: number };
+    }>(`/api/x402/metrics/history?hours=${hours}&limit=${limit}`),
 };
 
 // ============================================

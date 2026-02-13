@@ -3,15 +3,9 @@
  *
  * Implements the X-402 payment protocol for pay-per-request AI inference.
  * Uses Solana blockchain for payment verification and settlement.
- *
- * Protocol Flow:
- * 1. Client makes request without payment
- * 2. Server returns 402 with X-Payment-Required header
- * 3. Client signs Solana transaction for payment
- * 4. Client retries with X-Payment header containing signed tx
- * 5. Server verifies payment and processes request
- * 6. Server submits transaction to chain (or uses facilitator)
  */
+
+import { randomUUID } from "crypto";
 
 import {
   Connection,
@@ -20,11 +14,9 @@ import {
   SystemProgram,
   LAMPORTS_PER_SOL,
 } from "@solana/web3.js";
-import {
-  getAssociatedTokenAddress,
-  createTransferInstruction,
-  TOKEN_PROGRAM_ID,
-} from "@solana/spl-token";
+import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import bs58 from "bs58";
+
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
 
@@ -47,9 +39,7 @@ const NOS_MINT = {
 };
 
 // WheelsAI treasury address
-const TREASURY_ADDRESS = new PublicKey(
-  env.TREASURY_WALLET_ADDRESS || "11111111111111111111111111111111"
-);
+const TREASURY_ADDRESS = new PublicKey(env.TREASURY_WALLET_ADDRESS);
 
 // ============================================
 // Types
@@ -96,10 +86,10 @@ export interface PriceQuote {
 // ============================================
 
 // Prices per 1K tokens in USD
-const PRICING: Record<string, { input: number; output: number }> = {
-  small: { input: 0.00015, output: 0.00060 },
-  medium: { input: 0.00030, output: 0.00120 },
-  large: { input: 0.00090, output: 0.00360 },
+const PRICING: Record<PriceQuote["modelTier"], { input: number; output: number }> = {
+  small: { input: 0.00015, output: 0.0006 },
+  medium: { input: 0.0003, output: 0.0012 },
+  large: { input: 0.0009, output: 0.0036 },
 };
 
 // Minimum charge in USD
@@ -168,10 +158,11 @@ export function estimatePrice(
  */
 export function generatePaymentRequirement(
   quote: PriceQuote,
-  asset: "USDC" | "SOL" | "NOS" = "USDC",
+  asset: "USDC" | "SOL" | "NOS" = env.X402_DEFAULT_ASSET,
   memo?: string
 ): PaymentRequirement {
-  const network = env.SOLANA_NETWORK === "mainnet-beta" ? "solana:mainnet" : "solana:devnet";
+  const network =
+    env.SOLANA_NETWORK === "mainnet-beta" ? "solana:mainnet" : "solana:devnet";
 
   let amount: string;
   switch (asset) {
@@ -205,6 +196,21 @@ export function formatPaymentHeader(requirement: PaymentRequirement): string {
   return JSON.stringify(requirement);
 }
 
+/**
+ * Check if a requirement has expired
+ */
+export function isRequirementExpired(requirement: PaymentRequirement): boolean {
+  if (!requirement.validUntil) return false;
+  return requirement.validUntil < Math.floor(Date.now() / 1000);
+}
+
+/**
+ * Create a correlation ID for a payment request.
+ */
+export function createPaymentRequestId(): string {
+  return `x402_${randomUUID()}`;
+}
+
 // ============================================
 // Payment Verification
 // ============================================
@@ -214,7 +220,22 @@ export function formatPaymentHeader(requirement: PaymentRequirement): string {
  */
 export function parsePaymentHeader(header: string): PaymentHeader | null {
   try {
-    return JSON.parse(header);
+    const parsed: unknown = JSON.parse(header);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("signature" in parsed) ||
+      !("network" in parsed)
+    ) {
+      return null;
+    }
+
+    const { signature, network } = parsed as Record<string, unknown>;
+    if (typeof signature !== "string" || typeof network !== "string") {
+      return null;
+    }
+
+    return { signature, network };
   } catch {
     return null;
   }
@@ -228,6 +249,26 @@ export async function verifyPayment(
   expectedRequirement: PaymentRequirement
 ): Promise<PaymentVerification> {
   try {
+    if (paymentHeader.network !== expectedRequirement.network) {
+      return {
+        isValid: false,
+        payer: "",
+        amount: "0",
+        asset: expectedRequirement.asset,
+        error: "Payment network does not match requirement",
+      };
+    }
+
+    if (isRequirementExpired(expectedRequirement)) {
+      return {
+        isValid: false,
+        payer: "",
+        amount: "0",
+        asset: expectedRequirement.asset,
+        error: "Payment requirement has expired",
+      };
+    }
+
     // Decode the signed transaction
     const txBuffer = Buffer.from(paymentHeader.signature, "base64");
     const transaction = Transaction.from(txBuffer);
@@ -243,6 +284,26 @@ export async function verifyPayment(
       };
     }
 
+    if (!transaction.verifySignatures()) {
+      return {
+        isValid: false,
+        payer: "",
+        amount: "0",
+        asset: expectedRequirement.asset,
+        error: "Transaction signature verification failed",
+      };
+    }
+
+    if (!transaction.recentBlockhash) {
+      return {
+        isValid: false,
+        payer: "",
+        amount: "0",
+        asset: expectedRequirement.asset,
+        error: "Transaction missing recent blockhash",
+      };
+    }
+
     // Get payer from fee payer
     const payer = transaction.feePayer?.toBase58() || "";
     if (!payer) {
@@ -255,11 +316,19 @@ export async function verifyPayment(
       };
     }
 
+    const txSignature = getTransactionSignature(transaction);
+    if (!txSignature) {
+      return {
+        isValid: false,
+        payer,
+        amount: "0",
+        asset: expectedRequirement.asset,
+        error: "Unable to resolve transaction signature",
+      };
+    }
+
     // Verify the payment instruction
-    const verified = await verifyPaymentInstruction(
-      transaction,
-      expectedRequirement
-    );
+    const verified = await verifyPaymentInstruction(transaction, expectedRequirement);
 
     if (!verified.isValid) {
       return {
@@ -271,27 +340,24 @@ export async function verifyPayment(
       };
     }
 
-    // In production, submit transaction to chain
-    // For now, we simulate verification
-    const connection = getConnection();
-
-    // Check if we should actually submit the transaction
-    if (env.X402_SUBMIT_TRANSACTIONS === "true") {
+    // In production, optionally submit transaction to chain
+    if (env.X402_SUBMIT_TRANSACTIONS) {
+      const connection = getConnection();
       try {
-        const signature = await connection.sendRawTransaction(txBuffer, {
+        const submittedSignature = await connection.sendRawTransaction(txBuffer, {
           skipPreflight: false,
           preflightCommitment: "confirmed",
         });
 
         // Wait for confirmation
-        await connection.confirmTransaction(signature, "confirmed");
+        await connection.confirmTransaction(submittedSignature, "confirmed");
 
         return {
           isValid: true,
           payer,
           amount: expectedRequirement.amount,
           asset: expectedRequirement.asset,
-          txSignature: signature,
+          txSignature: submittedSignature,
         };
       } catch (err: any) {
         logger.error({ err, payer }, "Failed to submit X-402 payment transaction");
@@ -305,13 +371,13 @@ export async function verifyPayment(
       }
     }
 
-    // Development mode: simulate successful payment
+    // Verification-only mode
     return {
       isValid: true,
       payer,
       amount: expectedRequirement.amount,
       asset: expectedRequirement.asset,
-      txSignature: `sim_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      txSignature,
     };
   } catch (err: any) {
     logger.error({ err }, "Payment verification error");
@@ -323,6 +389,19 @@ export async function verifyPayment(
       error: `Verification error: ${err.message}`,
     };
   }
+}
+
+function getTransactionSignature(transaction: Transaction): string | null {
+  if (transaction.signature) {
+    return bs58.encode(transaction.signature);
+  }
+
+  const signedEntry = transaction.signatures.find((entry) => entry.signature);
+  if (!signedEntry?.signature) {
+    return null;
+  }
+
+  return bs58.encode(signedEntry.signature);
 }
 
 /**
@@ -344,12 +423,12 @@ async function verifyPaymentInstruction(
       if (data.length >= 12) {
         // Transfer instruction: [4 bytes type][8 bytes lamports]
         const instructionType = data.readUInt32LE(0);
-        if (instructionType === 2) {
-          // Transfer
+        if (instructionType === 2 && instruction.keys.length >= 2) {
           const lamports = data.readBigUInt64LE(4);
-          const recipient = instruction.keys[1].pubkey;
+          const recipient = instruction.keys[1]?.pubkey;
 
           if (
+            recipient &&
             recipient.toBase58() === requirement.payTo &&
             lamports >= BigInt(requirement.amount)
           ) {
@@ -360,28 +439,41 @@ async function verifyPaymentInstruction(
     }
 
     // Check for SPL token transfer (USDC, NOS)
-    if (instruction.programId.equals(TOKEN_PROGRAM_ID)) {
-      // Decode token transfer
+    if (
+      requirement.asset !== "SOL" &&
+      instruction.programId.equals(TOKEN_PROGRAM_ID)
+    ) {
       const data = instruction.data;
-      if (data[0] === 3) {
-        // Transfer instruction
-        const amount = data.readBigUInt64LE(1);
-        const destination = instruction.keys[1].pubkey;
+      if (data.length < 9 || instruction.keys.length < 2) {
+        continue;
+      }
 
-        // Verify destination is treasury's token account
-        const mint = requirement.asset === "USDC" ? USDC_MINT : NOS_MINT;
-        const network = env.SOLANA_NETWORK === "mainnet-beta" ? "mainnet" : "devnet";
-        const expectedTokenAccount = await getAssociatedTokenAddress(
-          mint[network],
-          TREASURY_ADDRESS
-        );
+      const tokenInstructionType = data[0];
+      const isTransfer = tokenInstructionType === 3;
+      const isTransferChecked = tokenInstructionType === 12 && data.length >= 10;
+      if (!isTransfer && !isTransferChecked) {
+        continue;
+      }
 
-        if (
-          destination.equals(expectedTokenAccount) &&
-          amount >= BigInt(requirement.amount)
-        ) {
-          return { isValid: true };
-        }
+      const amount = data.readBigUInt64LE(1);
+      const destination = instruction.keys[1]?.pubkey;
+      if (!destination) {
+        continue;
+      }
+
+      // Verify destination is treasury's token account
+      const mint = requirement.asset === "USDC" ? USDC_MINT : NOS_MINT;
+      const network = env.SOLANA_NETWORK === "mainnet-beta" ? "mainnet" : "devnet";
+      const expectedTokenAccount = await getAssociatedTokenAddress(
+        mint[network],
+        TREASURY_ADDRESS
+      );
+
+      if (
+        destination.equals(expectedTokenAccount) &&
+        amount >= BigInt(requirement.amount)
+      ) {
+        return { isValid: true };
       }
     }
   }
@@ -417,9 +509,7 @@ function getConnection(): Connection {
 /**
  * Create a 402 response with payment requirement
  */
-export function create402Response(
-  requirement: PaymentRequirement
-): {
+export function create402Response(requirement: PaymentRequirement): {
   status: 402;
   headers: Record<string, string>;
   body: { error: string; message: string; payment: PaymentRequirement };
@@ -439,19 +529,25 @@ export function create402Response(
 }
 
 /**
- * Check if a request includes X-402 payment
+ * Check if a request includes X-402 payment.
  */
-export function hasPaymentHeader(headers: Record<string, string>): boolean {
-  return "x-payment" in headers || "X-Payment" in headers;
+export function hasPaymentHeader(
+  headers: Record<string, string | string[] | undefined>
+): boolean {
+  return Boolean(headers["x-payment"] || headers["X-Payment"]);
 }
 
 /**
- * Get payment header from request headers
+ * Get payment header from request headers.
  */
 export function getPaymentFromHeaders(
-  headers: Record<string, string>
+  headers: Record<string, string | string[] | undefined>
 ): string | null {
-  return headers["x-payment"] || headers["X-Payment"] || null;
+  const headerValue = headers["x-payment"] ?? headers["X-Payment"];
+  if (Array.isArray(headerValue)) {
+    return headerValue[0] ?? null;
+  }
+  return headerValue ?? null;
 }
 
 // ============================================

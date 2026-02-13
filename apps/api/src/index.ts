@@ -5,6 +5,11 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
 
+// BigInt JSON serialization support (used by Prisma for BigInt columns)
+(BigInt.prototype as any).toJSON = function () {
+  return Number(this);
+};
+
 import { env } from "./config/env.js";
 import { logger } from "./utils/logger.js";
 import { registerAuthPlugins } from "./middleware/auth.js";
@@ -33,6 +38,8 @@ import { knowledgeRoutes } from "./routes/knowledge.js";
 import { orchestrationRoutes } from "./routes/orchestration.js";
 import { templateRoutes } from "./routes/templates.js";
 import { twoFactorRoutes } from "./routes/twoFactor.js";
+import { x402Routes } from "./routes/x402.js";
+import { startX402SettlementWorker } from "./services/x402Settlement.js";
 
 async function main() {
   const app = Fastify({
@@ -85,6 +92,7 @@ async function main() {
   await app.register(orchestrationRoutes, { prefix: "/api/orchestrations" });
   await app.register(templateRoutes, { prefix: "/api/templates" });
   await app.register(twoFactorRoutes, { prefix: "/api/2fa" });
+  await app.register(x402Routes, { prefix: "/api/x402" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
 
   // Global error handler
@@ -121,11 +129,14 @@ async function main() {
     process.exit(1);
   }
 
+  const stopSettlementWorker = startX402SettlementWorker();
+
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
   for (const signal of signals) {
     process.on(signal, async () => {
       app.log.info(`Received ${signal}, shutting down gracefully`);
+      stopSettlementWorker();
       await app.close();
       process.exit(0);
     });

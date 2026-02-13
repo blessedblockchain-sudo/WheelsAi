@@ -1,4 +1,4 @@
-import * as argon2 from "argon2";
+import argon2 from "argon2";
 import { nanoid } from "nanoid";
 import nacl from "tweetnacl";
 import bs58 from "bs58";

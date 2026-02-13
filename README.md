@@ -1,47 +1,523 @@
 <p align="center">
-  <img src="https://via.placeholder.com/120x120/0a0a0f/00ff00?text=W" alt="WheelsAI Logo" width="120" height="120" />
+  <img src="https://via.placeholder.com/120x120/040a18/3b82f6?text=W" alt="WheelsAI Logo" width="120" height="120" />
 </p>
 
 <h1 align="center">WheelsAI</h1>
 
 <p align="center">
-  <strong>Build, Deploy, and Monetize AI Agents</strong><br/>
-  One unified platform. Any framework. No scattered tools.
+  <strong>Deploy AI Agents on Decentralized GPUs</strong><br/>
+  Build, fine-tune, test, and monetize AI agents on Nosana's GPU network. Powered by Solana.
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#documentation">Documentation</a> •
-  <a href="#contributing">Contributing</a>
+  <a href="#features">Features</a> &bull;
+  <a href="#architecture">Architecture</a> &bull;
+  <a href="#tech-stack">Tech Stack</a> &bull;
+  <a href="#getting-started">Getting Started</a> &bull;
+  <a href="#api-reference">API Reference</a> &bull;
+  <a href="#deployment">Deployment</a> &bull;
+  <a href="#roadmap">Roadmap</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/ElizaOS-supported-00ff00?style=flat-square" alt="ElizaOS" />
-  <img src="https://img.shields.io/badge/Mastra-supported-00ff00?style=flat-square" alt="Mastra" />
-  <img src="https://img.shields.io/badge/JuliaOS-supported-00ff00?style=flat-square" alt="JuliaOS" />
-  <img src="https://img.shields.io/badge/LangChain-supported-00ff00?style=flat-square" alt="LangChain" />
-  <img src="https://img.shields.io/badge/AutoGen-supported-00ff00?style=flat-square" alt="AutoGen" />
+  <img src="https://img.shields.io/badge/Mastra-supported-3b82f6?style=flat-square" alt="Mastra" />
+  <img src="https://img.shields.io/badge/LangChain-supported-3b82f6?style=flat-square" alt="LangChain" />
+  <img src="https://img.shields.io/badge/AutoGen-supported-3b82f6?style=flat-square" alt="AutoGen" />
+  <img src="https://img.shields.io/badge/ElizaOS-supported-3b82f6?style=flat-square" alt="ElizaOS" />
+  <img src="https://img.shields.io/badge/CrewAI-supported-3b82f6?style=flat-square" alt="CrewAI" />
+  <img src="https://img.shields.io/badge/Custom-supported-3b82f6?style=flat-square" alt="Custom" />
 </p>
 
 ---
 
 ## Overview
 
-**WheelsAI** is an all-in-one platform for building, deploying, testing, and monetizing AI agents. Unlike scattered tools and fragmented workflows, WheelsAI brings everything together in a unified experience.
+**WheelsAI** is a full-stack platform for building, deploying, testing, and monetizing AI agents on [Nosana's](https://nosana.io) decentralized GPU network. It provides a unified experience for the entire agent lifecycle -- from visual drag-and-drop building to one-click deployment, marketplace monetization, and enterprise-grade monitoring.
 
-Whether you're a seasoned developer or just getting started with AI, WheelsAI provides the tools you need to create powerful AI agents and share them with the world.
+Up to **85% cheaper** than centralized cloud. Pay with **SOL**, **USDC**, or **NOS** tokens.
 
 ### Why WheelsAI?
 
-| Problem | Solution |
-|---------|----------|
-| Building AI agents is fragmented | Unified platform for the entire lifecycle |
-| Deploy here, test there, monetize somewhere else | Everything in one place |
-| Framework lock-in | Support for ElizaOS, Mastra, JuliaOS, LangChain, AutoGen, and more |
-| Technical barriers | Templates and no-code options for everyone |
-| No monetization path | Built-in marketplace to sell your agents |
+| Problem | WheelsAI Solution |
+|---------|-------------------|
+| Building AI agents requires stitching together fragmented tools | Unified platform: build, deploy, test, monitor, monetize in one place |
+| GPU compute is expensive and centralized | Decentralized GPU network (2,000+ nodes) at a fraction of the cost |
+| Framework lock-in limits flexibility | First-class support for Mastra, LangChain, AutoGen, ElizaOS, CrewAI, or custom |
+| No clear path to monetize agents | Built-in marketplace with 90/10 revenue sharing |
+| Enterprise requirements are an afterthought | SSO, RBAC, audit logging, 2FA, custom domains, and SLAs from day one |
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+  - [System Architecture](#system-architecture)
+  - [Monorepo Structure](#monorepo-structure)
+  - [Package Dependencies](#package-dependencies)
+  - [Frontend Architecture](#frontend-architecture)
+  - [Backend Architecture](#backend-architecture)
+  - [Database Schema](#database-schema)
+  - [Blockchain Integration](#blockchain-integration)
+- [Tech Stack](#tech-stack)
+- [Features](#features)
+  - [Core Platform](#core-platform)
+  - [AI & Models](#ai--models)
+  - [Agent Ecosystem](#agent-ecosystem)
+  - [Knowledge & Memory](#knowledge--memory)
+  - [Orchestration & Scheduling](#orchestration--scheduling)
+  - [Testing & Monitoring](#testing--monitoring)
+  - [Security & Auth](#security--auth)
+  - [Billing & Payments](#billing--payments)
+  - [Integrations](#integrations)
+- [Getting Started](#getting-started)
+- [Environment Variables](#environment-variables)
+- [Scripts](#scripts)
+- [API Reference](#api-reference)
+- [Design System](#design-system)
+- [Deployment](#deployment)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Architecture
+
+### System Architecture
+
+```
+                                     +-------------------+
+                                     |   Solana Network   |
+                                     | SOL / USDC / NOS   |
+                                     +--------+----------+
+                                              |
++---------------+     +---------------+     +-+----------+     +-------------------+
+|               |     |               |     |            |     |                   |
+|  Next.js 15   +---->+  Fastify API  +---->+ PostgreSQL |     |  Nosana Network   |
+|  (Frontend)   |     |  (Backend)    |     |  + Redis   |     |  2,000+ GPUs      |
+|  Port 3000    |     |  Port 4000    |     |            |     |  3060 --> H100    |
+|               |     |               +---->+            |     |                   |
++-------+-------+     +-------+-------+     +------------+     +-------------------+
+        |                     |                                         ^
+        |  tRPC / REST / WS   |                                         |
+        +---------------------+                    Nosana SDK           |
+                                               (Job Submission) --------+
+```
+
+**Data Flow:**
+
+1. **Users** interact through the Next.js dashboard, landing page, or OpenAI-compatible API
+2. **Fastify API** handles authentication, business logic, and job orchestration
+3. **PostgreSQL** stores all persistent state across 80+ Prisma models
+4. **Redis + BullMQ** powers background job queues (training, deployment, scheduling, webhooks)
+5. **Nosana SDK** submits GPU jobs to the decentralized compute network
+6. **Solana** handles payments (SOL, USDC, NOS) and wallet-based authentication
+
+### Monorepo Structure
+
+```
+wheelsai/
+├── apps/
+│   ├── api/                           # Fastify backend server (port 4000)
+│   │   ├── src/
+│   │   │   ├── index.ts               # Server entry point + plugin registration
+│   │   │   ├── config/
+│   │   │   │   └── env.ts             # Environment configuration
+│   │   │   ├── middleware/
+│   │   │   │   └── auth.ts            # JWT + cookie authentication
+│   │   │   ├── routes/                # 25 route modules
+│   │   │   │   ├── agents.ts          # Agent CRUD + deployment
+│   │   │   │   ├── auth.ts            # Register, login, wallet auth
+│   │   │   │   ├── billing.ts         # Credits, transactions, usage
+│   │   │   │   ├── deployments.ts     # Model deployment management
+│   │   │   │   ├── domains.ts         # Custom domain provisioning
+│   │   │   │   ├── inference.ts       # OpenAI-compatible /v1/* endpoints
+│   │   │   │   ├── integrations.ts    # Third-party integrations
+│   │   │   │   ├── knowledge.ts       # RAG / knowledge base
+│   │   │   │   ├── marketplace.ts     # Listing, search, install
+│   │   │   │   ├── memory.ts          # Conversation memory
+│   │   │   │   ├── models.ts          # Model catalog
+│   │   │   │   ├── monitoring.ts      # Alerts, uptime, health
+│   │   │   │   ├── orchestrations.ts  # Multi-agent workflows
+│   │   │   │   ├── reputation.ts      # Publisher reputation
+│   │   │   │   ├── scheduler.ts       # Cron / interval tasks
+│   │   │   │   ├── templates.ts       # Agent starter kits
+│   │   │   │   ├── testing.ts         # Test suites + execution
+│   │   │   │   ├── training.ts        # Fine-tuning jobs
+│   │   │   │   ├── twoFactor.ts       # 2FA setup + verify
+│   │   │   │   ├── webhooks.ts        # Webhook management
+│   │   │   │   ├── x402.ts            # X-402 payment protocol
+│   │   │   │   └── ...
+│   │   │   ├── services/              # 24 business logic modules
+│   │   │   │   ├── auth.ts            # Argon2 hashing, JWT, wallet verify
+│   │   │   │   ├── agent-runtime.ts   # Agent execution engine
+│   │   │   │   ├── agentGraph.ts      # Visual builder graph ops
+│   │   │   │   ├── analytics.ts       # Usage metrics
+│   │   │   │   ├── domains.ts         # SSL provisioning, DNS verify
+│   │   │   │   ├── enterprise.ts      # SSO, audit logs, teams
+│   │   │   │   ├── knowledge.ts       # Chunking, embeddings, RAG
+│   │   │   │   ├── marketplace.ts     # Search, install, revenue
+│   │   │   │   ├── memory.ts          # Conversation context storage
+│   │   │   │   ├── monitoring.ts      # Alert rules + channels
+│   │   │   │   ├── nosana.ts          # GPU market + job submission
+│   │   │   │   ├── orchestration.ts   # Multi-agent workflow execution
+│   │   │   │   ├── reputation.ts      # Reputation scoring (0-100)
+│   │   │   │   ├── scheduler.ts       # Task scheduling engine
+│   │   │   │   ├── training.ts        # LoRA/QLoRA config
+│   │   │   │   ├── twoFactor.ts       # TOTP + backup codes
+│   │   │   │   ├── wallet.ts          # Solana wallet encryption
+│   │   │   │   ├── webhooks.ts        # Delivery + retry logic
+│   │   │   │   ├── x402.ts            # Per-request Solana payments
+│   │   │   │   └── ...
+│   │   │   └── tests/                 # API test suites
+│   │   └── package.json
+│   │
+│   └── web/                           # Next.js 15 frontend (port 3000)
+│       ├── src/
+│       │   ├── app/                   # App Router pages
+│       │   │   ├── page.tsx           # Landing page (11 component composition)
+│       │   │   ├── layout.tsx         # Root layout (providers, fonts, toaster)
+│       │   │   ├── globals.css        # Tailwind base + custom animations
+│       │   │   ├── (auth)/            # Auth routes
+│       │   │   │   ├── layout.tsx
+│       │   │   │   ├── login/page.tsx
+│       │   │   │   └── register/page.tsx
+│       │   │   ├── (dashboard)/dashboard/  # Dashboard routes
+│       │   │   │   ├── layout.tsx     # Dashboard shell (sidebar + header)
+│       │   │   │   ├── page.tsx       # Dashboard home
+│       │   │   │   ├── agents/        # Agent CRUD + visual builder
+│       │   │   │   ├── deployments/   # Deployment management
+│       │   │   │   ├── training/      # Fine-tuning UI
+│       │   │   │   ├── marketplace/   # Publish, revenue, installs
+│       │   │   │   ├── billing/       # Credits + transactions
+│       │   │   │   ├── knowledge/     # Knowledge base management
+│       │   │   │   ├── memory/        # Conversation history
+│       │   │   │   ├── scheduler/     # Scheduled tasks
+│       │   │   │   ├── domains/       # Custom domains
+│       │   │   │   ├── integrations/  # Third-party integrations
+│       │   │   │   ├── templates/     # Agent templates
+│       │   │   │   ├── analytics/     # Usage analytics
+│       │   │   │   ├── playground/    # Live model testing
+│       │   │   │   ├── testing/       # Test suites
+│       │   │   │   ├── keys/          # API key management
+│       │   │   │   └── settings/      # Org, security, team
+│       │   │   └── marketplace/       # Public marketplace
+│       │   │       ├── page.tsx       # Browse agents
+│       │   │       ├── [slug]/page.tsx # Agent detail
+│       │   │       └── leaderboard/   # Reputation board
+│       │   ├── components/
+│       │   │   ├── landing/           # 11 landing page components
+│       │   │   ├── dashboard/         # Dashboard components
+│       │   │   ├── marketplace/       # Marketplace UI
+│       │   │   ├── reputation/        # Reputation display
+│       │   │   ├── ui/               # Shared UI primitives
+│       │   │   └── providers.tsx      # Auth, Query, Wallet providers
+│       │   └── lib/
+│       │       └── api.ts            # API client (REST + tRPC)
+│       ├── tailwind.config.ts
+│       ├── next.config.js
+│       └── package.json
+│
+├── packages/
+│   ├── db/                            # Prisma ORM + database
+│   │   └── prisma/
+│   │       ├── schema.prisma          # 80+ models (1900+ lines)
+│   │       └── migrations/            # Database migrations
+│   │
+│   ├── shared/                        # Shared utilities
+│   │   └── src/index.ts               # Formatting, validation, cost calc,
+│   │                                  # slug gen, retry, ID generation
+│   │
+│   └── types/                         # TypeScript types + Zod schemas
+│       └── src/index.ts               # Models, Deployments, Auth, Billing,
+│                                      # Chat, GPU tiers, errors
+│
+├── docker-compose.yml                 # PostgreSQL 15 + Redis 7
+├── turbo.json                         # Turborepo build pipeline
+├── tsconfig.base.json                 # Base TS config (ES2022, strict)
+├── .env.example                       # Environment variable template
+└── package.json                       # Root workspace (npm workspaces)
+```
+
+### Package Dependencies
+
+```
+apps/api  ────> packages/db
+              ├──> packages/shared
+              └──> packages/types
+
+apps/web  ────> packages/shared
+              └──> packages/types
+
+packages/shared ──> packages/types
+```
+
+- **`@wheelsai/db`** - Prisma client, migrations, and seeding
+- **`@wheelsai/shared`** - Formatting (currency, tokens, bytes, duration), wallet utils (address truncation, validation), slug generation, cost calculation, retry logic, ID generation, API key helpers, health aggregation
+- **`@wheelsai/types`** - Zod schemas for Models, GPU Tiers, Deployments, Auth, Billing, Chat (OpenAI format), Agent Wallets, and API errors
+
+### Frontend Architecture
+
+#### App Router Layout
+
+```
+src/app/
+├── page.tsx                    # Landing page (navy dark theme)
+├── layout.tsx                  # Root: Inter font, providers, toaster
+├── globals.css                 # Tailwind + matrix/navy CSS utilities
+│
+├── (auth)/
+│   ├── layout.tsx              # Centered card layout
+│   ├── login/page.tsx          # Email + Solana wallet login
+│   └── register/page.tsx       # Registration form
+│
+├── (dashboard)/dashboard/
+│   ├── layout.tsx              # Sidebar + header shell
+│   ├── page.tsx                # Dashboard home (stats overview)
+│   ├── agents/                 # CRUD + visual graph builder
+│   │   ├── page.tsx            # Agent list
+│   │   ├── new/page.tsx        # Create agent
+│   │   └── [id]/builder/       # Visual drag-and-drop builder
+│   ├── deployments/            # Model deployment management
+│   ├── training/               # Fine-tuning job submission
+│   │   ├── page.tsx            # Training list
+│   │   └── new/page.tsx        # New training job (LoRA/QLoRA)
+│   ├── marketplace/            # Publisher tools
+│   │   ├── page.tsx            # Marketplace browse
+│   │   ├── publish/page.tsx    # List agent for sale
+│   │   ├── revenue/page.tsx    # Revenue tracking + payouts
+│   │   └── installs/page.tsx   # Installation metrics
+│   ├── billing/page.tsx        # Credit balance + transactions
+│   ├── knowledge/page.tsx      # Knowledge base + document upload
+│   ├── memory/page.tsx         # Conversation history
+│   ├── scheduler/page.tsx      # Cron/interval/one-shot tasks
+│   ├── domains/page.tsx        # Custom domain management
+│   ├── integrations/page.tsx   # Slack, Discord, GitHub, etc.
+│   ├── templates/page.tsx      # Agent starter kits
+│   ├── analytics/page.tsx      # Requests, tokens, latency, cost
+│   ├── playground/page.tsx     # Live model testing
+│   ├── testing/page.tsx        # Test suites + execution
+│   ├── keys/page.tsx           # API key management
+│   └── settings/
+│       ├── page.tsx            # Organization settings
+│       ├── security/page.tsx   # 2FA, API keys
+│       └── team/page.tsx       # Team members + invites
+│
+└── marketplace/                # Public marketplace (no auth)
+    ├── page.tsx                # Browse + search agents
+    ├── [slug]/page.tsx         # Agent detail + reviews
+    └── leaderboard/page.tsx    # Publisher reputation board
+```
+
+#### Component Architecture
+
+```
+src/components/
+├── landing/              # 11 components (dark navy theme)
+│   ├── navbar.tsx        # [client] Sticky, transparent -> solid on scroll
+│   ├── hero.tsx          # [client] Matrix rain, animated counters, CTAs
+│   ├── social-proof.tsx  # [server] SOC 2, latency, SOL-native, pay-per-token
+│   ├── features-grid.tsx # [client] 8 glow cards, scroll-triggered fade-in
+│   ├── how-it-works.tsx  # [client] 3-step: Connect -> Configure -> Deploy
+│   ├── code-preview.tsx  # [server] Terminal mockup + feature bullets
+│   ├── frameworks.tsx    # [server] 6 supported AI frameworks
+│   ├── pricing.tsx       # [server] 3-tier: Starter / Pro / Enterprise
+│   ├── stats-section.tsx # [client] 4 animated counters
+│   ├── final-cta.tsx     # [server] Gradient CTA with blur orbs
+│   └── footer.tsx        # [server] 4-column links + branding
+│
+├── dashboard/            # Dashboard-specific components
+├── marketplace/          # Marketplace UI (review forms, cards)
+├── reputation/           # Reputation score display (0-100)
+├── ui/                   # Reusable primitives (button, input, select, etc.)
+└── providers.tsx         # React Query, NextAuth, Solana Wallet providers
+```
+
+#### State Management
+
+- **tRPC + React Query** - Type-safe API calls with caching, refetching, and optimistic updates
+- **React Hook Form + Zod** - Form state management with runtime validation
+- **Solana Wallet Adapter** - Wallet connection state (Phantom, Solflare, Ledger)
+- **NextAuth.js** - Session management (JWT + HTTP-only cookies)
+
+### Backend Architecture
+
+#### Middleware Stack
+
+```
+Request
+  |
+  v
+CORS (configurable origins)
+  |
+  v
+Helmet (security headers, CSP disabled for API)
+  |
+  v
+Rate Limiting (100 req/min default)
+  |
+  v
+Auth Middleware (JWT from cookie or Authorization header)
+  |
+  v
+Route Handler --> Service Layer --> Prisma/Redis/Nosana
+  |
+  v
+Error Handler (standardized JSON errors)
+  |
+  v
+Response
+```
+
+#### Service Layer (24 modules)
+
+| Service | Responsibility |
+|---------|---------------|
+| `auth` | Argon2 password hashing, JWT signing, wallet nonce/verify, API key generation |
+| `agent-runtime` | Agent execution engine |
+| `agentGraph` | Visual builder graph operations (nodes, edges, validation) |
+| `analytics` | Usage metrics aggregation and snapshots |
+| `dataset` | Training dataset management (S3/IPFS/HuggingFace) |
+| `domains` | Custom domain provisioning, DNS verification, SSL certs |
+| `enterprise` | SSO (SAML/OIDC), audit logging, team management |
+| `integrations` | Slack, Discord, GitHub, Zapier, Make, n8n |
+| `knowledge` | Document chunking, embedding generation, RAG retrieval |
+| `marketplace` | Listing search, install tracking, revenue calculation |
+| `memory` | Conversation storage, fact extraction, context retrieval |
+| `monitoring` | Alert rules, channels, uptime checks |
+| `nosana` | Nosana GPU market interface, YAML job submission |
+| `orchestration` | Multi-agent workflow execution (sequential/parallel/conditional) |
+| `reputation` | Multi-factor reputation scoring (ratings, installs, response time, disputes) |
+| `scheduler` | Cron/interval/one-shot task execution |
+| `templates` | Agent template management (20+ starter kits) |
+| `testing` | Test execution with 6 assertion types |
+| `training` | LoRA/QLoRA fine-tuning configuration and job management |
+| `twoFactor` | TOTP generation, verification, backup codes |
+| `versioning` | Semantic agent versioning with diffs |
+| `wallet` | Solana keypair encryption/decryption (AES-256-GCM) |
+| `webhooks` | Event delivery with exponential backoff retry |
+| `x402` | X-402 per-request Solana payment verification and settlement |
+
+### Database Schema
+
+**80+ Prisma models** organized across 22 entity groups:
+
+```
+Users & Auth (5)              Agents & Builder (7)          Marketplace (7)
+├── User                      ├── Agent                     ├── AgentListing
+├── Organization              ├── AgentDeployment           ├── AgentReview
+├── OrgMember                 ├── AgentWallet               ├── AgentInstall
+├── TwoFactorAuth             ├── AgentTransaction          ├── AgentSubscription
+└── TwoFactorChallenge        ├── AgentGraph                ├── PublisherProfile
+                              ├── AgentVersion              ├── CreatorPayout
+API Keys (1)                  └── AgentVersionDiff          └── MarketplaceRevenue
+└── ApiKey
+                              Training & Knowledge (5)      Monitoring & Alerts (5)
+Models & Deploy (3)           ├── Dataset                   ├── AlertChannel
+├── Model                     ├── TrainingJob               ├── AlertRule
+├── Deployment                ├── KnowledgeBase             ├── AlertRuleChannel
+└── DeploymentNode            ├── KnowledgeDocument         ├── Alert
+                              └── DocumentChunk             └── UptimeMonitor
+Billing & Payments (4)                                         + UptimeEvent
+├── CreditBalance             Orchestration (3+)
+├── CreditTransaction         ├── Orchestration             Enterprise (3)
+├── UsageRecord               ├── OrchestrationStep         ├── AuditLog
+└── X402Payment               ├── OrchestrationExecution    ├── SsoConfig
+                              └── OrchestrationStepResult   └── TeamInvite
+Conversation Memory (3)
+├── Conversation              Scheduling (2)                Webhooks (4)
+├── Message                   ├── ScheduledTask             ├── Webhook
+└── MemoryContext              └── TaskExecution             ├── WebhookDelivery
+                                                            ├── Integration
+Custom Domains (2)            Testing (4)                   └── IntegrationEvent
+├── CustomDomain              ├── TestSuite
+└── DomainEvent               ├── TestCase                  Templates (1)
+                              ├── TestRun                   └── AgentTemplate
+Analytics (1)                 └── TestResult
+└── AnalyticsSnapshot
+```
+
+### Blockchain Integration
+
+#### Solana
+
+| Feature | Detail |
+|---------|--------|
+| Network | Devnet (development) / Mainnet-beta (production) |
+| Wallet Auth | Sign nonce with Phantom, Solflare, or Ledger (TweetNaCl ED25519) |
+| Payments | SOL, USDC (SPL), and NOS token support |
+| X-402 Protocol | Per-request micropayments via Solana transactions |
+| Agent Wallets | Encrypted keypairs (AES-256-GCM) with budget controls |
+
+#### Nosana Network
+
+| Feature | Detail |
+|---------|--------|
+| GPU Tiers | RTX 3060, RTX 4070, RTX 4090, A100, H100 |
+| Job Format | YAML-based definitions via `@nosana/sdk` |
+| Node Health | Real-time latency + health monitoring |
+| Billing | Per-second GPU billing settled on Solana |
+| Market | Separate Solana address per GPU tier |
+
+#### Agent Wallet Security
+
+```
+Create Agent Wallet
+  -> Generate Ed25519 keypair
+  -> Encrypt private key (AES-256-GCM, org-derived key via MASTER_ENCRYPTION_KEY)
+  -> Store ciphertext in PostgreSQL
+  -> Configure budget: daily limit, per-tx limit, domain allowlist
+  -> Agent can autonomously transact within constraints
+```
+
+---
+
+## Tech Stack
+
+### Frontend
+
+| Layer | Technology | Version |
+|-------|-----------|---------|
+| Framework | Next.js (App Router) | 15.5.9 |
+| Language | TypeScript (strict) | 5.3.3 |
+| UI | React | 18.2.0 |
+| Styling | Tailwind CSS + custom design system | 3.4.1 |
+| API Client | tRPC + React Query | 11.0.0-rc + 5.17.0 |
+| Forms | React Hook Form + Zod | 7.49.3 + 3.22.4 |
+| Icons | Lucide React | 0.303.0 |
+| Auth | NextAuth.js | 4.24.5 |
+| Wallet | Solana Wallet Adapter (Phantom, Solflare) | 0.15.35 |
+| Notifications | Sonner | 1.3.1 |
+| Class Utils | CVA + clsx + tailwind-merge | 0.7.0 + 2.1.0 + 2.2.0 |
+
+### Backend
+
+| Layer | Technology | Version |
+|-------|-----------|---------|
+| Framework | Fastify | 4.25.2 |
+| Language | TypeScript (strict) | 5.3.3 |
+| Runtime | Node.js | 22+ |
+| ORM | Prisma | 5.8.0 |
+| Database | PostgreSQL | 15 |
+| Cache / Queue | Redis 7 + BullMQ | 5.1.0 |
+| Auth | Argon2 (hashing) + Fastify JWT | 0.31.2 |
+| Payments | Stripe | 14.12.0 |
+| Blockchain | @solana/web3.js + TweetNaCl | 1.87.6 |
+| GPU Network | @nosana/sdk | 0.4.74 |
+| Logging | Pino (+ pino-pretty for dev) | 8.17.2 |
+| Validation | Zod | 3.22.4 |
+| IDs | nanoid | 5.0.4 |
+
+### Infrastructure
+
+| Layer | Technology | Version |
+|-------|-----------|---------|
+| Build | Turborepo | 2.0.0 |
+| Containers | Docker Compose | PostgreSQL 15 + Redis 7 |
+| Dev Runner | tsx | latest |
+| Linting | ESLint | 9.x |
+| TypeScript Base | ES2022, strict, noUncheckedIndexedAccess | -- |
 
 ---
 
@@ -49,43 +525,91 @@ Whether you're a seasoned developer or just getting started with AI, WheelsAI pr
 
 ### Core Platform
 
-- **Multi-Framework Support** - Build with ElizaOS, Mastra Framework, JuliaOS, LangChain, AutoGen, or your custom framework
-- **One-Click Deploy** - Deploy agents to production in seconds
-- **Agent Marketplace** - Publish, discover, and monetize AI agents
-- **Model Catalog** - Access Llama, Mistral, Qwen, and more with fine-tuning support
+- **One-Click Deploy** - Deploy AI agents to 2,000+ GPUs in seconds
+- **OpenAI-Compatible API** - Drop-in replacement at `/v1/chat/completions`
+- **Multi-Framework Support** - Mastra, LangChain, AutoGen, ElizaOS, CrewAI, or custom
+- **Visual Agent Builder** - Drag-and-drop node graph editor with validation
+- **Agent Templates** - 20+ starter kits for common use cases
+- **Unified Dashboard** - Single interface for the entire lifecycle
 
-### Developer Experience
+### AI & Models
 
-- **OpenAI-Compatible API** - Works with your existing code
-- **SDKs** - Python, JavaScript, and Go libraries
-- **Webhooks & Integrations** - Connect to Slack, Discord, GitHub, and more
-- **Testing Framework** - Test agents before deployment
+- **Model Catalog** - 100+ models: Llama, Mistral, Qwen, GPT-J, and more
+- **Fine-Tuning** - LoRA/QLoRA training on custom datasets (S3/IPFS/HuggingFace)
+- **Multi-Engine** - vLLM and Ollama backend support
+- **Custom Models** - Host your own fine-tuned models on dedicated GPUs
+- **GPU Tiers** - RTX 3060, RTX 4070, RTX 4090, A100, H100
 
-### Enterprise Features
+### Agent Ecosystem
 
-- **Custom Domains** - Bring your own domain with automatic SSL
-- **SSO Integration** - SAML/OIDC authentication
-- **Audit Logging** - Complete activity tracking
-- **Team Management** - Role-based access control
-- **Conversation Memory** - Persistent context across sessions
+- **Agent Marketplace** - Discover, install, and monetize community agents
+- **Pricing Models** - Free, per-request, or monthly subscription
+- **Revenue Sharing** - 90% creator / 10% platform
+- **Publisher Reputation** - Multi-factor scoring (ratings, installs, response time, disputes, age)
+- **Agent Versioning** - Semantic versioning with snapshot diffs
+- **Agent Wallets** - Autonomous Solana wallets with daily/per-tx budget controls
+- **Creator Payouts** - Credits, crypto, or SOL disbursements
 
-### Infrastructure
+### Knowledge & Memory
 
-- **Powered by Nosana** - Decentralized GPU network with 2,000+ nodes
-- **Cost Effective** - Up to 85% cheaper than traditional cloud
-- **Pay Per Use** - No minimums, no commitments
-- **SOL/USDC Payments** - Web3-native billing
+- **Knowledge Base (RAG)** - Upload documents (PDF, text, JSONL), auto-chunk, generate embeddings
+- **Semantic Search** - Vector-based retrieval across document collections
+- **Conversation Memory** - Persistent session context with automatic fact extraction
+- **Memory Context** - Embeddings for preferences, facts, and conversation summaries
+
+### Orchestration & Scheduling
+
+- **Multi-Agent Orchestration** - Sequential, parallel, and conditional agent pipelines
+- **Step Dependencies** - Control execution order with error handling and fallback agents
+- **Scheduled Tasks** - Cron expressions, fixed intervals, or one-shot execution
+- **Timezone Support** - Schedule in any timezone
+- **Execution History** - Full logs, duration, status, and error tracking
+
+### Testing & Monitoring
+
+- **Test Suites** - Organize and batch-run tests against agents
+- **6 Assertion Types** - Exact match, contains, regex, semantic similarity, JSON schema, custom function
+- **Alert Rules** - Threshold, anomaly detection, uptime, and budget alerts
+- **5 Alert Channels** - Slack, Discord, Email, Webhook, PagerDuty
+- **Uptime Monitoring** - Custom HTTP endpoint health checks with event logging
+- **Analytics** - Requests, tokens, latency (p50/p95/p99), errors, and cost dashboards
+
+### Security & Auth
+
+- **Email/Password** - Argon2id password hashing
+- **Solana Wallet Auth** - Sign-in by signing a nonce (TweetNaCl ED25519)
+- **Two-Factor Authentication** - TOTP with 10 backup codes
+- **Scoped API Keys** - Named keys with fine-grained permission scopes
+- **SSO** - SAML and OIDC for enterprise
+- **RBAC** - Organization roles: owner, admin, member
+- **Audit Logging** - Every action tracked with actor, resource, IP, and timestamp
+- **Team Invites** - Email-based onboarding with expiring tokens
+
+### Billing & Payments
+
+- **Credit System** - Prepaid credits (stored in cents) with usage deduction
+- **Token-Based Pricing** - Per-input/output token billing with tier-based rates
+- **Stripe Integration** - Credit card purchases for credit top-ups
+- **X-402 Protocol** - Per-request Solana micropayments (SOL/USDC/NOS)
+- **Usage Records** - Per-deployment metrics: tokens, requests, compute time, cost
+- **Custom Domains** - BYOD with DNS verification and auto-provisioned SSL
+
+### Integrations
+
+- **Webhooks** - Subscribe to events (agent.created, deployment.started, etc.) with retry logic
+- **Slack** - Notifications and agent interaction
+- **Discord** - Bot integration and alerts
+- **GitHub** - Repository-linked agent source code
+- **Zapier / Make / n8n** - Workflow automation connectors
 
 ---
 
-## Quick Start
+## Getting Started
 
 ### Prerequisites
 
-- Node.js 20+
-- Docker & Docker Compose
-- PostgreSQL 15+ (or use Docker)
-- Redis 7+ (or use Docker)
+- **Node.js** 22+ and **npm** 10+
+- **Docker** and **Docker Compose** (for PostgreSQL + Redis)
 
 ### Installation
 
@@ -94,329 +618,364 @@ Whether you're a seasoned developer or just getting started with AI, WheelsAI pr
 git clone https://github.com/wheelsai/wheelsai.git
 cd wheelsai
 
-# Install dependencies
+# Install all dependencies
 npm install
 
-# Set up environment variables
+# Copy and configure environment
 cp .env.example .env
+# Edit .env with your secrets (see Environment Variables section)
 
-# Start infrastructure (PostgreSQL + Redis)
-docker-compose up -d
+# Start PostgreSQL 15 and Redis 7
+docker compose up -d
+
+# Generate Prisma client
+npm run db:generate
 
 # Run database migrations
 npm run db:migrate
 
-# Seed the database (optional)
+# (Optional) Seed with sample data
 npm run db:seed
 
-# Start development servers
+# Start all services in development
 npm run dev
 ```
 
-### Access the Application
+### Access
 
-- **Web App**: http://localhost:3000
-- **API Server**: http://localhost:4000
-- **API Health**: http://localhost:4000/health
-
----
-
-## Architecture
-
-WheelsAI is built as a monorepo using Turborepo with the following structure:
-
-```
-wheelsai/
-├── apps/
-│   ├── api/                 # Fastify API server
-│   │   ├── src/
-│   │   │   ├── middleware/  # Auth, logging, error handling
-│   │   │   ├── routes/      # API endpoints
-│   │   │   ├── services/    # Business logic
-│   │   │   └── utils/       # Helpers and utilities
-│   │   └── package.json
-│   │
-│   └── web/                 # Next.js 15 frontend
-│       ├── src/
-│       │   ├── app/         # App Router pages
-│       │   ├── components/  # React components
-│       │   └── lib/         # Utilities and API client
-│       └── package.json
-│
-├── packages/
-│   ├── db/                  # Prisma schema and client
-│   ├── shared/              # Shared utilities
-│   └── types/               # TypeScript types
-│
-├── docker-compose.yml       # Local infrastructure
-├── turbo.json              # Turborepo config
-└── package.json            # Root package
-```
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Frontend** | Next.js 15, React 18, Tailwind CSS, TypeScript |
-| **Backend** | Fastify, Node.js 22, TypeScript |
-| **Database** | PostgreSQL 15, Prisma ORM |
-| **Cache** | Redis 7 |
-| **Infrastructure** | Nosana GPU Network |
-| **Auth** | JWT, NextAuth.js |
-| **Payments** | Solana (SOL/USDC) |
+| Service | URL |
+|---------|-----|
+| Web App | http://localhost:3000 |
+| API Server | http://localhost:4000 |
+| Health Check | http://localhost:4000/health |
+| Prisma Studio | `npm run db:studio` |
 
 ---
 
 ## Environment Variables
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the project root. See `.env.example` for the full template.
 
-```env
-# Database
-DATABASE_URL="postgresql://wheelsai:wheelsai@localhost:5434/wheelsai?schema=public"
+### Required
 
-# Redis
-REDIS_URL="redis://localhost:6380"
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis connection string |
+| `JWT_SECRET` | Secret for signing JWT tokens (use a secure random value) |
+| `SESSION_SECRET` | Session encryption key |
+| `NEXT_PUBLIC_APP_URL` | Frontend URL (e.g., `http://localhost:3000`) |
+| `NEXT_PUBLIC_API_URL` | API URL for frontend (e.g., `http://localhost:4000`) |
+| `SOLANA_RPC_URL` | Solana RPC endpoint |
+| `SOLANA_NETWORK` | `devnet` or `mainnet-beta` |
+| `NOSANA_MARKET_ADDRESS` | Nosana GPU market public key |
+| `NOSANA_WALLET_PRIVATE_KEY` | Platform wallet private key (base58) |
+| `MASTER_ENCRYPTION_KEY` | AES-256 key for agent wallet encryption |
 
-# Authentication
-JWT_SECRET="your-super-secret-jwt-key-change-in-production"
-NEXTAUTH_SECRET="your-nextauth-secret"
-NEXTAUTH_URL="http://localhost:3000"
+### Optional
 
-# API
-API_URL="http://localhost:4000"
-NEXT_PUBLIC_API_URL="http://localhost:4000"
+| Variable | Description |
+|----------|-------------|
+| `API_PORT` | API server port (default: `4000`) |
+| `API_HOST` | API server host (default: `0.0.0.0`) |
+| `JWT_EXPIRES_IN` | Token expiry (default: `24h`) |
+| `STRIPE_SECRET_KEY` | Stripe secret key for credit purchases |
+| `STRIPE_WEBHOOK_SECRET` | Stripe webhook verification |
+| `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | Stripe publishable key (frontend) |
+| `PINATA_API_KEY` | IPFS pinning via Pinata |
+| `PINATA_SECRET_KEY` | Pinata secret |
+| `IPFS_GATEWAY_URL` | IPFS gateway (default: Pinata) |
+| `INFERENCE_PROXY_PORT` | Inference proxy port (default: `4001`) |
+| `INFERENCE_TIMEOUT_MS` | Request timeout (default: `30000`) |
+| `SMTP_HOST` | Email server for notifications |
+| `SMTP_PORT` | SMTP port (default: `587`) |
+| `SMTP_USER` | SMTP username |
+| `SMTP_PASS` | SMTP password |
+| `EMAIL_FROM` | Sender address |
+| `SENTRY_DSN` | Sentry error tracking URL |
+| `LOG_LEVEL` | Pino log level (default: `debug`) |
 
-# Solana
-SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
-SOLANA_NETWORK="mainnet-beta"
+---
 
-# Nosana (GPU Network)
-NOSANA_API_KEY="your-nosana-api-key"
+## Scripts
 
-# Optional: External Services
-GITHUB_CLIENT_ID=""
-GITHUB_CLIENT_SECRET=""
-GOOGLE_CLIENT_ID=""
-GOOGLE_CLIENT_SECRET=""
+### Development
+
+```bash
+npm run dev              # Start all services (Turborepo)
+npm run dev:api          # Start API server only
+npm run dev:web          # Start frontend only
+```
+
+### Database
+
+```bash
+npm run db:generate      # Generate Prisma client from schema
+npm run db:migrate       # Create and apply migrations
+npm run db:migrate:deploy # Apply migrations (production, no prompts)
+npm run db:studio        # Open Prisma Studio GUI
+npm run db:seed          # Seed database with sample data
+```
+
+### Build
+
+```bash
+npm run build            # Build all packages and apps
+npm run build:api        # Build API only
+npm run build:web        # Build frontend only (standalone output)
+```
+
+### Quality
+
+```bash
+npm run lint             # ESLint across all packages
+npm run typecheck        # TypeScript strict check
+npm run test             # Run test suites
+npm run format           # Prettier formatting
+```
+
+### Turborepo
+
+```bash
+npx turbo dev            # Run dev in all packages (with caching)
+npx turbo build          # Build all with dependency graph
+npx turbo lint           # Lint all packages
 ```
 
 ---
 
 ## API Reference
 
+All endpoints (except `/health` and `/api/auth/*`) require authentication via JWT token in the `Authorization` header or HTTP-only cookie.
+
 ### Authentication
-
-All API endpoints (except `/health` and `/auth/*`) require authentication via JWT token.
-
-```bash
-# Include token in Authorization header
-curl -H "Authorization: Bearer <token>" http://localhost:4000/api/agents
-```
-
-### Core Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/api/auth/register` | Register new user |
-| `POST` | `/api/auth/login` | Authenticate user |
+| `POST` | `/api/auth/register` | Register with email/password |
+| `POST` | `/api/auth/login` | Login, receive JWT |
+| `POST` | `/api/auth/wallet/nonce` | Generate wallet sign-in nonce (5-min expiry) |
+| `POST` | `/api/auth/wallet/verify` | Verify Solana wallet signature |
+| `POST` | `/api/auth/2fa/setup` | Enable TOTP two-factor authentication |
+| `POST` | `/api/auth/2fa/verify` | Verify TOTP code or backup code |
+
+### Agents & Deployments
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | `GET` | `/api/agents` | List agents |
 | `POST` | `/api/agents` | Create agent |
 | `GET` | `/api/agents/:id` | Get agent details |
-| `POST` | `/api/agents/:id/deploy` | Deploy agent |
+| `POST` | `/api/agents/:id/deploy` | Deploy agent to GPUs |
+| `POST` | `/api/agents/:id/graph` | Save visual builder graph |
 | `GET` | `/api/deployments` | List deployments |
+| `POST` | `/api/deployments` | Create deployment |
 | `GET` | `/api/models` | List available models |
-| `POST` | `/api/models/deploy` | Deploy a model |
-| `GET` | `/api/marketplace` | Browse marketplace |
-| `GET` | `/api/memory/conversations` | List conversations |
-| `GET` | `/api/domains` | List custom domains |
-| `GET` | `/api/webhooks` | List webhooks |
-| `GET` | `/api/billing/usage` | Get usage stats |
+| `POST` | `/api/models/deploy` | Deploy model to Nosana |
 
-### WebSocket Events
+### Marketplace
 
-```javascript
-// Connect to real-time updates
-const ws = new WebSocket('ws://localhost:4000/ws');
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/marketplace` | Search agent listings |
+| `POST` | `/api/marketplace` | Publish agent to marketplace |
+| `POST` | `/api/marketplace/:id/install` | Install an agent |
+| `POST` | `/api/marketplace/:id/review` | Submit a review |
+| `GET` | `/api/reputation/:id` | Get publisher reputation score |
 
-ws.on('deployment:status', (data) => {
-  console.log('Deployment status:', data);
-});
+### AI Features
 
-ws.on('agent:message', (data) => {
-  console.log('Agent message:', data);
-});
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/training` | Submit LoRA/QLoRA fine-tuning job |
+| `POST` | `/api/knowledge` | Create knowledge base |
+| `POST` | `/api/knowledge/:id/documents` | Upload document for RAG |
+| `POST` | `/api/orchestrations` | Create multi-agent workflow |
+| `POST` | `/api/orchestrations/:id/execute` | Execute workflow |
+| `POST` | `/api/scheduler` | Create scheduled task |
+| `POST` | `/api/testing` | Run test suite |
+| `POST` | `/api/memory` | Store conversation context |
+| `POST` | `/api/templates` | Create agent template |
+
+### Infrastructure
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/domains` | Add custom domain |
+| `POST` | `/api/webhooks` | Register webhook |
+| `GET` | `/api/monitoring` | Get alert rules |
+| `POST` | `/api/monitoring/alerts` | Create alert rule |
+| `GET` | `/api/billing` | Get credit balance |
+| `GET` | `/api/billing/usage` | Get usage records |
+| `GET` | `/api/health` | Health check |
+
+### OpenAI-Compatible Inference
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer <api_key>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.1-70b",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "temperature": 0.7,
+    "max_tokens": 2048,
+    "stream": true
+  }'
 ```
+
+Supports streaming (`stream: true`), function calling, and all standard OpenAI chat completion parameters.
 
 ---
 
-## Development
+## Design System
 
-### Available Scripts
+WheelsAI uses a custom dark theme with two distinct palettes:
 
-```bash
-# Development
-npm run dev           # Start all services in dev mode
-npm run dev:api       # Start API server only
-npm run dev:web       # Start web app only
+### Matrix Theme (Dashboard)
 
-# Database
-npm run db:generate   # Generate Prisma client
-npm run db:migrate    # Run migrations
-npm run db:studio     # Open Prisma Studio
-npm run db:seed       # Seed database
+| Token | Value | Usage |
+|-------|-------|-------|
+| `matrix-green` | `#00ff00` | Primary accent, buttons, highlights |
+| `matrix-cyan` | `#00d4ff` | Secondary accent, gradients |
+| `matrix-purple` | `#a855f7` | Tertiary accent, gradient endpoints |
+| `matrix-dark` | `#0a0a0f` | Page background |
+| `matrix-surface` | `#12121a` | Card backgrounds |
+| `matrix-border` | `#1e1e2e` | Borders and dividers |
 
-# Build
-npm run build         # Build all packages
-npm run build:api     # Build API only
-npm run build:web     # Build web only
+### Navy Theme (Landing Page)
 
-# Quality
-npm run lint          # Run ESLint
-npm run typecheck     # Run TypeScript checks
-npm run test          # Run tests
-npm run format        # Format code with Prettier
-```
+| Token | Value | Usage |
+|-------|-------|-------|
+| `navy-950` | `#040a18` | Page background |
+| `navy-900` | `#0a1628` | Footer, solid navbar |
+| `navy-800` | `#0f1d35` | Card surfaces |
+| `navy-700` | `#1a2744` | Elevated surfaces |
+| `navy-600` | `#243352` | Borders, muted elements |
+| `navy-500` | `#2e4068` | Dividers |
+| `navy-400` | `#3b82f6` | Primary accent blue |
+| `navy-300` | `#60a5fa` | Lighter accent |
+| `navy-200` | `#93c5fd` | Highlights, body text |
 
-### Project Commands
+### CSS Utilities
 
-```bash
-# Turborepo commands
-npx turbo dev         # Run dev in all packages
-npx turbo build       # Build all packages
-npx turbo lint        # Lint all packages
+| Class | Description |
+|-------|-------------|
+| `.gradient-text` | Green -> cyan -> purple gradient text |
+| `.gradient-text-navy` | Blue -> cyan -> purple gradient text |
+| `.glow-card` | Dark card with green glow on hover |
+| `.glow-card-navy` | Navy card with blue glow on hover |
+| `.grid-bg` | Subtle green grid pattern overlay |
+| `.grid-bg-navy` | Subtle blue grid pattern overlay |
+| `.btn-glow` | Green glowing CTA button |
+| `.btn-glow-navy` | Blue glowing CTA button |
+| `.text-glow` | Green text shadow |
+| `.text-glow-blue` | Blue text shadow |
+| `.pricing-popular` | Enhanced glow for featured pricing tier |
 
-# Workspace commands
-npm run -w @wheelsai/api dev    # Run specific workspace
-npm run -w @wheelsai/web build  # Build specific workspace
-```
+### Animations
+
+| Animation | Duration | Usage |
+|-----------|----------|-------|
+| `matrix-fall` | 10s | Matrix digital rain columns |
+| `glow-pulse` | 2s | Pulsing glow on buttons |
+| `float` | 3s | Floating hover effect |
+| `glitch` | 5s | Cyberpunk glitch effect |
+| `fade-in-up` | 0.6s | Scroll-triggered entrance |
+| `typewriter` | 2s | Terminal typing effect |
+| `blink` | 1s | Cursor blink |
+| `wheel-spin` | 20s | Rotating elements |
+| `orbit` | variable | Orbital motion paths |
 
 ---
 
 ## Deployment
 
-### Docker
+### Docker (Local Development)
 
 ```bash
-# Build production images
-docker build -t wheelsai-api -f apps/api/Dockerfile .
-docker build -t wheelsai-web -f apps/web/Dockerfile .
+# Start infrastructure
+docker compose up -d
 
-# Run with docker-compose
-docker-compose -f docker-compose.prod.yml up -d
+# Services started:
+#   PostgreSQL 15 on port 5432
+#   Redis 7 on port 6379
 ```
 
-### Kubernetes
+### Production Build
+
+**Next.js** (configured with `output: 'standalone'`):
 
 ```bash
-# Apply manifests
-kubectl apply -f k8s/
-
-# Check status
-kubectl get pods -n wheelsai
+npm run build:web
+# Output: apps/web/.next/standalone/
+# Run: node apps/web/.next/standalone/server.js
 ```
 
-### Vercel (Web App)
-
-The web app can be deployed to Vercel with zero configuration:
+**Fastify API**:
 
 ```bash
-cd apps/web
-vercel deploy
+npm run build:api
+# Run: node apps/api/dist/index.js
 ```
 
----
+### Platform Options
 
-## Supported Frameworks
+| Platform | Best For |
+|----------|----------|
+| **Vercel** | Frontend (zero-config Next.js deployment) |
+| **Railway / Render** | Full-stack with Docker |
+| **AWS ECS / GCP Cloud Run** | Containerized production |
+| **Kubernetes** | Enterprise scale (manifests planned) |
 
-WheelsAI supports multiple AI agent frameworks out of the box:
+### Security Headers (Next.js)
 
-### ElizaOS
-```typescript
-import { ElizaAgent } from '@wheelsai/eliza';
-
-const agent = new ElizaAgent({
-  name: 'my-agent',
-  personality: 'helpful assistant',
-});
-```
-
-### Mastra Framework
-```typescript
-import { MastraAgent } from '@wheelsai/mastra';
-
-const agent = new MastraAgent({
-  name: 'my-agent',
-  tools: ['web-search', 'calculator'],
-});
-```
-
-### LangChain
-```typescript
-import { LangChainAgent } from '@wheelsai/langchain';
-
-const agent = new LangChainAgent({
-  name: 'my-agent',
-  model: 'llama-3.1-70b',
-  memory: true,
-});
-```
-
-### Custom Framework
-```typescript
-import { CustomAgent } from '@wheelsai/core';
-
-const agent = new CustomAgent({
-  name: 'my-agent',
-  sourceCode: `// Your custom agent code`,
-  runtime: 'node',
-});
-```
-
----
-
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes
-4. Run tests: `npm test`
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to the branch: `git push origin feature/amazing-feature`
-7. Open a Pull Request
-
-### Code Style
-
-- TypeScript for all code
-- ESLint + Prettier for formatting
-- Conventional commits for commit messages
+The Next.js config includes security headers:
+- `X-Frame-Options: DENY`
+- `X-Content-Type-Options: nosniff`
+- Standalone output for containerization
+- Transpiles `@wheelsai/*` workspace packages
 
 ---
 
 ## Roadmap
 
-### Current (Phase 4)
-- [x] Monitoring & Alerting
-- [x] Agent Versioning
-- [x] Webhooks & Integrations
-- [x] Testing Framework
-- [x] Conversation Memory
-- [x] Custom Domains
+### Completed
 
-### Upcoming (Phase 5)
-- [ ] Multi-tenancy / White-labeling
-- [ ] RAG with Vector Stores
-- [ ] Multi-Agent Orchestration
-- [ ] Two-Factor Authentication
-- [ ] SDK Generator
-- [ ] CLI Tool
+- [x] **Phase 1** - Core platform: auth, deployments, models, billing, inference API
+- [x] **Phase 2** - Agent ecosystem: visual builder, marketplace, reputation, agent wallets
+- [x] **Phase 3** - Custom domains, conversation memory, testing framework
+- [x] **Phase 4** - Analytics, monitoring & alerting, webhooks, third-party integrations
+- [x] **Phase 5** - Scheduler, knowledge base (RAG), multi-agent orchestration, templates, 2FA
 
-See [PHASE5_IDEAS.md](PHASE5_IDEAS.md) for the full roadmap.
+### Upcoming
+
+- [ ] Multi-tenancy with workspace isolation
+- [ ] SDK generator (Python, JavaScript, Go)
+- [ ] CLI tool (`wheelsai deploy`, `wheelsai logs`, `wheelsai test`)
+- [ ] IP allowlisting and advanced network security
+- [ ] Data retention policies and GDPR compliance
+- [ ] Kubernetes deployment manifests and Helm charts
+- [ ] White-labeling support
+
+---
+
+## Contributing
+
+We welcome contributions! Please follow these steps:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/your-feature`
+3. Make your changes
+4. Run quality checks: `npm run lint && npm run typecheck`
+5. Commit with conventional commits: `git commit -m 'feat: add your feature'`
+6. Push and open a Pull Request
+
+### Code Style
+
+- TypeScript strict mode for all code
+- ESLint + Prettier for formatting
+- Conventional commit messages (`feat:`, `fix:`, `chore:`, etc.)
 
 ---
 
@@ -431,14 +990,14 @@ See [PHASE5_IDEAS.md](PHASE5_IDEAS.md) for the full roadmap.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Proprietary. All rights reserved.
 
 ---
 
 ## Acknowledgments
 
 - [Nosana](https://nosana.io) - Decentralized GPU infrastructure
-- [Solana](https://solana.com) - Blockchain payments
+- [Solana](https://solana.com) - Blockchain payments and authentication
 - [ElizaOS](https://elizaos.ai) - AI agent framework
 - [Mastra](https://mastra.ai) - Agent development framework
 
@@ -446,5 +1005,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <p align="center">
   <strong>Built with wheels within wheels</strong><br/>
-  <sub>Powered by Nosana Decentralized GPU Network</sub>
+  <sub>Powered by Nosana Decentralized GPU Network &bull; Settled on Solana</sub>
 </p>

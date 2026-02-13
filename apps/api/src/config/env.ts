@@ -25,6 +25,57 @@ const envSchema = z.object({
   SOLANA_RPC_URL: z.string().default("https://api.devnet.solana.com"),
   SOLANA_NETWORK: z.enum(["devnet", "mainnet-beta"]).default("devnet"),
   NOSANA_WALLET_PRIVATE_KEY: z.string().optional(),
+  TREASURY_WALLET_ADDRESS: z
+    .string()
+    .default("11111111111111111111111111111111"),
+
+  // X402 Payments
+  X402_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  X402_INFERENCE_MODE: z
+    .enum(["off", "fallback", "required"])
+    .default("off"),
+  X402_DEFAULT_ASSET: z.enum(["USDC", "SOL", "NOS"]).default("USDC"),
+  X402_SUBMIT_TRANSACTIONS: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  X402_SETTLEMENT_WORKER_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  X402_SETTLEMENT_INTERVAL_MS: z.coerce.number().int().min(1000).default(15000),
+  X402_SETTLEMENT_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
+  X402_SETTLEMENT_MAX_RETRIES: z.coerce.number().int().min(1).max(20).default(5),
+  X402_METRICS_HISTORY_LIMIT: z.coerce.number().int().min(1).max(1000).default(168),
+  X402_METRICS_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  X402_METRICS_PRUNE_INTERVAL_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 7)
+    .default(60),
+  X402_ALERT_WEBHOOK_URL: z
+    .string()
+    .optional()
+    .transform((value) => (value && value.trim().length > 0 ? value : undefined)),
+  X402_ALERT_WEBHOOK_SECRET: z
+    .string()
+    .optional()
+    .transform((value) => (value && value.trim().length > 0 ? value : undefined)),
+  X402_ALERT_NOTIFY_COOLDOWN_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 7)
+    .default(30),
+  X402_ALERT_MAX_PENDING: z.coerce.number().int().min(1).default(25),
+  X402_ALERT_MAX_FAILED: z.coerce.number().int().min(1).default(15),
+  X402_ALERT_MAX_RETRIABLE: z.coerce.number().int().min(1).default(20),
+  X402_ALERT_MAX_FAILURE_RATE_PERCENT: z.coerce.number().min(0).max(100).default(20),
+  X402_ALERT_MAX_OLDEST_PENDING_MINUTES: z.coerce.number().int().min(1).default(30),
 
   // Stripe
   STRIPE_SECRET_KEY: z.string().optional(),

@@ -50,6 +50,7 @@ model Organization {
   usageRecords  UsageRecord[]
   agentWallets  AgentWallet[]
   x402Payments  X402Payment[]
+  x402SettlementMetrics X402SettlementMetric[]
 
   // Marketplace relations
   publisherProfile   PublisherProfile?
@@ -486,6 +487,42 @@ model X402Payment {
   @@index([txSignature])
   @@index([status])
   @@map("x402_payments")
+}
+
+model X402SettlementMetric {
+  id                   String   @id @default(uuid()) @db.Uuid
+  orgId                String   @map("org_id") @db.Uuid
+  timestamp            DateTime @default(now())
+
+  // Payment status counts at snapshot time
+  totalPayments        Int      @default(0) @map("total_payments")
+  pendingPayments      Int      @default(0) @map("pending_payments")
+  verifiedPayments     Int      @default(0) @map("verified_payments")
+  settledPayments      Int      @default(0) @map("settled_payments")
+  failedPayments       Int      @default(0) @map("failed_payments")
+  retriablePayments    Int      @default(0) @map("retriable_payments")
+  failureRatePercent   Float    @default(0) @map("failure_rate_percent")
+  oldestPendingMinutes Int?     @map("oldest_pending_minutes")
+
+  // Worker counters at snapshot time
+  workerTicks          Int      @default(0) @map("worker_ticks")
+  workerProcessed      Int      @default(0) @map("worker_processed")
+  workerSettled        Int      @default(0) @map("worker_settled")
+  workerFailed         Int      @default(0) @map("worker_failed")
+  workerRetried        Int      @default(0) @map("worker_retried")
+  workerSkipped        Int      @default(0) @map("worker_skipped")
+
+  // Alert metadata
+  alertCount           Int      @default(0) @map("alert_count")
+  alerts               Json?    // Array of alert objects
+
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  org                  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, timestamp])
+  @@index([timestamp])
+  @@map("x402_settlement_metrics")
 }
 
 // ============================================

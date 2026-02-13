@@ -3,14 +3,15 @@
 import { useEffect, useState } from "react";
 import {
   CreditCard,
-  Plus,
+  Activity,
   Download,
   TrendingUp,
   DollarSign,
-  Clock,
   Zap,
   ArrowUpRight,
   ArrowDownRight,
+  AlertTriangle,
+  CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -18,7 +19,14 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { billingApi, type CreditBalance, type CreditTransaction, type UsageSummary } from "@/lib/api";
+import {
+  billingApi,
+  type CreditBalance,
+  type CreditTransaction,
+  type UsageSummary,
+  type X402MetricsHistoryPoint,
+  type X402MetricsResponse,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const creditPackages = [
@@ -32,19 +40,31 @@ export default function BillingPage() {
   const [balance, setBalance] = useState<CreditBalance | null>(null);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
+  const [x402Metrics, setX402Metrics] = useState<X402MetricsResponse | null>(null);
+  const [x402History, setX402History] = useState<X402MetricsHistoryPoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPurchasing, setIsPurchasing] = useState<number | null>(null);
 
   async function loadBillingData() {
     try {
-      const [balanceData, transactionsData, usageData] = await Promise.all([
+      const [
+        balanceData,
+        transactionsData,
+        usageData,
+        x402MetricsData,
+        x402HistoryData,
+      ] = await Promise.all([
         billingApi.getBalance(),
         billingApi.getTransactions(),
         billingApi.getUsage(),
+        billingApi.getX402Metrics().catch(() => null),
+        billingApi.getX402MetricsHistory(24, 96).catch(() => null),
       ]);
       setBalance(balanceData.balance);
       setTransactions(transactionsData.transactions);
       setUsage(usageData.usage);
+      setX402Metrics(x402MetricsData);
+      setX402History(x402HistoryData?.history ?? []);
     } catch (error) {
       toast.error("Failed to load billing data");
     } finally {
@@ -58,6 +78,10 @@ export default function BillingPage() {
 
   async function handlePurchase(packageIndex: number) {
     const pkg = creditPackages[packageIndex];
+    if (!pkg) {
+      toast.error("Invalid credit package selection");
+      return;
+    }
     setIsPurchasing(packageIndex);
 
     try {
@@ -83,6 +107,16 @@ export default function BillingPage() {
       currency: "USD",
     }).format(amount);
   }
+
+  const x402Trend = x402History.slice(-24);
+  const maxPending = Math.max(
+    1,
+    ...x402Trend.map((point) => point.pendingPayments)
+  );
+  const maxFailureRate = Math.max(
+    1,
+    ...x402Trend.map((point) => point.failureRatePercent)
+  );
 
   if (isLoading) {
     return (
@@ -266,6 +300,158 @@ export default function BillingPage() {
                       {formatCurrency(usage.currentMonth)}
                     </p>
                   </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* X402 settlement health */}
+        {x402Metrics && (
+          <Card className="mb-8">
+            <CardHeader>
+              <CardTitle className="text-base">X402 Settlement Health</CardTitle>
+              <CardDescription>
+                Live worker status, threshold alerts, and payment trend
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="mb-6 grid gap-4 md:grid-cols-4">
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-gray-500">Worker Status</p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Activity className="h-4 w-4 text-blue-600" />
+                    <p className="font-semibold text-gray-900">
+                      {x402Metrics.worker.enabled
+                        ? x402Metrics.worker.running
+                          ? "Running"
+                          : "Stopped"
+                        : "Disabled"}
+                    </p>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Last tick:{" "}
+                    {x402Metrics.worker.lastTickAt
+                      ? new Date(x402Metrics.worker.lastTickAt).toLocaleTimeString()
+                      : "Never"}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-gray-500">Pending Payments</p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-900">
+                    {x402Metrics.payments.pending.toLocaleString()}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Threshold: {x402Metrics.thresholds.maxPending}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-gray-500">Failure Rate</p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-900">
+                    {x402Metrics.payments.failureRatePercent.toFixed(1)}%
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Threshold: {x402Metrics.thresholds.maxFailureRatePercent.toFixed(1)}%
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="text-sm text-gray-500">Open Alerts</p>
+                  <p className="mt-2 text-2xl font-semibold text-gray-900">
+                    {x402Metrics.alerts.length}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Retries pending: {x402Metrics.payments.retriable}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="rounded-lg border p-4">
+                  <p className="mb-3 text-sm font-medium text-gray-900">Active Alerts</p>
+                  {x402Metrics.alerts.length === 0 ? (
+                    <div className="flex items-center gap-2 text-sm text-green-700">
+                      <CheckCircle2 className="h-4 w-4" />
+                      No active threshold breaches
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {x402Metrics.alerts.map((alert) => (
+                        <div
+                          key={`${alert.code}-${alert.threshold}`}
+                          className={cn(
+                            "rounded-md border p-3 text-sm",
+                            alert.severity === "critical"
+                              ? "border-red-300 bg-red-50"
+                              : "border-amber-300 bg-amber-50"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle className="h-4 w-4" />
+                              <span className="font-medium">{alert.message}</span>
+                            </div>
+                            <Badge variant="outline" className="capitalize">
+                              {alert.severity}
+                            </Badge>
+                          </div>
+                          <p className="mt-1 text-xs text-gray-600">
+                            Value {alert.value} vs threshold {alert.threshold}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border p-4">
+                  <p className="mb-3 text-sm font-medium text-gray-900">24h Trend</p>
+                  {x402Trend.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      No metrics history yet. Enable the settlement worker to collect snapshots.
+                    </p>
+                  ) : (
+                    <div className="space-y-4">
+                      <div>
+                        <p className="mb-2 text-xs text-gray-500">Pending Payments</p>
+                        <div className="flex h-20 items-end gap-1">
+                          {x402Trend.map((point) => (
+                            <div
+                              key={`pending-${point.timestamp}`}
+                              className="flex-1 rounded-t bg-blue-400/80"
+                              style={{
+                                height: `${Math.max(
+                                  8,
+                                  Math.round((point.pendingPayments / maxPending) * 100)
+                                )}%`,
+                              }}
+                              title={`${new Date(point.timestamp).toLocaleString()}: ${point.pendingPayments} pending`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="mb-2 text-xs text-gray-500">Failure Rate (%)</p>
+                        <div className="flex h-16 items-end gap-1">
+                          {x402Trend.map((point) => (
+                            <div
+                              key={`failure-${point.timestamp}`}
+                              className="flex-1 rounded-t bg-red-400/80"
+                              style={{
+                                height: `${Math.max(
+                                  6,
+                                  Math.round((point.failureRatePercent / maxFailureRate) * 100)
+                                )}%`,
+                              }}
+                              title={`${new Date(point.timestamp).toLocaleString()}: ${point.failureRatePercent.toFixed(2)}% failure`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </CardContent>

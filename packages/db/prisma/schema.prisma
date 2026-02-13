@@ -303,6 +303,7 @@ model Agent {
   deployments   AgentDeployment[]
   listing       AgentListing?
   graph         AgentGraph?
+  openclawDeployment OpenClawDeployment?
 
   @@unique([orgId, slug])
   @@index([orgId])
@@ -542,7 +543,7 @@ model AgentListing {
   readme            String?   @db.Text
 
   // Pricing
-  pricingModel      String    @map("pricing_model") // 'free', 'per_request', 'monthly'
+  pricingModel      String    @map("pricing_model") // 'free', 'per_request', 'monthly', 'tokenized'
   pricePerRequestCents BigInt? @map("price_per_request_cents")
   monthlyPriceCents BigInt?   @map("monthly_price_cents")
 
@@ -568,6 +569,7 @@ model AgentListing {
   reviews           AgentReview[]
   installs          AgentInstall[]
   subscriptions     AgentSubscription[]
+  agentToken        AgentToken?
 
   @@index([publisherId])
   @@index([status, category])
@@ -1964,4 +1966,146 @@ model TwoFactorChallenge {
   @@index([userId])
   @@index([expiresAt])
   @@map("two_factor_challenges")
+}
+
+// ============================================
+// OpenClaw Integration (Phase 6)
+// ============================================
+
+enum OpenClawStatus {
+  PENDING
+  BUILDING
+  DEPLOYING
+  RUNNING
+  STOPPED
+  FAILED
+}
+
+model OpenClawDeployment {
+  id              String         @id @default(uuid()) @db.Uuid
+  agentId         String         @unique @map("agent_id") @db.Uuid
+  openclawVersion String         @default("latest") @map("openclaw_version")
+  dockerImage     String         @default("wheelsai/openclaw-hardened:latest") @map("docker_image")
+  envEncrypted    String         @map("env_encrypted") @db.Text
+  status          OpenClawStatus @default(PENDING)
+  nosanaJobId     String?        @map("nosana_job_id")
+  publicUrl       String?        @map("public_url")
+  healthLastCheck DateTime?      @map("health_last_check")
+  healthStatus    String?        @map("health_status")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  agent           Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  channels        OpenClawChannel[]
+
+  @@index([status])
+  @@map("openclaw_deployments")
+}
+
+model OpenClawChannel {
+  id              String   @id @default(uuid()) @db.Uuid
+  deploymentId    String   @map("deployment_id") @db.Uuid
+  platform        String
+  configEncrypted String   @map("config_encrypted") @db.Text
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  deployment      OpenClawDeployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  @@index([deploymentId])
+  @@map("openclaw_channels")
+}
+
+// ============================================
+// Agent Token Marketplace (Phase 6)
+// ============================================
+
+enum TokenStatus {
+  BONDING
+  GRADUATED
+  FAILED
+}
+
+model AgentToken {
+  id                String      @id @default(uuid()) @db.Uuid
+  agentListingId    String      @unique @map("agent_listing_id") @db.Uuid
+  mintAddress       String      @unique @map("mint_address")
+  pumpfunUrl        String?     @map("pumpfun_url")
+  bondingCurveAddress String?   @map("bonding_curve_address")
+  creatorAddress    String      @map("creator_address")
+  name              String
+  symbol            String
+  imageUri          String?     @map("image_uri")
+  totalSupply       BigInt      @default(1000000000) @map("total_supply")
+  curveSupply       BigInt      @default(800000000) @map("curve_supply")
+  reservedSupply    BigInt      @default(200000000) @map("reserved_supply")
+  status            TokenStatus @default(BONDING)
+  graduatedAt       DateTime?   @map("graduated_at")
+  raydiumPoolId     String?     @map("raydium_pool_id")
+  marketCapUsd      Float       @default(0) @map("market_cap_usd")
+  priceUsd          Float       @default(0) @map("price_usd")
+  volume24h         Float       @default(0) @map("volume_24h")
+  holders           Int         @default(0)
+  creatorLockupEnd  DateTime?   @map("creator_lockup_end")
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  agentListing      AgentListing @relation(fields: [agentListingId], references: [id], onDelete: Cascade)
+  trades            AgentTokenTrade[]
+  holdersList       AgentTokenHolder[]
+  snapshots         AgentTokenSnapshot[]
+
+  @@index([status])
+  @@index([marketCapUsd])
+  @@index([volume24h])
+  @@map("agent_tokens")
+}
+
+model AgentTokenTrade {
+  id            String   @id @default(uuid()) @db.Uuid
+  tokenId       String   @map("token_id") @db.Uuid
+  txSignature   String   @unique @map("tx_signature")
+  traderAddress String   @map("trader_address")
+  side          String
+  solAmount     Float    @map("sol_amount")
+  tokenAmount   Float    @map("token_amount")
+  priceUsd      Float    @map("price_usd")
+  timestamp     DateTime
+
+  token         AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId, timestamp])
+  @@index([traderAddress])
+  @@map("agent_token_trades")
+}
+
+model AgentTokenHolder {
+  id            String   @id @default(uuid()) @db.Uuid
+  tokenId       String   @map("token_id") @db.Uuid
+  walletAddress String   @map("wallet_address")
+  balance       Float
+  percentage    Float
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  token         AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenId, walletAddress])
+  @@index([tokenId])
+  @@map("agent_token_holders")
+}
+
+model AgentTokenSnapshot {
+  id           String   @id @default(uuid()) @db.Uuid
+  tokenId      String   @map("token_id") @db.Uuid
+  priceUsd     Float    @map("price_usd")
+  marketCapUsd Float    @map("market_cap_usd")
+  volume24h    Float    @map("volume_24h")
+  holders      Int
+  timestamp    DateTime @default(now())
+
+  token        AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId, timestamp])
+  @@map("agent_token_snapshots")
 }

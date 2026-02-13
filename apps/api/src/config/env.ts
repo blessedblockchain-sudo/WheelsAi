@@ -88,6 +88,14 @@ const envSchema = z.object({
   // Inference Proxy
   INFERENCE_TIMEOUT_MS: z.coerce.number().default(30000),
   MAX_RETRIES: z.coerce.number().default(2),
+
+  // OpenClaw
+  OPENCLAW_DEFAULT_IMAGE: z.string().default("wheelsai/openclaw-hardened:latest"),
+  OPENCLAW_SUBDOMAIN_BASE: z.string().default("openclaw.wheelsai.com"),
+
+  // Token Marketplace
+  PUMPFUN_API_KEY: z.string().optional(),
+  TOKEN_INDEXER_INTERVAL_MS: z.coerce.number().int().min(0).default(30000),
 });
 
 function parseEnv() {

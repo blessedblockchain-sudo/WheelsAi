@@ -402,7 +402,7 @@ export default function PublishWizardPage() {
 
                 <RadioGroup
                   value={formData.pricingModel}
-                  onValueChange={(value: "free" | "per_request" | "monthly") =>
+                  onValueChange={(value: "free" | "per_request" | "monthly" | "tokenized") =>
                     updateForm({
                       pricingModel: value,
                       pricePerRequestCents: undefined,
@@ -577,6 +577,39 @@ export default function PublishWizardPage() {
                       </div>
                     )}
                   </div>
+
+                  <div
+                    className={cn(
+                      "flex cursor-pointer items-start gap-4 rounded-lg border p-4 transition-colors",
+                      formData.pricingModel === "tokenized"
+                        ? "border-primary-500 bg-primary-50"
+                        : "hover:bg-gray-50"
+                    )}
+                    onClick={() =>
+                      updateForm({
+                        pricingModel: "tokenized",
+                        pricePerRequestCents: undefined,
+                        monthlyPriceCents: undefined,
+                      })
+                    }
+                  >
+                    <RadioGroupItem value="tokenized" id="tokenized" className="mt-1" />
+                    <div>
+                      <label
+                        htmlFor="tokenized"
+                        className="cursor-pointer font-medium text-gray-900"
+                      >
+                        Token Gated
+                      </label>
+                      <p className="text-sm text-gray-500">
+                        Access requires holding your agent's token. Tokenize your agent
+                        on pump.fun to create a bonding curve token.
+                      </p>
+                      <p className="mt-1 text-xs text-gray-500">
+                        Requires: reputation score &ge; 50, agent uptime &ge; 7 days
+                      </p>
+                    </div>
+                  </div>
                 </RadioGroup>
               </div>
             )}
@@ -625,9 +658,11 @@ export default function PublishWizardPage() {
                     >
                       {formData.pricingModel === "free"
                         ? "Free"
-                        : formData.pricingModel === "per_request"
-                          ? `$${((formData.pricePerRequestCents || 0) / 100).toFixed(4)}/req`
-                          : `$${((formData.monthlyPriceCents || 0) / 100).toFixed(2)}/mo`}
+                        : formData.pricingModel === "tokenized"
+                          ? "Token Gated"
+                          : formData.pricingModel === "per_request"
+                            ? `$${((formData.pricePerRequestCents || 0) / 100).toFixed(4)}/req`
+                            : `$${((formData.monthlyPriceCents || 0) / 100).toFixed(2)}/mo`}
                     </span>
                   </div>
                 </div>

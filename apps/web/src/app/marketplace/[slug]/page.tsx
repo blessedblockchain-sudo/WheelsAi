@@ -25,6 +25,7 @@ import {
 
 function formatPrice(listing: MarketplaceListing): string {
   if (listing.pricingModel === "free") return "Free";
+  if (listing.pricingModel === "tokenized") return "Token Gated";
   if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
     const price = listing.pricePerRequestCents / 100;
     return `$${price.toFixed(4)} per request`;
@@ -431,6 +432,8 @@ export default function ListingDetailPage() {
                   <p className="mt-1 text-sm text-gray-500">
                     {listing.pricingModel === "per_request"
                       ? "Pay only for what you use"
+                      : listing.pricingModel === "tokenized"
+                      ? "Hold tokens to access this agent"
                       : "Billed monthly"}
                   </p>
                 )}

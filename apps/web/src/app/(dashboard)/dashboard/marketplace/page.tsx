@@ -46,6 +46,7 @@ const statusLabels: Record<string, string> = {
 
 function formatPrice(listing: MarketplaceListing): string {
   if (listing.pricingModel === "free") return "Free";
+  if (listing.pricingModel === "tokenized") return "Token Gated";
   if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
     const price = listing.pricePerRequestCents / 100;
     return `$${price.toFixed(4)}/req`;

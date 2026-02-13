@@ -849,7 +849,7 @@ export interface MarketplaceListing {
   iconUrl: string | null;
   screenshots: string[];
   readme: string | null;
-  pricingModel: "free" | "per_request" | "monthly";
+  pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents: number | null;
   monthlyPriceCents: number | null;
   publisherId: string;
@@ -922,7 +922,7 @@ export interface CreateListingInput {
   iconUrl?: string;
   screenshots?: string[];
   readme?: string;
-  pricingModel: "free" | "per_request" | "monthly";
+  pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents?: number;
   monthlyPriceCents?: number;
 }
@@ -3328,6 +3328,220 @@ export const twoFactorApi = {
   setRecoveryEmail: (email: string) => api<{ success: boolean }>("/api/2fa/recovery-email", { method: "POST", body: { email } }),
   createChallenge: (userId: string) => api<{ required: boolean; challengeToken?: string; expiresAt?: string }>("/api/2fa/challenge", { method: "POST", body: { userId } }),
   verifyChallenge: (challengeToken: string, token: string) => api<{ userId: string; valid: boolean }>("/api/2fa/challenge/verify", { method: "POST", body: { challengeToken, token } }),
+};
+
+// ============================================
+// OpenClaw API (Phase 6)
+// ============================================
+
+export interface OpenClawDeployment {
+  id: string;
+  agentId: string;
+  agentName: string;
+  slug: string;
+  description?: string;
+  status: string;
+  healthStatus?: string | null;
+  publicUrl?: string | null;
+  channelCount: number;
+  channels: OpenClawChannel[];
+  modelConfig?: { model?: string; temperature?: number; maxTokens?: number };
+  gpuTier?: string;
+  systemPrompt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OpenClawChannel {
+  id: string;
+  platform: string;
+  enabled: boolean;
+  createdAt: string;
+}
+
+export const openclawApi = {
+  listDeployments: () =>
+    api<{ deployments: OpenClawDeployment[] }>("/api/openclaw/deployments"),
+
+  getDeployment: (id: string) =>
+    api<{ deployment: OpenClawDeployment }>(`/api/openclaw/deployments/${id}`),
+
+  deploy: (data: {
+    name: string;
+    slug: string;
+    description?: string;
+    systemPrompt?: string;
+    modelConfig?: { model?: string; temperature?: number; maxTokens?: number };
+    gpuTier?: string;
+    channels?: { platform: string; config: Record<string, string> }[];
+    env?: Record<string, string>;
+  }) =>
+    api<{ deployment: OpenClawDeployment; message: string }>("/api/openclaw/deploy", {
+      method: "POST",
+      body: data,
+    }),
+
+  updateDeployment: (id: string, data: Partial<{
+    description: string;
+    systemPrompt: string;
+    modelConfig: { model?: string; temperature?: number; maxTokens?: number };
+    env: Record<string, string>;
+  }>) =>
+    api<{ deployment: OpenClawDeployment }>(`/api/openclaw/deployments/${id}`, {
+      method: "PUT",
+      body: data,
+    }),
+
+  startDeployment: (id: string) =>
+    api<{ message: string }>(`/api/openclaw/deployments/${id}/start`, { method: "POST" }),
+
+  stopDeployment: (id: string) =>
+    api<{ message: string }>(`/api/openclaw/deployments/${id}/stop`, { method: "POST" }),
+
+  restartDeployment: (id: string) =>
+    api<{ message: string }>(`/api/openclaw/deployments/${id}/restart`, { method: "POST" }),
+
+  deleteDeployment: (id: string) =>
+    api<{ message: string }>(`/api/openclaw/deployments/${id}`, { method: "DELETE" }),
+
+  getHealth: (id: string) =>
+    api<{ status: string; healthStatus: string }>(`/api/openclaw/deployments/${id}/health`),
+
+  getLogs: (id: string) =>
+    api<{ logs: string }>(`/api/openclaw/deployments/${id}/logs`),
+
+  addChannel: (deploymentId: string, data: { platform: string; config: Record<string, string> }) =>
+    api<{ channel: OpenClawChannel }>(`/api/openclaw/deployments/${deploymentId}/channels`, {
+      method: "POST",
+      body: data,
+    }),
+
+  updateChannel: (channelId: string, data: { enabled?: boolean; config?: Record<string, string> }) =>
+    api<{ channel: OpenClawChannel }>(`/api/openclaw/channels/${channelId}`, {
+      method: "PATCH",
+      body: data,
+    }),
+
+  deleteChannel: (channelId: string) =>
+    api<{ message: string }>(`/api/openclaw/channels/${channelId}`, { method: "DELETE" }),
+};
+
+// ============================================
+// Token Marketplace API (Phase 6)
+// ============================================
+
+export interface AgentToken {
+  id: string;
+  agentListingId: string;
+  mintAddress: string;
+  pumpfunUrl?: string | null;
+  bondingCurveAddress?: string | null;
+  creatorAddress: string;
+  name: string;
+  symbol: string;
+  imageUri?: string | null;
+  totalSupply: number;
+  curveSupply: number;
+  reservedSupply: number;
+  status: "BONDING" | "GRADUATED" | "FAILED";
+  graduatedAt?: string | null;
+  raydiumPoolId?: string | null;
+  marketCapUsd: number;
+  priceUsd: number;
+  volume24h: number;
+  holders: number;
+  creatorLockupEnd?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  agentListing?: {
+    id: string;
+    title: string;
+    slug: string;
+    avgRating: number;
+    totalInstalls: number;
+    totalRequests: number;
+    category: string;
+  };
+}
+
+export interface AgentTokenTrade {
+  id: string;
+  tokenId: string;
+  txSignature: string;
+  traderAddress: string;
+  side: "buy" | "sell";
+  solAmount: number;
+  tokenAmount: number;
+  priceUsd: number;
+  timestamp: string;
+}
+
+export interface AgentTokenHolder {
+  id: string;
+  walletAddress: string;
+  balance: number;
+  percentage: number;
+}
+
+export interface TokenSnapshot {
+  id: string;
+  priceUsd: number;
+  marketCapUsd: number;
+  volume24h: number;
+  holders: number;
+  timestamp: string;
+}
+
+export const tokenApi = {
+  create: (data: {
+    agentListingId: string;
+    name: string;
+    symbol: string;
+    description?: string;
+  }) =>
+    api<{ token: AgentToken; message: string }>("/api/tokens/create", {
+      method: "POST",
+      body: data,
+    }),
+
+  list: (params?: {
+    sortBy?: string;
+    status?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.sortBy) sp.set("sortBy", params.sortBy);
+    if (params?.status) sp.set("status", params.status);
+    if (params?.search) sp.set("search", params.search);
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ tokens: AgentToken[]; total: number }>(`/api/tokens${q ? `?${q}` : ""}`);
+  },
+
+  trending: () => api<{ tokens: AgentToken[] }>("/api/tokens/trending"),
+
+  get: (id: string) =>
+    api<{ token: AgentToken }>(`/api/tokens/${id}`),
+
+  getTrades: (id: string, params?: { limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
+    const q = sp.toString();
+    return api<{ trades: AgentTokenTrade[]; total: number }>(`/api/tokens/${id}/trades${q ? `?${q}` : ""}`);
+  },
+
+  getHolders: (id: string) =>
+    api<{ holders: AgentTokenHolder[] }>(`/api/tokens/${id}/holders`),
+
+  getChart: (id: string) =>
+    api<{ snapshots: TokenSnapshot[] }>(`/api/tokens/${id}/chart`),
+
+  leaderboard: () =>
+    api<{ tokens: AgentToken[] }>("/api/tokens/leaderboard"),
 };
 
 export { ApiError };

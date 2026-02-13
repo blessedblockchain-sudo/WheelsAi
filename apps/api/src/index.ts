@@ -39,7 +39,10 @@ import { orchestrationRoutes } from "./routes/orchestration.js";
 import { templateRoutes } from "./routes/templates.js";
 import { twoFactorRoutes } from "./routes/twoFactor.js";
 import { x402Routes } from "./routes/x402.js";
+import { openclawRoutes } from "./routes/openclaw.js";
+import { tokenRoutes } from "./routes/tokens.js";
 import { startX402SettlementWorker } from "./services/x402Settlement.js";
+import { startTokenIndexerWorker } from "./services/tokenIndexer.js";
 
 async function main() {
   const app = Fastify({
@@ -93,6 +96,8 @@ async function main() {
   await app.register(templateRoutes, { prefix: "/api/templates" });
   await app.register(twoFactorRoutes, { prefix: "/api/2fa" });
   await app.register(x402Routes, { prefix: "/api/x402" });
+  await app.register(openclawRoutes, { prefix: "/api/openclaw" });
+  await app.register(tokenRoutes, { prefix: "/api/tokens" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
 
   // Global error handler
@@ -130,6 +135,7 @@ async function main() {
   }
 
   const stopSettlementWorker = startX402SettlementWorker();
+  const stopTokenIndexer = startTokenIndexerWorker();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
@@ -137,6 +143,7 @@ async function main() {
     process.on(signal, async () => {
       app.log.info(`Received ${signal}, shutting down gracefully`);
       stopSettlementWorker();
+      stopTokenIndexer();
       await app.close();
       process.exit(0);
     });

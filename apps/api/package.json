@@ -9,7 +9,11 @@
     "start": "node dist/index.js",
     "lint": "eslint src --ext .ts",
     "typecheck": "tsc --noEmit",
-    "test:x402": "tsx --test src/tests/x402.integration.test.ts"
+    "test:x402": "tsx --test src/tests/x402.integration.test.ts",
+    "test:wallet-auth": "tsx --test src/tests/wallet-auth.integration.test.ts",
+    "test:token-gate": "tsx --test src/tests/token-gate.integration.test.ts",
+    "test:nosana": "tsx --test src/tests/nosana.integration.test.ts",
+    "test": "tsx --test src/tests/*.integration.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.966.0",

@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
@@ -255,9 +255,10 @@ export async function generateApiKey(
 }
 
 async function hashApiKey(key: string): Promise<string> {
-  // Use a simple hash for API keys (faster than argon2)
+  // HMAC-SHA256 with server secret prevents offline brute-force from DB leaks
   const crypto = await import("crypto");
-  return crypto.createHash("sha256").update(key).digest("hex");
+  const hmacSecret = env.ENCRYPTION_KEY ?? env.JWT_SECRET;
+  return crypto.createHmac("sha256", hmacSecret).update(key).digest("hex");
 }
 
 export async function validateApiKey(key: string) {
@@ -333,6 +334,36 @@ export interface JwtPayload {
   orgId: string;
   email?: string;
   walletAddress?: string;
+  jti?: string;
+}
+
+// ============================================
+// JWT Blocklist (for logout invalidation)
+// ============================================
+
+const JWT_BLOCKLIST_PREFIX = "jwt:blocked:";
+
+export async function blockJwt(jti: string, expiresInSeconds: number): Promise<void> {
+  try {
+    await redisClient.set(
+      `${JWT_BLOCKLIST_PREFIX}${jti}`,
+      "1",
+      "EX",
+      expiresInSeconds
+    );
+  } catch (err) {
+    logger.error({ err, jti }, "Failed to blocklist JWT");
+  }
+}
+
+export async function isJwtBlocked(jti: string): Promise<boolean> {
+  try {
+    const result = await redisClient.get(`${JWT_BLOCKLIST_PREFIX}${jti}`);
+    return result !== null;
+  } catch (err) {
+    logger.error({ err, jti }, "Failed to check JWT blocklist");
+    return false; // fail open to avoid locking out all users on Redis failure
+  }
 }
 
 export interface ApiKeyPayload {

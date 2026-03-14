@@ -111,7 +111,21 @@ function parseEnv() {
     process.exit(1);
   }
 
-  return result.data;
+  const data = result.data;
+
+  // Production safety checks
+  if (data.NODE_ENV === "production") {
+    if (!data.ENCRYPTION_KEY) {
+      console.error("ENCRYPTION_KEY is required in production (must be distinct from JWT_SECRET)");
+      process.exit(1);
+    }
+    if (data.CORS_ORIGIN === "http://localhost:3000") {
+      console.error("CORS_ORIGIN must be explicitly set in production");
+      process.exit(1);
+    }
+  }
+
+  return data;
 }
 
 export const env = parseEnv();

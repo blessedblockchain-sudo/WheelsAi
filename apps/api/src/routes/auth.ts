@@ -24,6 +24,7 @@ import {
   setAuthCookie,
   clearAuthCookie,
 } from "../middleware/auth.js";
+import { blockJwt } from "../services/auth.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth-routes");
@@ -271,9 +272,34 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   // ==========================================
 
   /**
-   * Logout - clear session
+   * Logout - clear session and blocklist the JWT
    */
   app.post("/logout", async (request, reply) => {
+    // Blocklist the current JWT so it can't be reused via Bearer header
+    if (request.auth?.type === "jwt") {
+      try {
+        // Extract jti from the raw token
+        const token =
+          request.headers.authorization?.slice(7) ||
+          (() => {
+            const c = request.cookies.wheelsai_token;
+            if (!c) return null;
+            const u = request.unsignCookie(c);
+            return u.valid ? u.value : null;
+          })();
+        if (token) {
+          const decoded = request.server.jwt.decode<{ jti?: string; exp?: number }>(token);
+          if (decoded?.jti && decoded?.exp) {
+            const ttl = decoded.exp - Math.floor(Date.now() / 1000);
+            if (ttl > 0) {
+              await blockJwt(decoded.jti, ttl);
+            }
+          }
+        }
+      } catch {
+        // Best-effort blocklist — don't fail the logout
+      }
+    }
     clearAuthCookie(reply);
     return { message: "Logged out successfully" };
   });

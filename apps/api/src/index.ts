@@ -117,7 +117,7 @@ async function main() {
       statusCode === 500 ? "Internal Server Error" : error.message;
 
     return reply.status(statusCode).send({
-      error: error.name ?? "Error",
+      error: statusCode === 500 ? "InternalError" : (error.name ?? "Error"),
       message,
     });
   });

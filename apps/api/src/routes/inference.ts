@@ -544,22 +544,52 @@ function selectNode(nodes: NodeInfo[]): NodeInfo | null {
   return healthyNodes[0]!;
 }
 
+// Allowed node URL patterns — prevents SSRF via compromised DB records
+const ALLOWED_NODE_PATTERNS = [
+  /^https:\/\/[\w-]+\.nos\.ci(:\d+)?$/,
+  /^https:\/\/[\w-]+\.nosana\.\w+(:\d+)?$/,
+  /^https:\/\/[\w-]+\.openclaw\.wheelsai\.com(:\d+)?$/,
+  /^https?:\/\/localhost(:\d+)?$/, // dev only
+  /^https?:\/\/127\.0\.0\.1(:\d+)?$/, // dev only
+];
+
+function isAllowedNodeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    // Block private/internal IPs
+    const hostname = parsed.hostname;
+    if (
+      hostname.startsWith("10.") ||
+      hostname.startsWith("172.") ||
+      hostname.startsWith("192.168.") ||
+      hostname === "169.254.169.254" || // AWS metadata
+      hostname === "0.0.0.0"
+    ) {
+      return false;
+    }
+    return ALLOWED_NODE_PATTERNS.some((pattern) => pattern.test(url));
+  } catch {
+    return false;
+  }
+}
+
 async function proxyToNode(
   nodeUrl: string,
   body: z.infer<typeof chatCompletionSchema>,
   request: FastifyRequest
 ): Promise<Response> {
+  // Validate node URL to prevent SSRF
+  if (!isAllowedNodeUrl(nodeUrl)) {
+    throw new Error(`Node URL not allowed: ${nodeUrl}`);
+  }
+
   const targetUrl = `${nodeUrl}/v1/chat/completions`;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    // Do NOT forward the caller's auth header to inference nodes —
+    // it would leak JWTs/API keys to potentially untrusted endpoints.
   };
-
-  // Forward authorization if present (for nodes that need it)
-  const authHeader = request.headers.authorization;
-  if (authHeader) {
-    headers["Authorization"] = authHeader;
-  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), env.INFERENCE_TIMEOUT_MS);

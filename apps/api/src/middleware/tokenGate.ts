@@ -1,5 +1,5 @@
 import { FastifyRequest, FastifyReply } from "fastify";
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";

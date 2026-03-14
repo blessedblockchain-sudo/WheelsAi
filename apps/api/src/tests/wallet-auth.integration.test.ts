@@ -37,11 +37,11 @@ test("wallet/nonce returns a nonce string for a valid wallet address", async () 
   const app = Fastify();
 
   // Register JWT plugin (required by auth routes)
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });
@@ -81,11 +81,11 @@ test("wallet/nonce returns 400 when walletAddress is missing", async () => {
   ]);
 
   const app = Fastify();
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });
@@ -124,11 +124,11 @@ test("wallet/nonce returns 4xx when walletAddress is too short", async () => {
   ]);
 
   const app = Fastify();
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });
@@ -171,11 +171,11 @@ test("wallet/verify returns 401 when nonce does not match stored value", async (
   (authService as any).getNonce = async () => "stored_nonce_does_not_match";
 
   const app = Fastify();
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });
@@ -223,11 +223,11 @@ test("wallet/verify returns 401 when nonce has expired (Redis returns null)", as
   (authService as any).getNonce = async () => null;
 
   const app = Fastify();
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });
@@ -279,11 +279,11 @@ test("wallet/verify returns 401 when signature is invalid", async () => {
   (authService as any).verifySolanaSignature = () => false;
 
   const app = Fastify();
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });
@@ -330,11 +330,11 @@ test("wallet/verify returns 4xx when required fields are missing", async () => {
   ]);
 
   const app = Fastify();
-  await app.register(await import("@fastify/jwt"), {
+  await app.register((await import("@fastify/jwt")).default, {
     secret: env.JWT_SECRET,
     sign: { expiresIn: "24h" },
   });
-  await app.register(await import("@fastify/cookie"), {
+  await app.register((await import("@fastify/cookie")).default, {
     secret: env.JWT_SECRET,
     hook: "onRequest",
   });

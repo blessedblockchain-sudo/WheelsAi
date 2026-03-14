@@ -2,8 +2,9 @@ import { FastifyRequest, FastifyReply, FastifyInstance } from "fastify";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCookie from "@fastify/cookie";
 
+import { nanoid } from "nanoid";
 import { env } from "../config/env.js";
-import { validateApiKey, type JwtPayload } from "../services/auth.js";
+import { validateApiKey, isJwtBlocked, blockJwt, type JwtPayload } from "../services/auth.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth-middleware");
@@ -142,6 +143,13 @@ async function tryBearerAuth(
 
   try {
     const decoded = app.jwt.verify<JwtPayload>(token);
+
+    // Check JWT blocklist (logout invalidation)
+    if (decoded.jti && await isJwtBlocked(decoded.jti)) {
+      logger.debug({ jti: decoded.jti }, "Bearer token is blocklisted");
+      return null;
+    }
+
     return {
       userId: decoded.userId,
       orgId: decoded.orgId,
@@ -168,6 +176,13 @@ async function tryCookieAuth(
     if (!unsigned.valid || !unsigned.value) return null;
 
     const decoded = app.jwt.verify<JwtPayload>(unsigned.value);
+
+    // Check JWT blocklist (logout invalidation)
+    if (decoded.jti && await isJwtBlocked(decoded.jti)) {
+      logger.debug({ jti: decoded.jti }, "Cookie token is blocklisted");
+      return null;
+    }
+
     return {
       userId: decoded.userId,
       orgId: decoded.orgId,
@@ -257,9 +272,11 @@ export function generateTokens(
   app: FastifyInstance<any, any, any, any>,
   payload: JwtPayload
 ) {
-  const accessToken = app.jwt.sign(payload);
+  // Add a unique token ID for logout/blocklist support
+  const jti = nanoid(16);
+  const accessToken = app.jwt.sign({ ...payload, jti });
 
-  return { accessToken };
+  return { accessToken, jti };
 }
 
 export function setAuthCookie(

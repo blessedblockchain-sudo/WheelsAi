@@ -1,32 +1,39 @@
 import { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { hashPassword, verifyPassword } from "../services/auth.js";
+import { hashPassword, verifyPassword, generateNonce, getNonce, consumeNonce } from "../services/auth.js";
 
-interface UpdateProfileBody {
-  displayName?: string;
-  email?: string;
-}
+const updateProfileSchema = z.object({
+  displayName: z.string().max(100).optional(),
+  email: z.string().email().optional(),
+}).strict();
 
-interface ChangePasswordBody {
-  currentPassword: string;
-  newPassword: string;
-}
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8, "New password must be at least 8 characters"),
+});
 
-interface UpdateSettingsBody {
-  notifications?: {
-    deploymentStatus?: boolean;
-    usageAlerts?: boolean;
-    billing?: boolean;
-    productUpdates?: boolean;
-  };
-  preferences?: {
-    theme?: "light" | "dark" | "system";
-    timezone?: string;
-  };
-}
+const updateSettingsSchema = z.object({
+  notifications: z.object({
+    deploymentStatus: z.boolean().optional(),
+    usageAlerts: z.boolean().optional(),
+    billing: z.boolean().optional(),
+    productUpdates: z.boolean().optional(),
+  }).optional(),
+  preferences: z.object({
+    theme: z.enum(["light", "dark", "system"]).optional(),
+    timezone: z.string().max(50).optional(),
+  }).optional(),
+}).strict();
+
+const linkWalletSchema = z.object({
+  walletAddress: z.string().min(32).max(44),
+  signature: z.string().min(1),
+  nonce: z.string().min(1),
+});
 
 export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // Apply auth middleware to all settings routes
@@ -57,9 +64,9 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // Update user profile
-  fastify.patch<{ Body: UpdateProfileBody }>("/profile", async (request, reply) => {
+  fastify.patch("/profile", async (request, reply) => {
     const { userId } = request.user!;
-    const { displayName, email } = request.body;
+    const { displayName, email } = updateProfileSchema.parse(request.body);
 
     // Check if email is already taken
     if (email) {
@@ -124,9 +131,9 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // Update user settings
-  fastify.patch<{ Body: UpdateSettingsBody }>("/", async (request) => {
+  fastify.patch("/", async (request) => {
     const { userId } = request.user!;
-    const updates = request.body;
+    const updates = updateSettingsSchema.parse(request.body);
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -170,16 +177,9 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // Change password
-  fastify.post<{ Body: ChangePasswordBody }>("/password", async (request, reply) => {
+  fastify.post("/password", async (request, reply) => {
     const { userId } = request.user!;
-    const { currentPassword, newPassword } = request.body;
-
-    if (!newPassword || newPassword.length < 8) {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "New password must be at least 8 characters",
-      });
-    }
+    const { currentPassword, newPassword } = changePasswordSchema.parse(request.body);
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -210,19 +210,29 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     return { message: "Password updated successfully" };
   });
 
-  // Link Solana wallet
-  fastify.post<{
-    Body: { walletAddress: string; signature: string; message: string };
-  }>("/link-wallet", async (request, reply) => {
-    const { userId } = request.user!;
-    const { walletAddress, signature, message } = request.body;
+  // Request nonce for wallet linking
+  fastify.post("/link-wallet/nonce", async (request, reply) => {
+    const body = z.object({ walletAddress: z.string().min(32).max(44) }).parse(request.body);
+    const nonce = await generateNonce(body.walletAddress);
+    return { nonce, walletAddress: body.walletAddress };
+  });
 
-    if (!walletAddress || !signature || !message) {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "walletAddress, signature, and message are required",
+  // Link Solana wallet (with nonce-based replay protection)
+  fastify.post("/link-wallet", async (request, reply) => {
+    const { userId } = request.user!;
+    const { walletAddress, signature, nonce } = linkWalletSchema.parse(request.body);
+
+    // Verify the nonce matches (prevents replay attacks)
+    const storedNonce = await getNonce(walletAddress);
+    if (!storedNonce || storedNonce !== nonce) {
+      return reply.status(401).send({
+        error: "Unauthorized",
+        message: "Invalid or expired nonce. Request a new one via POST /link-wallet/nonce",
       });
     }
+
+    // Consume the nonce (one-time use)
+    await consumeNonce(walletAddress);
 
     // Verify the wallet address is a valid Solana public key
     let pubkey: PublicKey;
@@ -235,10 +245,10 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    // Verify ed25519 signature
+    // Verify ed25519 signature over the nonce
     let isValid = false;
     try {
-      const messageBytes = new TextEncoder().encode(message);
+      const messageBytes = new TextEncoder().encode(nonce);
       const signatureBytes = Buffer.from(signature, "base64");
       isValid = nacl.sign.detached.verify(
         messageBytes,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -9,18 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { TokenTradePanel } from "@/components/dashboard/token-trade-panel";
+import { usePolling } from "@/lib/use-polling";
 import { cn } from "@/lib/utils";
-import {
-  ArrowLeft,
-  ExternalLink,
-  TrendingUp,
-  TrendingDown,
-  Users,
-  BarChart3,
-  Clock,
-  Shield,
-  Copy,
-} from "lucide-react";
+import { ArrowLeft, Copy } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -72,6 +63,12 @@ interface ChartPoint {
   priceUsd: number;
 }
 
+interface TokenPageData {
+  token: TokenDetail;
+  trades: Trade[];
+  chartData: ChartPoint[];
+}
+
 function formatUsd(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
   if (v >= 1_000) return `$${(v / 1_000).toFixed(2)}K`;
@@ -84,50 +81,79 @@ function shortenAddress(addr: string): string {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
 }
 
+function LiveDot() {
+  return (
+    <span className="relative flex h-2 w-2 flex-shrink-0">
+      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+      <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+    </span>
+  );
+}
+
+function useRelativeTime(date: Date | null): string {
+  const [label, setLabel] = useState("just now");
+
+  useEffect(() => {
+    if (!date) return;
+
+    const update = () => {
+      const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (diffSec < 5) setLabel("just now");
+      else if (diffSec < 60) setLabel(`${diffSec}s ago`);
+      else setLabel(`${Math.floor(diffSec / 60)}m ago`);
+    };
+
+    update();
+    const id = setInterval(update, 5_000);
+    return () => clearInterval(id);
+  }, [date]);
+
+  return label;
+}
+
 export default function TokenDetailPage() {
   const params = useParams();
   const router = useRouter();
   const tokenId = params.id as string;
 
-  const [token, setToken] = useState<TokenDetail | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [chartData, setChartData] = useState<ChartPoint[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const updatedLabel = useRelativeTime(lastUpdated);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const [tokenRes, tradesRes, chartRes] = await Promise.all([
-          fetch(`${API_URL}/api/tokens/${tokenId}`, { credentials: "include" }),
-          fetch(`${API_URL}/api/tokens/${tokenId}/trades?limit=50`, { credentials: "include" }),
-          fetch(`${API_URL}/api/tokens/${tokenId}/chart`, { credentials: "include" }),
-        ]);
+  const fetcher = useCallback(async (): Promise<TokenPageData> => {
+    const [tokenRes, tradesRes, chartRes] = await Promise.all([
+      fetch(`${API_URL}/api/tokens/${tokenId}`, { credentials: "include" }),
+      fetch(`${API_URL}/api/tokens/${tokenId}/trades?limit=50`, { credentials: "include" }),
+      fetch(`${API_URL}/api/tokens/${tokenId}/chart`, { credentials: "include" }),
+    ]);
 
-        if (tokenRes.ok) {
-          const data = await tokenRes.json();
-          setToken(data.token);
-        }
+    if (!tokenRes.ok) {
+      throw new Error("Failed to fetch token");
+    }
 
-        if (tradesRes.ok) {
-          const data = await tradesRes.json();
-          setTrades(data.trades || []);
-        }
+    const [tokenData, tradesData, chartData] = await Promise.all([
+      tokenRes.json(),
+      tradesRes.ok ? tradesRes.json() : Promise.resolve({ trades: [] }),
+      chartRes.ok ? chartRes.json() : Promise.resolve({ snapshots: [] }),
+    ]);
 
-        if (chartRes.ok) {
-          const data = await chartRes.json();
-          setChartData(data.snapshots || []);
-        }
-      } catch (error) {
-        console.error("Error fetching token:", error);
-        toast.error("Failed to load token details");
-      } finally {
-        setLoading(false);
-      }
+    setLastUpdated(new Date());
+
+    return {
+      token: tokenData.token as TokenDetail,
+      trades: (tradesData.trades || []) as Trade[],
+      chartData: (chartData.snapshots || []) as ChartPoint[],
     };
-
-    fetchData();
   }, [tokenId]);
+
+  const { data, isLoading: loading } = usePolling<TokenPageData>({
+    fetcher,
+    interval: 15_000,
+    onError: () => toast.error("Failed to load token details"),
+  });
+
+  const token = data?.token ?? null;
+  const trades = data?.trades ?? [];
+  const chartData = data?.chartData ?? [];
 
   const copyAddress = (addr: string) => {
     navigator.clipboard.writeText(addr);
@@ -169,12 +195,6 @@ export default function TokenDetailPage() {
       <Header
         title={`${token.name} ($${token.symbol})`}
         description={token.agentListing?.title || "Agent Token"}
-        action={
-          <Button variant="outline" onClick={() => router.push("/dashboard/marketplace/tokens")}>
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
-        }
       />
 
       <div className="p-8">
@@ -187,25 +207,51 @@ export default function TokenDetailPage() {
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-4">
                     {token.imageUri ? (
-                      <img src={token.imageUri} alt={token.name} className="w-16 h-16 rounded-full" />
+                      <img
+                        src={token.imageUri}
+                        alt={token.name}
+                        className="w-16 h-16 rounded-full"
+                      />
                     ) : (
                       <div className="w-16 h-16 rounded-full bg-gradient-to-br from-primary/30 to-primary/10 flex items-center justify-center font-bold text-xl">
                         {token.symbol.slice(0, 2)}
                       </div>
                     )}
                     <div>
-                      <h2 className="text-2xl font-bold">{formatUsd(token.priceUsd)}</h2>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-2xl font-bold">{formatUsd(token.priceUsd)}</h2>
+                        <LiveDot />
+                      </div>
                       <div className="flex items-center gap-4 mt-1 text-sm">
-                        <span className="text-muted-foreground">MCap: {formatUsd(token.marketCapUsd)}</span>
-                        <span className="text-muted-foreground">Vol: {formatUsd(token.volume24h)}</span>
+                        <span className="text-muted-foreground">
+                          MCap: {formatUsd(token.marketCapUsd)}
+                        </span>
+                        <span className="text-muted-foreground">
+                          Vol: {formatUsd(token.volume24h)}
+                        </span>
                         <span className="text-muted-foreground">Holders: {token.holders}</span>
                       </div>
+                      {lastUpdated && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Updated {updatedLabel} &middot; polling every 15s
+                        </p>
+                      )}
                     </div>
                   </div>
                   <Badge
-                    variant={token.status === "GRADUATED" ? "default" : token.status === "FAILED" ? "destructive" : "secondary"}
+                    variant={
+                      token.status === "GRADUATED"
+                        ? "default"
+                        : token.status === "FAILED"
+                          ? "destructive"
+                          : "secondary"
+                    }
                   >
-                    {token.status === "BONDING" ? "Bonding Curve" : token.status === "GRADUATED" ? "Graduated" : "Failed"}
+                    {token.status === "BONDING"
+                      ? "Bonding Curve"
+                      : token.status === "GRADUATED"
+                        ? "Graduated"
+                        : "Failed"}
                   </Badge>
                 </div>
               </CardContent>
@@ -263,7 +309,9 @@ export default function TokenDetailPage() {
                             <td className="py-2 font-mono">{formatUsd(trade.priceUsd)}</td>
                             <td className="py-2 font-mono">{trade.solAmount.toFixed(4)}</td>
                             <td className="py-2 font-mono">
-                              {trade.tokenAmount.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                              {trade.tokenAmount.toLocaleString(undefined, {
+                                maximumFractionDigits: 0,
+                              })}
                             </td>
                             <td className="py-2">
                               <button
@@ -340,7 +388,9 @@ export default function TokenDetailPage() {
                 {token.creatorLockupEnd && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Creator Lockup</span>
-                    <span className="text-xs">Until {new Date(token.creatorLockupEnd).toLocaleDateString()}</span>
+                    <span className="text-xs">
+                      Until {new Date(token.creatorLockupEnd).toLocaleDateString()}
+                    </span>
                   </div>
                 )}
                 <div className="flex justify-between">
@@ -350,7 +400,9 @@ export default function TokenDetailPage() {
                 {token.graduatedAt && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Graduated</span>
-                    <span className="text-xs">{new Date(token.graduatedAt).toLocaleDateString()}</span>
+                    <span className="text-xs">
+                      {new Date(token.graduatedAt).toLocaleDateString()}
+                    </span>
                   </div>
                 )}
               </CardContent>
@@ -389,7 +441,9 @@ export default function TokenDetailPage() {
                     variant="outline"
                     size="sm"
                     className="w-full mt-2"
-                    onClick={() => router.push(`/dashboard/marketplace/${token.agentListing!.slug}`)}
+                    onClick={() =>
+                      router.push(`/dashboard/marketplace/${token.agentListing!.slug}`)
+                    }
                   >
                     View Agent Listing
                   </Button>

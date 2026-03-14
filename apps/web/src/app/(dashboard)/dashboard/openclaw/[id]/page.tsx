@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { OpenClawStatus } from "@/components/dashboard/openclaw-status";
+import { usePolling } from "@/lib/use-polling";
 import {
   Play,
   Square,
@@ -56,40 +57,58 @@ interface OpenClawDeployment {
   channels: Channel[];
 }
 
+function LiveIndicator() {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="relative flex h-2 w-2">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+      </span>
+      <span className="text-xs font-medium text-green-600 dark:text-green-400">Live</span>
+    </span>
+  );
+}
+
+function formatRelativeTime(date: Date): string {
+  const diffMs = Date.now() - date.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  return `${Math.floor(diffMin / 60)}h ago`;
+}
+
 export default function OpenClawDeploymentDetailPage() {
   const params = useParams();
   const router = useRouter();
   const deploymentId = params.id as string;
 
-  const [deployment, setDeployment] = useState<OpenClawDeployment | null>(null);
-  const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const fetchDeployment = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(`${API_URL}/api/openclaw/deployments/${deploymentId}`, {
-        credentials: "include",
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch deployment");
-      }
-
-      const data = await response.json();
-      setDeployment(data.deployment);
-    } catch (error) {
-      console.error("Error fetching deployment:", error);
-      toast.error("Failed to load deployment details");
-    } finally {
-      setLoading(false);
+  const fetcher = useCallback(async (): Promise<OpenClawDeployment> => {
+    const response = await fetch(`${API_URL}/api/openclaw/deployments/${deploymentId}`, {
+      credentials: "include",
+    });
+    if (!response.ok) {
+      throw new Error("Failed to fetch deployment");
     }
-  };
-
-  useEffect(() => {
-    fetchDeployment();
+    const data = await response.json();
+    setLastUpdated(new Date());
+    return data.deployment as OpenClawDeployment;
   }, [deploymentId]);
+
+  const {
+    data: deployment,
+    isLoading: loading,
+    refresh: refreshDeployment,
+  } = usePolling<OpenClawDeployment>({
+    fetcher,
+    interval: 10_000,
+    onError: () => toast.error("Failed to load deployment details"),
+  });
 
   const handleAction = async (action: "start" | "stop" | "restart" | "delete") => {
     if (!deployment) return;
@@ -97,9 +116,10 @@ export default function OpenClawDeploymentDetailPage() {
     try {
       setActionLoading(action);
 
-      const endpoint = action === "delete"
-        ? `${API_URL}/api/openclaw/deployments/${deploymentId}`
-        : `${API_URL}/api/openclaw/deployments/${deploymentId}/${action}`;
+      const endpoint =
+        action === "delete"
+          ? `${API_URL}/api/openclaw/deployments/${deploymentId}`
+          : `${API_URL}/api/openclaw/deployments/${deploymentId}/${action}`;
 
       const response = await fetch(endpoint, {
         method: action === "delete" ? "DELETE" : "POST",
@@ -115,7 +135,7 @@ export default function OpenClawDeploymentDetailPage() {
       if (action === "delete") {
         router.push("/dashboard/openclaw");
       } else {
-        await fetchDeployment();
+        await refreshDeployment();
       }
     } catch (error) {
       console.error(`Error ${action}ing deployment:`, error);
@@ -139,7 +159,7 @@ export default function OpenClawDeploymentDetailPage() {
       }
 
       toast.success(`Channel ${enabled ? "enabled" : "disabled"}`);
-      await fetchDeployment();
+      await refreshDeployment();
     } catch (error) {
       console.error("Error toggling channel:", error);
       toast.error("Failed to update channel");
@@ -179,7 +199,7 @@ export default function OpenClawDeploymentDetailPage() {
               <XCircle className="h-16 w-16 text-red-500 mb-4" />
               <h3 className="text-lg font-semibold mb-2">Deployment not found</h3>
               <p className="text-sm text-muted-foreground mb-6">
-                The deployment you're looking for doesn't exist or has been deleted.
+                The deployment you&apos;re looking for doesn&apos;t exist or has been deleted.
               </p>
               <Button onClick={() => router.push("/dashboard/openclaw")}>
                 <ArrowLeft className="mr-2 h-4 w-4" />
@@ -197,17 +217,6 @@ export default function OpenClawDeploymentDetailPage() {
       <Header
         title={deployment.agentName}
         description={`/${deployment.slug}`}
-        action={
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={() => router.push("/dashboard/openclaw")}
-            >
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
-            </Button>
-          </div>
-        }
       />
 
       <div className="p-8 space-y-6">
@@ -219,11 +228,19 @@ export default function OpenClawDeploymentDetailPage() {
                 <CardTitle>Deployment Status</CardTitle>
                 <CardDescription>Monitor and control your deployment</CardDescription>
               </div>
-              <OpenClawStatus
-                status={deployment.status}
-                healthStatus={deployment.healthStatus}
-              />
+              <div className="flex items-center gap-3">
+                {deployment.status === "RUNNING" && <LiveIndicator />}
+                <OpenClawStatus
+                  status={deployment.status}
+                  healthStatus={deployment.healthStatus}
+                />
+              </div>
             </div>
+            {lastUpdated && (
+              <p className="text-xs text-muted-foreground mt-1">
+                Updated {formatRelativeTime(lastUpdated)} &middot; polling every 10s
+              </p>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center gap-2">
@@ -259,7 +276,11 @@ export default function OpenClawDeploymentDetailPage() {
               <Button
                 variant="destructive"
                 onClick={() => {
-                  if (confirm(`Are you sure you want to delete "${deployment.agentName}"? This action cannot be undone.`)) {
+                  if (
+                    confirm(
+                      `Are you sure you want to delete "${deployment.agentName}"? This action cannot be undone.`
+                    )
+                  ) {
                     handleAction("delete");
                   }
                 }}
@@ -355,11 +376,7 @@ export default function OpenClawDeploymentDetailPage() {
                   <Globe className="h-4 w-4 text-muted-foreground" />
                   {deployment.publicUrl}
                 </div>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={copyPublicUrl}
-                >
+                <Button variant="outline" size="icon" onClick={copyPublicUrl}>
                   {copiedUrl ? (
                     <CheckCircle2 className="h-4 w-4 text-green-600" />
                   ) : (
@@ -386,9 +403,7 @@ export default function OpenClawDeploymentDetailPage() {
           </CardHeader>
           <CardContent>
             {deployment.channels.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                No channels configured
-              </div>
+              <div className="text-center py-8 text-muted-foreground">No channels configured</div>
             ) : (
               <div className="space-y-3">
                 {deployment.channels.map((channel) => (
@@ -397,10 +412,12 @@ export default function OpenClawDeploymentDetailPage() {
                     className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
                   >
                     <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "w-2 h-2 rounded-full",
-                        channel.enabled ? "bg-green-500" : "bg-gray-400"
-                      )} />
+                      <div
+                        className={cn(
+                          "w-2 h-2 rounded-full",
+                          channel.enabled ? "bg-green-500" : "bg-gray-400 dark:bg-gray-600"
+                        )}
+                      />
                       <div>
                         <div className="font-medium capitalize">{channel.platform}</div>
                         <div className="text-xs text-muted-foreground">

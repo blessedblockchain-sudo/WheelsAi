@@ -34,6 +34,32 @@
     --glow-cyan: 0 212 255;
     --glow-purple: 168 85 247;
   }
+
+  /* Dashboard dark theme variables */
+  [data-theme="dark"] {
+    --dashboard-bg: 220 14% 10%;
+    --dashboard-surface: 220 14% 14%;
+    --dashboard-surface-hover: 220 14% 18%;
+    --dashboard-border: 220 14% 20%;
+    --dashboard-text: 0 0% 93%;
+    --dashboard-text-muted: 220 10% 55%;
+    --dashboard-sidebar-bg: 220 16% 12%;
+    --dashboard-active-bg: 217 91% 20%;
+    --dashboard-active-text: 213 94% 68%;
+  }
+
+  /* Dashboard light theme variables */
+  [data-theme="light"] {
+    --dashboard-bg: 210 20% 97%;
+    --dashboard-surface: 0 0% 100%;
+    --dashboard-surface-hover: 210 20% 96%;
+    --dashboard-border: 220 13% 91%;
+    --dashboard-text: 224 71% 4%;
+    --dashboard-text-muted: 220 9% 46%;
+    --dashboard-sidebar-bg: 0 0% 100%;
+    --dashboard-active-bg: 120 60% 95%;
+    --dashboard-active-text: 120 60% 30%;
+  }
 }
 
 @layer base {
@@ -60,13 +86,25 @@
     background: #0a0a0f;
   }
 
+  .dark ::-webkit-scrollbar-track {
+    background: hsl(220, 14%, 10%);
+  }
+
   ::-webkit-scrollbar-thumb {
     background: #1e1e2e;
     border-radius: 4px;
   }
 
+  .dark ::-webkit-scrollbar-thumb {
+    background: hsl(220, 14%, 20%);
+  }
+
   ::-webkit-scrollbar-thumb:hover {
     background: #2e2e3e;
+  }
+
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background: hsl(220, 14%, 28%);
   }
 }
 
@@ -195,6 +233,13 @@
     @apply relative rounded-xl bg-navy-800 border-2 border-navy-400 p-8 transition-all duration-300;
     box-shadow: 0 0 30px rgba(59, 130, 246, 0.3), 0 0 60px rgba(59, 130, 246, 0.15);
   }
+
+  /* Dashboard theme utilities */
+  .dashboard-bg { background-color: hsl(var(--dashboard-bg)); }
+  .dashboard-surface { background-color: hsl(var(--dashboard-surface)); }
+  .dashboard-border { border-color: hsl(var(--dashboard-border)); }
+  .dashboard-text { color: hsl(var(--dashboard-text)); }
+  .dashboard-text-muted { color: hsl(var(--dashboard-text-muted)); }
 }
 
 /* Custom Animations */

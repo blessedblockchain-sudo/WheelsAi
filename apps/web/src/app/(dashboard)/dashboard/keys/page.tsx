@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DataTable, type Column } from "@/components/ui/data-table";
 import { apiKeysApi, type ApiKey } from "@/lib/api";
 
 export default function ApiKeysPage() {
@@ -22,10 +23,11 @@ export default function ApiKeysPage() {
 
   async function loadApiKeys() {
     try {
-      const { apiKeys } = await apiKeysApi.list();
-      setApiKeys(apiKeys);
+      const data = await apiKeysApi.list();
+      setApiKeys(data?.apiKeys ?? []);
     } catch (error) {
       toast.error("Failed to load API keys");
+      setApiKeys([]);
     } finally {
       setIsLoading(false);
     }
@@ -85,6 +87,114 @@ export default function ApiKeysPage() {
     return key.slice(0, 4) + "••••••••" + key.slice(-4);
   }
 
+  const keyColumns: Column<ApiKey>[] = [
+    {
+      key: "name",
+      header: "Name",
+      sortable: true,
+      render: (apiKey) => (
+        <div className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-800">
+            <Key className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+          </div>
+          <span className="font-medium">{apiKey.name}</span>
+        </div>
+      ),
+    },
+    {
+      key: "keyPrefix",
+      header: "Key",
+      render: (apiKey) => (
+        <div className="flex items-center gap-2">
+          <code className="text-sm text-gray-500 dark:text-gray-400">
+            {visibleKeys.has(apiKey.id)
+              ? apiKey.keyPrefix + "••••••••"
+              : maskKey(apiKey.keyPrefix)}
+          </code>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleKeyVisibility(apiKey.id);
+            }}
+            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+          >
+            {visibleKeys.has(apiKey.id) ? (
+              <EyeOff className="h-4 w-4" />
+            ) : (
+              <Eye className="h-4 w-4" />
+            )}
+          </button>
+        </div>
+      ),
+    },
+    {
+      key: "scopes",
+      header: "Scopes",
+      render: (apiKey) =>
+        apiKey.scopes && apiKey.scopes.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {apiKey.scopes.map((scope) => (
+              <Badge key={scope} variant="secondary" className="text-[10px]">
+                {scope}
+              </Badge>
+            ))}
+          </div>
+        ) : (
+          <span className="text-sm text-gray-400 dark:text-gray-500">All</span>
+        ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (apiKey) => (
+        <Badge variant={apiKey.status === "active" ? "success" : "destructive"}>
+          {apiKey.status}
+        </Badge>
+      ),
+    },
+    {
+      key: "lastUsedAt",
+      header: "Last Used",
+      sortable: true,
+      render: (apiKey) => (
+        <span className="text-sm text-gray-500 dark:text-gray-400">
+          {apiKey.lastUsedAt
+            ? new Date(apiKey.lastUsedAt).toLocaleDateString()
+            : "Never"}
+        </span>
+      ),
+    },
+    {
+      key: "createdAt",
+      header: "Created",
+      sortable: true,
+      render: (apiKey) => (
+        <span className="text-sm text-gray-500 dark:text-gray-400">
+          {new Date(apiKey.createdAt).toLocaleDateString()}
+        </span>
+      ),
+    },
+    {
+      key: "actions",
+      header: "",
+      className: "w-12",
+      render: (apiKey) =>
+        apiKey.status === "active" ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleRevokeKey(apiKey.id);
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        ) : null,
+    },
+  ];
+
   return (
     <div className="flex flex-col">
       <Header
@@ -104,22 +214,22 @@ export default function ApiKeysPage() {
           <CardContent>
             {newlyCreatedKey ? (
               <div className="space-y-4">
-                <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
+                <div className="rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950/30 p-4">
                   <div className="flex items-start gap-3">
-                    <AlertTriangle className="h-5 w-5 text-yellow-600" />
+                    <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-500" />
                     <div>
-                      <p className="font-medium text-yellow-800">
+                      <p className="font-medium text-yellow-800 dark:text-yellow-200">
                         Save your API key now
                       </p>
-                      <p className="mt-1 text-sm text-yellow-700">
-                        This is the only time you'll see this key. Store it securely.
+                      <p className="mt-1 text-sm text-yellow-700 dark:text-yellow-300">
+                        This is the only time you&apos;ll see this key. Store it securely.
                       </p>
                     </div>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 rounded-lg bg-gray-100 px-4 py-3 text-sm font-mono">
+                  <code className="flex-1 rounded-lg bg-gray-100 dark:bg-gray-800 px-4 py-3 text-sm font-mono text-gray-900 dark:text-gray-100">
                     {newlyCreatedKey}
                   </code>
                   <Button
@@ -144,7 +254,7 @@ export default function ApiKeysPage() {
             ) : showCreateForm ? (
               <div className="flex items-end gap-4">
                 <div className="flex-1">
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
                     Key Name
                   </label>
                   <Input
@@ -176,7 +286,7 @@ export default function ApiKeysPage() {
           </CardContent>
         </Card>
 
-        {/* API Keys list */}
+        {/* API Keys table */}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Your API Keys</CardTitle>
@@ -185,86 +295,17 @@ export default function ApiKeysPage() {
             {isLoading ? (
               <div className="space-y-3">
                 {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-16 animate-pulse rounded-lg bg-gray-200" />
+                  <div key={i} className="h-16 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
                 ))}
-              </div>
-            ) : apiKeys.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <Key className="h-12 w-12 text-gray-300" />
-                <p className="mt-4 text-gray-500">No API keys yet</p>
-                <p className="text-sm text-gray-400">
-                  Create your first API key to start making requests
-                </p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {apiKeys.map((apiKey) => (
-                  <div
-                    key={apiKey.id}
-                    className="flex items-center justify-between rounded-lg border p-4"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
-                        <Key className="h-5 w-5 text-gray-600" />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium">{apiKey.name}</p>
-                          <Badge
-                            variant={apiKey.status === "active" ? "success" : "destructive"}
-                          >
-                            {apiKey.status}
-                          </Badge>
-                        </div>
-                        <div className="mt-1 flex items-center gap-2">
-                          <code className="text-sm text-gray-500">
-                            {visibleKeys.has(apiKey.id)
-                              ? apiKey.keyPrefix + "••••••••"
-                              : maskKey(apiKey.keyPrefix)}
-                          </code>
-                          <button
-                            onClick={() => toggleKeyVisibility(apiKey.id)}
-                            className="text-gray-400 hover:text-gray-600"
-                          >
-                            {visibleKeys.has(apiKey.id) ? (
-                              <EyeOff className="h-4 w-4" />
-                            ) : (
-                              <Eye className="h-4 w-4" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                      <div className="text-right text-sm">
-                        <p className="text-gray-500">Last used</p>
-                        <p className="font-medium">
-                          {apiKey.lastUsedAt
-                            ? new Date(apiKey.lastUsedAt).toLocaleDateString()
-                            : "Never"}
-                        </p>
-                      </div>
-                      <div className="text-right text-sm">
-                        <p className="text-gray-500">Created</p>
-                        <p className="font-medium">
-                          {new Date(apiKey.createdAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      {apiKey.status === "active" && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-red-500 hover:bg-red-50 hover:text-red-600"
-                          onClick={() => handleRevokeKey(apiKey.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <DataTable
+                data={apiKeys}
+                columns={keyColumns}
+                pageSize={10}
+                emptyMessage="No API keys yet. Create your first API key to start making requests."
+                keyExtractor={(apiKey) => apiKey.id}
+              />
             )}
           </CardContent>
         </Card>

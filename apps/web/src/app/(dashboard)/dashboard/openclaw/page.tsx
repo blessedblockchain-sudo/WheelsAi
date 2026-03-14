@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { OpenClawStatus } from "@/components/dashboard/openclaw-status";
+import { usePolling } from "@/lib/use-polling";
 import {
   Play,
   Square,
@@ -45,59 +46,92 @@ interface DeploymentStats {
   failed: number;
 }
 
-export default function OpenClawDeploymentsPage() {
-  const router = useRouter();
-  const [deployments, setDeployments] = useState<OpenClawDeployment[]>([]);
-  const [stats, setStats] = useState<DeploymentStats>({
-    total: 0,
-    running: 0,
-    stopped: 0,
-    failed: 0,
-  });
-  const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+interface DeploymentListData {
+  deployments: OpenClawDeployment[];
+  stats: DeploymentStats;
+}
 
-  const fetchDeployments = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch(`${API_URL}/api/openclaw/deployments`, {
-        credentials: "include",
-      });
+function formatRelativeTime(date: Date): string {
+  const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (diffSec < 5) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+  return `${Math.floor(diffMin / 60)}h ago`;
+}
 
-      if (!response.ok) {
-        throw new Error("Failed to fetch deployments");
-      }
-
-      const data = await response.json();
-      setDeployments(data.deployments || []);
-
-      // Calculate stats
-      const total = data.deployments?.length || 0;
-      const running = data.deployments?.filter((d: OpenClawDeployment) => d.status === "RUNNING").length || 0;
-      const stopped = data.deployments?.filter((d: OpenClawDeployment) => d.status === "STOPPED").length || 0;
-      const failed = data.deployments?.filter((d: OpenClawDeployment) => d.status === "FAILED").length || 0;
-
-      setStats({ total, running, stopped, failed });
-    } catch (error) {
-      console.error("Error fetching deployments:", error);
-      toast.error("Failed to load deployments");
-      setDeployments([]);
-    } finally {
-      setLoading(false);
-    }
-  };
+function useRelativeTime(date: Date | null): string {
+  const [label, setLabel] = useState("just now");
 
   useEffect(() => {
-    fetchDeployments();
+    if (!date) return;
+
+    const update = () => {
+      const diffSec = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (diffSec < 5) setLabel("just now");
+      else if (diffSec < 60) setLabel(`${diffSec}s ago`);
+      else setLabel(`${Math.floor(diffSec / 60)}m ago`);
+    };
+
+    update();
+    const id = setInterval(update, 10_000);
+    return () => clearInterval(id);
+  }, [date]);
+
+  return label;
+}
+
+export default function OpenClawDeploymentsPage() {
+  const router = useRouter();
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const updatedLabel = useRelativeTime(lastUpdated);
+
+  const fetcher = useCallback(async (): Promise<DeploymentListData> => {
+    const response = await fetch(`${API_URL}/api/openclaw/deployments`, {
+      credentials: "include",
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch deployments");
+    }
+
+    const data = await response.json();
+    const deployments: OpenClawDeployment[] = data.deployments || [];
+
+    const stats: DeploymentStats = {
+      total: deployments.length,
+      running: deployments.filter((d) => d.status === "RUNNING").length,
+      stopped: deployments.filter((d) => d.status === "STOPPED").length,
+      failed: deployments.filter((d) => d.status === "FAILED").length,
+    };
+
+    setLastUpdated(new Date());
+    return { deployments, stats };
   }, []);
 
-  const handleAction = async (deploymentId: string, action: "start" | "stop" | "restart" | "delete") => {
+  const { data, isLoading: loading, refresh: refreshDeployments } = usePolling<DeploymentListData>({
+    fetcher,
+    interval: 30_000,
+    onError: () => {
+      toast.error("Failed to load deployments");
+    },
+  });
+
+  const deployments = data?.deployments ?? [];
+  const stats = data?.stats ?? { total: 0, running: 0, stopped: 0, failed: 0 };
+
+  const handleAction = async (
+    deploymentId: string,
+    action: "start" | "stop" | "restart" | "delete"
+  ) => {
     try {
       setActionLoading(deploymentId);
 
-      const endpoint = action === "delete"
-        ? `${API_URL}/api/openclaw/deployments/${deploymentId}`
-        : `${API_URL}/api/openclaw/deployments/${deploymentId}/${action}`;
+      const endpoint =
+        action === "delete"
+          ? `${API_URL}/api/openclaw/deployments/${deploymentId}`
+          : `${API_URL}/api/openclaw/deployments/${deploymentId}/${action}`;
 
       const response = await fetch(endpoint, {
         method: action === "delete" ? "DELETE" : "POST",
@@ -109,7 +143,7 @@ export default function OpenClawDeploymentsPage() {
       }
 
       toast.success(`Deployment ${action === "delete" ? "deleted" : action + "ed"} successfully`);
-      await fetchDeployments();
+      await refreshDeployments();
     } catch (error) {
       console.error(`Error ${action}ing deployment:`, error);
       toast.error(`Failed to ${action} deployment`);
@@ -127,12 +161,7 @@ export default function OpenClawDeploymentsPage() {
       <Header
         title="OpenClaw Deployments"
         description="Manage your AI agent deployments with multi-channel support"
-        action={
-          <Button onClick={() => router.push("/dashboard/openclaw/new")}>
-            <Plus className="mr-2 h-4 w-4" />
-            New Deployment
-          </Button>
-        }
+        action={{ label: "New Deployment", href: "/dashboard/openclaw/new" }}
       />
 
       <div className="p-8 space-y-6">
@@ -151,33 +180,50 @@ export default function OpenClawDeploymentsPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Running</CardTitle>
-              <Activity className="h-4 w-4 text-green-600" />
+              <Activity className="h-4 w-4 text-green-600 dark:text-green-400" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-600">{stats.running}</div>
+              <div className="text-2xl font-bold text-green-600 dark:text-green-400">
+                {stats.running}
+              </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Stopped</CardTitle>
-              <Square className="h-4 w-4 text-gray-600" />
+              <Square className="h-4 w-4 text-gray-600 dark:text-gray-400" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-gray-600">{stats.stopped}</div>
+              <div className="text-2xl font-bold text-gray-600 dark:text-gray-400">
+                {stats.stopped}
+              </div>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Failed</CardTitle>
-              <AlertCircle className="h-4 w-4 text-red-600" />
+              <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-600">{stats.failed}</div>
+              <div className="text-2xl font-bold text-red-600 dark:text-red-400">
+                {stats.failed}
+              </div>
             </CardContent>
           </Card>
         </div>
+
+        {/* Last updated indicator */}
+        {lastUpdated && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/60 opacity-75" />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-primary/80" />
+            </span>
+            Updated {updatedLabel} &middot; auto-refreshes every 30s
+          </div>
+        )}
 
         {/* Deployments Grid */}
         {loading ? (
@@ -193,7 +239,8 @@ export default function OpenClawDeploymentsPage() {
               <Server className="h-16 w-16 text-muted-foreground mb-4" />
               <h3 className="text-lg font-semibold mb-2">No deployments yet</h3>
               <p className="text-sm text-muted-foreground mb-6 text-center max-w-md">
-                Get started by creating your first OpenClaw deployment. Deploy AI agents with multi-channel support across Discord, Telegram, Slack, and more.
+                Get started by creating your first OpenClaw deployment. Deploy AI agents with
+                multi-channel support across Discord, Telegram, Slack, and more.
               </p>
               <Button onClick={() => router.push("/dashboard/openclaw/new")}>
                 <Plus className="mr-2 h-4 w-4" />
@@ -262,7 +309,10 @@ export default function OpenClawDeploymentsPage() {
                   </div>
 
                   {/* Action Buttons */}
-                  <div className="flex items-center gap-2 pt-2 border-t" onClick={(e) => e.stopPropagation()}>
+                  <div
+                    className="flex items-center gap-2 pt-2 border-t"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     {deployment.status === "STOPPED" || deployment.status === "FAILED" ? (
                       <Button
                         size="sm"
@@ -310,10 +360,12 @@ export default function OpenClawDeploymentsPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`Are you sure you want to delete "${deployment.agentName}"?`)) {
+                        if (
+                          confirm(`Are you sure you want to delete "${deployment.agentName}"?`)
+                        ) {
                           handleAction(deployment.id, "delete");
                         }
                       }}

@@ -104,8 +104,8 @@ export function Hero() {
 
         {/* Subtitle */}
         <p className="mx-auto mt-6 max-w-2xl text-lg sm:text-xl leading-relaxed text-navy-200/60">
-          Build, fine-tune, and deploy AI agents at scale. Powered by 2,000+ GPUs
-          on Solana — up to 85% cheaper than centralized cloud.
+          Build, fine-tune, and deploy AI agents on decentralized GPUs.
+          Powered by the Nosana Network on Solana.
         </p>
 
         {/* CTAs */}
@@ -123,11 +123,20 @@ export function Hero() {
           </Link>
         </div>
 
-        {/* Stat counters */}
+        {/* Feature highlights */}
         <div className="mt-16 grid grid-cols-3 gap-8 max-w-lg mx-auto">
-          <AnimatedCounter end={2000} suffix="+" label="GPUs Available" />
-          <AnimatedCounter end={500} suffix="+" label="Teams Using" />
-          <AnimatedCounter end={85} suffix="%" label="Cost Savings" />
+          <div className="text-center">
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">5</div>
+            <div className="text-sm text-navy-200/60 mt-1">GPU Tiers</div>
+          </div>
+          <div className="text-center">
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">SOL</div>
+            <div className="text-sm text-navy-200/60 mt-1">Native Payments</div>
+          </div>
+          <div className="text-center">
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">24/7</div>
+            <div className="text-sm text-navy-200/60 mt-1">Auto-Scaling</div>
+          </div>
         </div>
       </div>
 

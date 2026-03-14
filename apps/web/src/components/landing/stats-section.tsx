@@ -45,7 +45,7 @@ function StatItem({ icon: Icon, end, suffix, label, delay }: StatItemProps) {
 
   const displayValue = end >= 100
     ? Math.floor(count).toLocaleString()
-    : count.toFixed(1);
+    : Math.floor(count).toString();
 
   return (
     <div ref={ref} className="glow-card-navy text-center py-8">
@@ -61,10 +61,10 @@ function StatItem({ icon: Icon, end, suffix, label, delay }: StatItemProps) {
 }
 
 const stats = [
-  { icon: Cpu, end: 2000, suffix: "+", label: "GPUs Available", delay: 0 },
-  { icon: Gauge, end: 50, suffix: "ms", label: "Avg Latency", delay: 150 },
-  { icon: ShieldCheck, end: 99.9, suffix: "%", label: "Uptime SLA", delay: 300 },
-  { icon: PiggyBank, end: 85, suffix: "%", label: "Cost Savings", delay: 450 },
+  { icon: Cpu, end: 5, suffix: "", label: "GPU Tiers Available", delay: 0 },
+  { icon: Gauge, end: 12, suffix: "+", label: "Supported Models", delay: 150 },
+  { icon: ShieldCheck, end: 3, suffix: "", label: "Auth Methods", delay: 300 },
+  { icon: PiggyBank, end: 10, suffix: "+", label: "Deploy Channels", delay: 450 },
 ];
 
 export function StatsSection() {

@@ -3,9 +3,11 @@ import { nanoid } from "nanoid";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
+import Redis from "ioredis";
 
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
+import { env } from "../config/env.js";
 
 const logger = createLogger("auth-service");
 
@@ -35,48 +37,48 @@ export async function verifyPassword(
 }
 
 // ============================================
-// Nonce Management
+// Nonce Management (Redis-backed)
 // ============================================
 
-const nonceStore = new Map<string, { nonce: string; expiresAt: number }>();
+const NONCE_PREFIX = "nonce:";
+const NONCE_TTL_SECONDS = 300; // 5 minutes; Redis handles expiry automatically
 
-export function generateNonce(walletAddress: string): string {
+const redisClient = new Redis(env.REDIS_URL, {
+  lazyConnect: true,
+  enableOfflineQueue: false,
+});
+
+redisClient.on("error", (err) => {
+  logger.error({ err }, "Redis client error");
+});
+
+export async function generateNonce(walletAddress: string): Promise<string> {
   const nonce = `WheelsAI authentication request.\n\nWallet: ${walletAddress}\nNonce: ${nanoid(32)}\nTimestamp: ${Date.now()}`;
-
-  // Store nonce with 5 minute expiry
-  nonceStore.set(walletAddress, {
-    nonce,
-    expiresAt: Date.now() + 5 * 60 * 1000,
-  });
-
-  // Cleanup expired nonces periodically
-  cleanupExpiredNonces();
-
+  try {
+    await redisClient.set(`${NONCE_PREFIX}${walletAddress}`, nonce, "EX", NONCE_TTL_SECONDS);
+  } catch (err) {
+    logger.error({ err, walletAddress }, "Failed to store nonce in Redis");
+    throw new Error("Nonce storage unavailable, please try again");
+  }
   return nonce;
 }
 
-export function getNonce(walletAddress: string): string | null {
-  const stored = nonceStore.get(walletAddress);
-  if (!stored) return null;
-  if (Date.now() > stored.expiresAt) {
-    nonceStore.delete(walletAddress);
+export async function getNonce(walletAddress: string): Promise<string | null> {
+  try {
+    return await redisClient.get(`${NONCE_PREFIX}${walletAddress}`);
+  } catch (err) {
+    logger.error({ err, walletAddress }, "Failed to retrieve nonce from Redis");
     return null;
   }
-  return stored.nonce;
 }
 
-export function consumeNonce(walletAddress: string): boolean {
-  const exists = nonceStore.has(walletAddress);
-  nonceStore.delete(walletAddress);
-  return exists;
-}
-
-function cleanupExpiredNonces(): void {
-  const now = Date.now();
-  for (const [key, value] of nonceStore.entries()) {
-    if (now > value.expiresAt) {
-      nonceStore.delete(key);
-    }
+export async function consumeNonce(walletAddress: string): Promise<boolean> {
+  try {
+    const deleted = await redisClient.del(`${NONCE_PREFIX}${walletAddress}`);
+    return deleted > 0;
+  } catch (err) {
+    logger.error({ err, walletAddress }, "Failed to delete nonce from Redis");
+    return false;
   }
 }
 
@@ -135,9 +137,10 @@ export async function createUser(input: CreateUserInput) {
     });
 
     // Create default organization for the user
+    const emailPrefix = email?.split("@")[0] ?? "user";
     const org = await tx.organization.create({
       data: {
-        name: email ? email.split("@")[0] : `wallet-${walletAddress?.slice(0, 8)}`,
+        name: email ? emailPrefix : `wallet-${walletAddress?.slice(0, 8)}`,
         ownerId: user.id,
       },
     });

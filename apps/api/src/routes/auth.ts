@@ -69,7 +69,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Register new user with email/password
    */
-  app.post("/register", async (request, reply) => {
+  app.post("/register", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
     const body = registerSchema.parse(request.body);
 
     // Check if email already exists
@@ -118,7 +118,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Login with email/password
    */
-  app.post("/login", async (request, reply) => {
+  app.post("/login", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
     const body = loginSchema.parse(request.body);
 
     // Find user
@@ -183,10 +183,10 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get nonce for wallet signature
    */
-  app.post("/wallet/nonce", async (request, reply) => {
+  app.post("/wallet/nonce", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
     const { walletAddress } = walletNonceSchema.parse(request.body);
 
-    const nonce = generateNonce(walletAddress);
+    const nonce = await generateNonce(walletAddress);
 
     return { nonce, walletAddress };
   });
@@ -194,13 +194,13 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Verify wallet signature and authenticate
    */
-  app.post("/wallet/verify", async (request, reply) => {
+  app.post("/wallet/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
     const { walletAddress, signature, nonce } = walletVerifySchema.parse(
       request.body
     );
 
     // Verify the nonce matches
-    const storedNonce = getNonce(walletAddress);
+    const storedNonce = await getNonce(walletAddress);
     if (!storedNonce || storedNonce !== nonce) {
       return reply.status(401).send({
         error: "Unauthorized",
@@ -218,7 +218,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     }
 
     // Consume the nonce (one-time use)
-    consumeNonce(walletAddress);
+    await consumeNonce(walletAddress);
 
     // Find or create user
     const user = await findOrCreateUserByWallet(walletAddress);
@@ -326,7 +326,11 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.get("/keys", { preHandler: [requireJwtAuth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const keys = await listApiKeys(orgId);
-    return { keys };
+    const apiKeys = keys.map((key) => ({
+      ...key,
+      status: "active" as const,
+    }));
+    return { keys: apiKeys, apiKeys };
   });
 
   /**
@@ -337,6 +341,22 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const body = createApiKeySchema.parse(request.body);
 
     const { key, keyId } = await generateApiKey(orgId, body.name, body.scopes);
+    const createdKey = (await listApiKeys(orgId)).find((candidate) => candidate.id === keyId);
+    const apiKey = createdKey
+      ? {
+          ...createdKey,
+          status: "active" as const,
+        }
+      : {
+          id: keyId,
+          keyPrefix: key.slice(0, 16),
+          name: body.name ?? null,
+          scopes: body.scopes,
+          lastUsedAt: null,
+          expiresAt: null,
+          createdAt: new Date(),
+          status: "active" as const,
+        };
 
     logger.info({ orgId, keyId }, "API key created");
 
@@ -344,6 +364,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     return {
       id: keyId,
       key, // Only returned once!
+      apiKey,
       message: "Store this key securely - it cannot be retrieved again",
     };
   });

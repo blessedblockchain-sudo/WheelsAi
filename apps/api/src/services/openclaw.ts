@@ -2,6 +2,7 @@ import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
 import * as crypto from "crypto";
+import { getNosanaClient, type NosanaJobDefinition } from "./nosana.js";
 
 const logger = createLogger("openclaw-service");
 
@@ -9,6 +10,16 @@ const logger = createLogger("openclaw-service");
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
 const TAG_LENGTH = 16;
+const OPENCLAW_PORT = 8000;
+
+const OPENCLAW_GPU_TIER_MAP: Record<string, string> = {
+  basic: "3060",
+  standard: "4070",
+  premium: "4090",
+  "rtx-3060": "3060",
+  "rtx-4070": "4070",
+  "rtx-4090": "4090",
+};
 
 export const SUPPORTED_PLATFORMS = [
   "discord",
@@ -23,9 +34,134 @@ export const SUPPORTED_PLATFORMS = [
   "email",
 ] as const;
 
+type OpenClawDeploymentRecord = Awaited<ReturnType<typeof getDeployment>>;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeGpuTier(rawTier: unknown): string {
+  if (typeof rawTier !== "string" || rawTier.trim().length === 0) {
+    return "3060";
+  }
+  const normalized = rawTier.trim().toLowerCase();
+  return OPENCLAW_GPU_TIER_MAP[normalized] ?? normalized;
+}
+
+function toEnvValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  if (value === null || value === undefined) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function toStringEnvVars(input: Record<string, unknown>): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (!key) continue;
+    output[key] = toEnvValue(value);
+  }
+  return output;
+}
+
+function decryptConfigSafely(
+  encrypted: string,
+  context: { deploymentId: string; channelId?: string }
+): Record<string, unknown> {
+  try {
+    return decryptConfig(encrypted);
+  } catch (error) {
+    logger.warn({ error, ...context }, "Failed to decrypt OpenClaw config");
+    return {};
+  }
+}
+
+function fallbackPublicUrlForDeployment(deployment: OpenClawDeploymentRecord): string {
+  return `https://${deployment.agent.slug}.${env.OPENCLAW_SUBDOMAIN_BASE}`;
+}
+
+function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
+  definition: NosanaJobDefinition;
+  marketTier: string;
+  fallbackPublicUrl: string;
+} {
+  const modelConfig = asRecord(deployment.agent.modelConfig);
+  const marketTier = normalizeGpuTier(modelConfig.gpuTier);
+  const decryptedEnv = decryptConfigSafely(deployment.envEncrypted, {
+    deploymentId: deployment.id,
+  });
+
+  const enabledChannels = deployment.channels
+    .filter((channel) => channel.enabled)
+    .map((channel) => ({
+      id: channel.id,
+      platform: channel.platform,
+      config: decryptConfigSafely(channel.configEncrypted, {
+        deploymentId: deployment.id,
+        channelId: channel.id,
+      }),
+    }));
+
+  const definition: NosanaJobDefinition = {
+    version: "0.1",
+    type: "container",
+    meta: {
+      trigger: "openclaw",
+    },
+    ops: [
+      {
+        type: "container/run",
+        id: "openclaw-runtime",
+        args: {
+          image: deployment.dockerImage || env.OPENCLAW_DEFAULT_IMAGE,
+          gpu: true,
+          expose: [OPENCLAW_PORT],
+          env: {
+            ...toStringEnvVars(decryptedEnv),
+            OPENCLAW_DEPLOYMENT_ID: deployment.id,
+            OPENCLAW_AGENT_ID: deployment.agentId,
+            OPENCLAW_AGENT_NAME: deployment.agent.name,
+            OPENCLAW_AGENT_SLUG: deployment.agent.slug,
+            OPENCLAW_VERSION: deployment.openclawVersion,
+            OPENCLAW_SYSTEM_PROMPT: deployment.agent.systemPrompt ?? "",
+            OPENCLAW_MODEL_CONFIG: JSON.stringify(modelConfig),
+            OPENCLAW_CHANNELS: JSON.stringify(enabledChannels),
+            PORT: String(OPENCLAW_PORT),
+            NODE_ENV: env.NODE_ENV,
+          },
+        },
+      },
+    ],
+  };
+
+  return {
+    definition,
+    marketTier,
+    fallbackPublicUrl: fallbackPublicUrlForDeployment(deployment),
+  };
+}
+
+function isRecoverableNosanaError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("wallet not configured") || message.includes("unknown market tier");
+}
+
 function getEncryptionKey(): Buffer {
-  // Derive key from JWT_SECRET (in production, use a dedicated encryption key)
-  return crypto.createHash("sha256").update(env.JWT_SECRET).digest();
+  // Use ENCRYPTION_KEY when available; fall back to JWT_SECRET for backward compatibility
+  // with deployments that pre-date the dedicated key. In production, set ENCRYPTION_KEY
+  // to an independent 32+ character secret so rotating JWT_SECRET doesn't break decryption.
+  const source = env.ENCRYPTION_KEY ?? env.JWT_SECRET;
+  return crypto.createHash("sha256").update(source).digest();
 }
 
 export function encryptConfig(data: Record<string, unknown>): string {
@@ -40,10 +176,10 @@ export function encryptConfig(data: Record<string, unknown>): string {
 
 export function decryptConfig(encryptedStr: string): Record<string, unknown> {
   const key = getEncryptionKey();
-  const parts = encryptedStr.split(":");
-  const iv = Buffer.from(parts[0], "hex");
-  const tag = Buffer.from(parts[1], "hex");
-  const encrypted = parts[2];
+  const [ivHex, tagHex, encrypted] = encryptedStr.split(":");
+  if (!ivHex || !tagHex || !encrypted) throw new Error("Invalid encrypted config format");
+  const iv = Buffer.from(ivHex, "hex");
+  const tag = Buffer.from(tagHex, "hex");
   const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(tag);
   let decrypted = decipher.update(encrypted, "hex", "utf8");
@@ -101,7 +237,10 @@ export async function createDeployment(params: CreateDeploymentParams) {
         systemPrompt: systemPrompt || "",
         framework: "openclaw",
         sourceType: "inline",
-        modelConfig,
+        modelConfig: {
+          ...(modelConfig as Record<string, unknown>),
+          gpuTier,
+        } as any,
       },
     });
 
@@ -204,7 +343,7 @@ export async function updateDeployment(
   logger.info("Updating deployment", { id, orgId, params });
 
   // Verify ownership
-  const existing = await getDeployment(id, orgId);
+  await getDeployment(id, orgId);
 
   const updateData: any = {};
 
@@ -234,7 +373,7 @@ export async function deleteDeployment(id: string, orgId: string) {
   logger.info("Deleting deployment", { id, orgId });
 
   // Verify ownership
-  const existing = await getDeployment(id, orgId);
+  await getDeployment(id, orgId);
 
   await prisma.openClawDeployment.delete({
     where: { id },
@@ -409,10 +548,20 @@ export async function startDeployment(id: string, orgId: string) {
   // Verify ownership
   const existing = await getDeployment(id, orgId);
 
+  if (existing.status === "RUNNING" && existing.nosanaJobId) {
+    logger.info("Deployment already running with active Nosana job", {
+      id,
+      jobId: existing.nosanaJobId,
+    });
+    return existing;
+  }
+
   const deployment = await prisma.openClawDeployment.update({
     where: { id },
     data: {
       status: "BUILDING",
+      healthStatus: "provisioning",
+      healthLastCheck: new Date(),
     },
     include: {
       channels: true,
@@ -420,10 +569,76 @@ export async function startDeployment(id: string, orgId: string) {
     },
   });
 
-  // TODO: Trigger Nosana job creation here
-  logger.info("Deployment start initiated (Nosana job creation pending)", { id });
+  const { definition, marketTier, fallbackPublicUrl } = buildOpenClawJobDefinition(deployment);
 
-  return deployment;
+  try {
+    const nosana = await getNosanaClient();
+    const job = await nosana.submitJob(definition, marketTier);
+    const jobStatus = await nosana.getJobStatus(job.id).catch((error) => {
+      logger.warn({ error, id, jobId: job.id }, "Failed to fetch immediate Nosana job status");
+      return null;
+    });
+
+    const updated = await prisma.openClawDeployment.update({
+      where: { id },
+      data: {
+        status: jobStatus?.status === "running" ? "RUNNING" : "DEPLOYING",
+        nosanaJobId: job.id,
+        publicUrl: jobStatus?.nodeUrl ?? fallbackPublicUrl,
+        healthStatus: jobStatus?.status === "running" ? "healthy" : "unknown",
+        healthLastCheck: new Date(),
+      },
+      include: {
+        channels: true,
+        agent: true,
+      },
+    });
+
+    logger.info("Deployment submitted to Nosana", {
+      id,
+      jobId: job.id,
+      marketTier,
+      publicUrl: updated.publicUrl,
+    });
+
+    return updated;
+  } catch (error) {
+    if (isRecoverableNosanaError(error)) {
+      logger.warn(
+        { error, id, marketTier },
+        "Nosana unavailable for OpenClaw start, using fallback runtime status"
+      );
+
+      return prisma.openClawDeployment.update({
+        where: { id },
+        data: {
+          status: "RUNNING",
+          nosanaJobId: null,
+          publicUrl: fallbackPublicUrl,
+          healthStatus: "degraded",
+          healthLastCheck: new Date(),
+        },
+        include: {
+          channels: true,
+          agent: true,
+        },
+      });
+    }
+
+    logger.error({ error, id }, "Failed to start OpenClaw deployment");
+
+    await prisma.openClawDeployment.update({
+      where: { id },
+      data: {
+        status: "FAILED",
+        healthStatus: "down",
+        healthLastCheck: new Date(),
+      },
+    });
+
+    const message = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(`Failed to start deployment: ${message}`);
+  }
 }
 
 export async function stopDeployment(id: string, orgId: string) {
@@ -432,10 +647,27 @@ export async function stopDeployment(id: string, orgId: string) {
   // Verify ownership
   const existing = await getDeployment(id, orgId);
 
+  if (existing.nosanaJobId) {
+    try {
+      const nosana = await getNosanaClient();
+      await nosana.stopDeployment(existing.nosanaJobId);
+      logger.info("Stopped Nosana job for deployment", { id, jobId: existing.nosanaJobId });
+    } catch (error) {
+      logger.warn(
+        { error, id, jobId: existing.nosanaJobId },
+        "Failed to stop Nosana job, continuing with local status update"
+      );
+    }
+  }
+
   const deployment = await prisma.openClawDeployment.update({
     where: { id },
     data: {
       status: "STOPPED",
+      nosanaJobId: null,
+      publicUrl: null,
+      healthStatus: "down",
+      healthLastCheck: new Date(),
     },
     include: {
       channels: true,
@@ -443,7 +675,6 @@ export async function stopDeployment(id: string, orgId: string) {
     },
   });
 
-  // TODO: Trigger Nosana job termination here
   logger.info("Deployment stopped", { id });
 
   return deployment;
@@ -455,19 +686,33 @@ export async function restartDeployment(id: string, orgId: string) {
   // Verify ownership
   const existing = await getDeployment(id, orgId);
 
-  const deployment = await prisma.openClawDeployment.update({
+  if (existing.nosanaJobId) {
+    try {
+      const nosana = await getNosanaClient();
+      await nosana.stopDeployment(existing.nosanaJobId);
+      logger.info("Stopped previous Nosana job before restart", {
+        id,
+        jobId: existing.nosanaJobId,
+      });
+    } catch (error) {
+      logger.warn(
+        { error, id, jobId: existing.nosanaJobId },
+        "Failed to stop previous Nosana job during restart"
+      );
+    }
+  }
+
+  await prisma.openClawDeployment.update({
     where: { id },
     data: {
-      status: "BUILDING",
-    },
-    include: {
-      channels: true,
-      agent: true,
+      status: "PENDING",
+      nosanaJobId: null,
+      publicUrl: null,
+      healthStatus: "unknown",
+      healthLastCheck: new Date(),
     },
   });
 
-  // TODO: Trigger Nosana job restart here
-  logger.info("Deployment restart initiated", { id });
-
-  return deployment;
+  logger.info("Deployment reset completed, starting fresh deployment", { id });
+  return startDeployment(id, orgId);
 }

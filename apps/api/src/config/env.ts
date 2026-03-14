@@ -20,11 +20,15 @@ const envSchema = z.object({
   // Auth
   JWT_SECRET: z.string().min(32),
   JWT_EXPIRES_IN: z.string().default("24h"),
+  // Dedicated key for AES-256-GCM encryption of sensitive configs (e.g. OpenClaw env vars,
+  // channel credentials). Falls back to JWT_SECRET when not set for backward compatibility.
+  ENCRYPTION_KEY: z.string().min(32).optional(),
 
   // Solana / Nosana
   SOLANA_RPC_URL: z.string().default("https://api.devnet.solana.com"),
   SOLANA_NETWORK: z.enum(["devnet", "mainnet-beta"]).default("devnet"),
   NOSANA_WALLET_PRIVATE_KEY: z.string().optional(),
+  WALLET_MASTER_KEY: z.string().optional(),
   TREASURY_WALLET_ADDRESS: z
     .string()
     .default("11111111111111111111111111111111"),

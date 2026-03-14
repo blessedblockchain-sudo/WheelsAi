@@ -6,7 +6,6 @@ import {
   checkTokenEligibility,
   createToken,
   getToken,
-  getTokenByMint,
   listTokens,
   getTrendingTokens,
   getTokenTrades,
@@ -29,12 +28,25 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         sortBy: z
           .enum(["market_cap", "volume", "newest", "holders"])
           .optional(),
+        search: z.string().optional(),
         page: z.coerce.number().optional(),
+        offset: z.coerce.number().optional(),
         limit: z.coerce.number().optional(),
       });
 
       const query = querySchema.parse(request.query);
-      const result = await listTokens(query);
+      const page =
+        query.page ??
+        (query.offset !== undefined
+          ? Math.floor(query.offset / (query.limit ?? 20)) + 1
+          : undefined);
+      const result = await listTokens({
+        status: query.status,
+        sortBy: query.sortBy,
+        search: query.search,
+        page,
+        limit: query.limit,
+      });
 
       return reply.send(result);
     } catch (error) {
@@ -54,7 +66,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       const query = querySchema.parse(request.query);
       const result = await getTrendingTokens(query.limit);
 
-      return reply.send(result);
+      return reply.send({ tokens: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error }, "Get trending tokens error");
@@ -75,7 +87,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       const query = querySchema.parse(request.query);
       const result = await getLeaderboard(query.metric, query.limit);
 
-      return reply.send(result);
+      return reply.send({ tokens: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error }, "Get leaderboard error");
@@ -93,7 +105,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       const params = paramsSchema.parse(request.params);
       const result = await getToken(params.id);
 
-      return reply.send(result);
+      return reply.send({ token: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error }, "Get token error");
@@ -135,7 +147,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       const params = paramsSchema.parse(request.params);
       const result = await getTokenHolders(params.id);
 
-      return reply.send(result);
+      return reply.send({ holders: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error }, "Get token holders error");
@@ -158,7 +170,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       const query = querySchema.parse(request.query);
       const result = await getTokenChart(params.id, query.period);
 
-      return reply.send(result);
+      return reply.send({ snapshots: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error }, "Get token chart error");
@@ -169,22 +181,29 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   // Authenticated routes
 
   // POST /create - Create/tokenize an agent
-  app.post("/create", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/create", { preHandler: [requireAuth], config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (request, reply) => {
     try {
       const bodySchema = z.object({
         agentListingId: z.string(),
         name: z.string(),
         symbol: z.string().max(10).toUpperCase(),
-        creatorAddress: z.string(),
+        creatorAddress: z.string().optional(),
       });
 
       const body = bodySchema.parse(request.body);
+      const creatorAddress = body.creatorAddress ?? request.auth?.walletAddress;
+      if (!creatorAddress) {
+        return reply.status(400).send({
+          error: "creatorAddress is required",
+        });
+      }
       const result = await createToken({
         ...body,
-        orgId: (request as any).orgId,
+        creatorAddress,
+        orgId: request.auth!.orgId,
       });
 
-      return reply.send(result);
+      return reply.send({ token: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error }, "Create token error");
@@ -205,7 +224,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         const params = paramsSchema.parse(request.params);
         const result = await checkTokenEligibility(
           params.agentListingId,
-          (request as any).orgId
+          request.auth!.orgId
         );
 
         return reply.send(result);

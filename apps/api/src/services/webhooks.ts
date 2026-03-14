@@ -74,6 +74,37 @@ export interface WebhookPayload {
   data: Record<string, any>;
 }
 
+function toWebhookPayload(value: unknown): WebhookPayload | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const payload = value as Record<string, unknown>;
+  if (
+    typeof payload.id !== "string" ||
+    typeof payload.type !== "string" ||
+    typeof payload.timestamp !== "string" ||
+    typeof payload.data !== "object" ||
+    payload.data === null
+  ) {
+    return null;
+  }
+
+  return payload as unknown as WebhookPayload;
+}
+
+function normalizeWebhookHeaders(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string"
+    )
+  );
+}
+
 // ============================================
 // Webhook CRUD Operations
 // ============================================
@@ -282,7 +313,7 @@ async function deliverWebhook(
     "X-Webhook-Signature": `sha256=${signature}`,
     "X-Webhook-Event": payload.type,
     "X-Webhook-Delivery": deliveryId,
-    ...(webhook.headers || {}),
+    ...normalizeWebhookHeaders(webhook.headers),
   };
 
   const startTime = Date.now();
@@ -375,7 +406,7 @@ async function deliverWebhook(
           where: { id: webhook.id },
         });
         if (updatedWebhook && updatedWebhook.isEnabled) {
-          const payload = delivery?.payload as WebhookPayload;
+          const payload = toWebhookPayload(delivery?.payload);
           if (payload) {
             deliverWebhook(updatedWebhook, deliveryId, payload);
           }
@@ -452,7 +483,11 @@ export async function retryDelivery(orgId: string, webhookId: string, deliveryId
   });
 
   // Trigger delivery
-  deliverWebhook(webhook, deliveryId, delivery.payload as WebhookPayload);
+  const payload = toWebhookPayload(delivery.payload);
+  if (!payload) {
+    throw new Error("Invalid delivery payload");
+  }
+  deliverWebhook(webhook, deliveryId, payload);
 
   return { message: "Retry scheduled" };
 }
@@ -502,7 +537,7 @@ export async function testWebhook(orgId: string, webhookId: string) {
     "X-Webhook-Event": testPayload.type,
     "X-Webhook-Delivery": delivery.id,
     "X-Webhook-Test": "true",
-    ...(webhook.headers || {}),
+    ...normalizeWebhookHeaders(webhook.headers),
   };
 
   const startTime = Date.now();

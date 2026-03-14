@@ -46,7 +46,7 @@ import { startTokenIndexerWorker } from "./services/tokenIndexer.js";
 
 async function main() {
   const app = Fastify({
-    logger: logger,
+    logger: logger as any,
     trustProxy: true,
   });
 

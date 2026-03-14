@@ -48,10 +48,10 @@ export function TokenChart({
     const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
     const area =
       linePath +
-      ` L ${points[points.length - 1].x} ${padding.top + chartH}` +
-      ` L ${points[0].x} ${padding.top + chartH} Z`;
+      ` L ${points[points.length - 1]!.x} ${padding.top + chartH}` +
+      ` L ${points[0]!.x} ${padding.top + chartH} Z`;
 
-    const change = ((prices[prices.length - 1] - prices[0]) / (prices[0] || 1)) * 100;
+    const change = (((prices[prices.length - 1] ?? 0) - (prices[0] ?? 0)) / (prices[0] || 1)) * 100;
 
     return { path: linePath, areaPath: area, minPrice: min, maxPrice: max, priceChange: change };
   }, [data, width, height, showAxes]);
@@ -98,10 +98,10 @@ export function TokenChart({
             ${minPrice.toFixed(minPrice < 0.01 ? 6 : 4)}
           </text>
           <text x={60} y={height - 5} fill="currentColor" fontSize="10" className="fill-muted-foreground">
-            {new Date(data[0].timestamp).toLocaleDateString()}
+            {new Date(data[0]!.timestamp).toLocaleDateString()}
           </text>
           <text x={width - 10} y={height - 5} fill="currentColor" fontSize="10" textAnchor="end" className="fill-muted-foreground">
-            {new Date(data[data.length - 1].timestamp).toLocaleDateString()}
+            {new Date(data[data.length - 1]!.timestamp).toLocaleDateString()}
           </text>
         </>
       )}
@@ -135,7 +135,7 @@ export function SparkChart({ data, width = 80, height = 30, className }: SparkCh
 
   if (data.length < 2) return null;
 
-  const isPositive = data[data.length - 1] >= data[0];
+  const isPositive = (data[data.length - 1] ?? 0) >= (data[0] ?? 0);
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className={cn("inline-block", className)} style={{ width, height }}>

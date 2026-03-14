@@ -26,7 +26,7 @@ const healthConfig: Record<string, { label: string; color: string }> = {
 };
 
 export function OpenClawStatus({ status, healthStatus, className }: OpenClawStatusProps) {
-  const config = statusConfig[status] || statusConfig.PENDING;
+  const config = statusConfig[status] ?? statusConfig["PENDING"]!;
   const Icon = config.icon;
   const isAnimated = status === "BUILDING" || status === "DEPLOYING";
 

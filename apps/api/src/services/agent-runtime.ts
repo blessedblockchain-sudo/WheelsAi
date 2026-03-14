@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from "../utils/logger.js";
+import type { NosanaJobDefinition } from "./nosana.js";
 
 const logger = createLogger("agent-runtime");
 
@@ -35,19 +36,6 @@ export interface AgentConfig {
   };
   modelDeploymentId?: string;
   externalModelUrl?: string;
-}
-
-export interface NosanaJobDefinition {
-  version: string;
-  type: string;
-  meta: {
-    trigger: string;
-  };
-  ops: Array<{
-    type: string;
-    id: string;
-    args: Record<string, any>;
-  }>;
 }
 
 // ============================================
@@ -147,14 +135,14 @@ function getRuntimeImage(framework: string): string {
     custom: "wheelsai/agent-runtime-base:latest",
   };
 
-  return images[framework] || images.custom;
+  return images[framework] ?? images.custom ?? "wheelsai/agent-runtime-base:latest";
 }
 
 /**
  * Get external provider URL for a model identifier
  */
 function getExternalProviderUrl(modelId: string): string {
-  const [provider] = modelId.split("/");
+  const provider = modelId.split("/")[0] ?? "openai";
 
   const providerUrls: Record<string, string> = {
     openai: "https://api.openai.com/v1",
@@ -165,7 +153,7 @@ function getExternalProviderUrl(modelId: string): string {
     fireworks: "https://api.fireworks.ai/inference/v1",
   };
 
-  return providerUrls[provider] || providerUrls.openai;
+  return providerUrls[provider] ?? providerUrls.openai ?? "https://api.openai.com/v1";
 }
 
 /**

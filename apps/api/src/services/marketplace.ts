@@ -904,9 +904,6 @@ export async function getPublisherRevenue(publisherId: string) {
     where: { publisherId },
     orderBy: { createdAt: "desc" },
     take: 20,
-    include: {
-      // Note: We'd need to add relations to the schema for this
-    },
   });
 
   // Get pending payouts

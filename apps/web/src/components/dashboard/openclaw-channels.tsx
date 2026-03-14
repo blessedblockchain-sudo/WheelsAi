@@ -227,7 +227,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
                   <div className="flex items-center gap-2">
                     <Switch
                       checked={channel.enabled}
-                      onCheckedChange={(checked) => handleToggle(channel.id, checked)}
+                      onCheckedChange={(checked: boolean) => handleToggle(channel.id, checked)}
                     />
                     <Button
                       size="icon"
@@ -266,7 +266,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
             {!selectedPlatform ? (
               <div className="grid gap-2 sm:grid-cols-3">
                 {availablePlatforms.map((platform) => {
-                  const config = platformConfig[platform];
+                  const config = platformConfig[platform]!;
                   const Icon = config.icon;
                   return (
                     <button
@@ -285,7 +285,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
             ) : (
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline">{platformConfig[selectedPlatform]?.label}</Badge>
+                  <Badge variant="outline">{platformConfig[selectedPlatform]!.label}</Badge>
                   <Button
                     size="sm"
                     variant="ghost"
@@ -298,7 +298,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
                   </Button>
                 </div>
 
-                {platformConfig[selectedPlatform]?.fields.map((field) => (
+                {platformConfig[selectedPlatform]!.fields.map((field) => (
                   <div key={field.key} className="space-y-1">
                     <Label htmlFor={field.key}>{field.label}</Label>
                     <Input

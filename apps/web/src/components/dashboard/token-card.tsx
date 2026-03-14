@@ -43,7 +43,7 @@ function formatCompact(value: number): string {
 export function TokenCard({ token, onClick }: TokenCardProps) {
   const priceChange =
     token.priceHistory && token.priceHistory.length >= 2
-      ? ((token.priceHistory[token.priceHistory.length - 1] - token.priceHistory[0]) /
+      ? (((token.priceHistory[token.priceHistory.length - 1] ?? 0) - (token.priceHistory[0] ?? 0)) /
           (token.priceHistory[0] || 1)) *
         100
       : 0;

@@ -102,7 +102,7 @@ export async function getUsageTimeSeries(
   // Aggregate by day
   const dailyMap = new Map<string, TimeSeriesPoint>();
   for (const record of records) {
-    const day = record.periodStart.toISOString().split("T")[0];
+    const day = record.periodStart.toISOString().split("T")[0] ?? record.periodStart.toISOString();
     const existing = dailyMap.get(day) || {
       timestamp: day,
       requests: 0,

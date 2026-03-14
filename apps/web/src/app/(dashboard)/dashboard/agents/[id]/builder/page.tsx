@@ -262,6 +262,7 @@ export default function AgentBuilderPage() {
   ) {
     e.stopPropagation();
     const node = nodes[nodeIndex];
+    if (!node) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 

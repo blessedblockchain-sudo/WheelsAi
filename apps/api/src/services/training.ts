@@ -426,7 +426,8 @@ export function estimateTrainingCost(
 
   // Calculate training hours
   const trainingTokens = totalTokens * epochs;
-  const gpuHours = trainingTokens / tokensPerHour[method];
+  const throughput = tokensPerHour[method] ?? tokensPerHour.lora ?? 50000;
+  const gpuHours = trainingTokens / throughput;
 
   // Get cost per hour
   const costPerHour = GPU_PRICING[gpuTier] || 50;
@@ -461,7 +462,7 @@ export function recommendGpuTier(
     };
   }
 
-  return requirements;
+  return { tier: requirements.recommendedTier, minVram: requirements.minVram };
 }
 
 // ============================================

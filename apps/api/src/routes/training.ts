@@ -212,7 +212,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
         format: validation.schema.detectedFormat !== "unknown"
           ? validation.schema.detectedFormat
           : dataset.format,
-        validationErrors: validation.errors.length > 0 ? validation.errors : undefined,
+        validationErrors: validation.errors.length > 0 ? (validation.errors as any) : undefined,
         sampleRows: validation.sampleRows,
       },
     });
@@ -427,7 +427,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     if (!balance || Number(balance.balanceCents) < cost.totalCostCents) {
       return reply.paymentRequired(
         `Insufficient credits. Estimated cost: $${(cost.totalCostCents / 100).toFixed(2)}, ` +
-        `Available: $${((balance?.balanceCents || 0) / 100).toFixed(2)}`
+        `Available: $${(Number(balance?.balanceCents ?? 0n) / 100).toFixed(2)}`
       );
     }
 

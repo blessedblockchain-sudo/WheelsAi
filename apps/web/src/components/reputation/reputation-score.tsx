@@ -51,7 +51,11 @@ export function ReputationScore({
   showTier = true,
   showBadges = true,
 }: ReputationScoreProps) {
-  const config = tierConfig[tier] || tierConfig.new;
+  const config = tierConfig[tier] ?? tierConfig.new ?? {
+    label: "New",
+    color: "text-gray-400",
+    bgColor: "bg-gray-500/10",
+  };
 
   const scoreSize = {
     sm: "text-lg",
@@ -96,7 +100,11 @@ export function ReputationTierBadge({
   tier: string;
   size?: "sm" | "md" | "lg";
 }) {
-  const config = tierConfig[tier] || tierConfig.new;
+  const config = tierConfig[tier] ?? tierConfig.new ?? {
+    label: "New",
+    color: "text-gray-400",
+    bgColor: "bg-gray-500/10",
+  };
 
   const sizeClasses = {
     sm: "px-2 py-0.5 text-xs",
@@ -126,6 +134,12 @@ export function ReputationProgressBar({
   tier: string;
 }) {
   const config = tierConfig[tier] || tierConfig.new;
+  const fallbackTierConfig = tierConfig.new ?? {
+    label: "New",
+    color: "text-gray-400",
+    bgColor: "bg-gray-500/10",
+  };
+  const resolvedConfig = config ?? fallbackTierConfig;
   const nextTier =
     tier === "new"
       ? "bronze"
@@ -147,7 +161,7 @@ export function ReputationProgressBar({
   const currentThreshold =
     tier === "new" ? 0 : thresholds[tier as keyof typeof thresholds] || 0;
   const nextThreshold = nextTier
-    ? thresholds[nextTier as keyof typeof thresholds]
+    ? (thresholds[nextTier as keyof typeof thresholds] ?? 100)
     : 100;
   const progress =
     ((score - currentThreshold) / (nextThreshold - currentThreshold)) * 100;
@@ -155,8 +169,8 @@ export function ReputationProgressBar({
   return (
     <div className="w-full">
       <div className="flex justify-between text-xs text-muted-foreground mb-1">
-        <span>{config.label}</span>
-        {nextTier && <span>{tierConfig[nextTier].label}</span>}
+        <span>{resolvedConfig.label}</span>
+        {nextTier && <span>{(tierConfig[nextTier] ?? fallbackTierConfig).label}</span>}
       </div>
       <div className="h-2 bg-secondary rounded-full overflow-hidden">
         <div

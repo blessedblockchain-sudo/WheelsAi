@@ -498,6 +498,12 @@ export const settingsApi = {
       method: "POST",
       body: { currentPassword, newPassword },
     }),
+
+  linkWallet: (walletAddress: string, signature: string, message: string) =>
+    api<{ walletAddress: string; message: string }>("/api/settings/link-wallet", {
+      method: "POST",
+      body: { walletAddress, signature, message },
+    }),
 };
 
 // ============================================
@@ -3542,6 +3548,13 @@ export const tokenApi = {
 
   leaderboard: () =>
     api<{ tokens: AgentToken[] }>("/api/tokens/leaderboard"),
+
+  checkEligibility: (agentListingId: string) =>
+    api<{
+      eligible: boolean;
+      reasons: string[];
+      listing: { id: string; title: string; agentName: string };
+    }>(`/api/tokens/eligibility/${agentListingId}`),
 };
 
 export { ApiError };

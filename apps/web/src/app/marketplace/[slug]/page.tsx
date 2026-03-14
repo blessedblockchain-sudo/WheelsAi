@@ -16,12 +16,21 @@ import {
   ChevronRight,
   MessageSquare,
   Play,
+  Coins,
+  TrendingUp,
+  TrendingDown,
+  BarChart3,
 } from "lucide-react";
 import {
   marketplaceApi,
+  tokenApi,
   type MarketplaceListing,
   type MarketplaceReview,
+  type AgentToken,
+  type AgentTokenHolder,
+  type TokenSnapshot,
 } from "@/lib/api";
+import { TokenChart } from "@/components/dashboard/token-chart";
 
 function formatPrice(listing: MarketplaceListing): string {
   if (listing.pricingModel === "free") return "Free";
@@ -35,6 +44,14 @@ function formatPrice(listing: MarketplaceListing): string {
     return `$${price.toFixed(2)}/month`;
   }
   return "Free";
+}
+
+function formatUsd(value: number): string {
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  if (value >= 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(6)}`;
 }
 
 function formatDate(dateString: string): string {
@@ -96,6 +113,8 @@ function ReviewCard({ review }: { review: MarketplaceReview }) {
   );
 }
 
+type TabType = "overview" | "reviews" | "token";
+
 export default function ListingDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -104,7 +123,19 @@ export default function ListingDetailPage() {
   const [listing, setListing] = useState<MarketplaceListing | null>(null);
   const [reviews, setReviews] = useState<MarketplaceReview[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "reviews">("overview");
+  const [activeTab, setActiveTab] = useState<TabType>("overview");
+
+  // Token data
+  const [tokenData, setTokenData] = useState<AgentToken | null>(null);
+  const [chartData, setChartData] = useState<TokenSnapshot[]>([]);
+  const [holders, setHolders] = useState<AgentTokenHolder[]>([]);
+
+  // Handle hash-based tab selection
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash === "#token") {
+      setActiveTab("token");
+    }
+  }, []);
 
   useEffect(() => {
     async function loadData() {
@@ -120,6 +151,28 @@ export default function ListingDetailPage() {
 
         setListing(listingRes.listing);
         setReviews(reviewsRes.reviews);
+
+        // If tokenized, fetch token data
+        if (listingRes.listing.pricingModel === "tokenized") {
+          try {
+            const tokensRes = await tokenApi.list({ limit: 50 });
+            const matchingToken = tokensRes.tokens.find(
+              (t) => t.agentListingId === listingRes.listing.id
+            );
+            if (matchingToken) {
+              setTokenData(matchingToken);
+              // Fetch chart and holders in parallel
+              const [chartRes, holdersRes] = await Promise.all([
+                tokenApi.getChart(matchingToken.id).catch(() => ({ snapshots: [] })),
+                tokenApi.getHolders(matchingToken.id).catch(() => ({ holders: [] })),
+              ]);
+              setChartData(chartRes.snapshots);
+              setHolders(holdersRes.holders);
+            }
+          } catch {
+            // Token data is optional, don't block page
+          }
+        }
       } catch (error) {
         console.error("Failed to load listing:", error);
       } finally {
@@ -131,6 +184,8 @@ export default function ListingDetailPage() {
       loadData();
     }
   }, [slug]);
+
+  const hasToken = listing?.pricingModel === "tokenized" && tokenData !== null;
 
   if (isLoading) {
     return (
@@ -163,7 +218,7 @@ export default function ListingDetailPage() {
         <div className="mx-auto max-w-7xl px-4 py-16 text-center sm:px-6 lg:px-8">
           <h1 className="text-2xl font-bold text-gray-900">Agent Not Found</h1>
           <p className="mt-2 text-gray-600">
-            The agent you're looking for doesn't exist or has been removed.
+            The agent you&apos;re looking for doesn&apos;t exist or has been removed.
           </p>
           <Link
             href="/marketplace"
@@ -310,6 +365,19 @@ export default function ListingDetailPage() {
                       {listing.reviewCount}
                     </span>
                   </button>
+                  {hasToken && (
+                    <button
+                      onClick={() => setActiveTab("token")}
+                      className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
+                        activeTab === "token"
+                          ? "border-cyan-600 text-cyan-600"
+                          : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                      }`}
+                    >
+                      <Coins className="h-4 w-4" />
+                      Token
+                    </button>
+                  )}
                 </nav>
               </div>
 
@@ -414,6 +482,208 @@ export default function ListingDetailPage() {
                     </div>
                   </div>
                 )}
+
+                {activeTab === "token" && hasToken && tokenData && (
+                  <div className="space-y-6">
+                    {/* Token Header */}
+                    <div className="rounded-lg border bg-white p-6">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-center gap-4">
+                          {tokenData.imageUri ? (
+                            <img
+                              src={tokenData.imageUri}
+                              alt={tokenData.name}
+                              className="h-12 w-12 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-cyan-100 to-cyan-200 font-bold text-cyan-700">
+                              {tokenData.symbol.slice(0, 2)}
+                            </div>
+                          )}
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h2 className="text-xl font-bold text-gray-900">
+                                {tokenData.name}
+                              </h2>
+                              <span className="font-mono text-sm text-gray-500">
+                                ${tokenData.symbol}
+                              </span>
+                            </div>
+                            <span
+                              className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+                                tokenData.status === "GRADUATED"
+                                  ? "bg-green-100 text-green-700"
+                                  : tokenData.status === "FAILED"
+                                  ? "bg-red-100 text-red-700"
+                                  : "bg-gray-100 text-gray-700"
+                              }`}
+                            >
+                              {tokenData.status === "BONDING"
+                                ? "Bonding Curve"
+                                : tokenData.status === "GRADUATED"
+                                ? "Graduated"
+                                : "Failed"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-2xl font-bold text-gray-900">
+                            {formatUsd(tokenData.priceUsd)}
+                          </div>
+                          {chartData.length >= 2 && (
+                            <div
+                              className={`flex items-center justify-end gap-1 text-sm font-medium ${
+                                (chartData[chartData.length - 1]?.priceUsd ?? 0) >=
+                                (chartData[0]?.priceUsd ?? 0)
+                                  ? "text-green-600"
+                                  : "text-red-600"
+                              }`}
+                            >
+                              {(chartData[chartData.length - 1]?.priceUsd ?? 0) >=
+                              (chartData[0]?.priceUsd ?? 0) ? (
+                                <TrendingUp className="h-4 w-4" />
+                              ) : (
+                                <TrendingDown className="h-4 w-4" />
+                              )}
+                              {(
+                                (((chartData[chartData.length - 1]?.priceUsd ?? 0) -
+                                  (chartData[0]?.priceUsd ?? 0)) /
+                                  ((chartData[0]?.priceUsd ?? 0) || 1)) *
+                                100
+                              ).toFixed(2)}
+                              %
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Price Chart */}
+                    {chartData.length >= 2 && (
+                      <div className="rounded-lg border bg-white p-6">
+                        <h3 className="mb-4 font-semibold text-gray-900">
+                          Price Chart
+                        </h3>
+                        <div className="h-[200px]">
+                          <TokenChart
+                            data={chartData.map((s) => ({
+                              timestamp: s.timestamp,
+                              priceUsd: s.priceUsd,
+                            }))}
+                            width={700}
+                            height={200}
+                            showAxes
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Token Stats */}
+                    <div className="grid gap-4 sm:grid-cols-4">
+                      <div className="rounded-lg border bg-white p-4 text-center">
+                        <BarChart3 className="mx-auto h-5 w-5 text-gray-400" />
+                        <div className="mt-2 text-lg font-bold text-gray-900">
+                          {formatUsd(tokenData.marketCapUsd)}
+                        </div>
+                        <div className="text-xs text-gray-500">Market Cap</div>
+                      </div>
+                      <div className="rounded-lg border bg-white p-4 text-center">
+                        <TrendingUp className="mx-auto h-5 w-5 text-gray-400" />
+                        <div className="mt-2 text-lg font-bold text-gray-900">
+                          {formatUsd(tokenData.volume24h)}
+                        </div>
+                        <div className="text-xs text-gray-500">24h Volume</div>
+                      </div>
+                      <div className="rounded-lg border bg-white p-4 text-center">
+                        <Users className="mx-auto h-5 w-5 text-gray-400" />
+                        <div className="mt-2 text-lg font-bold text-gray-900">
+                          {tokenData.holders.toLocaleString()}
+                        </div>
+                        <div className="text-xs text-gray-500">Holders</div>
+                      </div>
+                      <div className="rounded-lg border bg-white p-4 text-center">
+                        <Coins className="mx-auto h-5 w-5 text-gray-400" />
+                        <div className="mt-2 text-lg font-bold text-gray-900">
+                          {tokenData.totalSupply.toLocaleString()}
+                        </div>
+                        <div className="text-xs text-gray-500">Total Supply</div>
+                      </div>
+                    </div>
+
+                    {/* Token Info */}
+                    <div className="rounded-lg border bg-white p-6">
+                      <h3 className="font-semibold text-gray-900">
+                        Token Details
+                      </h3>
+                      <dl className="mt-4 space-y-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <dt className="text-gray-500">Mint Address</dt>
+                          <dd className="font-mono text-xs text-gray-900">
+                            <a
+                              href={`https://solscan.io/token/${tokenData.mintAddress}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1 text-primary-600 hover:text-primary-700"
+                            >
+                              {tokenData.mintAddress.slice(0, 8)}...
+                              {tokenData.mintAddress.slice(-6)}
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </dd>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <dt className="text-gray-500">Creator</dt>
+                          <dd className="font-mono text-xs text-gray-900">
+                            {tokenData.creatorAddress.slice(0, 8)}...
+                            {tokenData.creatorAddress.slice(-6)}
+                          </dd>
+                        </div>
+                        {tokenData.creatorLockupEnd && (
+                          <div className="flex items-center justify-between">
+                            <dt className="text-gray-500">Creator Lockup Until</dt>
+                            <dd className="text-gray-900">
+                              {formatDate(tokenData.creatorLockupEnd)}
+                            </dd>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between">
+                          <dt className="text-gray-500">Created</dt>
+                          <dd className="text-gray-900">
+                            {formatDate(tokenData.createdAt)}
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+
+                    {/* CTA */}
+                    <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-6 text-center">
+                      <Coins className="mx-auto h-8 w-8 text-cyan-600" />
+                      <h3 className="mt-2 font-semibold text-gray-900">
+                        Trade ${tokenData.symbol}
+                      </h3>
+                      <p className="mt-1 text-sm text-gray-600">
+                        Sign in and connect your wallet to buy or sell this token
+                      </p>
+                      <Link
+                        href="/login"
+                        className="mt-4 inline-flex items-center gap-2 rounded-lg bg-cyan-600 px-6 py-2.5 font-medium text-white hover:bg-cyan-700"
+                      >
+                        Sign in to Trade
+                      </Link>
+                      {tokenData.pumpfunUrl && (
+                        <a
+                          href={tokenData.pumpfunUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-3 flex items-center justify-center gap-1 text-sm text-cyan-600 hover:text-cyan-700"
+                        >
+                          View on pump.fun
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -423,19 +693,33 @@ export default function ListingDetailPage() {
             {/* Pricing Card */}
             <div className="rounded-lg border bg-white p-6">
               <div className="text-center">
-                <div
-                  className={`text-3xl font-bold ${listing.pricingModel === "free" ? "text-green-600" : "text-gray-900"}`}
-                >
-                  {formatPrice(listing)}
-                </div>
-                {listing.pricingModel !== "free" && (
-                  <p className="mt-1 text-sm text-gray-500">
-                    {listing.pricingModel === "per_request"
-                      ? "Pay only for what you use"
-                      : listing.pricingModel === "tokenized"
-                      ? "Hold tokens to access this agent"
-                      : "Billed monthly"}
-                  </p>
+                {hasToken && tokenData ? (
+                  <>
+                    <div className="flex items-center justify-center gap-2 text-3xl font-bold text-cyan-600">
+                      <Coins className="h-6 w-6" />
+                      {formatUsd(tokenData.priceUsd)}
+                    </div>
+                    <p className="mt-1 text-sm text-gray-500">
+                      ${tokenData.symbol} token price
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div
+                      className={`text-3xl font-bold ${listing.pricingModel === "free" ? "text-green-600" : "text-gray-900"}`}
+                    >
+                      {formatPrice(listing)}
+                    </div>
+                    {listing.pricingModel !== "free" && (
+                      <p className="mt-1 text-sm text-gray-500">
+                        {listing.pricingModel === "per_request"
+                          ? "Pay only for what you use"
+                          : listing.pricingModel === "tokenized"
+                          ? "Hold tokens to access this agent"
+                          : "Billed monthly"}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -446,6 +730,16 @@ export default function ListingDetailPage() {
                 <Play className="h-4 w-4" />
                 Deploy Agent
               </Link>
+
+              {hasToken && (
+                <button
+                  onClick={() => setActiveTab("token")}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-2.5 text-sm font-medium text-cyan-700 hover:bg-cyan-100"
+                >
+                  <Coins className="h-4 w-4" />
+                  View Token
+                </button>
+              )}
 
               <p className="mt-3 text-center text-xs text-gray-500">
                 Sign in to deploy this agent to your account

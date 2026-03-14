@@ -210,7 +210,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     // Increment version on significant changes
     let newVersion = agent.version;
     if (updates.sourceCode || updates.sourceUrl || updates.systemPrompt || updates.tools) {
-      const [major, minor, patch] = agent.version.split(".").map(Number);
+      const [major = 1, minor = 0, patch = 0] = agent.version.split(".").map(Number);
       newVersion = `${major}.${minor}.${patch + 1}`;
     }
 

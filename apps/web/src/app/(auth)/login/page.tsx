@@ -34,7 +34,14 @@ export default function LoginPage() {
       router.push("/dashboard");
     } catch (error) {
       if (error instanceof ApiError) {
-        toast.error(error.data?.message || "Invalid email or password");
+        const message =
+          typeof error.data === "object" &&
+          error.data !== null &&
+          "message" in error.data &&
+          typeof (error.data as { message?: unknown }).message === "string"
+            ? (error.data as { message: string }).message
+            : "Invalid email or password";
+        toast.error(message);
       } else {
         toast.error("Something went wrong. Please try again.");
       }

@@ -305,7 +305,7 @@ export async function deleteVersion(agentId: string, version: string) {
 // ============================================
 
 function calculateNewVersion(currentVersion: string, changeType: ChangeType): string {
-  const [major, minor, patch] = currentVersion.split(".").map(Number);
+  const [major = 1, minor = 0, patch = 0] = currentVersion.split(".").map(Number);
 
   switch (changeType) {
     case "major":
@@ -459,6 +459,7 @@ export async function getVersionHistory(agentId: string, limit: number = 10) {
   for (let i = 0; i < versions.length; i++) {
     const current = versions[i];
     const previous = versions[i + 1];
+    if (!current) continue;
 
     let diff = null;
     if (previous) {

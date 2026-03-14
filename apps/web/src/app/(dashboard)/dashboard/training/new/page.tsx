@@ -126,15 +126,17 @@ export default function NewTrainingPage() {
 
   function nextStep() {
     const nextIndex = currentStepIndex + 1;
-    if (nextIndex < steps.length) {
-      setCurrentStep(steps[nextIndex].id);
+    const nextStepConfig = steps[nextIndex];
+    if (nextStepConfig) {
+      setCurrentStep(nextStepConfig.id);
     }
   }
 
   function prevStep() {
     const prevIndex = currentStepIndex - 1;
-    if (prevIndex >= 0) {
-      setCurrentStep(steps[prevIndex].id);
+    const prevStepConfig = steps[prevIndex];
+    if (prevStepConfig) {
+      setCurrentStep(prevStepConfig.id);
     }
   }
 

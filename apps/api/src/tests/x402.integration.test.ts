@@ -178,7 +178,7 @@ test("x402 settlement tick updates counters and statuses", async () => {
   const updates: Array<{ where: any; data: any }> = [];
   let executeRawCalls = 0;
   let alertWebhookCalls = 0;
-  let lastWebhookHeaders: Headers | null = null;
+  let lastWebhookHeaders: Record<string, string> = {};
   let lastWebhookBody = "";
 
   prismaAny.x402Payment.findMany = async () => [
@@ -252,7 +252,15 @@ test("x402 settlement tick updates counters and statuses", async () => {
   globalThis.fetch = async (_input, init) => {
     alertWebhookCalls += 1;
     if (init?.headers) {
-      lastWebhookHeaders = new Headers(init.headers);
+      const headers = new Headers(init.headers);
+      const timestamp = headers.get("x-wheelsai-alert-timestamp");
+      const signature = headers.get("x-wheelsai-alert-signature");
+      const algorithm = headers.get("x-wheelsai-alert-signature-alg");
+      lastWebhookHeaders = {
+        ...(timestamp ? { "x-wheelsai-alert-timestamp": timestamp } : {}),
+        ...(signature ? { "x-wheelsai-alert-signature": signature } : {}),
+        ...(algorithm ? { "x-wheelsai-alert-signature-alg": algorithm } : {}),
+      };
     }
     if (typeof init?.body === "string") {
       lastWebhookBody = init.body;
@@ -278,9 +286,9 @@ test("x402 settlement tick updates counters and statuses", async () => {
   );
   assert.ok(executeRawCalls >= 2);
   assert.equal(alertWebhookCalls, 1);
-  const webhookTimestamp = lastWebhookHeaders?.get("x-wheelsai-alert-timestamp");
+  const webhookTimestamp = lastWebhookHeaders["x-wheelsai-alert-timestamp"];
   assert.ok(webhookTimestamp);
-  const webhookSignature = lastWebhookHeaders?.get("x-wheelsai-alert-signature");
+  const webhookSignature = lastWebhookHeaders["x-wheelsai-alert-signature"];
   assert.ok(webhookSignature?.startsWith("v1="));
   assert.equal(
     webhookSignature,
@@ -289,7 +297,7 @@ test("x402 settlement tick updates counters and statuses", async () => {
       .digest("hex")}`
   );
   assert.equal(
-    lastWebhookHeaders?.get("x-wheelsai-alert-signature-alg"),
+    lastWebhookHeaders["x-wheelsai-alert-signature-alg"],
     "hmac-sha256"
   );
 

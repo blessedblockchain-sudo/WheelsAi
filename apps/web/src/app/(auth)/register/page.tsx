@@ -38,7 +38,14 @@ export default function RegisterPage() {
       router.push("/dashboard");
     } catch (error) {
       if (error instanceof ApiError) {
-        toast.error(error.data?.message || "Failed to create account");
+        const message =
+          typeof error.data === "object" &&
+          error.data !== null &&
+          "message" in error.data &&
+          typeof (error.data as { message?: unknown }).message === "string"
+            ? (error.data as { message: string }).message
+            : "Failed to create account";
+        toast.error(message);
       } else {
         toast.error("Something went wrong. Please try again.");
       }

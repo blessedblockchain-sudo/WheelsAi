@@ -264,7 +264,7 @@ function validateJsonl(
   const maxSamples = 5;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line = lines[i] ?? "";
     try {
       const row = JSON.parse(line);
 
@@ -354,7 +354,7 @@ function validateCsv(
   }
 
   // Parse header
-  const header = parseCSVLine(lines[0]);
+  const header = parseCSVLine(lines[0] ?? "");
   const fields = header.map((name) => ({
     name,
     type: "string" as const,
@@ -373,7 +373,7 @@ function validateCsv(
   const maxSamples = 5;
 
   for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
+    const values = parseCSVLine(lines[i] ?? "");
 
     if (values.length !== header.length) {
       errors.push({
@@ -386,7 +386,7 @@ function validateCsv(
 
     const row: Record<string, string> = {};
     header.forEach((col, idx) => {
-      row[col] = values[idx];
+      row[col] = values[idx] ?? "";
     });
 
     validRows++;
@@ -414,15 +414,19 @@ function validateCsv(
 function parseS3Url(url: string): { bucket: string; key: string } {
   if (url.startsWith("s3://")) {
     const parts = url.slice(5).split("/");
+    const bucket = parts[0];
+    if (!bucket) {
+      throw new Error("Invalid S3 URL format");
+    }
     return {
-      bucket: parts[0],
+      bucket,
       key: parts.slice(1).join("/"),
     };
   }
 
   // Handle https://bucket.s3.region.amazonaws.com/key format
   const match = url.match(/https?:\/\/([^.]+)\.s3\..*\.amazonaws\.com\/(.+)/);
-  if (match) {
+  if (match?.[1] && match?.[2]) {
     return { bucket: match[1], key: match[2] };
   }
 

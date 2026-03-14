@@ -25,6 +25,7 @@ export interface CreateTokenParams {
 export interface ListTokensParams {
   status?: string;
   sortBy?: "market_cap" | "volume" | "newest" | "holders";
+  search?: string;
   page?: number;
   limit?: number;
 }
@@ -263,7 +264,7 @@ export async function getTokenByMint(mintAddress: string) {
  * List tokens with filtering and sorting
  */
 export async function listTokens(params: ListTokensParams = {}) {
-  const { status, sortBy = "market_cap", page = 1, limit = 20 } = params;
+  const { status, sortBy = "market_cap", search, page = 1, limit = 20 } = params;
 
   const skip = (page - 1) * limit;
 
@@ -271,6 +272,20 @@ export async function listTokens(params: ListTokensParams = {}) {
   const where: any = {};
   if (status) {
     where.status = status;
+  }
+  if (search) {
+    where.OR = [
+      { name: { contains: search, mode: "insensitive" } },
+      { symbol: { contains: search, mode: "insensitive" } },
+      { mintAddress: { contains: search, mode: "insensitive" } },
+      {
+        agentListing: {
+          is: {
+            title: { contains: search, mode: "insensitive" },
+          },
+        },
+      },
+    ];
   }
 
   // Build orderBy clause

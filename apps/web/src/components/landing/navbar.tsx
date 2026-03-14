@@ -19,6 +19,7 @@ export function Navbar() {
     { href: "#how-it-works", label: "How It Works" },
     { href: "#frameworks", label: "Frameworks" },
     { href: "#pricing", label: "Pricing" },
+    { href: "/marketplace", label: "Marketplace" },
     { href: "/docs", label: "Docs" },
   ];
 

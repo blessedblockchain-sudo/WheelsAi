@@ -65,7 +65,11 @@ export async function getAgentGraph(agentId: string, userId: string) {
   const agent = await prisma.agent.findFirst({
     where: {
       id: agentId,
-      ownerId: userId,
+      org: {
+        members: {
+          some: { userId },
+        },
+      },
     },
   });
 
@@ -103,7 +107,11 @@ export async function saveAgentGraph(
   const agent = await prisma.agent.findFirst({
     where: {
       id: agentId,
-      ownerId: userId,
+      org: {
+        members: {
+          some: { userId },
+        },
+      },
     },
   });
 
@@ -141,7 +149,11 @@ export async function deleteAgentGraph(agentId: string, userId: string) {
   const agent = await prisma.agent.findFirst({
     where: {
       id: agentId,
-      ownerId: userId,
+      org: {
+        members: {
+          some: { userId },
+        },
+      },
     },
   });
 
@@ -467,7 +479,9 @@ export async function compileGraph(agentId: string, userId: string) {
     adjacency[node.id] = [];
   }
   for (const edge of edges) {
-    adjacency[edge.source].push(edge.target);
+    const targets = adjacency[edge.source] ?? [];
+    targets.push(edge.target);
+    adjacency[edge.source] = targets;
   }
 
   // Topological sort for execution order

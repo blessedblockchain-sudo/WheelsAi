@@ -12,12 +12,17 @@ import {
   ArrowRight,
   X,
   ChevronDown,
+  Coins,
+  TrendingUp,
 } from "lucide-react";
 import {
   marketplaceApi,
+  tokenApi,
   type MarketplaceListing,
   type MarketplaceCategory,
+  type AgentToken,
 } from "@/lib/api";
+import { TokenCard, type TokenCardData } from "@/components/dashboard/token-card";
 
 const SORT_OPTIONS = [
   { value: "popular", label: "Most Popular" },
@@ -35,9 +40,20 @@ const PRICING_OPTIONS = [
   { value: "tokenized", label: "Token Gated" },
 ];
 
-function formatPrice(listing: MarketplaceListing): string {
+function formatPrice(
+  listing: MarketplaceListing,
+  tokenPriceMap: Map<string, number>
+): string {
   if (listing.pricingModel === "free") return "Free";
-  if (listing.pricingModel === "tokenized") return "Token Gated";
+  if (listing.pricingModel === "tokenized") {
+    const price = tokenPriceMap.get(listing.id);
+    if (price !== undefined) {
+      if (price >= 1) return `$${price.toFixed(2)}`;
+      if (price >= 0.01) return `$${price.toFixed(4)}`;
+      return `$${price.toFixed(6)}`;
+    }
+    return "Token Gated";
+  }
   if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
     const price = listing.pricePerRequestCents / 100;
     return `$${price.toFixed(4)}/req`;
@@ -49,19 +65,33 @@ function formatPrice(listing: MarketplaceListing): string {
   return "Free";
 }
 
-function getCategoryIcon(category: string): string {
-  const icons: Record<string, string> = {
-    "customer-support": "headphones",
-    coding: "code",
-    research: "search",
-    automation: "zap",
-    creative: "sparkles",
-    other: "grid",
+function agentTokenToCardData(token: AgentToken): TokenCardData {
+  return {
+    id: token.id,
+    name: token.name,
+    symbol: token.symbol,
+    imageUri: token.imageUri,
+    priceUsd: token.priceUsd,
+    marketCapUsd: token.marketCapUsd,
+    volume24h: token.volume24h,
+    holders: token.holders,
+    status: token.status,
+    agentName: token.agentListing?.title,
+    createdAt: token.createdAt,
   };
-  return icons[category] || "grid";
 }
 
-function AgentCard({ listing }: { listing: MarketplaceListing }) {
+function AgentCard({
+  listing,
+  tokenPriceMap,
+}: {
+  listing: MarketplaceListing;
+  tokenPriceMap: Map<string, number>;
+}) {
+  const priceText = formatPrice(listing, tokenPriceMap);
+  const hasTokenPrice =
+    listing.pricingModel === "tokenized" && tokenPriceMap.has(listing.id);
+
   return (
     <Link
       href={`/marketplace/${listing.slug}`}
@@ -114,11 +144,18 @@ function AgentCard({ listing }: { listing: MarketplaceListing }) {
         <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
           {listing.agent?.framework || "custom"}
         </span>
-        <span
-          className={`font-semibold ${listing.pricingModel === "free" ? "text-green-600" : "text-gray-900"}`}
-        >
-          {formatPrice(listing)}
-        </span>
+        {hasTokenPrice ? (
+          <span className="flex items-center gap-1 font-semibold text-cyan-600">
+            <Coins className="h-3.5 w-3.5" />
+            {priceText}
+          </span>
+        ) : (
+          <span
+            className={`font-semibold ${listing.pricingModel === "free" ? "text-green-600" : "text-gray-900"}`}
+          >
+            {priceText}
+          </span>
+        )}
       </div>
     </Link>
   );
@@ -176,6 +213,8 @@ export default function MarketplacePage() {
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [categories, setCategories] = useState<MarketplaceCategory[]>([]);
   const [featuredListings, setFeaturedListings] = useState<MarketplaceListing[]>([]);
+  const [trendingTokens, setTrendingTokens] = useState<AgentToken[]>([]);
+  const [tokenPriceMap, setTokenPriceMap] = useState<Map<string, number>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
   const [totalCount, setTotalCount] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
@@ -207,23 +246,33 @@ export default function MarketplacePage() {
     async function loadData() {
       setIsLoading(true);
       try {
-        const [listingsRes, categoriesRes, featuredRes] = await Promise.all([
-          marketplaceApi.searchListings({
-            query: query || undefined,
-            category: category !== "all" ? category : undefined,
-            pricingModel: pricingModel !== "all" ? pricingModel : undefined,
-            sortBy,
-            page,
-            limit: 12,
-          }),
-          marketplaceApi.getCategories(),
-          marketplaceApi.getFeatured(4),
-        ]);
+        const [listingsRes, categoriesRes, featuredRes, trendingRes] =
+          await Promise.all([
+            marketplaceApi.searchListings({
+              query: query || undefined,
+              category: category !== "all" ? category : undefined,
+              pricingModel: pricingModel !== "all" ? pricingModel : undefined,
+              sortBy,
+              page,
+              limit: 12,
+            }),
+            marketplaceApi.getCategories(),
+            marketplaceApi.getFeatured(4),
+            tokenApi.trending().catch(() => ({ tokens: [] })),
+          ]);
 
         setListings(listingsRes.listings);
         setTotalCount(listingsRes.pagination.total);
         setCategories(categoriesRes.categories);
         setFeaturedListings(featuredRes.listings);
+        setTrendingTokens(trendingRes.tokens.slice(0, 4));
+
+        // Build price lookup: agentListingId -> priceUsd
+        const priceMap = new Map<string, number>();
+        for (const token of trendingRes.tokens) {
+          priceMap.set(token.agentListingId, token.priceUsd);
+        }
+        setTokenPriceMap(priceMap);
       } catch (error) {
         console.error("Failed to load marketplace data:", error);
       } finally {
@@ -233,6 +282,8 @@ export default function MarketplacePage() {
 
     loadData();
   }, [query, category, pricingModel, sortBy, page]);
+
+  const showUnfilteredSections = !query && category === "all" && pricingModel === "all";
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -371,14 +422,46 @@ export default function MarketplacePage() {
           {/* Listings */}
           <div className="flex-1">
             {/* Featured Section */}
-            {!query && category === "all" && featuredListings.length > 0 && (
+            {showUnfilteredSections && featuredListings.length > 0 && (
               <section className="mb-8">
                 <h2 className="mb-4 text-lg font-semibold text-gray-900">
                   Featured Agents
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2">
                   {featuredListings.map((listing) => (
-                    <AgentCard key={listing.id} listing={listing} />
+                    <AgentCard
+                      key={listing.id}
+                      listing={listing}
+                      tokenPriceMap={tokenPriceMap}
+                    />
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Trending Tokens Section */}
+            {showUnfilteredSections && trendingTokens.length > 0 && (
+              <section className="mb-8">
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp className="h-5 w-5 text-cyan-600" />
+                    <h2 className="text-lg font-semibold text-gray-900">
+                      Trending Tokens
+                    </h2>
+                  </div>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  {trendingTokens.map((token) => (
+                    <Link
+                      key={token.id}
+                      href={
+                        token.agentListing?.slug
+                          ? `/marketplace/${token.agentListing.slug}#token`
+                          : "#"
+                      }
+                    >
+                      <TokenCard token={agentTokenToCardData(token)} />
+                    </Link>
                   ))}
                 </div>
               </section>
@@ -440,7 +523,11 @@ export default function MarketplacePage() {
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {listings.map((listing) => (
-                  <AgentCard key={listing.id} listing={listing} />
+                  <AgentCard
+                    key={listing.id}
+                    listing={listing}
+                    tokenPriceMap={tokenPriceMap}
+                  />
                 ))}
               </div>
             )}

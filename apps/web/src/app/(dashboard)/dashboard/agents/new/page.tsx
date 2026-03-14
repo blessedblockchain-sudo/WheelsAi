@@ -109,15 +109,17 @@ export default function NewAgentPage() {
 
   function nextStep() {
     const nextIndex = currentStepIndex + 1;
-    if (nextIndex < steps.length) {
-      setCurrentStep(steps[nextIndex].id);
+    const nextStepConfig = steps[nextIndex];
+    if (nextStepConfig) {
+      setCurrentStep(nextStepConfig.id);
     }
   }
 
   function prevStep() {
     const prevIndex = currentStepIndex - 1;
-    if (prevIndex >= 0) {
-      setCurrentStep(steps[prevIndex].id);
+    const prevStepConfig = steps[prevIndex];
+    if (prevStepConfig) {
+      setCurrentStep(prevStepConfig.id);
     }
   }
 
@@ -407,7 +409,9 @@ export default function NewAgentPage() {
                           value={env.key}
                           onChange={(e) => {
                             const newEnv = [...customEnv];
-                            newEnv[index].key = e.target.value;
+                            const target = newEnv[index];
+                            if (!target) return;
+                            target.key = e.target.value;
                             setCustomEnv(newEnv);
                           }}
                           placeholder="KEY"
@@ -417,7 +421,9 @@ export default function NewAgentPage() {
                           value={env.value}
                           onChange={(e) => {
                             const newEnv = [...customEnv];
-                            newEnv[index].value = e.target.value;
+                            const target = newEnv[index];
+                            if (!target) return;
+                            target.value = e.target.value;
                             setCustomEnv(newEnv);
                           }}
                           placeholder="value"

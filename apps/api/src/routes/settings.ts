@@ -1,7 +1,9 @@
 import { FastifyPluginAsync } from "fastify";
+import { PublicKey } from "@solana/web3.js";
+import nacl from "tweetnacl";
 import { requireAuth } from "../middleware/auth.js";
-import { prisma } from "../lib/prisma";
-import { hashPassword, verifyPassword } from "../services/auth";
+import { prisma } from "../lib/prisma.js";
+import { hashPassword, verifyPassword } from "../services/auth.js";
 
 interface UpdateProfileBody {
   displayName?: string;
@@ -190,7 +192,7 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    const isValid = await verifyPassword(currentPassword, user.passwordHash);
+    const isValid = await verifyPassword(user.passwordHash, currentPassword);
     if (!isValid) {
       return reply.status(400).send({
         error: "Bad Request",
@@ -206,5 +208,80 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     });
 
     return { message: "Password updated successfully" };
+  });
+
+  // Link Solana wallet
+  fastify.post<{
+    Body: { walletAddress: string; signature: string; message: string };
+  }>("/link-wallet", async (request, reply) => {
+    const { userId } = request.user!;
+    const { walletAddress, signature, message } = request.body;
+
+    if (!walletAddress || !signature || !message) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "walletAddress, signature, and message are required",
+      });
+    }
+
+    // Verify the wallet address is a valid Solana public key
+    let pubkey: PublicKey;
+    try {
+      pubkey = new PublicKey(walletAddress);
+    } catch {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Invalid Solana wallet address",
+      });
+    }
+
+    // Verify ed25519 signature
+    let isValid = false;
+    try {
+      const messageBytes = new TextEncoder().encode(message);
+      const signatureBytes = Buffer.from(signature, "base64");
+      isValid = nacl.sign.detached.verify(
+        messageBytes,
+        signatureBytes,
+        pubkey.toBytes()
+      );
+    } catch {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Invalid wallet signature",
+      });
+    }
+
+    if (!isValid) {
+      return reply.status(400).send({
+        error: "Bad Request",
+        message: "Invalid wallet signature",
+      });
+    }
+
+    // Check if another user already has this wallet linked
+    const existing = await prisma.user.findFirst({
+      where: {
+        walletAddress,
+        id: { not: userId },
+      },
+    });
+
+    if (existing) {
+      return reply.status(409).send({
+        error: "Conflict",
+        message: "This wallet is already linked to another account",
+      });
+    }
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: { walletAddress },
+    });
+
+    return {
+      walletAddress,
+      message: "Wallet linked successfully",
+    };
   });
 };

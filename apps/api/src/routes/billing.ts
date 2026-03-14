@@ -12,10 +12,10 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Get credit balance
   fastify.get("/balance", async (request) => {
-    const { organizationId } = request.user!;
+    const orgId = request.auth!.orgId;
 
     const balance = await prisma.creditBalance.findUnique({
-      where: { organizationId },
+      where: { orgId },
     });
 
     return {
@@ -29,10 +29,10 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Get transaction history
   fastify.get("/transactions", async (request) => {
-    const { organizationId } = request.user!;
+    const orgId = request.auth!.orgId;
 
     const transactions = await prisma.creditTransaction.findMany({
-      where: { organizationId },
+      where: { orgId },
       orderBy: { createdAt: "desc" },
       take: 50,
     });
@@ -50,7 +50,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Get usage summary
   fastify.get("/usage", async (request) => {
-    const { organizationId } = request.user!;
+    const orgId = request.auth!.orgId;
 
     // Get current month's usage records
     const startOfMonth = new Date();
@@ -59,8 +59,8 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     const usageRecords = await prisma.usageRecord.findMany({
       where: {
-        organizationId,
-        createdAt: { gte: startOfMonth },
+        orgId,
+        periodStart: { gte: startOfMonth },
       },
     });
 
@@ -68,15 +68,15 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       (acc, record) => {
         acc.inputTokens += Number(record.inputTokens);
         acc.outputTokens += Number(record.outputTokens);
-        acc.requests += 1;
-        acc.computeMs += Number(record.computeMs);
+        acc.requests += record.requestCount;
+        acc.totalLatencyMs += Number(record.totalLatencyMs);
         acc.costCents += Number(record.costCents);
         return acc;
       },
-      { inputTokens: 0, outputTokens: 0, requests: 0, computeMs: 0, costCents: 0 }
+      { inputTokens: 0, outputTokens: 0, requests: 0, totalLatencyMs: 0, costCents: 0 }
     );
 
-    const gpuHours = totals.computeMs / (1000 * 60 * 60);
+    const gpuHours = totals.totalLatencyMs / (1000 * 60 * 60);
     const avgCostPerHour = gpuHours > 0 ? (totals.costCents / 100) / gpuHours : 0;
 
     return {
@@ -97,9 +97,9 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
   // Create checkout session (Stripe integration placeholder)
   fastify.post<{ Body: CheckoutBody }>("/checkout", async (request, reply) => {
     const { amount } = request.body;
-    const { organizationId, userId } = request.user!;
+    const orgId = request.auth!.orgId;
 
-    if (!amount || amount < 5) {
+    if (!amount || Number.isNaN(amount) || amount < 5) {
       return reply.status(400).send({
         error: "Bad Request",
         message: "Minimum purchase amount is $5",
@@ -109,27 +109,29 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     // TODO: Integrate with Stripe
     // For now, simulate adding credits directly (for development)
     const amountCents = Math.round(amount * 100);
+    const amountCentsBigInt = BigInt(amountCents);
 
     // Add credits
-    await prisma.creditBalance.upsert({
-      where: { organizationId },
+    const balanceAfterPurchase = await prisma.creditBalance.upsert({
+      where: { orgId },
       update: {
-        balanceCents: { increment: amountCents },
+        balanceCents: { increment: amountCentsBigInt },
       },
       create: {
-        organizationId,
-        balanceCents: amountCents,
+        orgId,
+        balanceCents: amountCentsBigInt,
       },
     });
 
     // Record transaction
     await prisma.creditTransaction.create({
       data: {
-        organizationId,
-        amountCents,
-        type: "PURCHASE",
+        orgId,
+        amountCents: amountCentsBigInt,
+        type: "purchase",
         description: `Credit purchase: $${amount}`,
-        metadata: { method: "development_mock" },
+        referenceId: "development_mock",
+        balanceAfter: balanceAfterPurchase.balanceCents,
       },
     });
 
@@ -141,17 +143,20 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
     if (bonusAmount > 0) {
       const bonusCents = bonusAmount * 100;
-      await prisma.creditBalance.update({
-        where: { organizationId },
-        data: { balanceCents: { increment: bonusCents } },
+      const bonusCentsBigInt = BigInt(bonusCents);
+      const balanceAfterBonus = await prisma.creditBalance.update({
+        where: { orgId },
+        data: { balanceCents: { increment: bonusCentsBigInt } },
       });
 
       await prisma.creditTransaction.create({
         data: {
-          organizationId,
-          amountCents: bonusCents,
-          type: "BONUS",
+          orgId,
+          amountCents: bonusCentsBigInt,
+          type: "bonus",
           description: `Bonus credits: $${bonusAmount}`,
+          referenceId: "development_bonus",
+          balanceAfter: balanceAfterBonus.balanceCents,
         },
       });
     }

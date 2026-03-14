@@ -8,6 +8,11 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth-middleware");
 
+type LegacyJwtUser = JwtPayload & {
+  id: string;
+  organizationId: string;
+};
+
 // Extend Fastify types
 declare module "fastify" {
   interface FastifyRequest {
@@ -26,7 +31,7 @@ declare module "fastify" {
 declare module "@fastify/jwt" {
   interface FastifyJWT {
     payload: JwtPayload;
-    user: JwtPayload;
+    user: LegacyJwtUser;
   }
 }
 
@@ -34,7 +39,9 @@ declare module "@fastify/jwt" {
 // Plugin Registration
 // ============================================
 
-export async function registerAuthPlugins(app: FastifyInstance) {
+export async function registerAuthPlugins(
+  app: FastifyInstance<any, any, any, any>
+) {
   // Register cookie plugin for session management
   await app.register(fastifyCookie, {
     secret: env.JWT_SECRET,
@@ -64,6 +71,7 @@ export async function registerAuthPlugins(app: FastifyInstance) {
     const auth = await authenticateRequest(request, app);
     if (auth) {
       request.auth = auth;
+      request.user = toLegacyUser(auth);
     }
   });
 }
@@ -74,7 +82,7 @@ export async function registerAuthPlugins(app: FastifyInstance) {
 
 async function authenticateRequest(
   request: FastifyRequest,
-  app: FastifyInstance
+  app: FastifyInstance<any, any, any, any>
 ): Promise<FastifyRequest["auth"]> {
   // 1. Check for API key in header
   const apiKeyAuth = await tryApiKeyAuth(request);
@@ -122,7 +130,7 @@ async function tryApiKeyAuth(
 
 async function tryBearerAuth(
   request: FastifyRequest,
-  app: FastifyInstance
+  app: FastifyInstance<any, any, any, any>
 ): Promise<FastifyRequest["auth"]> {
   const authHeader = request.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
@@ -149,7 +157,7 @@ async function tryBearerAuth(
 
 async function tryCookieAuth(
   request: FastifyRequest,
-  app: FastifyInstance
+  app: FastifyInstance<any, any, any, any>
 ): Promise<FastifyRequest["auth"]> {
   const token = request.cookies.wheelsai_token;
   if (!token) return null;
@@ -171,6 +179,17 @@ async function tryCookieAuth(
     logger.debug({ error }, "Cookie auth verification failed");
     return null;
   }
+}
+
+function toLegacyUser(auth: NonNullable<FastifyRequest["auth"]>): LegacyJwtUser {
+  return {
+    id: auth.userId,
+    userId: auth.userId,
+    orgId: auth.orgId,
+    organizationId: auth.orgId,
+    email: auth.email,
+    walletAddress: auth.walletAddress,
+  };
 }
 
 // ============================================
@@ -234,7 +253,10 @@ export async function requireJwtAuth(
 // Token Generation
 // ============================================
 
-export function generateTokens(app: FastifyInstance, payload: JwtPayload) {
+export function generateTokens(
+  app: FastifyInstance<any, any, any, any>,
+  payload: JwtPayload
+) {
   const accessToken = app.jwt.sign(payload);
 
   return { accessToken };

@@ -23,10 +23,6 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { agentsApi, marketplaceApi, type Agent, type CreateListingInput } from "@/lib/api";
@@ -90,7 +86,7 @@ export default function PublishWizardPage() {
     if (editId) {
       async function loadListing() {
         try {
-          const { listing } = await marketplaceApi.getListing(editId);
+          const { listing } = await marketplaceApi.getListing(editId ?? "");
           setFormData({
             agentId: listing.agentId,
             title: listing.title,
@@ -368,21 +364,18 @@ export default function PublishWizardPage() {
                   <div>
                     <Label htmlFor="category">Category *</Label>
                     <Select
+                      id="category"
                       value={formData.category}
-                      onValueChange={(value: any) =>
-                        updateForm({ category: value })
+                      onChange={(e) =>
+                        updateForm({ category: e.target.value as CreateListingInput["category"] })
                       }
+                      className="mt-1"
                     >
-                      <SelectTrigger className="mt-1">
-                        <SelectValue placeholder="Select a category" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {CATEGORIES.map((cat) => (
-                          <SelectItem key={cat.value} value={cat.value}>
-                            {cat.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
+                      {CATEGORIES.map((cat) => (
+                        <option key={cat.value} value={cat.value}>
+                          {cat.label}
+                        </option>
+                      ))}
                     </Select>
                   </div>
                 </div>
@@ -402,9 +395,9 @@ export default function PublishWizardPage() {
 
                 <RadioGroup
                   value={formData.pricingModel}
-                  onValueChange={(value: "free" | "per_request" | "monthly" | "tokenized") =>
+                  onValueChange={(value: string) =>
                     updateForm({
-                      pricingModel: value,
+                      pricingModel: value as CreateListingInput["pricingModel"],
                       pricePerRequestCents: undefined,
                       monthlyPriceCents: undefined,
                     })

@@ -512,6 +512,9 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
 
       // Pick a random healthy node
       const node = deployment.nodes[Math.floor(Math.random() * deployment.nodes.length)];
+      if (!node) {
+        return reply.serviceUnavailable("No healthy nodes available");
+      }
 
       try {
         // For development, return a mock response

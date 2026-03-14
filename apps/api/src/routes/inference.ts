@@ -2,6 +2,7 @@ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
+import { requireTokenHolding } from "../middleware/tokenGate.js";
 import { env } from "../config/env.js";
 import { createLogger } from "../utils/logger.js";
 import { Prisma, prisma } from "@wheelsai/db";
@@ -78,7 +79,7 @@ export function createInferenceRoutes(
    */
   app.post(
     "/v1/:deploymentSlug/chat/completions",
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireTokenHolding()] },
     async (request, reply) => {
       const { deploymentSlug } = z
         .object({ deploymentSlug: z.string() })

@@ -142,7 +142,14 @@ function getRuntimeImage(framework: string): string {
  * Get external provider URL for a model identifier
  */
 function getExternalProviderUrl(modelId: string): string {
-  const provider = modelId.split("/")[0] ?? "openai";
+  // Handle free/ prefix: free/groq/llama-3.3-70b → groq
+  let provider: string;
+  if (modelId.startsWith("free/")) {
+    const parts = modelId.split("/");
+    provider = parts[1] ?? "openai";
+  } else {
+    provider = modelId.split("/")[0] ?? "openai";
+  }
 
   const providerUrls: Record<string, string> = {
     openai: "https://api.openai.com/v1",
@@ -151,6 +158,7 @@ function getExternalProviderUrl(modelId: string): string {
     together: "https://api.together.xyz/v1",
     groq: "https://api.groq.com/openai/v1",
     fireworks: "https://api.fireworks.ai/inference/v1",
+    gemini: "https://generativelanguage.googleapis.com/v1beta/openai",
   };
 
   return providerUrls[provider] ?? providerUrls.openai ?? "https://api.openai.com/v1";
@@ -182,13 +190,27 @@ function shouldUseGpu(agent: AgentConfig["agent"]): boolean {
  * Generate Mastra-specific agent configuration
  */
 export function generateMastraConfig(agent: AgentConfig["agent"]): Record<string, any> {
+  const externalModel = agent.modelConfig.externalModel || "openai/gpt-4";
+
+  // Handle free/ prefix: free/groq/llama-3.3-70b → provider: groq, name: llama-3.3-70b-versatile
+  let provider: string;
+  let modelName: string;
+  if (externalModel.startsWith("free/")) {
+    const parts = externalModel.split("/");
+    provider = parts[1] || "groq";
+    modelName = parts.slice(2).join("/") || "llama-3.3-70b-versatile";
+  } else {
+    provider = externalModel.split("/")[0] || "openai";
+    modelName = externalModel.split("/")[1] || "gpt-4";
+  }
+
   return {
     agent: {
       name: agent.name,
       instructions: agent.systemPrompt,
       model: {
-        provider: agent.modelConfig.externalModel?.split("/")[0] || "openai",
-        name: agent.modelConfig.externalModel?.split("/")[1] || "gpt-4",
+        provider,
+        name: modelName,
         temperature: agent.modelConfig.temperature,
         maxTokens: agent.modelConfig.maxTokens,
       },

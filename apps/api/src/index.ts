@@ -41,6 +41,7 @@ import { twoFactorRoutes } from "./routes/twoFactor.js";
 import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
+import { playgroundRoutes } from "./routes/playground.js";
 import { startX402SettlementWorker } from "./services/x402Settlement.js";
 import { startTokenIndexerWorker } from "./services/tokenIndexer.js";
 
@@ -98,6 +99,7 @@ async function main() {
   await app.register(x402Routes, { prefix: "/api/x402" });
   await app.register(openclawRoutes, { prefix: "/api/openclaw" });
   await app.register(tokenRoutes, { prefix: "/api/tokens" });
+  await app.register(playgroundRoutes, { prefix: "/api" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
 
   // Global error handler

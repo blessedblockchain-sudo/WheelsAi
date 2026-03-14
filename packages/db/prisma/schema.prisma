@@ -2109,3 +2109,21 @@ model AgentTokenSnapshot {
   @@index([tokenId, timestamp])
   @@map("agent_token_snapshots")
 }
+
+// ============================================
+// Free Tier Usage Tracking
+// ============================================
+
+model FreeTierUsage {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @map("org_id") @db.Uuid
+  model        String
+  provider     String
+  inputTokens  Int      @default(0) @map("input_tokens")
+  outputTokens Int      @default(0) @map("output_tokens")
+  requestCount Int      @default(0) @map("request_count")
+  date         DateTime @default(now()) @db.Date
+
+  @@unique([orgId, model, date])
+  @@map("free_tier_usage")
+}

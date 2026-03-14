@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { getAllFreeModels, getAvailableFreeModels } from "../config/free-models.js";
 
 // Model catalog - in MVP this is seeded data, in production fetched from DB
 const MODEL_CATALOG = [
@@ -461,16 +462,36 @@ const GPU_TIERS = [
 ];
 
 export const modelRoutes: FastifyPluginAsync = async (app) => {
+  // List free models
+  app.get("/free", async () => {
+    return {
+      models: getAvailableFreeModels(),
+      allModels: getAllFreeModels(),
+    };
+  });
+
   // List all models
   app.get("/", async (request, reply) => {
-    const { tag, minGpu, search, engine } = z
+    const { tag, minGpu, search, engine, tier } = z
       .object({
         tag: z.string().optional(),
         minGpu: z.string().optional(),
         search: z.string().optional(),
         engine: z.enum(["vllm", "ollama"]).optional(),
+        tier: z.enum(["free", "gpu", "all"]).optional(),
       })
       .parse(request.query);
+
+    // Return only free models
+    if (tier === "free") {
+      return {
+        models: getAvailableFreeModels().map((m) => ({
+          ...m,
+          tier: "free" as const,
+        })),
+        gpuTiers: [],
+      };
+    }
 
     let models = [...MODEL_CATALOG];
 
@@ -491,8 +512,24 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
       );
     }
 
+    const gpuModels = models.map((m) => ({ ...m, tier: "gpu" as const }));
+
+    // Include free models in default response unless tier=gpu
+    if (tier === "gpu") {
+      return { models: gpuModels, gpuTiers: GPU_TIERS };
+    }
+
+    const freeModels = getAvailableFreeModels().map((m) => ({
+      id: m.id,
+      displayName: m.displayName,
+      description: m.notes,
+      provider: m.provider,
+      contextLength: m.contextLength,
+      tier: "free" as const,
+    }));
+
     return {
-      models,
+      models: [...freeModels, ...gpuModels],
       gpuTiers: GPU_TIERS,
     };
   });

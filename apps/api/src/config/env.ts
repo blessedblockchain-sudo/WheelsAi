@@ -97,6 +97,13 @@ const envSchema = z.object({
   OPENCLAW_DEFAULT_IMAGE: z.string().default("wheelsai/openclaw-hardened:latest"),
   OPENCLAW_SUBDOMAIN_BASE: z.string().default("openclaw.wheelsai.com"),
 
+  // Free Model Providers
+  GROQ_API_KEY: z.string().optional(),
+  GOOGLE_GEMINI_API_KEY: z.string().optional(),
+  TOGETHER_API_KEY: z.string().optional(),
+  FREE_TIER_RPM: z.coerce.number().default(20),
+  FREE_TIER_RPD: z.coerce.number().default(200),
+
   // Token Marketplace
   PUMPFUN_API_KEY: z.string().optional(),
   TOKEN_INDEXER_INTERVAL_MS: z.coerce.number().int().min(0).default(30000),

@@ -91,7 +91,7 @@ export default function NewAgentPage() {
     systemPrompt: "",
     tools: [],
     modelConfig: {
-      externalModel: "openai/gpt-4",
+      externalModel: "free/groq/llama-3.3-70b",
       temperature: 0.7,
       maxTokens: 4096,
     },
@@ -301,12 +301,19 @@ export default function NewAgentPage() {
                       }
                       className="mt-1"
                     >
-                      <optgroup label="OpenAI">
+                      <optgroup label="Free Models (No API Key)">
+                        <option value="free/groq/llama-3.3-70b">Llama 3.3 70B - Groq (Free)</option>
+                        <option value="free/groq/llama-3.1-8b">Llama 3.1 8B Instant - Groq (Free)</option>
+                        <option value="free/groq/mixtral-8x7b">Mixtral 8x7B - Groq (Free)</option>
+                        <option value="free/gemini/gemini-2.5-flash">Gemini 2.5 Flash - Google (Free)</option>
+                        <option value="free/together/llama-3.1-8b">Llama 3.1 8B - Together (Free)</option>
+                      </optgroup>
+                      <optgroup label="OpenAI (API Key Required)">
                         <option value="openai/gpt-4">GPT-4</option>
                         <option value="openai/gpt-4-turbo">GPT-4 Turbo</option>
                         <option value="openai/gpt-3.5-turbo">GPT-3.5 Turbo</option>
                       </optgroup>
-                      <optgroup label="Anthropic">
+                      <optgroup label="Anthropic (API Key Required)">
                         <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
                         <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
                       </optgroup>
@@ -622,8 +629,8 @@ export const agent = new Agent({
   name: 'My Agent',
   instructions: 'You are a helpful assistant.',
   model: {
-    provider: 'openai',
-    name: 'gpt-4',
+    provider: 'groq',
+    name: 'llama-3.3-70b-versatile',
   },
   tools: [],
 });`;

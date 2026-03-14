@@ -3557,4 +3557,104 @@ export const tokenApi = {
     }>(`/api/tokens/eligibility/${agentListingId}`),
 };
 
+// ============================================
+// Playground API
+// ============================================
+
+export interface PlaygroundChatResponse {
+  content: string;
+  model: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+}
+
+export interface PlaygroundModel {
+  id: string;
+  displayName: string;
+  provider: string;
+  contextLength: number;
+  notes?: string;
+  available: boolean;
+}
+
+export interface PlaygroundModelsResponse {
+  freeModels: PlaygroundModel[];
+  externalModels: Array<{
+    id: string;
+    displayName: string;
+    provider: string;
+    requiresApiKey: boolean;
+    envKey: string;
+  }>;
+}
+
+export const playgroundApi = {
+  chat: (agentId: string, body: { messages: Array<{ role: string; content: string }>; model?: string; stream?: boolean }) =>
+    api<PlaygroundChatResponse>(`/api/agents/${agentId}/playground/chat`, {
+      method: "POST",
+      body,
+    }),
+
+  models: (agentId: string) =>
+    api<PlaygroundModelsResponse>(`/api/agents/${agentId}/playground/models`),
+};
+
+/**
+ * Stream playground chat responses as an async generator of content deltas
+ */
+export async function* streamPlaygroundChat(
+  agentId: string,
+  body: { messages: Array<{ role: string; content: string }>; model?: string }
+): AsyncGenerator<string, void, unknown> {
+  const res = await fetch(
+    `${API_URL}/api/agents/${agentId}/playground/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, stream: true }),
+      credentials: "include",
+    }
+  );
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, res.statusText, data);
+  }
+
+  if (!res.body) return;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6);
+          if (data === "[DONE]") return;
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) yield content;
+          } catch {
+            // Skip unparseable SSE chunks
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export { ApiError };

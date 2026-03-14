@@ -17,6 +17,7 @@ import {
   ExternalLink,
   AlertTriangle,
   Workflow,
+  MessageCircle,
   History,
   GitBranch,
   ArrowLeft,
@@ -333,6 +334,12 @@ export default function AgentDetailPage() {
               </div>
 
               <div className="flex gap-2">
+                <Link href={`/dashboard/agents/${agentId}/playground`}>
+                  <Button variant="outline">
+                    <MessageCircle className="mr-2 h-4 w-4" />
+                    Playground
+                  </Button>
+                </Link>
                 <Link href={`/dashboard/agents/${agentId}/builder`}>
                   <Button variant="outline">
                     <Workflow className="mr-2 h-4 w-4" />

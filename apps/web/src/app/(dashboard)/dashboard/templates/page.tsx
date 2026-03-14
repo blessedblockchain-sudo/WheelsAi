@@ -20,6 +20,7 @@ import {
   HelpCircle,
 } from "lucide-react";
 import { templateApi, type AgentTemplate } from "@/lib/api";
+import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -106,7 +107,10 @@ function slugify(text: string): string {
 // ---------------------------------------------------------------------------
 
 function DifficultyBadge({ difficulty }: { difficulty: string }) {
-  const cfg = DIFFICULTY_CONFIG[difficulty] ?? DIFFICULTY_CONFIG.beginner;
+  const cfg = DIFFICULTY_CONFIG[difficulty] ?? DIFFICULTY_CONFIG.beginner ?? {
+    color: "text-muted-foreground",
+    dot: "bg-muted-foreground",
+  };
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${cfg.color}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
@@ -488,9 +492,32 @@ export default function TemplatesPage() {
 
         {/* Loading State */}
         {loading && (
-          <div className="mt-16 flex flex-col items-center justify-center gap-3 text-gray-500">
-            <Loader2 className="h-8 w-8 animate-spin text-matrix-green/60" />
-            <p className="text-sm">Loading templates...</p>
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-matrix-border bg-matrix-surface p-5 space-y-4"
+              >
+                <div className="flex items-start gap-4">
+                  <Skeleton className="h-10 w-10 rounded-lg" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-3 w-1/3" />
+                  </div>
+                </div>
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-2/3" />
+                <div className="flex gap-2">
+                  <Skeleton className="h-6 w-20" />
+                  <Skeleton className="h-6 w-16" />
+                  <Skeleton className="h-6 w-18" />
+                </div>
+                <div className="flex items-center justify-between pt-2">
+                  <Skeleton className="h-4 w-16" />
+                  <Skeleton className="h-8 w-24" />
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

@@ -18,6 +18,8 @@ import {
   type AnalyticsDashboard,
   type SpendingAlert,
 } from "@/lib/api";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
 
 export default function AnalyticsDashboardPage() {
   const [dashboard, setDashboard] = useState<AnalyticsDashboard | null>(null);
@@ -61,13 +63,23 @@ export default function AnalyticsDashboardPage() {
   if (loading) {
     return (
       <div className="p-6 space-y-6">
-        <div className="h-8 w-48 bg-muted animate-pulse rounded" />
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-8 w-36" />
+            <Skeleton className="h-4 w-56" />
+          </div>
+          <Skeleton className="h-10 w-36" />
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-32 bg-card border rounded-lg animate-pulse" />
+          {Array.from({ length: 4 }).map((_, i) => (
+            <SkeletonCard key={i} />
           ))}
         </div>
-        <div className="h-80 bg-card border rounded-lg animate-pulse" />
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6 space-y-4">
+          <Skeleton className="h-5 w-48" />
+          <Skeleton className="h-48 w-full" />
+        </div>
+        <SkeletonTable rows={5} cols={8} />
       </div>
     );
   }
@@ -75,13 +87,13 @@ export default function AnalyticsDashboardPage() {
   if (!dashboard) {
     return (
       <div className="p-6">
-        <div className="text-center py-12">
-          <BarChart3 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-          <h2 className="text-xl font-semibold mb-2">No Analytics Data</h2>
-          <p className="text-muted-foreground">
-            Start using deployments to see analytics here.
-          </p>
-        </div>
+        <EmptyState
+          icon={BarChart3}
+          title="No analytics data"
+          description="Start using deployments to see usage metrics and cost insights here."
+          actionLabel="Deploy a Model"
+          actionHref="/dashboard/models"
+        />
       </div>
     );
   }
@@ -220,6 +232,11 @@ export default function AnalyticsDashboardPage() {
         <h2 className="text-lg font-semibold mb-4">Usage Over Time</h2>
         {timeseries.length > 0 ? (
           <div className="h-64">
+            {(() => {
+              const firstPoint = timeseries[0];
+              const lastPoint = timeseries[timeseries.length - 1];
+              return (
+                <>
             <div className="flex items-end gap-1 h-48">
               {timeseries.slice(-30).map((point, i) => {
                 const maxRequests = Math.max(...timeseries.map((p) => p.requests));
@@ -242,16 +259,15 @@ export default function AnalyticsDashboardPage() {
             </div>
             <div className="flex justify-between text-xs text-muted-foreground mt-2">
               <span>
-                {timeseries.length > 0
-                  ? new Date(timeseries[0].timestamp).toLocaleDateString()
-                  : ""}
+                {firstPoint ? new Date(firstPoint.timestamp).toLocaleDateString() : ""}
               </span>
               <span>
-                {timeseries.length > 0
-                  ? new Date(timeseries[timeseries.length - 1].timestamp).toLocaleDateString()
-                  : ""}
+                {lastPoint ? new Date(lastPoint.timestamp).toLocaleDateString() : ""}
               </span>
             </div>
+                </>
+              );
+            })()}
           </div>
         ) : (
           <div className="h-48 flex items-center justify-center text-muted-foreground">

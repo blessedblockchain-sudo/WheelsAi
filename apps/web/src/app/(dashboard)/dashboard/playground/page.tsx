@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import { deploymentsApi, playgroundApi, type Deployment } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -51,8 +52,9 @@ export default function PlaygroundPage() {
         const { deployments } = await deploymentsApi.list();
         const runningDeployments = deployments.filter((d) => d.status === "running");
         setDeployments(runningDeployments);
-        if (runningDeployments.length > 0) {
-          setSelectedDeployment(runningDeployments[0].id);
+        const firstDeployment = runningDeployments[0];
+        if (firstDeployment) {
+          setSelectedDeployment(firstDeployment.id);
         }
       } catch (error) {
         toast.error("Failed to load deployments");
@@ -102,7 +104,7 @@ export default function PlaygroundPage() {
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: response.choices[0].message.content,
+        content: response.choices[0]?.message?.content ?? "",
         timestamp: new Date(),
         tokens: response.usage?.total_tokens,
         latency,
@@ -154,7 +156,7 @@ export default function PlaygroundPage() {
                   Deployment
                 </label>
                 {isLoadingDeployments ? (
-                  <div className="mt-1 h-10 animate-pulse rounded-lg bg-gray-200" />
+                  <Skeleton className="mt-1 h-10 w-full" />
                 ) : deployments.length === 0 ? (
                   <p className="mt-1 text-sm text-gray-500">
                     No running deployments.{" "}

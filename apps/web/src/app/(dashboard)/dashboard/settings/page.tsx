@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import {
   User,
   Mail,
@@ -12,6 +14,8 @@ import {
   LogOut,
   Save,
   AlertTriangle,
+  Unlink,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,6 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
 import { settingsApi, authApi, type UserProfile, type UserSettings } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -117,7 +122,26 @@ export default function SettingsPage() {
       <div className="flex flex-col">
         <Header title="Settings" />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-gray-200" />
+          <div className="flex gap-8">
+            {/* Sidebar skeleton */}
+            <div className="w-48 shrink-0 space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-9 w-full" />
+              ))}
+            </div>
+            {/* Content skeleton */}
+            <div className="flex-1">
+              <SkeletonCard />
+              <div className="mt-6 space-y-4">
+                <Skeleton className="h-4 w-1/3" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-4 w-1/3" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-4 w-1/4" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -394,64 +418,139 @@ export default function SettingsPage() {
 
             {/* Wallets tab */}
             {activeTab === "wallets" && (
-              <div className="space-y-6">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Connected Wallets</CardTitle>
-                    <CardDescription>
-                      Manage your connected Solana wallets for authentication and payments
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {profile?.walletAddress ? (
-                      <div className="flex items-center justify-between rounded-lg border p-4">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-r from-green-400 to-purple-500">
-                            <Wallet className="h-5 w-5 text-white" />
-                          </div>
-                          <div>
-                            <p className="font-medium">Solana Wallet</p>
-                            <code className="text-sm text-gray-500">
-                              {profile.walletAddress.slice(0, 8)}...{profile.walletAddress.slice(-8)}
-                            </code>
-                          </div>
-                        </div>
-                        <Badge variant="success">Connected</Badge>
-                      </div>
-                    ) : (
-                      <div className="text-center py-8">
-                        <Wallet className="mx-auto h-12 w-12 text-gray-300" />
-                        <p className="mt-4 text-gray-500">No wallets connected</p>
-                        <Button className="mt-4" onClick={() => toast.info("Wallet connect coming soon!")}>
-                          <Wallet className="mr-2 h-4 w-4" />
-                          Connect Solana Wallet
-                        </Button>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Agent Wallets</CardTitle>
-                    <CardDescription>
-                      Managed wallets for autonomous agent transactions (coming soon)
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
-                      <AlertTriangle className="mx-auto h-8 w-8 text-gray-400" />
-                      <p className="mt-2 text-sm text-gray-500">
-                        Agent wallets will be available in a future update
-                      </p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+              <WalletsTab profile={profile} onProfileUpdate={setProfile} />
             )}
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function WalletsTab({
+  profile,
+  onProfileUpdate,
+}: {
+  profile: UserProfile | null;
+  onProfileUpdate: (p: UserProfile) => void;
+}) {
+  const { publicKey, connected, signMessage, disconnect } = useWallet();
+  const { setVisible } = useWalletModal();
+  const [isLinking, setIsLinking] = useState(false);
+
+  const handleConnectAndLink = async () => {
+    if (!connected) {
+      setVisible(true);
+      return;
+    }
+
+    if (!publicKey || !signMessage) return;
+
+    setIsLinking(true);
+    try {
+      const address = publicKey.toBase58();
+      const message = `Link wallet ${address} to WheelsAI account at ${Date.now()}`;
+      const encoded = new TextEncoder().encode(message);
+      const signature = await signMessage(encoded);
+      const sigBase64 = Buffer.from(signature).toString("base64");
+      const result = await settingsApi.linkWallet(address, sigBase64, message);
+      toast.success("Wallet linked successfully");
+      if (profile) {
+        onProfileUpdate({ ...profile, walletAddress: address });
+      }
+    } catch (err: any) {
+      if (err?.message?.includes("User rejected")) {
+        toast.error("Signature rejected");
+      } else {
+        toast.error("Failed to link wallet");
+      }
+    } finally {
+      setIsLinking(false);
+    }
+  };
+
+  // Auto-link when wallet connects and not yet linked
+  useEffect(() => {
+    if (connected && publicKey && !profile?.walletAddress && signMessage) {
+      handleConnectAndLink();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, publicKey, profile?.walletAddress]);
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Connected Wallets</CardTitle>
+          <CardDescription>
+            Manage your connected Solana wallets for authentication and payments
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {profile?.walletAddress ? (
+            <div className="flex items-center justify-between rounded-lg border p-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-r from-green-400 to-purple-500">
+                  <Wallet className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <p className="font-medium">Solana Wallet</p>
+                  <code className="text-sm text-gray-500">
+                    {profile.walletAddress.slice(0, 8)}...
+                    {profile.walletAddress.slice(-8)}
+                  </code>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="success">Connected</Badge>
+                {connected && (
+                  <button
+                    onClick={() => disconnect()}
+                    className="p-1.5 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                    title="Disconnect wallet"
+                  >
+                    <Unlink className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-8">
+              <Wallet className="mx-auto h-12 w-12 text-gray-300" />
+              <p className="mt-4 text-gray-500">No wallets connected</p>
+              <Button
+                className="mt-4"
+                onClick={handleConnectAndLink}
+                disabled={isLinking}
+              >
+                {isLinking ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Wallet className="mr-2 h-4 w-4" />
+                )}
+                {isLinking ? "Linking..." : "Connect Solana Wallet"}
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Agent Wallets</CardTitle>
+          <CardDescription>
+            Managed wallets for autonomous agent transactions (coming soon)
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
+            <AlertTriangle className="mx-auto h-8 w-8 text-gray-400" />
+            <p className="mt-2 text-sm text-gray-500">
+              Agent wallets will be available in a future update
+            </p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

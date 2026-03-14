@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { OpenClawStatus } from "@/components/dashboard/openclaw-status";
+import { EmptyState } from "@/components/ui/empty-state";
 import { usePolling } from "@/lib/use-polling";
 import {
   Play,
@@ -234,20 +235,13 @@ export default function OpenClawDeploymentsPage() {
             </div>
           </div>
         ) : deployments.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <Server className="h-16 w-16 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">No deployments yet</h3>
-              <p className="text-sm text-muted-foreground mb-6 text-center max-w-md">
-                Get started by creating your first OpenClaw deployment. Deploy AI agents with
-                multi-channel support across Discord, Telegram, Slack, and more.
-              </p>
-              <Button onClick={() => router.push("/dashboard/openclaw/new")}>
-                <Plus className="mr-2 h-4 w-4" />
-                Create Deployment
-              </Button>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Server}
+            title="No deployments yet"
+            description="Get started by creating your first OpenClaw deployment. Deploy AI agents with multi-channel support across Discord, Telegram, Slack, and more."
+            actionLabel="Create Deployment"
+            actionHref="/dashboard/openclaw/new"
+          />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {deployments.map((deployment) => (

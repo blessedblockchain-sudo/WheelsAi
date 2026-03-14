@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { EmptyState } from "@/components/ui/empty-state";
+import { SkeletonCard } from "@/components/ui/skeleton";
 import { modelsApi, type Model, type GpuTier } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -108,22 +110,22 @@ export default function ModelsPage() {
         {/* Models grid */}
         {isLoading ? (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-64 animate-pulse rounded-lg bg-gray-200" />
+            {Array.from({ length: 6 }).map((_, i) => (
+              <SkeletonCard key={i} />
             ))}
           </div>
+        ) : models.length === 0 ? (
+          <EmptyState
+            icon={Cpu}
+            title="No models available"
+            description="There are no models in the catalog yet. Check back soon as new models are added regularly."
+          />
         ) : filteredModels.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <Cpu className="h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium text-gray-900">
-                No models found
-              </h3>
-              <p className="mt-2 text-gray-500">
-                Try adjusting your search or filters
-              </p>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Search}
+            title="No models found"
+            description="Try adjusting your search query or filters to find what you are looking for."
+          />
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {filteredModels.map((model) => (
@@ -132,7 +134,7 @@ export default function ModelsPage() {
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100">
-                        {categoryIcons[model.tags[0]] || <Cpu className="h-5 w-5 text-primary-600" />}
+                        {categoryIcons[model.tags[0] ?? ""] || <Cpu className="h-5 w-5 text-primary-600" />}
                       </div>
                       <div>
                         <CardTitle className="text-base">{model.displayName}</CardTitle>

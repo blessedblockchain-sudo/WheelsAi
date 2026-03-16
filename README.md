@@ -69,6 +69,9 @@ Up to **85% cheaper** than centralized cloud. Pay with **SOL**, **USDC**, or **N
   - [Testing & Monitoring](#testing--monitoring)
   - [Security & Auth](#security--auth)
   - [Billing & Payments](#billing--payments)
+  - [OpenClaw Integration](#openclaw-integration)
+  - [Token Marketplace](#token-marketplace)
+  - [Free Tier & Rate Limiting](#free-tier--rate-limiting)
   - [Integrations](#integrations)
 - [Getting Started](#getting-started)
 - [Environment Variables](#environment-variables)
@@ -109,8 +112,8 @@ Up to **85% cheaper** than centralized cloud. Pay with **SOL**, **USDC**, or **N
 
 1. **Users** interact through the Next.js dashboard, landing page, or OpenAI-compatible API
 2. **Fastify API** handles authentication, business logic, and job orchestration
-3. **PostgreSQL** stores all persistent state across 80+ Prisma models
-4. **Redis + BullMQ** powers background job queues (training, deployment, scheduling, webhooks)
+3. **PostgreSQL** stores all persistent state across 90+ Prisma models
+4. **Redis** powers rate limiting, token-gate caching, and free-tier quotas
 5. **Nosana SDK** submits GPU jobs to the decentralized compute network
 6. **Solana** handles payments (SOL, USDC, NOS) and wallet-based authentication
 
@@ -123,10 +126,13 @@ wheelsai/
 │   │   ├── src/
 │   │   │   ├── index.ts               # Server entry point + plugin registration
 │   │   │   ├── config/
-│   │   │   │   └── env.ts             # Environment configuration
+│   │   │   │   ├── env.ts             # Environment configuration
+│   │   │   │   └── free-models.ts     # Free model catalog (Groq, Gemini, Together)
 │   │   │   ├── middleware/
-│   │   │   │   └── auth.ts            # JWT + cookie authentication
-│   │   │   ├── routes/                # 25 route modules
+│   │   │   │   ├── auth.ts            # JWT + cookie authentication
+│   │   │   │   ├── free-tier-limit.ts # Redis rate limiter (RPM/RPD per org)
+│   │   │   │   └── tokenGate.ts       # Token-gated agent access
+│   │   │   ├── routes/                # 29 route modules
 │   │   │   │   ├── agents.ts          # Agent CRUD + deployment
 │   │   │   │   ├── auth.ts            # Register, login, wallet auth
 │   │   │   │   ├── billing.ts         # Credits, transactions, usage
@@ -148,8 +154,11 @@ wheelsai/
 │   │   │   │   ├── twoFactor.ts       # 2FA setup + verify
 │   │   │   │   ├── webhooks.ts        # Webhook management
 │   │   │   │   ├── x402.ts            # X-402 payment protocol
+│   │   │   │   ├── openclaw.ts        # OpenClaw managed deployments
+│   │   │   │   ├── tokens.ts          # Token marketplace (pump.fun)
+│   │   │   │   ├── playground.ts      # Agent playground chat + models
 │   │   │   │   └── ...
-│   │   │   ├── services/              # 24 business logic modules
+│   │   │   ├── services/              # 27 business logic modules
 │   │   │   │   ├── auth.ts            # Argon2 hashing, JWT, wallet verify
 │   │   │   │   ├── agent-runtime.ts   # Agent execution engine
 │   │   │   │   ├── agentGraph.ts      # Visual builder graph ops
@@ -176,7 +185,7 @@ wheelsai/
 │   └── web/                           # Next.js 15 frontend (port 3000)
 │       ├── src/
 │       │   ├── app/                   # App Router pages
-│       │   │   ├── page.tsx           # Landing page (11 component composition)
+│       │   │   ├── page.tsx           # Landing page (12 component composition)
 │       │   │   ├── layout.tsx         # Root layout (providers, fonts, toaster)
 │       │   │   ├── globals.css        # Tailwind base + custom animations
 │       │   │   ├── (auth)/            # Auth routes
@@ -186,7 +195,8 @@ wheelsai/
 │       │   │   ├── (dashboard)/dashboard/  # Dashboard routes
 │       │   │   │   ├── layout.tsx     # Dashboard shell (sidebar + header)
 │       │   │   │   ├── page.tsx       # Dashboard home
-│       │   │   │   ├── agents/        # Agent CRUD + visual builder
+│       │   │   │   ├── agents/        # Agent CRUD + visual builder + playground
+│   │   │   │   └── [id]/playground/ # Chat interface for testing agents
 │       │   │   │   ├── deployments/   # Deployment management
 │       │   │   │   ├── training/      # Fine-tuning UI
 │       │   │   │   ├── marketplace/   # Publish, revenue, installs
@@ -222,7 +232,7 @@ wheelsai/
 ├── packages/
 │   ├── db/                            # Prisma ORM + database
 │   │   └── prisma/
-│   │       ├── schema.prisma          # 80+ models (1900+ lines)
+│   │       ├── schema.prisma          # 90+ models (2100+ lines)
 │   │       └── migrations/            # Database migrations
 │   │
 │   ├── shared/                        # Shared utilities
@@ -314,7 +324,7 @@ src/app/
 
 ```
 src/components/
-├── landing/              # 11 components (dark navy theme)
+├── landing/              # 12 components (dark navy theme)
 │   ├── navbar.tsx        # [client] Sticky, transparent -> solid on scroll
 │   ├── hero.tsx          # [client] Matrix rain, animated counters, CTAs
 │   ├── social-proof.tsx  # [server] SOC 2, latency, SOL-native, pay-per-token
@@ -327,7 +337,7 @@ src/components/
 │   ├── final-cta.tsx     # [server] Gradient CTA with blur orbs
 │   └── footer.tsx        # [server] 4-column links + branding
 │
-├── dashboard/            # Dashboard-specific components
+├── dashboard/            # Dashboard components (model-selector, header, etc.)
 ├── marketplace/          # Marketplace UI (review forms, cards)
 ├── reputation/           # Reputation score display (0-100)
 ├── ui/                   # Reusable primitives (button, input, select, etc.)
@@ -370,7 +380,7 @@ Error Handler (standardized JSON errors)
 Response
 ```
 
-#### Service Layer (24 modules)
+#### Service Layer (29 modules)
 
 | Service | Responsibility |
 |---------|---------------|
@@ -398,10 +408,15 @@ Response
 | `wallet` | Solana keypair encryption/decryption (AES-256-GCM) |
 | `webhooks` | Event delivery with exponential backoff retry |
 | `x402` | X-402 per-request Solana payment verification and settlement |
+| `openclaw` | OpenClaw managed deployments (Docker containers on Nosana GPUs) |
+| `agentToken` | Token creation, eligibility checks, indexer worker |
+| `pumpfun` | Pump.fun bonding curve API client |
+| `mastra-runtime` | Ephemeral agent chat execution (OpenAI-compatible API) |
+| `tokenIndexer` | Background worker polling pump.fun for trades/graduation |
 
 ### Database Schema
 
-**80+ Prisma models** organized across 22 entity groups:
+**90+ Prisma models** organized across 22 entity groups:
 
 ```
 Users & Auth (5)              Agents & Builder (7)          Marketplace (7)
@@ -436,6 +451,12 @@ Custom Domains (2)            Testing (4)                   └── Integratio
                               ├── TestRun                   └── AgentTemplate
 Analytics (1)                 └── TestResult
 └── AnalyticsSnapshot
+                                                            OpenClaw (2)
+Token Marketplace (4)         Free Tier (1)                 ├── OpenClawDeployment
+├── AgentToken                └── FreeTierUsage             └── OpenClawChannel
+├── AgentTokenTrade
+├── AgentTokenHolder
+└── AgentTokenSnapshot
 ```
 
 ### Blockchain Integration
@@ -505,6 +526,7 @@ Create Agent Wallet
 | Payments | Stripe | 14.12.0 |
 | Blockchain | @solana/web3.js + TweetNaCl | 1.87.6 |
 | GPU Network | @nosana/sdk | 0.4.74 |
+| Agent Runtime | @mastra/core | 1.10.0+ |
 | Logging | Pino (+ pino-pretty for dev) | 8.17.2 |
 | Validation | Zod | 3.22.4 |
 | IDs | nanoid | 5.0.4 |
@@ -534,11 +556,14 @@ Create Agent Wallet
 
 ### AI & Models
 
+- **Free Model Catalog** - Start building with zero cost: Groq (Llama 3.3 70B, Llama 3.1 8B, Qwen3 32B), Google (Gemini 2.5 Flash), Together.xyz (Llama 3.1 8B Turbo)
+- **Agent Playground** - Chat interface to test agents instantly with free models, no GPU deployment needed. Supports SSE streaming.
 - **Model Catalog** - 100+ models: Llama, Mistral, Qwen, GPT-J, and more
 - **Fine-Tuning** - LoRA/QLoRA training on custom datasets (S3/IPFS/HuggingFace)
 - **Multi-Engine** - vLLM and Ollama backend support
 - **Custom Models** - Host your own fine-tuned models on dedicated GPUs
 - **GPU Tiers** - RTX 3060, RTX 4070, RTX 4090, A100, H100
+- **Mastra Runtime** - Ephemeral agent execution with built-in tool support (calculator, HTTP requests with SSRF protection)
 
 ### Agent Ecosystem
 
@@ -593,6 +618,31 @@ Create Agent Wallet
 - **X-402 Protocol** - Per-request Solana micropayments (SOL/USDC/NOS)
 - **Usage Records** - Per-deployment metrics: tokens, requests, compute time, cost
 - **Custom Domains** - BYOD with DNS verification and auto-provisioned SSL
+
+### OpenClaw Integration
+
+- **Managed Deployments** - Deploy OpenClaw agents on Nosana GPUs in hardened Docker containers
+- **Multi-Channel** - Discord, Telegram, Slack, Twitter, WhatsApp, Line, Messenger, Web, API, Email
+- **Encrypted Config** - Channel credentials stored with AES-256-GCM encryption
+- **GPU Tiers** - Basic (RTX 3060), Standard (RTX 4070), Premium (RTX 4090)
+- **Lifecycle Management** - Start, stop, restart, health checks, log streaming
+
+### Token Marketplace
+
+- **Pump.fun-Style Tokens** - Create bonding curve tokens for agents via pump.fun SDK
+- **Anti-Scam Protections** - Publisher reputation >= 50, agent deployed >= 7 days, creator lockup 30 days
+- **Token Gating** - Gate agent access to token holders (Redis-cached balance checks)
+- **Live Indexer** - Background worker polls pump.fun for trades, graduation events, and holder changes
+- **Eligibility Checks** - Automated pre-launch validation before token creation
+- **Token Lifecycle** - BONDING -> GRADUATED -> FAILED status tracking
+
+### Free Tier & Rate Limiting
+
+- **Free Models** - 5 models across Groq, Google Gemini, and Together.xyz (no user API key needed)
+- **Platform-Level Keys** - Free models use platform API keys, not user keys
+- **Redis Rate Limiting** - 20 requests/minute and 200 requests/day per organization (configurable)
+- **Usage Tracking** - Daily token consumption tracked per org per model in `FreeTierUsage`
+- **Graceful Degradation** - Rate limiter fails open when Redis is unavailable
 
 ### Integrations
 
@@ -694,6 +744,16 @@ Create a `.env` file in the project root. See `.env.example` for the full templa
 | `EMAIL_FROM` | Sender address |
 | `SENTRY_DSN` | Sentry error tracking URL |
 | `LOG_LEVEL` | Pino log level (default: `debug`) |
+| `GROQ_API_KEY` | Groq API key (enables free Llama 3.3 70B, Llama 3.1 8B, Qwen3 32B) |
+| `GOOGLE_GEMINI_API_KEY` | Google Gemini API key (enables free Gemini 2.5 Flash) |
+| `TOGETHER_API_KEY` | Together.xyz API key (enables free Llama 3.1 8B Turbo) |
+| `FREE_TIER_RPM` | Free model rate limit per minute per org (default: `20`) |
+| `FREE_TIER_RPD` | Free model rate limit per day per org (default: `200`) |
+| `PUMPFUN_API_KEY` | Pump.fun API key for token marketplace |
+| `TOKEN_INDEXER_INTERVAL_MS` | Token indexer polling interval (default: `30000`) |
+| `OPENCLAW_DEFAULT_IMAGE` | OpenClaw Docker image (default: `wheelsai/openclaw-hardened:latest`) |
+| `OPENCLAW_SUBDOMAIN_BASE` | OpenClaw subdomain base (default: `openclaw.wheelsai.com`) |
+| `ENCRYPTION_KEY` | AES-256-GCM key for sensitive config (required in production) |
 
 ---
 
@@ -809,6 +869,36 @@ All endpoints (except `/health` and `/api/auth/*`) require authentication via JW
 | `GET` | `/api/billing/usage` | Get usage records |
 | `GET` | `/api/health` | Health check |
 
+### Agent Playground
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/agents/:id/playground/chat` | Chat with agent using free or paid models (supports SSE streaming) |
+| `GET` | `/api/agents/:id/playground/models` | List available models grouped by tier (free / external) |
+
+### OpenClaw
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/openclaw` | Create OpenClaw deployment |
+| `GET` | `/api/openclaw` | List OpenClaw deployments |
+| `POST` | `/api/openclaw/:id/start` | Start deployment |
+| `POST` | `/api/openclaw/:id/stop` | Stop deployment |
+| `POST` | `/api/openclaw/channels` | Add channel (Discord, Telegram, etc.) |
+
+### Token Marketplace
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/tokens/create` | Create bonding curve token for agent (rate limited: 3/min) |
+| `GET` | `/api/tokens` | List tokens (sortable, filterable) |
+| `GET` | `/api/tokens/trending` | Trending tokens |
+| `GET` | `/api/tokens/:id` | Get token details |
+| `GET` | `/api/tokens/:id/trades` | Get trade history |
+| `GET` | `/api/tokens/:id/holders` | Get holder distribution |
+| `GET` | `/api/tokens/:id/chart` | Get price chart snapshots |
+| `GET` | `/api/tokens/eligibility/:listingId` | Check token creation eligibility |
+
 ### OpenAI-Compatible Inference
 
 ```bash
@@ -898,8 +988,8 @@ WheelsAI uses a custom dark theme with two distinct palettes:
 docker compose up -d
 
 # Services started:
-#   PostgreSQL 15 on port 5432
-#   Redis 7 on port 6379
+#   PostgreSQL 15 on port 5434
+#   Redis 7 on port 6380
 ```
 
 ### Production Build
@@ -947,6 +1037,7 @@ The Next.js config includes security headers:
 - [x] **Phase 3** - Custom domains, conversation memory, testing framework
 - [x] **Phase 4** - Analytics, monitoring & alerting, webhooks, third-party integrations
 - [x] **Phase 5** - Scheduler, knowledge base (RAG), multi-agent orchestration, templates, 2FA
+- [x] **Phase 6** - OpenClaw integration, pump.fun-style token marketplace, free model catalog, agent playground, Mastra runtime, free-tier rate limiting
 
 ### Upcoming
 

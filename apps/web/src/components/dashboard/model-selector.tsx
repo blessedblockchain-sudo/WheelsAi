@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { playgroundApi, type PlaygroundModelsResponse } from "@/lib/api";
 import { Select } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 
 interface ModelSelectorProps {
   agentId: string;

@@ -40,14 +40,14 @@ const FREE_MODEL_CATALOG: FreeModelConfig[] = [
     notes: "Ultra-fast, lighter model",
   },
   {
-    id: "free/groq/mixtral-8x7b",
+    id: "free/groq/qwen3-32b",
     provider: "groq",
-    modelName: "mixtral-8x7b-32768",
-    displayName: "Mixtral 8x7B (Groq)",
+    modelName: "qwen/qwen3-32b",
+    displayName: "Qwen3 32B (Groq)",
     contextLength: 32768,
     baseUrl: "https://api.groq.com/openai/v1",
     envKey: "GROQ_API_KEY",
-    notes: "Long context, MoE architecture",
+    notes: "Alibaba Qwen3, strong reasoning",
   },
   {
     id: "free/gemini/gemini-2.5-flash",

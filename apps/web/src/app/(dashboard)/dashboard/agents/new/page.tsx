@@ -304,7 +304,7 @@ export default function NewAgentPage() {
                       <optgroup label="Free Models (No API Key)">
                         <option value="free/groq/llama-3.3-70b">Llama 3.3 70B - Groq (Free)</option>
                         <option value="free/groq/llama-3.1-8b">Llama 3.1 8B Instant - Groq (Free)</option>
-                        <option value="free/groq/mixtral-8x7b">Mixtral 8x7B - Groq (Free)</option>
+                        <option value="free/groq/qwen3-32b">Qwen3 32B - Groq (Free)</option>
                         <option value="free/gemini/gemini-2.5-flash">Gemini 2.5 Flash - Google (Free)</option>
                         <option value="free/together/llama-3.1-8b">Llama 3.1 8B - Together (Free)</option>
                       </optgroup>

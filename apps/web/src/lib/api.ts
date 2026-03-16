@@ -440,12 +440,50 @@ export interface ChatCompletionResponse {
   };
 }
 
+export interface PlaygroundAgentChatResponse {
+  content: string;
+  model: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+}
+
+export interface PlaygroundModel {
+  id: string;
+  displayName: string;
+  provider: string;
+  contextLength: number;
+  notes?: string;
+  available: boolean;
+}
+
+export interface PlaygroundModelsResponse {
+  freeModels: PlaygroundModel[];
+  externalModels: Array<{
+    id: string;
+    displayName: string;
+    provider: string;
+    requiresApiKey: boolean;
+    envKey: string;
+  }>;
+}
+
 export const playgroundApi = {
   chat: (deploymentId: string, request: ChatCompletionRequest) =>
     api<ChatCompletionResponse>(`/api/deployments/${deploymentId}/chat`, {
       method: "POST",
       body: request,
     }),
+
+  agentChat: (agentId: string, body: { messages: Array<{ role: string; content: string }>; model?: string; stream?: boolean }) =>
+    api<PlaygroundAgentChatResponse>(`/api/agents/${agentId}/playground/chat`, {
+      method: "POST",
+      body,
+    }),
+
+  models: (agentId: string) =>
+    api<PlaygroundModelsResponse>(`/api/agents/${agentId}/playground/models`),
 };
 
 // ============================================
@@ -3558,48 +3596,8 @@ export const tokenApi = {
 };
 
 // ============================================
-// Playground API
+// Streaming Helper
 // ============================================
-
-export interface PlaygroundChatResponse {
-  content: string;
-  model: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-  };
-}
-
-export interface PlaygroundModel {
-  id: string;
-  displayName: string;
-  provider: string;
-  contextLength: number;
-  notes?: string;
-  available: boolean;
-}
-
-export interface PlaygroundModelsResponse {
-  freeModels: PlaygroundModel[];
-  externalModels: Array<{
-    id: string;
-    displayName: string;
-    provider: string;
-    requiresApiKey: boolean;
-    envKey: string;
-  }>;
-}
-
-export const playgroundApi = {
-  chat: (agentId: string, body: { messages: Array<{ role: string; content: string }>; model?: string; stream?: boolean }) =>
-    api<PlaygroundChatResponse>(`/api/agents/${agentId}/playground/chat`, {
-      method: "POST",
-      body,
-    }),
-
-  models: (agentId: string) =>
-    api<PlaygroundModelsResponse>(`/api/agents/${agentId}/playground/models`),
-};
 
 /**
  * Stream playground chat responses as an async generator of content deltas

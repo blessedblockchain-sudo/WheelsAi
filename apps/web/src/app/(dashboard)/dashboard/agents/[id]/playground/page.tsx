@@ -15,7 +15,7 @@ import {
   playgroundApi,
   streamPlaygroundChat,
   type AgentDetail,
-  type PlaygroundChatResponse,
+  type PlaygroundAgentChatResponse,
 } from "@/lib/api";
 
 interface Message {
@@ -93,7 +93,7 @@ export default function PlaygroundPage() {
         }
       } else {
         // Non-streaming for paid models
-        const result = await playgroundApi.chat(agentId, {
+        const result = await playgroundApi.agentChat(agentId, {
           messages: chatMessages,
           model: selectedModel,
         });

@@ -31,7 +31,9 @@ import {
   Moon,
   Sun,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { authApi } from "@/lib/api";
 import { WalletButton } from "@/components/dashboard/wallet-button";
 import { useTheme } from "@/components/providers/theme-provider";
 import type { LucideIcon } from "lucide-react";
@@ -104,8 +106,21 @@ const navGroups: NavGroup[] = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const router = useRouter();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
+    "Train & Test": true,
+    "Operate": true,
+  });
   const { resolvedTheme, setTheme } = useTheme();
+
+  const handleSignOut = async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // Continue with redirect even if API call fails
+    }
+    router.push("/login");
+  };
 
   const toggleGroup = (label: string) => {
     setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }));
@@ -199,7 +214,10 @@ export function Sidebar() {
           )}
           {resolvedTheme === "dark" ? "Light Mode" : "Dark Mode"}
         </button>
-        <button className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800">
+        <button
+          onClick={handleSignOut}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+        >
           <LogOut className="h-5 w-5" />
           Sign out
         </button>

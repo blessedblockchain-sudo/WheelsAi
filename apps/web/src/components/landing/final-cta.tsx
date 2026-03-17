@@ -14,7 +14,8 @@ export function FinalCTA() {
           <span className="gradient-text-navy">AI Agent</span>?
         </h2>
         <p className="mt-6 text-lg text-navy-200/60 max-w-2xl mx-auto">
-          Start free. List on the marketplace at no cost. Keep 90% of everything you earn.
+          Join hundreds of builders deploying AI agents on decentralized GPUs.
+          No credit card required.
         </p>
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
           <Link

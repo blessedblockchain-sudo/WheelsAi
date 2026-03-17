@@ -15,16 +15,20 @@ export default function HomePage() {
   return (
     <div className="min-h-screen bg-navy-950 text-white">
       <Navbar />
-      <Hero />
-      <SocialProof />
-      <AgentAnimation />
-      <HowItWorks />
-      <FeaturesGrid />
-      <CodePreview />
-      <Frameworks />
-      <StatsSection />
-      <Pricing />
-      <FinalCTA />
+      <main>
+        <Hero />
+        <SocialProof />
+        <div className="hidden md:block">
+          <AgentAnimation />
+        </div>
+        <HowItWorks />
+        <FeaturesGrid />
+        <CodePreview />
+        <Frameworks />
+        <StatsSection />
+        <Pricing />
+        <FinalCTA />
+      </main>
       <Footer />
     </div>
   );

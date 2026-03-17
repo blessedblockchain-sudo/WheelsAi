@@ -75,14 +75,14 @@ export default function DashboardPage() {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500">
+              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Active Deployments
               </CardTitle>
-              <Box className="h-4 w-4 text-gray-400" />
+              <Box className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{runningDeployments.length}</div>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
                 {deployments.length} total deployments
               </p>
             </CardContent>
@@ -90,23 +90,23 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500">
+              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Requests (24h)
               </CardTitle>
-              <Zap className="h-4 w-4 text-gray-400" />
+              <Zap className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{formatNumber(totalRequests)}</div>
-              <p className="text-xs text-gray-500">Across all deployments</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">Across all deployments</p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500">
+              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Credit Balance
               </CardTitle>
-              <DollarSign className="h-4 w-4 text-gray-400" />
+              <DollarSign className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{formatCurrency(creditBalance)}</div>
@@ -121,10 +121,10 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500">
+              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
                 Models Available
               </CardTitle>
-              <Cpu className="h-4 w-4 text-gray-400" />
+              <Cpu className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{modelCount || 8}</div>
@@ -141,7 +141,7 @@ export default function DashboardPage() {
         {/* Recent Deployments */}
         <div className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
               Recent Deployments
             </h2>
             <Link
@@ -157,18 +157,18 @@ export default function DashboardPage() {
               {[1, 2, 3].map((i) => (
                 <div
                   key={i}
-                  className="h-20 animate-pulse rounded-lg bg-gray-200"
+                  className="h-20 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800"
                 />
               ))}
             </div>
           ) : deployments.length === 0 ? (
             <Card className="mt-4">
               <CardContent className="flex flex-col items-center justify-center py-12">
-                <Box className="h-12 w-12 text-gray-300" />
-                <h3 className="mt-4 text-lg font-medium text-gray-900">
+                <Box className="h-12 w-12 text-gray-300 dark:text-gray-600" />
+                <h3 className="mt-4 text-lg font-medium text-gray-900 dark:text-gray-100">
                   No deployments yet
                 </h3>
-                <p className="mt-2 text-sm text-gray-500">
+                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
                   Deploy your first model to get started
                 </p>
                 <Link href="/dashboard/deployments/new" className="mt-4">
@@ -189,26 +189,26 @@ export default function DashboardPage() {
                   <Card className="transition-shadow hover:shadow-md">
                     <CardContent className="flex items-center justify-between py-4">
                       <div className="flex items-center gap-4">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100">
-                          <Cpu className="h-5 w-5 text-primary-600" />
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                          <Cpu className="h-5 w-5 text-primary-600 dark:text-primary-400" />
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="font-medium text-gray-900">
+                            <span className="font-medium text-gray-900 dark:text-gray-100">
                               {deployment.name}
                             </span>
                             <Badge variant={statusColors[deployment.status]}>
                               {deployment.status}
                             </Badge>
                           </div>
-                          <p className="text-sm text-gray-500">
+                          <p className="text-sm text-gray-500 dark:text-gray-400">
                             {deployment.model} on {deployment.gpuTier}
                           </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-4">
                         {deployment.endpoint && (
-                          <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">
+                          <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
                             {deployment.endpoint}
                           </code>
                         )}
@@ -224,17 +224,17 @@ export default function DashboardPage() {
 
         {/* Quick Actions */}
         <div className="mt-8">
-          <h2 className="text-lg font-semibold text-gray-900">Quick Actions</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Quick Actions</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-3">
             <Link href="/dashboard/deployments/new">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100">
-                    <Cpu className="h-6 w-6 text-primary-600" />
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                    <Cpu className="h-6 w-6 text-primary-600 dark:text-primary-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900">Deploy Model</h3>
-                    <p className="text-sm text-gray-500">
+                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Deploy Model</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       Launch a new inference endpoint
                     </p>
                   </div>
@@ -245,12 +245,12 @@ export default function DashboardPage() {
             <Link href="/dashboard/keys">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100">
-                    <Zap className="h-6 w-6 text-green-600" />
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/30">
+                    <Zap className="h-6 w-6 text-green-600 dark:text-green-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900">Create API Key</h3>
-                    <p className="text-sm text-gray-500">
+                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Create API Key</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       Get credentials for your apps
                     </p>
                   </div>
@@ -261,12 +261,12 @@ export default function DashboardPage() {
             <Link href="/dashboard/playground">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-100">
-                    <Box className="h-6 w-6 text-purple-600" />
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-100 dark:bg-purple-900/30">
+                    <Box className="h-6 w-6 text-purple-600 dark:text-purple-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900">Open Playground</h3>
-                    <p className="text-sm text-gray-500">
+                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Open Playground</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
                       Test your models interactively
                     </p>
                   </div>

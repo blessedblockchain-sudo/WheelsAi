@@ -47,8 +47,12 @@ export default function DeploymentsPage() {
 
   useEffect(() => {
     loadDeployments();
-    // Poll for updates every 10 seconds
-    const interval = setInterval(loadDeployments, 10000);
+    // Poll for updates every 10 seconds, but only when tab is visible
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        loadDeployments();
+      }
+    }, 10000);
     return () => clearInterval(interval);
   }, []);
 

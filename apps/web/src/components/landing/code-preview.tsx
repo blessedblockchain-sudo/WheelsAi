@@ -45,8 +45,8 @@ export function CodePreview() {
             <ul className="space-y-4">
               {bullets.map((bullet) => (
                 <li key={bullet} className="flex items-center gap-3">
-                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#00ff00]/10 border border-[#00ff00]/30">
-                    <Check className="h-3.5 w-3.5 text-[#00ff00]" />
+                  <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-navy-400/10 border border-navy-400/30">
+                    <Check className="h-3.5 w-3.5 text-navy-400" />
                   </div>
                   <span className="text-sm text-navy-200/70">{bullet}</span>
                 </li>

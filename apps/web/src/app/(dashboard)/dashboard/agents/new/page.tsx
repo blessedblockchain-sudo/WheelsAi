@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Bot,
@@ -76,6 +76,14 @@ const builtInTools = [
 ];
 
 export default function NewAgentPage() {
+  return (
+    <Suspense fallback={<div className="flex h-96 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" /></div>}>
+      <NewAgentContent />
+    </Suspense>
+  );
+}
+
+function NewAgentContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const template = searchParams.get("template");

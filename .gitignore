@@ -18,9 +18,12 @@ out/
 .env.*.local
 !.env.example
 
-# IDE
+# IDE & AI tooling
 .idea/
 .vscode/
+.cursor/
+.claude/
+.agents/
 *.swp
 *.swo
 

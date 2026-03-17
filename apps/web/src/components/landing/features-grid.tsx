@@ -2,64 +2,95 @@
 
 import { useEffect, useRef } from "react";
 import {
-  Bot,
-  Workflow,
-  Cpu,
+  Hammer,
+  Rocket,
   Store,
-  GraduationCap,
+  Workflow,
   Database,
   GitBranch,
+  Globe,
+  Cpu,
+  Zap,
+  ShoppingBag,
+  Coins,
   BarChart3,
 } from "lucide-react";
 
-const features = [
+const pillars = [
   {
-    icon: Bot,
-    title: "AI Agent Deployment",
-    description:
-      "Deploy autonomous AI agents with one click. Supports LLM-powered agents, chatbots, and custom workflows.",
+    label: "BUILD",
+    icon: Hammer,
+    color: "text-navy-400",
+    features: [
+      {
+        icon: Workflow,
+        title: "Visual Agent Builder",
+        description:
+          "Drag-and-drop graph editor with 12 node types. Build agents without writing code.",
+      },
+      {
+        icon: Database,
+        title: "Knowledge Base & RAG",
+        description:
+          "Upload docs, build vector stores. Retrieval-augmented generation built in.",
+      },
+      {
+        icon: GitBranch,
+        title: "Multi-Agent Orchestration",
+        description:
+          "Chain agents with branching, loops, and parallel execution.",
+      },
+    ],
   },
   {
-    icon: Workflow,
-    title: "Visual Agent Builder",
-    description:
-      "Drag-and-drop agent builder with a visual graph editor. No coding required for simple agents.",
+    label: "DEPLOY",
+    icon: Rocket,
+    color: "text-[#00d4ff]",
+    features: [
+      {
+        icon: Globe,
+        title: "10+ Channels",
+        description:
+          "Discord, Telegram, Slack, Twitter, WhatsApp, Web, API — all from one deploy.",
+      },
+      {
+        icon: Cpu,
+        title: "GPU Compute",
+        description:
+          "RTX 3060 / 4070 / 4090 tiers. Auto-scaling, zero cold starts.",
+      },
+      {
+        icon: Zap,
+        title: "OpenAI-Compatible API",
+        description:
+          "Drop-in replacement. Streaming, function calls, all built in.",
+      },
+    ],
   },
   {
-    icon: Cpu,
-    title: "Model Hub",
-    description:
-      "Access 100+ pre-trained models. Llama, Mistral, GPT-J, and more — ready to deploy in seconds.",
-  },
-  {
+    label: "MONETIZE",
     icon: Store,
-    title: "Agent Marketplace",
-    description:
-      "Browse and deploy community-built agents. Monetize your own agents on the marketplace.",
-  },
-  {
-    icon: GraduationCap,
-    title: "Fine-Tuning",
-    description:
-      "Fine-tune models on your data with LoRA and QLoRA. GPU-accelerated training at a fraction of the cost.",
-  },
-  {
-    icon: Database,
-    title: "Knowledge Base & RAG",
-    description:
-      "Upload documents and build vector stores. Retrieval-augmented generation out of the box.",
-  },
-  {
-    icon: GitBranch,
-    title: "Multi-Agent Orchestration",
-    description:
-      "Chain multiple agents together. Build complex workflows with branching, loops, and parallel execution.",
-  },
-  {
-    icon: BarChart3,
-    title: "Analytics & Monitoring",
-    description:
-      "Real-time dashboards for token usage, latency, errors, and cost. Set alerts and usage limits.",
+    color: "text-[#a855f7]",
+    features: [
+      {
+        icon: ShoppingBag,
+        title: "Agent Marketplace",
+        description:
+          "Publish and discover agents. Six categories, reviews, featured listings.",
+      },
+      {
+        icon: Coins,
+        title: "Flexible Pricing",
+        description:
+          "Free, per-request, or subscription. 90% revenue share. Payouts in SOL, USDC, or credits.",
+      },
+      {
+        icon: BarChart3,
+        title: "Agent Tokens",
+        description:
+          "Bonding-curve tokens for your agents. Community-driven price discovery on Solana.",
+      },
+    ],
   },
 ];
 
@@ -94,31 +125,45 @@ export function FeaturesGrid() {
       <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-16">
           <h2 className="text-3xl sm:text-4xl font-bold text-white">
-            Everything You Need to{" "}
-            <span className="gradient-text-navy">Ship AI</span>
+            One Platform.{" "}
+            <span className="gradient-text-navy">No Fragmentation.</span>
           </h2>
           <p className="mt-4 text-lg text-navy-200/60 max-w-2xl mx-auto">
-            A complete platform for building, deploying, and scaling AI agents on
-            decentralized infrastructure.
+            Everything you need — frameworks, compute, channels, marketplace — unified.
           </p>
         </div>
 
-        <div ref={ref} className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {features.map((feature, i) => (
-            <div
-              key={feature.title}
-              className="feature-card glow-card-navy opacity-0 translate-y-8 transition-all duration-700"
-              style={{ transitionDelay: `${i * 100}ms` }}
-            >
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-navy-700 border border-navy-600/50 mb-4">
-                <feature.icon className="h-5 w-5 text-navy-400" />
+        <div ref={ref} className="grid gap-10 lg:grid-cols-3">
+          {pillars.map((pillar, pi) => (
+            <div key={pillar.label}>
+              {/* Pillar header */}
+              <div className="flex items-center gap-2 mb-6">
+                <pillar.icon className={`h-5 w-5 ${pillar.color}`} />
+                <span className={`text-sm font-bold tracking-widest ${pillar.color}`}>
+                  {pillar.label}
+                </span>
               </div>
-              <h3 className="text-base font-semibold text-white mb-2">
-                {feature.title}
-              </h3>
-              <p className="text-sm text-navy-200/50 leading-relaxed">
-                {feature.description}
-              </p>
+
+              {/* Feature cards */}
+              <div className="space-y-4">
+                {pillar.features.map((feature, fi) => (
+                  <div
+                    key={feature.title}
+                    className="feature-card glow-card-navy opacity-0 translate-y-8 transition-all duration-700"
+                    style={{ transitionDelay: `${(pi * 3 + fi) * 100}ms` }}
+                  >
+                    <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-navy-700 border border-navy-600/50 mb-4">
+                      <feature.icon className="h-5 w-5 text-navy-400" />
+                    </div>
+                    <h3 className="text-base font-semibold text-white mb-2">
+                      {feature.title}
+                    </h3>
+                    <p className="text-sm text-navy-200/50 leading-relaxed">
+                      {feature.description}
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
           ))}
         </div>

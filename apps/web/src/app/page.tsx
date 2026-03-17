@@ -1,8 +1,9 @@
 import { Navbar } from "@/components/landing/navbar";
 import { Hero } from "@/components/landing/hero";
 import { SocialProof } from "@/components/landing/social-proof";
-import { FeaturesGrid } from "@/components/landing/features-grid";
+import { AgentAnimation } from "@/components/landing/agent-animation";
 import { HowItWorks } from "@/components/landing/how-it-works";
+import { FeaturesGrid } from "@/components/landing/features-grid";
 import { CodePreview } from "@/components/landing/code-preview";
 import { Frameworks } from "@/components/landing/frameworks";
 import { Pricing } from "@/components/landing/pricing";
@@ -16,8 +17,9 @@ export default function HomePage() {
       <Navbar />
       <Hero />
       <SocialProof />
-      <FeaturesGrid />
+      <AgentAnimation />
       <HowItWorks />
+      <FeaturesGrid />
       <CodePreview />
       <Frameworks />
       <StatsSection />

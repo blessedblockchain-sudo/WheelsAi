@@ -399,6 +399,52 @@
   animation: orbit var(--orbit-duration, 10s) linear infinite;
 }
 
+@keyframes draw-line {
+  from { stroke-dashoffset: var(--line-length, 200); }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes scale-in {
+  0% { transform: scale(0); opacity: 0; }
+  70% { transform: scale(1.08); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes travel-dot {
+  0% { transform: translateX(0); opacity: 0.8; }
+  100% { transform: translateX(var(--travel-dist, 80px)); opacity: 0.2; }
+}
+
+@keyframes float-up-fade {
+  0% { transform: translateY(0); opacity: 0.8; }
+  100% { transform: translateY(-30px); opacity: 0; }
+}
+
+@keyframes glow-pulse-blue {
+  0%, 100% { box-shadow: 0 0 10px rgba(59,130,246,0.3); }
+  50% { box-shadow: 0 0 25px rgba(59,130,246,0.6); }
+}
+
+.animate-scale-in {
+  animation: scale-in 0.5s ease-out forwards;
+}
+
+.animate-draw-line {
+  animation: draw-line 0.6s ease-out forwards;
+}
+
+.animate-travel-dot {
+  animation: travel-dot 1.5s linear infinite;
+}
+
+.animate-float-up-fade {
+  animation: float-up-fade 1.5s ease-out infinite;
+}
+
+.animate-glow-pulse-blue {
+  animation: glow-pulse-blue 2s ease-in-out infinite;
+}
+
 /* Delay utilities */
 .delay-100 { animation-delay: 100ms; }
 .delay-200 { animation-delay: 200ms; }

@@ -1,29 +1,36 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Wallet, Settings, Rocket } from "lucide-react";
+import { Workflow, Rocket, Store, TrendingUp } from "lucide-react";
 
 const steps = [
   {
-    icon: Wallet,
+    icon: Workflow,
     step: "01",
-    title: "Connect",
+    title: "Build",
     description:
-      "Connect your Solana wallet or sign up with email. Fund your account with SOL or USDC.",
-  },
-  {
-    icon: Settings,
-    step: "02",
-    title: "Configure",
-    description:
-      "Choose a model, build your agent with the visual builder or SDK, and configure parameters.",
+      "Design your agent visually with our graph builder, or code with Mastra, LangChain, AutoGen, or your own framework. Add tools, knowledge, and custom logic.",
   },
   {
     icon: Rocket,
-    step: "03",
+    step: "02",
     title: "Deploy",
     description:
-      "One-click deploy to decentralized GPUs. Get an API endpoint in seconds with auto-scaling.",
+      "One-click deploy to GPU compute. Connect 10+ channels — Discord, Telegram, Slack, Twitter, WhatsApp, and more — all at once.",
+  },
+  {
+    icon: Store,
+    step: "03",
+    title: "Monetize",
+    description:
+      "List on the marketplace for free. Choose your pricing: free, per-request, or subscription. You keep 90% of every dollar earned.",
+  },
+  {
+    icon: TrendingUp,
+    step: "04",
+    title: "Scale",
+    description:
+      "Track analytics, auto-scale compute, and launch agent tokens with bonding curves to build community and supercharge growth.",
   },
 ];
 
@@ -57,15 +64,15 @@ export function HowItWorks() {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="text-center mb-16">
           <h2 className="text-3xl sm:text-4xl font-bold text-white">
-            Go from Zero to{" "}
-            <span className="gradient-text-navy">Production</span> in Minutes
+            From Idea to{" "}
+            <span className="gradient-text-navy">Revenue</span> in Minutes
           </h2>
           <p className="mt-4 text-lg text-navy-200/60 max-w-2xl mx-auto">
-            Three simple steps to deploy your first AI agent.
+            Stop juggling fragmented tools. Four steps to a live, earning AI agent.
           </p>
         </div>
 
-        <div ref={ref} className="grid gap-8 md:grid-cols-3">
+        <div ref={ref} className="grid gap-8 md:grid-cols-2 lg:grid-cols-4">
           {steps.map((s, i) => (
             <div
               key={s.step}
@@ -88,7 +95,7 @@ export function HowItWorks() {
 
               {/* Connector line */}
               {i < steps.length - 1 && (
-                <div className="hidden md:block absolute top-1/2 -right-4 w-8 border-t border-dashed border-navy-600/50" />
+                <div className="hidden lg:block absolute top-1/2 -right-4 w-8 border-t border-dashed border-navy-600/50" />
               )}
             </div>
           ))}

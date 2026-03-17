@@ -1,10 +1,10 @@
-import { Shield, Zap, Globe, Coins } from "lucide-react";
+import { Layers, Coins, Globe, Zap } from "lucide-react";
 
 const stats = [
-  { icon: Shield, label: "SOC 2 Compliant", sublabel: "Enterprise Security" },
-  { icon: Zap, label: "50ms Avg Latency", sublabel: "Global Edge Network" },
-  { icon: Globe, label: "SOL-Native", sublabel: "Pay with Solana" },
-  { icon: Coins, label: "Pay Per Token", sublabel: "No Minimums" },
+  { icon: Layers, label: "All-in-One Platform", sublabel: "Build, deploy & monetize" },
+  { icon: Coins, label: "90% Revenue Share", sublabel: "Creators keep earnings" },
+  { icon: Globe, label: "10+ Channels", sublabel: "Discord, Telegram, Slack..." },
+  { icon: Zap, label: "SOL Native", sublabel: "Payments on Solana" },
 ];
 
 export function SocialProof() {

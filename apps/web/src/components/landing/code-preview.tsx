@@ -5,23 +5,24 @@ const bullets = [
   "Auto-scaling with zero cold starts",
   "Built-in load balancing & failover",
   "Real-time streaming responses",
-  "SOL & USDC payment support",
-  "99.9% uptime SLA",
+  "Deploy to Discord, Telegram, Slack & 7+ more",
+  "Free marketplace listing, 90% revenue share",
 ];
 
 const terminalLines = [
-  { text: "$ wheelsai deploy --model llama-3.1-70b", color: "text-white" },
+  { text: "$ wheelsai deploy --agent my-support-bot", color: "text-white" },
   { text: "", color: "" },
-  { text: "🔍  Selecting optimal GPU node...", color: "text-navy-300" },
-  { text: "✓  Node selected: RTX 4090 (us-east-1)", color: "text-[#00ff00]" },
-  { text: "📦  Pulling model weights...", color: "text-navy-300" },
-  { text: "✓  Model loaded (4-bit quantized, 35GB)", color: "text-[#00ff00]" },
-  { text: "🚀  Deploying to Nosana network...", color: "text-navy-300" },
+  { text: "  ✓ Building agent graph... 4 nodes, 3 tools", color: "text-[#00ff00]" },
+  { text: "  ✓ GPU node selected: RTX 4090 (us-east-1)", color: "text-[#00ff00]" },
+  { text: "  ✓ Deploying agent...", color: "text-[#00ff00]" },
   { text: "", color: "" },
-  { text: "✓  Agent deployed successfully!", color: "text-[#00ff00]" },
-  { text: "   Endpoint: https://api.wheelsai.com/v1/chat", color: "text-navy-400" },
-  { text: "   Latency:  47ms avg", color: "text-navy-400" },
-  { text: "   Cost:     $0.0002/1K tokens", color: "text-navy-400" },
+  { text: "  Agent live!", color: "text-white font-bold" },
+  { text: "    Endpoint:  https://api.wheelsai.com/v1/chat", color: "text-navy-400" },
+  { text: "    Channels:  Discord, Telegram, Slack, Web", color: "text-navy-400" },
+  { text: "    Latency:   47ms avg", color: "text-navy-400" },
+  { text: "", color: "" },
+  { text: "  ✓ Publishing to marketplace...", color: "text-[#00ff00]" },
+  { text: "  ✓ Listed! wheelsai.com/marketplace/my-support-bot", color: "text-[#00ff00]" },
   { text: "", color: "" },
   { text: "█", color: "text-navy-400 animate-blink" },
 ];
@@ -39,8 +40,7 @@ export function CodePreview() {
               Scale Forever
             </h2>
             <p className="text-lg text-navy-200/60 mb-8">
-              Our CLI and dashboard make deployment effortless. Connect your
-              wallet, choose a model, and you&apos;re live.
+              One CLI command. Your agent is built, deployed, and listed — all at once.
             </p>
             <ul className="space-y-4">
               {bullets.map((bullet) => (

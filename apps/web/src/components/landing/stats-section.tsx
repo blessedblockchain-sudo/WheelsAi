@@ -1,22 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Cpu, Gauge, ShieldCheck, PiggyBank } from "lucide-react";
+import { Store, Coins, Globe, Box } from "lucide-react";
 
 interface StatItemProps {
   icon: React.ElementType;
-  end: number;
-  suffix: string;
+  end?: number;
+  suffix?: string;
   label: string;
+  staticText?: string;
   delay: number;
 }
 
-function StatItem({ icon: Icon, end, suffix, label, delay }: StatItemProps) {
+function StatItem({ icon: Icon, end, suffix = "", label, staticText, delay }: StatItemProps) {
   const [count, setCount] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
   const hasAnimated = useRef(false);
 
   useEffect(() => {
+    if (staticText || end === undefined) return;
     const el = ref.current;
     if (!el) return;
     const observer = new IntersectionObserver(
@@ -41,11 +43,13 @@ function StatItem({ icon: Icon, end, suffix, label, delay }: StatItemProps) {
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [end, delay]);
+  }, [end, delay, staticText]);
 
-  const displayValue = end >= 100
-    ? Math.floor(count).toLocaleString()
-    : Math.floor(count).toString();
+  const displayValue = staticText
+    ? staticText
+    : end !== undefined && end >= 100
+      ? Math.floor(count).toLocaleString()
+      : Math.floor(count).toString();
 
   return (
     <div ref={ref} className="glow-card-navy text-center py-8">
@@ -53,18 +57,18 @@ function StatItem({ icon: Icon, end, suffix, label, delay }: StatItemProps) {
         <Icon className="h-6 w-6 text-navy-400" />
       </div>
       <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">
-        {displayValue}{suffix}
+        {displayValue}{!staticText && suffix}
       </div>
       <div className="mt-2 text-sm text-navy-200/50">{label}</div>
     </div>
   );
 }
 
-const stats = [
-  { icon: Cpu, end: 5, suffix: "", label: "GPU Tiers Available", delay: 0 },
-  { icon: Gauge, end: 12, suffix: "+", label: "Supported Models", delay: 150 },
-  { icon: ShieldCheck, end: 3, suffix: "", label: "Auth Methods", delay: 300 },
-  { icon: PiggyBank, end: 10, suffix: "+", label: "Deploy Channels", delay: 450 },
+const stats: StatItemProps[] = [
+  { icon: Store, staticText: "Free", label: "Free to List", delay: 0 },
+  { icon: Coins, end: 90, suffix: "%", label: "Revenue Share", delay: 150 },
+  { icon: Globe, end: 10, suffix: "+", label: "Deploy Channels", delay: 300 },
+  { icon: Box, end: 6, suffix: "+", label: "Frameworks Supported", delay: 450 },
 ];
 
 export function StatsSection() {
@@ -74,10 +78,10 @@ export function StatsSection() {
         <div className="text-center mb-16">
           <h2 className="text-3xl sm:text-4xl font-bold text-white">
             Built for{" "}
-            <span className="gradient-text-navy">Performance</span>
+            <span className="gradient-text-navy">Creators</span>
           </h2>
           <p className="mt-4 text-lg text-navy-200/60 max-w-2xl mx-auto">
-            Enterprise-grade infrastructure at decentralized prices.
+            Everything you need to build a business around your AI agents.
           </p>
         </div>
 

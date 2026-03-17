@@ -35,6 +35,13 @@ const steps: { id: Step; label: string; icon: React.ElementType }[] = [
   { id: "review", label: "Review", icon: Check },
 ];
 
+const frameworkColors: Record<string, { bg: string; text: string }> = {
+  purple: { bg: "bg-purple-100", text: "text-purple-600" },
+  green: { bg: "bg-green-100", text: "text-green-600" },
+  blue: { bg: "bg-blue-100", text: "text-blue-600" },
+  gray: { bg: "bg-gray-100", text: "text-gray-600" },
+};
+
 const frameworks = [
   {
     id: "mastra",
@@ -231,8 +238,8 @@ function NewAgentContent() {
                       )}
                     >
                       <div className="flex items-center gap-3">
-                        <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", `bg-${fw.color}-100`)}>
-                          <Bot className={cn("h-5 w-5", `text-${fw.color}-600`)} />
+                        <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", frameworkColors[fw.color]?.bg)}>
+                          <Bot className={cn("h-5 w-5", frameworkColors[fw.color]?.text)} />
                         </div>
                         <div>
                           <p className="font-medium">{fw.name}</p>

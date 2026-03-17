@@ -15,15 +15,15 @@ interface HeaderProps {
 
 export function Header({ title, description, action }: HeaderProps) {
   return (
-    <div className="flex items-center justify-between border-b border-gray-200 bg-white px-8 py-4">
+    <div className="flex items-center justify-between border-b border-gray-200 bg-white px-8 py-4 dark:border-gray-700 dark:bg-gray-900">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{title}</h1>
         {description && (
-          <p className="mt-1 text-sm text-gray-500">{description}</p>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{description}</p>
         )}
       </div>
       <div className="flex items-center gap-4">
-        <button className="rounded-lg p-2 text-gray-500 hover:bg-gray-100">
+        <button className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800" aria-label="Notifications">
           <Bell className="h-5 w-5" />
         </button>
         {action && (

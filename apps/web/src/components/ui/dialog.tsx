@@ -41,16 +41,66 @@ function DialogTrigger({ children, asChild }: { children: React.ReactElement; as
   return <button onClick={() => setOpen(true)}>{children}</button>;
 }
 
+function DialogClose({ children, className }: { children?: React.ReactNode; className?: string }) {
+  const { setOpen } = React.useContext(DialogContext);
+  return (
+    <button className={className} onClick={() => setOpen(false)}>
+      {children}
+    </button>
+  );
+}
+
 function DialogContent({ children, className }: { children: React.ReactNode; className?: string }) {
   const { open, setOpen } = React.useContext(DialogContext);
+  const contentRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
     if (open) {
       document.body.style.overflow = "hidden";
+      // Focus the dialog content on open
+      requestAnimationFrame(() => {
+        contentRef.current?.focus();
+      });
     } else {
       document.body.style.overflow = "";
     }
     return () => { document.body.style.overflow = ""; };
+  }, [open]);
+
+  // Handle Escape key
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open, setOpen]);
+
+  // Focus trap
+  React.useEffect(() => {
+    if (!open || !contentRef.current) return;
+    const content = contentRef.current;
+    const focusableSelector = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const focusable = content.querySelectorAll(focusableSelector);
+      if (focusable.length === 0) return;
+      const first = focusable[0] as HTMLElement;
+      const last = focusable[focusable.length - 1] as HTMLElement;
+
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
   if (!open) return null;
@@ -59,14 +109,19 @@ function DialogContent({ children, className }: { children: React.ReactNode; cla
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/50" onClick={() => setOpen(false)} />
       <div
+        ref={contentRef}
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
         className={cn(
-          "relative z-50 w-full max-w-lg rounded-lg bg-white p-6 shadow-lg animate-in fade-in-0 zoom-in-95",
+          "relative z-50 w-full max-w-lg rounded-lg bg-white p-6 shadow-lg dark:bg-gray-900 dark:text-gray-100",
           className
         )}
       >
         <button
           className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100"
           onClick={() => setOpen(false)}
+          aria-label="Close"
         >
           <X className="h-4 w-4" />
         </button>
@@ -85,11 +140,11 @@ function DialogTitle({ children, className }: { children: React.ReactNode; class
 }
 
 function DialogDescription({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <p className={cn("text-sm text-gray-500", className)}>{children}</p>;
+  return <p className={cn("text-sm text-gray-500 dark:text-gray-400", className)}>{children}</p>;
 }
 
 function DialogFooter({ children, className }: { children: React.ReactNode; className?: string }) {
   return <div className={cn("flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 mt-4", className)}>{children}</div>;
 }
 
-export { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter };
+export { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose };

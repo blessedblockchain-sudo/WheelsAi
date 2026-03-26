@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { authApi, ApiError } from "@/lib/api";
+import { WalletAuthButton } from "@/components/auth/wallet-auth-button";
 
 interface LoginForm {
   email: string;
@@ -111,36 +112,7 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <Button
-            variant="outline"
-            className="mt-4 w-full"
-            onClick={() => toast.info("Wallet connect coming soon!")}
-          >
-            <svg className="mr-2 h-5 w-5" viewBox="0 0 32 32" fill="none">
-              <circle cx="16" cy="16" r="16" fill="url(#solana-gradient)" />
-              <path
-                d="M10.5 19.5L14 16L10.5 12.5M17.5 19.5L21 16L17.5 12.5"
-                stroke="white"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <defs>
-                <linearGradient
-                  id="solana-gradient"
-                  x1="0"
-                  y1="0"
-                  x2="32"
-                  y2="32"
-                  gradientUnits="userSpaceOnUse"
-                >
-                  <stop stopColor="#00FFA3" />
-                  <stop offset="1" stopColor="#DC1FFF" />
-                </linearGradient>
-              </defs>
-            </svg>
-            Connect Solana Wallet
-          </Button>
+          <WalletAuthButton />
         </div>
 
         <p className="mt-6 text-center text-sm text-gray-500">

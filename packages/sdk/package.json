@@ -1,0 +1,24 @@
+{
+  "name": "@wheelsai/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@wheelsai/types": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

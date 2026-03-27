@@ -1,10 +1,10 @@
-import { Shield, Clock, Cpu, Users } from "lucide-react";
+import { Zap, Users, Globe, Shield } from "lucide-react";
 
 const trustSignals = [
-  { icon: Cpu, label: "2,000+ GPUs", sublabel: "Decentralized network" },
-  { icon: Users, label: "500+ Builders", sublabel: "Active community" },
-  { icon: Clock, label: "<200ms Latency", sublabel: "Edge-optimized inference" },
-  { icon: Shield, label: "SOC 2 Ready", sublabel: "Enterprise security" },
+  { icon: Globe, label: "10+ Channels", sublabel: "Deploy everywhere" },
+  { icon: Users, label: "500+ Builders", sublabel: "Growing community" },
+  { icon: Zap, label: "Instant Responses", sublabel: "Optimized inference" },
+  { icon: Shield, label: "Secure by Default", sublabel: "Enterprise-ready" },
 ];
 
 export function SocialProof() {

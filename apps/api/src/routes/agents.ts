@@ -6,6 +6,7 @@ import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { getNosanaClient } from "../services/nosana.js";
+import { parseGitHubUrl, detectFramework } from "../services/github-import.js";
 
 const logger = createLogger("agent-routes");
 
@@ -23,7 +24,7 @@ const toolSchema = z.object({
 const createAgentSchema = z.object({
   name: z.string().min(3).max(100),
   description: z.string().max(500).optional(),
-  framework: z.enum(["mastra", "langchain", "autogen", "custom"]),
+  framework: z.enum(["mastra", "langchain", "autogen", "elizaos", "crewai", "custom"]),
   systemPrompt: z.string().max(10000).optional(),
   tools: z.array(toolSchema).default([]),
   modelConfig: z.object({
@@ -60,6 +61,21 @@ const deployAgentSchema = z.object({
 // ============================================
 
 export const agentRoutes: FastifyPluginAsync = async (app) => {
+  /**
+   * Import agent from GitHub — detects framework and pre-fills config
+   */
+  app.post("/import-github", { preHandler: [requireAuth] }, async (request, reply) => {
+    const { githubUrl } = z.object({ githubUrl: z.string().url() }).parse(request.body);
+
+    try {
+      const repoInfo = parseGitHubUrl(githubUrl);
+      const config = await detectFramework(repoInfo.owner, repoInfo.repo);
+      return { config, repoInfo };
+    } catch (err) {
+      return reply.badRequest(err instanceof Error ? err.message : "Failed to import from GitHub");
+    }
+  });
+
   /**
    * List all agents
    */

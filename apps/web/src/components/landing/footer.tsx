@@ -57,8 +57,8 @@ export function Footer() {
               <span className="text-xl font-bold text-white">WheelsAI</span>
             </Link>
             <p className="text-sm text-navy-200/50 leading-relaxed">
-              Build, deploy, and monetize AI agents — all in one platform.
-              Powered by Solana.
+              Build, deploy, and monetize AI agents — no fragmentation.
+              One platform for every framework.
             </p>
           </div>
 
@@ -91,7 +91,7 @@ export function Footer() {
             &copy; {new Date().getFullYear()} WheelsAI. All rights reserved.
           </p>
           <p className="text-sm text-navy-200/40">
-            Powered by <span className="text-navy-300">Solana</span>.
+            Built on <span className="text-navy-300">Solana</span>.
           </p>
         </div>
       </div>

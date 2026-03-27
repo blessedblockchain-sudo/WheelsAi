@@ -58,7 +58,7 @@ export default function AgentDetailPage() {
   const [isDeploying, setIsDeploying] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
   const [deployConfig, setDeployConfig] = useState<DeployConfig>({
-    gpuTier: "rtx-4090",
+    gpuTier: "rtx-4070", // default: Standard tier (~$0.35/hr, Recommended)
     replicas: 1,
     enableWallet: false,
     dailyLimitCents: 1000,

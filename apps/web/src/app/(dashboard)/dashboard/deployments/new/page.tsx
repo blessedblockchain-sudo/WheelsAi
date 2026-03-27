@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Cpu, Check, Zap, Server, Box } from "lucide-react";
+import { ArrowLeft, Cpu, Check, Zap, Server, Box, ChevronRight, ChevronDown } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 
@@ -17,6 +17,23 @@ import { cn } from "@/lib/utils";
 
 type Step = "model" | "config" | "review";
 type Engine = "vllm" | "ollama";
+type SimplifiedTier = "basic" | "standard" | "premium" | "enterprise";
+
+interface SimplifiedTierOption {
+  id: SimplifiedTier;
+  label: string;
+  price: string;
+  recommended?: boolean;
+  /** Substring matched against GpuTier.id returned from the API. */
+  gpuIdFragment: string;
+}
+
+const SIMPLIFIED_TIERS: SimplifiedTierOption[] = [
+  { id: "basic",      label: "Basic",      price: "~$0.15/hr", gpuIdFragment: "3060" },
+  { id: "standard",   label: "Standard",   price: "~$0.35/hr", gpuIdFragment: "4070", recommended: true },
+  { id: "premium",    label: "Premium",    price: "~$0.50/hr", gpuIdFragment: "4090" },
+  { id: "enterprise", label: "Enterprise", price: "~$1.50/hr", gpuIdFragment: "a100" },
+];
 
 interface EngineOption {
   id: Engine;
@@ -67,6 +84,10 @@ export default function NewDeploymentPage() {
   const [replicas, setReplicas] = useState(1);
   const [maxTokens, setMaxTokens] = useState(4096);
 
+  // Simplified tier state
+  const [selectedSimplifiedTier, setSelectedSimplifiedTier] = useState<SimplifiedTier>("standard");
+  const [showAdvancedGpu, setShowAdvancedGpu] = useState(false);
+
   useEffect(() => {
     async function loadData() {
       try {
@@ -89,10 +110,15 @@ export default function NewDeploymentPage() {
     // Set default engine from model
     setSelectedEngine(model.defaultEngine as Engine);
 
-    // Auto-select compatible GPU
+    // Auto-select compatible GPU and sync simplified tier
     const compatible = gpuTiers.find((g) => g.id === model.minGpuTier);
     if (compatible) {
       setSelectedGpu(compatible);
+      // Derive the closest simplified tier for the auto-selected GPU
+      const matchedTier = SIMPLIFIED_TIERS.find((t) =>
+        compatible.id.includes(t.gpuIdFragment)
+      );
+      setSelectedSimplifiedTier(matchedTier?.id ?? "standard");
     }
 
     setStep("config");
@@ -106,6 +132,30 @@ export default function NewDeploymentPage() {
 
   function getAvailableEngines(model: Model): EngineOption[] {
     return ENGINE_OPTIONS.filter((e) => model.supportedEngines.includes(e.id));
+  }
+
+  /**
+   * Given a simplified tier, find the best matching GpuTier from those
+   * compatible with the currently selected model. Falls back to the first
+   * compatible GPU if no exact fragment match is found.
+   */
+  function resolveGpuForTier(tier: SimplifiedTier, model: Model): GpuTier | null {
+    const compatible = getCompatibleGpus(model);
+    const option = SIMPLIFIED_TIERS.find((t) => t.id === tier);
+    if (!option) return compatible[0] ?? null;
+    return (
+      compatible.find((g) => g.id.includes(option.gpuIdFragment)) ??
+      compatible[0] ??
+      null
+    );
+  }
+
+  function handleSimplifiedTierChange(tier: SimplifiedTier) {
+    setSelectedSimplifiedTier(tier);
+    if (selectedModel) {
+      const gpu = resolveGpuForTier(tier, selectedModel);
+      setSelectedGpu(gpu);
+    }
   }
 
   async function handleDeploy() {
@@ -339,34 +389,92 @@ export default function NewDeploymentPage() {
                   )}
                 </div>
 
+                {/* Simplified GPU tier selector */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
-                    GPU Type
+                    Performance Tier
                   </label>
                   <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                    {getCompatibleGpus(selectedModel).map((gpu) => (
+                    {SIMPLIFIED_TIERS.map((tier) => (
                       <div
-                        key={gpu.id}
+                        key={tier.id}
                         className={cn(
                           "cursor-pointer rounded-lg border-2 p-4 transition-all",
-                          selectedGpu?.id === gpu.id
+                          selectedSimplifiedTier === tier.id
                             ? "border-primary-500 bg-primary-50"
                             : "border-gray-200 hover:border-gray-300"
                         )}
-                        onClick={() => setSelectedGpu(gpu)}
+                        onClick={() => handleSimplifiedTierChange(tier.id)}
                       >
                         <div className="flex items-center justify-between">
-                          <span className="font-medium">{gpu.name}</span>
-                          <span className="text-sm text-gray-500">
-                            {formatPrice(gpu.pricePerHour)}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-sm text-gray-500">
-                          {gpu.vram}GB VRAM &middot; {gpu.available} available
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{tier.label}</span>
+                            {tier.recommended && (
+                              <Badge variant="secondary" className="text-xs">
+                                Recommended
+                              </Badge>
+                            )}
+                          </div>
+                          <span className="text-sm text-gray-500">{tier.price}</span>
                         </div>
                       </div>
                     ))}
                   </div>
+                </div>
+
+                {/* Advanced GPU options toggle */}
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedGpu(!showAdvancedGpu)}
+                    className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors"
+                  >
+                    {showAdvancedGpu ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                    Advanced GPU Options
+                  </button>
+
+                  {showAdvancedGpu && (
+                    <div className="mt-3 rounded-lg border border-gray-200 p-4">
+                      <p className="mb-3 text-xs text-gray-500">
+                        Selecting a specific GPU overrides the simplified tier above.
+                      </p>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {getCompatibleGpus(selectedModel).map((gpu) => (
+                          <div
+                            key={gpu.id}
+                            className={cn(
+                              "cursor-pointer rounded-lg border-2 p-4 transition-all",
+                              selectedGpu?.id === gpu.id
+                                ? "border-primary-500 bg-primary-50"
+                                : "border-gray-200 hover:border-gray-300"
+                            )}
+                            onClick={() => {
+                              setSelectedGpu(gpu);
+                              // Sync simplified tier if there's a match
+                              const matched = SIMPLIFIED_TIERS.find((t) =>
+                                gpu.id.includes(t.gpuIdFragment)
+                              );
+                              if (matched) setSelectedSimplifiedTier(matched.id);
+                            }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium">{gpu.name}</span>
+                              <span className="text-sm text-gray-500">
+                                {formatPrice(gpu.pricePerHour)}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-sm text-gray-500">
+                              {gpu.vram}GB VRAM &middot; {gpu.available} available
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid gap-4 sm:grid-cols-2">

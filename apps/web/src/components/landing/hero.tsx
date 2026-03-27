@@ -51,21 +51,22 @@ export function Hero() {
         {/* Badge */}
         <div className="inline-flex items-center gap-2 rounded-full border border-navy-600 bg-navy-900/80 px-4 py-1.5 text-sm text-navy-200/80 mb-8 backdrop-blur-sm">
           <Layers className="h-4 w-4 text-navy-400" />
-          The All-in-One AI Agent Platform
+          Solve AI Agent Fragmentation
         </div>
 
         {/* Headline */}
         <h1 className="text-4xl sm:text-5xl lg:text-7xl font-bold tracking-tight text-white leading-tight">
-          Everyone Needs AI Agents.
+          Build AI Agents.
           <br className="hidden sm:block" />
-          <span className="gradient-text-navy">We Make It Simple.</span>
+          Deploy Everywhere.{" "}
+          <span className="gradient-text-navy">Monetize Instantly.</span>
         </h1>
 
         {/* Subtitle */}
         <p className="mx-auto mt-6 max-w-2xl text-lg sm:text-xl leading-relaxed text-navy-200/60">
-          Frameworks, hosting, inference, and monetization — all fragmented.
-          WheelsAI brings it all together. Build visually, deploy to 10+ channels,
-          and list on our marketplace for free.
+          Frameworks fragmented. Hosting scattered. Monetization impossible.
+          WheelsAI eliminates all of it — pick your framework, import from GitHub,
+          deploy to 10+ channels, and earn 90% revenue.
         </p>
 
         {/* CTAs */}
@@ -86,16 +87,16 @@ export function Hero() {
         {/* Feature highlights */}
         <div className="mt-16 grid grid-cols-3 gap-8 max-w-lg mx-auto">
           <div className="text-center">
-            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">Free</div>
-            <div className="text-sm text-navy-200/60 mt-1">To List</div>
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">6+</div>
+            <div className="text-sm text-navy-200/60 mt-1">Frameworks</div>
+          </div>
+          <div className="text-center">
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">10+</div>
+            <div className="text-sm text-navy-200/60 mt-1">Deploy Channels</div>
           </div>
           <div className="text-center">
             <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">90%</div>
             <div className="text-sm text-navy-200/60 mt-1">Revenue Share</div>
-          </div>
-          <div className="text-center">
-            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">10+</div>
-            <div className="text-sm text-navy-200/60 mt-1">Channels</div>
           </div>
         </div>
       </div>

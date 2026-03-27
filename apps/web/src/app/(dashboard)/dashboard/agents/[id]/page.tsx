@@ -11,6 +11,7 @@ import {
   Copy,
   MessageCircle,
   Workflow,
+  BarChart3,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -200,6 +201,12 @@ export default function AgentDetailPage() {
                   <Button variant="outline">
                     <Workflow className="mr-2 h-4 w-4" />
                     Visual Builder
+                  </Button>
+                </Link>
+                <Link href={`/dashboard/agents/${agentId}/analytics`}>
+                  <Button variant="outline">
+                    <BarChart3 className="mr-2 h-4 w-4" />
+                    Analytics
                   </Button>
                 </Link>
                 {isRunning ? (

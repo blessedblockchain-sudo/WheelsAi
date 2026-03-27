@@ -5,8 +5,8 @@
 <h1 align="center">WheelsAI</h1>
 
 <p align="center">
-  <strong>Deploy AI Agents on Decentralized GPUs</strong><br/>
-  Build, fine-tune, test, and monetize AI agents on Nosana's GPU network. Powered by Solana.
+  <strong>Build, Deploy & Monetize AI Agents — One Platform</strong><br/>
+  Eliminate fragmentation across frameworks, hosting, and monetization. Import from GitHub, deploy to 10+ channels, earn 90% revenue.
 </p>
 
 <p align="center">
@@ -32,18 +32,18 @@
 
 ## Overview
 
-**WheelsAI** is a full-stack platform for building, deploying, testing, and monetizing AI agents on [Nosana's](https://nosana.io) decentralized GPU network. It provides a unified experience for the entire agent lifecycle -- from visual drag-and-drop building to one-click deployment, marketplace monetization, and enterprise-grade monitoring.
+**WheelsAI** solves the fragmentation problem in AI agent development. Today, building an agent means stitching together frameworks, hosting, inference, and monetization from separate tools and platforms. WheelsAI brings it all together — build with any framework (or import from GitHub), deploy to 10+ channels with one click, and monetize through a marketplace with bonding curve token economics.
 
-Up to **85% cheaper** than centralized cloud. Pay with **SOL**, **USDC**, or **NOS** tokens.
+Platform-agnostic. Framework-agnostic. Built on Solana.
 
 ### Why WheelsAI?
 
 | Problem | WheelsAI Solution |
 |---------|-------------------|
 | Building AI agents requires stitching together fragmented tools | Unified platform: build, deploy, test, monitor, monetize in one place |
-| GPU compute is expensive and centralized | Decentralized GPU network (2,000+ nodes) at a fraction of the cost |
-| Framework lock-in limits flexibility | First-class support for Mastra, LangChain, AutoGen, ElizaOS, CrewAI, or custom |
-| No clear path to monetize agents | Built-in marketplace with 90/10 revenue sharing |
+| Framework lock-in limits flexibility | First-class support for Mastra, ElizaOS, LangChain, AutoGen, CrewAI, or custom |
+| Infrastructure complexity blocks agent builders | We handle compute — you focus on your agent. Import from GitHub and deploy in seconds |
+| No clear path to monetize agents | Two-track marketplace: traditional pricing + pump.fun-style bonding curve tokens |
 | Enterprise requirements are an afterthought | SSO, RBAC, audit logging, 2FA, custom domains, and SLAs from day one |
 
 ---

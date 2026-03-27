@@ -2,10 +2,10 @@ import { Check, Terminal } from "lucide-react";
 
 const bullets = [
   "OpenAI-compatible API endpoints",
-  "Auto-scaling with zero cold starts",
-  "Built-in load balancing & failover",
+  "Always-on availability with auto-scaling",
+  "Enterprise-grade reliability",
   "Real-time streaming responses",
-  "Deploy to Discord, Telegram, Slack & 7+ more",
+  "Deploy to Discord, Telegram, Slack & 10+ channels",
   "Free marketplace listing, 90% revenue share",
 ];
 

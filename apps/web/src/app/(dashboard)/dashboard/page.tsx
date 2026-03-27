@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Box, Cpu, Zap, DollarSign, ArrowRight } from "lucide-react";
+import { Box, Bot, Cpu, Zap, DollarSign, ArrowRight } from "lucide-react";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -122,17 +122,17 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
-                Models Available
+                Total Agents
               </CardTitle>
-              <Cpu className="h-4 w-4 text-gray-400 dark:text-gray-500" />
+              <Bot className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{modelCount || 8}</div>
+              <div className="text-2xl font-bold">{modelCount || 0}</div>
               <Link
-                href="/dashboard/models"
+                href="/dashboard/agents"
                 className="text-xs text-primary-600 hover:underline"
               >
-                Browse models
+                Manage agents
               </Link>
             </CardContent>
           </Card>

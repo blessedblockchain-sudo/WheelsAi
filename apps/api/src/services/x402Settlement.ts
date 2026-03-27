@@ -288,6 +288,9 @@ export async function pruneX402SettlementMetricsHistory(): Promise<number> {
   `;
 }
 
+/**
+ * @deprecated Use BullMQ queue instead — call `startX402Queue()` from `../queues/index.js`.
+ */
 export function startX402SettlementWorker(): () => void {
   workerMetrics.enabled = env.X402_SETTLEMENT_WORKER_ENABLED;
 
@@ -326,6 +329,9 @@ export function startX402SettlementWorker(): () => void {
   return stopX402SettlementWorker;
 }
 
+/**
+ * @deprecated Use BullMQ queue instead — call `stopX402Queue()` from `../queues/index.js`.
+ */
 export function stopX402SettlementWorker(): void {
   if (!settlementInterval) {
     return;

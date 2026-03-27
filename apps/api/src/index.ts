@@ -42,8 +42,15 @@ import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
 import { playgroundRoutes } from "./routes/playground.js";
+// Deprecated setInterval-based workers — kept for reference, not invoked.
 import { startX402SettlementWorker } from "./services/x402Settlement.js";
 import { startTokenIndexerWorker } from "./services/tokenIndexer.js";
+import {
+  startX402Queue,
+  stopX402Queue,
+  startTokenIndexerQueue,
+  stopTokenIndexerQueue,
+} from "./queues/index.js";
 
 async function main() {
   const app = Fastify({
@@ -136,16 +143,18 @@ async function main() {
     process.exit(1);
   }
 
-  const stopSettlementWorker = startX402SettlementWorker();
-  const stopTokenIndexer = startTokenIndexerWorker();
+  await startX402Queue();
+  await startTokenIndexerQueue();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
   for (const signal of signals) {
     process.on(signal, async () => {
       app.log.info(`Received ${signal}, shutting down gracefully`);
-      stopSettlementWorker();
-      stopTokenIndexer();
+      await stopX402Queue();
+      await stopTokenIndexerQueue();
+      await stopX402Queue();
+      await stopTokenIndexerQueue();
       await app.close();
       process.exit(0);
     });

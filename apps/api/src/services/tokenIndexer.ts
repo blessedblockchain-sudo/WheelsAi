@@ -47,6 +47,13 @@ export function getIndexerMetrics(): IndexerMetrics {
   return { ...metrics };
 }
 
+/**
+ * Runs a single token indexer tick. Exported for use by the BullMQ worker.
+ */
+export async function runTokenIndexerTick(): Promise<void> {
+  return tick();
+}
+
 async function tick(): Promise<void> {
   if (isTickRunning) {
     logger.debug("Skipping tick - previous tick still running");
@@ -173,6 +180,9 @@ async function tick(): Promise<void> {
   }
 }
 
+/**
+ * @deprecated Use BullMQ queue instead — call `startTokenIndexerQueue()` from `../queues/index.js`.
+ */
 export function startTokenIndexerWorker(): () => void {
   const intervalMs = env.TOKEN_INDEXER_INTERVAL_MS;
 

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wheelsai.fullname" . }}-web
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wheelsai.componentLabels" (dict "component" "web" "root" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.web.port }}
+      targetPort: {{ .Values.web.port }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "wheelsai.selectorLabels" (dict "component" "web" "root" .) | nindent 4 }}

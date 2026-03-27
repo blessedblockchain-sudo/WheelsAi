@@ -264,6 +264,21 @@ export const agentWalletSchema = z.object({
 export type AgentWallet = z.infer<typeof agentWalletSchema>;
 
 // ============================================
+// Branding / White-label Types
+// ============================================
+
+export const brandingSchema = z.object({
+  logo: z.string().url().optional(),
+  favicon: z.string().url().optional(),
+  primaryColor: z.string().optional(),
+  accentColor: z.string().optional(),
+  appName: z.string().optional(),
+  supportEmail: z.string().email().optional(),
+});
+
+export type Branding = z.infer<typeof brandingSchema>;
+
+// ============================================
 // Error Types
 // ============================================
 

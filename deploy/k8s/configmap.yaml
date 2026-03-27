@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wheelsai-config
+  namespace: wheelsai
+data:
+  NODE_ENV: "production"
+  API_PORT: "4000"
+  API_HOST: "0.0.0.0"
+  CORS_ORIGIN: "https://app.wheelsai.io"
+  LOG_LEVEL: "info"
+  SOLANA_NETWORK: "mainnet-beta"
+  SOLANA_RPC_URL: "https://api.mainnet-beta.solana.com"

@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { brandingSchema } from "@wheelsai/types";
 import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { requireAuth } from "../middleware/auth.js";
@@ -294,4 +295,36 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
       message: "Wallet linked successfully",
     };
   });
+
+  // ============================================
+  // Branding / White-label
+  // ============================================
+
+  fastify.get(
+    "/branding",
+    { preHandler: [requireAuth] },
+    async (request) => {
+      const orgId = request.auth!.orgId;
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+      });
+      return { branding: (org as any)?.branding ?? {} };
+    }
+  );
+
+  fastify.put(
+    "/branding",
+    { preHandler: [requireAuth] },
+    async (request) => {
+      const orgId = request.auth!.orgId;
+      const branding = brandingSchema.parse(request.body);
+
+      await prisma.organization.update({
+        where: { id: orgId },
+        data: { branding: branding as any },
+      });
+
+      return { branding, message: "Branding updated" };
+    }
+  );
 };

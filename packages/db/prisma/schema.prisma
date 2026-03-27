@@ -38,6 +38,8 @@ model Organization {
   ownerId   String   @map("owner_id") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at")
 
+  branding  Json?    @default("{}")
+
   owner         User            @relation("OrgOwner", fields: [ownerId], references: [id])
   members       OrgMember[]
   apiKeys       ApiKey[]

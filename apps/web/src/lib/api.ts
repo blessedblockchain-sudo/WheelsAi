@@ -542,6 +542,22 @@ export const settingsApi = {
       method: "POST",
       body: { walletAddress, signature, message },
     }),
+
+  getBranding: () =>
+    api<{ branding: Record<string, string> }>("/api/settings/branding"),
+
+  updateBranding: (branding: {
+    logo?: string;
+    favicon?: string;
+    primaryColor?: string;
+    accentColor?: string;
+    appName?: string;
+    supportEmail?: string;
+  }) =>
+    api<{ branding: Record<string, string>; message: string }>("/api/settings/branding", {
+      method: "PUT",
+      body: branding,
+    }),
 };
 
 // ============================================

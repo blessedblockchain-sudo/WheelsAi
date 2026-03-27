@@ -1,0 +1,121 @@
+## Global settings
+nameOverride: ""
+fullnameOverride: ""
+
+## API server configuration
+api:
+  image:
+    repository: ghcr.io/wheelsai/api
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  port: 4000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  health:
+    path: /health
+    initialDelaySeconds: 15
+    periodSeconds: 15
+
+## Web app configuration
+web:
+  image:
+    repository: ghcr.io/wheelsai/web
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  port: 3000
+  resources:
+    requests:
+      cpu: 125m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  health:
+    path: /
+    initialDelaySeconds: 10
+    periodSeconds: 15
+
+## PostgreSQL configuration
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "15-alpine"
+  storage:
+    size: 10Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+## Redis configuration
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7-alpine"
+  maxmemory: 256mb
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+
+## Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+  hosts:
+    web: app.wheelsai.io
+    api: api.wheelsai.io
+  tls:
+    enabled: true
+    secretName: wheelsai-tls
+
+## Environment variables (ConfigMap)
+config:
+  NODE_ENV: production
+  API_PORT: "4000"
+  API_HOST: "0.0.0.0"
+  CORS_ORIGIN: "https://app.wheelsai.io"
+  LOG_LEVEL: info
+  SOLANA_NETWORK: mainnet-beta
+  SOLANA_RPC_URL: "https://api.mainnet-beta.solana.com"
+
+## Secrets (replace before deploying)
+secrets:
+  DATABASE_URL: "postgresql://wheelsai:CHANGE_ME@wheelsai-postgres:5432/wheelsai"
+  REDIS_URL: "redis://wheelsai-redis:6379"
+  JWT_SECRET: "CHANGE_ME_MIN_32_CHARS_REPLACE_BEFORE_DEPLOY"
+  ENCRYPTION_KEY: "CHANGE_ME_MIN_32_CHARS_REPLACE_BEFORE_DEPLOY"
+  POSTGRES_USER: wheelsai
+  POSTGRES_PASSWORD: "CHANGE_ME"
+  POSTGRES_DB: wheelsai
+  GROQ_API_KEY: ""
+  GOOGLE_GEMINI_API_KEY: ""
+  TOGETHER_API_KEY: ""
+
+## Image pull secrets (if using private registry)
+imagePullSecrets: []
+
+## Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1001

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: wheelsai
+description: WheelsAI platform - AI agent deployment and management
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+maintainers:
+  - name: WheelsAI Team
+keywords:
+  - ai
+  - agents
+  - solana
+  - nextjs
+  - fastify

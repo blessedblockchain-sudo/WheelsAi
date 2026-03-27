@@ -107,6 +107,9 @@ const envSchema = z.object({
   // Token Marketplace
   PUMPFUN_API_KEY: z.string().optional(),
   TOKEN_INDEXER_INTERVAL_MS: z.coerce.number().int().min(0).default(30000),
+
+  // GitHub Integration
+  GITHUB_TOKEN: z.string().optional(),
 });
 
 function parseEnv() {

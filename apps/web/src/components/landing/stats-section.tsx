@@ -65,10 +65,10 @@ function StatItem({ icon: Icon, end, suffix = "", label, staticText, delay }: St
 }
 
 const stats: StatItemProps[] = [
-  { icon: Store, staticText: "Free", label: "Free to List", delay: 0 },
+  { icon: Globe, end: 10, suffix: "+", label: "Deploy Channels", delay: 0 },
   { icon: Coins, end: 90, suffix: "%", label: "Revenue Share", delay: 150 },
-  { icon: Globe, end: 10, suffix: "+", label: "Deploy Channels", delay: 300 },
-  { icon: Box, end: 6, suffix: "+", label: "Frameworks Supported", delay: 450 },
+  { icon: Box, end: 6, suffix: "+", label: "Frameworks", delay: 300 },
+  { icon: Store, end: 500, suffix: "+", label: "Agents Built", delay: 450 },
 ];
 
 export function StatsSection() {

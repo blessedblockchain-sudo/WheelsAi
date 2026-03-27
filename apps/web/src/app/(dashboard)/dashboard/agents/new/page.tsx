@@ -12,12 +12,13 @@ import {
   Check,
   Plus,
   Trash2,
-  ExternalLink,
+  Github,
+  LayoutTemplate,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,9 +26,12 @@ import { Select } from "@/components/ui/select";
 import { agentsApi, type CreateAgentInput } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type Step = "framework" | "config" | "tools" | "code" | "review";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+
+type Step = "start" | "framework" | "config" | "tools" | "code" | "review";
 
 const steps: { id: Step; label: string; icon: React.ElementType }[] = [
+  { id: "start", label: "Start", icon: Bot },
   { id: "framework", label: "Framework", icon: Bot },
   { id: "config", label: "Configuration", icon: Settings },
   { id: "tools", label: "Tools", icon: Wrench },
@@ -40,6 +44,8 @@ const frameworkColors: Record<string, { bg: string; text: string }> = {
   green: { bg: "bg-green-100", text: "text-green-600" },
   blue: { bg: "bg-blue-100", text: "text-blue-600" },
   gray: { bg: "bg-gray-100", text: "text-gray-600" },
+  cyan: { bg: "bg-cyan-100", text: "text-cyan-600" },
+  orange: { bg: "bg-orange-100", text: "text-orange-600" },
 };
 
 const frameworks = [
@@ -63,6 +69,20 @@ const frameworks = [
     description: "Multi-agent conversation framework by Microsoft",
     features: ["Multi-agent", "Code execution", "Human-in-loop"],
     color: "blue",
+  },
+  {
+    id: "elizaos",
+    name: "ElizaOS",
+    description: "Autonomous agent framework with multi-platform support",
+    features: ["Multi-platform", "Autonomous", "Plugin system"],
+    color: "cyan",
+  },
+  {
+    id: "crewai",
+    name: "CrewAI",
+    description: "Multi-agent orchestration framework",
+    features: ["Multi-agent", "Role-based", "Task planning"],
+    color: "orange",
   },
   {
     id: "custom",
@@ -93,10 +113,12 @@ export default function NewAgentPage() {
 function NewAgentContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const template = searchParams.get("template");
+  const _template = searchParams.get("template");
 
-  const [currentStep, setCurrentStep] = useState<Step>("framework");
+  const [currentStep, setCurrentStep] = useState<Step>("start");
   const [isCreating, setIsCreating] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [githubUrl, setGithubUrl] = useState("");
 
   // Form state
   const [formData, setFormData] = useState<Partial<CreateAgentInput>>({
@@ -120,7 +142,13 @@ function NewAgentContent() {
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
   const [customEnv, setCustomEnv] = useState<{ key: string; value: string }[]>([]);
 
+  // Visible steps exclude "start" once past it so progress bar shows correctly
+  const visibleSteps = steps.filter((s) => s.id !== "start");
   const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
+
+  function goToStep(step: Step) {
+    setCurrentStep(step);
+  }
 
   function nextStep() {
     const nextIndex = currentStepIndex + 1;
@@ -135,6 +163,55 @@ function NewAgentContent() {
     const prevStepConfig = steps[prevIndex];
     if (prevStepConfig) {
       setCurrentStep(prevStepConfig.id);
+    }
+  }
+
+  async function handleGithubImport() {
+    if (!githubUrl.trim()) {
+      toast.error("Please enter a GitHub URL");
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const res = await fetch(`${API_URL}/api/agents/import-github`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ githubUrl }),
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as any).message ?? "Failed to import from GitHub");
+      }
+
+      const data = await res.json() as {
+        config: {
+          framework: string;
+          name: string;
+          description: string;
+          sourceUrl: string;
+          detectedFiles: string[];
+        };
+        repoInfo: { owner: string; repo: string };
+      };
+
+      setFormData((prev) => ({
+        ...prev,
+        framework: data.config.framework as CreateAgentInput["framework"],
+        name: data.config.name,
+        description: data.config.description,
+        sourceType: "github",
+        sourceUrl: data.config.sourceUrl,
+      }));
+
+      toast.success(`Detected framework: ${data.config.framework}`);
+      goToStep("config");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to import from GitHub");
+    } finally {
+      setIsImporting(false);
     }
   }
 
@@ -174,6 +251,10 @@ function NewAgentContent() {
     }
   }
 
+  const isOnStart = currentStep === "start";
+  // Progress bar uses visibleSteps (everything except "start")
+  const visibleStepIndex = visibleSteps.findIndex((s) => s.id === currentStep);
+
   return (
     <div className="flex flex-col">
       <Header
@@ -182,41 +263,125 @@ function NewAgentContent() {
       />
 
       <div className="p-8">
-        {/* Progress steps */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between">
-            {steps.map((step, index) => (
-              <div key={step.id} className="flex items-center">
-                <button
-                  onClick={() => setCurrentStep(step.id)}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-                    currentStep === step.id
-                      ? "bg-primary-100 text-primary-700"
-                      : index < currentStepIndex
-                      ? "text-primary-600"
-                      : "text-gray-400"
-                  )}
-                >
-                  <step.icon className="h-4 w-4" />
-                  <span className="hidden md:inline">{step.label}</span>
-                </button>
-                {index < steps.length - 1 && (
-                  <div
+        {/* Progress steps — only shown after the start screen */}
+        {!isOnStart && (
+          <div className="mb-8">
+            <div className="flex items-center justify-between">
+              {visibleSteps.map((step, index) => (
+                <div key={step.id} className="flex items-center">
+                  <button
+                    onClick={() => setCurrentStep(step.id)}
                     className={cn(
-                      "mx-2 h-0.5 w-8 md:w-16",
-                      index < currentStepIndex ? "bg-primary-500" : "bg-gray-200"
+                      "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+                      currentStep === step.id
+                        ? "bg-primary-100 text-primary-700"
+                        : index < visibleStepIndex
+                        ? "text-primary-600"
+                        : "text-gray-400"
                     )}
-                  />
-                )}
-              </div>
-            ))}
+                  >
+                    <step.icon className="h-4 w-4" />
+                    <span className="hidden md:inline">{step.label}</span>
+                  </button>
+                  {index < visibleSteps.length - 1 && (
+                    <div
+                      className={cn(
+                        "mx-2 h-0.5 w-8 md:w-16",
+                        index < visibleStepIndex ? "bg-primary-500" : "bg-gray-200"
+                      )}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Step content */}
         <Card className="mb-6">
           <CardContent className="py-6">
+
+            {/* Start — choose how to begin */}
+            {currentStep === "start" && (
+              <div>
+                <h3 className="text-lg font-medium">How would you like to start?</h3>
+                <p className="mt-1 text-sm text-gray-500">
+                  Import an existing project or build from scratch
+                </p>
+
+                <div className="mt-8 grid gap-4 md:grid-cols-3">
+                  {/* Import from GitHub */}
+                  <div className="flex flex-col rounded-lg border-2 border-gray-200 p-5 hover:border-primary-300 transition-all">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
+                        <Github className="h-5 w-5 text-gray-700" />
+                      </div>
+                      <div>
+                        <p className="font-semibold">Import from GitHub</p>
+                        <p className="text-sm text-gray-500">Auto-detect framework</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-col gap-2 flex-1">
+                      <Input
+                        value={githubUrl}
+                        onChange={(e) => setGithubUrl(e.target.value)}
+                        placeholder="https://github.com/owner/repo"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleGithubImport();
+                        }}
+                      />
+                      <Button
+                        onClick={handleGithubImport}
+                        isLoading={isImporting}
+                        className="w-full"
+                      >
+                        Import
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Choose a Framework */}
+                  <button
+                    onClick={() => goToStep("framework")}
+                    className="flex flex-col items-start rounded-lg border-2 border-gray-200 p-5 text-left hover:border-primary-300 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100">
+                        <Bot className="h-5 w-5 text-primary-600" />
+                      </div>
+                      <div>
+                        <p className="font-semibold">Choose a Framework</p>
+                        <p className="text-sm text-gray-500">Mastra, LangChain, CrewAI & more</p>
+                      </div>
+                    </div>
+                    <p className="mt-4 text-sm text-gray-500">
+                      Pick the framework that best fits your needs and configure your agent from scratch.
+                    </p>
+                  </button>
+
+                  {/* Start from Template */}
+                  <button
+                    onClick={() => router.push("/dashboard/templates")}
+                    className="flex flex-col items-start rounded-lg border-2 border-gray-200 p-5 text-left hover:border-primary-300 transition-all"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+                        <LayoutTemplate className="h-5 w-5 text-green-600" />
+                      </div>
+                      <div>
+                        <p className="font-semibold">Start from Template</p>
+                        <p className="text-sm text-gray-500">Ready-to-use agent blueprints</p>
+                      </div>
+                    </div>
+                    <p className="mt-4 text-sm text-gray-500">
+                      Browse the template gallery to find a pre-built agent that matches your use case.
+                    </p>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Framework selection */}
             {currentStep === "framework" && (
               <div>
@@ -600,6 +765,11 @@ function NewAgentContent() {
                     <p className="mt-1 text-sm text-gray-500">
                       Type: {formData.sourceType}
                     </p>
+                    {formData.sourceUrl && (
+                      <p className="mt-1 text-sm text-gray-500 break-all">
+                        URL: {formData.sourceUrl}
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -608,28 +778,30 @@ function NewAgentContent() {
         </Card>
 
         {/* Navigation */}
-        <div className="flex justify-between">
-          <Button
-            variant="outline"
-            onClick={prevStep}
-            disabled={currentStepIndex === 0}
-          >
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back
-          </Button>
+        {!isOnStart && (
+          <div className="flex justify-between">
+            <Button
+              variant="outline"
+              onClick={prevStep}
+              disabled={currentStepIndex <= 1}
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
 
-          {currentStep === "review" ? (
-            <Button onClick={handleCreate} isLoading={isCreating}>
-              <Check className="mr-2 h-4 w-4" />
-              Create Agent
-            </Button>
-          ) : (
-            <Button onClick={nextStep}>
-              Next
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Button>
-          )}
-        </div>
+            {currentStep === "review" ? (
+              <Button onClick={handleCreate} isLoading={isCreating}>
+                <Check className="mr-2 h-4 w-4" />
+                Create Agent
+              </Button>
+            ) : (
+              <Button onClick={nextStep}>
+                Next
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -668,6 +840,40 @@ agent = AssistantAgent(
     system_message="You are a helpful AI assistant.",
     llm_config={"model": "gpt-4"}
 )`;
+    case "elizaos":
+      return `import { Character, ModelProviderName } from '@elizaos/core';
+
+export const character: Character = {
+  name: 'My Agent',
+  bio: ['A helpful AI assistant.'],
+  lore: [],
+  messageExamples: [],
+  postExamples: [],
+  topics: [],
+  style: { all: [], chat: [], post: [] },
+  adjectives: [],
+  modelProvider: ModelProviderName.GROQ,
+  plugins: [],
+};`;
+    case "crewai":
+      return `from crewai import Agent, Crew, Task
+
+agent = Agent(
+    role='Assistant',
+    goal='Complete tasks effectively',
+    backstory='You are a helpful AI agent.',
+    verbose=False,
+    allow_delegation=False,
+)
+
+task = Task(
+    description='Your task description here',
+    agent=agent,
+    expected_output='A clear and concise result',
+)
+
+crew = Crew(agents=[agent], tasks=[task])
+result = crew.kickoff()`;
     default:
       return `# Your custom agent implementation
 # Can be a Dockerfile or any script`;

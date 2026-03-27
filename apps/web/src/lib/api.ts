@@ -692,6 +692,12 @@ export const agentsApi = {
     api<{ logs: string; error: string | null }>(
       `/api/agents/${agentId}/deployments/${deploymentId}/logs`
     ),
+
+  importGithub: (githubUrl: string) =>
+    api<{ config: { framework: string; name: string; description: string; sourceUrl: string; detectedFiles: string[] }; repoInfo: { owner: string; repo: string } }>("/api/agents/import-github", {
+      method: "POST",
+      body: { githubUrl },
+    }),
 };
 
 // ============================================

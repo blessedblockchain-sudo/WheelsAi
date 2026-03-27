@@ -24,21 +24,21 @@ const pillars = [
     features: [
       {
         icon: Workflow,
-        title: "Visual Agent Builder",
+        title: "Build Your Way",
         description:
-          "Drag-and-drop graph editor with 12 node types. Build agents without writing code.",
+          "Visual drag-and-drop builder or bring your own code. No framework lock-in — ever.",
       },
       {
         icon: Database,
-        title: "Knowledge Base & RAG",
+        title: "GitHub Import & 6+ Frameworks",
         description:
-          "Upload docs, build vector stores. Retrieval-augmented generation built in.",
+          "Import existing agents from GitHub. Supports Mastra, ElizaOS, LangChain, AutoGen, CrewAI, and custom builds.",
       },
       {
         icon: GitBranch,
-        title: "Multi-Agent Orchestration",
+        title: "Free Models Included",
         description:
-          "Chain agents with branching, loops, and parallel execution.",
+          "Test and prototype with free LLMs — no API key required. Upgrade to premium models when you're ready.",
       },
     ],
   },
@@ -49,21 +49,21 @@ const pillars = [
     features: [
       {
         icon: Globe,
-        title: "10+ Channels",
+        title: "10+ Channels, One Deploy",
         description:
-          "Discord, Telegram, Slack, Twitter, WhatsApp, Web, API — all from one deploy.",
+          "Discord, Telegram, Slack, Twitter, WhatsApp, Web, API — publish everywhere from a single click.",
       },
       {
         icon: Cpu,
-        title: "GPU Compute",
+        title: "Auto-Scaling Compute",
         description:
-          "RTX 3060 / 4070 / 4090 tiers. Auto-scaling, zero cold starts.",
+          "We handle the infrastructure. Instant deployment, zero cold starts, no DevOps required.",
       },
       {
         icon: Zap,
         title: "OpenAI-Compatible API",
         description:
-          "Drop-in replacement. Streaming, function calls, all built in.",
+          "Drop-in replacement for any OpenAI client. Streaming, function calls, and tool use built in.",
       },
     ],
   },
@@ -76,19 +76,19 @@ const pillars = [
         icon: ShoppingBag,
         title: "Agent Marketplace",
         description:
-          "Publish and discover agents. Six categories, reviews, featured listings.",
+          "List your agent for free. Choose your model: free tier, per-request, or subscription. Community-driven discovery.",
       },
       {
         icon: Coins,
-        title: "Flexible Pricing",
+        title: "90% Revenue Share",
         description:
-          "Free, per-request, or subscription. 90% revenue share. Payouts in SOL, USDC, or credits.",
+          "Keep 90% of everything you earn. Payouts in SOL, USDC, or platform credits — your choice.",
       },
       {
         icon: BarChart3,
         title: "Agent Tokens",
         description:
-          "Bonding-curve tokens for your agents. Community-driven price discovery on Solana.",
+          "Launch a bonding-curve token for your agent. pump.fun-style graduation to full liquidity on Solana.",
       },
     ],
   },

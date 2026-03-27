@@ -132,6 +132,8 @@ function getRuntimeImage(framework: string): string {
     mastra: "wheelsai/agent-runtime-mastra:latest",
     langchain: "wheelsai/agent-runtime-langchain:latest",
     autogen: "wheelsai/agent-runtime-autogen:latest",
+    elizaos: "wheelsai/agent-runtime-elizaos:latest",
+    crewai: "wheelsai/agent-runtime-crewai:latest",
     custom: "wheelsai/agent-runtime-base:latest",
   };
 
@@ -268,6 +270,61 @@ export function generateAutoGenConfig(agent: AgentConfig["agent"]): Record<strin
       description: tool.description,
       parameters: tool.config?.parameters || { type: "object", properties: {} },
     })),
+  };
+}
+
+/**
+ * Generate ElizaOS-specific agent configuration
+ */
+export function generateElizaOSConfig(agent: AgentConfig["agent"]): Record<string, any> {
+  return {
+    name: agent.name,
+    bio: agent.systemPrompt ? [agent.systemPrompt] : [],
+    lore: [],
+    messageExamples: [],
+    postExamples: [],
+    topics: [],
+    style: {
+      all: [],
+      chat: [],
+      post: [],
+    },
+    adjectives: [],
+    modelProvider: agent.modelConfig.externalModel?.split("/")[0] || "groq",
+    model: agent.modelConfig.externalModel?.split("/").slice(1).join("/") || "llama-3.3-70b-versatile",
+    settings: {
+      model: agent.modelConfig.externalModel || "groq/llama-3.3-70b-versatile",
+      temperature: agent.modelConfig.temperature,
+      maxOutputTokens: agent.modelConfig.maxTokens,
+    },
+    plugins: agent.tools.map((tool) => tool.name),
+  };
+}
+
+/**
+ * Generate CrewAI-specific agent configuration
+ */
+export function generateCrewAIConfig(agent: AgentConfig["agent"]): Record<string, any> {
+  return {
+    crew: {
+      agents: [
+        {
+          role: agent.name,
+          goal: agent.systemPrompt || "Complete assigned tasks effectively",
+          backstory: agent.systemPrompt || `You are ${agent.name}, an AI agent.`,
+          llm: {
+            model: agent.modelConfig.externalModel || "gpt-4",
+            temperature: agent.modelConfig.temperature,
+            max_tokens: agent.modelConfig.maxTokens,
+          },
+          tools: agent.tools.map((tool) => tool.name),
+          verbose: false,
+          allow_delegation: false,
+        },
+      ],
+      tasks: [],
+      process: "sequential",
+    },
   };
 }
 

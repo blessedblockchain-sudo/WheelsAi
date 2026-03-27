@@ -9,14 +9,14 @@ const steps = [
     step: "01",
     title: "Build",
     description:
-      "Design your agent visually with our graph builder, or code with Mastra, LangChain, AutoGen, or your own framework. Add tools, knowledge, and custom logic.",
+      "Import from GitHub, build visually, or code with Mastra, ElizaOS, LangChain, AutoGen, CrewAI, or your own framework. Add tools, knowledge, and custom logic.",
   },
   {
     icon: Rocket,
     step: "02",
     title: "Deploy",
     description:
-      "One-click deploy to GPU compute. Connect 10+ channels — Discord, Telegram, Slack, Twitter, WhatsApp, and more — all at once.",
+      "One-click deploy to 10+ channels — Discord, Telegram, Slack, Twitter, WhatsApp, Web, API, and more. We handle the infrastructure.",
   },
   {
     icon: Store,
@@ -30,7 +30,7 @@ const steps = [
     step: "04",
     title: "Scale",
     description:
-      "Track analytics, auto-scale compute, and launch agent tokens with bonding curves to build community and supercharge growth.",
+      "Track performance, grow your community with bonding curve tokens, and scale your agent's reach across channels and markets.",
   },
 ];
 

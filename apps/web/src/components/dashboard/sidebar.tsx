@@ -30,6 +30,9 @@ import {
   Coins,
   Moon,
   Sun,
+  Plus,
+  Upload,
+  DollarSign,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -59,39 +62,37 @@ const navGroups: NavGroup[] = [
   {
     label: "Build",
     items: [
-      { name: "Agents", href: "/dashboard/agents", icon: Bot },
-      { name: "OpenClaw", href: "/dashboard/openclaw", icon: Sparkles },
-      { name: "Deployments", href: "/dashboard/deployments", icon: Box },
-      { name: "Templates", href: "/dashboard/templates", icon: FileCode },
-      { name: "Models", href: "/dashboard/models", icon: Cpu },
+      { name: "My Agents", href: "/dashboard/agents", icon: Bot },
+      { name: "Create Agent", href: "/dashboard/agents/new", icon: Plus },
       { name: "Playground", href: "/dashboard/playground", icon: MessageSquare },
+      { name: "Templates", href: "/dashboard/templates", icon: FileCode },
     ],
   },
   {
     label: "Marketplace",
     items: [
-      { name: "Marketplace", href: "/dashboard/marketplace", icon: Store },
-      { name: "Tokens", href: "/dashboard/marketplace/tokens", icon: Coins },
+      { name: "Browse Agents", href: "/dashboard/marketplace", icon: Store },
+      { name: "Token Marketplace", href: "/dashboard/marketplace/tokens", icon: Coins },
+      { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
+      { name: "Revenue", href: "/dashboard/marketplace/revenue", icon: DollarSign },
     ],
   },
   {
-    label: "Train & Test",
+    label: "Advanced",
     items: [
+      { name: "OpenClaw", href: "/dashboard/openclaw", icon: Sparkles },
+      { name: "Deployments", href: "/dashboard/deployments", icon: Box },
+      { name: "Models", href: "/dashboard/models", icon: Cpu },
       { name: "Training", href: "/dashboard/training", icon: GraduationCap },
       { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
       { name: "Knowledge", href: "/dashboard/knowledge", icon: Database },
       { name: "Memory", href: "/dashboard/memory", icon: Brain },
-    ],
-  },
-  {
-    label: "Operate",
-    items: [
-      { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
-      { name: "Monitoring", href: "/dashboard/monitoring", icon: Bell },
       { name: "Orchestration", href: "/dashboard/orchestrations", icon: GitBranch },
       { name: "Scheduler", href: "/dashboard/scheduler", icon: Clock },
+      { name: "Monitoring", href: "/dashboard/monitoring", icon: Bell },
       { name: "Domains", href: "/dashboard/domains", icon: Globe },
       { name: "Integrations", href: "/dashboard/integrations", icon: Plug },
+      { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
     ],
   },
   {
@@ -108,8 +109,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
-    "Train & Test": true,
-    "Operate": true,
+    "Advanced": true,
   });
   const { resolvedTheme, setTheme } = useTheme();
 
@@ -166,7 +166,14 @@ export function Sidebar() {
                 onClick={() => toggleGroup(group.label)}
                 className="flex w-full items-center justify-between px-3 py-1"
               >
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <span
+                  className={cn(
+                    "font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500",
+                    group.label === "Advanced"
+                      ? "text-[9px] opacity-60"
+                      : "text-[10px]"
+                  )}
+                >
                   {group.label}
                 </span>
                 <ChevronDown

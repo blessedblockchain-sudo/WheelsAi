@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { TokenTradePanel } from "@/components/dashboard/token-trade-panel";
+import { BondingCurveProgress } from "@/components/dashboard/bonding-curve-progress";
 import { usePolling } from "@/lib/use-polling";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, Copy } from "lucide-react";
@@ -346,6 +347,22 @@ export default function TokenDetailPage() {
               pumpfunUrl={token.pumpfunUrl}
               mintAddress={token.mintAddress}
             />
+
+            {/* Bonding Curve */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Bonding Curve</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <BondingCurveProgress
+                  status={token.status}
+                  marketCapUsd={token.marketCapUsd}
+                  priceUsd={token.priceUsd}
+                  holders={token.holders}
+                  volume24h={token.volume24h}
+                />
+              </CardContent>
+            </Card>
 
             {/* Token Info */}
             <Card>

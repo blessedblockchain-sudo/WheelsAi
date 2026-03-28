@@ -70,7 +70,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Register new user with email/password
    */
-  app.post("/register", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
+  app.post("/register", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Register a new user", body: { type: "object", properties: { email: { type: "string" }, password: { type: "string" } }, required: ["email", "password"] } } }, async (request, reply) => {
     const body = registerSchema.parse(request.body);
 
     // Check if email already exists
@@ -119,7 +119,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Login with email/password
    */
-  app.post("/login", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
+  app.post("/login", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Login with email and password", body: { type: "object", properties: { email: { type: "string" }, password: { type: "string" } }, required: ["email", "password"] } } }, async (request, reply) => {
     const body = loginSchema.parse(request.body);
 
     // Find user
@@ -184,7 +184,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get nonce for wallet signature
    */
-  app.post("/wallet/nonce", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
+  app.post("/wallet/nonce", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Get wallet nonce for signing" } }, async (request, reply) => {
     const { walletAddress } = walletNonceSchema.parse(request.body);
 
     const nonce = await generateNonce(walletAddress);
@@ -195,7 +195,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Verify wallet signature and authenticate
    */
-  app.post("/wallet/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (request, reply) => {
+  app.post("/wallet/verify", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Verify wallet signature" } }, async (request, reply) => {
     const { walletAddress, signature, nonce } = walletVerifySchema.parse(
       request.body
     );
@@ -307,7 +307,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get current user
    */
-  app.get("/me", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/me", { preHandler: [requireAuth], schema: { tags: ["Auth"], description: "Get current user", security: [{ bearerAuth: [] }] } }, async (request, reply) => {
     const { userId, orgId, email, walletAddress } = request.auth!;
 
     return {

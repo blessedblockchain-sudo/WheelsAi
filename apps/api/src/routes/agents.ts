@@ -64,7 +64,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Import agent from GitHub — detects framework and pre-fills config
    */
-  app.post("/import-github", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/import-github", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Import agent from GitHub repo" } }, async (request, reply) => {
     const { githubUrl } = z.object({ githubUrl: z.string().url() }).parse(request.body);
 
     try {
@@ -79,7 +79,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   /**
    * List all agents
    */
-  app.get("/", { preHandler: [requireAuth] }, async (request) => {
+  app.get("/", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "List all agents", security: [{ bearerAuth: [] }] } }, async (request) => {
     const { orgId } = request.auth!;
 
     const agents = await prisma.agent.findMany({
@@ -120,7 +120,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get single agent
    */
-  app.get("/:agentId", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/:agentId", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Get agent details" } }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
 
@@ -149,7 +149,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Create new agent
    */
-  app.post("/", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Create a new agent", security: [{ bearerAuth: [] }] } }, async (request, reply) => {
     const { orgId } = request.auth!;
     const body = createAgentSchema.parse(request.body);
 
@@ -283,7 +283,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Deploy agent
    */
-  app.post("/:agentId/deploy", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/:agentId/deploy", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Deploy agent to GPU" } }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
     const body = deployAgentSchema.parse(request.body);

@@ -29,7 +29,7 @@ export async function templateRoutes(app: FastifyInstance) {
       limit?: string;
       offset?: string;
     };
-  }>("/", async (request, reply) => {
+  }>("/", { schema: { tags: ["Templates"], description: "List agent templates" } }, async (request, reply) => {
     try {
       const { category, framework, difficulty, isFeatured, search, limit, offset } = request.query;
       const result = await getTemplates({
@@ -83,7 +83,7 @@ export async function templateRoutes(app: FastifyInstance) {
   app.post<{
     Params: { templateId: string };
     Body: { name: string; slug: string; description?: string };
-  }>("/:templateId/use", { preHandler: requireAuth }, async (request, reply) => {
+  }>("/:templateId/use", { preHandler: requireAuth, schema: { tags: ["Templates"], description: "Create agent from template" } }, async (request, reply) => {
     try {
       const agent = await useTemplate(request.params.templateId, request.auth!.orgId, request.body);
       return reply.status(201).send(agent);

@@ -21,7 +21,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   // Public routes
 
   // GET / - List all tokens
-  app.get("/", async (request, reply) => {
+  app.get("/", { schema: { tags: ["Tokens"], description: "List agent tokens" } }, async (request, reply) => {
     try {
       const querySchema = z.object({
         status: z.string().optional(),
@@ -57,7 +57,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // GET /trending - Get trending tokens
-  app.get("/trending", async (request, reply) => {
+  app.get("/trending", { schema: { tags: ["Tokens"], description: "Get trending tokens" } }, async (request, reply) => {
     try {
       const querySchema = z.object({
         limit: z.coerce.number().optional(),
@@ -181,7 +181,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   // Authenticated routes
 
   // POST /create - Create/tokenize an agent
-  app.post("/create", { preHandler: [requireAuth], config: { rateLimit: { max: 3, timeWindow: "1 minute" } } }, async (request, reply) => {
+  app.post("/create", { preHandler: [requireAuth], config: { rateLimit: { max: 3, timeWindow: "1 minute" } }, schema: { tags: ["Tokens"], description: "Create bonding curve token for agent" } }, async (request, reply) => {
     try {
       const bodySchema = z.object({
         agentListingId: z.string(),

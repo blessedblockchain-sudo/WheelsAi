@@ -35,7 +35,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
    */
   app.post(
     "/agents/:agentId/playground/chat",
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth], schema: { tags: ["Playground"], description: "Chat with agent using free or paid models" } },
     async (request, reply) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const body = chatBodySchema.parse(request.body);
@@ -176,7 +176,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
    */
   app.get(
     "/agents/:agentId/playground/models",
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth], schema: { tags: ["Playground"], description: "List available models for playground" } },
     async (request, reply) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const orgId = request.auth!.orgId;

@@ -463,7 +463,7 @@ const GPU_TIERS = [
 
 export const modelRoutes: FastifyPluginAsync = async (app) => {
   // List free models
-  app.get("/free", async () => {
+  app.get("/free", { schema: { tags: ["Models"], description: "List free-tier models" } }, async () => {
     return {
       models: getAvailableFreeModels(),
       allModels: getAllFreeModels(),
@@ -471,7 +471,7 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // List all models
-  app.get("/", async (request, reply) => {
+  app.get("/", { schema: { tags: ["Models"], description: "List all models" } }, async (request, reply) => {
     const { tag, minGpu, search, engine, tier } = z
       .object({
         tag: z.string().optional(),

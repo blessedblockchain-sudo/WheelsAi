@@ -4,6 +4,8 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import sensible from "@fastify/sensible";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 
 // BigInt JSON serialization support (used by Prisma for BigInt columns)
 (BigInt.prototype as any).toJSON = function () {
@@ -42,6 +44,7 @@ import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
 import { playgroundRoutes } from "./routes/playground.js";
+import { collaborationRoutes } from "./routes/collaboration.js";
 // Deprecated setInterval-based workers — kept for reference, not invoked.
 import { startX402SettlementWorker } from "./services/x402Settlement.js";
 import { startTokenIndexerWorker } from "./services/tokenIndexer.js";
@@ -75,6 +78,53 @@ async function main() {
 
   await app.register(sensible);
 
+  await app.register(swagger, {
+    openapi: {
+      info: {
+        title: "WheelsAI API",
+        description: "Build, deploy, and monetize AI agents. API documentation for the WheelsAI platform.",
+        version: "0.1.0",
+      },
+      servers: [
+        { url: "http://localhost:4000", description: "Development" },
+      ],
+      tags: [
+        { name: "Auth", description: "Authentication and authorization" },
+        { name: "Agents", description: "Agent CRUD and deployment" },
+        { name: "Deployments", description: "GPU deployment management" },
+        { name: "Models", description: "Model catalog" },
+        { name: "Playground", description: "Agent testing playground" },
+        { name: "Marketplace", description: "Agent marketplace" },
+        { name: "Tokens", description: "Agent token marketplace" },
+        { name: "Templates", description: "Agent templates" },
+        { name: "Billing", description: "Credits and billing" },
+        { name: "Analytics", description: "Usage analytics" },
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: "http",
+            scheme: "bearer",
+            bearerFormat: "JWT",
+          },
+          apiKey: {
+            type: "apiKey",
+            in: "header",
+            name: "X-API-Key",
+          },
+        },
+      },
+    },
+  });
+
+  await app.register(swaggerUi, {
+    routePrefix: "/docs",
+    uiConfig: {
+      docExpansion: "list",
+      deepLinking: true,
+    },
+  });
+
   // Register auth plugins (JWT, cookies)
   await registerAuthPlugins(app);
 
@@ -107,6 +157,7 @@ async function main() {
   await app.register(openclawRoutes, { prefix: "/api/openclaw" });
   await app.register(tokenRoutes, { prefix: "/api/tokens" });
   await app.register(playgroundRoutes, { prefix: "/api" });
+  await app.register(collaborationRoutes, { prefix: "/api/agents" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
 
   // Global error handler

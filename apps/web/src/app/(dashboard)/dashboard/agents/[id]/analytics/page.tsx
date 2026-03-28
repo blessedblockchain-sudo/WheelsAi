@@ -26,12 +26,12 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { agentsApi, type AgentDetail } from "@/lib/api";
-
-// Mock data for charts — real data will come from analytics API
-const REQUESTS_LAST_7_DAYS = [45, 62, 38, 71, 55, 89, 67];
-const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MAX_REQUESTS = Math.max(...REQUESTS_LAST_7_DAYS);
+import {
+  agentsApi,
+  analyticsApi,
+  type AgentDetail,
+  type AnalyticsDashboard,
+} from "@/lib/api";
 
 function MetricCard({
   label,
@@ -67,12 +67,31 @@ function MetricCard({
   );
 }
 
+function SkeletonCard() {
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <div className="h-3 w-24 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+            <div className="h-7 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+          </div>
+          <div className="h-10 w-10 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AgentAnalyticsPage() {
   const params = useParams();
   const agentId = params.id as string;
 
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const [analytics, setAnalytics] = useState<AnalyticsDashboard | null>(null);
+  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(true);
 
   useEffect(() => {
     async function loadAgent() {
@@ -86,6 +105,15 @@ export default function AgentAnalyticsPage() {
       }
     }
     loadAgent();
+  }, [agentId]);
+
+  useEffect(() => {
+    if (!agentId) return;
+    analyticsApi
+      .getDashboard(7)
+      .then((res) => setAnalytics(res.data))
+      .catch(() => {})
+      .finally(() => setIsLoadingAnalytics(false));
   }, [agentId]);
 
   if (isLoading) {
@@ -118,6 +146,24 @@ export default function AgentAnalyticsPage() {
     );
   }
 
+  const overview = analytics?.overview;
+  const timeseries = analytics?.timeseries ?? [];
+  const maxRequests = timeseries.length > 0 ? Math.max(...timeseries.map((p) => p.requests), 1) : 1;
+
+  // Compute per-day labels from the timeseries timestamps
+  const barLabels = timeseries.map((p) => {
+    const d = new Date(p.timestamp);
+    return d.toLocaleDateString("en-US", { weekday: "short" });
+  });
+
+  const totalRevenueDollars = overview ? (overview.totalCostCents / 100).toFixed(2) : "0.00";
+  const errorRatePct = overview ? `${overview.errorRate.toFixed(1)}%` : "0%";
+  const avgLatencyDisplay = overview ? `${Math.round(overview.avgLatencyMs)}ms` : "—";
+
+  // Derive a rough per-day cost/revenue split from projection data
+  const projection = analytics?.projection;
+  const dailyCostDollars = projection ? (projection.dailyAverage / 100).toFixed(2) : null;
+
   // Determine whether this agent has a token (placeholder: false until token API is wired)
   const hasToken = false;
 
@@ -136,7 +182,9 @@ export default function AgentAnalyticsPage() {
               Back to Agent
             </Button>
           </Link>
-          <Badge variant="secondary">Read-only scaffold</Badge>
+          {isLoadingAnalytics && (
+            <Badge variant="secondary">Loading analytics…</Badge>
+          )}
         </div>
 
         {/* Overview Cards */}
@@ -144,37 +192,54 @@ export default function AgentAnalyticsPage() {
           <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
             Overview
           </h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <MetricCard
-              label="Total Requests"
-              value="0"
-              icon={BarChart3}
-              iconBg="bg-blue-100 dark:bg-blue-900/30"
-              iconColor="text-blue-600 dark:text-blue-400"
-            />
-            <MetricCard
-              label="Active Users"
-              value="0"
-              icon={Users}
-              iconBg="bg-purple-100 dark:bg-purple-900/30"
-              iconColor="text-purple-600 dark:text-purple-400"
-            />
-            <MetricCard
-              label="Revenue Earned"
-              value="$0.00"
-              icon={DollarSign}
-              iconBg="bg-green-100 dark:bg-green-900/30"
-              iconColor="text-green-600 dark:text-green-400"
-              valueColor="text-green-600 dark:text-green-400"
-            />
-            <MetricCard
-              label="Error Rate"
-              value="0%"
-              icon={Activity}
-              iconBg="bg-red-100 dark:bg-red-900/30"
-              iconColor="text-red-600 dark:text-red-400"
-            />
-          </div>
+          {isLoadingAnalytics ? (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <SkeletonCard key={i} />
+              ))}
+            </div>
+          ) : !analytics ? (
+            <Card>
+              <CardContent className="py-10 text-center">
+                <BarChart3 className="mx-auto h-10 w-10 text-gray-300" />
+                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                  No analytics data yet. Deploy an agent to start tracking performance.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <MetricCard
+                label="Total Requests"
+                value={(overview?.totalRequests ?? 0).toLocaleString()}
+                icon={BarChart3}
+                iconBg="bg-blue-100 dark:bg-blue-900/30"
+                iconColor="text-blue-600 dark:text-blue-400"
+              />
+              <MetricCard
+                label="Tokens Used"
+                value={((overview?.totalTokensIn ?? 0) + (overview?.totalTokensOut ?? 0)).toLocaleString()}
+                icon={Users}
+                iconBg="bg-purple-100 dark:bg-purple-900/30"
+                iconColor="text-purple-600 dark:text-purple-400"
+              />
+              <MetricCard
+                label="Total Cost"
+                value={`$${totalRevenueDollars}`}
+                icon={DollarSign}
+                iconBg="bg-green-100 dark:bg-green-900/30"
+                iconColor="text-green-600 dark:text-green-400"
+                valueColor="text-green-600 dark:text-green-400"
+              />
+              <MetricCard
+                label="Error Rate"
+                value={errorRatePct}
+                icon={Activity}
+                iconBg="bg-red-100 dark:bg-red-900/30"
+                iconColor="text-red-600 dark:text-red-400"
+              />
+            </div>
+          )}
         </section>
 
         {/* Charts Section */}
@@ -189,29 +254,43 @@ export default function AgentAnalyticsPage() {
               <CardDescription>Daily request volume over the past week</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex h-40 items-end gap-2">
-                {REQUESTS_LAST_7_DAYS.map((value, index) => {
-                  const heightPct = Math.round((value / MAX_REQUESTS) * 100);
-                  return (
-                    <div key={index} className="flex flex-1 flex-col items-center gap-1">
-                      <span className="text-xs text-gray-500 dark:text-gray-400">{value}</span>
-                      <div
-                        className="w-full rounded-t bg-primary-500 transition-all"
-                        style={{ height: `${heightPct}%` }}
-                        title={`${DAY_LABELS[index]}: ${value} requests`}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-              {/* X-axis labels */}
-              <div className="mt-2 flex gap-2">
-                {DAY_LABELS.map((label) => (
-                  <div key={label} className="flex-1 text-center text-xs text-gray-500 dark:text-gray-400">
-                    {label}
+              {isLoadingAnalytics ? (
+                <div className="h-40 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+              ) : timeseries.length === 0 ? (
+                <div className="flex h-40 items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+                  No request data for this period
+                </div>
+              ) : (
+                <>
+                  <div className="flex h-40 items-end gap-2">
+                    {timeseries.map((point, index) => {
+                      const heightPct = Math.round((point.requests / maxRequests) * 100);
+                      return (
+                        <div key={index} className="flex flex-1 flex-col items-center gap-1">
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                            {point.requests}
+                          </span>
+                          <div
+                            className="w-full rounded-t bg-primary-500 transition-all"
+                            style={{ height: `${heightPct}%` }}
+                            title={`${barLabels[index]}: ${point.requests} requests`}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
+                  <div className="mt-2 flex gap-2">
+                    {barLabels.map((label, i) => (
+                      <div
+                        key={i}
+                        className="flex-1 text-center text-xs text-gray-500 dark:text-gray-400"
+                      >
+                        {label}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -225,25 +304,50 @@ export default function AgentAnalyticsPage() {
               <CardDescription>Latency and availability statistics</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-2 gap-4">
-                {[
-                  { label: "Avg Latency", value: "47ms", icon: Clock },
-                  { label: "P95 Latency", value: "120ms", icon: Clock },
-                  { label: "P99 Latency", value: "250ms", icon: Clock },
-                  { label: "Uptime", value: "99.9%", icon: Activity },
-                ].map(({ label, value, icon: Icon }) => (
-                  <div
-                    key={label}
-                    className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800"
-                  >
-                    <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
-                      <Icon className="h-4 w-4" />
-                      <span className="text-xs font-medium uppercase tracking-wide">{label}</span>
+              {isLoadingAnalytics ? (
+                <div className="grid grid-cols-2 gap-4">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="h-20 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700"
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-4">
+                  {[
+                    { label: "Avg Latency", value: avgLatencyDisplay, icon: Clock },
+                    {
+                      label: "Total Tokens In",
+                      value: (overview?.totalTokensIn ?? 0).toLocaleString(),
+                      icon: TrendingUp,
+                    },
+                    {
+                      label: "Total Tokens Out",
+                      value: (overview?.totalTokensOut ?? 0).toLocaleString(),
+                      icon: TrendingUp,
+                    },
+                    {
+                      label: "Error Rate",
+                      value: errorRatePct,
+                      icon: Activity,
+                    },
+                  ].map(({ label, value, icon: Icon }) => (
+                    <div
+                      key={label}
+                      className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800"
+                    >
+                      <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                        <Icon className="h-4 w-4" />
+                        <span className="text-xs font-medium uppercase tracking-wide">{label}</span>
+                      </div>
+                      <p className="mt-1 text-xl font-bold text-gray-900 dark:text-gray-100">
+                        {value}
+                      </p>
                     </div>
-                    <p className="mt-1 text-xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -293,43 +397,58 @@ export default function AgentAnalyticsPage() {
               <DollarSign className="h-5 w-5 text-gray-500" />
               Cost Breakdown
             </CardTitle>
-            <CardDescription>Daily compute cost versus revenue</CardDescription>
+            <CardDescription>Compute cost and projection</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-200 text-left dark:border-gray-700">
-                    <th className="pb-3 font-medium text-gray-500 dark:text-gray-400">Item</th>
-                    <th className="pb-3 text-right font-medium text-gray-500 dark:text-gray-400">
-                      Amount (per day)
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                  <tr>
-                    <td className="py-3 text-gray-700 dark:text-gray-300">Compute Cost</td>
-                    <td className="py-3 text-right font-medium text-red-600 dark:text-red-400">
-                      $12.50
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-3 text-gray-700 dark:text-gray-300">Revenue</td>
-                    <td className="py-3 text-right font-medium text-green-600 dark:text-green-400">
-                      $45.00
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-3 font-semibold text-gray-900 dark:text-gray-100">
-                      Net Profit
-                    </td>
-                    <td className="py-3 text-right text-lg font-bold text-green-600 dark:text-green-400">
-                      $32.50
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            {isLoadingAnalytics ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="h-10 animate-pulse rounded bg-gray-200 dark:bg-gray-700"
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-left dark:border-gray-700">
+                      <th className="pb-3 font-medium text-gray-500 dark:text-gray-400">Item</th>
+                      <th className="pb-3 text-right font-medium text-gray-500 dark:text-gray-400">
+                        Amount
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                    <tr>
+                      <td className="py-3 text-gray-700 dark:text-gray-300">Total Cost (7 days)</td>
+                      <td className="py-3 text-right font-medium text-red-600 dark:text-red-400">
+                        ${totalRevenueDollars}
+                      </td>
+                    </tr>
+                    {dailyCostDollars !== null && (
+                      <tr>
+                        <td className="py-3 text-gray-700 dark:text-gray-300">Daily Average</td>
+                        <td className="py-3 text-right font-medium text-gray-700 dark:text-gray-300">
+                          ${dailyCostDollars}
+                        </td>
+                      </tr>
+                    )}
+                    {projection && (
+                      <tr>
+                        <td className="py-3 font-semibold text-gray-900 dark:text-gray-100">
+                          Projected (30 days)
+                        </td>
+                        <td className="py-3 text-right text-lg font-bold text-blue-600 dark:text-blue-400">
+                          ${(projection.projectedSpend / 100).toFixed(2)}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
 

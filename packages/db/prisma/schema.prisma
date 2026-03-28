@@ -27,6 +27,7 @@ model User {
 
   ownedOrganizations Organization[] @relation("OrgOwner")
   memberships        OrgMember[]
+  contributions      AgentContributor[]
   twoFactorAuth      TwoFactorAuth?
 
   @@map("users")
@@ -303,6 +304,7 @@ model Agent {
 
   org           Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
   deployments   AgentDeployment[]
+  contributors  AgentContributor[]
   listing       AgentListing?
   graph         AgentGraph?
   openclawDeployment OpenClawDeployment?
@@ -310,6 +312,30 @@ model Agent {
   @@unique([orgId, slug])
   @@index([orgId])
   @@map("agents")
+}
+
+// ============================================
+// Agent Collaboration
+// ============================================
+
+model AgentContributor {
+  id           String    @id @default(uuid()) @db.Uuid
+  agentId      String    @map("agent_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  role         String    @default("contributor") // 'owner', 'contributor', 'reviewer'
+  revenueShare Float     @default(0) @map("revenue_share") // 0.0 to 1.0
+  addedBy      String?   @map("added_by") @db.Uuid
+  acceptedAt   DateTime? @map("accepted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  agent        Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, userId])
+  @@index([agentId])
+  @@index([userId])
+  @@map("agent_contributors")
 }
 
 model AgentDeployment {

@@ -12,6 +12,7 @@ import {
   MessageCircle,
   Workflow,
   BarChart3,
+  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -207,6 +208,12 @@ export default function AgentDetailPage() {
                   <Button variant="outline">
                     <BarChart3 className="mr-2 h-4 w-4" />
                     Analytics
+                  </Button>
+                </Link>
+                <Link href={`/dashboard/agents/${agentId}/contributors`}>
+                  <Button variant="outline">
+                    <Users className="mr-2 h-4 w-4" />
+                    Contributors
                   </Button>
                 </Link>
                 {isRunning ? (

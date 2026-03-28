@@ -11,10 +11,39 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "WheelsAI - Deploy AI on Decentralized GPUs",
+  title: {
+    default: "WheelsAI — Build, Deploy & Monetize AI Agents",
+    template: "%s | WheelsAI",
+  },
   description:
-    "Build agents, train models, deploy inference. All on Nosana's decentralized GPU network.",
-  keywords: ["AI", "GPU", "Nosana", "Solana", "LLM", "inference", "agents"],
+    "Solve AI agent fragmentation. Build with any framework, import from GitHub, deploy to 10+ channels, and earn 90% revenue on the marketplace.",
+  keywords: [
+    "AI agents",
+    "agent marketplace",
+    "Mastra",
+    "ElizaOS",
+    "LangChain",
+    "Solana",
+    "bonding curve",
+    "deploy AI",
+    "monetize AI",
+  ],
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://wheelsai.io"),
+  openGraph: {
+    type: "website",
+    siteName: "WheelsAI",
+    title: "WheelsAI — Build, Deploy & Monetize AI Agents",
+    description:
+      "One platform to build, deploy, and monetize AI agents. No fragmentation.",
+    images: ["/api/og"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "WheelsAI — Build, Deploy & Monetize AI Agents",
+    description:
+      "One platform to build, deploy, and monetize AI agents. No fragmentation.",
+    images: ["/api/og"],
+  },
 };
 
 export default function RootLayout({

@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { Navbar } from "@/components/landing/navbar";
 import { Hero } from "@/components/landing/hero";
 import { SocialProof } from "@/components/landing/social-proof";
@@ -10,6 +11,12 @@ import { Pricing } from "@/components/landing/pricing";
 import { StatsSection } from "@/components/landing/stats-section";
 import { FinalCTA } from "@/components/landing/final-cta";
 import { Footer } from "@/components/landing/footer";
+
+export const metadata: Metadata = {
+  title: "WheelsAI — Build, Deploy & Monetize AI Agents",
+  description:
+    "Solve AI agent fragmentation. Build with Mastra, ElizaOS, LangChain or import from GitHub. Deploy to 10+ channels. Earn 90% revenue.",
+};
 
 export default function HomePage() {
   return (

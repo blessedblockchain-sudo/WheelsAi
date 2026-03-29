@@ -15,7 +15,7 @@ function MatrixColumn({ index, total }: { index: number; total: number }) {
 
   return (
     <div
-      className={`absolute top-0 font-mono text-xs text-[#00ff00]/15 whitespace-pre leading-5 pointer-events-none ${
+      className={`absolute top-0 font-mono text-sm text-[#00ff00]/40 whitespace-pre leading-5 pointer-events-none ${
         index % 3 === 0 ? "" : "hidden sm:block"
       }`}
       style={{
@@ -29,12 +29,12 @@ function MatrixColumn({ index, total }: { index: number; total: number }) {
 }
 
 export function Hero() {
-  const columnCount = 25;
+  const columnCount = 35;
 
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden bg-navy-950">
       {/* Matrix rain background */}
-      <div className="absolute inset-0 overflow-hidden opacity-60">
+      <div className="absolute inset-0 overflow-hidden opacity-90">
         {Array.from({ length: columnCount }, (_, i) => (
           <MatrixColumn key={i} index={i} total={columnCount} />
         ))}

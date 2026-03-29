@@ -113,8 +113,8 @@ export function calculatePrice(
   // USDC: 6 decimals
   const priceUsdc = Math.ceil(totalUsd * 1_000_000).toString();
 
-  // SOL: 9 decimals
-  const prices = await getTokenPrices();
+  // SOL: 9 decimals — use cached prices (sync) for hot path
+  const prices = cachedPrices ?? { sol: 150, usdc: 1, nos: 0.1 };
   const priceSol = Math.ceil((totalUsd / prices.sol) * LAMPORTS_PER_SOL).toString();
 
   // NOS: 6 decimals

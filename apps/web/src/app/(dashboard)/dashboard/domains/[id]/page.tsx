@@ -26,6 +26,7 @@ import {
   type CustomDomainWithDns,
   type DomainEvent,
 } from "@/lib/api";
+import { toast } from "sonner";
 
 export default function DomainDetailPage({
   params,
@@ -67,9 +68,9 @@ export default function DomainDetailPage({
       setVerifying(true);
       const result = await domainsApi.verifyDomain(domain.id);
       if (result.data.verified) {
-        alert("Domain verified successfully! SSL provisioning has started.");
+        toast.success("Domain verified successfully! SSL provisioning has started.");
       } else {
-        alert(result.data.message || "Verification failed. Please check DNS records.");
+        toast.error(result.data.message || "Verification failed. Please check DNS records.");
       }
       loadDomain();
     } catch (error) {
@@ -86,7 +87,7 @@ export default function DomainDetailPage({
       loadDomain();
     } catch (error) {
       console.error("Failed to toggle domain:", error);
-      alert((error as Error).message);
+      toast.error((error as Error).message);
     }
   }
 
@@ -105,7 +106,7 @@ export default function DomainDetailPage({
     if (!domain) return;
     try {
       await domainsApi.reverifyDomain(domain.id);
-      alert("New verification token generated. Please update your DNS records.");
+      toast.success("New verification token generated. Please update your DNS records.");
       loadDomain();
     } catch (error) {
       console.error("Failed to reverify domain:", error);

@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
 
 // Icons
 function WebhookIcon({ className }: { className?: string }) {
@@ -210,9 +211,9 @@ export default function IntegrationsPage() {
     try {
       const result = await webhooksApi.testWebhook(id);
       if (result.success) {
-        alert(`Test successful! Response time: ${result.responseTimeMs}ms`);
+        toast.success(`Test successful! Response time: ${result.responseTimeMs}ms`);
       } else {
-        alert(`Test failed: ${result.error}`);
+        toast.error(`Test failed: ${result.error}`);
       }
     } catch (error) {
       console.error("Failed to test webhook:", error);

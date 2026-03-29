@@ -29,6 +29,7 @@ import {
   type Agent,
   type Deployment,
 } from "@/lib/api";
+import { toast } from "sonner";
 
 export default function DomainsPage() {
   const router = useRouter();
@@ -78,7 +79,7 @@ export default function DomainsPage() {
       loadData();
     } catch (error) {
       console.error("Failed to create domain:", error);
-      alert((error as Error).message);
+      toast.error((error as Error).message);
     }
   }
 
@@ -86,9 +87,9 @@ export default function DomainsPage() {
     try {
       const result = await domainsApi.verifyDomain(domainId);
       if (result.data.verified) {
-        alert("Domain verified successfully!");
+        toast.success("Domain verified successfully!");
       } else {
-        alert(result.data.message || "Verification failed. Please check DNS records.");
+        toast.error(result.data.message || "Verification failed. Please check DNS records.");
       }
       loadData();
     } catch (error) {
@@ -102,7 +103,7 @@ export default function DomainsPage() {
       loadData();
     } catch (error) {
       console.error("Failed to toggle domain:", error);
-      alert((error as Error).message);
+      toast.error((error as Error).message);
     }
   }
 

@@ -1,4 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
+import { prisma } from "@wheelsai/db";
+import { Redis } from "ioredis";
+import { env } from "../config/env.js";
 
 export const healthRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async () => {
@@ -11,25 +14,34 @@ export const healthRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get("/ready", async (request, reply) => {
-    // Check database connection
-    try {
-      // TODO: Add actual DB health check
-      // await prisma.$queryRaw`SELECT 1`;
+    const checks: Record<string, string> = {};
 
-      return {
-        status: "ready",
-        checks: {
-          database: "ok",
-          redis: "ok",
-        },
-      };
-    } catch (error) {
-      reply.status(503);
-      return {
-        status: "not_ready",
-        error: "Database connection failed",
-      };
+    // Check database
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      checks.database = "ok";
+    } catch {
+      checks.database = "failed";
     }
+
+    // Check Redis
+    try {
+      const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: 1, connectTimeout: 3000 });
+      await redis.ping();
+      await redis.quit();
+      checks.redis = "ok";
+    } catch {
+      checks.redis = "failed";
+    }
+
+    const allOk = Object.values(checks).every((v) => v === "ok");
+
+    if (!allOk) {
+      reply.status(503);
+      return { status: "not_ready", checks };
+    }
+
+    return { status: "ready", checks };
   });
 
   app.get("/live", async () => {

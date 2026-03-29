@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
+import { toast } from "sonner";
 
 export default function AnalyticsDashboardPage() {
   const [dashboard, setDashboard] = useState<AnalyticsDashboard | null>(null);
@@ -42,6 +43,7 @@ export default function AnalyticsDashboardPage() {
       setAlerts(alertsRes.data);
     } catch (error) {
       console.error("Failed to load analytics:", error);
+      toast.error("Failed to load analytics data");
     } finally {
       setLoading(false);
     }

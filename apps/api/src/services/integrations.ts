@@ -549,7 +549,8 @@ export async function getIntegrationEvents(
 // Token Encryption Helpers
 // ============================================
 
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString("hex");
+import { env } from "../config/env.js";
+const ENCRYPTION_KEY = env.ENCRYPTION_KEY || env.JWT_SECRET;
 const ALGORITHM = "aes-256-gcm";
 
 function encryptToken(token: string): Buffer {

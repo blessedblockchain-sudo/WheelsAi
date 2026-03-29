@@ -45,9 +45,6 @@ import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
 import { playgroundRoutes } from "./routes/playground.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
-// Deprecated setInterval-based workers — kept for reference, not invoked.
-import { startX402SettlementWorker } from "./services/x402Settlement.js";
-import { startTokenIndexerWorker } from "./services/tokenIndexer.js";
 import {
   startX402Queue,
   stopX402Queue,
@@ -202,8 +199,6 @@ async function main() {
   for (const signal of signals) {
     process.on(signal, async () => {
       app.log.info(`Received ${signal}, shutting down gracefully`);
-      await stopX402Queue();
-      await stopTokenIndexerQueue();
       await stopX402Queue();
       await stopTokenIndexerQueue();
       await app.close();

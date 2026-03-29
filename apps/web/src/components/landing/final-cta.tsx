@@ -19,11 +19,11 @@ export function FinalCTA() {
         </p>
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
           <Link
-            href="/register"
+            href="/waitlist"
             prefetch={false}
             className="btn-glow-navy text-base px-10 py-4 h-auto"
           >
-            Start Building Free
+            Join the Beta
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
           <Link

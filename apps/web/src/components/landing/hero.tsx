@@ -71,8 +71,8 @@ export function Hero() {
 
         {/* CTAs */}
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Link href="/register" prefetch={false} className="btn-glow-navy text-base px-8 py-3 h-auto">
-            Start Building Free
+          <Link href="/waitlist" prefetch={false} className="btn-glow-navy text-base px-8 py-3 h-auto">
+            Join the Beta
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
           <Link

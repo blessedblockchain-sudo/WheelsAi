@@ -75,6 +75,7 @@ const navGroups: NavGroup[] = [
       { name: "Token Marketplace", href: "/dashboard/marketplace/tokens", icon: Coins },
       { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
       { name: "Revenue", href: "/dashboard/marketplace/revenue", icon: DollarSign },
+      { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },
     ],
   },
   {
@@ -101,6 +102,7 @@ const navGroups: NavGroup[] = [
       { name: "API Keys", href: "/dashboard/keys", icon: Key },
       { name: "Billing", href: "/dashboard/billing", icon: CreditCard },
       { name: "Settings", href: "/dashboard/settings", icon: Settings },
+      { name: "Branding", href: "/dashboard/settings/branding", icon: Sparkles },
     ],
   },
 ];
@@ -128,7 +130,7 @@ export function Sidebar() {
 
   const isItemActive = (href: string) =>
     pathname === href ||
-    (href !== "/dashboard" && pathname.startsWith(href));
+    (href !== "/dashboard" && pathname.startsWith(href + "/"));
 
   return (
     <div className="flex h-full w-64 flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">

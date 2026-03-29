@@ -7,9 +7,9 @@ const columns = [
     links: [
       { label: "Features", href: "#features" },
       { label: "Pricing", href: "#pricing" },
+      { label: "Explore Agents", href: "/explore" },
       { label: "Marketplace", href: "/marketplace" },
-      { label: "Model Hub", href: "/models" },
-      { label: "Agent Builder", href: "/dashboard/builder" },
+      { label: "Templates", href: "/dashboard/templates" },
     ],
   },
   {

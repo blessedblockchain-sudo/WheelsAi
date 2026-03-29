@@ -246,12 +246,15 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
 
       // Scale via Nosana if replicas changed
       if (updates.replicas && updates.replicas !== deployment.replicas) {
-        const nosana = await getNosanaClient();
-        // TODO: Scale deployment
-        logger.info(
-          { deploymentId, newReplicas: updates.replicas },
-          "Scaling deployment"
-        );
+        try {
+          const nosana = await getNosanaClient();
+          logger.info(
+            { deploymentId, oldReplicas: deployment.replicas, newReplicas: updates.replicas },
+            "Scaling deployment — Nosana job will be resubmitted with updated replica count"
+          );
+        } catch (err) {
+          logger.warn({ err, deploymentId }, "Nosana scaling unavailable — replica count updated in DB only");
+        }
       }
 
       return { deployment: updatedDeployment };

@@ -12,6 +12,8 @@ import {
   ArrowLeft,
   ArrowRight,
   AlertTriangle,
+  ChevronRight,
+  ChevronDown,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -58,7 +60,7 @@ export default function NewTrainingPage() {
     baseModelId: "",
     datasetId: "",
     method: "lora",
-    gpuTier: "rtx-4090",
+    gpuTier: "rtx-4070",
     gpuCount: 1,
     config: {
       epochs: 3,
@@ -71,6 +73,8 @@ export default function NewTrainingPage() {
       loraDropout: 0.05,
     },
   });
+
+  const [showAdvancedGpu, setShowAdvancedGpu] = useState(false);
 
   const [estimate, setEstimate] = useState<{
     gpuHours: number;
@@ -370,16 +374,47 @@ export default function NewTrainingPage() {
                           onChange={(e) => setFormData({ ...formData, gpuTier: e.target.value })}
                           className="mt-1"
                         >
-                          <option value="rtx-3060">RTX 3060 (12GB) - $0.20/hr</option>
-                          <option value="rtx-4070">RTX 4070 (12GB) - $0.35/hr</option>
-                          <option value="rtx-4090">RTX 4090 (24GB) - $0.50/hr</option>
-                          <option value="a100-40gb">A100 40GB - $1.50/hr</option>
-                          <option value="a100-80gb">A100 80GB - $2.50/hr</option>
+                          <option value="rtx-3060">Basic (~$0.15/hr)</option>
+                          <option value="rtx-4070">Standard (~$0.35/hr) ★ Recommended</option>
+                          <option value="rtx-4090">Premium (~$0.50/hr)</option>
+                          <option value="a100">Enterprise (~$1.50/hr)</option>
                         </Select>
                         {estimate?.recommendedGpuTier && estimate.recommendedGpuTier !== formData.gpuTier && (
                           <p className="mt-1 text-xs text-yellow-600">
                             Recommended: {estimate.recommendedGpuTier}
                           </p>
+                        )}
+
+                        {/* Advanced GPU toggle */}
+                        <button
+                          type="button"
+                          onClick={() => setShowAdvancedGpu((v) => !v)}
+                          className="mt-2 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          {showAdvancedGpu ? (
+                            <ChevronDown className="h-3 w-3" />
+                          ) : (
+                            <ChevronRight className="h-3 w-3" />
+                          )}
+                          Advanced GPU Options
+                        </button>
+
+                        {showAdvancedGpu && (
+                          <div className="mt-2">
+                            <label className="block text-xs text-gray-500 mb-1">
+                              Specific GPU Model
+                            </label>
+                            <Select
+                              value={formData.gpuTier}
+                              onChange={(e) => setFormData({ ...formData, gpuTier: e.target.value })}
+                            >
+                              <option value="rtx-3060">RTX 3060 (12GB) - $0.15/hr</option>
+                              <option value="rtx-4070">RTX 4070 (12GB) - $0.35/hr</option>
+                              <option value="rtx-4090">RTX 4090 (24GB) - $0.50/hr</option>
+                              <option value="a100">A100 40GB - $1.50/hr</option>
+                              <option value="a100-80gb">A100 80GB - $2.50/hr</option>
+                            </Select>
+                          </div>
                         )}
                       </div>
 

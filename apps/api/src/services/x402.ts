@@ -113,13 +113,12 @@ export function calculatePrice(
   // USDC: 6 decimals
   const priceUsdc = Math.ceil(totalUsd * 1_000_000).toString();
 
-  // SOL: 9 decimals, assuming ~$150/SOL
-  const solPrice = 150; // TODO: Get from oracle
-  const priceSol = Math.ceil((totalUsd / solPrice) * LAMPORTS_PER_SOL).toString();
+  // SOL: 9 decimals
+  const prices = await getTokenPrices();
+  const priceSol = Math.ceil((totalUsd / prices.sol) * LAMPORTS_PER_SOL).toString();
 
-  // NOS: Assuming ~$0.10/NOS
-  const nosPrice = 0.1; // TODO: Get from oracle
-  const priceNos = Math.ceil((totalUsd / nosPrice) * 1_000_000).toString();
+  // NOS: 6 decimals
+  const priceNos = Math.ceil((totalUsd / prices.nos) * 1_000_000).toString();
 
   return {
     inputTokens,
@@ -574,8 +573,27 @@ export async function getTokenPrices(): Promise<TokenPrices> {
     return cachedPrices;
   }
 
-  // TODO: Integrate with price oracle (Pyth, Switchboard, etc.)
-  // For now, use placeholder values
+  // Fetch live prices from CoinGecko (free, no API key needed)
+  try {
+    const res = await fetch(
+      "https://api.coingecko.com/api/v3/simple/price?ids=solana,nosana&vs_currencies=usd",
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      cachedPrices = {
+        sol: data.solana?.usd ?? 150,
+        usdc: 1,
+        nos: data.nosana?.usd ?? 0.1,
+      };
+      pricesCacheTime = now;
+      return cachedPrices;
+    }
+  } catch {
+    // CoinGecko unavailable — fall through to defaults
+  }
+
+  // Fallback prices if oracle is unreachable
   cachedPrices = {
     sol: 150,
     usdc: 1,

@@ -132,7 +132,7 @@ wheelsai/
 │   │   │   │   ├── auth.ts            # JWT + cookie authentication
 │   │   │   │   ├── free-tier-limit.ts # Redis rate limiter (RPM/RPD per org)
 │   │   │   │   └── tokenGate.ts       # Token-gated agent access
-│   │   │   ├── routes/                # 29 route modules
+│   │   │   ├── routes/                # 30 route modules
 │   │   │   │   ├── agents.ts          # Agent CRUD + deployment
 │   │   │   │   ├── auth.ts            # Register, login, wallet auth
 │   │   │   │   ├── billing.ts         # Credits, transactions, usage
@@ -158,7 +158,7 @@ wheelsai/
 │   │   │   │   ├── tokens.ts          # Token marketplace (pump.fun)
 │   │   │   │   ├── playground.ts      # Agent playground chat + models
 │   │   │   │   └── ...
-│   │   │   ├── services/              # 27 business logic modules
+│   │   │   ├── services/              # 32 business logic modules
 │   │   │   │   ├── auth.ts            # Argon2 hashing, JWT, wallet verify
 │   │   │   │   ├── agent-runtime.ts   # Agent execution engine
 │   │   │   │   ├── agentGraph.ts      # Visual builder graph ops
@@ -380,7 +380,7 @@ Error Handler (standardized JSON errors)
 Response
 ```
 
-#### Service Layer (29 modules)
+#### Service Layer (32 modules)
 
 | Service | Responsibility |
 |---------|---------------|
@@ -699,6 +699,11 @@ npm run dev
 | API Server | http://localhost:4000 |
 | Health Check | http://localhost:4000/health |
 | Prisma Studio | `npm run db:studio` |
+| API Docs (Swagger) | http://localhost:4000/docs |
+| Explore Agents | http://localhost:3000/explore |
+| Beta Waitlist | http://localhost:3000/waitlist |
+
+> **Note:** Stripe billing is simulated in development. Credits are added directly without real payment processing. Configure `STRIPE_SECRET_KEY` for production.
 
 ---
 
@@ -898,6 +903,25 @@ All endpoints (except `/health` and `/api/auth/*`) require authentication via JW
 | `GET` | `/api/tokens/:id/holders` | Get holder distribution |
 | `GET` | `/api/tokens/:id/chart` | Get price chart snapshots |
 | `GET` | `/api/tokens/eligibility/:listingId` | Check token creation eligibility |
+
+### GitHub Import
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/agents/import-github` | Auto-detect framework from GitHub repo URL |
+
+### Collaboration
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/agents/:id/contributors` | List agent contributors |
+| `POST` | `/api/agents/:id/contributors` | Invite a contributor with revenue share |
+| `PATCH` | `/api/agents/:id/contributors/:cid` | Update role or revenue share |
+| `DELETE` | `/api/agents/:id/contributors/:cid` | Remove a contributor |
+
+### API Documentation
+
+Interactive Swagger UI is available at `/docs` when the API server is running. Raw OpenAPI JSON at `/docs/json`.
 
 ### OpenAI-Compatible Inference
 

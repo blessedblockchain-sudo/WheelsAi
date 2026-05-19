@@ -219,6 +219,12 @@ model UsageRecord {
   totalLatencyMs BigInt  @default(0) @map("total_latency_ms")
   errorCount    Int      @default(0) @map("error_count")
   costCents     BigInt   @default(0) @map("cost_cents")
+  // Actual GPU-seconds consumed on Nosana (sum of job end-start across this
+  // period). Distinct from totalLatencyMs, which is end-to-end request latency.
+  computeSeconds  BigInt @default(0) @map("compute_seconds")
+  // Authoritative compute cost derived from MARKETS[tier].pricePerSecond *
+  // computeSeconds. costCents is kept for backwards compat during rollout.
+  actualCostCents BigInt @default(0) @map("actual_cost_cents")
 
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   deployment Deployment   @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
@@ -2076,6 +2082,23 @@ model AgentToken {
   volume24h         Float       @default(0) @map("volume_24h")
   holders           Int         @default(0)
   creatorLockupEnd  DateTime?   @map("creator_lockup_end")
+  // Per-agent treasury PDA (derived from mintAddress). Receives the token's
+  // fee share and auto-pays the agent's Nosana compute bill. See plan A2/A3.
+  treasuryAddress       String? @unique @map("treasury_address")
+  treasuryPdaAuthorityBump Int?   @map("treasury_pda_authority_bump")
+  // Cumulative lifetime counters (mirror of on-chain state, updated by
+  // treasury-settlement worker).
+  computePaidLamports BigInt @default(0) @map("compute_paid_lamports")
+  revenueLamports     BigInt @default(0) @map("revenue_lamports")
+  // Whether the reputation-oracle program's AgentReputation PDA has been
+  // initialized on-chain for this token mint (plan A4). The attestation
+  // worker skips agents where this is false; the bootstrap path calls
+  // initialize_agent_reputation and flips it. Existing rows default false.
+  reputationProgramInitialized Boolean   @default(false) @map("reputation_program_initialized")
+  // Cursor advanced by the reputation-attestation worker after a
+  // successful submit_attestation. Usage records with periodEnd > this
+  // cursor contribute to the next attestation. Null = never attested.
+  lastOnChainAttestationAt     DateTime? @map("last_on_chain_attestation_at")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @updatedAt @map("updated_at")
 
@@ -2083,11 +2106,53 @@ model AgentToken {
   trades            AgentTokenTrade[]
   holdersList       AgentTokenHolder[]
   snapshots         AgentTokenSnapshot[]
+  treasury          AgentTreasury?
+  onChainAttestations OnChainAttestation[]
 
   @@index([status])
   @@index([marketCapUsd])
   @@index([volume24h])
   @@map("agent_tokens")
+}
+
+// ============================================
+// On-chain reputation attestation mirror (Plan A4)
+// ============================================
+//
+// The reputation-oracle Anchor program emits an `AttestationSubmitted`
+// event on every successful submit_attestation. We mirror those events
+// here so off-chain readers (token launchpad eligibility, public
+// transparency pages, the runway dashboard) don't have to scan the
+// chain on every load. The on-chain AgentReputation PDA remains the
+// source of truth — this is a read-cache, not authoritative.
+
+model OnChainAttestation {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tokenId             String   @map("token_id") @db.Uuid
+  txSignature         String   @unique @map("tx_signature")
+  attestorAddress     String   @map("attestor_address")
+  uptimeSecondsDelta  BigInt   @map("uptime_seconds_delta")
+  messageCountDelta   BigInt   @map("message_count_delta")
+  score               Int
+  // Cumulative totals AFTER applying this attestation, mirroring the
+  // values emitted in the AttestationSubmitted event so a reader can
+  // reconstruct the state-after without replaying.
+  cumulativeUptimeSeconds BigInt @map("cumulative_uptime_seconds")
+  cumulativeMessageCount  BigInt @map("cumulative_message_count")
+  attestationCount        Int    @map("attestation_count")
+  // Attestor-claimed unix timestamp; the program rejected stale values
+  // (< prior last_attestation_unix_ts) so this is monotonic per token.
+  attestorUnixTs      BigInt   @map("attestor_unix_ts")
+  // When we OBSERVED the on-chain landing (cron tick time). Useful for
+  // detecting attestor liveness independent of attestor-claimed time.
+  observedAt          DateTime @default(now()) @map("observed_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  token               AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  @@index([tokenId, attestorUnixTs])
+  @@index([attestorAddress])
+  @@map("on_chain_attestations")
 }
 
 model AgentTokenTrade {
@@ -2136,6 +2201,83 @@ model AgentTokenSnapshot {
 
   @@index([tokenId, timestamp])
   @@map("agent_token_snapshots")
+}
+
+// ============================================
+// Per-Agent Treasury (Plan A2/A3)
+// ============================================
+//
+// Each tokenized agent owns a Solana PDA treasury derived from its mint
+// address. The on-chain `agent-treasury` Anchor program is the source of
+// truth for balances; these rows are a local mirror maintained by the
+// treasury-settlement worker for fast reads + indexing.
+
+model AgentTreasury {
+  id                       String   @id @default(uuid()) @db.Uuid
+  tokenId                  String   @unique @map("token_id") @db.Uuid
+  treasuryPdaAddress       String   @unique @map("treasury_pda_address")
+  authorityBump            Int      @map("authority_bump")
+  solBalanceLamports       BigInt   @default(0) @map("sol_balance_lamports")
+  accruedFeeLamports       BigInt   @default(0) @map("accrued_fee_lamports")
+  lastComputeBillLamports  BigInt?  @map("last_compute_bill_lamports")
+  lastComputeBillAt        DateTime? @map("last_compute_bill_at")
+  // Computed off last-paid compute rate; UI reads this to render the runway
+  // card. Recomputed on each settlement tick.
+  runwaySecondsEstimate    BigInt   @default(0) @map("runway_seconds_estimate")
+  lastSyncedAt             DateTime @default(now()) @map("last_synced_at")
+  // Whether the agent-treasury Anchor program has been initialized
+  // on-chain for this row (`initialize_treasury` instruction landed).
+  // The submit worker reads this to decide between the legacy
+  // SystemProgram.transfer path (false) and the program-mediated
+  // pay_nosana path (true). Existing rows default to false; the
+  // backfill script flips them as it migrates each treasury PDA.
+  programInitialized       Boolean  @default(false) @map("program_initialized")
+  // Cursor advanced by the fee-router BullMQ worker after a successful
+  // fee_receive submission. Trades with timestamp > this cursor are
+  // unrouted (eligible for the next batch). Null = never routed.
+  lastFeeRoutedAt          DateTime? @map("last_fee_routed_at")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  token     AgentToken       @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  payments  ComputePayment[]
+
+  @@map("agent_treasuries")
+}
+
+enum ComputePaymentStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+model ComputePayment {
+  id             String               @id @default(uuid()) @db.Uuid
+  treasuryId     String               @map("treasury_id") @db.Uuid
+  nosanaJobId    String               @map("nosana_job_id")
+  amountLamports BigInt               @map("amount_lamports")
+  computeSeconds BigInt               @map("compute_seconds")
+  txSignature    String?              @unique @map("tx_signature")
+  status         ComputePaymentStatus @default(PENDING)
+  errorMessage   String?              @map("error_message")
+  scheduledFor   DateTime             @default(now()) @map("scheduled_for")
+  // Set by persistSubmitTransition when status moves PENDING → SUBMITTED.
+  // Reaper reads this to detect blockhash-expired stuck submissions
+  // (a row whose submittedAt is older than the blockhash window will
+  // never confirm).
+  submittedAt    DateTime?            @map("submitted_at")
+  paidAt         DateTime?            @map("paid_at")
+  // Counts retries from FAILED → PENDING resubmissions. Lifecycle
+  // shouldRetry() reads this against a maxRetries policy.
+  retryCount     Int                  @default(0) @map("retry_count")
+  createdAt      DateTime             @default(now()) @map("created_at")
+
+  treasury AgentTreasury @relation(fields: [treasuryId], references: [id], onDelete: Cascade)
+
+  @@index([treasuryId, status])
+  @@index([status, scheduledFor])
+  @@map("compute_payments")
 }
 
 // ============================================

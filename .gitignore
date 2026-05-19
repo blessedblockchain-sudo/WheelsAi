@@ -53,3 +53,18 @@ docker-compose.override.yml
 *.tsbuildinfo
 *.pid
 *.seed
+
+# Anchor / Solana programs
+target/
+test-ledger/
+.anchor/
+*.so
+
+# Generated marketing artifacts
+video/
+pitch-deck-*.html
+
+# Local scratch / debug files
+apps/api/dbg.ts
+apps/api/scratch.ts
+apps/api/*.debug.ts

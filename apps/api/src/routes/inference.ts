@@ -7,6 +7,7 @@ import { env } from "../config/env.js";
 import { createLogger } from "../utils/logger.js";
 import { Prisma, prisma } from "@wheelsai/db";
 import { PRICING_TIERS, calculateTokenCost } from "@wheelsai/shared";
+import { getPricePerSecond } from "../services/computeMetering.js";
 import {
   create402Response,
   createPaymentRequestId,
@@ -232,10 +233,17 @@ export function createInferenceRoutes(
         });
       }
 
-      // 7. Record usage metrics (async, non-blocking)
-      recordUsage(orgId, deployment.id, usage, latencyMs, costCents).catch((err) =>
-        logger.error({ err }, "Failed to record usage")
-      );
+      // 7. Record usage metrics (async, non-blocking).
+      // Compute metering uses the real Nosana tier price-per-second so
+      // actualCostCents reflects measured GPU time, not an estimated split.
+      recordUsage(
+        orgId,
+        deployment.id,
+        usage,
+        latencyMs,
+        costCents,
+        deployment.gpuTier,
+      ).catch((err) => logger.error({ err }, "Failed to record usage"));
 
       // 8. Return response
       return responseBody;
@@ -611,7 +619,8 @@ async function recordUsage(
   deploymentId: string,
   usage: { prompt_tokens: number; completion_tokens: number },
   latencyMs: number,
-  costCents: number
+  costCents: number,
+  gpuTier: string,
 ): Promise<void> {
   // Get current hour boundary
   const now = new Date();
@@ -623,7 +632,14 @@ async function recordUsage(
   );
   const periodEnd = new Date(periodStart.getTime() + 60 * 60 * 1000);
 
-  // Upsert usage record
+  // Per-request compute metering: latencyMs is wall-clock GPU time for a
+  // single inference. We convert to seconds and price at the tier's
+  // authoritative rate. Batching + idle GPU time are reconciled by the
+  // treasury-settlement worker against real Nosana job durations (plan A3).
+  const computeSeconds = Math.max(0, Math.round(latencyMs / 1000));
+  const pricePerSecondUsd = getPricePerSecond(gpuTier);
+  const actualCostCents = Math.round(computeSeconds * pricePerSecondUsd * 100);
+
   await prisma.usageRecord.upsert({
     where: {
       orgId_deploymentId_periodStart: {
@@ -643,6 +659,8 @@ async function recordUsage(
       totalLatencyMs: BigInt(latencyMs),
       errorCount: 0,
       costCents: BigInt(costCents),
+      computeSeconds: BigInt(computeSeconds),
+      actualCostCents: BigInt(actualCostCents),
     },
     update: {
       requestCount: { increment: 1 },
@@ -650,6 +668,8 @@ async function recordUsage(
       outputTokens: { increment: usage.completion_tokens },
       totalLatencyMs: { increment: latencyMs },
       costCents: { increment: BigInt(costCents) },
+      computeSeconds: { increment: BigInt(computeSeconds) },
+      actualCostCents: { increment: BigInt(actualCostCents) },
     },
   });
 }

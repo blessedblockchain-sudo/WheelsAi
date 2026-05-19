@@ -71,25 +71,51 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
         acc.requests += record.requestCount;
         acc.totalLatencyMs += Number(record.totalLatencyMs);
         acc.costCents += Number(record.costCents);
+        acc.computeSeconds += Number(record.computeSeconds);
+        acc.actualCostCents += Number(record.actualCostCents);
         return acc;
       },
-      { inputTokens: 0, outputTokens: 0, requests: 0, totalLatencyMs: 0, costCents: 0 }
+      {
+        inputTokens: 0,
+        outputTokens: 0,
+        requests: 0,
+        totalLatencyMs: 0,
+        costCents: 0,
+        computeSeconds: 0,
+        actualCostCents: 0,
+      }
     );
 
-    const gpuHours = totals.totalLatencyMs / (1000 * 60 * 60);
-    const avgCostPerHour = gpuHours > 0 ? (totals.costCents / 100) / gpuHours : 0;
+    // Prefer the real metered compute cost when we have it; fall back to the
+    // legacy estimate while the metering backfill is still rolling out.
+    const computeCostCents = totals.actualCostCents > 0 ? totals.actualCostCents : totals.costCents * 0.7;
+    const gpuHours =
+      totals.computeSeconds > 0
+        ? totals.computeSeconds / 3600
+        : totals.totalLatencyMs / (1000 * 60 * 60);
+    const totalCostCents =
+      totals.actualCostCents > 0
+        ? totals.actualCostCents + totals.costCents * 0.1 + totals.costCents * 0.2
+        : totals.costCents;
+    const avgCostPerHour = gpuHours > 0 ? computeCostCents / 100 / gpuHours : 0;
 
     return {
       usage: {
-        currentMonth: totals.costCents / 100,
+        currentMonth: totalCostCents / 100,
         gpuHours,
         avgCostPerHour,
-        computeCost: (totals.costCents * 0.7) / 100, // 70% compute
+        computeCost: computeCostCents / 100,
         requests: totals.requests,
-        requestsCost: (totals.costCents * 0.1) / 100, // 10% requests
+        requestsCost: (totals.costCents * 0.1) / 100,
         inputTokens: totals.inputTokens,
         outputTokens: totals.outputTokens,
-        tokensCost: (totals.costCents * 0.2) / 100, // 20% tokens
+        tokensCost: (totals.costCents * 0.2) / 100,
+        // Surface the raw metered values so the UI can label "measured" vs
+        // "estimated" on the runway/economics card.
+        metered: {
+          computeSeconds: totals.computeSeconds,
+          actualComputeCost: totals.actualCostCents / 100,
+        },
       },
     };
   });

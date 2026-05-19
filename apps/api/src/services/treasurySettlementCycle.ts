@@ -1,0 +1,118 @@
+/**
+ * Treasury settlement cycle orchestrator (plan A3).
+ *
+ * One call = one tick of the BullMQ worker. The worker is a thin shell over
+ * this function: every IO surface (load, compute cost, sol price oracle,
+ * persist) is dependency-injected so the orchestration logic is unit-
+ * testable without a DB, the Nosana SDK, or a price feed.
+ *
+ * Flow:
+ *   1. loadBatch(now, intervalMs)         — eligible (deployment, treasury) pairs
+ *   2. getSolPriceUsd()                   — abort the cycle if the oracle is down
+ *   3. runSettlementTick(...)             — pure decision layer; collects records
+ *   4. persistPayments(records)           — single batched write
+ *
+ * Counters returned: loaded / recorded / pending / failed / errors. The
+ * worker logs these and the public status page exposes them.
+ */
+
+import {
+  runSettlementTick,
+  type ComputeCostResult,
+  type ComputePaymentRecord,
+  type DeploymentForSettlement,
+  type TreasuryForSettlement,
+} from "./treasurySettlement.js";
+import { createLogger } from "../utils/logger.js";
+
+const logger = createLogger("treasury-cycle");
+
+const DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
+
+export interface SettlementBatch {
+  deployments: DeploymentForSettlement[];
+  treasuries: Map<string, TreasuryForSettlement>;
+}
+
+export interface SettlementCycleDeps {
+  loadBatch: (args: {
+    now: Date;
+    intervalMs: number;
+  }) => Promise<SettlementBatch>;
+  getComputeCost: (
+    deployment: DeploymentForSettlement,
+  ) => Promise<ComputeCostResult>;
+  getSolPriceUsd: () => Promise<number>;
+  persistPayments: (records: ComputePaymentRecord[]) => Promise<void>;
+  intervalMs?: number;
+  now?: Date;
+}
+
+export interface SettlementCycleResult {
+  loaded: number;
+  recorded: number;
+  pending: number;
+  failed: number;
+  errors: number;
+}
+
+export async function runTreasurySettlementCycle(
+  deps: SettlementCycleDeps,
+): Promise<SettlementCycleResult> {
+  const intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
+  const now = deps.now ?? new Date();
+
+  const result: SettlementCycleResult = {
+    loaded: 0,
+    recorded: 0,
+    pending: 0,
+    failed: 0,
+    errors: 0,
+  };
+
+  const batch = await deps.loadBatch({ now, intervalMs });
+  result.loaded = batch.deployments.length;
+  if (result.loaded === 0) return result;
+
+  let solPriceUsd: number;
+  try {
+    solPriceUsd = await deps.getSolPriceUsd();
+  } catch (err) {
+    logger.error({ err }, "sol price oracle failed; aborting cycle");
+    result.errors += 1;
+    return result;
+  }
+
+  const collected: ComputePaymentRecord[] = [];
+  await runSettlementTick({
+    deployments: batch.deployments,
+    treasuries: batch.treasuries,
+    now,
+    intervalMs,
+    solPriceUsd,
+    getComputeCost: deps.getComputeCost,
+    recordComputePayment: async (record) => {
+      collected.push(record);
+    },
+  });
+
+  result.recorded = collected.length;
+  for (const r of collected) {
+    if (r.status === "PENDING") result.pending += 1;
+    else if (r.status === "FAILED") result.failed += 1;
+  }
+
+  if (collected.length > 0) {
+    try {
+      await deps.persistPayments(collected);
+    } catch (err) {
+      logger.error(
+        { err, recordCount: collected.length },
+        "persistPayments failed; in-memory counts kept for retry",
+      );
+      result.errors += 1;
+    }
+  }
+
+  return result;
+}

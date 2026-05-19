@@ -54,10 +54,17 @@ export interface NosanaJob {
   market: string;
   status: "queued" | "running" | "completed" | "failed";
   nodeUrl?: string;
+  /** Base58 pubkey of the host node executing the job. Source-of-truth
+   * recipient for treasury auto-pay (plan A3). Undefined when the job
+   * isn't yet picked up by a host (queue state) or the SDK reports the
+   * SystemProgram zero-pubkey sentinel. */
+  nodePubkey?: string;
   startTime?: Date;
   endTime?: Date;
   cost?: number;
 }
+
+const SYSTEM_PROGRAM_ZERO_PUBKEY = "11111111111111111111111111111111";
 
 export interface NosanaDeployment {
   id: string;
@@ -75,8 +82,10 @@ export interface NosanaDeployment {
 // GPU Market Configuration
 // ============================================
 
-// Known Nosana market addresses (devnet/mainnet)
-const MARKETS: Record<string, NosanaMarket> = {
+// Known Nosana market addresses (devnet/mainnet).
+// Exported so compute-metering and treasury settlement can price jobs against
+// the same source of truth the scheduler uses.
+export const MARKETS: Record<string, NosanaMarket> = {
   "3060": {
     address: "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf", // Example
     name: "RTX 3060",
@@ -373,13 +382,18 @@ export class NosanaClient {
         startTime: new Date(),
       };
     } catch (error) {
+      if (!env.ALLOW_NOSANA_MOCK) {
+        logger.error(
+          { error: (error as Error).message, market: market.name },
+          "Nosana job submission failed and mock fallback is disabled"
+        );
+        throw error;
+      }
       logger.warn(
         { error: (error as Error).message, market: market.name },
-        "SDK job submission failed - returning mock job ID"
+        "SDK job submission failed - returning mock job ID (ALLOW_NOSANA_MOCK=true)"
       );
 
-      // Graceful degradation: return a traceable mock ID so callers can
-      // continue without a funded wallet (e.g. local dev).
       const fallbackId = `mock_job_${Date.now().toString(36)}`;
       return {
         id: fallbackId,
@@ -412,16 +426,17 @@ export class NosanaClient {
     try {
       const sdkJob = await sdk.jobs.get(jobId);
 
-      const nodeUrl =
-        sdkJob.node && String(sdkJob.node) !== "11111111111111111111111111111111"
-          ? `https://${sdkJob.node}.node.nos.ci`
-          : undefined;
+      const nodeStr = sdkJob.node ? String(sdkJob.node) : "";
+      const hasRealNode = nodeStr && nodeStr !== SYSTEM_PROGRAM_ZERO_PUBKEY;
+      const nodeUrl = hasRealNode ? `https://${nodeStr}.node.nos.ci` : undefined;
+      const nodePubkey = hasRealNode ? nodeStr : undefined;
 
       return {
         id: jobId,
         market: sdkJob.market?.toBase58?.() ?? "",
         status: this.mapJobState(sdkJob.state),
         nodeUrl,
+        nodePubkey,
         startTime: sdkJob.timeStart
           ? new Date(sdkJob.timeStart * 1000)
           : undefined,
@@ -507,13 +522,18 @@ export class NosanaClient {
         nodes,
       };
     } catch (error) {
+      if (!env.ALLOW_NOSANA_MOCK) {
+        logger.error(
+          { error: (error as Error).message, market: market.name, replicas },
+          "Nosana deployment creation failed and mock fallback is disabled"
+        );
+        throw error;
+      }
       logger.warn(
         { error: (error as Error).message, market: market.name, replicas },
-        "SDK deployment creation failed - returning mock deployment"
+        "SDK deployment creation failed - returning mock deployment (ALLOW_NOSANA_MOCK=true)"
       );
 
-      // Graceful degradation: fabricate a deployment record so callers
-      // can store an ID and attempt status checks later.
       const fallbackId = `mock_deploy_${Date.now().toString(36)}`;
       const nodes = Array.from({ length: replicas }, (_, i) => ({
         id: `node_${i}`,

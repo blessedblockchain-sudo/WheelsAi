@@ -50,6 +50,18 @@ import {
   stopX402Queue,
   startTokenIndexerQueue,
   stopTokenIndexerQueue,
+  startTreasurySettlementQueue,
+  stopTreasurySettlementQueue,
+  startPaymentSubmitQueue,
+  stopPaymentSubmitQueue,
+  startPaymentPollQueue,
+  stopPaymentPollQueue,
+  startPaymentReapQueue,
+  stopPaymentReapQueue,
+  startFeeRouterQueue,
+  stopFeeRouterQueue,
+  startReputationAttestationQueue,
+  stopReputationAttestationQueue,
 } from "./queues/index.js";
 
 async function main() {
@@ -160,6 +172,9 @@ async function main() {
   await app.register(tokenRoutes, { prefix: "/api/tokens" });
   await app.register(playgroundRoutes, { prefix: "/api" });
   await app.register(collaborationRoutes, { prefix: "/api/agents" });
+  // Treasury read routes — runway / payments / chart at /api/agents/:slug/*
+  const { agentTreasuryRoutes } = await import("./routes/agent-treasury.js");
+  await app.register(agentTreasuryRoutes, { prefix: "/api" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
 
   // Global error handler
@@ -198,6 +213,12 @@ async function main() {
 
   await startX402Queue();
   await startTokenIndexerQueue();
+  await startTreasurySettlementQueue();
+  await startPaymentSubmitQueue();
+  await startPaymentPollQueue();
+  await startPaymentReapQueue();
+  await startFeeRouterQueue();
+  await startReputationAttestationQueue();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
@@ -206,6 +227,12 @@ async function main() {
       app.log.info(`Received ${signal}, shutting down gracefully`);
       await stopX402Queue();
       await stopTokenIndexerQueue();
+      await stopTreasurySettlementQueue();
+      await stopPaymentSubmitQueue();
+      await stopPaymentPollQueue();
+      await stopPaymentReapQueue();
+      await stopFeeRouterQueue();
+      await stopReputationAttestationQueue();
       await app.close();
       process.exit(0);
     });

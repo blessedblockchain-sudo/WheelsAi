@@ -108,6 +108,41 @@ const envSchema = z.object({
   PUMPFUN_API_KEY: z.string().optional(),
   TOKEN_INDEXER_INTERVAL_MS: z.coerce.number().int().min(0).default(30000),
 
+  // Treasury auto-pay pipeline (set to 0 to disable a worker)
+  TREASURY_SETTLEMENT_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
+  TREASURY_SETTLEMENT_BATCH_INTERVAL_MS: z.coerce.number().int().min(0).default(300_000),
+  PAYMENT_SUBMIT_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
+  PAYMENT_POLL_INTERVAL_MS: z.coerce.number().int().min(0).default(15_000),
+  PAYMENT_REAP_INTERVAL_MS: z.coerce.number().int().min(0).default(120_000),
+  PAYMENT_BATCH_LIMIT: z.coerce.number().int().min(1).default(50),
+  PAYMENT_REAP_MAX_AGE_SECONDS: z.coerce.number().int().min(60).default(150),
+  PAYMENT_REAP_BATCH_LIMIT: z.coerce.number().int().min(1).default(100),
+  // Fee-router BullMQ worker: scans new agent_token_trades and forwards
+  // 1% of volume to the corresponding treasury via fee_receive. Disabled
+  // by default (interval=0) until the platform fee-router wallet is
+  // funded — see FEE_ROUTER_WALLET_PRIVATE_KEY.
+  FEE_ROUTER_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
+  FEE_ROUTER_WALLET_PRIVATE_KEY: z.string().optional(),
+  // Reputation-attestation BullMQ worker: posts on-chain
+  // submit_attestation per active tokenized agent. Disabled by default
+  // (interval=0); enable once the attestor wallet is whitelisted via
+  // the reputation-oracle program's admin add_attestor instruction.
+  REPUTATION_ATTESTATION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
+  REPUTATION_ATTESTOR_PRIVATE_KEY: z.string().optional(),
+  // Dev-only: when true, pumpfun.createToken returns synthetic mint addresses if the
+  // upstream API is unreachable. Forced to false in production so failures surface
+  // instead of silently returning fake mints in demos or screenshots.
+  ALLOW_PUMPFUN_MOCK: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  // Dev-only: when true, nosana.submitJob returns mock_job_* IDs if the SDK fails.
+  // Forced to false in production.
+  ALLOW_NOSANA_MOCK: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+
   // GitHub Integration
   GITHUB_TOKEN: z.string().optional(),
 });
@@ -131,6 +166,14 @@ function parseEnv() {
     }
     if (data.CORS_ORIGIN === "http://localhost:3000") {
       console.error("CORS_ORIGIN must be explicitly set in production");
+      process.exit(1);
+    }
+    if (data.ALLOW_PUMPFUN_MOCK) {
+      console.error("ALLOW_PUMPFUN_MOCK must not be enabled in production");
+      process.exit(1);
+    }
+    if (data.ALLOW_NOSANA_MOCK) {
+      console.error("ALLOW_NOSANA_MOCK must not be enabled in production");
       process.exit(1);
     }
   }

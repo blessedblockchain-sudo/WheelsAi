@@ -97,15 +97,17 @@ export class PumpFunClient {
   }
 
   /**
-   * Create a new token on pump.fun with bonding curve
-   * In production, this would submit a Solana transaction via pump.fun SDK
-   * For now, we simulate the API call and return mock data for development
+   * Create a new token on pump.fun with bonding curve.
+   * Real implementation requires a signed Solana transaction submitted via the
+   * pump.fun SDK from the creator wallet — tracked in plan Phase 1 (A1).
+   * Until that lands, we call pumpportal.fun's hosted endpoint. When it fails,
+   * we only return a synthetic mint if ALLOW_PUMPFUN_MOCK is explicitly enabled
+   * (dev-only, forced off in production by env.ts). Otherwise we throw so that
+   * demos and screenshots never show a fake mint address.
    */
   async createToken(params: CreateTokenParams): Promise<CreateTokenResult> {
     logger.info({ name: params.name, symbol: params.symbol, creator: params.creatorAddress }, "Creating token on pump.fun");
 
-    // In production, this calls pump.fun's token creation endpoint
-    // which requires a signed Solana transaction from the creator wallet
     try {
       const result = await this.request<CreateTokenResult>("/create-token", {
         method: "POST",
@@ -122,8 +124,11 @@ export class PumpFunClient {
       });
       return result;
     } catch (error) {
-      // Fallback: Generate deterministic mock data for development
-      logger.warn({ error }, "Pump.fun API unavailable, using development fallback");
+      if (!env.ALLOW_PUMPFUN_MOCK) {
+        logger.error({ error }, "Pump.fun createToken failed and mock fallback is disabled");
+        throw error;
+      }
+      logger.warn({ error }, "Pump.fun API unavailable — returning dev mock (ALLOW_PUMPFUN_MOCK=true)");
       const mockMint = `${params.symbol.toLowerCase()}${Date.now().toString(36)}mock`;
       return {
         mintAddress: mockMint,

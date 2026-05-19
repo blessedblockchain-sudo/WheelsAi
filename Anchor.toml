@@ -1,0 +1,28 @@
+[toolchain]
+anchor_version = "0.32.1"
+solana_version = "3.0.0"
+
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+agent_treasury = "AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT"
+reputation_oracle = "DdWf1ypdByF2QVxXhzerGZ8GomAASdNe7THt4YWXoTum"
+
+[programs.devnet]
+agent_treasury = "AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT"
+reputation_oracle = "DdWf1ypdByF2QVxXhzerGZ8GomAASdNe7THt4YWXoTum"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+# Tests run via plain `cargo test -p agent-treasury` (LiteSVM, no validator).
+# Anchor's TS test runner is intentionally NOT wired so the program tests stay
+# decoupled from this monorepo's pnpm/turbo conventions.
+[scripts]
+test = "cargo test --manifest-path programs/agent-treasury/Cargo.toml && cargo test --manifest-path programs/reputation-oracle/Cargo.toml"

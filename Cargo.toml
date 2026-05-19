@@ -1,0 +1,27 @@
+# Cargo workspace for the WheelsAI Solana programs.
+#
+# Lives at the monorepo root because Anchor's tooling expects Anchor.toml
+# and Cargo.toml side-by-side. The TypeScript apps (apps/*, packages/*)
+# are entirely outside this workspace.
+[workspace]
+members = [
+    "programs/agent-treasury",
+    "programs/reputation-oracle",
+]
+resolver = "2"
+
+[workspace.dependencies]
+anchor-lang = "0.32.1"
+
+# Anchor recommends opt-level=3 for verifiable BPF builds; size matters more
+# than compile time once the program is in production. lto helps shrink the
+# .so a bit further.
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1

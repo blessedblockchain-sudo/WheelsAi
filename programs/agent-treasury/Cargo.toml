@@ -1,0 +1,32 @@
+[package]
+name = "agent-treasury"
+version = "0.1.0"
+description = "WheelsAI agent treasury program — receives token-trade fees and pays Nosana hosts on behalf of the agent."
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "agent_treasury"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+# When the `idl-build` feature is enabled, anchor-lang exposes the
+# IDL-extraction bits used by `anchor build` / `anchor idl`.
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = { workspace = true }
+
+[dev-dependencies]
+# LiteSVM lets us run the program in-process for tests — no validator,
+# no test-ledger directory, no localnet RPC. Faster iteration than
+# `solana-program-test` and an order of magnitude faster than
+# `solana-test-validator`.
+litesvm = "0.7"
+solana-sdk = "2.1"
+solana-program = "2.1"
+borsh = "1.5"

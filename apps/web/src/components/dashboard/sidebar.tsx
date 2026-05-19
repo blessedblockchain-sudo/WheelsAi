@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { featureFlags } from "@/lib/feature-flags";
 import { authApi } from "@/lib/api";
 import { WalletButton } from "@/components/dashboard/wallet-button";
 import { useTheme } from "@/components/providers/theme-provider";
@@ -72,7 +73,9 @@ const navGroups: NavGroup[] = [
     label: "Marketplace",
     items: [
       { name: "Browse Agents", href: "/dashboard/marketplace", icon: Store },
-      { name: "Token Marketplace", href: "/dashboard/marketplace/tokens", icon: Coins },
+      ...(featureFlags.tokenUi
+        ? [{ name: "Token Marketplace", href: "/dashboard/marketplace/tokens", icon: Coins } as NavItem]
+        : []),
       { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
       { name: "Revenue", href: "/dashboard/marketplace/revenue", icon: DollarSign },
       { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },

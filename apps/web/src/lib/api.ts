@@ -3677,4 +3677,90 @@ export async function* streamPlaygroundChat(
   }
 }
 
+// ============================================
+// Treasury API — runway card + payments history
+// (drives apps/api/src/routes/runway.ts + payments.ts)
+// ============================================
+
+export type RunwayAlertLevel = "ok" | "warning" | "critical" | "shutdown";
+
+export interface AgentRunwayResponse {
+  agent: { id: string; name: string; slug: string };
+  treasuryAddress: string | null;
+  // BigInt as string — JSON-safe
+  treasuryBalanceLamports: string;
+  solPriceUsd: number;
+  runway: {
+    totalCostCents: number;
+    lookbackSeconds: number;
+    burnRateLamportsPerSecond: string;
+    burnLamportsPerDay: string;
+    // "infinity" means burn rate is zero (idle agent)
+    runwaySeconds: number | "infinity";
+    alertLevel: RunwayAlertLevel;
+    desiredReplicas: number;
+  };
+}
+
+export type ComputePaymentStatus =
+  | "PENDING"
+  | "SUBMITTED"
+  | "CONFIRMED"
+  | "FAILED";
+
+export interface AgentPaymentRow {
+  id: string;
+  // BigInt as string
+  amountLamports: string;
+  computeSeconds: string;
+  status: ComputePaymentStatus;
+  txSignature: string | null;
+  // ISO 8601 — null when unset (PENDING rows have no paidAt)
+  paidAt: string | null;
+  scheduledFor: string;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
+export interface AgentPaymentsResponse {
+  payments: AgentPaymentRow[];
+  totalCount: number;
+  limit: number;
+  offset: number;
+  status: ComputePaymentStatus | null;
+  from: string | null;
+  to: string | null;
+}
+
+export const treasuryApi = {
+  runway: (slug: string, lookbackSeconds?: number) => {
+    const q = lookbackSeconds
+      ? `?lookbackSeconds=${lookbackSeconds}`
+      : "";
+    return api<AgentRunwayResponse>(`/api/agents/${slug}/runway${q}`);
+  },
+
+  payments: (
+    slug: string,
+    params: {
+      limit?: number;
+      offset?: number;
+      status?: ComputePaymentStatus;
+      from?: string;
+      to?: string;
+    } = {},
+  ) => {
+    const sp = new URLSearchParams();
+    if (params.limit !== undefined) sp.set("limit", String(params.limit));
+    if (params.offset !== undefined) sp.set("offset", String(params.offset));
+    if (params.status) sp.set("status", params.status);
+    if (params.from) sp.set("from", params.from);
+    if (params.to) sp.set("to", params.to);
+    const q = sp.toString();
+    return api<AgentPaymentsResponse>(
+      `/api/agents/${slug}/payments${q ? `?${q}` : ""}`,
+    );
+  },
+};
+
 export { ApiError };

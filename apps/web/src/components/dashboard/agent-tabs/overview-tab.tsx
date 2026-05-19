@@ -6,6 +6,8 @@ import { Settings, ChevronRight, ChevronDown } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { RunwayCard } from "@/components/dashboard/runway-card";
+import { PaymentsTable } from "@/components/dashboard/payments-table";
 import type { AgentTabProps } from "./types";
 
 export interface DeployConfig {
@@ -113,6 +115,17 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
           </CardContent>
         </Card>
       )}
+
+      {/* Treasury — runway + auto-pay history.
+          Only renders meaningfully once the agent is tokenized; the
+          underlying API returns 404 otherwise and the components show
+          their own loading/error states. */}
+      <RunwayCard slug={agent.slug} />
+      <PaymentsTable
+        slug={agent.slug}
+        cluster="devnet"
+        className="md:col-span-2"
+      />
 
       {/* Deploy configuration */}
       {!isRunning && (

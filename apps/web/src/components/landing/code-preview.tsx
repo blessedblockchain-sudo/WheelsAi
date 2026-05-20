@@ -13,7 +13,7 @@ const terminalLines = [
   { text: "$ wheelsai deploy --agent my-support-bot", color: "text-white" },
   { text: "", color: "" },
   { text: "  ✓ Building agent graph... 4 nodes, 3 tools", color: "text-[#00ff00]" },
-  { text: "  ✓ GPU node selected: RTX 4090 (us-east-1)", color: "text-[#00ff00]" },
+  { text: "  ✓ Compute provisioned, treasury PDA created", color: "text-[#00ff00]" },
   { text: "  ✓ Deploying agent...", color: "text-[#00ff00]" },
   { text: "", color: "" },
   { text: "  Agent live!", color: "text-white font-bold" },

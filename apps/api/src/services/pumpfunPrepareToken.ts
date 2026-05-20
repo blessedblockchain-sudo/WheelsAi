@@ -39,6 +39,15 @@ export interface PreparePayload {
   orgId: string;
   /** Creator pubkey (user's wallet) that prepared this tx. */
   creatorPubkey: string;
+  /**
+   * User-submitted fields the wallet committed to when it signed the
+   * prepared tx. Carried in the token so the /submit step persists
+   * exactly what was signed — the client can't substitute different
+   * symbol/description between prepare and submit.
+   */
+  symbol: string;
+  description: string;
+  imageUri?: string;
   /** Issued-at unix seconds. */
   iat: number;
   /** Expires-at unix seconds. */
@@ -159,6 +168,9 @@ export function verifyPrepareToken(
     typeof payload.agentListingId !== "string" ||
     typeof payload.orgId !== "string" ||
     typeof payload.creatorPubkey !== "string" ||
+    typeof payload.symbol !== "string" ||
+    typeof payload.description !== "string" ||
+    (payload.imageUri !== undefined && typeof payload.imageUri !== "string") ||
     typeof payload.iat !== "number" ||
     typeof payload.exp !== "number"
   ) {

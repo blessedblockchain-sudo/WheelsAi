@@ -14,6 +14,9 @@ const baseFields = {
   agentListingId: "listing-123",
   orgId: "org-abc",
   creatorPubkey: "CreatorPub11111111111111111111111111111111",
+  symbol: "TST",
+  description: "Test token",
+  imageUri: "https://example.com/img.png",
 };
 
 test("signPrepareToken + verifyPrepareToken round-trip", () => {

@@ -43,6 +43,7 @@ import { twoFactorRoutes } from "./routes/twoFactor.js";
 import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
+import { createPartialSignTokenRoutesProduction } from "./routes/tokenLaunchPartialSignBindings.js";
 import { playgroundRoutes } from "./routes/playground.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
 import {
@@ -170,6 +171,21 @@ async function main() {
   await app.register(x402Routes, { prefix: "/api/x402" });
   await app.register(openclawRoutes, { prefix: "/api/openclaw" });
   await app.register(tokenRoutes, { prefix: "/api/tokens" });
+  // Browser-partial-sign launch path (POST /api/tokens/launch/prepare
+  // and POST /api/tokens/launch/submit). The legacy /api/tokens/create
+  // path (custodial) stays mounted under tokenRoutes during the
+  // transition. Production wiring needs WALLET_MASTER_KEY; the
+  // factory throws at boot if it's missing, which is the right behavior
+  // (don't ship a launch surface that silently can't sign tokens).
+  if (env.WALLET_MASTER_KEY) {
+    await app.register(createPartialSignTokenRoutesProduction(), {
+      prefix: "/api/tokens",
+    });
+  } else {
+    app.log.warn(
+      "WALLET_MASTER_KEY unset — /api/tokens/launch/{prepare,submit} disabled",
+    );
+  }
   await app.register(playgroundRoutes, { prefix: "/api" });
   await app.register(collaborationRoutes, { prefix: "/api/agents" });
   // Treasury read routes — runway / payments / chart at /api/agents/:slug/*

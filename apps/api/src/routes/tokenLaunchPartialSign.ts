@@ -169,9 +169,9 @@ export function createPartialSignTokenRoutes(
 
   return async (app) => {
     // ============================================
-    // POST /tokens/launch/prepare
+    // POST /launch/prepare  (mounted under /api/tokens)
     // ============================================
-    app.post("/tokens/launch/prepare", async (request, reply) => {
+    app.post("/launch/prepare", async (request, reply) => {
       if (!request.auth) {
         return reply.status(401).send({ error: "unauthenticated" });
       }
@@ -280,9 +280,9 @@ export function createPartialSignTokenRoutes(
     });
 
     // ============================================
-    // POST /tokens/launch/submit
+    // POST /launch/submit  (mounted under /api/tokens)
     // ============================================
-    app.post("/tokens/launch/submit", async (request, reply) => {
+    app.post("/launch/submit", async (request, reply) => {
       if (!request.auth) {
         return reply.status(401).send({ error: "unauthenticated" });
       }

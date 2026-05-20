@@ -107,7 +107,7 @@ test("/prepare 401 when unauthenticated", async () => {
   const app = await makeApp({ authed: false });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 401);
@@ -117,7 +117,7 @@ test("/prepare 400 wallet_required when no walletAddress on auth", async () => {
   const app = await makeApp({ walletAddress: null });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 400);
@@ -130,7 +130,7 @@ test("/prepare 404 when the agent is missing for this org", async () => {
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 404);
@@ -147,7 +147,7 @@ test("/prepare 400 not_eligible when reputation too low", async () => {
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 400);
@@ -162,7 +162,7 @@ test("/prepare 400 listing_required when the agent has no published listing", as
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 400);
@@ -179,7 +179,7 @@ test("/prepare 502 pumpfun_prepare_failed when pumpportal errors", async () => {
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 502);
@@ -190,7 +190,7 @@ test("/prepare 200 returns partial-signed tx + prepare token", async () => {
   const app = await makeApp();
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/prepare",
+    url: "/launch/prepare",
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 200);
@@ -235,7 +235,7 @@ test("/submit 401 when unauthenticated", async () => {
   const app = await makeApp({ authed: false });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: {
       prepareToken: makeValidPrepareToken(),
       signedTxBase64: "anything",
@@ -248,7 +248,7 @@ test("/submit 400 prepare_token_invalid for a malformed token", async () => {
   const app = await makeApp();
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: {
       prepareToken: "not-a-real-token",
       signedTxBase64: "anything",
@@ -263,7 +263,7 @@ test("/submit 400 prepare_token_org_mismatch when token belongs to a different o
   const token = makeValidPrepareToken({ orgId: "org_OTHER" });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: { prepareToken: token, signedTxBase64: "anything" },
   });
   assert.equal(res.statusCode, 400);
@@ -277,7 +277,7 @@ test("/submit 400 prepare_token_creator_mismatch when token belongs to a differe
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: { prepareToken: token, signedTxBase64: "anything" },
   });
   assert.equal(res.statusCode, 400);
@@ -302,7 +302,7 @@ test("/submit 502 pumpfun_submit_failed on broadcast failure (and no persist)", 
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: {
       prepareToken: makeValidPrepareToken(),
       signedTxBase64: "anything",
@@ -323,7 +323,7 @@ test("/submit 500 persistence_failed surfaces mintAddress + txSignature for reco
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: {
       prepareToken: makeValidPrepareToken(),
       signedTxBase64: "anything",
@@ -351,7 +351,7 @@ test("/submit 200 returns persisted ids + on-chain refs on the happy path", asyn
   });
   const res = await app.inject({
     method: "POST",
-    url: "/tokens/launch/submit",
+    url: "/launch/submit",
     payload: {
       prepareToken: makeValidPrepareToken(),
       signedTxBase64: "anything",

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { VersionedTransaction } from "@solana/web3.js";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,7 @@ interface EligibilityResult {
 
 export default function CreateTokenPage() {
   const router = useRouter();
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, signTransaction } = useWallet();
   const { setVisible } = useWalletModal();
 
   const [step, setStep] = useState<Step>(1);
@@ -121,21 +122,65 @@ export default function CreateTokenPage() {
       setVisible(true);
       return;
     }
+    if (!signTransaction) {
+      toast.error(
+        "This wallet doesn't support transaction signing — try a different wallet.",
+      );
+      return;
+    }
 
-    if (!selectedListingId) return;
+    if (!selectedListingId || !selectedListing) return;
 
+    // Browser-partial-sign flow (Phase 1.5):
+    //   1. POST /launch/prepare  → server prepares pump.fun create tx,
+    //                              signs mint half, returns base64 +
+    //                              short-lived HMAC prepareToken.
+    //   2. Wallet signs the tx.  → user reviews + approves in their wallet.
+    //   3. POST /launch/submit   → server broadcasts the fully-signed
+    //                              tx, persists AgentToken + AgentTreasury.
     setIsCreating(true);
     try {
-      const result = await tokenApi.create({
-        agentListingId: selectedListingId,
-        name: tokenName,
+      const prepared = await tokenApi.prepareLaunch({
+        agentId: selectedListing.agentId,
         symbol: tokenSymbol,
-        description: tokenDescription || undefined,
+        description: tokenDescription || tokenName,
+        imageUri: selectedListing.iconUrl ?? undefined,
       });
+
+      // Deserialize the partial-signed tx and let the wallet add its
+      // signature. wallet.signTransaction preserves existing signatures
+      // (the mint slot the server already filled) and only signs the
+      // creator slot matching the wallet's pubkey.
+      const partialBytes = Uint8Array.from(
+        atob(prepared.partialSignedTxBase64),
+        (c) => c.charCodeAt(0),
+      );
+      const tx = VersionedTransaction.deserialize(partialBytes);
+      const signedTx = await signTransaction(tx);
+
+      const signedBytes = signedTx.serialize();
+      // Base64-encode without going through Node's Buffer (browser
+      // bundle stays small).
+      let binary = "";
+      for (let i = 0; i < signedBytes.length; i++) {
+        binary += String.fromCharCode(signedBytes[i]!);
+      }
+      const signedTxBase64 = btoa(binary);
+
+      const result = await tokenApi.submitLaunch({
+        prepareToken: prepared.prepareToken,
+        signedTxBase64,
+      });
+
       toast.success("Token created successfully!");
-      router.push(`/dashboard/marketplace/tokens/${result.token.id}`);
+      router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
     } catch (err: any) {
-      toast.error(err?.data?.message || "Failed to create token");
+      const msg =
+        err?.data?.message ??
+        err?.data?.error ??
+        err?.message ??
+        "Failed to create token";
+      toast.error(msg);
       setIsCreating(false);
     }
   };

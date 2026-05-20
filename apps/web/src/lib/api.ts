@@ -3615,6 +3615,52 @@ export const tokenApi = {
       reasons: string[];
       listing: { id: string; title: string; agentName: string };
     }>(`/api/tokens/eligibility/${agentListingId}`),
+
+  // ============================================
+  // Browser-partial-sign launch (Phase 1.5)
+  // ============================================
+  //
+  // Two-step flow that keeps the on-chain creator equal to the user's
+  // connected wallet — server never holds the creator privkey.
+  //
+  //   1. prepareLaunch  → returns a base64 partial-signed pumpfun
+  //                       create tx + an HMAC-signed prepareToken.
+  //   2. Caller signs the tx with `wallet.signTransaction(...)`.
+  //   3. submitLaunch   → returns the persisted token + on-chain
+  //                       mint + tx signature.
+  //
+  // Both endpoints require a connected wallet (request.auth.walletAddress).
+  prepareLaunch: (data: {
+    agentId: string;
+    symbol: string;
+    description: string;
+    imageUri?: string;
+    twitter?: string;
+    telegram?: string;
+    website?: string;
+    initialBuySol?: number;
+  }) =>
+    api<{
+      partialSignedTxBase64: string;
+      mintAddress: string;
+      creatorPubkey: string;
+      prepareToken: string;
+    }>("/api/tokens/launch/prepare", {
+      method: "POST",
+      body: data,
+    }),
+
+  submitLaunch: (data: { prepareToken: string; signedTxBase64: string }) =>
+    api<{
+      tokenId: string;
+      mintAddress: string;
+      txSignature: string;
+      treasuryPdaAddress: string;
+      creatorLockupEnd: string;
+    }>("/api/tokens/launch/submit", {
+      method: "POST",
+      body: data,
+    }),
 };
 
 // ============================================

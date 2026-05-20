@@ -103,10 +103,10 @@ async function main() {
 
   // programInitialized lives on AgentTreasury (the Prisma mirror of the
   // on-chain Treasury PDA), not on AgentToken. Each candidate row must
-  // already have an AgentTreasury — without one there's nothing to
-  // flip after the on-chain init lands; the treasury-settlement worker
-  // creates the AgentTreasury row at first compute payment, so a token
-  // without a treasury hasn't reached that lifecycle stage yet.
+  // already have an AgentTreasury — createToken (services/agentToken.ts)
+  // writes both AgentToken and AgentTreasury atomically at tokenize
+  // time, so any token created via the launch flow will appear here.
+  // Older rows that predate that change may need a one-shot backfill.
   const rows = await prisma.agentTreasury.findMany({
     where: {
       programInitialized: false,

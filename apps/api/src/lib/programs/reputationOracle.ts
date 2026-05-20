@@ -38,7 +38,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export const REPUTATION_ORACLE_PROGRAM_ID = new PublicKey(
-  "DdWf1ypdByF2QVxXhzerGZ8GomAASdNe7THt4YWXoTum",
+  "DMa1sNwXF6mZ2vyGiuA4QZhXPb5Sk4tp9gdnXsscrEB5",
 );
 
 const ORACLE_CONFIG_SEED = Buffer.from("oracle");

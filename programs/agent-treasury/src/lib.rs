@@ -46,7 +46,7 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
-declare_id!("AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT");
+declare_id!("9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n");
 
 pub const TREASURY_SEED: &[u8] = b"treasury";
 

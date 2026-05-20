@@ -34,7 +34,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export const AGENT_TREASURY_PROGRAM_ID = new PublicKey(
-  "AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT",
+  "9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n",
 );
 
 const TREASURY_SEED = Buffer.from("treasury");

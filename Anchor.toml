@@ -7,12 +7,12 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-agent_treasury = "AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT"
-reputation_oracle = "DdWf1ypdByF2QVxXhzerGZ8GomAASdNe7THt4YWXoTum"
+agent_treasury = "9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n"
+reputation_oracle = "DMa1sNwXF6mZ2vyGiuA4QZhXPb5Sk4tp9gdnXsscrEB5"
 
 [programs.devnet]
-agent_treasury = "AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT"
-reputation_oracle = "DdWf1ypdByF2QVxXhzerGZ8GomAASdNe7THt4YWXoTum"
+agent_treasury = "9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n"
+reputation_oracle = "DMa1sNwXF6mZ2vyGiuA4QZhXPb5Sk4tp9gdnXsscrEB5"
 
 [registry]
 url = "https://api.apr.dev"

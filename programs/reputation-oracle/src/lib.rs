@@ -52,7 +52,7 @@
 
 use anchor_lang::prelude::*;
 
-declare_id!("DdWf1ypdByF2QVxXhzerGZ8GomAASdNe7THt4YWXoTum");
+declare_id!("DMa1sNwXF6mZ2vyGiuA4QZhXPb5Sk4tp9gdnXsscrEB5");
 
 pub const ORACLE_CONFIG_SEED: &[u8] = b"oracle";
 pub const AGENT_REPUTATION_SEED: &[u8] = b"agent";

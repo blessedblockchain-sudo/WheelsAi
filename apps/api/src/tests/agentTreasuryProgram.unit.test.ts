@@ -25,7 +25,7 @@ function setupEnv() {
     process.env.JWT_SECRET ?? "12345678901234567890123456789012";
 }
 
-const PROGRAM_ID_BASE58 = "AgTrXVx1qz7eyUSF7sEpUiTSUbYnxhDxnzQpCeJ8XThT";
+const PROGRAM_ID_BASE58 = "9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n";
 const SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
 
 // Pinned discriminators — precomputed from sha256("global:<name>")[..8].

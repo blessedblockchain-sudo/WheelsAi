@@ -129,13 +129,6 @@ const envSchema = z.object({
   // the reputation-oracle program's admin add_attestor instruction.
   REPUTATION_ATTESTATION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
   REPUTATION_ATTESTOR_PRIVATE_KEY: z.string().optional(),
-  // Dev-only: when true, pumpfun.createToken returns synthetic mint addresses if the
-  // upstream API is unreachable. Forced to false in production so failures surface
-  // instead of silently returning fake mints in demos or screenshots.
-  ALLOW_PUMPFUN_MOCK: z
-    .union([z.boolean(), z.string()])
-    .transform((value) => value === true || value === "true")
-    .default(false),
   // Dev-only: when true, nosana.submitJob returns mock_job_* IDs if the SDK fails.
   // Forced to false in production.
   ALLOW_NOSANA_MOCK: z
@@ -166,10 +159,6 @@ function parseEnv() {
     }
     if (data.CORS_ORIGIN === "http://localhost:3000") {
       console.error("CORS_ORIGIN must be explicitly set in production");
-      process.exit(1);
-    }
-    if (data.ALLOW_PUMPFUN_MOCK) {
-      console.error("ALLOW_PUMPFUN_MOCK must not be enabled in production");
       process.exit(1);
     }
     if (data.ALLOW_NOSANA_MOCK) {

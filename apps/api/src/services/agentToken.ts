@@ -1,7 +1,12 @@
+import { Keypair } from "@solana/web3.js";
+
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
-import { getPumpFunClient } from "./pumpfun.js";
+import { getSolanaConnection } from "../lib/solana.js";
+import { buildPumpfunCreateRequest } from "./pumpfunTxBuilder.js";
+import { submitPumpfunCreate } from "./submitPumpfunCreate.js";
+import { deriveCreatorKeypair } from "./creatorKeypairs.js";
 
 const logger = createLogger("agent-token-service");
 
@@ -19,7 +24,24 @@ export interface CreateTokenParams {
   orgId: string;
   name: string;
   symbol: string;
+  /**
+   * Off-chain identity hint (typically the user's wallet address). Recorded
+   * for audit only — the actual on-chain creator is the deterministic
+   * per-org keypair derived from WALLET_MASTER_KEY (see creatorKeypairs.ts).
+   */
   creatorAddress: string;
+}
+
+/**
+ * Optional DI surface for createToken — injected only in tests. Production
+ * callers omit and the function builds the real connection + keypairs.
+ */
+export interface CreateTokenDeps {
+  deriveCreatorKeypair?: (orgId: string) => import("@solana/web3.js").Keypair;
+  generateMintKeypair?: () => import("@solana/web3.js").Keypair;
+  fetchFn?: typeof fetch;
+  sendRawTransaction?: (raw: Uint8Array) => Promise<string>;
+  connection?: import("@solana/web3.js").Connection;
 }
 
 export interface ListTokensParams {
@@ -161,9 +183,25 @@ export async function checkTokenEligibility(
 // ============================================
 
 /**
- * Create a new token on pump.fun and record in database
+ * Create a new token on pump.fun and record in database.
+ *
+ * Phase 1C: uses the real `submitPumpfunCreate` flow — POST
+ * pumpportal `/api/trade-local` → sign with creator+mint keypairs →
+ * broadcast via Solana RPC. The creator keypair is derived
+ * deterministically from `WALLET_MASTER_KEY` + orgId
+ * (see services/creatorKeypairs.ts). The mint keypair is generated
+ * fresh per create and discarded after broadcast.
+ *
+ * The legacy `pumpfunClient.createToken()` path (hosted pumpportal
+ * endpoint that never shipped) is gone. Caller's `creatorAddress`
+ * input becomes an off-chain identity hint only; the on-chain creator
+ * is whatever the derived keypair resolves to. The DB stores the
+ * derived pubkey so reads match the chain.
  */
-export async function createToken(params: CreateTokenParams) {
+export async function createToken(
+  params: CreateTokenParams,
+  deps: CreateTokenDeps = {},
+) {
   logger.info(
     {
       agentListingId: params.agentListingId,
@@ -188,18 +226,71 @@ export async function createToken(params: CreateTokenParams) {
     throw new Error("Agent listing not found");
   }
 
-  // Create token on pump.fun
-  const pumpfunClient = getPumpFunClient();
-  const pumpfunResult = await pumpfunClient.createToken({
+  // Idempotency: agentListingId is @unique on AgentToken, so a duplicate
+  // create would surface as a Prisma P2002 deep in the persist step. Check
+  // up front so the failure is a clear domain error before any pumpportal
+  // call (which would otherwise burn a real on-chain mint with no DB row).
+  const existing = await prisma.agentToken.findUnique({
+    where: { agentListingId: params.agentListingId },
+    select: { id: true, mintAddress: true },
+  });
+  if (existing) {
+    throw new Error(
+      `Token already exists for this listing (mint=${existing.mintAddress})`,
+    );
+  }
+
+  if (!env.WALLET_MASTER_KEY) {
+    throw new Error("WALLET_MASTER_KEY not configured; cannot derive creator keypair");
+  }
+
+  // Derive deterministic per-org creator keypair (MVP custodial).
+  // Browser-partial-sign is Phase 1.5 — see creatorKeypairs.ts.
+  const creatorKeypair = deps.deriveCreatorKeypair
+    ? deps.deriveCreatorKeypair(params.orgId)
+    : deriveCreatorKeypair({ masterKey: env.WALLET_MASTER_KEY, orgId: params.orgId });
+  const creatorPubkey = creatorKeypair.publicKey.toBase58();
+
+  // Ephemeral mint keypair — must sign its own creation, discarded after.
+  const mintKeypair = deps.generateMintKeypair
+    ? deps.generateMintKeypair()
+    : Keypair.generate();
+  const mintAddress = mintKeypair.publicKey.toBase58();
+
+  // pumpportal requires a non-empty uri. Until proper IPFS metadata
+  // upload ships (Phase 1.5), the listing's iconUrl doubles as the
+  // metadata uri — pumpfun shows it directly. If absent, fail loud
+  // rather than burn an on-chain mint with a broken metadata pointer.
+  const uri = listing.iconUrl ?? "";
+  if (!uri) {
+    throw new Error(
+      "Listing must have an iconUrl set before tokenization (pumpfun requires metadata uri)",
+    );
+  }
+
+  const pumpfunBody = buildPumpfunCreateRequest({
+    creatorPubkey,
+    mintPubkey: mintAddress,
     name: params.name,
     symbol: params.symbol,
-    description: listing.shortDescription,
-    imageUri: listing.iconUrl || undefined,
-    creatorAddress: params.creatorAddress,
-    website: undefined,
-    twitter: undefined,
-    telegram: undefined,
+    uri,
   });
+
+  const connection = deps.connection ?? getSolanaConnection();
+  const fetchFn = deps.fetchFn ?? fetch;
+  const sendRawTransaction =
+    deps.sendRawTransaction ??
+    (async (raw: Uint8Array) =>
+      connection.sendRawTransaction(raw, { skipPreflight: false }));
+
+  const submitted = await submitPumpfunCreate(
+    {
+      body: pumpfunBody,
+      creatorKeypair,
+      mintKeypair,
+    },
+    { fetchFn, sendRawTransaction },
+  );
 
   // Calculate initial creator lockup end (placeholder - will be updated on graduation)
   const creatorLockupEnd = new Date();
@@ -209,10 +300,9 @@ export async function createToken(params: CreateTokenParams) {
   const token = await prisma.agentToken.create({
     data: {
       agentListingId: params.agentListingId,
-      mintAddress: pumpfunResult.mintAddress,
-      bondingCurveAddress: pumpfunResult.bondingCurveAddress,
-      pumpfunUrl: pumpfunResult.pumpfunUrl,
-      creatorAddress: params.creatorAddress,
+      mintAddress: submitted.mintAddress,
+      pumpfunUrl: `https://pump.fun/coin/${submitted.mintAddress}`,
+      creatorAddress: creatorPubkey,
       name: params.name,
       symbol: params.symbol,
       imageUri: listing.iconUrl || undefined,

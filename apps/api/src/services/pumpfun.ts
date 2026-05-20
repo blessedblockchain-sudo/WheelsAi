@@ -4,29 +4,10 @@ import { env } from "../config/env.js";
 const logger = createLogger("pumpfun-service");
 
 const PUMPFUN_API_BASE = "https://pumpportal.fun/api";
-const PUMPFUN_FRONTEND_BASE = "https://pump.fun";
 
 // ============================================
 // Types
 // ============================================
-
-export interface CreateTokenParams {
-  name: string;
-  symbol: string;
-  description: string;
-  imageUri?: string;
-  creatorAddress: string;
-  twitter?: string;
-  telegram?: string;
-  website?: string;
-}
-
-export interface CreateTokenResult {
-  mintAddress: string;
-  bondingCurveAddress: string;
-  pumpfunUrl: string;
-  txSignature: string;
-}
 
 export interface TokenInfo {
   mintAddress: string;
@@ -93,49 +74,6 @@ export class PumpFunClient {
       }
       logger.error({ error, endpoint }, "Pump.fun API request failed");
       throw new Error(`Failed to reach Pump.fun API: ${(error as Error).message}`);
-    }
-  }
-
-  /**
-   * Create a new token on pump.fun with bonding curve.
-   * Real implementation requires a signed Solana transaction submitted via the
-   * pump.fun SDK from the creator wallet — tracked in plan Phase 1 (A1).
-   * Until that lands, we call pumpportal.fun's hosted endpoint. When it fails,
-   * we only return a synthetic mint if ALLOW_PUMPFUN_MOCK is explicitly enabled
-   * (dev-only, forced off in production by env.ts). Otherwise we throw so that
-   * demos and screenshots never show a fake mint address.
-   */
-  async createToken(params: CreateTokenParams): Promise<CreateTokenResult> {
-    logger.info({ name: params.name, symbol: params.symbol, creator: params.creatorAddress }, "Creating token on pump.fun");
-
-    try {
-      const result = await this.request<CreateTokenResult>("/create-token", {
-        method: "POST",
-        body: JSON.stringify({
-          name: params.name,
-          symbol: params.symbol,
-          description: params.description,
-          image_uri: params.imageUri,
-          creator: params.creatorAddress,
-          twitter: params.twitter,
-          telegram: params.telegram,
-          website: params.website,
-        }),
-      });
-      return result;
-    } catch (error) {
-      if (!env.ALLOW_PUMPFUN_MOCK) {
-        logger.error({ error }, "Pump.fun createToken failed and mock fallback is disabled");
-        throw error;
-      }
-      logger.warn({ error }, "Pump.fun API unavailable — returning dev mock (ALLOW_PUMPFUN_MOCK=true)");
-      const mockMint = `${params.symbol.toLowerCase()}${Date.now().toString(36)}mock`;
-      return {
-        mintAddress: mockMint,
-        bondingCurveAddress: `curve_${mockMint}`,
-        pumpfunUrl: `${PUMPFUN_FRONTEND_BASE}/coin/${mockMint}`,
-        txSignature: `mock_tx_${Date.now().toString(36)}`,
-      };
     }
   }
 

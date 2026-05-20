@@ -1,4 +1,4 @@
-import { Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
@@ -7,6 +7,7 @@ import { getSolanaConnection } from "../lib/solana.js";
 import { buildPumpfunCreateRequest } from "./pumpfunTxBuilder.js";
 import { submitPumpfunCreate } from "./submitPumpfunCreate.js";
 import { deriveCreatorKeypair } from "./creatorKeypairs.js";
+import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
 
 const logger = createLogger("agent-token-service");
 
@@ -296,27 +297,53 @@ export async function createToken(
   const creatorLockupEnd = new Date();
   creatorLockupEnd.setDate(creatorLockupEnd.getDate() + CREATOR_LOCKUP_DAYS);
 
-  // Create token record in database
-  const token = await prisma.agentToken.create({
-    data: {
-      agentListingId: params.agentListingId,
-      mintAddress: submitted.mintAddress,
-      pumpfunUrl: `https://pump.fun/coin/${submitted.mintAddress}`,
-      creatorAddress: creatorPubkey,
-      name: params.name,
-      symbol: params.symbol,
-      imageUri: listing.iconUrl || undefined,
-      creatorLockupEnd,
-      status: "BONDING",
-    },
-    include: {
-      agentListing: true,
-    },
+  // Derive the on-chain agent-treasury PDA address up front so the AgentToken
+  // + AgentTreasury rows land atomically with the correct linkage. Without
+  // this the fee-router has no row to route to and bootstrap-treasury.ts
+  // has no candidate (it scans AgentTreasury, not AgentToken).
+  const [treasuryPda, treasuryBump] = deriveTreasuryPda(
+    new PublicKey(submitted.mintAddress),
+  );
+
+  // Create token + treasury in a single transaction. If either insert fails
+  // we don't want a half-written DB next to a successful on-chain mint.
+  const token = await prisma.$transaction(async (tx) => {
+    const created = await tx.agentToken.create({
+      data: {
+        agentListingId: params.agentListingId,
+        mintAddress: submitted.mintAddress,
+        pumpfunUrl: `https://pump.fun/coin/${submitted.mintAddress}`,
+        creatorAddress: creatorPubkey,
+        name: params.name,
+        symbol: params.symbol,
+        imageUri: listing.iconUrl || undefined,
+        creatorLockupEnd,
+        status: "BONDING",
+        treasuryAddress: treasuryPda.toBase58(),
+      },
+      include: {
+        agentListing: true,
+      },
+    });
+    await tx.agentTreasury.create({
+      data: {
+        tokenId: created.id,
+        treasuryPdaAddress: treasuryPda.toBase58(),
+        authorityBump: treasuryBump,
+        // programInitialized stays false — bootstrap-treasury.ts flips it
+        // after the on-chain initialize_treasury instruction lands.
+      },
+    });
+    return created;
   });
 
   logger.info(
-    { tokenId: token.id, mintAddress: token.mintAddress },
-    "Agent token created successfully"
+    {
+      tokenId: token.id,
+      mintAddress: token.mintAddress,
+      treasuryPdaAddress: treasuryPda.toBase58(),
+    },
+    "Agent token + treasury created successfully"
   );
 
   return token;

@@ -5,6 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# One staging deploy at a time; queue (don't cancel) so every main commit
+# still ships in order.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
 env:
   FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -13,13 +19,13 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  # NOTE: flyctl runs from the REPO ROOT. The Dockerfiles COPY package.json,
+  # turbo.json, and packages/ from the monorepo root, so the build context
+  # must be the root — running from apps/* fails at the first COPY.
   deploy-api:
     name: Deploy API to Staging
     runs-on: ubuntu-latest
     needs: ci
-    defaults:
-      run:
-        working-directory: apps/api
 
     steps:
       - uses: actions/checkout@v4
@@ -28,17 +34,24 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy API
-        run: flyctl deploy --config fly.staging.toml --remote-only
+        run: flyctl deploy --config apps/api/fly.staging.toml --dockerfile apps/api/Dockerfile --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Post-deploy smoke check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS --max-time 10 https://wheelsai-api-staging.fly.dev/health; then
+              echo "API healthy"; exit 0
+            fi
+            echo "waiting for API health ($i/12)..."; sleep 10
+          done
+          echo "::error::API health check failed after deploy"; exit 1
 
   deploy-web:
     name: Deploy Web to Staging
     runs-on: ubuntu-latest
     needs: ci
-    defaults:
-      run:
-        working-directory: apps/web
 
     steps:
       - uses: actions/checkout@v4
@@ -47,9 +60,19 @@ jobs:
         uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy Web
-        run: flyctl deploy --config fly.staging.toml --remote-only
+        run: flyctl deploy --config apps/web/fly.staging.toml --dockerfile apps/web/Dockerfile --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Post-deploy smoke check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS --max-time 10 https://wheelsai-web-staging.fly.dev/api/health; then
+              echo "Web healthy"; exit 0
+            fi
+            echo "waiting for web health ($i/12)..."; sleep 10
+          done
+          echo "::error::Web health check failed after deploy"; exit 1
 
   notify:
     name: Notify Deployment Status

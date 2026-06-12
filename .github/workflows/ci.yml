@@ -120,6 +120,22 @@ jobs:
       - name: Generate Prisma client
         run: npm run db:generate
 
+      # Fails the build when schema.prisma has drifted from the migration
+      # chain (e.g. a hand-edited schema without a migration). Runs before
+      # the deploy below because diff resets its shadow database.
+      - name: Check schema/migration drift
+        run: >-
+          npx prisma migrate diff
+          --from-migrations packages/db/prisma/migrations
+          --to-schema-datamodel packages/db/prisma/schema.prisma
+          --shadow-database-url postgresql://wheelsai:wheelsai@localhost:5432/wheelsai_test
+          --exit-code
+
+      - name: Apply migrations to test database
+        run: npm run migrate:deploy -w @wheelsai/db
+        env:
+          DATABASE_URL: postgresql://wheelsai:wheelsai@localhost:5432/wheelsai_test
+
       - name: Run tests
         run: npm run test
         env:

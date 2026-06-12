@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
+import { env } from "../config/env.js";
 
 interface CheckoutBody {
   amount: number;
@@ -120,10 +121,22 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
-  // Create checkout session (Stripe integration placeholder)
+  // Create checkout session.
+  // Real Stripe checkout is not implemented yet. The mock path below grants
+  // credits with no payment — credits buy real GPU compute, so it is gated
+  // behind ALLOW_MOCK_CHECKOUT, which env.ts refuses to boot with in
+  // production. When Stripe lands, credits must only be granted from a
+  // signature-verified webhook with an idempotency key.
   fastify.post<{ Body: CheckoutBody }>("/checkout", async (request, reply) => {
     const { amount } = request.body;
     const orgId = request.auth!.orgId;
+
+    if (!env.ALLOW_MOCK_CHECKOUT) {
+      return reply.status(501).send({
+        error: "checkout_not_implemented",
+        message: "Credit purchases are not yet available.",
+      });
+    }
 
     if (!amount || Number.isNaN(amount) || amount < 5) {
       return reply.status(400).send({
@@ -132,60 +145,58 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    // TODO: Integrate with Stripe
-    // For now, simulate adding credits directly (for development)
     const amountCents = Math.round(amount * 100);
     const amountCentsBigInt = BigInt(amountCents);
 
-    // Add credits
-    const balanceAfterPurchase = await prisma.creditBalance.upsert({
-      where: { orgId },
-      update: {
-        balanceCents: { increment: amountCentsBigInt },
-      },
-      create: {
-        orgId,
-        balanceCents: amountCentsBigInt,
-      },
-    });
-
-    // Record transaction
-    await prisma.creditTransaction.create({
-      data: {
-        orgId,
-        amountCents: amountCentsBigInt,
-        type: "purchase",
-        description: `Credit purchase: $${amount}`,
-        referenceId: "development_mock",
-        balanceAfter: balanceAfterPurchase.balanceCents,
-      },
-    });
-
-    // Add bonus if applicable
     let bonusAmount = 0;
     if (amount >= 500) bonusAmount = 100;
     else if (amount >= 100) bonusAmount = 15;
     else if (amount >= 50) bonusAmount = 5;
 
-    if (bonusAmount > 0) {
-      const bonusCents = bonusAmount * 100;
-      const bonusCentsBigInt = BigInt(bonusCents);
-      const balanceAfterBonus = await prisma.creditBalance.update({
+    // Balance mutation and ledger rows commit atomically — a crash between
+    // them must never desync the running balance from the ledger.
+    await prisma.$transaction(async (tx) => {
+      const balanceAfterPurchase = await tx.creditBalance.upsert({
         where: { orgId },
-        data: { balanceCents: { increment: bonusCentsBigInt } },
-      });
-
-      await prisma.creditTransaction.create({
-        data: {
+        update: {
+          balanceCents: { increment: amountCentsBigInt },
+        },
+        create: {
           orgId,
-          amountCents: bonusCentsBigInt,
-          type: "bonus",
-          description: `Bonus credits: $${bonusAmount}`,
-          referenceId: "development_bonus",
-          balanceAfter: balanceAfterBonus.balanceCents,
+          balanceCents: amountCentsBigInt,
         },
       });
-    }
+
+      await tx.creditTransaction.create({
+        data: {
+          orgId,
+          amountCents: amountCentsBigInt,
+          type: "purchase",
+          description: `Credit purchase: $${amount}`,
+          referenceId: "development_mock",
+          balanceAfter: balanceAfterPurchase.balanceCents,
+        },
+      });
+
+      if (bonusAmount > 0) {
+        const bonusCentsBigInt = BigInt(bonusAmount * 100);
+        const balanceAfterBonus = await tx.creditBalance.update({
+          where: { orgId },
+          data: { balanceCents: { increment: bonusCentsBigInt } },
+        });
+
+        await tx.creditTransaction.create({
+          data: {
+            orgId,
+            amountCents: bonusCentsBigInt,
+            type: "bonus",
+            description: `Bonus credits: $${bonusAmount}`,
+            referenceId: "development_bonus",
+            balanceAfter: balanceAfterBonus.balanceCents,
+          },
+        });
+      }
+    });
 
     return {
       checkoutUrl: `/dashboard/billing?success=true&amount=${amount}`,

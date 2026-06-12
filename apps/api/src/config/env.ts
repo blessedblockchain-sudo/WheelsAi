@@ -154,18 +154,32 @@ const envSchema = z.object({
     .union([z.boolean(), z.string()])
     .transform((value) => value === true || value === "true")
     .default(false),
+  // Dev-only: when true, POST /api/billing/checkout grants credits directly
+  // with no Stripe payment ("mock checkout"). Forbidden in production —
+  // credits buy real GPU compute, so an ungated grant is a fund-loss path.
+  ALLOW_MOCK_CHECKOUT: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
 
   // GitHub Integration
   GITHUB_TOKEN: z.string().optional(),
 });
 
-function parseEnv() {
-  const result = envSchema.safeParse(process.env);
+export class EnvValidationError extends Error {}
+
+/**
+ * Pure validation: parses + applies the production safety assertions and
+ * THROWS EnvValidationError on any violation. Exported so the boot-fatal
+ * invariants are unit-testable without process.exit side effects.
+ */
+export function validateEnv(raw: Record<string, string | undefined>) {
+  const result = envSchema.safeParse(raw);
 
   if (!result.success) {
-    console.error("Invalid environment variables:");
-    console.error(result.error.format());
-    process.exit(1);
+    throw new EnvValidationError(
+      `Invalid environment variables:\n${JSON.stringify(result.error.format(), null, 2)}`
+    );
   }
 
   const data = result.data;
@@ -173,20 +187,38 @@ function parseEnv() {
   // Production safety checks
   if (data.NODE_ENV === "production") {
     if (!data.ENCRYPTION_KEY) {
-      console.error("ENCRYPTION_KEY is required in production (must be distinct from JWT_SECRET)");
-      process.exit(1);
+      throw new EnvValidationError(
+        "ENCRYPTION_KEY is required in production (must be distinct from JWT_SECRET)"
+      );
+    }
+    if (data.ENCRYPTION_KEY === data.JWT_SECRET) {
+      throw new EnvValidationError(
+        "ENCRYPTION_KEY must be distinct from JWT_SECRET in production"
+      );
     }
     if (data.CORS_ORIGIN === "http://localhost:3000") {
-      console.error("CORS_ORIGIN must be explicitly set in production");
-      process.exit(1);
+      throw new EnvValidationError("CORS_ORIGIN must be explicitly set in production");
     }
     if (data.ALLOW_NOSANA_MOCK) {
-      console.error("ALLOW_NOSANA_MOCK must not be enabled in production");
-      process.exit(1);
+      throw new EnvValidationError("ALLOW_NOSANA_MOCK must not be enabled in production");
+    }
+    if (data.ALLOW_MOCK_CHECKOUT) {
+      throw new EnvValidationError(
+        "ALLOW_MOCK_CHECKOUT must not be enabled in production"
+      );
     }
   }
 
   return data;
+}
+
+function parseEnv() {
+  try {
+    return validateEnv(process.env);
+  } catch (error) {
+    console.error(error instanceof EnvValidationError ? error.message : error);
+    process.exit(1);
+  }
 }
 
 export const env = parseEnv();

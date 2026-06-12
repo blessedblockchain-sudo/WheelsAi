@@ -24,6 +24,7 @@ import {
   buildSellTransaction,
   getTokenBalance,
 } from "@/lib/pumpfun-trade";
+import { featureFlags } from "@/lib/feature-flags";
 
 interface TokenTradePanelProps {
   tokenId: string;
@@ -43,7 +44,44 @@ type TradeState =
   | "confirmed"
   | "failed";
 
-export function TokenTradePanel({
+/**
+ * In-app trading is gated off until the server-prepared trade flow lands
+ * (the previous client-built instructions were unsafe — see
+ * lib/pumpfun-trade.ts). Until then we link out to the venue itself.
+ */
+export function TokenTradePanel(props: TokenTradePanelProps) {
+  if (!featureFlags.trading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ArrowRightLeft className="h-5 w-5" />
+            Trade {props.symbol}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            In-app trading is coming soon.
+          </p>
+          {props.pumpfunUrl ? (
+            <a
+              href={props.pumpfunUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              Trade on pump.fun
+              <ExternalLink className="h-4 w-4" />
+            </a>
+          ) : null}
+        </CardContent>
+      </Card>
+    );
+  }
+  return <TokenTradePanelInner {...props} />;
+}
+
+function TokenTradePanelInner({
   tokenId,
   tokenName,
   symbol,

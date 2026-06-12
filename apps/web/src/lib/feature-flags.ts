@@ -15,6 +15,10 @@ function readBool(value: string | undefined): boolean {
 
 export const featureFlags = {
   tokenUi: readBool(process.env.NEXT_PUBLIC_ENABLE_TOKEN_UI),
+  // In-app bonding-curve trading. Off until the server-prepared trade flow
+  // lands — the previous client-built instructions were unsafe (see
+  // lib/pumpfun-trade.ts).
+  trading: readBool(process.env.NEXT_PUBLIC_ENABLE_TRADING),
 } as const;
 
 export type FeatureFlag = keyof typeof featureFlags;

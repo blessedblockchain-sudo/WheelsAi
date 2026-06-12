@@ -44,26 +44,30 @@
  *       txSignature so the wizard can recover (mint exists on-chain).
  */
 
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { z } from "zod";
 import type { FastifyPluginAsync } from "fastify";
 
 import {
   checkTokenEligibility,
+  CREATOR_LOCKUP_DAYS,
   type EligibilityResult,
 } from "../services/tokenEligibility.js";
-import { buildPumpfunCreateRequest } from "../services/pumpfunTxBuilder.js";
 import {
   signPrepareToken,
   verifyPrepareToken,
-} from "../services/pumpfunPrepareToken.js";
+} from "../services/launchpadPrepareToken.js";
+import type {
+  LaunchpadAdapter,
+  LaunchTokenMetadata,
+  PrepareLaunchResult,
+  BroadcastLaunchResult,
+} from "../services/launchpad/types.js";
 import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
 import { createLogger } from "../utils/logger.js";
 import type { EligibilityState } from "./tokenLaunch.js";
 
 const logger = createLogger("token-launch-partial-sign");
-
-const CREATOR_LOCKUP_DAYS = 30;
 
 // ============================================
 // Schemas
@@ -71,7 +75,11 @@ const CREATOR_LOCKUP_DAYS = 30;
 
 const prepareBodySchema = z.object({
   agentId: z.string().min(1),
-  symbol: z.string().min(1).max(10),
+  // The on-chain + DB token name. Editable by the creator in the wizard;
+  // single source of truth (was previously split across agent.name and
+  // listing.title).
+  name: z.string().min(2).max(32),
+  symbol: z.string().min(2).max(10),
   description: z.string(),
   imageUri: z.string().optional(),
   twitter: z.string().optional(),
@@ -85,20 +93,18 @@ const submitBodySchema = z.object({
   signedTxBase64: z.string().min(1),
 });
 
+// Recovery path: the broadcast already landed on-chain (the mint exists)
+// but the DB persist failed, so the client retries persistence with the
+// mint + tx it received in the persistence_failed response.
+const reconcileBodySchema = z.object({
+  prepareToken: z.string().min(1),
+  mintAddress: z.string().min(1),
+  txSignature: z.string().min(1),
+});
+
 // ============================================
 // DI surface
 // ============================================
-
-export interface PreparePumpfunResult {
-  partialSignedTxBase64: string;
-  mintAddress: string;
-  creatorPubkey: string;
-}
-
-export interface BroadcastResult {
-  mintAddress: string;
-  txSignature: string;
-}
 
 export interface PersistAgentTokenWithTreasuryInput {
   agentListingId: string;
@@ -107,9 +113,14 @@ export interface PersistAgentTokenWithTreasuryInput {
   txSignature: string;
   creatorAddress: string;
   creatorLockupEnd: Date;
+  name: string;
   symbol: string;
   description: string;
   imageUri?: string;
+  /** Launchpad that minted this token ("pumpfun" | "bags"). */
+  launchpad: string;
+  /** Bags Meteora fee-share config key; undefined for pump.fun. */
+  meteoraConfigKey?: string;
   treasuryPdaAddress: string;
   treasuryAuthorityBump: number;
 }
@@ -117,6 +128,13 @@ export interface PersistAgentTokenWithTreasuryInput {
 export interface PersistAgentTokenWithTreasuryResult {
   tokenId: string;
   creatorLockupEnd: Date;
+}
+
+export interface ReconcileLaunchResult {
+  tokenId: string;
+  creatorLockupEnd: Date;
+  /** True when the token row already existed (idempotent replay). */
+  alreadyExisted: boolean;
 }
 
 export interface PartialSignTokenRouteDeps {
@@ -132,27 +150,26 @@ export interface PartialSignTokenRouteDeps {
     agentId: string;
     orgId: string;
   }) => Promise<string | null>;
-  generateMintKeypair: () => Keypair;
   /**
-   * Concrete prepare impl — wraps preparePumpfunCreate with a fetch
-   * binding. The route doesn't know about HTTP transport.
+   * The active launchpad (pump.fun or Bags). Owns all launchpad-specific
+   * network + signing; the route only knows the prepare/broadcast contract.
    */
-  preparePumpfunCreate: (input: {
-    body: import("../services/pumpfunTxBuilder.js").PumpfunCreateRequestBody;
-    mintKeypair: Keypair;
-  }) => Promise<PreparePumpfunResult>;
-  /**
-   * Concrete broadcast impl — wraps broadcastSignedPumpfunCreate with
-   * an RPC binding. The route doesn't know about Solana transport.
-   */
-  broadcastSignedPumpfunCreate: (input: {
-    signedTxBase64: string;
-    expectedMintAddress: string;
-    expectedCreatorPubkey: string;
-  }) => Promise<BroadcastResult>;
+  launchpad: LaunchpadAdapter;
   persistAgentTokenWithTreasury: (
     input: PersistAgentTokenWithTreasuryInput,
   ) => Promise<PersistAgentTokenWithTreasuryResult>;
+  /**
+   * Idempotent persistence for the recovery path: returns the existing
+   * token row if one already exists for the mint, otherwise persists.
+   */
+  reconcileLaunch: (
+    input: PersistAgentTokenWithTreasuryInput,
+  ) => Promise<ReconcileLaunchResult>;
+  /**
+   * Optional on-chain existence check — guards reconcile against creating
+   * a DB row for a mint that never actually broadcast. Undefined skips it.
+   */
+  confirmMintOnChain?: (mintAddress: string) => Promise<boolean>;
   prepareTokenSecret: string;
   prepareTokenTtlSeconds?: number;
   now?: () => Date;
@@ -226,32 +243,30 @@ export function createPartialSignTokenRoutes(
         });
       }
 
-      const mint = deps.generateMintKeypair();
-      const pumpfunBody = buildPumpfunCreateRequest({
-        creatorPubkey: walletAddress,
-        mintPubkey: mint.publicKey.toBase58(),
-        name: state.agent.name,
+      const metadata: LaunchTokenMetadata = {
+        name: body.name,
         symbol: body.symbol,
-        uri: body.imageUri ?? "",
+        imageUrl: body.imageUri ?? "",
+        description: body.description,
         twitter: body.twitter,
         telegram: body.telegram,
         website: body.website,
-        initialBuySol: body.initialBuySol,
-      });
+      };
 
-      let prepared: PreparePumpfunResult;
+      let prepared: PrepareLaunchResult;
       try {
-        prepared = await deps.preparePumpfunCreate({
-          body: pumpfunBody,
-          mintKeypair: mint,
+        prepared = await deps.launchpad.prepareLaunch({
+          creatorPubkey: walletAddress,
+          metadata,
+          initialBuySol: body.initialBuySol,
         });
       } catch (err) {
         logger.error(
-          { err, agentId: body.agentId },
-          "pumpfun prepare failed",
+          { err, agentId: body.agentId, launchpad: deps.launchpad.id },
+          "launch prepare failed",
         );
         return reply.status(502).send({
-          error: "pumpfun_prepare_failed",
+          error: "launch_prepare_failed",
           message: (err as Error).message,
         });
       }
@@ -262,9 +277,12 @@ export function createPartialSignTokenRoutes(
           agentListingId,
           orgId,
           creatorPubkey: walletAddress,
+          name: body.name,
           symbol: body.symbol,
           description: body.description,
           imageUri: body.imageUri,
+          launchpad: deps.launchpad.id,
+          context: prepared.context,
         },
         secret: deps.prepareTokenSecret,
         ttlSeconds: deps.prepareTokenTtlSeconds,
@@ -323,6 +341,16 @@ export function createPartialSignTokenRoutes(
           error: "prepare_token_creator_mismatch",
         });
       }
+      // The active launchpad must match the one that prepared this token —
+      // a redeploy that flips LAUNCHPAD would otherwise hand the new
+      // adapter a context it can't interpret.
+      if (tokenPayload.launchpad !== deps.launchpad.id) {
+        return reply.status(400).send({
+          error: "prepare_token_launchpad_mismatch",
+          expected: deps.launchpad.id,
+          got: tokenPayload.launchpad,
+        });
+      }
 
       let mintPub: PublicKey;
       try {
@@ -335,20 +363,21 @@ export function createPartialSignTokenRoutes(
       }
       const [treasuryPda, treasuryBump] = deriveTreasuryPda(mintPub);
 
-      let submitted: BroadcastResult;
+      let submitted: BroadcastLaunchResult;
       try {
-        submitted = await deps.broadcastSignedPumpfunCreate({
+        submitted = await deps.launchpad.broadcastLaunch({
           signedTxBase64: body.signedTxBase64,
           expectedMintAddress: tokenPayload.mintAddress,
           expectedCreatorPubkey: tokenPayload.creatorPubkey,
+          context: tokenPayload.context,
         });
       } catch (err) {
         logger.error(
-          { err, mint: tokenPayload.mintAddress },
-          "pumpfun submit failed",
+          { err, mint: tokenPayload.mintAddress, launchpad: deps.launchpad.id },
+          "launch submit failed",
         );
         return reply.status(502).send({
-          error: "pumpfun_submit_failed",
+          error: "launch_submit_failed",
           message: (err as Error).message,
         });
       }
@@ -364,9 +393,15 @@ export function createPartialSignTokenRoutes(
           txSignature: submitted.txSignature,
           creatorAddress: tokenPayload.creatorPubkey,
           creatorLockupEnd: lockupEnd,
+          name: tokenPayload.name,
           symbol: tokenPayload.symbol,
           description: tokenPayload.description,
           imageUri: tokenPayload.imageUri,
+          launchpad: tokenPayload.launchpad,
+          meteoraConfigKey:
+            typeof tokenPayload.context.configKey === "string"
+              ? tokenPayload.context.configKey
+              : undefined,
           treasuryPdaAddress: treasuryPda.toBase58(),
           treasuryAuthorityBump: treasuryBump,
         });
@@ -390,6 +425,137 @@ export function createPartialSignTokenRoutes(
           error: "persistence_failed",
           mintAddress: submitted.mintAddress,
           txSignature: submitted.txSignature,
+          message: (err as Error).message,
+        });
+      }
+    });
+
+    // ============================================
+    // POST /launch/reconcile  (mounted under /api/tokens)
+    // ============================================
+    //
+    // Recovery for the persistence_failed case: the mint is already
+    // on-chain but the DB write failed. Re-verify the prepare token,
+    // confirm the mint matches + (optionally) exists on-chain, then
+    // persist idempotently. Safe to call repeatedly.
+    app.post("/launch/reconcile", async (request, reply) => {
+      if (!request.auth) {
+        return reply.status(401).send({ error: "unauthenticated" });
+      }
+      const { orgId, walletAddress } = request.auth;
+      if (!walletAddress) {
+        return reply.status(400).send({ error: "wallet_required" });
+      }
+
+      const parsed = reconcileBodySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({
+          error: "invalid_payload",
+          details: parsed.error.flatten(),
+        });
+      }
+      const body = parsed.data;
+
+      const verified = verifyPrepareToken({
+        token: body.prepareToken,
+        secret: deps.prepareTokenSecret,
+        now,
+      });
+      if (!verified.ok) {
+        return reply.status(400).send({
+          error: "prepare_token_invalid",
+          reason: verified.reason,
+        });
+      }
+      const tokenPayload = verified.payload;
+
+      if (tokenPayload.orgId !== orgId) {
+        return reply.status(400).send({ error: "prepare_token_org_mismatch" });
+      }
+      if (tokenPayload.creatorPubkey !== walletAddress) {
+        return reply
+          .status(400)
+          .send({ error: "prepare_token_creator_mismatch" });
+      }
+      // The mint must be the one this token was prepared for — the client
+      // can't reconcile an unrelated mint into existence.
+      if (body.mintAddress !== tokenPayload.mintAddress) {
+        return reply.status(400).send({ error: "mint_mismatch" });
+      }
+
+      let mintPub: PublicKey;
+      try {
+        mintPub = new PublicKey(tokenPayload.mintAddress);
+      } catch {
+        return reply.status(400).send({
+          error: "prepare_token_invalid",
+          reason: "mint_unparseable",
+        });
+      }
+
+      // Guard against persisting a phantom token: only reconcile a mint
+      // that actually exists on-chain (i.e. the broadcast really landed).
+      if (deps.confirmMintOnChain) {
+        let exists: boolean;
+        try {
+          exists = await deps.confirmMintOnChain(tokenPayload.mintAddress);
+        } catch (err) {
+          logger.error(
+            { err, mint: tokenPayload.mintAddress },
+            "reconcile on-chain check failed",
+          );
+          return reply.status(502).send({
+            error: "mint_check_failed",
+            message: (err as Error).message,
+          });
+        }
+        if (!exists) {
+          return reply.status(409).send({ error: "mint_not_on_chain" });
+        }
+      }
+
+      const [treasuryPda, treasuryBump] = deriveTreasuryPda(mintPub);
+      const lockupEnd = new Date(
+        now().getTime() + CREATOR_LOCKUP_DAYS * 86_400 * 1000,
+      );
+
+      try {
+        const result = await deps.reconcileLaunch({
+          agentListingId: tokenPayload.agentListingId,
+          orgId,
+          mintAddress: tokenPayload.mintAddress,
+          txSignature: body.txSignature,
+          creatorAddress: tokenPayload.creatorPubkey,
+          creatorLockupEnd: lockupEnd,
+          name: tokenPayload.name,
+          symbol: tokenPayload.symbol,
+          description: tokenPayload.description,
+          imageUri: tokenPayload.imageUri,
+          launchpad: tokenPayload.launchpad,
+          meteoraConfigKey:
+            typeof tokenPayload.context.configKey === "string"
+              ? tokenPayload.context.configKey
+              : undefined,
+          treasuryPdaAddress: treasuryPda.toBase58(),
+          treasuryAuthorityBump: treasuryBump,
+        });
+        return reply.status(200).send({
+          tokenId: result.tokenId,
+          mintAddress: tokenPayload.mintAddress,
+          txSignature: body.txSignature,
+          treasuryPdaAddress: treasuryPda.toBase58(),
+          creatorLockupEnd: result.creatorLockupEnd.toISOString(),
+          alreadyExisted: result.alreadyExisted,
+        });
+      } catch (err) {
+        logger.error(
+          { err, mint: tokenPayload.mintAddress },
+          "reconcileLaunch persistence failed",
+        );
+        return reply.status(500).send({
+          error: "reconcile_failed",
+          mintAddress: tokenPayload.mintAddress,
+          txSignature: body.txSignature,
           message: (err as Error).message,
         });
       }

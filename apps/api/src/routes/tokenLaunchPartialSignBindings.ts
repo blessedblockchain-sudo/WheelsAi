@@ -11,22 +11,20 @@
  * become `/api/tokens/launch/prepare` and `/api/tokens/launch/submit`.
  */
 
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 
 import { prisma } from "@wheelsai/db";
 
 import { env } from "../config/env.js";
 import { getSolanaConnection } from "../lib/solana.js";
-import {
-  preparePumpfunCreate,
-  broadcastSignedPumpfunCreate,
-} from "../services/preparePumpfunCreate.js";
+import { getLaunchpadAdapter } from "../services/launchpad/index.js";
 import { loadEligibilityStateByPrisma } from "../services/loadEligibilityState.js";
 import {
   createPartialSignTokenRoutes,
   type PartialSignTokenRouteDeps,
   type PersistAgentTokenWithTreasuryInput,
   type PersistAgentTokenWithTreasuryResult,
+  type ReconcileLaunchResult,
 } from "./tokenLaunchPartialSign.js";
 
 const PUMPFUN_FRONTEND_BASE = "https://pump.fun";
@@ -89,9 +87,13 @@ async function persistAgentTokenWithTreasury(
         mintAddress: input.mintAddress,
         pumpfunUrl: `${PUMPFUN_FRONTEND_BASE}/coin/${input.mintAddress}`,
         creatorAddress: input.creatorAddress,
-        name: listing.title,
+        // Creator-supplied token name (carried through the prepare token);
+        // listing.title is only the ownership-check join, not the name.
+        name: input.name,
         symbol: input.symbol,
         imageUri: input.imageUri ?? listing.iconUrl ?? undefined,
+        launchpad: input.launchpad,
+        meteoraConfigKey: input.meteoraConfigKey,
         creatorLockupEnd: input.creatorLockupEnd,
         status: "BONDING",
         treasuryAddress: input.treasuryPdaAddress,
@@ -109,6 +111,51 @@ async function persistAgentTokenWithTreasury(
       creatorLockupEnd: created.creatorLockupEnd ?? input.creatorLockupEnd,
     };
   });
+}
+
+// ============================================
+// Reconcile: idempotent persist for the recovery path
+// ============================================
+//
+// Called when the mint already broadcast on-chain but the original
+// /submit persist failed. Returns the existing row if one was created
+// (idempotent replay, incl. a race with a concurrent reconcile), else
+// persists fresh.
+
+async function reconcileLaunch(
+  input: PersistAgentTokenWithTreasuryInput,
+): Promise<ReconcileLaunchResult> {
+  const existing = await prisma.agentToken.findUnique({
+    where: { mintAddress: input.mintAddress },
+    select: { id: true, creatorLockupEnd: true },
+  });
+  if (existing) {
+    return {
+      tokenId: existing.id,
+      creatorLockupEnd: existing.creatorLockupEnd ?? input.creatorLockupEnd,
+      alreadyExisted: true,
+    };
+  }
+  try {
+    const persisted = await persistAgentTokenWithTreasury(input);
+    return { ...persisted, alreadyExisted: false };
+  } catch (err) {
+    // Lost a race with a concurrent reconcile? Return the now-existing row
+    // (unique mintAddress means the insert collided) instead of surfacing
+    // a constraint error to the user.
+    const racy = await prisma.agentToken.findUnique({
+      where: { mintAddress: input.mintAddress },
+      select: { id: true, creatorLockupEnd: true },
+    });
+    if (racy) {
+      return {
+        tokenId: racy.id,
+        creatorLockupEnd: racy.creatorLockupEnd ?? input.creatorLockupEnd,
+        alreadyExisted: true,
+      };
+    }
+    throw err;
+  }
 }
 
 // ============================================
@@ -151,17 +198,14 @@ export function createPartialSignTokenRoutesProduction() {
       });
       return agent?.listing?.id ?? null;
     },
-    generateMintKeypair: () => Keypair.generate(),
-    preparePumpfunCreate: (input) =>
-      preparePumpfunCreate(input, { fetchFn: fetch }),
-    broadcastSignedPumpfunCreate: (input) => {
-      const connection = getSolanaConnection();
-      return broadcastSignedPumpfunCreate(input, {
-        sendRawTransaction: async (raw) =>
-          connection.sendRawTransaction(raw, { skipPreflight: false }),
-      });
-    },
+    launchpad: getLaunchpadAdapter(),
     persistAgentTokenWithTreasury,
+    reconcileLaunch,
+    confirmMintOnChain: async (mintAddress: string) => {
+      const connection = getSolanaConnection();
+      const info = await connection.getAccountInfo(new PublicKey(mintAddress));
+      return info !== null;
+    },
     prepareTokenSecret,
   };
 

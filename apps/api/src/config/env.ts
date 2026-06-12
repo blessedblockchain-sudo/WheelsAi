@@ -33,6 +33,19 @@ const envSchema = z.object({
     .string()
     .default("11111111111111111111111111111111"),
 
+  // Token launchpad selection. pumpfun works on devnet + mainnet (cheap
+  // dev loop, default); bags is mainnet-only (Bags fee-share programs are
+  // not deployed on devnet — see memory/bags-ecosystem-eval).
+  LAUNCHPAD: z.enum(["pumpfun", "bags"]).default("pumpfun"),
+  BAGS_API_KEY: z.string().optional(),
+  // Optional static override for the platform fee-claimer wallet that
+  // receives Bags fee-share payouts (which the treasury sweep then claims
+  // into the PDA). It MUST be a WheelsAI-controlled wallet — when the Bags
+  // adapter lands it defaults to the fee-router wallet. Never falls back to
+  // TREASURY_WALLET_ADDRESS (whose default is the all-ones system address,
+  // which would make 100% of fees permanently unclaimable).
+  BAGS_FEE_RECIPIENT: z.string().optional(),
+
   // X402 Payments
   X402_ENABLED: z
     .union([z.boolean(), z.string()])
@@ -123,6 +136,12 @@ const envSchema = z.object({
   // funded — see FEE_ROUTER_WALLET_PRIVATE_KEY.
   FEE_ROUTER_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
   FEE_ROUTER_WALLET_PRIVATE_KEY: z.string().optional(),
+  // Bags fee-claim sweep worker: claims REAL Meteora fees accrued to the
+  // platform fee wallet (Bags fee-share) and deposits them into each
+  // bags-launched token's treasury PDA via fee_receive. Disabled by default
+  // (interval=0); only meaningful when LAUNCHPAD=bags and the adapter is
+  // validated (see services/launchpad/bagsAdapter.ts BAGS_ADAPTER_IMPLEMENTED).
+  BAGS_FEE_SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
   // Reputation-attestation BullMQ worker: posts on-chain
   // submit_attestation per active tokenized agent. Disabled by default
   // (interval=0); enable once the attestor wallet is whitelisted via

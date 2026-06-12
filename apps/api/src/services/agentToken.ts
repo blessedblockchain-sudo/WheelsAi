@@ -8,6 +8,10 @@ import { buildPumpfunCreateRequest } from "./pumpfunTxBuilder.js";
 import { submitPumpfunCreate } from "./submitPumpfunCreate.js";
 import { deriveCreatorKeypair } from "./creatorKeypairs.js";
 import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
+import {
+  ELIGIBILITY_DEFAULTS,
+  CREATOR_LOCKUP_DAYS,
+} from "./tokenEligibility.js";
 
 const logger = createLogger("agent-token-service");
 
@@ -81,9 +85,10 @@ export interface HolderData {
 // Constants
 // ============================================
 
-const MIN_REPUTATION_SCORE = 50;
-const MIN_DEPLOYMENT_DAYS = 7;
-const CREATOR_LOCKUP_DAYS = 30;
+// Single source of truth lives in services/tokenEligibility.ts; alias here
+// so the rest of this file reads unchanged and the values can't drift.
+const MIN_REPUTATION_SCORE = ELIGIBILITY_DEFAULTS.minReputation;
+const MIN_DEPLOYMENT_DAYS = ELIGIBILITY_DEFAULTS.minDeploymentAgeDays;
 
 // ============================================
 // Eligibility Checks
@@ -185,6 +190,14 @@ export async function checkTokenEligibility(
 
 /**
  * Create a new token on pump.fun and record in database.
+ *
+ * @deprecated Custodial server-signed path. No UI surface reaches it — the
+ * live flow is browser-partial-sign via routes/tokenLaunchPartialSign.ts +
+ * the launchpad adapters. NOTE: this path still passes `listing.iconUrl`
+ * straight into the create `uri` (line below) without the IPFS metadata
+ * upload the adapter does, so any token minted here would get broken
+ * on-chain metadata. Do not revive without wiring services/pumpfunIpfs.ts
+ * (see services/launchpad/pumpfunAdapter.ts for the correct flow).
  *
  * Phase 1C: uses the real `submitPumpfunCreate` flow — POST
  * pumpportal `/api/trade-local` → sign with creator+mint keypairs →

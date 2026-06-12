@@ -29,6 +29,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import {
   checkTokenEligibility,
+  CREATOR_LOCKUP_DAYS,
   type EligibilityResult,
 } from "../services/tokenEligibility.js";
 import {
@@ -38,8 +39,6 @@ import {
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("token-launch-route");
-
-const CREATOR_LOCKUP_DAYS = 30;
 
 // ============================================
 // Schema

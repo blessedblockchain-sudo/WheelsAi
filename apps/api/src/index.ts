@@ -14,6 +14,7 @@ import swaggerUi from "@fastify/swagger-ui";
 
 import { env } from "./config/env.js";
 import { logger } from "./utils/logger.js";
+import { BAGS_ADAPTER_IMPLEMENTED } from "./services/launchpad/bagsAdapter.js";
 import { registerAuthPlugins } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.js";
 import { deploymentRoutes } from "./routes/deployments.js";
@@ -66,6 +67,19 @@ import {
 } from "./queues/index.js";
 
 async function main() {
+  // Fail-fast: the Bags adapter is mainnet-only and currently a scaffold.
+  // Selecting it without a real implementation would boot "healthy" and
+  // then throw on the first launch request — die on boot instead.
+  if (env.LAUNCHPAD === "bags" && !BAGS_ADAPTER_IMPLEMENTED) {
+    // Mirror the env.ts boot-fatal pattern (console.error + exit) — this
+    // runs before the Fastify logger is set up.
+    console.error(
+      "LAUNCHPAD=bags is not yet supported (the Bags adapter is a scaffold). " +
+        "Set LAUNCHPAD=pumpfun.",
+    );
+    process.exit(1);
+  }
+
   const app = Fastify({
     logger: logger as any,
     trustProxy: true,

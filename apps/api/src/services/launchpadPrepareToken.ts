@@ -1,6 +1,11 @@
 /**
- * Short-lived HMAC-signed token that carries the state from the
- * pump.fun create "prepare" endpoint to the "submit" endpoint.
+ * Short-lived HMAC-signed token that carries the state from the launch
+ * "prepare" endpoint to the "submit" endpoint.
+ *
+ * Launchpad-neutral: it carries the active adapter id plus an opaque
+ * adapter `context` (e.g. Bags' configKey), so the submit step can hand
+ * the right adapter exactly the state prepare produced — tamper-proof,
+ * since the whole payload is HMAC'd.
  *
  * Why a token instead of Redis/DB state: keeping the linkage stateless
  * means no extra moving piece in the launch path, and the only thing
@@ -42,12 +47,21 @@ export interface PreparePayload {
   /**
    * User-submitted fields the wallet committed to when it signed the
    * prepared tx. Carried in the token so the /submit step persists
-   * exactly what was signed — the client can't substitute different
-   * symbol/description between prepare and submit.
+   * exactly what was signed — the client can't substitute a different
+   * name/symbol/description between prepare and submit.
    */
+  name: string;
   symbol: string;
   description: string;
   imageUri?: string;
+  /** Launchpad adapter id that produced this prepare (e.g. "pumpfun"). */
+  launchpad: string;
+  /**
+   * Opaque adapter-specific state the submit step hands back to the
+   * adapter (e.g. Bags' configKey). Empty object for pump.fun. HMAC'd
+   * with the rest of the payload, so the client cannot mutate it.
+   */
+  context: Record<string, unknown>;
   /** Issued-at unix seconds. */
   iat: number;
   /** Expires-at unix seconds. */
@@ -168,9 +182,13 @@ export function verifyPrepareToken(
     typeof payload.agentListingId !== "string" ||
     typeof payload.orgId !== "string" ||
     typeof payload.creatorPubkey !== "string" ||
+    typeof payload.name !== "string" ||
     typeof payload.symbol !== "string" ||
     typeof payload.description !== "string" ||
     (payload.imageUri !== undefined && typeof payload.imageUri !== "string") ||
+    typeof payload.launchpad !== "string" ||
+    typeof payload.context !== "object" ||
+    payload.context === null ||
     typeof payload.iat !== "number" ||
     typeof payload.exp !== "number"
   ) {

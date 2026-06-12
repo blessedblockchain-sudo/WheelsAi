@@ -7,7 +7,8 @@ import {
   createPartialSignTokenRoutes,
   type PartialSignTokenRouteDeps,
 } from "../routes/tokenLaunchPartialSign.js";
-import { signPrepareToken } from "../services/pumpfunPrepareToken.js";
+import { signPrepareToken } from "../services/launchpadPrepareToken.js";
+import type { LaunchpadAdapter } from "../services/launchpad/types.js";
 
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
@@ -42,6 +43,27 @@ function makeFixedMint(): Keypair {
 
 const USER_WALLET = "EeYpfM4mEYHRJV6w3WAyKVMv47o6sNFM4nXjN3JoEHbW";
 
+// Mock launchpad adapter — the route's only launchpad-specific dep.
+// Overridable per-test for the prepare/broadcast failure paths.
+function makeMockLaunchpad(
+  overrides: Partial<LaunchpadAdapter> = {},
+): LaunchpadAdapter {
+  return {
+    id: "pumpfun",
+    prepareLaunch: async () => ({
+      partialSignedTxBase64: "FAKE_PARTIAL_SIGNED_TX_BASE64",
+      mintAddress: makeFixedMint().publicKey.toBase58(),
+      creatorPubkey: USER_WALLET,
+      context: {},
+    }),
+    broadcastLaunch: async ({ expectedMintAddress }) => ({
+      mintAddress: expectedMintAddress,
+      txSignature: "fake_signature_xyz",
+    }),
+    ...overrides,
+  };
+}
+
 interface MakeAppOpts {
   authed?: boolean;
   walletAddress?: string | null;
@@ -69,19 +91,15 @@ async function makeApp(opts: MakeAppOpts = {}) {
   const baseDeps: PartialSignTokenRouteDeps = {
     loadEligibilityState: async () => eligibleState(),
     resolveAgentListingId: async () => "listing_1",
-    generateMintKeypair: () => makeFixedMint(),
-    preparePumpfunCreate: async ({ mintKeypair }) => ({
-      partialSignedTxBase64: "FAKE_PARTIAL_SIGNED_TX_BASE64",
-      mintAddress: mintKeypair.publicKey.toBase58(),
-      creatorPubkey: USER_WALLET,
-    }),
-    broadcastSignedPumpfunCreate: async ({ expectedMintAddress }) => ({
-      mintAddress: expectedMintAddress,
-      txSignature: "fake_signature_xyz",
-    }),
+    launchpad: makeMockLaunchpad(),
     persistAgentTokenWithTreasury: async () => ({
       tokenId: "tok_new",
       creatorLockupEnd: new Date("2026-06-26T00:00:00Z"),
+    }),
+    reconcileLaunch: async () => ({
+      tokenId: "tok_reconciled",
+      creatorLockupEnd: new Date("2026-06-26T00:00:00Z"),
+      alreadyExisted: false,
     }),
     prepareTokenSecret: PREPARE_SECRET,
     now: () => new Date("2026-05-27T00:00:00Z"),
@@ -94,6 +112,7 @@ async function makeApp(opts: MakeAppOpts = {}) {
 
 const validPrepareBody = () => ({
   agentId: "agent_1",
+  name: "Eliza Token",
   symbol: "ELZ",
   description: "Test agent token",
   imageUri: "https://example.com/elza.png",
@@ -169,12 +188,16 @@ test("/prepare 400 listing_required when the agent has no published listing", as
   assert.equal(JSON.parse(res.body).error, "listing_required");
 });
 
-test("/prepare 502 pumpfun_prepare_failed when pumpportal errors", async () => {
+test("/prepare 502 launch_prepare_failed when the launchpad errors", async () => {
   const app = await makeApp({
     deps: {
-      preparePumpfunCreate: async () => {
-        throw new Error("pumpportal_local: returned 502 (upstream timed out)");
-      },
+      launchpad: makeMockLaunchpad({
+        prepareLaunch: async () => {
+          throw new Error(
+            "pumpportal_local: returned 502 (upstream timed out)",
+          );
+        },
+      }),
     },
   });
   const res = await app.inject({
@@ -183,7 +206,7 @@ test("/prepare 502 pumpfun_prepare_failed when pumpportal errors", async () => {
     payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 502);
-  assert.equal(JSON.parse(res.body).error, "pumpfun_prepare_failed");
+  assert.equal(JSON.parse(res.body).error, "launch_prepare_failed");
 });
 
 test("/prepare 200 returns partial-signed tx + prepare token", async () => {
@@ -212,9 +235,12 @@ function makeValidPrepareToken(opts: {
   agentListingId?: string;
   orgId?: string;
   creatorPubkey?: string;
+  name?: string;
   symbol?: string;
   description?: string;
   imageUri?: string;
+  launchpad?: string;
+  context?: Record<string, unknown>;
 } = {}) {
   return signPrepareToken({
     payload: {
@@ -222,9 +248,12 @@ function makeValidPrepareToken(opts: {
       agentListingId: opts.agentListingId ?? "listing_1",
       orgId: opts.orgId ?? "org_1",
       creatorPubkey: opts.creatorPubkey ?? USER_WALLET,
+      name: opts.name ?? "Eliza Token",
       symbol: opts.symbol ?? "ELZ",
       description: opts.description ?? "Test agent token",
       imageUri: opts.imageUri ?? "https://example.com/elza.png",
+      launchpad: opts.launchpad ?? "pumpfun",
+      context: opts.context ?? {},
     },
     secret: PREPARE_SECRET,
     now: () => new Date("2026-05-27T00:00:00Z"),
@@ -284,13 +313,15 @@ test("/submit 400 prepare_token_creator_mismatch when token belongs to a differe
   assert.equal(JSON.parse(res.body).error, "prepare_token_creator_mismatch");
 });
 
-test("/submit 502 pumpfun_submit_failed on broadcast failure (and no persist)", async () => {
+test("/submit 502 launch_submit_failed on broadcast failure (and no persist)", async () => {
   let persistCalled = false;
   const app = await makeApp({
     deps: {
-      broadcastSignedPumpfunCreate: async () => {
-        throw new Error("rpc_submit: blockhash not found");
-      },
+      launchpad: makeMockLaunchpad({
+        broadcastLaunch: async () => {
+          throw new Error("rpc_submit: blockhash not found");
+        },
+      }),
       persistAgentTokenWithTreasury: async () => {
         persistCalled = true;
         return {
@@ -309,8 +340,21 @@ test("/submit 502 pumpfun_submit_failed on broadcast failure (and no persist)", 
     },
   });
   assert.equal(res.statusCode, 502);
-  assert.equal(JSON.parse(res.body).error, "pumpfun_submit_failed");
+  assert.equal(JSON.parse(res.body).error, "launch_submit_failed");
   assert.equal(persistCalled, false, "persist must not run after broadcast fails");
+});
+
+test("/submit 400 prepare_token_launchpad_mismatch when the active adapter differs", async () => {
+  // Active adapter is pumpfun (default mock); token was prepared for bags.
+  const app = await makeApp();
+  const token = makeValidPrepareToken({ launchpad: "bags" });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/submit",
+    payload: { prepareToken: token, signedTxBase64: "anything" },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(JSON.parse(res.body).error, "prepare_token_launchpad_mismatch");
 });
 
 test("/submit 500 persistence_failed surfaces mintAddress + txSignature for recovery", async () => {
@@ -370,10 +414,136 @@ test("/submit 200 returns persisted ids + on-chain refs on the happy path", asyn
   // Verify the persist input carries the symbol + description from the token
   // (not from the request body — the token is the source of truth for what
   // the user signed).
+  assert.equal(captured.persistInput.name, "Eliza Token");
   assert.equal(captured.persistInput.symbol, "ELZ");
+  assert.equal(captured.persistInput.launchpad, "pumpfun");
   assert.equal(captured.persistInput.description, "Test agent token");
   assert.equal(captured.persistInput.imageUri, "https://example.com/elza.png");
   assert.equal(captured.persistInput.creatorAddress, USER_WALLET);
   assert.equal(captured.persistInput.agentListingId, "listing_1");
   assert.equal(captured.persistInput.orgId, "org_1");
+});
+
+// ============================================
+// /reconcile (recovery path)
+// ============================================
+
+const FIXED_MINT_B58 = makeFixedMint().publicKey.toBase58();
+
+test("/reconcile 200 persists from the token + body and returns the tokenId", async () => {
+  const captured: any = {};
+  const app = await makeApp({
+    deps: {
+      reconcileLaunch: async (input) => {
+        captured.input = input;
+        return {
+          tokenId: "tok_reconciled",
+          creatorLockupEnd: input.creatorLockupEnd,
+          alreadyExisted: false,
+        };
+      },
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/reconcile",
+    payload: {
+      prepareToken: makeValidPrepareToken(),
+      mintAddress: FIXED_MINT_B58,
+      txSignature: "broadcast_sig_123",
+    },
+  });
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.equal(body.tokenId, "tok_reconciled");
+  assert.equal(body.mintAddress, FIXED_MINT_B58);
+  assert.equal(body.txSignature, "broadcast_sig_123");
+  assert.equal(body.alreadyExisted, false);
+  // Persisted fields come from the HMAC token (name/symbol), not the body.
+  assert.equal(captured.input.name, "Eliza Token");
+  assert.equal(captured.input.symbol, "ELZ");
+  assert.equal(captured.input.txSignature, "broadcast_sig_123");
+});
+
+test("/reconcile 200 alreadyExisted=true on idempotent replay", async () => {
+  const app = await makeApp({
+    deps: {
+      reconcileLaunch: async (input) => ({
+        tokenId: "tok_existing",
+        creatorLockupEnd: input.creatorLockupEnd,
+        alreadyExisted: true,
+      }),
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/reconcile",
+    payload: {
+      prepareToken: makeValidPrepareToken(),
+      mintAddress: FIXED_MINT_B58,
+      txSignature: "broadcast_sig_123",
+    },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(JSON.parse(res.body).alreadyExisted, true);
+});
+
+test("/reconcile 400 mint_mismatch when body mint differs from the token", async () => {
+  const app = await makeApp();
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/reconcile",
+    payload: {
+      prepareToken: makeValidPrepareToken(),
+      mintAddress: "SomeOtherMint1111111111111111111111111111111",
+      txSignature: "broadcast_sig_123",
+    },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(JSON.parse(res.body).error, "mint_mismatch");
+});
+
+test("/reconcile 409 mint_not_on_chain when the on-chain check fails", async () => {
+  let reconcileCalled = false;
+  const app = await makeApp({
+    deps: {
+      confirmMintOnChain: async () => false,
+      reconcileLaunch: async (input) => {
+        reconcileCalled = true;
+        return {
+          tokenId: "x",
+          creatorLockupEnd: input.creatorLockupEnd,
+          alreadyExisted: false,
+        };
+      },
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/reconcile",
+    payload: {
+      prepareToken: makeValidPrepareToken(),
+      mintAddress: FIXED_MINT_B58,
+      txSignature: "broadcast_sig_123",
+    },
+  });
+  assert.equal(res.statusCode, 409);
+  assert.equal(JSON.parse(res.body).error, "mint_not_on_chain");
+  assert.equal(reconcileCalled, false, "must not persist when mint is absent");
+});
+
+test("/reconcile 400 prepare_token_org_mismatch for a foreign org token", async () => {
+  const app = await makeApp();
+  const token = makeValidPrepareToken({ orgId: "org_OTHER" });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/reconcile",
+    payload: {
+      prepareToken: token,
+      mintAddress: FIXED_MINT_B58,
+      txSignature: "broadcast_sig_123",
+    },
+  });
+  assert.equal(res.statusCode, 400);
+  assert.equal(JSON.parse(res.body).error, "prepare_token_org_mismatch");
 });

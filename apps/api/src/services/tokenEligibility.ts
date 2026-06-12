@@ -25,6 +25,13 @@ export const ELIGIBILITY_DEFAULTS = {
   minDeploymentAgeDays: 7,
 } as const;
 
+/**
+ * Days the creator's allocation is locked after launch. Single source of
+ * truth — imported by the launch routes and the legacy custodial path so
+ * the number can't drift across the codebase (or the UI that displays it).
+ */
+export const CREATOR_LOCKUP_DAYS = 30;
+
 export type EligibilityReason =
   | "reputation_too_low"
   | "uptime_insufficient"

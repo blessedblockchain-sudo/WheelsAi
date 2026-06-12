@@ -14,6 +14,10 @@ import {
   getLeaderboard,
 } from "../services/agentToken.js";
 import { getIndexerMetrics } from "../services/tokenIndexer.js";
+import {
+  ELIGIBILITY_DEFAULTS,
+  CREATOR_LOCKUP_DAYS,
+} from "../services/tokenEligibility.js";
 
 const logger = createLogger("routes:tokens");
 
@@ -227,7 +231,16 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           request.auth!.orgId
         );
 
-        return reply.send(result);
+        // Surface the live thresholds so the UI renders the real
+        // requirements instead of hardcoded copy that can drift.
+        return reply.send({
+          ...result,
+          requirements: {
+            minReputation: ELIGIBILITY_DEFAULTS.minReputation,
+            minDeploymentAgeDays: ELIGIBILITY_DEFAULTS.minDeploymentAgeDays,
+            creatorLockupDays: CREATOR_LOCKUP_DAYS,
+          },
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         logger.error({ error }, "Check token eligibility error");

@@ -2133,6 +2133,26 @@ model AgentToken {
 // chain on every load. The on-chain AgentReputation PDA remains the
 // source of truth — this is a read-cache, not authoritative.
 
+// OnChainAttestation mirror state machine (confirmation discipline,
+// remediation D6b):
+//
+//   SUBMITTED ──getSignatureStatuses confirmed/finalized──> CONFIRMED
+//       │
+//       ├── landed with on-chain err ──────────> FAILED
+//       └── expired (head > lastValidBlockHeight) AND unseen ──> FAILED
+//
+// The row is INSERTED at submit time (claim-first: BEFORE the broadcast)
+// with the signed-tx artifacts, so a crash anywhere afterwards leaves a
+// durable record recovery can settle from on-chain evidence. Only
+// CONFIRMED rows count as attestations; the per-token cursor
+// (AgentToken.lastOnChainAttestationAt) advances only on CONFIRMED.
+// FAILED rows keep the window open — the next tick re-attests it.
+enum OnChainAttestationStatus {
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
 model OnChainAttestation {
   id                  String   @id @default(uuid()) @db.Uuid
   tokenId             String   @map("token_id") @db.Uuid
@@ -2141,24 +2161,34 @@ model OnChainAttestation {
   uptimeSecondsDelta  BigInt   @map("uptime_seconds_delta")
   messageCountDelta   BigInt   @map("message_count_delta")
   score               Int
-  // Cumulative totals AFTER applying this attestation, mirroring the
-  // values emitted in the AttestationSubmitted event so a reader can
-  // reconstruct the state-after without replaying.
-  cumulativeUptimeSeconds BigInt @map("cumulative_uptime_seconds")
-  cumulativeMessageCount  BigInt @map("cumulative_message_count")
-  attestationCount        Int    @map("attestation_count")
+  status              OnChainAttestationStatus @default(SUBMITTED)
+  // Cumulative totals AFTER applying this attestation, read back from the
+  // on-chain AgentReputation PDA at CONFIRMATION time (the program is the
+  // source of truth — these are NOT derived from the deltas). Null while
+  // the row is SUBMITTED/FAILED, or when the post-confirm readback was
+  // unavailable.
+  cumulativeUptimeSeconds BigInt? @map("cumulative_uptime_seconds")
+  cumulativeMessageCount  BigInt? @map("cumulative_message_count")
+  attestationCount        Int?    @map("attestation_count")
   // Attestor-claimed unix timestamp; the program rejected stale values
   // (< prior last_attestation_unix_ts) so this is monotonic per token.
   attestorUnixTs      BigInt   @map("attestor_unix_ts")
-  // When we OBSERVED the on-chain landing (cron tick time). Useful for
-  // detecting attestor liveness independent of attestor-claimed time.
-  observedAt          DateTime @default(now()) @map("observed_at")
+  // When we CONFIRMED the on-chain landing (getSignatureStatuses returned
+  // confirmed/finalized). Null until then — broadcast time is createdAt.
+  observedAt          DateTime? @map("observed_at")
+  // Claim-first artifacts (same shape as ComputePayment, remediation D3):
+  // persisted BEFORE broadcast so recovery can re-broadcast the SAME bytes
+  // (same signature ⇒ cluster dedupes) or prove expiry from
+  // lastValidBlockHeight + an unseen signature.
+  signedTxB64          String?  @map("signed_tx_b64")
+  lastValidBlockHeight BigInt?  @map("last_valid_block_height")
   createdAt           DateTime @default(now()) @map("created_at")
 
   token               AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
 
   @@index([tokenId, attestorUnixTs])
   @@index([attestorAddress])
+  @@index([status])
   @@map("on_chain_attestations")
 }
 
@@ -2172,12 +2202,72 @@ model AgentTokenTrade {
   tokenAmount   Float    @map("token_amount")
   priceUsd      Float    @map("price_usd")
   timestamp     DateTime
+  // Row-identity fee routing (remediation D6a). Null = this trade's 1%
+  // fee has not been claimed by any fee-routing batch yet; the fee
+  // router selects by THIS column, never by timestamp windows, so a
+  // late-arriving trade (older timestamp, indexed after a batch routed)
+  // simply joins a later batch instead of being silently skipped.
+  // Cleared back to null when the owning batch FAILs (expired/errored
+  // on-chain) so the trades rejoin the next batch.
+  feeRoutingBatchId String? @map("fee_routing_batch_id") @db.Uuid
 
-  token         AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  token           AgentToken       @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  feeRoutingBatch FeeRoutingBatch? @relation(fields: [feeRoutingBatchId], references: [id], onDelete: SetNull)
 
   @@index([tokenId, timestamp])
   @@index([traderAddress])
+  @@index([feeRoutingBatchId])
   @@map("agent_token_trades")
+}
+
+// Fee-routing batch state machine (row-identity fee routing, remediation
+// D6a). One batch = one fee_receive transaction depositing 1% of the
+// claimed trades' SOL volume into the agent's treasury PDA.
+//
+//   CLAIMED ──sign (CAS + artifacts persisted)──> SUBMITTED ──confirm──> CONFIRMED
+//      │                                             │
+//      │ crash before sign (nothing broadcast)       │ landed with err, OR
+//      ▼                                             ▼ expired AND provably unseen
+//    FAILED <────────────────────────────────────  FAILED
+//    (trades un-stamped → rejoin the next batch)
+//
+// CLAIMED  — batch row + trade stamps written in one $transaction; no
+//            signature exists yet, so failing a stale CLAIMED batch is
+//            always safe (nothing can land).
+// SUBMITTED— signed artifacts persisted via compare-and-set BEFORE the
+//            broadcast (claim-first, same as ComputePayment D3); recovery
+//            settles it from on-chain evidence only: landed → CONFIRMED,
+//            unexpired+unseen → re-broadcast the SAME bytes, expired+unseen
+//            or landed-with-err → FAILED + un-stamp.
+// CONFIRMED— getSignatureStatuses returned confirmed/finalized with no err.
+//            The trades' fee is durably routed; they never rejoin a batch.
+enum FeeRoutingBatchStatus {
+  CLAIMED
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+model FeeRoutingBatch {
+  id                   String                @id @default(uuid()) @db.Uuid
+  treasuryId           String                @map("treasury_id") @db.Uuid
+  status               FeeRoutingBatchStatus @default(CLAIMED)
+  // 1% of the claimed trades' summed SOL volume, floored to lamports
+  // (same math as the pre-batch fee router; D9 revisits the Float source).
+  lamports             BigInt
+  tradeCount           Int                   @map("trade_count")
+  txSignature          String?               @unique @map("tx_signature")
+  signedTxB64          String?               @map("signed_tx_b64")
+  lastValidBlockHeight BigInt?               @map("last_valid_block_height")
+  createdAt            DateTime              @default(now()) @map("created_at")
+  updatedAt            DateTime              @updatedAt @map("updated_at")
+
+  treasury AgentTreasury     @relation(fields: [treasuryId], references: [id], onDelete: Cascade)
+  trades   AgentTokenTrade[]
+
+  @@index([status])
+  @@index([treasuryId, createdAt])
+  @@map("fee_routing_batches")
 }
 
 model AgentTokenHolder {
@@ -2244,15 +2334,19 @@ model AgentTreasury {
   // pay_nosana path (true). Existing rows default to false; the
   // backfill script flips them as it migrates each treasury PDA.
   programInitialized       Boolean  @default(false) @map("program_initialized")
-  // Cursor advanced by the fee-router BullMQ worker after a successful
-  // fee_receive submission. Trades with timestamp > this cursor are
-  // unrouted (eligible for the next batch). Null = never routed.
+  // DISPLAY/OPS ONLY (remediation D6a): the latest trade timestamp whose
+  // fee was confirmed-routed, bumped by the fee router after a batch
+  // reaches CONFIRMED. It is NO LONGER the routing source of truth —
+  // routing selects trades by row identity (AgentTokenTrade.
+  // feeRoutingBatchId IS NULL), so this value being stale or null never
+  // causes a fee to be skipped or double-paid.
   lastFeeRoutedAt          DateTime? @map("last_fee_routed_at")
   createdAt                DateTime @default(now()) @map("created_at")
   updatedAt                DateTime @updatedAt @map("updated_at")
 
-  token     AgentToken       @relation(fields: [tokenId], references: [id], onDelete: Cascade)
-  payments  ComputePayment[]
+  token            AgentToken        @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  payments         ComputePayment[]
+  feeRoutingBatches FeeRoutingBatch[]
 
   @@map("agent_treasuries")
 }

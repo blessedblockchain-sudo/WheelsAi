@@ -1,11 +1,20 @@
 /**
- * Drives apps/api/src/services/persistAttestationCursor.ts.
+ * Drives apps/api/src/services/persistAttestationCursor.ts — the atomic
+ * CONFIRM writer for the reputation-attestation worker (confirmation
+ * discipline, remediation D6b).
  *
  * Pinning:
- *   - cursor UPDATE + mirror INSERT run inside the same prisma.$transaction
- *   - count==0 from the cursor UPDATE skips the mirror INSERT (stale-tick
- *     guard avoids an orphan attestation row without a cursor bump)
- *   - WHERE clause filters by id + OR(null, lt:cursor) — the progression guard
+ *   - mirror CAS (SUBMITTED→CONFIRMED) + cursor UPDATE run inside the
+ *     same prisma.$transaction
+ *   - the mirror CAS comes FIRST (ownership claim); count==0 → the
+ *     cursor write is SKIPPED entirely (a lost race touches nothing)
+ *   - the mirror CAS writes observedAt (confirmation-observation time)
+ *     and the PDA-readback cumulatives; null readback stays null
+ *     (truthful unknown — never delta-derived)
+ *   - cursor WHERE filters by id + OR(null, lt:cursor) — the
+ *     progression guard, so an old window confirming late can never
+ *     rewind a newer cursor
+ *   - $transaction throw propagates
  */
 
 import assert from "node:assert/strict";
@@ -21,151 +30,169 @@ function setupEnv() {
     process.env.JWT_SECRET ?? "12345678901234567890123456789012";
 }
 
-const NOW = new Date("2026-05-14T10:00:00Z");
+const CURSOR = new Date("2026-05-14T10:00:00Z");
+const OBSERVED_AT = new Date("2026-05-14T10:00:07Z");
 
-function happyMirror() {
+const CUMULATIVES = {
+  cumulativeUptimeSeconds: BigInt(7200),
+  cumulativeMessageCount: BigInt(24),
+  attestationCount: 2,
+};
+
+function happyInput(overrides: Partial<{
+  mirrorId: string;
+  tokenId: string;
+  cursor: Date;
+  observedAt: Date;
+  cumulatives: typeof CUMULATIVES | null;
+}> = {}) {
   return {
+    mirrorId: "mirror_1",
     tokenId: "tok_1",
-    txSignature: "sig_a",
-    attestorAddress: "ATT",
-    uptimeSecondsDelta: BigInt(3600),
-    messageCountDelta: BigInt(12),
-    score: 80,
-    cumulativeUptimeSeconds: BigInt(3600),
-    cumulativeMessageCount: BigInt(12),
-    attestationCount: 1,
-    attestorUnixTs: BigInt(1_700_000_000),
+    cursor: CURSOR,
+    observedAt: OBSERVED_AT,
+    cumulatives: CUMULATIVES,
+    ...overrides,
   };
 }
+
+function makePrisma(opts: { mirrorCasCount?: number } = {}) {
+  const log: any[] = [];
+  const prisma = {
+    $transaction: async (fn: any) =>
+      fn({
+        onChainAttestation: {
+          updateMany: async (args: any) => {
+            log.push({ type: "mirror.updateMany", args });
+            return { count: opts.mirrorCasCount ?? 1 };
+          },
+        },
+        agentToken: {
+          updateMany: async (args: any) => {
+            log.push({ type: "cursor.updateMany", args });
+            return { count: 1 };
+          },
+        },
+      }),
+  };
+  return { log, prisma };
+}
+
+test("persistAttestationCursor: mirror CAS targets id + status=SUBMITTED and writes observedAt + cumulatives", async () => {
+  setupEnv();
+  const { persistAttestationCursor } = await import(
+    "../services/persistAttestationCursor.js"
+  );
+  const { log, prisma } = makePrisma({});
+  await persistAttestationCursor(happyInput(), { prisma: prisma as any });
+
+  const mirror = log.find((c) => c.type === "mirror.updateMany");
+  assert.deepEqual(mirror.args.where, { id: "mirror_1", status: "SUBMITTED" });
+  assert.deepEqual(mirror.args.data, {
+    status: "CONFIRMED",
+    // observedAt is stamped at CONFIRMATION time — when we saw the
+    // landing, not when we broadcast.
+    observedAt: OBSERVED_AT,
+    // Cumulatives are the AgentReputation PDA readback (program truth).
+    cumulativeUptimeSeconds: BigInt(7200),
+    cumulativeMessageCount: BigInt(24),
+    attestationCount: 2,
+  });
+});
 
 test("persistAttestationCursor: cursor UPDATE WHERE uses id + progression guard", async () => {
   setupEnv();
   const { persistAttestationCursor } = await import(
     "../services/persistAttestationCursor.js"
   );
-  let observed: any = null;
-  await persistAttestationCursor(
-    { tokenId: "tok_1", cursor: NOW, mirror: happyMirror() },
-    {
-      prisma: {
-        $transaction: async (fn: any) =>
-          fn({
-            agentToken: {
-              updateMany: async (args: any) => {
-                observed = args;
-                return { count: 1 };
-              },
-            },
-            onChainAttestation: {
-              create: async () => ({}),
-            },
-          }),
-      } as any,
-    },
-  );
-  assert.equal(observed.where.id, "tok_1");
-  assert.deepEqual(observed.where.OR, [
+  const { log, prisma } = makePrisma({});
+  await persistAttestationCursor(happyInput(), { prisma: prisma as any });
+
+  const cursor = log.find((c) => c.type === "cursor.updateMany");
+  assert.equal(cursor.args.where.id, "tok_1");
+  assert.deepEqual(cursor.args.where.OR, [
     { lastOnChainAttestationAt: null },
-    { lastOnChainAttestationAt: { lt: NOW } },
+    { lastOnChainAttestationAt: { lt: CURSOR } },
   ]);
-  assert.deepEqual(observed.data, { lastOnChainAttestationAt: NOW });
+  assert.deepEqual(cursor.args.data, { lastOnChainAttestationAt: CURSOR });
 });
 
-test("persistAttestationCursor: count=0 from UPDATE → mirror INSERT is SKIPPED", async () => {
+test("persistAttestationCursor: mirror CAS count=0 (lost race) → cursor write SKIPPED", async () => {
+  // The cursor advances ONLY for the worker that won the
+  // SUBMITTED→CONFIRMED claim — a lost race must touch nothing.
   setupEnv();
   const { persistAttestationCursor } = await import(
     "../services/persistAttestationCursor.js"
   );
-  let inserted = 0;
-  await persistAttestationCursor(
-    { tokenId: "tok_1", cursor: NOW, mirror: happyMirror() },
-    {
-      prisma: {
-        $transaction: async (fn: any) =>
-          fn({
-            agentToken: {
-              updateMany: async () => ({ count: 0 }),
-            },
-            onChainAttestation: {
-              create: async () => {
-                inserted += 1;
-                return {};
-              },
-            },
-          }),
-      } as any,
-    },
-  );
-  assert.equal(inserted, 0);
+  const { log, prisma } = makePrisma({ mirrorCasCount: 0 });
+  await persistAttestationCursor(happyInput(), { prisma: prisma as any });
+  assert.equal(log.filter((c) => c.type === "cursor.updateMany").length, 0);
 });
 
-test("persistAttestationCursor: count=1 from UPDATE → mirror row inserted with the input shape", async () => {
+test("persistAttestationCursor: null readback → cumulative columns persisted as null (truthful unknown)", async () => {
   setupEnv();
   const { persistAttestationCursor } = await import(
     "../services/persistAttestationCursor.js"
   );
-  let createdWith: any = null;
-  const mirror = happyMirror();
-  await persistAttestationCursor(
-    { tokenId: "tok_1", cursor: NOW, mirror },
-    {
-      prisma: {
-        $transaction: async (fn: any) =>
-          fn({
-            agentToken: {
-              updateMany: async () => ({ count: 1 }),
-            },
-            onChainAttestation: {
-              create: async (args: any) => {
-                createdWith = args.data;
-                return {};
-              },
-            },
-          }),
-      } as any,
-    },
-  );
-  assert.deepEqual(createdWith, mirror);
+  const { log, prisma } = makePrisma({});
+  await persistAttestationCursor(happyInput({ cumulatives: null }), {
+    prisma: prisma as any,
+  });
+  const mirror = log.find((c) => c.type === "mirror.updateMany");
+  assert.equal(mirror.args.data.cumulativeUptimeSeconds, null);
+  assert.equal(mirror.args.data.cumulativeMessageCount, null);
+  assert.equal(mirror.args.data.attestationCount, null);
+  // Still CONFIRMED with observedAt — only the readback is unknown.
+  assert.equal(mirror.args.data.status, "CONFIRMED");
+  assert.equal(mirror.args.data.observedAt, OBSERVED_AT);
 });
 
-test("persistAttestationCursor: cursor + mirror run inside the same prisma.$transaction", async () => {
+test("persistAttestationCursor: mirror CAS + cursor run inside the same prisma.$transaction", async () => {
   setupEnv();
   const { persistAttestationCursor } = await import(
     "../services/persistAttestationCursor.js"
   );
   let inTransaction = false;
-  let cursorRanInTx = false;
   let mirrorRanInTx = false;
-  await persistAttestationCursor(
-    { tokenId: "tok_1", cursor: NOW, mirror: happyMirror() },
-    {
-      prisma: {
-        $transaction: async (fn: any) => {
-          inTransaction = true;
-          try {
-            return await fn({
-              agentToken: {
-                updateMany: async () => {
-                  cursorRanInTx = inTransaction;
-                  return { count: 1 };
-                },
+  let cursorRanInTx = false;
+  await persistAttestationCursor(happyInput(), {
+    prisma: {
+      $transaction: async (fn: any) => {
+        inTransaction = true;
+        try {
+          return await fn({
+            onChainAttestation: {
+              updateMany: async () => {
+                mirrorRanInTx = inTransaction;
+                return { count: 1 };
               },
-              onChainAttestation: {
-                create: async () => {
-                  mirrorRanInTx = inTransaction;
-                  return {};
-                },
+            },
+            agentToken: {
+              updateMany: async () => {
+                cursorRanInTx = inTransaction;
+                return { count: 1 };
               },
-            });
-          } finally {
-            inTransaction = false;
-          }
-        },
-      } as any,
-    },
-  );
-  assert.equal(cursorRanInTx, true);
+            },
+          });
+        } finally {
+          inTransaction = false;
+        }
+      },
+    } as any,
+  });
   assert.equal(mirrorRanInTx, true);
+  assert.equal(cursorRanInTx, true);
+});
+
+test("persistAttestationCursor: mirror CAS runs BEFORE the cursor write (ownership claim first)", async () => {
+  setupEnv();
+  const { persistAttestationCursor } = await import(
+    "../services/persistAttestationCursor.js"
+  );
+  const { log, prisma } = makePrisma({});
+  await persistAttestationCursor(happyInput(), { prisma: prisma as any });
+  const order = log.map((c) => c.type);
+  assert.deepEqual(order, ["mirror.updateMany", "cursor.updateMany"]);
 });
 
 test("persistAttestationCursor: prisma.$transaction throw propagates", async () => {
@@ -175,16 +202,13 @@ test("persistAttestationCursor: prisma.$transaction throw propagates", async () 
   );
   await assert.rejects(
     () =>
-      persistAttestationCursor(
-        { tokenId: "tok_1", cursor: NOW, mirror: happyMirror() },
-        {
-          prisma: {
-            $transaction: async () => {
-              throw new Error("connection lost");
-            },
-          } as any,
-        },
-      ),
+      persistAttestationCursor(happyInput(), {
+        prisma: {
+          $transaction: async () => {
+            throw new Error("connection lost");
+          },
+        } as any,
+      }),
     /connection lost/,
   );
 });

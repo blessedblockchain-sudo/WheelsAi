@@ -1,6 +1,12 @@
 /**
  * Conditional cursor-update writer for the fee-router worker.
  *
+ * DISPLAY/OPS ONLY since remediation D6a: routing truth is the trades'
+ * `feeRoutingBatchId` stamp (row identity) — this value being stale or
+ * null can never skip or double-pay a fee. The worker still bumps it
+ * after a batch reaches CONFIRMED so dashboards/ops can read "fees
+ * routed through trade-time T" without joining batches.
+ *
  * Bumps AgentTreasury.lastFeeRoutedAt to a new value, but only if
  * the new value is strictly greater than the current one (or current
  * is NULL). This guards against a stale tick — if BullMQ retries an

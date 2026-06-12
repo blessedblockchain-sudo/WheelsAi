@@ -64,6 +64,7 @@ import {
   stopFeeRouterQueue,
   startReputationAttestationQueue,
   stopReputationAttestationQueue,
+  assertQueueRedisReady,
 } from "./queues/index.js";
 
 async function main() {
@@ -240,6 +241,11 @@ async function main() {
     app.log.error(err);
     process.exit(1);
   }
+
+  // B5: prove the queue Redis connection actually works before declaring
+  // the worker fleet started. Without this, misconfigured credentials/TLS
+  // leave every financial worker dead while /health stays green.
+  await assertQueueRedisReady(app.log);
 
   await startX402Queue();
   await startTokenIndexerQueue();

@@ -271,6 +271,178 @@ test("runTreasurySettlementCycle reports errors when persistPayments throws but 
 });
 
 // ============================================
+// D1: balance sync first-step
+// ============================================
+
+test("runTreasurySettlementCycle runs syncBalances BEFORE loading the batch", async () => {
+  // Ordering is the whole point: the loader's staleness guard reads
+  // balanceSyncedAt, so the mirror refresh must happen first or every
+  // treasury would be one tick stale.
+  const { runTreasurySettlementCycle } = await import(
+    "../services/treasurySettlementCycle.js"
+  );
+
+  const calls: string[] = [];
+  await runTreasurySettlementCycle({
+    syncBalances: async () => {
+      calls.push("syncBalances");
+      return { synced: 3, failed: 0 };
+    },
+    loadBatch: async () => {
+      calls.push("loadBatch");
+      return { deployments: [], treasuries: new Map() };
+    },
+    getComputeCost: async () => ({ computeSeconds: 0, costUsd: 0 }),
+    getSolPriceUsd: async () => 200,
+    persistPayments: async () => {},
+    now: new Date("2026-04-26T12:00:00Z"),
+  });
+
+  assert.deepEqual(calls, ["syncBalances", "loadBatch"]);
+});
+
+test("runTreasurySettlementCycle counts a syncBalances throw as an error but still runs the cycle", async () => {
+  // Sync failure degrades to "stale → skip" via the loader guard; it
+  // must never abort settlement for treasuries whose mirror is still
+  // fresh from a previous tick.
+  const { runTreasurySettlementCycle } = await import(
+    "../services/treasurySettlementCycle.js"
+  );
+
+  let persisted: any[] = [];
+  const result = await runTreasurySettlementCycle({
+    syncBalances: async () => {
+      throw new Error("RPC down");
+    },
+    loadBatch: async () => ({
+      deployments: [baseDeployment()],
+      treasuries: new Map([["tok_1", baseTreasury()]]),
+    }),
+    getComputeCost: async () => ({ computeSeconds: 3600, costUsd: 0.9 }),
+    getSolPriceUsd: async () => 200,
+    persistPayments: async (records) => {
+      persisted = records;
+    },
+    now: new Date("2026-04-26T12:00:00Z"),
+  });
+
+  assert.equal(result.errors, 1);
+  // The cycle still settled the (fresh-mirrored) batch the loader returned.
+  assert.equal(result.recorded, 1);
+  assert.equal(persisted.length, 1);
+});
+
+test("runTreasurySettlementCycle works without syncBalances (injectable, optional for tests)", async () => {
+  const { runTreasurySettlementCycle } = await import(
+    "../services/treasurySettlementCycle.js"
+  );
+  const result = await runTreasurySettlementCycle({
+    loadBatch: async () => ({ deployments: [], treasuries: new Map() }),
+    getComputeCost: async () => ({ computeSeconds: 0, costUsd: 0 }),
+    getSolPriceUsd: async () => 200,
+    persistPayments: async () => {},
+    now: new Date("2026-04-26T12:00:00Z"),
+  });
+  assert.equal(result.errors, 0);
+});
+
+test("runTreasurySettlementCycle surfaces the loader's skippedStale counter", async () => {
+  const { runTreasurySettlementCycle } = await import(
+    "../services/treasurySettlementCycle.js"
+  );
+  const result = await runTreasurySettlementCycle({
+    loadBatch: async () => ({
+      deployments: [],
+      treasuries: new Map(),
+      skippedStale: 4,
+    }),
+    getComputeCost: async () => ({ computeSeconds: 0, costUsd: 0 }),
+    getSolPriceUsd: async () => 200,
+    persistPayments: async () => {},
+    now: new Date("2026-04-26T12:00:00Z"),
+  });
+  assert.equal(result.skippedStale, 4);
+  // Batches from stubs that predate the guard default to 0.
+  const legacy = await runTreasurySettlementCycle({
+    loadBatch: async () => ({ deployments: [], treasuries: new Map() }),
+    getComputeCost: async () => ({ computeSeconds: 0, costUsd: 0 }),
+    getSolPriceUsd: async () => 200,
+    persistPayments: async () => {},
+    now: new Date("2026-04-26T12:00:00Z"),
+  });
+  assert.equal(legacy.skippedStale, 0);
+});
+
+// ============================================
+// D2: billing window plumbed into getComputeCost
+// ============================================
+
+test("runTreasurySettlementCycle passes the treasury's billing window to getComputeCost", async () => {
+  const { runTreasurySettlementCycle } = await import(
+    "../services/treasurySettlementCycle.js"
+  );
+
+  const lastBill = new Date("2026-04-26T10:00:00Z");
+  const now = new Date("2026-04-26T12:00:00Z");
+  const windows: any[] = [];
+  await runTreasurySettlementCycle({
+    loadBatch: async () => ({
+      deployments: [baseDeployment()],
+      treasuries: new Map([
+        ["tok_1", baseTreasury({ lastComputeBillAt: lastBill })],
+      ]),
+    }),
+    getComputeCost: async (_deployment, window) => {
+      windows.push(window);
+      return { computeSeconds: 3600, costUsd: 0.9 };
+    },
+    getSolPriceUsd: async () => 200,
+    persistPayments: async () => {},
+    intervalMs: 60 * 60 * 1000,
+    now,
+  });
+
+  assert.equal(windows.length, 1);
+  // Delta billing: window = [lastComputeBillAt, now].
+  assert.equal(
+    (windows[0].start as Date).toISOString(),
+    lastBill.toISOString(),
+  );
+  assert.equal((windows[0].end as Date).toISOString(), now.toISOString());
+});
+
+test("runTreasurySettlementCycle persists records carrying the billing window bounds", async () => {
+  const { runTreasurySettlementCycle } = await import(
+    "../services/treasurySettlementCycle.js"
+  );
+
+  const now = new Date("2026-04-26T12:00:00Z");
+  let persisted: any[] = [];
+  await runTreasurySettlementCycle({
+    loadBatch: async () => ({
+      deployments: [baseDeployment()],
+      treasuries: new Map([["tok_1", baseTreasury()]]),
+    }),
+    getComputeCost: async () => ({ computeSeconds: 3600, costUsd: 0.9 }),
+    getSolPriceUsd: async () => 200,
+    persistPayments: async (records) => {
+      persisted = records;
+    },
+    intervalMs: 60 * 60 * 1000,
+    now,
+  });
+
+  assert.equal(persisted.length, 1);
+  // Never-billed treasury: periodStart pins to the epoch sentinel so the
+  // composite unique key dedupes a replayed first window.
+  assert.equal((persisted[0].periodStart as Date).getTime(), 0);
+  assert.equal(
+    (persisted[0].periodEnd as Date).toISOString(),
+    now.toISOString(),
+  );
+});
+
+// ============================================
 // Defaults
 // ============================================
 

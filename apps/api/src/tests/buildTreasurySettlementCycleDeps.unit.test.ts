@@ -16,6 +16,8 @@ function setupEnv() {
 // Combines:
 //   loadSettlementBatchByPrisma(args, {prisma})  → loadBatch
 //   persistComputePayments(records, {prisma})    → persistPayments
+//   runTreasuryBalanceSyncTick + its deps        → syncBalances (when a
+//                                                  connection is given, D1)
 //   injected getComputeCost / getSolPriceUsd    (forwarded)
 //   intervalMs from config                      (forwarded)
 //
@@ -24,6 +26,23 @@ function setupEnv() {
 
 function makePrismaStub() {
   const log: any[] = [];
+  // persistComputePayments runs createMany + the cursor CAS inside one
+  // $transaction; the stub hands the same client surface back so the
+  // production writer works unchanged.
+  const tx = {
+    computePayment: {
+      async createMany(args: any) {
+        log.push({ type: "payment.createMany", args });
+        return { count: args.data.length };
+      },
+    },
+    agentTreasury: {
+      async updateMany(args: any) {
+        log.push({ type: "treasury.updateMany", args });
+        return { count: 1 };
+      },
+    },
+  };
   return {
     log,
     prisma: {
@@ -33,11 +52,19 @@ function makePrismaStub() {
           return [];
         },
       },
-      computePayment: {
-        async createMany(args: any) {
-          log.push({ type: "payment.createMany", args });
-          return { count: args.data.length };
+      agentTreasury: {
+        async findMany(args: any): Promise<any[]> {
+          log.push({ type: "treasury.findMany", args });
+          return [];
         },
+        async updateMany(args: any) {
+          log.push({ type: "treasury.updateMany", args });
+          return { count: 1 };
+        },
+      },
+      async $transaction(fn: (tx: any) => Promise<unknown>) {
+        log.push({ type: "$transaction" });
+        return fn(tx);
       },
     },
   };
@@ -151,6 +178,8 @@ test("buildTreasurySettlementCycleDeps wires persistPayments to prisma.computePa
       computeSeconds: 3600,
       status: "PENDING",
       scheduledFor: new Date("2026-04-26T10:00:00Z"),
+      periodStart: new Date("2026-04-26T09:00:00Z"),
+      periodEnd: new Date("2026-04-26T10:00:00Z"),
     },
   ]);
   const calls = stub.log.filter((c) => c.type === "payment.createMany");
@@ -159,6 +188,12 @@ test("buildTreasurySettlementCycleDeps wires persistPayments to prisma.computePa
   // BigInt conversion of computeSeconds — the on-the-boundary detail
   // persistComputePayments handles for us.
   assert.equal(typeof calls[0]!.args.data[0].computeSeconds, "bigint");
+  // D2: the write happens inside one $transaction together with the
+  // billing-cursor CAS.
+  assert.equal(stub.log.filter((c) => c.type === "$transaction").length, 1);
+  const cas = stub.log.find((c) => c.type === "treasury.updateMany");
+  assert.ok(cas, "expected the lastComputeBillAt cursor CAS");
+  assert.equal(cas.args.where.id, "treas_1");
 });
 
 test("buildTreasurySettlementCycleDeps persistPayments is a no-op for an empty record list", async () => {
@@ -191,8 +226,10 @@ test("buildTreasurySettlementCycleDeps forwards getComputeCost as a callable ref
   );
   const stub = makePrismaStub();
   let called = 0;
-  const myCost = async () => {
+  let observedWindow: any = null;
+  const myCost = async (_deployment: any, window: any) => {
     called += 1;
+    observedWindow = window;
     return { computeSeconds: 99, costUsd: 7.5 };
   };
   const deps = buildTreasurySettlementCycleDeps({
@@ -201,8 +238,11 @@ test("buildTreasurySettlementCycleDeps forwards getComputeCost as a callable ref
     getSolPriceUsd: async () => 100,
     intervalMs: 60_000,
   });
-  const result = await deps.getComputeCost({} as any);
+  const window = { start: null, end: new Date("2026-04-26T12:00:00Z") };
+  const result = await deps.getComputeCost({} as any, window);
   assert.equal(called, 1);
+  // The billing window (D2) flows through untouched.
+  assert.equal(observedWindow, window);
   assert.equal(result.computeSeconds, 99);
   assert.equal(result.costUsd, 7.5);
 });
@@ -226,6 +266,76 @@ test("buildTreasurySettlementCycleDeps forwards getSolPriceUsd as a callable ref
   const price = await deps.getSolPriceUsd();
   assert.equal(called, 1);
   assert.equal(price, 142.5);
+});
+
+// ============================================
+// D1: syncBalances composition
+// ============================================
+
+test("buildTreasurySettlementCycleDeps omits syncBalances when no connection is given", async () => {
+  const { buildTreasurySettlementCycleDeps } = await import(
+    "../services/buildTreasurySettlementCycleDeps.js"
+  );
+  const stub = makePrismaStub();
+  const deps = buildTreasurySettlementCycleDeps({
+    prisma: stub.prisma as any,
+    getComputeCost: async () => ({ computeSeconds: 0, costUsd: 0 }),
+    getSolPriceUsd: async () => 100,
+    intervalMs: 60_000,
+  });
+  assert.equal(deps.syncBalances, undefined);
+});
+
+test("buildTreasurySettlementCycleDeps composes syncBalances from the connection (D1 first-step)", async () => {
+  const { buildTreasurySettlementCycleDeps } = await import(
+    "../services/buildTreasurySettlementCycleDeps.js"
+  );
+  const stub = makePrismaStub();
+  // One program-initialized treasury with a valid PDA on chain.
+  stub.prisma.agentTreasury.findMany = async (args: any) => {
+    stub.log.push({ type: "treasury.findMany", args });
+    return [
+      {
+        id: "treas_1",
+        treasuryPdaAddress: "So11111111111111111111111111111111111111112",
+      },
+    ];
+  };
+  const connection = {
+    async getMultipleAccountsInfo(pdas: unknown[]) {
+      stub.log.push({ type: "rpc.getMultipleAccountsInfo", count: pdas.length });
+      return pdas.map(() => ({ lamports: 5_000_000 }));
+    },
+    async getMinimumBalanceForRentExemption(space: number) {
+      stub.log.push({ type: "rpc.getMinimumBalanceForRentExemption", space });
+      return 1_000_000;
+    },
+  };
+
+  const deps = buildTreasurySettlementCycleDeps({
+    prisma: stub.prisma as any,
+    connection: connection as any,
+    getComputeCost: async () => ({ computeSeconds: 0, costUsd: 0 }),
+    getSolPriceUsd: async () => 100,
+    intervalMs: 60_000,
+  });
+
+  assert.ok(deps.syncBalances, "expected syncBalances to be composed");
+  const result = await deps.syncBalances!();
+  assert.deepEqual(result, { synced: 1, failed: 0 });
+
+  // The full D1 chain ran: load → rent reserve → RPC balances → mirror write.
+  assert.equal(stub.log.filter((c) => c.type === "treasury.findMany").length, 1);
+  assert.equal(
+    stub.log.filter((c) => c.type === "rpc.getMultipleAccountsInfo").length,
+    1,
+  );
+  const write = stub.log.find((c) => c.type === "treasury.updateMany");
+  assert.ok(write, "expected the balance mirror write");
+  assert.equal(write.args.where.id, "treas_1");
+  // 5_000_000 lamports - 1_000_000 rent reserve.
+  assert.equal(write.args.data.solBalanceLamports, 4_000_000n);
+  assert.ok(write.args.data.balanceSyncedAt instanceof Date);
 });
 
 // ============================================

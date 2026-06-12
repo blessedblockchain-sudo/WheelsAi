@@ -21,6 +21,12 @@ function setupEnv() {
 //   - AgentToken.treasury exists                          (treasury PDA initialized)
 //   - treasury.lastComputeBillAt is NULL                  (never settled)
 //     OR treasury.lastComputeBillAt < (now - intervalMs)  (cooldown elapsed)
+//   - treasury.balanceSyncedAt is non-null AND within
+//     maxBalanceStalenessMs of now                        (D1 staleness guard)
+//
+// The staleness guard exists because solBalanceLamports is a MIRROR
+// written by runTreasuryBalanceSyncTick — a stale or never-written mirror
+// means SKIP (counted in skippedStale), never "assume 0".
 
 const LAMPORTS_PER_SOL = 1_000_000_000n;
 
@@ -42,6 +48,7 @@ interface FakeAgentDeployment {
           treasuryPdaAddress: string;
           solBalanceLamports: bigint;
           lastComputeBillAt: Date | null;
+          balanceSyncedAt: Date | null;
         } | null;
       } | null;
     } | null;
@@ -86,6 +93,9 @@ const baseDeployment = (overrides: Partial<FakeAgentDeployment> = {}): FakeAgent
           treasuryPdaAddress: "PDA",
           solBalanceLamports: LAMPORTS_PER_SOL,
           lastComputeBillAt: null,
+          // Freshly synced mirror (D1) so the staleness guard admits
+          // the row; staleness-specific tests override this.
+          balanceSyncedAt: NOW,
         },
       },
     },
@@ -237,6 +247,121 @@ test("loadSettlementBatchByPrisma includes treasuries settled before the cooldow
 });
 
 // ============================================
+// D1 staleness guard
+// ============================================
+
+test("loadSettlementBatchByPrisma skips a treasury whose balance was never synced (balanceSyncedAt null)", async () => {
+  // The schema default: balanceSyncedAt is null until the first
+  // runTreasuryBalanceSyncTick write. Settling against the default-0
+  // solBalanceLamports would fabricate insufficient_funds failures.
+  const { loadSettlementBatchByPrisma } = await import(
+    "../services/loadSettlementBatch.js"
+  );
+  const neverSynced = baseDeployment({ id: "never_synced" });
+  neverSynced.agent.listing!.agentToken!.treasury!.balanceSyncedAt = null;
+  const stub = makePrismaStub([neverSynced, baseDeployment({ id: "ok" })]);
+  const result = await loadSettlementBatchByPrisma(
+    { now: NOW, intervalMs: INTERVAL_MS },
+    { prisma: stub.prisma as any },
+  );
+  assert.deepEqual(
+    result.deployments.map((d) => d.id),
+    ["ok"],
+  );
+  assert.equal(result.skippedStale, 1);
+});
+
+test("loadSettlementBatchByPrisma skips a treasury whose balance mirror is older than the default 5-minute ceiling", async () => {
+  const { loadSettlementBatchByPrisma } = await import(
+    "../services/loadSettlementBatch.js"
+  );
+  const stale = baseDeployment({ id: "stale" });
+  stale.agent.listing!.agentToken!.treasury!.balanceSyncedAt = new Date(
+    NOW.getTime() - 6 * 60 * 1000, // 6 min ago > 5 min default
+  );
+  const stub = makePrismaStub([stale]);
+  const result = await loadSettlementBatchByPrisma(
+    { now: NOW, intervalMs: INTERVAL_MS },
+    { prisma: stub.prisma as any },
+  );
+  assert.equal(result.deployments.length, 0);
+  assert.equal(result.skippedStale, 1);
+});
+
+test("loadSettlementBatchByPrisma includes a treasury synced inside the staleness ceiling", async () => {
+  const { loadSettlementBatchByPrisma } = await import(
+    "../services/loadSettlementBatch.js"
+  );
+  const fresh = baseDeployment({ id: "fresh" });
+  fresh.agent.listing!.agentToken!.treasury!.balanceSyncedAt = new Date(
+    NOW.getTime() - 4 * 60 * 1000, // 4 min ago < 5 min default
+  );
+  const stub = makePrismaStub([fresh]);
+  const result = await loadSettlementBatchByPrisma(
+    { now: NOW, intervalMs: INTERVAL_MS },
+    { prisma: stub.prisma as any },
+  );
+  assert.equal(result.deployments.length, 1);
+  assert.equal(result.skippedStale, 0);
+});
+
+test("loadSettlementBatchByPrisma honors an injected maxBalanceStalenessMs", async () => {
+  const { loadSettlementBatchByPrisma } = await import(
+    "../services/loadSettlementBatch.js"
+  );
+  const row = baseDeployment({ id: "two_min_old" });
+  row.agent.listing!.agentToken!.treasury!.balanceSyncedAt = new Date(
+    NOW.getTime() - 2 * 60 * 1000, // 2 min ago
+  );
+  const stub = makePrismaStub([row]);
+
+  // 1-minute ceiling → the 2-minute-old mirror is stale.
+  const tight = await loadSettlementBatchByPrisma(
+    { now: NOW, intervalMs: INTERVAL_MS, maxBalanceStalenessMs: 60_000 },
+    { prisma: stub.prisma as any },
+  );
+  assert.equal(tight.deployments.length, 0);
+  assert.equal(tight.skippedStale, 1);
+
+  // 10-minute ceiling → the same mirror is fresh.
+  const loose = await loadSettlementBatchByPrisma(
+    { now: NOW, intervalMs: INTERVAL_MS, maxBalanceStalenessMs: 10 * 60_000 },
+    { prisma: stub.prisma as any },
+  );
+  assert.equal(loose.deployments.length, 1);
+  assert.equal(loose.skippedStale, 0);
+});
+
+test("loadSettlementBatchByPrisma counts skippedStale only for stale mirrors, not other exclusions", async () => {
+  // A row excluded by the cooldown (or with no token/treasury) is not a
+  // staleness skip — the counter must isolate the D1 guard so the cycle
+  // counters stay diagnosable.
+  const { loadSettlementBatchByPrisma } = await import(
+    "../services/loadSettlementBatch.js"
+  );
+  const cooldown = baseDeployment({ id: "cooldown" });
+  cooldown.agent.listing!.agentToken!.treasury!.lastComputeBillAt = new Date(
+    "2026-04-26T11:30:00Z", // 30 min ago, interval 60 min → cooldown skip
+  );
+  const stale = baseDeployment({ id: "stale" });
+  stale.agent.listing!.agentToken!.treasury!.balanceSyncedAt = null;
+  const stub = makePrismaStub([
+    cooldown,
+    stale,
+    baseDeployment({ id: "ok" }),
+  ]);
+  const result = await loadSettlementBatchByPrisma(
+    { now: NOW, intervalMs: INTERVAL_MS },
+    { prisma: stub.prisma as any },
+  );
+  assert.deepEqual(
+    result.deployments.map((d) => d.id),
+    ["ok"],
+  );
+  assert.equal(result.skippedStale, 1);
+});
+
+// ============================================
 // Mapping shape
 // ============================================
 
@@ -261,6 +386,7 @@ test("loadSettlementBatchByPrisma maps Prisma rows into DeploymentForSettlement 
             treasuryPdaAddress: "PDA42",
             solBalanceLamports: 5_000_000_000n,
             lastComputeBillAt: null,
+            balanceSyncedAt: NOW,
           },
         },
       },

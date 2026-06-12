@@ -2225,6 +2225,11 @@ model AgentTreasury {
   treasuryPdaAddress       String   @unique @map("treasury_pda_address")
   authorityBump            Int      @map("authority_bump")
   solBalanceLamports       BigInt   @default(0) @map("sol_balance_lamports")
+  // When the balance-sync tick last mirrored the on-chain PDA lamports into
+  // solBalanceLamports (spendable = lamports - rent reserve). Settlement
+  // skips treasuries whose mirror is stale — null/old means "skip", never
+  // "assume 0 or pay anyway".
+  balanceSyncedAt          DateTime? @map("balance_synced_at")
   accruedFeeLamports       BigInt   @default(0) @map("accrued_fee_lamports")
   lastComputeBillLamports  BigInt?  @map("last_compute_bill_lamports")
   lastComputeBillAt        DateTime? @map("last_compute_bill_at")
@@ -2278,10 +2283,21 @@ model ComputePayment {
   // Counts retries from FAILED → PENDING resubmissions. Lifecycle
   // shouldRetry() reads this against a maxRetries policy.
   retryCount     Int                  @default(0) @map("retry_count")
+  // Billing window this row charges for (delta billing, remediation D2).
+  // periodStart = the treasury's lastComputeBillAt cursor at decision time
+  // (epoch for the first-ever bill); periodEnd = the tick's `now`, which
+  // becomes the new cursor. The composite unique below is the DB backstop
+  // against double-billing the same window: createMany(skipDuplicates) makes
+  // a crash-replayed tick a no-op. Legacy rows keep NULL periodStart —
+  // Postgres treats NULLs as distinct in unique indexes, which is acceptable
+  // for pre-migration rows; every new write sets both bounds.
+  periodStart    DateTime?            @map("period_start")
+  periodEnd      DateTime?            @map("period_end")
   createdAt      DateTime             @default(now()) @map("created_at")
 
   treasury AgentTreasury @relation(fields: [treasuryId], references: [id], onDelete: Cascade)
 
+  @@unique([treasuryId, nosanaJobId, periodStart], map: "compute_payments_treasury_job_period_key")
   @@index([treasuryId, status])
   @@index([status, scheduledFor])
   @@map("compute_payments")

@@ -2,6 +2,7 @@ import { Queue, Worker } from "bullmq";
 
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
+import { getSolanaConnection } from "../lib/solana.js";
 import { buildTreasurySettlementCycleDeps } from "../services/buildTreasurySettlementCycleDeps.js";
 import { makeComputeCostProvider } from "../services/computeCostForDeployment.js";
 import { getNosanaClient } from "../services/nosana.js";
@@ -73,6 +74,9 @@ export async function startTreasurySettlementQueue(): Promise<void> {
     async () => {
       const deps = buildTreasurySettlementCycleDeps({
         prisma,
+        // D1: enables the balance-sync first-step so solBalanceLamports
+        // mirrors the on-chain PDA before every settlement decision.
+        connection: getSolanaConnection(),
         getComputeCost,
         getSolPriceUsd,
         intervalMs: env.TREASURY_SETTLEMENT_BATCH_INTERVAL_MS,

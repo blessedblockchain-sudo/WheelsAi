@@ -170,6 +170,106 @@ test("decideTreasurySettlement rejects a non-positive sol price", async () => {
 });
 
 // ============================================
+// decideTreasurySettlement — billing window (D2)
+// ============================================
+
+test("decideTreasurySettlement passes the [lastComputeBillAt, now] window to getComputeCost", async () => {
+  const { decideTreasurySettlement } = await import(
+    "../services/treasurySettlement.js"
+  );
+
+  const lastBill = new Date("2026-04-24T10:00:00Z");
+  const now = new Date("2026-04-24T12:00:00Z");
+  let observedWindow: any = null;
+  await decideTreasurySettlement({
+    deployment: baseDeployment(),
+    treasury: baseTreasury({ lastComputeBillAt: lastBill }),
+    now,
+    intervalMs: 60 * 60 * 1000,
+    getComputeCost: async (_deployment: any, window: any) => {
+      observedWindow = window;
+      return { computeSeconds: 3600, costUsd: 0.9 };
+    },
+    solPriceUsd: 200,
+  });
+
+  assert.equal(
+    (observedWindow.start as Date).toISOString(),
+    lastBill.toISOString(),
+  );
+  assert.equal((observedWindow.end as Date).toISOString(), now.toISOString());
+});
+
+test("decideTreasurySettlement uses a null window start for a never-billed treasury", async () => {
+  // start: null = "no lower bound": the metering layer clamps to each
+  // job's own start time.
+  const { decideTreasurySettlement } = await import(
+    "../services/treasurySettlement.js"
+  );
+
+  let observedWindow: any = null;
+  await decideTreasurySettlement({
+    deployment: baseDeployment(),
+    treasury: baseTreasury({ lastComputeBillAt: null }),
+    now: new Date("2026-04-24T12:00:00Z"),
+    intervalMs: 60 * 60 * 1000,
+    getComputeCost: async (_deployment: any, window: any) => {
+      observedWindow = window;
+      return { computeSeconds: 3600, costUsd: 0.9 };
+    },
+    solPriceUsd: 200,
+  });
+
+  assert.equal(observedWindow.start, null);
+});
+
+test("decideTreasurySettlement pins periodStart to the cursor and periodEnd to now", async () => {
+  const { decideTreasurySettlement } = await import(
+    "../services/treasurySettlement.js"
+  );
+
+  const lastBill = new Date("2026-04-24T10:00:00Z");
+  const now = new Date("2026-04-24T12:00:00Z");
+  const result = await decideTreasurySettlement({
+    deployment: baseDeployment(),
+    treasury: baseTreasury({ lastComputeBillAt: lastBill }),
+    now,
+    intervalMs: 60 * 60 * 1000,
+    getComputeCost: async () => ({ computeSeconds: 3600, costUsd: 0.9 }),
+    solPriceUsd: 200,
+  });
+
+  assert.equal(result.action, "settle");
+  if (result.action !== "settle") return;
+  assert.equal(result.periodStart.toISOString(), lastBill.toISOString());
+  assert.equal(result.periodEnd.toISOString(), now.toISOString());
+});
+
+test("decideTreasurySettlement pins the first-ever bill's periodStart to the epoch sentinel", async () => {
+  // lastComputeBillAt null → the persisted row still needs a
+  // deterministic, non-null periodStart so the composite unique key
+  // (treasuryId, nosanaJobId, periodStart) dedupes a crash-replayed
+  // first window.
+  const { decideTreasurySettlement, FIRST_BILL_PERIOD_START } = await import(
+    "../services/treasurySettlement.js"
+  );
+
+  const result = await decideTreasurySettlement({
+    deployment: baseDeployment(),
+    treasury: baseTreasury({ lastComputeBillAt: null }),
+    now: new Date("2026-04-24T12:00:00Z"),
+    intervalMs: 60 * 60 * 1000,
+    getComputeCost: async () => ({ computeSeconds: 3600, costUsd: 0.9 }),
+    solPriceUsd: 200,
+  });
+
+  assert.equal(result.action, "settle");
+  if (result.action !== "settle") return;
+  assert.equal(result.periodStart.getTime(), FIRST_BILL_PERIOD_START.getTime());
+  assert.equal(result.periodStart.getTime(), 0);
+});
+
+// ============================================
 // runSettlementTick — orchestration over many agents
 // ============================================
 
@@ -249,4 +349,52 @@ test("runSettlementTick marks insufficient-funds agents as FAILED instead of PEN
   assert.equal(recorded.length, 1);
   assert.equal(recorded[0].status, "FAILED");
   assert.equal(recorded[0].errorMessage, "insufficient_funds");
+});
+
+test("runSettlementTick stamps the billing window onto every record — FAILED rows included", async () => {
+  // D2 invariant: one bill row per window regardless of outcome. The
+  // FAILED (insufficient_funds) row carries the same periodStart/
+  // periodEnd as a PENDING one, because persistComputePayments advances
+  // the treasury cursor off these bounds either way.
+  const { runSettlementTick } = await import("../services/treasurySettlement.js");
+  const recorded: any[] = [];
+  const lastBill = new Date("2026-04-24T10:00:00Z");
+  const now = new Date("2026-04-24T12:00:00Z");
+
+  await runSettlementTick({
+    deployments: [
+      baseDeployment({ id: "dep_ok", agentTokenId: "tok_ok" }),
+      baseDeployment({ id: "dep_broke", agentTokenId: "tok_broke" }),
+    ],
+    treasuries: new Map([
+      [
+        "tok_ok",
+        baseTreasury({ id: "t_ok", tokenId: "tok_ok", lastComputeBillAt: lastBill }),
+      ],
+      [
+        "tok_broke",
+        baseTreasury({
+          id: "t_broke",
+          tokenId: "tok_broke",
+          solBalanceLamports: 1000n,
+          lastComputeBillAt: lastBill,
+        }),
+      ],
+    ]),
+    now,
+    intervalMs: 60 * 60 * 1000,
+    solPriceUsd: 200,
+    getComputeCost: async () => ({ computeSeconds: 3600, costUsd: 0.9 }),
+    recordComputePayment: async (p: any) => {
+      recorded.push(p);
+    },
+  });
+
+  assert.equal(recorded.length, 2);
+  const statuses = recorded.map((r) => r.status).sort();
+  assert.deepEqual(statuses, ["FAILED", "PENDING"]);
+  for (const r of recorded) {
+    assert.equal((r.periodStart as Date).toISOString(), lastBill.toISOString());
+    assert.equal((r.periodEnd as Date).toISOString(), now.toISOString());
+  }
 });

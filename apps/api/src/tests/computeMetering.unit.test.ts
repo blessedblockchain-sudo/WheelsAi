@@ -200,3 +200,275 @@ test("calculateDeploymentComputeCost returns zeros for an empty job list", async
   assert.equal(result.computeSeconds, 0);
   assert.equal(result.costUsd, 0);
 });
+
+// ============================================
+// calculateJobComputeCostForWindow (delta billing, D2)
+// ============================================
+
+test("calculateJobComputeCostForWindow bills exactly the window delta for a long-running job", async () => {
+  // The D2 pin: a job running for 2 hours, with the treasury's
+  // lastComputeBillAt cursor 1 hour ago, bills exactly 1 hour — not the
+  // cumulative 2-hour lifetime the old metering re-charged every tick.
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const now = new Date("2026-01-01T12:00:00Z");
+  const deps = stubbedDeps({
+    job_long: {
+      id: "job_long",
+      market: "",
+      status: "running",
+      startTime: new Date("2026-01-01T10:00:00Z"), // started 2h ago
+      endTime: undefined, // still running
+      cost: undefined,
+    },
+  });
+  const result = await calculateJobComputeCostForWindow(
+    "job_long",
+    "4090",
+    { start: new Date("2026-01-01T11:00:00Z"), end: now }, // billed 1h ago
+    deps,
+  );
+  assert.equal(result.source, "on-chain");
+  assert.equal(result.computeSeconds, 3600);
+  assert.equal(result.costUsd, 3600 * 0.00025);
+});
+
+test("calculateJobComputeCostForWindow bills 0 for a job that ended before the window started", async () => {
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const deps = stubbedDeps({
+    job_done: {
+      id: "job_done",
+      market: "",
+      status: "completed",
+      startTime: new Date("2026-01-01T08:00:00Z"),
+      endTime: new Date("2026-01-01T09:00:00Z"), // ended before window
+      cost: undefined,
+    },
+  });
+  const result = await calculateJobComputeCostForWindow(
+    "job_done",
+    "4090",
+    {
+      start: new Date("2026-01-01T11:00:00Z"),
+      end: new Date("2026-01-01T12:00:00Z"),
+    },
+    deps,
+  );
+  assert.equal(result.computeSeconds, 0);
+  assert.equal(result.costUsd, 0);
+});
+
+test("calculateJobComputeCostForWindow clamps to jobStart for a job started mid-window", async () => {
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const deps = stubbedDeps({
+    job_mid: {
+      id: "job_mid",
+      market: "",
+      status: "running",
+      startTime: new Date("2026-01-01T11:30:00Z"), // started inside the window
+      endTime: undefined,
+      cost: undefined,
+    },
+  });
+  const result = await calculateJobComputeCostForWindow(
+    "job_mid",
+    "3060",
+    {
+      start: new Date("2026-01-01T11:00:00Z"),
+      end: new Date("2026-01-01T12:00:00Z"),
+    },
+    deps,
+  );
+  // Only the 30 minutes the job actually ran inside the window.
+  assert.equal(result.computeSeconds, 1800);
+  assert.equal(result.costUsd, 1800 * 0.0001);
+});
+
+test("calculateJobComputeCostForWindow with a null window start bills from the job's own start", async () => {
+  // First-ever bill: lastComputeBillAt is null → no lower bound; the
+  // job's full (in-window) lifetime is billable.
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const deps = stubbedDeps({
+    job_first: {
+      id: "job_first",
+      market: "",
+      status: "completed",
+      startTime: new Date("2026-01-01T10:00:00Z"),
+      endTime: new Date("2026-01-01T11:00:00Z"),
+      cost: undefined,
+    },
+  });
+  const result = await calculateJobComputeCostForWindow(
+    "job_first",
+    "4090",
+    { start: null, end: new Date("2026-01-01T12:00:00Z") },
+    deps,
+  );
+  assert.equal(result.computeSeconds, 3600);
+  assert.equal(result.costUsd, 3600 * 0.00025);
+});
+
+test("calculateJobComputeCostForWindow clamps a running job's accrual at the window end", async () => {
+  // Whatever runs after window.end belongs to the NEXT window; billing
+  // past it would double-charge once the cursor advances.
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const deps = stubbedDeps({
+    job_run: {
+      id: "job_run",
+      market: "",
+      status: "running",
+      startTime: new Date("2026-01-01T10:00:00Z"),
+      endTime: undefined,
+      cost: undefined,
+    },
+  });
+  const result = await calculateJobComputeCostForWindow(
+    "job_run",
+    "3060",
+    {
+      start: new Date("2026-01-01T11:00:00Z"),
+      end: new Date("2026-01-01T11:10:00Z"),
+    },
+    deps,
+  );
+  assert.equal(result.computeSeconds, 600);
+});
+
+test("calculateJobComputeCostForWindow prorates SDK-reported cost over the window", async () => {
+  // SDK cost is cumulative for the whole job; taking it verbatim every
+  // tick is the exact compounding-over-billing bug D2 fixes. The window
+  // pays cost * (windowSeconds / lifetimeSeconds).
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const deps = stubbedDeps({
+    job_sdk: {
+      id: "job_sdk",
+      market: "",
+      status: "completed",
+      startTime: new Date("2026-01-01T10:00:00Z"),
+      endTime: new Date("2026-01-01T12:00:00Z"), // 2h lifetime
+      cost: 1.8, // whole-job cost
+    },
+  });
+  const result = await calculateJobComputeCostForWindow(
+    "job_sdk",
+    "4090",
+    {
+      start: new Date("2026-01-01T11:00:00Z"), // last hour only
+      end: new Date("2026-01-01T12:00:00Z"),
+    },
+    deps,
+  );
+  assert.equal(result.source, "sdk-reported");
+  assert.equal(result.computeSeconds, 3600);
+  // Half the lifetime → half the SDK cost.
+  assert.ok(
+    Math.abs(result.costUsd - 0.9) < 1e-9,
+    `expected ~0.9 got ${result.costUsd}`,
+  );
+});
+
+test("calculateJobComputeCostForWindow returns zeros for queued/missing/erroring jobs", async () => {
+  setupEnv();
+  const { calculateJobComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const window = {
+    start: new Date("2026-01-01T11:00:00Z"),
+    end: new Date("2026-01-01T12:00:00Z"),
+  };
+  const deps = stubbedDeps({
+    job_queued: {
+      id: "job_queued",
+      market: "",
+      status: "queued",
+      startTime: undefined,
+      endTime: undefined,
+      cost: undefined,
+    },
+    job_thrown: new Error("RPC down"),
+  });
+
+  const queued = await calculateJobComputeCostForWindow("job_queued", "4090", window, deps);
+  assert.equal(queued.computeSeconds, 0);
+  assert.equal(queued.costUsd, 0);
+
+  const missing = await calculateJobComputeCostForWindow("job_missing", "4090", window, deps);
+  assert.equal(missing.source, "unavailable");
+  assert.equal(missing.costUsd, 0);
+
+  const thrown = await calculateJobComputeCostForWindow("job_thrown", "4090", window, deps);
+  assert.equal(thrown.source, "unavailable");
+  assert.equal(thrown.costUsd, 0);
+});
+
+// ============================================
+// calculateDeploymentComputeCostForWindow
+// ============================================
+
+test("calculateDeploymentComputeCostForWindow sums window-clamped costs across jobs", async () => {
+  setupEnv();
+  const { calculateDeploymentComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const deps = stubbedDeps({
+    // Fully inside the window: 10 minutes.
+    job_a: {
+      id: "job_a",
+      market: "",
+      status: "completed",
+      startTime: new Date("2026-01-01T11:10:00Z"),
+      endTime: new Date("2026-01-01T11:20:00Z"),
+    },
+    // Ended before the window: contributes 0.
+    job_b: {
+      id: "job_b",
+      market: "",
+      status: "completed",
+      startTime: new Date("2026-01-01T09:00:00Z"),
+      endTime: new Date("2026-01-01T10:00:00Z"),
+    },
+  });
+  const result = await calculateDeploymentComputeCostForWindow(
+    ["job_a", "job_b"],
+    "3060",
+    {
+      start: new Date("2026-01-01T11:00:00Z"),
+      end: new Date("2026-01-01T12:00:00Z"),
+    },
+    deps,
+  );
+  assert.equal(result.computeSeconds, 600);
+  assert.equal(result.costUsd, 600 * 0.0001);
+});
+
+test("calculateDeploymentComputeCostForWindow returns zeros for an empty job list", async () => {
+  setupEnv();
+  const { calculateDeploymentComputeCostForWindow } = await import(
+    "../services/computeMetering.js"
+  );
+  const result = await calculateDeploymentComputeCostForWindow(
+    [],
+    "h100",
+    { start: null, end: new Date() },
+    stubbedDeps({}),
+  );
+  assert.equal(result.computeSeconds, 0);
+  assert.equal(result.costUsd, 0);
+});

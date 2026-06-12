@@ -40,6 +40,14 @@ export interface ComputeCostResult {
   costUsd: number;
 }
 
+/** Billing window for delta metering (remediation D2). `start: null`
+ * means the treasury has never been billed — meter from each job's own
+ * start time. */
+export interface BillingWindow {
+  start: Date | null;
+  end: Date;
+}
+
 export type SettlementDecision =
   | {
       action: "skip";
@@ -52,6 +60,12 @@ export type SettlementDecision =
       amountLamports: bigint;
       insufficientFunds: boolean;
       treasuryBalanceLamports: bigint;
+      /** Window this bill charges for. periodStart pins the treasury's
+       * lastComputeBillAt cursor at decision time (epoch when null) so the
+       * (treasuryId, nosanaJobId, periodStart) unique key dedupes
+       * crash-replays; periodEnd becomes the new cursor. */
+      periodStart: Date;
+      periodEnd: Date;
     };
 
 export interface DecideInput {
@@ -62,6 +76,7 @@ export interface DecideInput {
   solPriceUsd: number;
   getComputeCost: (
     deployment: DeploymentForSettlement,
+    window: BillingWindow,
   ) => Promise<ComputeCostResult>;
 }
 
@@ -70,6 +85,12 @@ export interface DecideInput {
 // ============================================
 
 const LAMPORTS_PER_SOL = 1_000_000_000n;
+
+/** periodStart for a treasury's first-ever bill (lastComputeBillAt null).
+ * The metering window itself is unbounded below (clamped to each job's
+ * start), but the persisted row needs a deterministic non-null periodStart
+ * so the composite unique key dedupes a crash-replayed first window. */
+export const FIRST_BILL_PERIOD_START = new Date(0);
 
 export async function decideTreasurySettlement(
   input: DecideInput,
@@ -91,7 +112,15 @@ export async function decideTreasurySettlement(
     return { action: "skip", reason: "interval_not_elapsed" };
   }
 
-  const cost = await getComputeCost(deployment);
+  // Delta billing (D2): meter only [lastComputeBillAt, now]. A null
+  // cursor means "never billed" — the metering layer clamps to each
+  // job's own start time.
+  const window: BillingWindow = {
+    start: treasury.lastComputeBillAt,
+    end: now,
+  };
+
+  const cost = await getComputeCost(deployment, window);
   if (cost.computeSeconds <= 0 || cost.costUsd <= 0) {
     return { action: "skip", reason: "no_measurable_compute" };
   }
@@ -108,6 +137,8 @@ export async function decideTreasurySettlement(
     amountLamports,
     insufficientFunds: treasury.solBalanceLamports < amountLamports,
     treasuryBalanceLamports: treasury.solBalanceLamports,
+    periodStart: treasury.lastComputeBillAt ?? FIRST_BILL_PERIOD_START,
+    periodEnd: now,
   };
 }
 
@@ -123,6 +154,14 @@ export interface ComputePaymentRecord {
   status: "PENDING" | "FAILED";
   errorMessage?: string;
   scheduledFor: Date;
+  /** Billing window (D2). Always set on new rows; periodStart feeds the
+   * (treasuryId, nosanaJobId, periodStart) unique key and periodEnd is
+   * the cursor target persistComputePayments compare-and-sets onto
+   * AgentTreasury.lastComputeBillAt — for FAILED (insufficient_funds)
+   * rows too: the bill for the window exists, and re-billing the same
+   * window once funds arrive would double-charge. */
+  periodStart: Date;
+  periodEnd: Date;
 }
 
 export interface TickInput {
@@ -134,6 +173,7 @@ export interface TickInput {
   solPriceUsd: number;
   getComputeCost: (
     deployment: DeploymentForSettlement,
+    window: BillingWindow,
   ) => Promise<ComputeCostResult>;
   recordComputePayment: (record: ComputePaymentRecord) => Promise<void>;
 }
@@ -179,6 +219,8 @@ export async function runSettlementTick(input: TickInput): Promise<void> {
       status,
       errorMessage: decision.insufficientFunds ? "insufficient_funds" : undefined,
       scheduledFor: now,
+      periodStart: decision.periodStart,
+      periodEnd: decision.periodEnd,
     });
   }
 }

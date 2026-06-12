@@ -111,10 +111,148 @@ export async function calculateJobComputeCost(
   }
 }
 
+// ============================================
+// Windowed (delta) metering — remediation D2
+// ============================================
+
+/** Billing window. `start: null` means "no lower bound" — bill from each
+ * job's own start (the treasury has never been billed before). */
+export interface MeteringWindow {
+  start: Date | null;
+  end: Date;
+}
+
+/**
+ * Window-clamped compute cost for one Nosana job (remediation D2).
+ *
+ * The cumulative calculateJobComputeCost above bills the job's whole
+ * lifetime — correct for one-shot billing display, but the settlement
+ * loop runs every tick, so it must bill only the DELTA since the
+ * treasury's lastComputeBillAt cursor. Billable seconds are the overlap
+ * of [jobStart, jobEndOrWindowEnd] with [window.start ?? jobStart,
+ * window.end]:
+ *   - job ended before the window started        → 0 seconds
+ *   - job started inside the window              → clamped to jobStart
+ *   - job still running                          → clamped to window.end
+ *
+ * SDK-reported cost is cumulative for the whole job, so it is prorated
+ * over the window (effective per-second rate = cost / lifetime seconds)
+ * instead of being taken verbatim — taking it verbatim would re-bill the
+ * full lifetime every tick, the exact bug this function exists to fix.
+ */
+export async function calculateJobComputeCostForWindow(
+  jobId: string,
+  tier: string,
+  window: MeteringWindow,
+  deps?: MeteringDeps,
+): Promise<JobComputeCost> {
+  const getJobStatus = await resolveJobFetcher(deps);
+  const pricePerSecondUsd = getPricePerSecond(tier);
+
+  try {
+    const job = await getJobStatus(jobId);
+    if (!job) {
+      return {
+        jobId,
+        tier,
+        computeSeconds: 0,
+        costUsd: 0,
+        pricePerSecondUsd,
+        source: "unavailable",
+      };
+    }
+
+    const jobStartMs = job.startTime ? job.startTime.getTime() : 0;
+    if (jobStartMs <= 0) {
+      // Not started yet (queued) — nothing billable in any window.
+      return {
+        jobId,
+        tier,
+        computeSeconds: 0,
+        costUsd: 0,
+        pricePerSecondUsd,
+        source: "on-chain",
+      };
+    }
+
+    const windowEndMs = window.end.getTime();
+    // Running jobs accrue up to the window end (the tick's `now`), never
+    // beyond — the next window picks up from there.
+    const jobEndMs = job.endTime ? job.endTime.getTime() : windowEndMs;
+    const fromMs = Math.max(jobStartMs, window.start?.getTime() ?? jobStartMs);
+    const toMs = Math.min(jobEndMs, windowEndMs);
+    const computeSeconds = Math.max(0, Math.round((toMs - fromMs) / 1000));
+
+    if (job.cost !== undefined) {
+      const lifetimeSeconds = Math.max(
+        0,
+        Math.round((jobEndMs - jobStartMs) / 1000),
+      );
+      const effectiveRate =
+        lifetimeSeconds > 0 ? job.cost / lifetimeSeconds : 0;
+      return {
+        jobId,
+        tier,
+        computeSeconds,
+        costUsd: computeSeconds * effectiveRate,
+        pricePerSecondUsd,
+        source: "sdk-reported",
+      };
+    }
+
+    return {
+      jobId,
+      tier,
+      computeSeconds,
+      costUsd: computeSeconds * pricePerSecondUsd,
+      pricePerSecondUsd,
+      source: "on-chain",
+    };
+  } catch (error) {
+    logger.warn({ error, jobId, tier }, "Failed to compute windowed job cost");
+    return {
+      jobId,
+      tier,
+      computeSeconds: 0,
+      costUsd: 0,
+      pricePerSecondUsd,
+      source: "unavailable",
+    };
+  }
+}
+
+/**
+ * Window-clamped aggregate across every Nosana job attached to a
+ * deployment. This is the metering primitive the treasury-settlement
+ * worker uses (remediation D2): the window's end becomes both the
+ * payment row's periodEnd and the treasury's new lastComputeBillAt.
+ */
+export async function calculateDeploymentComputeCostForWindow(
+  jobIds: string[],
+  tier: string,
+  window: MeteringWindow,
+  deps?: MeteringDeps,
+): Promise<{ computeSeconds: number; costUsd: number }> {
+  if (jobIds.length === 0) return { computeSeconds: 0, costUsd: 0 };
+
+  const results = await Promise.all(
+    jobIds.map((id) => calculateJobComputeCostForWindow(id, tier, window, deps)),
+  );
+
+  return results.reduce(
+    (acc, r) => ({
+      computeSeconds: acc.computeSeconds + r.computeSeconds,
+      costUsd: acc.costUsd + r.costUsd,
+    }),
+    { computeSeconds: 0, costUsd: 0 },
+  );
+}
+
 /**
  * Aggregate compute cost across every Nosana job attached to a deployment.
- * Used by billing + the treasury-settlement worker (plan A3) to figure out
- * how much the agent owes for the current period.
+ * Bills CUMULATIVE job lifetime — kept for one-shot billing display
+ * surfaces. The treasury-settlement path must NOT use this; it uses
+ * calculateDeploymentComputeCostForWindow (delta billing, D2).
  */
 export async function calculateDeploymentComputeCost(
   jobIds: string[],

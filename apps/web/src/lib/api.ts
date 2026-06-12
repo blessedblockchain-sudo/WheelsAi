@@ -3559,16 +3559,9 @@ export interface TokenSnapshot {
 }
 
 export const tokenApi = {
-  create: (data: {
-    agentListingId: string;
-    name: string;
-    symbol: string;
-    description?: string;
-  }) =>
-    api<{ token: AgentToken; message: string }>("/api/tokens/create", {
-      method: "POST",
-      body: data,
-    }),
+  // NOTE: the custodial POST /api/tokens/create client was removed — the
+  // endpoint is retired (410). Launching goes through prepareLaunch +
+  // submitLaunch below (browser partial-sign flow).
 
   list: (params?: {
     sortBy?: string;

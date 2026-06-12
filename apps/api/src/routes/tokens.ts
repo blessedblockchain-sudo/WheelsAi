@@ -4,7 +4,6 @@ import { requireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import {
   checkTokenEligibility,
-  createToken,
   getToken,
   listTokens,
   getTrendingTokens,
@@ -184,36 +183,31 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
   // Authenticated routes
 
-  // POST /create - Create/tokenize an agent
-  app.post("/create", { preHandler: [requireAuth], config: { rateLimit: { max: 3, timeWindow: "1 minute" } }, schema: { tags: ["Tokens"], description: "Create bonding curve token for agent" } }, async (request, reply) => {
-    try {
-      const bodySchema = z.object({
-        agentListingId: z.string(),
-        name: z.string(),
-        symbol: z.string().max(10).toUpperCase(),
-        creatorAddress: z.string().optional(),
+  // POST /create - retired custodial mint path.
+  // The service behind this route is @deprecated and produces broken
+  // on-chain metadata (raw iconUrl as the metadata uri); the supported
+  // path is the browser-partial-sign flow at /api/tokens/launch/prepare
+  // + /submit, where the user's wallet is the on-chain creator. Kept
+  // mounted as 410 so old clients get an actionable error instead of a
+  // broken mint.
+  app.post(
+    "/create",
+    {
+      preHandler: [requireAuth],
+      schema: {
+        tags: ["Tokens"],
+        description: "Retired — use /api/tokens/launch/prepare + /submit",
+        deprecated: true,
+      },
+    },
+    async (_request, reply) => {
+      return reply.status(410).send({
+        error: "custodial_create_retired",
+        message:
+          "This endpoint has been retired. Use POST /api/tokens/launch/prepare and /api/tokens/launch/submit (browser partial-sign flow).",
       });
-
-      const body = bodySchema.parse(request.body);
-      const creatorAddress = body.creatorAddress ?? request.auth?.walletAddress;
-      if (!creatorAddress) {
-        return reply.status(400).send({
-          error: "creatorAddress is required",
-        });
-      }
-      const result = await createToken({
-        ...body,
-        creatorAddress,
-        orgId: request.auth!.orgId,
-      });
-
-      return reply.send({ token: result });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      logger.error({ error }, "Create token error");
-      return reply.status(400).send({ error: message });
     }
-  });
+  );
 
   // GET /eligibility/:agentListingId - Check token eligibility
   app.get(

@@ -52,8 +52,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body className="min-h-screen bg-gray-50 font-sans antialiased dark:bg-gray-950">
+    <html lang="en" className={`${inter.variable} dark`}>
+      <body className="min-h-screen bg-background font-sans text-foreground antialiased">
         <Providers>
           {children}
           <Toaster position="top-right" richColors />

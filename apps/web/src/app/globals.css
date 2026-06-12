@@ -3,36 +3,62 @@
 @tailwind utilities;
 
 @layer base {
+  /* Light theme — derived from the homepage navy/blue identity.
+     Brand = blue primary (#3b82f6) with cyan/purple accents; neutrals are
+     blue-tinted (cool) so light + dark share one palette. */
   :root {
-    /* Dark Theme - Matrix/Ezekiel inspired */
-    --background: 240 10% 4%;
-    --foreground: 0 0% 90%;
-    --card: 240 6% 8%;
-    --card-foreground: 0 0% 90%;
-    --popover: 240 6% 8%;
-    --popover-foreground: 0 0% 90%;
-    --primary: 120 100% 50%;
-    --primary-foreground: 240 10% 4%;
-    --secondary: 187 100% 50%;
-    --secondary-foreground: 240 10% 4%;
-    --muted: 240 4% 16%;
-    --muted-foreground: 240 5% 45%;
-    --accent: 270 70% 60%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 84% 60%;
+    --background: 0 0% 100%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 95%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 214 32% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 214 32% 94%;
+    --accent-foreground: 222 47% 11%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 240 4% 16%;
-    --input: 240 4% 16%;
-    --ring: 120 100% 50%;
+    --border: 214 32% 88%;
+    --input: 214 32% 88%;
+    --ring: 217 91% 60%;
     --radius: 0.5rem;
 
-    /* Matrix Colors */
+    /* Brand accents (shared by both modes) */
     --matrix-green: 120 100% 50%;
     --matrix-cyan: 187 100% 50%;
     --matrix-purple: 270 70% 60%;
     --glow-green: 0 255 0;
     --glow-cyan: 0 212 255;
     --glow-purple: 168 85 247;
+  }
+
+  /* Dark theme — the homepage navy palette (navy-950 bg, navy-900 cards,
+     navy-700 borders, blue primary). This is the app default (see <html>). */
+  .dark {
+    --background: 222 71% 5%;
+    --foreground: 213 31% 91%;
+    --card: 216 55% 9%;
+    --card-foreground: 213 31% 91%;
+    --popover: 216 55% 9%;
+    --popover-foreground: 213 31% 91%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 213 31% 91%;
+    --muted: 217 33% 15%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 18%;
+    --accent-foreground: 213 31% 91%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 217 30% 18%;
+    --input: 217 30% 20%;
+    --ring: 217 91% 60%;
   }
 
   /* Dashboard dark theme variables */
@@ -73,38 +99,37 @@
 
   body {
     @apply bg-background text-foreground antialiased;
-    background-color: #0a0a0f;
   }
 
-  /* Custom scrollbar for dark theme */
+  /* Custom scrollbar — navy in dark, cool-light in light */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
 
   ::-webkit-scrollbar-track {
-    background: #0a0a0f;
+    background: hsl(214, 32%, 95%);
   }
 
   .dark ::-webkit-scrollbar-track {
-    background: hsl(220, 14%, 10%);
+    background: #0a1628;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #1e1e2e;
+    background: hsl(214, 25%, 80%);
     border-radius: 4px;
   }
 
   .dark ::-webkit-scrollbar-thumb {
-    background: hsl(220, 14%, 20%);
+    background: #1a2744;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #2e2e3e;
+    background: hsl(214, 25%, 70%);
   }
 
   .dark ::-webkit-scrollbar-thumb:hover {
-    background: hsl(220, 14%, 28%);
+    background: #243352;
   }
 }
 

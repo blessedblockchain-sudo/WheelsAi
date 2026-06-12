@@ -41,20 +41,42 @@ const config: Config = {
           200: "#93c5fd",
         },
 
+        // Neutral gray remapped to a blue-tinted ramp so the dashboard's
+        // hardcoded gray-*/dark:gray-* chrome (≈59 files) follows the
+        // homepage navy identity with no per-file edits. Light end = slate
+        // (legible cool neutrals); dark end = the navy surfaces so
+        // dark:bg-gray-900 → navy-900 cards, dark:bg-gray-950 → navy-950 bg.
+        gray: {
+          50: "#f8fafc",
+          100: "#f1f5f9",
+          200: "#e2e8f0",
+          300: "#cbd5e1",
+          400: "#94a3b8",
+          500: "#64748b",
+          600: "#475569",
+          700: "#1a2744",
+          800: "#0f1d35",
+          900: "#0a1628",
+          950: "#040a18",
+        },
+
+        // Primary = the homepage blue (#3b82f6 at 500). Replaces the old
+        // matrix-green scale — `*-primary-NNN` is used ~250x across the
+        // dashboard, so this single change reskins those actions to blue.
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
-          50: "#f0fff0",
-          100: "#dcffdc",
-          200: "#bbffbb",
-          300: "#86ff86",
-          400: "#4dff4d",
-          500: "#00ff00",
-          600: "#00cc00",
-          700: "#009900",
-          800: "#006600",
-          900: "#004d00",
-          950: "#003300",
+          50: "#eff6ff",
+          100: "#dbeafe",
+          200: "#bfdbfe",
+          300: "#93c5fd",
+          400: "#60a5fa",
+          500: "#3b82f6",
+          600: "#2563eb",
+          700: "#1d4ed8",
+          800: "#1e40af",
+          900: "#1e3a8a",
+          950: "#172554",
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary))",

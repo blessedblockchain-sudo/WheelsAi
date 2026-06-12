@@ -3613,7 +3613,11 @@ export const tokenApi = {
     api<{
       eligible: boolean;
       reasons: string[];
-      listing: { id: string; title: string; agentName: string };
+      requirements: {
+        minReputation: number;
+        minDeploymentAgeDays: number;
+        creatorLockupDays: number;
+      };
     }>(`/api/tokens/eligibility/${agentListingId}`),
 
   // ============================================
@@ -3632,6 +3636,7 @@ export const tokenApi = {
   // Both endpoints require a connected wallet (request.auth.walletAddress).
   prepareLaunch: (data: {
     agentId: string;
+    name: string;
     symbol: string;
     description: string;
     imageUri?: string;
@@ -3658,6 +3663,25 @@ export const tokenApi = {
       treasuryPdaAddress: string;
       creatorLockupEnd: string;
     }>("/api/tokens/launch/submit", {
+      method: "POST",
+      body: data,
+    }),
+
+  // Recovery: the mint already broadcast on-chain but /submit's DB persist
+  // failed. Retries persistence idempotently from the same prepare token.
+  reconcileLaunch: (data: {
+    prepareToken: string;
+    mintAddress: string;
+    txSignature: string;
+  }) =>
+    api<{
+      tokenId: string;
+      mintAddress: string;
+      txSignature: string;
+      treasuryPdaAddress: string;
+      creatorLockupEnd: string;
+      alreadyExisted: boolean;
+    }>("/api/tokens/launch/reconcile", {
       method: "POST",
       body: data,
     }),

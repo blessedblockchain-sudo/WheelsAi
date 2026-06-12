@@ -29,12 +29,21 @@ import {
   Sparkles,
 } from "lucide-react";
 
+// Display label for the active launchpad. Mirrors the backend LAUNCHPAD env
+// (Bags is gated off until its adapter ships, so this is pump.fun today).
+const LAUNCHPAD_LABEL =
+  process.env.NEXT_PUBLIC_LAUNCHPAD === "bags" ? "Bags" : "pump.fun";
+
 type Step = 1 | 2 | 3 | 4;
 
 interface EligibilityResult {
   eligible: boolean;
   reasons: string[];
-  listing: { id: string; title: string; agentName: string };
+  requirements?: {
+    minReputation: number;
+    minDeploymentAgeDays: number;
+    creatorLockupDays: number;
+  };
 }
 
 export default function CreateTokenPage() {
@@ -55,14 +64,29 @@ export default function CreateTokenPage() {
   const [tokenName, setTokenName] = useState("");
   const [tokenSymbol, setTokenSymbol] = useState("");
   const [tokenDescription, setTokenDescription] = useState("");
+  // Optional creator "dev buy" in SOL (spends the user's own SOL via the
+  // wallet-signed tx). Empty string = no initial buy.
+  const [initialBuySol, setInitialBuySol] = useState("");
 
   // Step 4: Creating
   const [isCreating, setIsCreating] = useState(false);
+
+  // Recovery: set when the mint broadcast on-chain but persistence failed.
+  const [recovery, setRecovery] = useState<{
+    mintAddress: string;
+    txSignature: string;
+    prepareToken: string;
+  } | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const selectedListing = listings.find((l) => l.id === selectedListingId);
   const selectedEligibility = selectedListingId
     ? eligibility[selectedListingId]
     : null;
+  // pump.fun requires an image; the token's metadata is built from the
+  // agent's listing icon. Without one, prepare would fail server-side, so
+  // block the flow early with an actionable message.
+  const missingIcon = !!selectedListing && !selectedListing.iconUrl;
 
   useEffect(() => {
     async function loadListings() {
@@ -93,7 +117,6 @@ export default function CreateTokenPage() {
         [listingId]: {
           eligible: false,
           reasons: ["Failed to check eligibility"],
-          listing: { id: listingId, title: "", agentName: "" },
         },
       }));
     } finally {
@@ -139,13 +162,21 @@ export default function CreateTokenPage() {
     //   3. POST /launch/submit   → server broadcasts the fully-signed
     //                              tx, persists AgentToken + AgentTreasury.
     setIsCreating(true);
+    // Hoisted so the catch can hand the recovery flow the same prepare
+    // token if persistence fails after the mint is already on-chain.
+    let prepareTokenForRecovery: string | null = null;
     try {
+      const parsedBuy = Number(initialBuySol);
       const prepared = await tokenApi.prepareLaunch({
         agentId: selectedListing.agentId,
+        name: tokenName,
         symbol: tokenSymbol,
         description: tokenDescription || tokenName,
         imageUri: selectedListing.iconUrl ?? undefined,
+        initialBuySol:
+          initialBuySol && parsedBuy > 0 ? parsedBuy : undefined,
       });
+      prepareTokenForRecovery = prepared.prepareToken;
 
       // Deserialize the partial-signed tx and let the wallet add its
       // signature. wallet.signTransaction preserves existing signatures
@@ -175,6 +206,23 @@ export default function CreateTokenPage() {
       toast.success("Token created successfully!");
       router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
     } catch (err: any) {
+      // The mint broadcast but the server couldn't persist it. The token
+      // exists on-chain — switch to the recovery panel instead of dropping
+      // the user with a toast they can't act on.
+      if (
+        err?.data?.error === "persistence_failed" &&
+        prepareTokenForRecovery &&
+        err?.data?.mintAddress &&
+        err?.data?.txSignature
+      ) {
+        setRecovery({
+          mintAddress: err.data.mintAddress,
+          txSignature: err.data.txSignature,
+          prepareToken: prepareTokenForRecovery,
+        });
+        setIsCreating(false);
+        return;
+      }
       const msg =
         err?.data?.message ??
         err?.data?.error ??
@@ -185,12 +233,36 @@ export default function CreateTokenPage() {
     }
   };
 
+  const handleRetryReconcile = async () => {
+    if (!recovery) return;
+    setIsRetrying(true);
+    try {
+      const result = await tokenApi.reconcileLaunch({
+        prepareToken: recovery.prepareToken,
+        mintAddress: recovery.mintAddress,
+        txSignature: recovery.txSignature,
+      });
+      toast.success("Token linked successfully!");
+      router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
+    } catch (err: any) {
+      const msg =
+        err?.data?.message ??
+        err?.data?.error ??
+        err?.message ??
+        "Retry failed — please try again or contact support.";
+      toast.error(msg);
+      setIsRetrying(false);
+    }
+  };
+
   const canProceed = (): boolean => {
     switch (step) {
       case 1:
         return !!selectedListingId && !!selectedEligibility?.eligible;
       case 2:
-        return tokenName.length >= 2 && tokenSymbol.length >= 2;
+        return (
+          tokenName.length >= 2 && tokenSymbol.length >= 2 && !missingIcon
+        );
       case 3:
         return true;
       case 4:
@@ -206,10 +278,69 @@ export default function CreateTokenPage() {
     <div className="flex flex-col">
       <Header
         title="Create Agent Token"
-        description="Launch a token for your AI agent on the pump.fun bonding curve"
+        description={`Launch a token for your AI agent on the ${LAUNCHPAD_LABEL} bonding curve`}
       />
 
       <div className="p-8 max-w-3xl mx-auto w-full space-y-6">
+        {recovery ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Check className="h-5 w-5 text-green-600" />
+                Token launched — finishing up
+              </CardTitle>
+              <CardDescription>
+                Your token was created on-chain, but we couldn&apos;t link it
+                to your dashboard. Nothing is lost — retry to finish linking.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-lg border p-4 space-y-2 text-sm">
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground shrink-0">Mint</span>
+                  <a
+                    href={`https://solscan.io/token/${recovery.mintAddress}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-xs truncate text-primary hover:underline"
+                  >
+                    {recovery.mintAddress}
+                  </a>
+                </div>
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground shrink-0">
+                    Transaction
+                  </span>
+                  <a
+                    href={`https://solscan.io/tx/${recovery.txSignature}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono text-xs truncate text-primary hover:underline"
+                  >
+                    {recovery.txSignature}
+                  </a>
+                </div>
+              </div>
+              <Button
+                className="w-full"
+                onClick={handleRetryReconcile}
+                disabled={isRetrying}
+              >
+                {isRetrying ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <ArrowRight className="mr-2 h-4 w-4" />
+                )}
+                {isRetrying ? "Linking..." : "Retry linking"}
+              </Button>
+              <p className="text-xs text-muted-foreground text-center">
+                Still failing? Your token is safe at the mint above — contact
+                support with this address.
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+        <>
         {/* Progress bar */}
         <div className="flex items-center gap-2">
           {stepLabels.map((label, i) => (
@@ -295,7 +426,7 @@ export default function CreateTokenPage() {
                           "w-full rounded-lg border p-4 text-left transition-colors",
                           isSelected
                             ? "border-primary bg-primary/5"
-                            : "border-gray-200 hover:border-gray-300"
+                            : "border-border hover:border-primary/40"
                         )}
                       >
                         <div className="flex items-center justify-between">
@@ -360,6 +491,13 @@ export default function CreateTokenPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {missingIcon && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-600">
+                  This agent has no icon image. Add an icon to its marketplace
+                  listing before launching a token — pump.fun requires an image
+                  for the token metadata.
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium mb-1">
                   Token Name
@@ -378,13 +516,13 @@ export default function CreateTokenPage() {
                 <Input
                   value={tokenSymbol}
                   onChange={(e) =>
-                    setTokenSymbol(e.target.value.toUpperCase().slice(0, 8))
+                    setTokenSymbol(e.target.value.toUpperCase().slice(0, 10))
                   }
                   placeholder="TKNS"
-                  maxLength={8}
+                  maxLength={10}
                 />
                 <p className="text-xs text-muted-foreground mt-1">
-                  2-8 uppercase characters
+                  2-10 uppercase characters
                 </p>
               </div>
               <div>
@@ -398,6 +536,24 @@ export default function CreateTokenPage() {
                   placeholder="Describe your agent token..."
                   maxLength={500}
                 />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">
+                  Initial buy (optional)
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  inputMode="decimal"
+                  value={initialBuySol}
+                  onChange={(e) => setInitialBuySol(e.target.value)}
+                  placeholder="0"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Seed the bonding curve with your own SOL (spent from your
+                  connected wallet). Leave blank to skip.
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -467,9 +623,16 @@ export default function CreateTokenPage() {
                 <h4 className="text-sm font-medium">Anti-Scam Requirements</h4>
                 <div className="rounded-lg border p-4 space-y-2">
                   {[
-                    "Creator reputation score >= 50",
-                    "Agent uptime >= 7 days",
-                    "Creator lockup period: 30 days",
+                    `Creator reputation score >= ${
+                      selectedEligibility?.requirements?.minReputation ?? 50
+                    }`,
+                    `Agent uptime >= ${
+                      selectedEligibility?.requirements?.minDeploymentAgeDays ??
+                      7
+                    } days`,
+                    `Creator lockup period: ${
+                      selectedEligibility?.requirements?.creatorLockupDays ?? 30
+                    } days`,
                   ].map((req) => (
                     <div key={req} className="flex items-center gap-2 text-sm">
                       <Check className="h-4 w-4 text-green-600 shrink-0" />
@@ -491,7 +654,7 @@ export default function CreateTokenPage() {
                 Confirm & Create
               </CardTitle>
               <CardDescription>
-                Connect your wallet and create the token on pump.fun
+                Connect your wallet and create the token on {LAUNCHPAD_LABEL}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -526,14 +689,17 @@ export default function CreateTokenPage() {
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Platform</span>
-                      <span>pump.fun bonding curve</span>
+                      <span>{LAUNCHPAD_LABEL} bonding curve</span>
                     </div>
                   </div>
 
                   <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm text-yellow-700">
-                    By creating this token, you agree to the 30-day creator
-                    lockup period. Your tokens will be locked and cannot be sold
-                    for 30 days after creation.
+                    By creating this token, you agree to the{" "}
+                    {selectedEligibility?.requirements?.creatorLockupDays ?? 30}
+                    -day creator lockup period. Your tokens will be locked and
+                    cannot be sold for{" "}
+                    {selectedEligibility?.requirements?.creatorLockupDays ?? 30}{" "}
+                    days after creation.
                   </div>
 
                   <Button
@@ -575,6 +741,8 @@ export default function CreateTokenPage() {
             </Button>
           )}
         </div>
+        </>
+        )}
       </div>
     </div>
   );

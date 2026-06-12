@@ -2071,6 +2071,12 @@ model AgentToken {
   name              String
   symbol            String
   imageUri          String?     @map("image_uri")
+  // Which launchpad minted this token ("pumpfun" | "bags"). Discriminator
+  // for the Bags fee-claim sweep (which only operates on bags tokens).
+  // Existing rows backfill to "pumpfun".
+  launchpad         String      @default("pumpfun")
+  // Bags Meteora fee-share config key (base58). Null for pump.fun.
+  meteoraConfigKey  String?     @map("meteora_config_key")
   totalSupply       BigInt      @default(1000000000) @map("total_supply")
   curveSupply       BigInt      @default(800000000) @map("curve_supply")
   reservedSupply    BigInt      @default(200000000) @map("reserved_supply")
@@ -2112,6 +2118,7 @@ model AgentToken {
   @@index([status])
   @@index([marketCapUsd])
   @@index([volume24h])
+  @@index([launchpad])
   @@map("agent_tokens")
 }
 

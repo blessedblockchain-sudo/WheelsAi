@@ -212,6 +212,16 @@ export function validateEnv(raw: Record<string, string | undefined>) {
         "ALLOW_MOCK_CHECKOUT must not be enabled in production"
       );
     }
+    if (data.X402_ENABLED && !data.X402_SUBMIT_TRANSACTIONS) {
+      throw new EnvValidationError(
+        "X402_ENABLED requires X402_SUBMIT_TRANSACTIONS in production — verification-only mode accepts payments that never land on-chain"
+      );
+    }
+    if (data.X402_ENABLED && !data.X402_SETTLEMENT_WORKER_ENABLED) {
+      throw new EnvValidationError(
+        "X402_ENABLED requires X402_SETTLEMENT_WORKER_ENABLED in production — without the worker, verified payments are never settled on-chain"
+      );
+    }
   }
 
   return data;

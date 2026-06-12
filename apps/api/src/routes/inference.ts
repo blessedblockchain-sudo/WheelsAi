@@ -224,11 +224,15 @@ export function createInferenceRoutes(
           }),
         ]);
       } else if (billingResolution.x402PaymentId) {
+        // A5: "settled" means CONFIRMED ON-CHAIN, and only the settlement
+        // worker may say so. The route has merely verified the payment's
+        // signature/shape, so it records "verified"; the worker owns the
+        // verified -> settled transition after broadcast + confirmation.
         await prisma.x402Payment.update({
           where: { id: billingResolution.x402PaymentId },
           data: {
-            status: "settled",
-            settledAt: new Date(),
+            status: "verified",
+            verifiedAt: new Date(),
           },
         });
       }

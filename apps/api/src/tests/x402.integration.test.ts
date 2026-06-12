@@ -37,7 +37,7 @@ test("x402 handshake and paid inference flow", async () => {
   };
 
   const createdPayments: Array<{ requestId: string; txSignature: string | null }> = [];
-  let settledUpdates = 0;
+  const paymentUpdates: Array<{ data?: { status?: string } }> = [];
 
   prismaAny.deployment.findFirst = async () => ({
     id: "dep_1",
@@ -60,8 +60,8 @@ test("x402 handshake and paid inference flow", async () => {
     createdPayments.push({ requestId: data.requestId, txSignature: data.txSignature });
     return { id: "pay_1" };
   };
-  prismaAny.x402Payment.update = async () => {
-    settledUpdates += 1;
+  prismaAny.x402Payment.update = async (args: any) => {
+    paymentUpdates.push(args);
     return { id: "pay_1" };
   };
   prismaAny.usageRecord.upsert = async () => ({ id: "usage_1" });
@@ -132,7 +132,10 @@ test("x402 handshake and paid inference flow", async () => {
   assert.equal(createdPayments.length, 1);
   assert.equal(createdPayments[0]?.requestId, "req_test_1");
   assert.equal(createdPayments[0]?.txSignature, "sig_1");
-  assert.equal(settledUpdates, 1);
+  // A5: the route may only mark the payment "verified" — "settled" is
+  // reserved for the settlement worker after on-chain confirmation.
+  assert.equal(paymentUpdates.length, 1);
+  assert.equal(paymentUpdates[0]?.data?.status, "verified");
 
   await app.close();
   globalThis.fetch = originalFetch;

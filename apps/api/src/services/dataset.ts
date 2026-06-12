@@ -148,7 +148,6 @@ export async function validateDataset(
 ): Promise<DatasetValidationResult> {
   const errors: ValidationError[] = [];
   const warnings: ValidationWarning[] = [];
-  const sampleRows: Record<string, any>[] = [];
 
   try {
     // Parse S3 URL
@@ -187,7 +186,7 @@ export async function validateDataset(
 
     // Determine format from file extension or content
     const extension = key.split(".").pop()?.toLowerCase();
-    let format = declaredFormat || extension || "jsonl";
+    const format = declaredFormat || extension || "jsonl";
 
     if (format === "json" || format === "jsonl") {
       return validateJsonl(content, sizeBytes, errors, warnings);

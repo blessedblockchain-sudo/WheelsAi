@@ -123,7 +123,7 @@ export function generateTrainingJobDefinition(config: TrainingConfig): NosanaTra
   } = config;
 
   // Build training script based on method
-  const trainingScript = buildTrainingScript({
+  buildTrainingScript({
     ...config,
     loraR: loraR ?? DEFAULT_LORA_CONFIG.loraR,
     loraAlpha: loraAlpha ?? DEFAULT_LORA_CONFIG.loraAlpha,

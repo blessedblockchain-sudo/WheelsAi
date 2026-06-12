@@ -3,7 +3,6 @@ import { requireAuth } from "../middleware/auth.js";
 import {
   setup2FA,
   verify2FASetup,
-  verify2FA,
   disable2FA,
   regenerateBackupCodes,
   get2FAStatus,

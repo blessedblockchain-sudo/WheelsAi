@@ -107,11 +107,9 @@ export async function submitReputationAttestation(
   }
 
   let blockhash: string;
-  let lastValidBlockHeight: number;
   try {
     const fetched = await deps.fetchLatestBlockhash();
     blockhash = fetched.blockhash;
-    lastValidBlockHeight = fetched.lastValidBlockHeight;
   } catch (err) {
     throw new Error(
       `blockhash_unavailable: ${(err as Error).message ?? "unknown"}`,

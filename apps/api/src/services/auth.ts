@@ -214,7 +214,7 @@ export async function findOrCreateUserByWallet(walletAddress: string) {
   let user = await findUserByWallet(walletAddress);
 
   if (!user) {
-    const result = await createUser({ walletAddress });
+    await createUser({ walletAddress });
     user = await findUserByWallet(walletAddress);
   }
 

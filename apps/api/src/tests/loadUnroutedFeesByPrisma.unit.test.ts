@@ -64,7 +64,7 @@ function makePrismaStub(opts: {
       agentTreasury: {
         async findMany(args: any) {
           observed.findManyArgs = args;
-          let matched = (opts.treasuries ?? []).filter((t) => {
+          const matched = (opts.treasuries ?? []).filter((t) => {
             if (
               args.where?.programInitialized !== undefined &&
               t.programInitialized !== args.where.programInitialized

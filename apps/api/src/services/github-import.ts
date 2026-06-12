@@ -20,7 +20,7 @@ export interface DetectedAgentConfig {
 export function parseGitHubUrl(url: string): GitHubRepoInfo {
   // Handle: https://github.com/owner/repo, https://github.com/owner/repo/tree/branch, github.com/owner/repo
   const cleaned = url.replace(/\.git$/, "").replace(/\/$/, "");
-  const match = cleaned.match(/github\.com\/([^\/]+)\/([^\/]+)(?:\/tree\/(.+))?/);
+  const match = cleaned.match(/github\.com\/([^/]+)\/([^/]+)(?:\/tree\/(.+))?/);
   if (!match) throw new Error("Invalid GitHub URL. Expected: https://github.com/owner/repo");
   return { owner: match[1]!, repo: match[2]!, branch: match[3] };
 }

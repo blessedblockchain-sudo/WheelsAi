@@ -343,7 +343,7 @@ export async function verifyDomain(domainId: string, orgId: string) {
 }
 
 // Start SSL provisioning (mock implementation)
-async function startSslProvisioning(domainId: string, orgId: string) {
+async function startSslProvisioning(domainId: string, _orgId: string) {
   await prisma.customDomain.update({
     where: { id: domainId },
     data: {

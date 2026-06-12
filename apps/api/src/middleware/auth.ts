@@ -4,7 +4,7 @@ import fastifyCookie from "@fastify/cookie";
 
 import { nanoid } from "nanoid";
 import { env } from "../config/env.js";
-import { validateApiKey, isJwtBlocked, blockJwt, type JwtPayload } from "../services/auth.js";
+import { validateApiKey, isJwtBlocked, type JwtPayload } from "../services/auth.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth-middleware");
@@ -65,7 +65,7 @@ export async function registerAuthPlugins(
   app.decorateRequest("auth", null);
 
   // Global auth hook - runs on every request
-  app.addHook("onRequest", async (request, reply) => {
+  app.addHook("onRequest", async (request, _reply) => {
     request.auth = null;
 
     // Try to authenticate from various sources

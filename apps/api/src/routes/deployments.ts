@@ -49,7 +49,7 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
   /**
    * List deployments
    */
-  app.get("/", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/", { preHandler: [requireAuth] }, async (request, _reply) => {
     const { orgId } = request.auth!;
 
     const deployments = await prisma.deployment.findMany({
@@ -282,7 +282,7 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
       // Scale via Nosana if replicas changed
       if (updates.replicas && updates.replicas !== deployment.replicas) {
         try {
-          const nosana = await getNosanaClient();
+          await getNosanaClient();
           logger.info(
             { deploymentId, oldReplicas: deployment.replicas, newReplicas: updates.replicas },
             "Scaling deployment — Nosana job will be resubmitted with updated replica count"
@@ -403,11 +403,9 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
       const { deploymentId } = z
         .object({ deploymentId: z.string() })
         .parse(request.params);
-      const { lines } = z
-        .object({
-          lines: z.coerce.number().int().min(10).max(1000).default(100),
-        })
-        .parse(request.query);
+      z.object({
+        lines: z.coerce.number().int().min(10).max(1000).default(100),
+      }).parse(request.query);
 
       const deployment = await prisma.deployment.findFirst({
         where: { id: deploymentId, orgId },

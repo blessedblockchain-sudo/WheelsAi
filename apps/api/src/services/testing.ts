@@ -580,7 +580,7 @@ async function runAssertion(
             : `Expected "${expectedContent}" but got "${actualContent}"`,
       };
 
-    case "contains":
+    case "contains": {
       const contains = actualContent.toLowerCase().includes(expectedContent.toLowerCase());
       return {
         passed: contains,
@@ -588,6 +588,7 @@ async function runAssertion(
           ? `Output contains "${expectedContent}"`
           : `Output does not contain "${expectedContent}"`,
       };
+    }
 
     case "regex":
       try {
@@ -599,14 +600,14 @@ async function runAssertion(
             ? `Output matches pattern /${expectedContent}/`
             : `Output does not match pattern /${expectedContent}/`,
         };
-      } catch (e) {
+      } catch {
         return {
           passed: false,
           details: `Invalid regex pattern: ${expectedContent}`,
         };
       }
 
-    case "semantic":
+    case "semantic": {
       // Simplified semantic similarity (in production, use embeddings)
       const words1 = new Set(actualContent.toLowerCase().split(/\s+/));
       const words2 = new Set(expectedContent.toLowerCase().split(/\s+/));
@@ -620,6 +621,7 @@ async function runAssertion(
         details: `Semantic similarity: ${(similarity * 100).toFixed(1)}% (threshold: ${threshold * 100}%)`,
         score: similarity,
       };
+    }
 
     case "json_schema":
       try {
@@ -635,7 +637,7 @@ async function runAssertion(
             ? "Output matches schema"
             : "Output missing required fields",
         };
-      } catch (e) {
+      } catch {
         return {
           passed: false,
           details: "Output is not valid JSON",

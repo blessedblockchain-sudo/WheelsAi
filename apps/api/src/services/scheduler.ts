@@ -25,7 +25,7 @@ export function calculateNextRun(
   cronExpression?: string | null,
   intervalSeconds?: number | null,
   scheduledAt?: Date | null,
-  timezone: string = "UTC"
+  _timezone: string = "UTC"
 ): Date | null {
   const now = new Date();
 

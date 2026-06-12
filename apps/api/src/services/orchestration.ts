@@ -142,13 +142,12 @@ export async function executeOrchestration(id: string, orgId: string, input: {
 
   // Simulate step-by-step execution asynchronously
   const totalSteps = orch.steps.length;
-  let context: Record<string, any> = { input: input.input || {} };
+  const context: Record<string, any> = { input: input.input || {} };
 
   setTimeout(async () => {
     try {
       for (let i = 0; i < orch.steps.length; i++) {
         const step = orch.steps[i]!;
-        const stepStart = Date.now();
 
         await prisma.orchestrationStepResult.create({
           data: {

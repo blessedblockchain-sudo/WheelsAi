@@ -638,8 +638,7 @@ export async function getTokenChart(
   period: "1h" | "24h" | "7d" | "30d" = "24h"
 ) {
   // Calculate the time cutoff
-  const now = new Date();
-  let cutoff = new Date();
+  const cutoff = new Date();
 
   switch (period) {
     case "1h":

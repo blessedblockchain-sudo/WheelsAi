@@ -588,7 +588,7 @@ function isAllowedNodeUrl(url: string): boolean {
 async function proxyToNode(
   nodeUrl: string,
   body: z.infer<typeof chatCompletionSchema>,
-  request: FastifyRequest
+  _request: FastifyRequest
 ): Promise<Response> {
   // Validate node URL to prevent SSRF
   if (!isAllowedNodeUrl(nodeUrl)) {

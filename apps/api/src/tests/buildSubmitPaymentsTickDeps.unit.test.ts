@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Keypair, SystemInstruction, VersionedTransaction } from "@solana/web3.js";
+import { Keypair } from "@solana/web3.js";
 
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";

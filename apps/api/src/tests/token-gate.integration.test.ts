@@ -413,7 +413,7 @@ test("token gate resolves listing via :id param when deploymentSlug is absent", 
   prismaAny.deployment.findFirst = async () => null;
 
   let agentDeploymentCalled = false;
-  prismaAny.agentDeployment.findFirst = async ({ where }: any) => {
+  prismaAny.agentDeployment.findFirst = async ({ where: _where }: any) => {
     agentDeploymentCalled = true;
     return {
       agent: {

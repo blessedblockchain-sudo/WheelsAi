@@ -25,7 +25,6 @@ import {
   getPublisherRevenue,
   requestPayout,
   getPayoutHistory,
-  CATEGORIES,
   PRICING_MODELS,
 } from "../services/marketplace.js";
 

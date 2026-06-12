@@ -17,7 +17,7 @@
 import "dotenv/config";
 import { env } from "../config/env.js";
 import { createLogger } from "../utils/logger.js";
-import { resolveModelForPlayground, runChat, type ChatMessage } from "../services/mastra-runtime.js";
+import { runChat, type ChatMessage } from "../services/mastra-runtime.js";
 import { getAvailableFreeModels, resolveFreeModelConfig } from "../config/free-models.js";
 import { getNosanaClient } from "../services/nosana.js";
 import { generateAgentJobDefinition, type AgentConfig } from "../services/agent-runtime.js";

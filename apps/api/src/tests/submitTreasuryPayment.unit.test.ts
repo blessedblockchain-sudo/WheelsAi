@@ -123,7 +123,7 @@ test("submitTreasuryPayment throws when signerKeypair pubkey doesn't match treas
   const { submitTreasuryPayment } = await import(
     "../services/submitTreasuryPayment.js"
   );
-  const { signer, deps } = happyDeps();
+  const { deps } = happyDeps();
   const wrongTreasury = Keypair.generate().publicKey.toBase58();
 
   await assert.rejects(

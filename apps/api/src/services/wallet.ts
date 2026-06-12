@@ -17,7 +17,6 @@ import {
 import {
   getAssociatedTokenAddress,
   createTransferInstruction,
-  TOKEN_PROGRAM_ID,
   getAccount,
 } from "@solana/spl-token";
 import * as crypto from "crypto";
@@ -311,7 +310,7 @@ export async function checkTransactionAllowed(
 export async function executeTransaction(
   request: TransactionRequest
 ): Promise<{ success: boolean; txSignature?: string; error?: string }> {
-  const { walletId, recipient, amount, token, memo } = request;
+  const { walletId, recipient, amount, token } = request;
 
   // Get wallet
   const wallet = await prisma.agentWallet.findUnique({

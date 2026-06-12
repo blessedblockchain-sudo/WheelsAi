@@ -471,8 +471,8 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // List all models
-  app.get("/", { schema: { tags: ["Models"], description: "List all models" } }, async (request, reply) => {
-    const { tag, minGpu, search, engine, tier } = z
+  app.get("/", { schema: { tags: ["Models"], description: "List all models" } }, async (request, _reply) => {
+    const { tag, search, engine, tier } = z
       .object({
         tag: z.string().optional(),
         minGpu: z.string().optional(),

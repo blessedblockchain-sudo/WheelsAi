@@ -1,7 +1,4 @@
 import { prisma } from "@wheelsai/db";
-import { createLogger } from "../utils/logger.js";
-
-const logger = createLogger("collaboration");
 
 export async function listContributors(agentId: string) {
   return prisma.agentContributor.findMany({

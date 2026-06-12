@@ -35,7 +35,6 @@ export interface SearchMemoryInput {
   limit?: number;
 }
 
-type ConversationRecord = Awaited<ReturnType<typeof prisma.conversation.findFirst>>;
 type AgentLite = { id: string; name: string };
 type DeploymentLite = { id: string; name: string };
 

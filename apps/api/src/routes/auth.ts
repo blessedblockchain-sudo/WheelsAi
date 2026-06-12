@@ -2,11 +2,9 @@ import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import {
-  hashPassword,
   verifyPassword,
   createUser,
   findUserByEmail,
-  findUserByWallet,
   findOrCreateUserByWallet,
   generateNonce,
   getNonce,
@@ -184,7 +182,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get nonce for wallet signature
    */
-  app.post("/wallet/nonce", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Get wallet nonce for signing" } }, async (request, reply) => {
+  app.post("/wallet/nonce", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Get wallet nonce for signing" } }, async (request, _reply) => {
     const { walletAddress } = walletNonceSchema.parse(request.body);
 
     const nonce = await generateNonce(walletAddress);
@@ -307,7 +305,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get current user
    */
-  app.get("/me", { preHandler: [requireAuth], schema: { tags: ["Auth"], description: "Get current user", security: [{ bearerAuth: [] }] } }, async (request, reply) => {
+  app.get("/me", { preHandler: [requireAuth], schema: { tags: ["Auth"], description: "Get current user", security: [{ bearerAuth: [] }] } }, async (request, _reply) => {
     const { userId, orgId, email, walletAddress } = request.auth!;
 
     return {
@@ -349,7 +347,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   /**
    * List API keys
    */
-  app.get("/keys", { preHandler: [requireJwtAuth] }, async (request, reply) => {
+  app.get("/keys", { preHandler: [requireJwtAuth] }, async (request, _reply) => {
     const { orgId } = request.auth!;
     const keys = await listApiKeys(orgId);
     const apiKeys = keys.map((key) => ({
@@ -401,7 +399,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.delete(
     "/keys/:keyId",
     { preHandler: [requireJwtAuth] },
-    async (request, reply) => {
+    async (request, _reply) => {
       const { orgId } = request.auth!;
       const { keyId } = z.object({ keyId: z.string() }).parse(request.params);
 

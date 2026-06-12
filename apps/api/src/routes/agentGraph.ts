@@ -157,8 +157,6 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Validate graph without saving
   app.post("/agents/:agentId/graph/validate", async (request, reply) => {
-    const { userId } = request.user as { userId: string };
-    const { agentId } = request.params as { agentId: string };
     const graphData = request.body as AgentGraphData;
 
     const issues: { type: "error" | "warning"; message: string }[] = [];

@@ -9,7 +9,6 @@ const logger = createLogger("openclaw-service");
 // Encryption helpers using AES-256-GCM
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
-const TAG_LENGTH = 16;
 const OPENCLAW_PORT = 8000;
 
 const OPENCLAW_GPU_TIER_MAP: Record<string, string> = {

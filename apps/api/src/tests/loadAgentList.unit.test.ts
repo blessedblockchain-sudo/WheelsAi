@@ -22,8 +22,6 @@ function setupEnv() {
 
 const LAMPORTS_PER_SOL = 1_000_000_000n;
 
-type SortIn = "newest" | "oldest" | "name" | "treasury_balance_desc";
-
 interface FakeAgent {
   id: string;
   orgId: string;

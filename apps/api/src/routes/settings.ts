@@ -212,7 +212,7 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   });
 
   // Request nonce for wallet linking
-  fastify.post("/link-wallet/nonce", async (request, reply) => {
+  fastify.post("/link-wallet/nonce", async (request, _reply) => {
     const body = z.object({ walletAddress: z.string().min(32).max(44) }).parse(request.body);
     const nonce = await generateNonce(body.walletAddress);
     return { nonce, walletAddress: body.walletAddress };

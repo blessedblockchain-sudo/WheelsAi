@@ -479,7 +479,7 @@ export async function webhooksRoutes(app: FastifyInstance) {
     try {
       const orgId = request.user!.orgId;
       const { integrationId } = request.params;
-      const { action, payload } = request.body;
+      const { payload } = request.body;
 
       const integration = await getIntegration(orgId, integrationId);
       if (!integration) {

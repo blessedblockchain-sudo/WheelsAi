@@ -911,11 +911,6 @@ export async function getPublisherRevenue(publisherId: string) {
     where: { publisherId, status: { in: ["pending", "processing"] } },
   });
 
-  const pendingPayoutTotal = pendingPayouts.reduce(
-    (sum, p) => sum + Number(p.amountCents),
-    0
-  );
-
   return {
     totalRevenueCents: Number(profile.totalRevenueCents),
     pendingPayoutCents: Number(profile.pendingPayoutCents),

@@ -70,7 +70,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   /**
    * List datasets
    */
-  app.get("/datasets", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/datasets", { preHandler: [requireAuth] }, async (request, _reply) => {
     const { orgId } = request.auth!;
 
     const datasets = await prisma.dataset.findMany({
@@ -284,7 +284,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   /**
    * List training jobs
    */
-  app.get("/jobs", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/jobs", { preHandler: [requireAuth] }, async (request, _reply) => {
     const { orgId } = request.auth!;
     const { status } = z.object({
       status: z.enum(["pending", "queued", "running", "completed", "failed", "cancelled"]).optional(),
@@ -410,9 +410,6 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     if (!model) {
       return reply.notFound(`Model '${body.baseModelId}' not found`);
     }
-
-    // Get GPU recommendation
-    const gpuRec = recommendGpuTier(body.baseModelId, body.method);
 
     // Estimate cost
     const cost = estimateTrainingCost(
@@ -711,7 +708,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get available base models for training
    */
-  app.get("/models", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/models", { preHandler: [requireAuth] }, async (_request, _reply) => {
     // Models that support fine-tuning
     const trainableModels = await prisma.model.findMany({
       where: {

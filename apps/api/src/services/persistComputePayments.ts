@@ -2,7 +2,7 @@
  * Prisma-backed persistPayments loader for runTreasurySettlementCycle.
  *
  * The cycle emits a batch of ComputePaymentRecord rows per tick:
- *   - PENDING → deployment with positive cost; submitTreasuryPayment
+ *   - PENDING → deployment with positive cost; the submit-payments worker
  *     picks these up next.
  *   - FAILED  → insufficient funds at decision time; we still record the
  *     row so the dashboard's payment history shows the gap.

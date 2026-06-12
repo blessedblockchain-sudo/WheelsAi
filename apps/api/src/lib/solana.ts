@@ -5,7 +5,7 @@
  * sharing one instance keeps RPC quotas predictable and avoids the
  * per-worker construction cost.
  *
- * Commitment: "confirmed" — the same level used by submitTreasuryPayment
+ * Commitment: "confirmed" — the same level used by prepareTreasuryPayment
  * for blockhash fetches and the poll worker for sig status. processed
  * is too racy; finalized adds latency without buying us anything.
  */

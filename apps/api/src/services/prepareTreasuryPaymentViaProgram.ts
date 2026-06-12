@@ -1,14 +1,14 @@
 /**
- * Program-mode treasury payment submission orchestrator (plan A2/A3).
+ * Program-mode treasury payment PREPARE orchestrator (plan A2/A3;
+ * claim-first protocol, remediation D3).
  *
- * Counterpart to submitTreasuryPayment.ts (system::transfer mode). Both
- * compose the same five-step pipeline:
+ * Counterpart to prepareTreasuryPayment.ts (system::transfer mode). Both
+ * build + sign WITHOUT broadcasting:
  *
  *   1. fetchLatestBlockhash                          (Solana RPC)
  *   2. buildTreasuryProgramTransferTx                (pure)
- *   3. tx.sign([platformAuthorityKeypair])
- *   4. sendRawTransaction                            (Solana RPC)
- *   5. markSubmitted(payment, txSignature)           (pure)
+ *   3. tx.sign([platformAuthorityKeypair])           (in-memory)
+ *   4. return { txSignature, lastValidBlockHeight, signedTxB64 }
  *
  * The difference is at step 2: the tx wraps an `agent_treasury::pay_nosana`
  * instruction targeted at the deployed program, instead of a bare
@@ -18,22 +18,24 @@
  *   - recipient is not the system-program zero pubkey
  *   - treasury balance stays >= rent reserve
  *
+ * The caller persists the returned artifacts in the PENDING → SUBMITTING
+ * compare-and-set claim and broadcasts the stored bytes afterwards; see
+ * prepareTreasuryPayment.ts for why sign and send are split.
+ *
  * Errors mapped:
  *   - blockhash fetch throw → `blockhash_unavailable: <upstream>`
- *   - sendRawTransaction throw → `rpc_submit: <upstream>`
- * Same shape as submitTreasuryPayment.ts so the BullMQ submit driver can
- * map both flavours into FAILED rows uniformly.
+ * Same shape as prepareTreasuryPayment.ts so the BullMQ submit driver can
+ * map both flavours into per-row transitions uniformly.
  */
 
+import bs58 from "bs58";
 import type { Keypair, PublicKey } from "@solana/web3.js";
 
 import { buildTreasuryProgramTransferTx } from "./treasuryProgramTransferTx.js";
-import {
-  markSubmitted,
-  type ComputePaymentState,
-} from "./computePaymentLifecycle.js";
+import type { ComputePaymentState } from "./computePaymentLifecycle.js";
+import type { PreparedTreasuryPayment } from "./prepareTreasuryPayment.js";
 
-export interface SubmitTreasuryPaymentViaProgramInput {
+export interface PrepareTreasuryPaymentViaProgramInput {
   payment: ComputePaymentState;
   /** SPL mint that owns the treasury PDA. */
   mint: PublicKey;
@@ -44,27 +46,21 @@ export interface SubmitTreasuryPaymentViaProgramInput {
   amountLamports: bigint;
 }
 
-export interface SubmitTreasuryPaymentViaProgramDeps {
+export interface PrepareTreasuryPaymentViaProgramDeps {
   platformAuthorityKeypair: Keypair;
   fetchLatestBlockhash: () => Promise<{
     blockhash: string;
     lastValidBlockHeight: number;
   }>;
-  sendRawTransaction: (raw: Uint8Array) => Promise<string>;
 }
 
-export interface SubmitTreasuryPaymentViaProgramResult {
-  payment: ComputePaymentState;
-  txSignature: string;
-}
-
-export async function submitTreasuryPaymentViaProgram(
-  input: SubmitTreasuryPaymentViaProgramInput,
-  deps: SubmitTreasuryPaymentViaProgramDeps,
-): Promise<SubmitTreasuryPaymentViaProgramResult> {
+export async function prepareTreasuryPaymentViaProgram(
+  input: PrepareTreasuryPaymentViaProgramInput,
+  deps: PrepareTreasuryPaymentViaProgramDeps,
+): Promise<PreparedTreasuryPayment> {
   if (input.payment.status !== "PENDING") {
     throw new Error(
-      `submitTreasuryPaymentViaProgram: payment is ${input.payment.status}, not PENDING — refusing to double-submit`,
+      `prepareTreasuryPaymentViaProgram: payment is ${input.payment.status}, not PENDING — refusing to double-submit`,
     );
   }
   if (
@@ -72,14 +68,16 @@ export async function submitTreasuryPaymentViaProgram(
     input.platformAuthority.toBase58()
   ) {
     throw new Error(
-      "submitTreasuryPaymentViaProgram: keypair/platformAuthority mismatch",
+      "prepareTreasuryPaymentViaProgram: keypair/platformAuthority mismatch",
     );
   }
 
   let blockhash: string;
+  let lastValidBlockHeight: number;
   try {
     const fetched = await deps.fetchLatestBlockhash();
     blockhash = fetched.blockhash;
+    lastValidBlockHeight = fetched.lastValidBlockHeight;
   } catch (err) {
     throw new Error(
       `blockhash_unavailable: ${(err as Error).message ?? "unknown"}`,
@@ -96,18 +94,9 @@ export async function submitTreasuryPaymentViaProgram(
   });
   tx.sign([deps.platformAuthorityKeypair]);
 
-  let txSignature: string;
-  try {
-    txSignature = await deps.sendRawTransaction(tx.serialize());
-  } catch (err) {
-    throw new Error(
-      `rpc_submit: ${(err as Error).message ?? "unknown"}`,
-      { cause: err as Error },
-    );
-  }
-
   return {
-    payment: markSubmitted(input.payment, txSignature),
-    txSignature,
+    txSignature: bs58.encode(tx.signatures[0]!),
+    lastValidBlockHeight: BigInt(lastValidBlockHeight),
+    signedTxB64: Buffer.from(tx.serialize()).toString("base64"),
   };
 }

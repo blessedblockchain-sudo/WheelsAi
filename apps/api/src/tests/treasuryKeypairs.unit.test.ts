@@ -163,8 +163,8 @@ test("deriveTreasuryKeypair: rejects empty treasuryId", async () => {
 // ----------------------------------------------------------------------
 // makeTreasurySignerProvider — synchronous factory that the BullMQ
 // payment-submit shell injects as `treasurySignerFor`. Trivial wrapper —
-// downstream submitTreasuryPayment is the layer that defensively checks
-// signer.publicKey vs row.treasuryAddress before sending the tx, so this
+// downstream prepareTreasuryPayment is the layer that defensively checks
+// signer.publicKey vs row.treasuryAddress before signing the tx, so this
 // factory only owns the masterKey closure.
 // ----------------------------------------------------------------------
 

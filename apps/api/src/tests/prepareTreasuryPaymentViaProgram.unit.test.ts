@@ -1,23 +1,26 @@
 /**
- * Drives apps/api/src/services/submitTreasuryPaymentViaProgram.ts —
- * program-mode counterpart to submitTreasuryPayment.ts. Composes:
+ * Drives apps/api/src/services/prepareTreasuryPaymentViaProgram.ts —
+ * program-mode counterpart to prepareTreasuryPayment.ts (sign-only half
+ * of the claim-first protocol, remediation D3). Composes:
  *
  *   1. fetchLatestBlockhash                          (Solana RPC)
  *   2. buildTreasuryProgramTransferTx                (pure, already tested)
  *   3. tx.sign([platformAuthorityKeypair])           (in-memory)
- *   4. sendRawTransaction                            (Solana RPC)
- *   5. markSubmitted(payment, txSignature)           (pure, already tested)
+ *   4. return { txSignature, lastValidBlockHeight, signedTxB64 }
+ *
+ * NEVER broadcasts — its deps shape has no sendRawTransaction at all.
  *
  * In program mode, the signer is the `platform_authority` recorded
  * on-chain — verified by the Anchor program's `has_one` constraint.
  * The orchestrator validates `signer.publicKey === platformAuthority`
- * up front so a misconfiguration fails before we send a tx that the
+ * up front so a misconfiguration fails before we sign a tx that the
  * program will reject anyway.
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Keypair, PublicKey } from "@solana/web3.js";
+import bs58 from "bs58";
+import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
@@ -43,20 +46,14 @@ function basePayment() {
 
 function happyDeps() {
   const authority = Keypair.generate();
-  const sentRaw: Uint8Array[] = [];
   return {
     authority,
-    sentRaw,
     deps: {
       platformAuthorityKeypair: authority,
       fetchLatestBlockhash: async () => ({
         blockhash: VALID_BLOCKHASH,
         lastValidBlockHeight: 9000,
       }),
-      sendRawTransaction: async (raw: Uint8Array) => {
-        sentRaw.push(raw);
-        return "prog_sig_aaa";
-      },
     },
   };
 }
@@ -75,31 +72,35 @@ function happyInput(authorityPubkey: PublicKey) {
 // Happy path
 // ----------------------------------------------------------------------
 
-test("submitTreasuryPaymentViaProgram: happy path returns submitted payment + signature", async () => {
+test("prepareTreasuryPaymentViaProgram: happy path returns a signed artifact without broadcasting", async () => {
   setupEnv();
-  const { submitTreasuryPaymentViaProgram } = await import(
-    "../services/submitTreasuryPaymentViaProgram.js"
+  const { prepareTreasuryPaymentViaProgram } = await import(
+    "../services/prepareTreasuryPaymentViaProgram.js"
   );
 
-  const { authority, sentRaw, deps } = happyDeps();
+  const { authority, deps } = happyDeps();
   const input = happyInput(authority.publicKey);
 
-  const result = await submitTreasuryPaymentViaProgram(input, deps);
+  const artifact = await prepareTreasuryPaymentViaProgram(input, deps);
 
-  assert.equal(result.txSignature, "prog_sig_aaa");
-  assert.equal(result.payment.status, "SUBMITTED");
-  assert.equal(result.payment.txSignature, "prog_sig_aaa");
-  assert.equal(sentRaw.length, 1, "should send exactly one tx");
+  const tx = VersionedTransaction.deserialize(
+    new Uint8Array(Buffer.from(artifact.signedTxB64, "base64")),
+  );
+  assert.ok(tx.signatures[0]!.some((b) => b !== 0), "tx must be signed");
+  assert.equal(artifact.txSignature, bs58.encode(tx.signatures[0]!));
+  // The program-mode path now CAPTURES lastValidBlockHeight (the old
+  // submit orchestrator discarded it — the reaper was blind, D4).
+  assert.equal(artifact.lastValidBlockHeight, 9000n);
 });
 
 // ----------------------------------------------------------------------
 // Up-front guards
 // ----------------------------------------------------------------------
 
-test("submitTreasuryPaymentViaProgram: throws if payment is not PENDING", async () => {
+test("prepareTreasuryPaymentViaProgram: throws if payment is not PENDING", async () => {
   setupEnv();
-  const { submitTreasuryPaymentViaProgram } = await import(
-    "../services/submitTreasuryPaymentViaProgram.js"
+  const { prepareTreasuryPaymentViaProgram } = await import(
+    "../services/prepareTreasuryPaymentViaProgram.js"
   );
 
   const { authority, deps } = happyDeps();
@@ -109,15 +110,15 @@ test("submitTreasuryPaymentViaProgram: throws if payment is not PENDING", async 
   };
 
   await assert.rejects(
-    () => submitTreasuryPaymentViaProgram(input, deps),
+    () => prepareTreasuryPaymentViaProgram(input, deps),
     /not.*PENDING|double-submit/i,
   );
 });
 
-test("submitTreasuryPaymentViaProgram: throws if signer pubkey != platformAuthority", async () => {
+test("prepareTreasuryPaymentViaProgram: throws if signer pubkey != platformAuthority", async () => {
   setupEnv();
-  const { submitTreasuryPaymentViaProgram } = await import(
-    "../services/submitTreasuryPaymentViaProgram.js"
+  const { prepareTreasuryPaymentViaProgram } = await import(
+    "../services/prepareTreasuryPaymentViaProgram.js"
   );
 
   const { deps } = happyDeps();
@@ -127,7 +128,7 @@ test("submitTreasuryPaymentViaProgram: throws if signer pubkey != platformAuthor
   const input = happyInput(wrongAuthority);
 
   await assert.rejects(
-    () => submitTreasuryPaymentViaProgram(input, deps),
+    () => prepareTreasuryPaymentViaProgram(input, deps),
     /authority|mismatch/i,
   );
 });
@@ -136,10 +137,10 @@ test("submitTreasuryPaymentViaProgram: throws if signer pubkey != platformAuthor
 // Failure-mode mappings
 // ----------------------------------------------------------------------
 
-test("submitTreasuryPaymentViaProgram: blockhash fetch error → blockhash_unavailable", async () => {
+test("prepareTreasuryPaymentViaProgram: blockhash fetch error → blockhash_unavailable", async () => {
   setupEnv();
-  const { submitTreasuryPaymentViaProgram } = await import(
-    "../services/submitTreasuryPaymentViaProgram.js"
+  const { prepareTreasuryPaymentViaProgram } = await import(
+    "../services/prepareTreasuryPaymentViaProgram.js"
   );
 
   const { authority } = happyDeps();
@@ -152,36 +153,30 @@ test("submitTreasuryPaymentViaProgram: blockhash fetch error → blockhash_unava
     }> => {
       throw new Error("rpc 503");
     },
-    sendRawTransaction: async () => "shouldnt_get_here",
   };
 
   await assert.rejects(
-    () => submitTreasuryPaymentViaProgram(input, deps),
+    () => prepareTreasuryPaymentViaProgram(input, deps),
     /blockhash_unavailable.*rpc 503/,
   );
 });
 
-test("submitTreasuryPaymentViaProgram: send error → rpc_submit", async () => {
+// ----------------------------------------------------------------------
+// Artifact pair coherence
+// ----------------------------------------------------------------------
+
+test("prepareTreasuryPaymentViaProgram: the b64 bytes carry exactly txSignature", async () => {
   setupEnv();
-  const { submitTreasuryPaymentViaProgram } = await import(
-    "../services/submitTreasuryPaymentViaProgram.js"
+  const { prepareTreasuryPaymentViaProgram } = await import(
+    "../services/prepareTreasuryPaymentViaProgram.js"
   );
-
-  const { authority } = happyDeps();
-  const input = happyInput(authority.publicKey);
-  const deps = {
-    platformAuthorityKeypair: authority,
-    fetchLatestBlockhash: async () => ({
-      blockhash: VALID_BLOCKHASH,
-      lastValidBlockHeight: 1,
-    }),
-    sendRawTransaction: async (): Promise<string> => {
-      throw new Error("preflight failed: HasOne");
-    },
-  };
-
-  await assert.rejects(
-    () => submitTreasuryPaymentViaProgram(input, deps),
-    /rpc_submit.*HasOne/,
+  const { authority, deps } = happyDeps();
+  const artifact = await prepareTreasuryPaymentViaProgram(
+    happyInput(authority.publicKey),
+    deps,
   );
+  const decoded = VersionedTransaction.deserialize(
+    new Uint8Array(Buffer.from(artifact.signedTxB64, "base64")),
+  );
+  assert.equal(bs58.encode(decoded.signatures[0]!), artifact.txSignature);
 });

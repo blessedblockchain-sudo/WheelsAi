@@ -7,8 +7,9 @@
  * disagree with worker clock), so the loader's filter is a SQL-side
  * narrowing, not the source of truth.
  *
- * Includes the full ComputePaymentState fields + submittedAt so the
- * classifier has everything it needs.
+ * Includes the full ComputePaymentState fields + submittedAt +
+ * lastValidBlockHeight so the classifier and the tick's chain-evidence
+ * gate (remediation D4) have everything they need.
  */
 
 import type { ReaperPayment } from "./reapStuckSubmissions.js";
@@ -31,6 +32,9 @@ interface PrismaStub {
         paidAt: Date | null;
         retryCount: number;
         submittedAt: Date | null;
+        // Optional in the stub for pre-D3 test fixtures; nullable in the
+        // schema (legacy rows submitted before the claim-first migration).
+        lastValidBlockHeight?: bigint | null;
       }>
     >;
   };
@@ -69,5 +73,6 @@ export async function loadStuckCandidatesByPrisma(
     paidAt: r.paidAt,
     retryCount: r.retryCount,
     submittedAt: r.submittedAt,
+    lastValidBlockHeight: r.lastValidBlockHeight ?? null,
   }));
 }

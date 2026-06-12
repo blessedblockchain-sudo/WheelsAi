@@ -34,6 +34,7 @@ interface FakePayment {
   paidAt: Date | null;
   retryCount: number;
   submittedAt: Date | null;
+  lastValidBlockHeight?: bigint | null;
 }
 
 function makePrismaStub(payments: FakePayment[]) {
@@ -237,6 +238,24 @@ test("loadStuckCandidatesByPrisma returns the full ReaperPayment shape", async (
   assert.equal((row.submittedAt as Date).toISOString(), submittedAt.toISOString());
 });
 
+test("loadStuckCandidatesByPrisma surfaces lastValidBlockHeight (D4 chain gate) and defaults it to null on legacy rows", async () => {
+  setupEnv();
+  const { loadStuckCandidatesByPrisma } = await import(
+    "../services/loadStuckCandidatesByPrisma.js"
+  );
+  const stub = makePrismaStub([
+    samplePayment({ id: "claim_first", lastValidBlockHeight: 424242n }),
+    samplePayment({ id: "legacy" }), // column absent in the fixture
+  ]);
+  const result = await loadStuckCandidatesByPrisma(
+    { now: NOW, maxAgeSeconds: 300, limit: 100 },
+    { prisma: stub.prisma as any },
+  );
+  const byId = new Map(result.map((r) => [r.id, r]));
+  assert.equal(byId.get("claim_first")!.lastValidBlockHeight, 424242n);
+  assert.equal(byId.get("legacy")!.lastValidBlockHeight, null);
+});
+
 // ============================================
 // End-to-end: feed loader output into the reaper tick
 // ============================================
@@ -265,6 +284,9 @@ test("loadStuckCandidatesByPrisma output is consumable by runReapStuckTick", asy
           { now, maxAgeSeconds: 300, limit: 100 },
           { prisma: stub.prisma as any },
         ),
+      // D4 chain-evidence stubs: expired + unseen → reapable.
+      getCurrentBlockHeight: async () => 1_000_000n,
+      hasSignatureLanded: async () => false,
       persistTransition: async (id, t) => {
         persisted.push({ id, ...t });
       },

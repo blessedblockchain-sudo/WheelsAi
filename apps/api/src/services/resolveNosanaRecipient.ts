@@ -10,19 +10,18 @@
  * and testable.
  *
  * Failure mode policy:
- *   - getJobStatus throws → rethrow (RPC outage; submit driver records FAILED)
+ *   - getJobStatus throws → rethrow (RPC outage)
  *   - getJobStatus → null → throw "not found"
  *   - nodePubkey missing/empty → throw "no host yet"  (job is queued; retry next tick)
  *
- * Caller (runSubmitPaymentsTick) catches these into the per-row {ok:false}
- * branch which marks the row FAILED with errorMessage. Because the tick
- * is repeatable and rows that fail are not retried automatically by this
- * worker (they need explicit re-PENDING via lifecycle.shouldRetry), the
- * "queued job" case currently puts a row into FAILED rather than holding.
- * That's acceptable for now — a payment whose job hasn't started yet
- * shouldn't even be PENDING; the upstream settlement cycle is what
- * decides scheduling, and it would only emit a row for a job that's
- * already produced compute time.
+ * Containment (remediation D5): resolution is invoked PER ROW by
+ * runSubmitPaymentsTick — never inside the batch loader — so a throw
+ * here is contained to its own payment. The driver catches it, leaves
+ * the row PENDING with resolutionAttempts incremented (transient
+ * failures like "no host yet" or RPC blips simply retry next tick),
+ * and PARKs the row after MAX_RESOLUTION_ATTEMPTS so a poison job
+ * (e.g. a deleted Nosana job) can't occupy the queue forever. Every
+ * other row in the batch still submits in the same tick.
  */
 
 import type { NosanaJob } from "./nosana.js";

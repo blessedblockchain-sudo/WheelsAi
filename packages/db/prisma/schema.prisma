@@ -2257,11 +2257,31 @@ model AgentTreasury {
   @@map("agent_treasuries")
 }
 
+// ComputePayment state machine (claim-first submit protocol, remediation D3/D5):
+//
+//   PENDING ──claim (CAS + sign artifacts)──> SUBMITTING ──broadcast ok──> SUBMITTED ──poller──> CONFIRMED
+//      │                                          │                            │
+//      │                                          │ blockhash expired AND      │ poller saw on-chain err,
+//      │                                          │ signature provably unseen  │ or reaper proved
+//      │                                          ▼ (claim fields cleared)     ▼ expired + unseen
+//      │<──────────── safe-expiry recovery ── PENDING                       FAILED
+//      │
+//      ├── prepare/sign failure ──> FAILED  (terminal; no tx bytes ever existed)
+//      └── recipient-resolution failure ──> stays PENDING with resolution_attempts += 1;
+//          after the 5th failed attempt ──> PARKED (terminal until operator re-PENDINGs)
+//
+// SUBMITTING rows are owned by the submit worker's recovery scan: the signed
+// bytes + signature + lastValidBlockHeight persisted at claim time make
+// re-broadcast idempotent (same signature ⇒ at most one effective transfer).
+// A SUBMITTING row is NEVER re-signed; it either lands (→ SUBMITTED), is
+// re-broadcast verbatim, or is proven expired-and-unseen (→ back to PENDING).
 enum ComputePaymentStatus {
   PENDING
+  SUBMITTING
   SUBMITTED
   CONFIRMED
   FAILED
+  PARKED
 }
 
 model ComputePayment {
@@ -2274,11 +2294,26 @@ model ComputePayment {
   status         ComputePaymentStatus @default(PENDING)
   errorMessage   String?              @map("error_message")
   scheduledFor   DateTime             @default(now()) @map("scheduled_for")
-  // Set by persistSubmitTransition when status moves PENDING → SUBMITTED.
-  // Reaper reads this to detect blockhash-expired stuck submissions
-  // (a row whose submittedAt is older than the blockhash window will
-  // never confirm).
+  // Set when status moves SUBMITTING → SUBMITTED (broadcast accepted).
+  // Reaper uses this as the wall-clock TRIGGER for which rows to examine;
+  // the actual FAIL decision additionally requires on-chain evidence
+  // (block height past lastValidBlockHeight + signature unseen).
   submittedAt    DateTime?            @map("submitted_at")
+  // Claim-first protocol fields (remediation D3). Written atomically by the
+  // PENDING → SUBMITTING compare-and-set BEFORE any broadcast:
+  //   signedTxB64          — the fully signed tx bytes; recovery re-broadcasts
+  //                          these verbatim (same signature, no double-spend).
+  //   lastValidBlockHeight — expiry bound of the signed tx's blockhash. Once
+  //                          the chain passes it AND the signature is unseen
+  //                          (searchTransactionHistory), re-signing is safe.
+  // Cleared when safe-expiry recovery returns the row to PENDING.
+  signedTxB64    String?              @map("signed_tx_b64")
+  lastValidBlockHeight BigInt?        @map("last_valid_block_height")
+  // Counts recipient-resolution failures (Nosana job → host pubkey). The
+  // submit worker retries a PENDING row whose resolution failed (transient
+  // "no host yet" / RPC blips) and PARKs the row once this reaches 5 so a
+  // poison job can't occupy the queue forever (remediation D5).
+  resolutionAttempts Int              @default(0) @map("resolution_attempts")
   paidAt         DateTime?            @map("paid_at")
   // Counts retries from FAILED → PENDING resubmissions. Lifecycle
   // shouldRetry() reads this against a maxRetries policy.

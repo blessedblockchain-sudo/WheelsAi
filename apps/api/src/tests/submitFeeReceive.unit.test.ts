@@ -11,7 +11,7 @@
  * record and increment its "last_fee_routed_at" cursor.
  *
  * Same error-tag prefixes as the outflow orchestrator
- * (submitTreasuryPaymentViaProgram) so the worker layer can map both
+ * (prepareTreasuryPaymentViaProgram) so the worker layer can map both
  * uniformly into a single retryable-error policy.
  */
 

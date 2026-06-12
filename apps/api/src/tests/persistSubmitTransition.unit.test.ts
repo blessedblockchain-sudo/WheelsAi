@@ -11,19 +11,21 @@ function setupEnv() {
 }
 
 // Drives apps/api/src/services/persistSubmitTransition.ts — the
-// conditional-update Prisma writer for runSubmitPaymentsTick.
+// conditional-update Prisma writer for runSubmitPaymentsTick under the
+// claim-first protocol (remediation D3/D5).
 //
-// Race safety: the writer uses updateMany WHERE id = X AND status = 'PENDING'.
-// If another worker already advanced the row (e.g., manual operator
-// submit) the count returns 0 and we throw — preventing a double-submit
-// where two on-chain txs both move funds.
+//   submitted         → SUBMITTING → SUBMITTED   (guards on SUBMITTING;
+//                       count 0 throws — a claimed row whose bytes are on
+//                       the wire must never be silently lost)
+//   failed            → PENDING → FAILED          (pre-claim prepare errors)
+//   resolution_failed → stays PENDING, attempts++ (transient; retry next tick)
+//   parked            → PENDING → PARKED, attempts++ (poison row)
 //
-// Submitted-marker: txSignature is the load-bearing column. Combined
-// with the unique index on tx_signature, a duplicate submit attempt
-// would also crash on the unique constraint as a defense-in-depth.
+// The PENDING-guarded family treats count 0 as a benign lost race (another
+// worker claimed the row first; nothing of ours is on-chain pre-claim).
 
 interface UpdateManyArgs {
-  where: { id: string; status: "PENDING" };
+  where: { id: string; status: string };
   data: any;
 }
 
@@ -43,10 +45,10 @@ function makePrismaStub(opts: { matchedCount: number }) {
 }
 
 // ============================================
-// Submitted transition
+// Submitted transition (SUBMITTING → SUBMITTED)
 // ============================================
 
-test("persistSubmitTransition writes SUBMITTED + txSignature + submittedAt for an ok submit", async () => {
+test("persistSubmitTransition writes SUBMITTED + submittedAt guarded on status=SUBMITTING", async () => {
   setupEnv();
   const { persistSubmitTransition } = await import(
     "../services/persistSubmitTransition.js"
@@ -60,13 +62,14 @@ test("persistSubmitTransition writes SUBMITTED + txSignature + submittedAt for a
   );
   const call = stub.log[0].args;
   assert.equal(call.where.id, "cp_1");
-  assert.equal(call.where.status, "PENDING");
+  // Claim-first: the row was already claimed (PENDING→SUBMITTING with the
+  // signature persisted); this write only completes SUBMITTING→SUBMITTED.
+  assert.equal(call.where.status, "SUBMITTING");
   assert.equal(call.data.status, "SUBMITTED");
-  assert.equal(call.data.txSignature, "SIG_1");
   assert.equal((call.data.submittedAt as Date).toISOString(), now.toISOString());
 });
 
-test("persistSubmitTransition does NOT write paidAt or errorMessage on a successful submit", async () => {
+test("persistSubmitTransition does NOT write paidAt and clears errorMessage on a successful submit", async () => {
   // paidAt is set by the poll worker on CONFIRMED. errorMessage is null.
   // Writing them now would either lie about confirmation or carry
   // stale error text from a previous attempt.
@@ -81,16 +84,46 @@ test("persistSubmitTransition does NOT write paidAt or errorMessage on a success
   );
   const data = stub.log[0].args.data;
   assert.equal("paidAt" in data, false);
-  // errorMessage explicitly cleared (null) since we successfully submitted
-  // — the column stays null on success.
   assert.ok(data.errorMessage === null || !("errorMessage" in data));
 });
 
+test("persistSubmitTransition does NOT rewrite the txSignature on submitted (the claim already persisted it)", async () => {
+  const { persistSubmitTransition } = await import(
+    "../services/persistSubmitTransition.js"
+  );
+  const stub = makePrismaStub({ matchedCount: 1 });
+  await persistSubmitTransition(
+    "cp_1",
+    { type: "submitted", txSignature: "SIG_1" },
+    { prisma: stub.prisma as any, now: new Date() },
+  );
+  assert.equal("txSignature" in stub.log[0].args.data, false);
+});
+
+test("persistSubmitTransition throws when the submitted CAS matches no row (claimed row went missing)", async () => {
+  // count===0 on SUBMITTING→SUBMITTED is serious: we hold a row whose
+  // signed bytes are potentially on the wire and someone moved it from
+  // under us. Throwing makes BullMQ retry; the recovery scan settles the
+  // row from on-chain evidence.
+  const { persistSubmitTransition } = await import(
+    "../services/persistSubmitTransition.js"
+  );
+  const stub = makePrismaStub({ matchedCount: 0 });
+  await assert.rejects(
+    persistSubmitTransition(
+      "cp_1",
+      { type: "submitted", txSignature: "SIG_1" },
+      { prisma: stub.prisma as any, now: new Date() },
+    ),
+    /not in SUBMITTING/,
+  );
+});
+
 // ============================================
-// Failed transition
+// Failed transition (PENDING → FAILED, pre-claim)
 // ============================================
 
-test("persistSubmitTransition writes FAILED + errorMessage for a failed submit", async () => {
+test("persistSubmitTransition writes FAILED + errorMessage guarded on status=PENDING", async () => {
   const { persistSubmitTransition } = await import(
     "../services/persistSubmitTransition.js"
   );
@@ -101,13 +134,15 @@ test("persistSubmitTransition writes FAILED + errorMessage for a failed submit",
     { prisma: stub.prisma as any, now: new Date() },
   );
   const call = stub.log[0].args;
+  assert.equal(call.where.status, "PENDING");
   assert.equal(call.data.status, "FAILED");
   assert.equal(call.data.errorMessage, "blockhash_unavailable");
 });
 
 test("persistSubmitTransition does NOT write a txSignature on a failed submit", async () => {
-  // Failed = nothing landed, no sig to record. Writing one would
-  // make the row indistinguishable from a SUBMITTED-but-stuck row.
+  // Failed = prepare threw pre-claim; no signed tx exists, no sig to
+  // record. Writing one would make the row indistinguishable from a
+  // claimed/submitted row.
   const { persistSubmitTransition } = await import(
     "../services/persistSubmitTransition.js"
   );
@@ -121,41 +156,62 @@ test("persistSubmitTransition does NOT write a txSignature on a failed submit", 
   assert.ok(data.txSignature === null || data.txSignature === undefined);
 });
 
+test("persistSubmitTransition treats count=0 on failed as a benign lost race (no throw)", async () => {
+  // Another replica claimed the row between our load and our failure
+  // write. Pre-claim there is nothing of ours on-chain, so the right
+  // move is to yield silently — throwing would abort the whole tick
+  // and punish every other row in the batch.
+  const { persistSubmitTransition } = await import(
+    "../services/persistSubmitTransition.js"
+  );
+  const stub = makePrismaStub({ matchedCount: 0 });
+  await persistSubmitTransition(
+    "cp_1",
+    { type: "failed", errorMessage: "x" },
+    { prisma: stub.prisma as any, now: new Date() },
+  );
+  assert.equal(stub.log.length, 1); // attempted, swallowed the miss
+});
+
 // ============================================
-// Race safety
+// resolution_failed (stays PENDING; D5)
 // ============================================
 
-test("persistSubmitTransition guards on status=PENDING in the where clause", async () => {
-  // The conditional update is the race-safety primitive — without it,
-  // two workers picking up the same row would both submit and we'd
-  // pay twice. Pin the where clause.
+test("persistSubmitTransition resolution_failed keeps the row PENDING and increments resolutionAttempts", async () => {
   const { persistSubmitTransition } = await import(
     "../services/persistSubmitTransition.js"
   );
   const stub = makePrismaStub({ matchedCount: 1 });
   await persistSubmitTransition(
     "cp_1",
-    { type: "submitted", txSignature: "SIG_1" },
+    { type: "resolution_failed", errorMessage: "no host yet" },
     { prisma: stub.prisma as any, now: new Date() },
   );
-  assert.equal(stub.log[0].args.where.status, "PENDING");
+  const call = stub.log[0].args;
+  assert.equal(call.where.status, "PENDING");
+  // No status write — the row STAYS PENDING so the next tick retries.
+  assert.equal("status" in call.data, false);
+  assert.deepEqual(call.data.resolutionAttempts, { increment: 1 });
+  assert.equal(call.data.errorMessage, "no host yet");
 });
 
-test("persistSubmitTransition throws when no row matched (stolen by another worker)", async () => {
-  // count===0 means the row has moved out of PENDING since we loaded
-  // it — either another worker stole it or the operator manually
-  // failed it. Throwing is correct: we cannot leave the in-memory
-  // tx unrecorded.
+// ============================================
+// parked (PENDING → PARKED; D5)
+// ============================================
+
+test("persistSubmitTransition parked moves PENDING → PARKED with attempts incremented and the error recorded", async () => {
   const { persistSubmitTransition } = await import(
     "../services/persistSubmitTransition.js"
   );
-  const stub = makePrismaStub({ matchedCount: 0 });
-  await assert.rejects(
-    persistSubmitTransition(
-      "cp_1",
-      { type: "submitted", txSignature: "SIG_1" },
-      { prisma: stub.prisma as any, now: new Date() },
-    ),
-    /not in PENDING/,
+  const stub = makePrismaStub({ matchedCount: 1 });
+  await persistSubmitTransition(
+    "cp_1",
+    { type: "parked", errorMessage: "Nosana job not found: job_x" },
+    { prisma: stub.prisma as any, now: new Date() },
   );
+  const call = stub.log[0].args;
+  assert.equal(call.where.status, "PENDING");
+  assert.equal(call.data.status, "PARKED");
+  assert.deepEqual(call.data.resolutionAttempts, { increment: 1 });
+  assert.equal(call.data.errorMessage, "Nosana job not found: job_x");
 });

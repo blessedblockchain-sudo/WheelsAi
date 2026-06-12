@@ -21,7 +21,13 @@ function setupEnv() {
 // Loader returns null when the agent has no treasury (not tokenized) —
 // the route renders 404, distinct from "[] payments yet" which is 200.
 
-type Status = "PENDING" | "SUBMITTED" | "CONFIRMED" | "FAILED";
+type Status =
+  | "PENDING"
+  | "SUBMITTING"
+  | "SUBMITTED"
+  | "CONFIRMED"
+  | "FAILED"
+  | "PARKED";
 
 interface FakePayment {
   id: string;

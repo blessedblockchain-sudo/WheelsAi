@@ -1,23 +1,40 @@
 /**
- * Conditional-update Prisma writer for the submit-payment driver.
+ * Conditional-update Prisma writer for the submit-payment driver
+ * (claim-first protocol, remediation D3/D5).
  *
- * Race safety: the writer uses updateMany WHERE id = X AND status =
- * 'PENDING'. If another worker already advanced the row (e.g. manual
- * operator submit), the count returns 0 and we throw — preventing a
- * double-submit where two on-chain txs both move funds.
+ * Why claim-first: signing is NOT deterministic across ticks — each tick
+ * fetches a FRESH blockhash, so two signing passes over the same payment
+ * produce two different, independently valid transfers. (An earlier
+ * version of this comment claimed determinism made a re-submit harmless;
+ * that was false.) The protection is ordering, not determinism: the row
+ * is claimed (PENDING → SUBMITTING, persisting txSignature +
+ * lastValidBlockHeight + signedTxB64 — see claimPendingPayment.ts)
+ * BEFORE any broadcast, so a crash or replica overlap can only ever
+ * re-broadcast the SAME stored bytes, never re-sign.
  *
- * Defense-in-depth: the schema's unique tx_signature constraint will
- * also crash a second submit attempt if the conditional update
- * somehow slipped through (different sig from the same id is
- * impossible because submitTreasuryPayment is deterministic given a
- * keypair + blockhash).
+ * Transitions written here:
+ *   - submitted         → SUBMITTING → SUBMITTED, submittedAt = now,
+ *                         errorMessage cleared. (txSignature was already
+ *                         persisted by the claim.) count===0 THROWS: we
+ *                         hold a claimed row whose bytes are on the wire —
+ *                         losing track of it silently is never OK. The
+ *                         tick bubbles, BullMQ retries, and the recovery
+ *                         scan settles the row from on-chain evidence.
+ *   - failed            → PENDING → FAILED (terminal), errorMessage set.
+ *                         Pre-claim failures only (prepare/sign threw) —
+ *                         no tx bytes exist, txSignature stays null.
+ *   - resolution_failed → row STAYS PENDING, resolutionAttempts += 1,
+ *                         errorMessage records the resolution error. The
+ *                         next tick retries (D5: transient "no host yet").
+ *   - parked            → PENDING → PARKED, resolutionAttempts += 1,
+ *                         errorMessage set. Poison row pulled from the
+ *                         queue until an operator re-PENDINGs it.
  *
- * Field policy:
- *   - submitted → status SUBMITTED, txSignature, submittedAt = now,
- *                 errorMessage cleared to null
- *   - failed    → status FAILED, errorMessage, txSignature stays null
- *                 (no sig landed; writing one would make the row
- *                 indistinguishable from SUBMITTED-but-stuck)
+ * count semantics for the three PENDING-guarded transitions: count===0
+ * means another worker claimed/moved the row mid-flight — a BENIGN race
+ * (nothing of ours is on-chain pre-claim), so we return without
+ * throwing; aborting the tick would punish every other row in the batch
+ * for a race that resolved correctly.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
@@ -34,7 +51,9 @@ type PrismaStub =
 
 export type SubmitTransition =
   | { type: "submitted"; txSignature: string }
-  | { type: "failed"; errorMessage: string };
+  | { type: "failed"; errorMessage: string }
+  | { type: "resolution_failed"; errorMessage: string }
+  | { type: "parked"; errorMessage: string };
 
 export interface PersistSubmitTransitionDeps {
   prisma: PrismaStub;
@@ -46,35 +65,53 @@ export async function persistSubmitTransition(
   transition: SubmitTransition,
   deps: PersistSubmitTransitionDeps,
 ): Promise<void> {
-  const data: Record<string, unknown> =
-    transition.type === "submitted"
-      ? {
-          status: "SUBMITTED",
-          txSignature: transition.txSignature,
-          submittedAt: deps.now,
-          errorMessage: null,
-        }
-      : {
-          status: "FAILED",
-          errorMessage: transition.errorMessage,
-          txSignature: null,
-        };
-
-  const result = await (deps.prisma as never as {
+  const prisma = deps.prisma as never as {
     computePayment: {
       updateMany: (args: {
-        where: { id: string; status: "PENDING" };
+        where: { id: string; status: "PENDING" | "SUBMITTING" };
         data: Record<string, unknown>;
       }) => Promise<{ count: number }>;
     };
-  }).computePayment.updateMany({
+  };
+
+  if (transition.type === "submitted") {
+    const result = await prisma.computePayment.updateMany({
+      where: { id, status: "SUBMITTING" },
+      data: {
+        status: "SUBMITTED",
+        submittedAt: deps.now,
+        errorMessage: null,
+      },
+    });
+    if (result.count === 0) {
+      throw new Error(
+        `persistSubmitTransition: payment ${id} is not in SUBMITTING — refusing to write`,
+      );
+    }
+    return;
+  }
+
+  const data: Record<string, unknown> =
+    transition.type === "failed"
+      ? {
+          status: "FAILED",
+          errorMessage: transition.errorMessage,
+          txSignature: null,
+        }
+      : transition.type === "parked"
+        ? {
+            status: "PARKED",
+            errorMessage: transition.errorMessage,
+            resolutionAttempts: { increment: 1 },
+          }
+        : {
+            // resolution_failed: stays PENDING for the next tick.
+            errorMessage: transition.errorMessage,
+            resolutionAttempts: { increment: 1 },
+          };
+
+  await prisma.computePayment.updateMany({
     where: { id, status: "PENDING" },
     data,
   });
-
-  if (result.count === 0) {
-    throw new Error(
-      `persistSubmitTransition: payment ${id} is not in PENDING — refusing to write`,
-    );
-  }
 }

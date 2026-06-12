@@ -2,6 +2,7 @@ import { Queue, Worker } from "bullmq";
 
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
+import { getSolanaConnection } from "../lib/solana.js";
 import { buildReapStuckTickDeps } from "../services/buildReapStuckTickDeps.js";
 import { runReapStuckTick } from "../services/runReapStuckTick.js";
 import { createLogger } from "../utils/logger.js";
@@ -46,6 +47,7 @@ export async function startPaymentReapQueue(): Promise<void> {
     async () => {
       const deps = buildReapStuckTickDeps({
         prisma,
+        connection: getSolanaConnection(),
         batchLimit: env.PAYMENT_REAP_BATCH_LIMIT,
         maxAgeSeconds: env.PAYMENT_REAP_MAX_AGE_SECONDS,
       });

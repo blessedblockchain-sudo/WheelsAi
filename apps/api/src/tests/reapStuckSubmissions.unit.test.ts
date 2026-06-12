@@ -18,6 +18,12 @@ function setupEnv() {
 // so a separate reaper is responsible for force-FAILing rows past the
 // timeout.
 //
+// D4 NOTE: this pure function is now only the AGE TRIGGER. A `changed:
+// true` result is a *candidate* — runReapStuckTick additionally requires
+// on-chain evidence (block height past lastValidBlockHeight + signature
+// unseen with searchTransactionHistory) before persisting the FAILED.
+// The age-classification semantics tested here are unchanged.
+//
 // Pure function. The BullMQ worker that wraps it is a thin shell.
 
 const NOW = new Date("2026-04-27T12:00:00Z");
@@ -31,6 +37,7 @@ interface ReaperPayment {
   paidAt: Date | null;
   retryCount: number;
   submittedAt: Date | null;
+  lastValidBlockHeight: bigint | null;
 }
 
 function p(overrides: Partial<ReaperPayment> = {}): ReaperPayment {
@@ -42,6 +49,7 @@ function p(overrides: Partial<ReaperPayment> = {}): ReaperPayment {
     paidAt: null,
     retryCount: 0,
     submittedAt: new Date(NOW.getTime() - 30 * 1000), // 30s ago — fresh
+    lastValidBlockHeight: null,
     ...overrides,
   };
 }
@@ -247,6 +255,24 @@ test("reapStuckSubmissions skips SUBMITTED rows with no submittedAt (treat as re
   });
   assert.equal(result!.changed, false);
   assert.equal(result!.payment.status, "SUBMITTED");
+});
+
+test("reapStuckSubmissions carries lastValidBlockHeight through the FAILED patch (the tick's chain gate reads it)", async () => {
+  const { reapStuckSubmissions } = await import(
+    "../services/reapStuckSubmissions.js"
+  );
+  const stuck = p({
+    id: "cp_lvbh",
+    submittedAt: new Date(NOW.getTime() - 10 * 60 * 1000),
+    lastValidBlockHeight: 31337n,
+  });
+  const [result] = reapStuckSubmissions({
+    payments: [stuck],
+    maxAgeSeconds: MAX_AGE_SECONDS,
+    now: NOW,
+  });
+  assert.equal(result!.changed, true);
+  assert.equal(result!.payment.lastValidBlockHeight, 31337n);
 });
 
 test("reapStuckSubmissions throws when maxAgeSeconds is non-positive (caller bug)", async () => {

@@ -12,8 +12,10 @@
  * the batch sequentially (concurrency=1 BullMQ worker).
  *
  * The loader does NOT resolve the Nosana host / recipient address —
- * that's a side-effecting Nosana SDK call best done in the dep-builder
- * closure that wraps submitTreasuryPayment.
+ * resolution is a side-effecting Nosana SDK call performed PER ROW by
+ * runSubmitPaymentsTick (remediation D5), so one unresolvable job can
+ * only fail its own row instead of aborting the whole batch load. The
+ * loader surfaces nosanaJobId + resolutionAttempts for that purpose.
  */
 
 interface PrismaStub {
@@ -32,6 +34,10 @@ interface PrismaStub {
         treasuryId: string;
         amountLamports: bigint;
         nosanaJobId: string;
+        // Recipient-resolution failures so far (D5 parking threshold).
+        // Optional in the stub for pre-migration test fixtures; the
+        // column is NOT NULL DEFAULT 0 in the schema.
+        resolutionAttempts?: number;
         treasury: {
           id: string;
           treasuryPdaAddress: string;
@@ -75,6 +81,9 @@ export interface LoadedPendingPayment {
    * token join. Only used by the program-mode dispatcher; legacy
    * mode ignores it. */
   mintAddress: string | null;
+  /** Recipient-resolution failures so far — the driver parks the row
+   * once the next failure reaches MAX_RESOLUTION_ATTEMPTS. */
+  resolutionAttempts: number;
 }
 
 export async function loadPendingPaymentsByPrisma(
@@ -108,5 +117,6 @@ export async function loadPendingPaymentsByPrisma(
     nosanaJobId: r.nosanaJobId,
     programInitialized: r.treasury.programInitialized ?? false,
     mintAddress: r.treasury.token?.mintAddress ?? null,
+    resolutionAttempts: r.resolutionAttempts ?? 0,
   }));
 }

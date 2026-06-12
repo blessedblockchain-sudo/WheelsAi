@@ -17,11 +17,20 @@ const MAX_LIMIT = 100;
 
 export type ComputePaymentStatus =
   | "PENDING"
+  | "SUBMITTING"
   | "SUBMITTED"
   | "CONFIRMED"
-  | "FAILED";
+  | "FAILED"
+  | "PARKED";
 
-const STATUS_VALUES = ["PENDING", "SUBMITTED", "CONFIRMED", "FAILED"] as const;
+const STATUS_VALUES = [
+  "PENDING",
+  "SUBMITTING",
+  "SUBMITTED",
+  "CONFIRMED",
+  "FAILED",
+  "PARKED",
+] as const;
 
 // ============================================
 // Shapes

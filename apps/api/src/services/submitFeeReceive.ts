@@ -2,7 +2,8 @@
  * Side-effect orchestrator for the inflow path
  * (agent_treasury::fee_receive).
  *
- * Counterpart to submitTreasuryPaymentViaProgram.ts (outflow). Composes:
+ * Counterpart to prepareTreasuryPaymentViaProgram.ts (outflow, which is
+ * sign-only under the claim-first protocol; this one still sends). Composes:
  *   1. fetchLatestBlockhash
  *   2. buildFeeReceiveTx
  *   3. tx.sign([fromKeypair])

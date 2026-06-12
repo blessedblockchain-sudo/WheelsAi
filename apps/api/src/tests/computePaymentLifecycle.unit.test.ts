@@ -15,15 +15,27 @@ function setupEnv() {
 // (the side-effect layer) calls these to compute the next-state patch it
 // writes back to Postgres; the lifecycle module never touches Prisma or RPC.
 //
-//   PENDING ──submit──> SUBMITTED ──confirm──> CONFIRMED  (terminal)
-//      └──────────────────────────────────────> FAILED     (terminal)
-//                          └─────────────────> FAILED     (terminal)
+// Claim-first machine (remediation D3/D5):
+//
+//   PENDING ──claim──> SUBMITTING ──broadcast──> SUBMITTED ──confirm──> CONFIRMED (terminal)
+//      │                   │                         └────fail────────> FAILED    (terminal)
+//      │                   └──safe-expiry recovery──> PENDING
+//      ├───────fail──────────────────────────────────> FAILED   (terminal)
+//      └───────park (resolution attempts exhausted)──> PARKED   (terminal until operator)
 //
 // Illegal transitions throw — caller is buggy if it ever calls them.
 
+type Status =
+  | "PENDING"
+  | "SUBMITTING"
+  | "SUBMITTED"
+  | "CONFIRMED"
+  | "FAILED"
+  | "PARKED";
+
 interface FakePayment {
   id: string;
-  status: "PENDING" | "SUBMITTED" | "CONFIRMED" | "FAILED";
+  status: Status;
   txSignature: string | null;
   errorMessage: string | null;
   paidAt: Date | null;
@@ -43,13 +55,53 @@ function p(overrides: Partial<FakePayment> = {}): FakePayment {
 }
 
 // ============================================
+// markClaimed
+// ============================================
+
+test("markClaimed moves PENDING → SUBMITTING and stamps the (pre-broadcast) tx signature", async () => {
+  setupEnv();
+  const { markClaimed } = await import("../services/computePaymentLifecycle.js");
+  const next = markClaimed(p(), "sig_claimed");
+  assert.equal(next.status, "SUBMITTING");
+  assert.equal(next.txSignature, "sig_claimed");
+  // Other fields unchanged.
+  assert.equal(next.id, "cp_1");
+  assert.equal(next.errorMessage, null);
+});
+
+test("markClaimed throws on a non-PENDING payment", async () => {
+  const { markClaimed } = await import("../services/computePaymentLifecycle.js");
+  for (const status of [
+    "SUBMITTING",
+    "SUBMITTED",
+    "CONFIRMED",
+    "FAILED",
+    "PARKED",
+  ] as const) {
+    assert.throws(
+      () => markClaimed(p({ status }), "sig"),
+      /illegal transition/i,
+      `markClaimed(${status}) should throw`,
+    );
+  }
+});
+
+test("markClaimed requires a non-empty signature", async () => {
+  const { markClaimed } = await import("../services/computePaymentLifecycle.js");
+  assert.throws(() => markClaimed(p(), ""), /signature/i);
+});
+
+// ============================================
 // markSubmitted
 // ============================================
 
-test("markSubmitted moves PENDING → SUBMITTED and stamps the tx signature", async () => {
+test("markSubmitted moves SUBMITTING → SUBMITTED and stamps the tx signature", async () => {
   setupEnv();
   const { markSubmitted } = await import("../services/computePaymentLifecycle.js");
-  const next = markSubmitted(p(), "sig_123");
+  const next = markSubmitted(
+    p({ status: "SUBMITTING", txSignature: "sig_123" }),
+    "sig_123",
+  );
   assert.equal(next.status, "SUBMITTED");
   assert.equal(next.txSignature, "sig_123");
   // Other fields unchanged.
@@ -57,9 +109,15 @@ test("markSubmitted moves PENDING → SUBMITTED and stamps the tx signature", as
   assert.equal(next.errorMessage, null);
 });
 
-test("markSubmitted throws on a non-PENDING payment", async () => {
+test("markSubmitted throws on a non-SUBMITTING payment (claim must come first)", async () => {
   const { markSubmitted } = await import("../services/computePaymentLifecycle.js");
-  for (const status of ["SUBMITTED", "CONFIRMED", "FAILED"] as const) {
+  for (const status of [
+    "PENDING",
+    "SUBMITTED",
+    "CONFIRMED",
+    "FAILED",
+    "PARKED",
+  ] as const) {
     assert.throws(
       () => markSubmitted(p({ status }), "sig"),
       /illegal transition/i,
@@ -70,7 +128,10 @@ test("markSubmitted throws on a non-PENDING payment", async () => {
 
 test("markSubmitted requires a non-empty signature", async () => {
   const { markSubmitted } = await import("../services/computePaymentLifecycle.js");
-  assert.throws(() => markSubmitted(p(), ""), /signature/i);
+  assert.throws(
+    () => markSubmitted(p({ status: "SUBMITTING" }), ""),
+    /signature/i,
+  );
 });
 
 // ============================================
@@ -85,17 +146,19 @@ test("markConfirmed moves SUBMITTED → CONFIRMED and stamps paidAt", async () =
   assert.equal(next.paidAt!.toISOString(), at.toISOString());
 });
 
-test("markConfirmed throws on PENDING (you must submit first)", async () => {
+test("markConfirmed throws on PENDING and SUBMITTING (you must broadcast first)", async () => {
   const { markConfirmed } = await import("../services/computePaymentLifecycle.js");
-  assert.throws(
-    () => markConfirmed(p({ status: "PENDING" }), new Date()),
-    /illegal transition/i,
-  );
+  for (const status of ["PENDING", "SUBMITTING"] as const) {
+    assert.throws(
+      () => markConfirmed(p({ status }), new Date()),
+      /illegal transition/i,
+    );
+  }
 });
 
 test("markConfirmed throws on terminal states", async () => {
   const { markConfirmed } = await import("../services/computePaymentLifecycle.js");
-  for (const status of ["CONFIRMED", "FAILED"] as const) {
+  for (const status of ["CONFIRMED", "FAILED", "PARKED"] as const) {
     assert.throws(
       () => markConfirmed(p({ status }), new Date()),
       /illegal transition/i,
@@ -138,6 +201,23 @@ test("markFailed refuses to overwrite a CONFIRMED payment", async () => {
   );
 });
 
+test("markFailed refuses to fail a SUBMITTING payment (its bytes may be on-chain; recovery owns it)", async () => {
+  const { markFailed } = await import("../services/computePaymentLifecycle.js");
+  assert.throws(
+    () =>
+      markFailed(p({ status: "SUBMITTING", txSignature: "sig" }), "whoops"),
+    /illegal transition/i,
+  );
+});
+
+test("markFailed refuses to fail a PARKED payment (operator-owned)", async () => {
+  const { markFailed } = await import("../services/computePaymentLifecycle.js");
+  assert.throws(
+    () => markFailed(p({ status: "PARKED" }), "whoops"),
+    /illegal transition/i,
+  );
+});
+
 test("markFailed is idempotent on an already-FAILED payment but can update the error", async () => {
   const { markFailed } = await import("../services/computePaymentLifecycle.js");
   const next = markFailed(
@@ -149,15 +229,45 @@ test("markFailed is idempotent on an already-FAILED payment but can update the e
 });
 
 // ============================================
+// markParked
+// ============================================
+
+test("markParked moves PENDING → PARKED with the error message", async () => {
+  const { markParked } = await import("../services/computePaymentLifecycle.js");
+  const next = markParked(p(), "Nosana job not found: job_zzz");
+  assert.equal(next.status, "PARKED");
+  assert.equal(next.errorMessage, "Nosana job not found: job_zzz");
+});
+
+test("markParked throws on a non-PENDING payment", async () => {
+  const { markParked } = await import("../services/computePaymentLifecycle.js");
+  for (const status of [
+    "SUBMITTING",
+    "SUBMITTED",
+    "CONFIRMED",
+    "FAILED",
+    "PARKED",
+  ] as const) {
+    assert.throws(
+      () => markParked(p({ status }), "x"),
+      /illegal transition/i,
+      `markParked(${status}) should throw`,
+    );
+  }
+});
+
+// ============================================
 // isTerminal
 // ============================================
 
-test("isTerminal classifies the four statuses", async () => {
+test("isTerminal classifies all six statuses", async () => {
   const { isTerminal } = await import("../services/computePaymentLifecycle.js");
   assert.equal(isTerminal("PENDING"), false);
+  assert.equal(isTerminal("SUBMITTING"), false);
   assert.equal(isTerminal("SUBMITTED"), false);
   assert.equal(isTerminal("CONFIRMED"), true);
   assert.equal(isTerminal("FAILED"), true);
+  assert.equal(isTerminal("PARKED"), true);
 });
 
 // ============================================
@@ -174,6 +284,11 @@ test("shouldRetry returns false for PENDING at or above the retry cap", async ()
   const { shouldRetry } = await import("../services/computePaymentLifecycle.js");
   assert.equal(shouldRetry(p({ status: "PENDING", retryCount: 5 }), 5), false);
   assert.equal(shouldRetry(p({ status: "PENDING", retryCount: 99 }), 5), false);
+});
+
+test("shouldRetry returns false for SUBMITTING (claimed; the recovery scan owns it)", async () => {
+  const { shouldRetry } = await import("../services/computePaymentLifecycle.js");
+  assert.equal(shouldRetry(p({ status: "SUBMITTING", retryCount: 0 }), 5), false);
 });
 
 test("shouldRetry returns false for SUBMITTED (already in flight; the confirm poller owns it)", async () => {
@@ -194,4 +309,9 @@ test("shouldRetry returns false for FAILED at or above the retry cap (poison)", 
 test("shouldRetry returns false for CONFIRMED (terminal success)", async () => {
   const { shouldRetry } = await import("../services/computePaymentLifecycle.js");
   assert.equal(shouldRetry(p({ status: "CONFIRMED", retryCount: 0 }), 5), false);
+});
+
+test("shouldRetry returns false for PARKED (operator must re-PENDING explicitly)", async () => {
+  const { shouldRetry } = await import("../services/computePaymentLifecycle.js");
+  assert.equal(shouldRetry(p({ status: "PARKED", retryCount: 0 }), 5), false);
 });

@@ -30,6 +30,7 @@ interface FakePayment {
   scheduledFor: Date;
   amountLamports: bigint;
   nosanaJobId: string;
+  resolutionAttempts?: number;
   treasury: {
     id: string;
     treasuryPdaAddress: string;
@@ -286,6 +287,36 @@ test("loadPendingPaymentsByPrisma surfaces programInitialized=true through to th
     result[0]!.mintAddress,
     "MintXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   );
+});
+
+// ============================================
+// resolutionAttempts passthrough (D5)
+// ============================================
+
+test("loadPendingPaymentsByPrisma surfaces resolutionAttempts for the driver's parking threshold", async () => {
+  setupEnv();
+  const { loadPendingPaymentsByPrisma } = await import(
+    "../services/loadPendingPaymentsByPrisma.js"
+  );
+  const stub = makePrismaStub([samplePayment({ resolutionAttempts: 4 })]);
+  const result = await loadPendingPaymentsByPrisma(
+    { now: NOW, limit: 100 },
+    { prisma: stub.prisma as any },
+  );
+  assert.equal(result[0]!.resolutionAttempts, 4);
+});
+
+test("loadPendingPaymentsByPrisma defaults resolutionAttempts to 0 when missing (pre-migration fixture)", async () => {
+  setupEnv();
+  const { loadPendingPaymentsByPrisma } = await import(
+    "../services/loadPendingPaymentsByPrisma.js"
+  );
+  const stub = makePrismaStub([samplePayment()]); // no resolutionAttempts
+  const result = await loadPendingPaymentsByPrisma(
+    { now: NOW, limit: 100 },
+    { prisma: stub.prisma as any },
+  );
+  assert.equal(result[0]!.resolutionAttempts, 0);
 });
 
 test("loadPendingPaymentsByPrisma flattens mintAddress to null when token relation is missing", async () => {

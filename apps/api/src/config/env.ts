@@ -164,6 +164,11 @@ const envSchema = z.object({
 
   // GitHub Integration
   GITHUB_TOKEN: z.string().optional(),
+
+  // Per-org cap on concurrently active GPU deployments (model + agent
+  // deployments each enforce it). Nosana jobs are platform-paid, so the
+  // cap plus the credit reservation bound the platform's exposure.
+  MAX_ACTIVE_DEPLOYMENTS_PER_ORG: z.coerce.number().int().min(1).default(5),
 });
 
 export class EnvValidationError extends Error {}

@@ -4,9 +4,11 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
+import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { getNosanaClient } from "../services/nosana.js";
 import { parseGitHubUrl, detectFramework } from "../services/github-import.js";
+import { reserveDeploymentCredits } from "../services/deploymentCreditGate.js";
 
 const logger = createLogger("agent-routes");
 
@@ -315,6 +317,39 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if (modelDeployment.status !== "running") {
         return reply.badRequest("Model deployment is not running");
       }
+    }
+
+    // A4: Nosana jobs are platform-paid — gate admission on a per-org
+    // active-deployment quota and a credit reservation.
+    const activeCount = await prisma.agentDeployment.count({
+      where: {
+        agent: { orgId },
+        status: { in: ["pending", "building", "deploying", "running"] },
+      },
+    });
+    if (activeCount >= env.MAX_ACTIVE_DEPLOYMENTS_PER_ORG) {
+      return reply.status(429).send({
+        error: "deployment_quota_exceeded",
+        message: `Organization already has ${activeCount} active agent deployments (limit ${env.MAX_ACTIVE_DEPLOYMENTS_PER_ORG}).`,
+      });
+    }
+
+    const reservation = await prisma.$transaction((tx) =>
+      reserveDeploymentCredits({
+        tx,
+        orgId,
+        gpuTier: body.gpuTier,
+        replicas: body.replicas,
+        referenceId: `agent-deploy:${agentId}:${Date.now()}`,
+      })
+    );
+    if (!reservation.ok) {
+      return reply.status(402).send({
+        error: "insufficient_credits",
+        message: `Deploying requires a reservation of $${(
+          Number(reservation.requiredCents) / 100
+        ).toFixed(2)} in credits. Add credits and retry.`,
+      });
     }
 
     // Create agent deployment

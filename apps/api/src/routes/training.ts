@@ -13,6 +13,10 @@ import {
   DEFAULT_LORA_CONFIG,
 } from "../services/training.js";
 import {
+  deriveTrainingWebhookToken,
+  verifyTrainingWebhookToken,
+} from "../services/trainingWebhookAuth.js";
+import {
   generateUploadUrl,
   validateDataset,
   estimateDatasetStats,
@@ -478,7 +482,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
       method: body.method,
       ...trainingConfig,
       outputPath: `s3://wheelsai-models/${orgId}/${job.id}`,
-      webhookUrl: `${process.env.API_URL}/api/training/jobs/${job.id}/webhook`,
+      webhookUrl: `${process.env.API_URL}/api/training/jobs/${job.id}/webhook?token=${deriveTrainingWebhookToken(job.id)}`,
     }, body.gpuTier).catch((err) => {
       logger.error({ err, jobId: job.id }, "Failed to submit training job");
     });
@@ -572,10 +576,26 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /**
-   * Training job webhook (called by Nosana)
+   * Training job webhook (called by Nosana). Authenticated by the per-job
+   * HMAC token embedded in the webhook URL at submission time (A6) —
+   * accepted via ?token= or the x-webhook-token header.
    */
   app.post("/jobs/:jobId/webhook", async (request, reply) => {
     const { jobId } = z.object({ jobId: z.string().uuid() }).parse(request.params);
+
+    const presentedToken =
+      (request.query as Record<string, unknown> | undefined)?.token ??
+      request.headers["x-webhook-token"];
+    if (
+      typeof presentedToken !== "string" ||
+      !verifyTrainingWebhookToken(jobId, presentedToken)
+    ) {
+      return reply.status(401).send({
+        error: "invalid_webhook_token",
+        message: "Missing or invalid webhook token for this job.",
+      });
+    }
+
     const body = z.object({
       status: z.enum(["running", "completed", "failed"]).optional(),
       progress: z.number().int().min(0).max(100).optional(),
@@ -616,8 +636,13 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     if (body.outputPath) update.outputPath = body.outputPath;
 
     if (body.logs) {
-      // Append logs
-      update.logs = (job.logs || "") + body.logs;
+      // Append logs, capped per call and in total so a chatty (or hostile)
+      // runner cannot grow the row without bound.
+      const MAX_APPEND = 64 * 1024;
+      const MAX_TOTAL = 1024 * 1024;
+      update.logs = ((job.logs || "") + body.logs.slice(0, MAX_APPEND)).slice(
+        -MAX_TOTAL
+      );
     }
 
     await prisma.trainingJob.update({

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
@@ -54,8 +54,33 @@ function makePrismaStub(opts: {
   };
 }
 
-function makeConnectionStub() {
+// sha256("account:Treasury")[..8] — pinned in isPdaAccountInitialized.ts.
+const TREASURY_ACCOUNT_DISC = Buffer.from([
+  238, 239, 123, 238, 89, 1, 168, 253,
+]);
+
+/** Synthetic on-chain Treasury account data: disc(8) + mint(32) +
+ * platform_authority(32) + zero padding to the real 153-byte size. */
+function makeTreasuryAccountData(platformAuthority: PublicKey): Buffer {
+  const data = Buffer.alloc(153);
+  TREASURY_ACCOUNT_DISC.copy(data, 0);
+  // bytes 8..40 (owner_token_mint) stay zeroed — the reader ignores them.
+  platformAuthority.toBuffer().copy(data, 40);
+  return data;
+}
+
+function makeConnectionStub(opts?: {
+  /** The platform_authority recorded in the synthetic on-chain Treasury
+   * account that getAccountInfo serves. Defaults to the test-global
+   * treasuryKeypair (= the derived signer), i.e. a verified match.
+   * Pass null to simulate "no account on-chain". */
+  treasuryAuthority?: PublicKey | null;
+}) {
   const log: any[] = [];
+  const treasuryAuthority =
+    opts?.treasuryAuthority === undefined
+      ? treasuryKeypair.publicKey
+      : opts.treasuryAuthority;
   return {
     log,
     connection: {
@@ -71,6 +96,17 @@ function makeConnectionStub() {
       async sendRawTransaction(raw: Uint8Array) {
         log.push({ type: "sendRawTransaction", rawLength: raw.length });
         return "REAL_SIG_FROM_STUB";
+      },
+      async getAccountInfo(pda: PublicKey) {
+        log.push({ type: "getAccountInfo", pda: pda.toBase58() });
+        if (treasuryAuthority === null) return null;
+        return {
+          data: makeTreasuryAccountData(treasuryAuthority),
+          lamports: 1_000_000,
+          executable: false,
+          owner: PublicKey.default,
+          rentEpoch: 0,
+        };
       },
     },
   };
@@ -343,6 +379,129 @@ test("buildSubmitPaymentsTickDeps submit routes to program path when programInit
   if (outcome.ok) assert.equal(outcome.txSignature, "REAL_SIG_FROM_STUB");
   // RPC closures still fired — both paths use the same connection.
   assert.ok(conn.log.some((c) => c.type === "sendRawTransaction"));
+  // C1/C2 defense: the on-chain authority was read and verified before
+  // the program-mode tx was signed.
+  assert.ok(conn.log.some((c) => c.type === "getAccountInfo"));
+});
+
+test("buildSubmitPaymentsTickDeps program-mode submit fails on authority_mismatch without sending a tx", async () => {
+  // The on-chain Treasury records someone ELSE's key as the
+  // platform_authority (hijacked PDA or wrong WALLET_MASTER_KEY).
+  // Submitting would burn a fee on a guaranteed has_one rejection —
+  // the builder must fail the row loudly instead.
+  setupEnv();
+  const { buildSubmitPaymentsTickDeps } = await import(
+    "../services/buildSubmitPaymentsTickDeps.js"
+  );
+  const stub = makePrismaStub({});
+  const hijacker = Keypair.generate().publicKey;
+  const conn = makeConnectionStub({ treasuryAuthority: hijacker });
+  const deps = buildSubmitPaymentsTickDeps({
+    prisma: stub.prisma as any,
+    connection: conn.connection as any,
+    treasurySignerFor: () => treasuryKeypair,
+    resolveRecipient: async () => Keypair.generate().publicKey.toBase58(),
+    batchLimit: 50,
+    now: () => new Date(),
+  });
+  const outcome = await deps.submit({
+    id: "cp_hijack",
+    treasuryId: "treas_hijack",
+    treasuryAddress: "WhateverPda",
+    recipientAddress: Keypair.generate().publicKey.toBase58(),
+    amountLamports: 1n,
+    programInitialized: true,
+    mintAddress: "So11111111111111111111111111111111111111112",
+  });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    assert.match(outcome.error, /authority_mismatch/);
+    // Both keys appear in the message for incident triage.
+    assert.ok(outcome.error.includes(hijacker.toBase58()));
+    assert.ok(outcome.error.includes(treasuryKeypair.publicKey.toBase58()));
+  }
+  // No tx was signed/sent.
+  assert.equal(
+    conn.log.some((c) => c.type === "sendRawTransaction"),
+    false,
+  );
+});
+
+test("buildSubmitPaymentsTickDeps program-mode submit fails when the treasury account is missing on-chain", async () => {
+  setupEnv();
+  const { buildSubmitPaymentsTickDeps } = await import(
+    "../services/buildSubmitPaymentsTickDeps.js"
+  );
+  const stub = makePrismaStub({});
+  const conn = makeConnectionStub({ treasuryAuthority: null });
+  const deps = buildSubmitPaymentsTickDeps({
+    prisma: stub.prisma as any,
+    connection: conn.connection as any,
+    treasurySignerFor: () => treasuryKeypair,
+    resolveRecipient: async () => Keypair.generate().publicKey.toBase58(),
+    batchLimit: 50,
+    now: () => new Date(),
+  });
+  const outcome = await deps.submit({
+    id: "cp_missing",
+    treasuryId: "treas_missing",
+    treasuryAddress: "WhateverPda",
+    recipientAddress: Keypair.generate().publicKey.toBase58(),
+    amountLamports: 1n,
+    programInitialized: true,
+    mintAddress: "So11111111111111111111111111111111111111112",
+  });
+  assert.equal(outcome.ok, false);
+  if (!outcome.ok) {
+    assert.match(outcome.error, /authority_mismatch/);
+    assert.match(outcome.error, /<missing>/);
+  }
+  assert.equal(
+    conn.log.some((c) => c.type === "sendRawTransaction"),
+    false,
+  );
+});
+
+test("buildSubmitPaymentsTickDeps caches positive authority verification per treasury per tick", async () => {
+  // Two payments against the same treasury in one tick must cost
+  // exactly ONE getAccountInfo read; a new tick (loadPendingBatch)
+  // clears the cache so rotations/hijacks between ticks are caught.
+  setupEnv();
+  const { buildSubmitPaymentsTickDeps } = await import(
+    "../services/buildSubmitPaymentsTickDeps.js"
+  );
+  const stub = makePrismaStub({});
+  const conn = makeConnectionStub();
+  const deps = buildSubmitPaymentsTickDeps({
+    prisma: stub.prisma as any,
+    connection: conn.connection as any,
+    treasurySignerFor: () => treasuryKeypair,
+    resolveRecipient: async () => Keypair.generate().publicKey.toBase58(),
+    batchLimit: 50,
+    now: () => new Date(),
+  });
+  const row = {
+    treasuryId: "treas_cached",
+    treasuryAddress: "WhateverPda",
+    recipientAddress: Keypair.generate().publicKey.toBase58(),
+    amountLamports: 1n,
+    programInitialized: true,
+    mintAddress: "So11111111111111111111111111111111111111112",
+  };
+  const first = await deps.submit({ ...row, id: "cp_a" });
+  const second = await deps.submit({ ...row, id: "cp_b" });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  const reads = () =>
+    conn.log.filter((c) => c.type === "getAccountInfo").length;
+  assert.equal(reads(), 1, "one authority read for two same-treasury rows");
+
+  // A fresh tick starts with loadPendingBatch — the cache resets and
+  // the next submit re-verifies.
+  await deps.loadPendingBatch({ now: new Date() });
+  const third = await deps.submit({ ...row, id: "cp_c" });
+  assert.equal(third.ok, true);
+  assert.equal(reads(), 2, "new tick re-reads the on-chain authority");
 });
 
 test("buildSubmitPaymentsTickDeps submit fails fast when program-mode row is missing mintAddress", async () => {

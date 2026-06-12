@@ -33,6 +33,12 @@ export const ORACLE_CONFIG_ACCOUNT_DISCRIMINATOR = Buffer.from([
   133, 196, 152, 50, 27, 21, 145, 254,
 ]);
 
+// sha256("account:TreasuryConfig")[..8] — the agent-treasury program's
+// singleton config PDA (seeds [b"config"]) that gates initialize_treasury.
+export const TREASURY_CONFIG_ACCOUNT_DISCRIMINATOR = Buffer.from([
+  124, 54, 212, 227, 213, 189, 168, 41,
+]);
+
 export interface IsPdaAccountInitializedDeps {
   connection: Pick<Connection, "getAccountInfo">;
 }
@@ -46,4 +52,33 @@ export async function isPdaAccountInitialized(
   // Account data shorter than the disc itself can't possibly match.
   if (acc.data.length < 8) return false;
   return Buffer.from(acc.data).subarray(0, 8).equals(input.expectedDiscriminator);
+}
+
+/**
+ * Read the `platform_authority` field straight out of an on-chain
+ * Treasury account (C1/C2 verification).
+ *
+ * Anchor account layout for Treasury (programs/agent-treasury/src/lib.rs):
+ *   bytes 0..8     account discriminator (sha256("account:Treasury")[..8])
+ *   bytes 8..40    owner_token_mint:    Pubkey
+ *   bytes 40..72   platform_authority:  Pubkey
+ *   ...            (totals, bump, pending_authority, padding)
+ *
+ * Returns null when the account doesn't exist, is too short, or carries
+ * a different discriminator (an incidental lamport bag at the PDA is
+ * NOT a Treasury). Callers use this to assert that the recorded
+ * authority matches the key they derive before signing anything — a
+ * mismatch means hijack or master-key misconfiguration.
+ */
+export async function readTreasuryPlatformAuthority(
+  connection: Pick<Connection, "getAccountInfo">,
+  treasuryPda: PublicKey,
+): Promise<PublicKey | null> {
+  const acc = await connection.getAccountInfo(treasuryPda);
+  if (!acc) return null;
+  const data = Buffer.from(acc.data);
+  // Need disc(8) + mint(32) + authority(32) at minimum.
+  if (data.length < 72) return null;
+  if (!data.subarray(0, 8).equals(TREASURY_ACCOUNT_DISCRIMINATOR)) return null;
+  return new PublicKey(data.subarray(40, 72));
 }

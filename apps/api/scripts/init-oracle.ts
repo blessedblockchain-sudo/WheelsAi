@@ -22,7 +22,7 @@
  *   BOOTSTRAP_PAYER_PRIVATE_KEY — JSON byte array of the admin keypair.
  *     Whoever calls initialize_oracle BECOMES the oracle admin; pick the
  *     wallet you want to hold that authority (rotate later via
- *     transfer_admin to a multisig before mainnet — Phase 3A).
+ *     propose_admin + accept_admin to a multisig before mainnet — Phase 3A).
  *   BOOTSTRAP_ATTESTOR_PUBKEY — base58 pubkey to add to the attestor
  *     whitelist. Optional if --skip-attestor is passed.
  *

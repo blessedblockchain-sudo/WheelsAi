@@ -23,12 +23,20 @@
  * FAILED transition cleanly. The orchestrator's invariant checks
  * (signerKeypair.publicKey === treasuryAddress, payment.status ===
  * PENDING) will throw too — those are caught and translated.
+ *
+ * Program-mode rows additionally verify (once per treasury per tick)
+ * that the on-chain Treasury's platform_authority equals the derived
+ * signer's pubkey before signing — hijacked/misconfigured treasuries
+ * fail loudly with `authority_mismatch` instead of burning tx fees on
+ * guaranteed has_one rejections.
  */
 
 import type { PrismaClient } from "@prisma/client";
 import { PublicKey, type Connection, type Keypair } from "@solana/web3.js";
 
+import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
 import { buildSubmitTreasuryPaymentDeps } from "./buildSubmitTreasuryPaymentDeps.js";
+import { readTreasuryPlatformAuthority } from "./isPdaAccountInitialized.js";
 import { loadPendingPaymentsByPrisma } from "./loadPendingPaymentsByPrisma.js";
 import { persistSubmitTransition } from "./persistSubmitTransition.js";
 import {
@@ -70,7 +78,10 @@ type PrismaSurface = Pick<PrismaClient, "computePayment">;
 
 export interface BuildSubmitPaymentsTickDepsInput {
   prisma: PrismaSurface;
-  connection: Pick<Connection, "getLatestBlockhash" | "sendRawTransaction">;
+  connection: Pick<
+    Connection,
+    "getLatestBlockhash" | "sendRawTransaction" | "getAccountInfo"
+  >;
   /** Per-treasury keypair lookup. */
   treasurySignerFor: (treasuryId: string) => Keypair;
   /** Resolve the Nosana host pubkey for a given nosanaJobId. */
@@ -84,8 +95,17 @@ export interface BuildSubmitPaymentsTickDepsInput {
 export function buildSubmitPaymentsTickDeps(
   input: BuildSubmitPaymentsTickDepsInput,
 ): SubmitPaymentsTickDeps {
+  // Per-tick cache of positively-verified treasury authorities (C1/C2
+  // defense-in-depth). Keyed by treasuryId; cleared at the top of each
+  // loadPendingBatch (once per tick), so a batch with N payments against
+  // the same treasury costs exactly one getAccountInfo read — but a NEW
+  // tick re-verifies, so a rotation/hijack between ticks is still caught.
+  // Only positive verifications are cached; failures throw per-row.
+  const verifiedAuthorities = new Set<string>();
+
   return {
     loadPendingBatch: async ({ now }) => {
+      verifiedAuthorities.clear();
       const rows = await loadPendingPaymentsByPrisma(
         { now, limit: input.batchLimit },
         { prisma: input.prisma as never },
@@ -122,6 +142,36 @@ export function buildSubmitPaymentsTickDeps(
               error: `program_mode_missing_mint: treasury ${row.treasuryId} has programInitialized=true but no token.mintAddress on the join`,
             };
           }
+
+          // C1/C2 client-side authority verification: before signing,
+          // confirm the on-chain Treasury records OUR derived key as
+          // platform_authority. A mismatch means the PDA was hijacked
+          // (initialized by someone else) or WALLET_MASTER_KEY is
+          // misconfigured — either way, signing would only waste a tx
+          // fee on a guaranteed has_one rejection, and silently
+          // retrying forever would mask the incident. Throwing here
+          // records a FAILED transition with a loud, distinct message.
+          if (!verifiedAuthorities.has(row.treasuryId)) {
+            const [treasuryPda] = deriveTreasuryPda(
+              new PublicKey(row.mintAddress),
+            );
+            const onChainAuthority = await readTreasuryPlatformAuthority(
+              input.connection,
+              treasuryPda,
+            );
+            if (
+              !onChainAuthority ||
+              !onChainAuthority.equals(signerKeypair.publicKey)
+            ) {
+              throw new Error(
+                `authority_mismatch: on-chain ${
+                  onChainAuthority ? onChainAuthority.toBase58() : "<missing>"
+                } != derived ${signerKeypair.publicKey.toBase58()}`,
+              );
+            }
+            verifiedAuthorities.add(row.treasuryId);
+          }
+
           const result = await submitTreasuryPaymentViaProgram(
             {
               payment: {

@@ -71,6 +71,7 @@ pub mod reputation_oracle {
         config.attestor_count = 0;
         config.attestors = [Pubkey::default(); MAX_ATTESTORS];
         config.bump = ctx.bumps.config;
+        config.pending_admin = Pubkey::default();
 
         emit!(OracleInitialized {
             config: config.key(),
@@ -149,25 +150,47 @@ pub mod reputation_oracle {
         Ok(())
     }
 
-    /// Rotate the admin key. Old admin must sign; new admin is the
-    /// argument. Useful when moving from single-key bootstrap to a
-    /// multisig without redeploying the program.
-    pub fn transfer_admin(
+    /// Two-step admin rotation, step 1: the current admin proposes a
+    /// successor. The switch only happens when the successor accepts
+    /// by signing (`accept_admin`), so a typo'd pubkey can never brick
+    /// the oracle.
+    pub fn propose_admin(
         ctx: Context<TransferAdmin>,
         new_admin: Pubkey,
     ) -> Result<()> {
         require!(
             new_admin != Pubkey::default(),
-            ReputationError::InvalidAttestor,
+            ReputationError::InvalidAdmin,
         );
         let config = &mut ctx.accounts.config;
+        config.pending_admin = new_admin;
+
+        emit!(AdminProposed {
+            config: config.key(),
+            current_admin: config.admin,
+            pending_admin: new_admin,
+        });
+        Ok(())
+    }
+
+    /// Two-step admin rotation, step 2: the proposed admin accepts by
+    /// signing, proving the new key exists and is usable before the
+    /// old one loses power.
+    pub fn accept_admin(ctx: Context<AcceptAdmin>) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        require!(
+            config.pending_admin != Pubkey::default()
+                && config.pending_admin == ctx.accounts.new_admin.key(),
+            ReputationError::AdminMismatch,
+        );
         let old_admin = config.admin;
-        config.admin = new_admin;
+        config.admin = config.pending_admin;
+        config.pending_admin = Pubkey::default();
 
         emit!(AdminTransferred {
             config: config.key(),
             old_admin,
-            new_admin,
+            new_admin: config.admin,
         });
         Ok(())
     }
@@ -311,6 +334,18 @@ pub struct TransferAdmin<'info> {
 }
 
 #[derive(Accounts)]
+pub struct AcceptAdmin<'info> {
+    #[account(
+        mut,
+        seeds = [ORACLE_CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, OracleConfig>,
+
+    pub new_admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct InitializeAgentReputation<'info> {
     #[account(
         init,
@@ -358,11 +393,16 @@ pub struct OracleConfig {
     pub attestor_count: u8,
     pub attestors: [Pubkey; MAX_ATTESTORS],
     pub bump: u8,
+    /// Two-step rotation: the proposed next admin, or Pubkey::default()
+    /// when no rotation is pending. Appended after `bump` so pre-rotation
+    /// accounts (zeroed padding) deserialize as "no pending rotation".
+    pub pending_admin: Pubkey,
 }
 
 impl OracleConfig {
-    // 8 (disc) + 32 (admin) + 1 (count) + 5*32 (attestors) + 1 (bump) = 202
-    // + 64 padding for forward-compat
+    // Used: 8 (disc) + 32 (admin) + 1 (count) + 5*32 (attestors) + 1 (bump)
+    // + 32 (pending_admin) = 234. Total allocation 266 — remainder is
+    // forward-compat padding.
     pub const SIZE: usize = 8 + 32 + 1 + (32 * MAX_ATTESTORS) + 1 + 64;
 }
 
@@ -402,6 +442,13 @@ pub struct AttestorAdded {
 pub struct AttestorRemoved {
     pub config: Pubkey,
     pub attestor: Pubkey,
+}
+
+#[event]
+pub struct AdminProposed {
+    pub config: Pubkey,
+    pub current_admin: Pubkey,
+    pub pending_admin: Pubkey,
 }
 
 #[event]
@@ -454,4 +501,6 @@ pub enum ReputationError {
     StaleAttestation,
     #[msg("integer overflow")]
     Overflow,
+    #[msg("admin pubkey cannot be the default zero pubkey")]
+    InvalidAdmin,
 }

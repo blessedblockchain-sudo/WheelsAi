@@ -39,6 +39,15 @@ const PAY_NOSANA_DISC = Buffer.from([
 const FEE_RECEIVE_DISC = Buffer.from([
   247, 110, 129, 219, 38, 11, 219, 246,
 ]);
+const INITIALIZE_CONFIG_DISC = Buffer.from([
+  208, 127, 21, 1, 194, 190, 196, 70,
+]);
+const PROPOSE_PLATFORM_AUTHORITY_DISC = Buffer.from([
+  174, 55, 230, 197, 197, 70, 205, 64,
+]);
+const ACCEPT_PLATFORM_AUTHORITY_DISC = Buffer.from([
+  147, 215, 144, 55, 11, 5, 151, 130,
+]);
 
 // ----------------------------------------------------------------------
 // Program ID
@@ -91,13 +100,32 @@ test("deriveTreasuryPda: different mints → different PDAs", async () => {
   assert.notEqual(p1.toBase58(), p2.toBase58());
 });
 
+test("deriveTreasuryConfigPda: derives from [b'config'] under program ID", async () => {
+  setupEnv();
+  const { deriveTreasuryConfigPda, AGENT_TREASURY_PROGRAM_ID } = await import(
+    "../lib/programs/agentTreasury.js"
+  );
+
+  const [pda, bump] = deriveTreasuryConfigPda();
+  const [expectedPda, expectedBump] = PublicKey.findProgramAddressSync(
+    [Buffer.from("config")],
+    AGENT_TREASURY_PROGRAM_ID,
+  );
+  assert.equal(pda.toBase58(), expectedPda.toBase58());
+  assert.equal(bump, expectedBump);
+
+  // Explicit program ID arg yields the same singleton.
+  const [pda2] = deriveTreasuryConfigPda(AGENT_TREASURY_PROGRAM_ID);
+  assert.equal(pda2.toBase58(), pda.toBase58());
+});
+
 // ----------------------------------------------------------------------
 // initialize_treasury — instruction shape
 // ----------------------------------------------------------------------
 
 test("buildInitializeTreasuryIx: account metas in the Rust struct order", async () => {
   setupEnv();
-  const { buildInitializeTreasuryIx } = await import(
+  const { buildInitializeTreasuryIx, deriveTreasuryConfigPda } = await import(
     "../lib/programs/agentTreasury.js"
   );
 
@@ -105,30 +133,49 @@ test("buildInitializeTreasuryIx: account metas in the Rust struct order", async 
   const platformAuthority = new PublicKey(
     "9aE2qe8KzvLyxd5HPkdLVCDQyJ9LxhtzNPZkEmLbYEz4",
   );
+  const admin = new PublicKey(
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  );
   const payer = new PublicKey(
     "11111111111111111111111111111112",
   );
-  const ix = buildInitializeTreasuryIx({ mint, platformAuthority, payer });
+  const ix = buildInitializeTreasuryIx({
+    mint,
+    platformAuthority,
+    admin,
+    payer,
+  });
+  const [config] = deriveTreasuryConfigPda();
 
-  // The InitializeTreasury account struct in lib.rs:
-  //   1. treasury           (mut, init)
-  //   2. owner_token_mint   (readonly UncheckedAccount)
-  //   3. payer              (mut signer)
-  //   4. system_program
-  assert.equal(ix.keys.length, 4);
-  // 0: treasury PDA — writable, not signer
+  // The InitializeTreasury account struct in lib.rs (post-C1 admin gate):
+  //   1. config             (readonly, has_one = admin)
+  //   2. admin              (signer, readonly)
+  //   3. treasury           (mut, init)
+  //   4. owner_token_mint   (readonly UncheckedAccount)
+  //   5. payer              (mut signer)
+  //   6. system_program
+  assert.equal(ix.keys.length, 6);
+  // 0: config PDA — readonly, not signer
+  assert.equal(ix.keys[0]!.pubkey.toBase58(), config.toBase58());
   assert.equal(ix.keys[0]!.isSigner, false);
-  assert.equal(ix.keys[0]!.isWritable, true);
-  // 1: mint — readonly, not signer
-  assert.equal(ix.keys[1]!.pubkey.toBase58(), mint.toBase58());
-  assert.equal(ix.keys[1]!.isSigner, false);
+  assert.equal(ix.keys[0]!.isWritable, false);
+  // 1: admin — readonly signer
+  assert.equal(ix.keys[1]!.pubkey.toBase58(), admin.toBase58());
+  assert.equal(ix.keys[1]!.isSigner, true);
   assert.equal(ix.keys[1]!.isWritable, false);
-  // 2: payer — writable signer
-  assert.equal(ix.keys[2]!.pubkey.toBase58(), payer.toBase58());
-  assert.equal(ix.keys[2]!.isSigner, true);
+  // 2: treasury PDA — writable, not signer
+  assert.equal(ix.keys[2]!.isSigner, false);
   assert.equal(ix.keys[2]!.isWritable, true);
-  // 3: system program
-  assert.equal(ix.keys[3]!.pubkey.toBase58(), SYSTEM_PROGRAM_ID);
+  // 3: mint — readonly, not signer
+  assert.equal(ix.keys[3]!.pubkey.toBase58(), mint.toBase58());
+  assert.equal(ix.keys[3]!.isSigner, false);
+  assert.equal(ix.keys[3]!.isWritable, false);
+  // 4: payer — writable signer
+  assert.equal(ix.keys[4]!.pubkey.toBase58(), payer.toBase58());
+  assert.equal(ix.keys[4]!.isSigner, true);
+  assert.equal(ix.keys[4]!.isWritable, true);
+  // 5: system program
+  assert.equal(ix.keys[5]!.pubkey.toBase58(), SYSTEM_PROGRAM_ID);
 });
 
 test("buildInitializeTreasuryIx: data is disc(8) + platform_authority(32)", async () => {
@@ -141,10 +188,18 @@ test("buildInitializeTreasuryIx: data is disc(8) + platform_authority(32)", asyn
   const platformAuthority = new PublicKey(
     "9aE2qe8KzvLyxd5HPkdLVCDQyJ9LxhtzNPZkEmLbYEz4",
   );
+  const admin = new PublicKey(
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  );
   const payer = new PublicKey(
     "11111111111111111111111111111112",
   );
-  const ix = buildInitializeTreasuryIx({ mint, platformAuthority, payer });
+  const ix = buildInitializeTreasuryIx({
+    mint,
+    platformAuthority,
+    admin,
+    payer,
+  });
 
   assert.equal(ix.data.length, 8 + 32, "disc + Pubkey");
   assert.deepEqual(
@@ -155,6 +210,127 @@ test("buildInitializeTreasuryIx: data is disc(8) + platform_authority(32)", asyn
     Array.from(ix.data.subarray(8)),
     Array.from(platformAuthority.toBuffer()),
   );
+});
+
+// ----------------------------------------------------------------------
+// initialize_config — instruction shape
+// ----------------------------------------------------------------------
+
+test("buildInitializeConfigIx: account metas + data shape", async () => {
+  setupEnv();
+  const { buildInitializeConfigIx, deriveTreasuryConfigPda } = await import(
+    "../lib/programs/agentTreasury.js"
+  );
+
+  const admin = new PublicKey(
+    "9aE2qe8KzvLyxd5HPkdLVCDQyJ9LxhtzNPZkEmLbYEz4",
+  );
+  const ix = buildInitializeConfigIx({ admin });
+  const [config] = deriveTreasuryConfigPda();
+
+  // InitializeConfig: 1. config (mut, init), 2. admin (mut signer/payer),
+  // 3. system_program
+  assert.equal(ix.keys.length, 3);
+  assert.equal(ix.keys[0]!.pubkey.toBase58(), config.toBase58());
+  assert.equal(ix.keys[0]!.isSigner, false);
+  assert.equal(ix.keys[0]!.isWritable, true);
+  assert.equal(ix.keys[1]!.pubkey.toBase58(), admin.toBase58());
+  assert.equal(ix.keys[1]!.isSigner, true);
+  assert.equal(ix.keys[1]!.isWritable, true);
+  assert.equal(ix.keys[2]!.pubkey.toBase58(), SYSTEM_PROGRAM_ID);
+
+  // Data: disc only (no args).
+  assert.equal(ix.data.length, 8);
+  assert.deepEqual(Array.from(ix.data), Array.from(INITIALIZE_CONFIG_DISC));
+});
+
+// ----------------------------------------------------------------------
+// propose_platform_authority / accept_platform_authority — shape
+// ----------------------------------------------------------------------
+
+test("buildProposePlatformAuthorityIx: account metas + data shape", async () => {
+  setupEnv();
+  const { buildProposePlatformAuthorityIx, deriveTreasuryPda } = await import(
+    "../lib/programs/agentTreasury.js"
+  );
+
+  const mint = new PublicKey("So11111111111111111111111111111111111111112");
+  const platformAuthority = new PublicKey(
+    "9aE2qe8KzvLyxd5HPkdLVCDQyJ9LxhtzNPZkEmLbYEz4",
+  );
+  const newAuthority = new PublicKey(
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  );
+  const ix = buildProposePlatformAuthorityIx({
+    mint,
+    platformAuthority,
+    newAuthority,
+  });
+  const [treasury] = deriveTreasuryPda(mint);
+
+  // ProposePlatformAuthority: 1. treasury (mut, has_one),
+  // 2. platform_authority (signer)
+  assert.equal(ix.keys.length, 2);
+  assert.equal(ix.keys[0]!.pubkey.toBase58(), treasury.toBase58());
+  assert.equal(ix.keys[0]!.isSigner, false);
+  assert.equal(ix.keys[0]!.isWritable, true);
+  assert.equal(ix.keys[1]!.pubkey.toBase58(), platformAuthority.toBase58());
+  assert.equal(ix.keys[1]!.isSigner, true);
+  assert.equal(ix.keys[1]!.isWritable, false);
+
+  // Data: disc(8) + new_authority(32).
+  assert.equal(ix.data.length, 8 + 32);
+  assert.deepEqual(
+    Array.from(ix.data.subarray(0, 8)),
+    Array.from(PROPOSE_PLATFORM_AUTHORITY_DISC),
+  );
+  assert.deepEqual(
+    Array.from(ix.data.subarray(8)),
+    Array.from(newAuthority.toBuffer()),
+  );
+});
+
+test("buildAcceptPlatformAuthorityIx: account metas + data shape", async () => {
+  setupEnv();
+  const { buildAcceptPlatformAuthorityIx, deriveTreasuryPda } = await import(
+    "../lib/programs/agentTreasury.js"
+  );
+
+  const mint = new PublicKey("So11111111111111111111111111111111111111112");
+  const newAuthority = new PublicKey(
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  );
+  const ix = buildAcceptPlatformAuthorityIx({ mint, newAuthority });
+  const [treasury] = deriveTreasuryPda(mint);
+
+  // AcceptPlatformAuthority: 1. treasury (mut), 2. new_authority (signer)
+  assert.equal(ix.keys.length, 2);
+  assert.equal(ix.keys[0]!.pubkey.toBase58(), treasury.toBase58());
+  assert.equal(ix.keys[0]!.isSigner, false);
+  assert.equal(ix.keys[0]!.isWritable, true);
+  assert.equal(ix.keys[1]!.pubkey.toBase58(), newAuthority.toBase58());
+  assert.equal(ix.keys[1]!.isSigner, true);
+  assert.equal(ix.keys[1]!.isWritable, false);
+
+  // Data: disc only (no args).
+  assert.equal(ix.data.length, 8);
+  assert.deepEqual(
+    Array.from(ix.data),
+    Array.from(ACCEPT_PLATFORM_AUTHORITY_DISC),
+  );
+});
+
+test("all agent-treasury discriminators are distinct", () => {
+  const discs = [
+    INITIALIZE_TREASURY_DISC,
+    PAY_NOSANA_DISC,
+    FEE_RECEIVE_DISC,
+    INITIALIZE_CONFIG_DISC,
+    PROPOSE_PLATFORM_AUTHORITY_DISC,
+    ACCEPT_PLATFORM_AUTHORITY_DISC,
+  ].map((b) => b.toString("hex"));
+  const set = new Set(discs);
+  assert.equal(set.size, discs.length);
 });
 
 // ----------------------------------------------------------------------

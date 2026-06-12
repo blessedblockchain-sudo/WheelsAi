@@ -49,26 +49,97 @@ use anchor_lang::system_program;
 declare_id!("9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n");
 
 pub const TREASURY_SEED: &[u8] = b"treasury";
+pub const TREASURY_CONFIG_SEED: &[u8] = b"config";
 
 #[program]
 pub mod agent_treasury {
     use super::*;
+
+    /// Bootstrap the singleton program config. Whoever calls this
+    /// becomes the admin (intended to be the ops multisig). One per
+    /// program ID — run immediately after deploy, before any treasury
+    /// exists. The admin gates `initialize_treasury`, which is what
+    /// makes treasury creation front-run-proof (C1).
+    pub fn initialize_config(ctx: Context<InitializeConfig>) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        config.admin = ctx.accounts.admin.key();
+        config.pending_admin = Pubkey::default();
+        config.bump = ctx.bumps.config;
+
+        emit!(ConfigInitialized {
+            config: config.key(),
+            admin: config.admin,
+        });
+        Ok(())
+    }
+
+    /// Two-step config-admin rotation, step 1: current admin proposes.
+    pub fn propose_config_admin(
+        ctx: Context<ManageConfig>,
+        new_admin: Pubkey,
+    ) -> Result<()> {
+        require!(
+            new_admin != Pubkey::default(),
+            TreasuryError::InvalidAuthority,
+        );
+        let config = &mut ctx.accounts.config;
+        config.pending_admin = new_admin;
+
+        emit!(ConfigAdminProposed {
+            config: config.key(),
+            current_admin: config.admin,
+            pending_admin: new_admin,
+        });
+        Ok(())
+    }
+
+    /// Two-step config-admin rotation, step 2: the proposed admin
+    /// accepts by signing — a typo'd pubkey can never brick the config.
+    pub fn accept_config_admin(ctx: Context<AcceptConfigAdmin>) -> Result<()> {
+        let config = &mut ctx.accounts.config;
+        require!(
+            config.pending_admin != Pubkey::default()
+                && config.pending_admin == ctx.accounts.new_admin.key(),
+            TreasuryError::AuthorityMismatch,
+        );
+        let old_admin = config.admin;
+        config.admin = config.pending_admin;
+        config.pending_admin = Pubkey::default();
+
+        emit!(ConfigAdminRotated {
+            config: config.key(),
+            old_admin,
+            new_admin: config.admin,
+        });
+        Ok(())
+    }
 
     /// Create the treasury PDA for a given token mint.
     ///
     /// One-shot: a token can only have one treasury. The PDA is
     /// system-owned (Anchor allocates it via `init`), so the SOL
     /// balance is just the lamports field on the account itself.
+    ///
+    /// Admin-gated (C1): the PDA seed (the mint) is public the moment a
+    /// token launches, so a permissionless init was front-runnable — an
+    /// attacker could record THEIR key as platform_authority and the
+    /// fee router would deposit platform funds into an attacker-
+    /// drainable vault. Only the config admin may create treasuries.
     pub fn initialize_treasury(
         ctx: Context<InitializeTreasury>,
         platform_authority: Pubkey,
     ) -> Result<()> {
+        require!(
+            platform_authority != Pubkey::default(),
+            TreasuryError::InvalidAuthority,
+        );
         let treasury = &mut ctx.accounts.treasury;
         treasury.owner_token_mint = ctx.accounts.owner_token_mint.key();
         treasury.platform_authority = platform_authority;
         treasury.total_paid_lamports = 0;
         treasury.total_received_lamports = 0;
         treasury.bump = ctx.bumps.treasury;
+        treasury.pending_authority = Pubkey::default();
 
         emit!(TreasuryInitialized {
             treasury: treasury.key(),
@@ -76,6 +147,53 @@ pub mod agent_treasury {
             platform_authority,
         });
 
+        Ok(())
+    }
+
+    /// Two-step platform-authority rotation, step 1: the CURRENT
+    /// authority proposes a successor (C3). Without rotation, a
+    /// WALLET_MASTER_KEY rotation (the standard response to a key
+    /// compromise) would permanently strand every treasury's funds.
+    pub fn propose_platform_authority(
+        ctx: Context<ProposePlatformAuthority>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        require!(
+            new_authority != Pubkey::default(),
+            TreasuryError::InvalidAuthority,
+        );
+        let treasury = &mut ctx.accounts.treasury;
+        treasury.pending_authority = new_authority;
+
+        emit!(PlatformAuthorityProposed {
+            treasury: treasury.key(),
+            current_authority: treasury.platform_authority,
+            pending_authority: new_authority,
+        });
+        Ok(())
+    }
+
+    /// Two-step platform-authority rotation, step 2: the proposed
+    /// authority accepts by signing, proving the new key exists and is
+    /// usable before the old one loses power.
+    pub fn accept_platform_authority(
+        ctx: Context<AcceptPlatformAuthority>,
+    ) -> Result<()> {
+        let treasury = &mut ctx.accounts.treasury;
+        require!(
+            treasury.pending_authority != Pubkey::default()
+                && treasury.pending_authority == ctx.accounts.new_authority.key(),
+            TreasuryError::AuthorityMismatch,
+        );
+        let old_authority = treasury.platform_authority;
+        treasury.platform_authority = treasury.pending_authority;
+        treasury.pending_authority = Pubkey::default();
+
+        emit!(PlatformAuthorityRotated {
+            treasury: treasury.key(),
+            old_authority,
+            new_authority: treasury.platform_authority,
+        });
         Ok(())
     }
 
@@ -204,7 +322,59 @@ pub mod agent_treasury {
 // ============================================================================
 
 #[derive(Accounts)]
+pub struct InitializeConfig<'info> {
+    #[account(
+        init,
+        payer = admin,
+        space = TreasuryConfig::SIZE,
+        seeds = [TREASURY_CONFIG_SEED],
+        bump,
+    )]
+    pub config: Account<'info, TreasuryConfig>,
+
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ManageConfig<'info> {
+    #[account(
+        mut,
+        seeds = [TREASURY_CONFIG_SEED],
+        bump = config.bump,
+        has_one = admin @ TreasuryError::AuthorityMismatch,
+    )]
+    pub config: Account<'info, TreasuryConfig>,
+
+    pub admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptConfigAdmin<'info> {
+    #[account(
+        mut,
+        seeds = [TREASURY_CONFIG_SEED],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, TreasuryConfig>,
+
+    pub new_admin: Signer<'info>,
+}
+
+#[derive(Accounts)]
 pub struct InitializeTreasury<'info> {
+    #[account(
+        seeds = [TREASURY_CONFIG_SEED],
+        bump = config.bump,
+        has_one = admin @ TreasuryError::AuthorityMismatch,
+    )]
+    pub config: Account<'info, TreasuryConfig>,
+
+    /// The config admin must co-sign treasury creation (C1).
+    pub admin: Signer<'info>,
+
     #[account(
         init,
         payer = payer,
@@ -223,6 +393,31 @@ pub struct InitializeTreasury<'info> {
     pub payer: Signer<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct ProposePlatformAuthority<'info> {
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, treasury.owner_token_mint.as_ref()],
+        bump = treasury.bump,
+        has_one = platform_authority @ TreasuryError::AuthorityMismatch,
+    )]
+    pub treasury: Account<'info, Treasury>,
+
+    pub platform_authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct AcceptPlatformAuthority<'info> {
+    #[account(
+        mut,
+        seeds = [TREASURY_SEED, treasury.owner_token_mint.as_ref()],
+        bump = treasury.bump,
+    )]
+    pub treasury: Account<'info, Treasury>,
+
+    pub new_authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -275,12 +470,31 @@ pub struct Treasury {
     pub total_paid_lamports: u64,
     pub total_received_lamports: u64,
     pub bump: u8,
+    /// Two-step rotation: the proposed next platform_authority, or
+    /// Pubkey::default() when no rotation is pending. Appended after
+    /// `bump` so pre-rotation accounts (zeroed padding) deserialize as
+    /// "no pending rotation".
+    pub pending_authority: Pubkey,
 }
 
 impl Treasury {
-    /// 8 (discriminator) + 32 + 32 + 8 + 8 + 1 = 89. Padded for
-    /// forward-compat fields without requiring a migration.
+    /// Used: 8 (discriminator) + 32 + 32 + 8 + 8 + 1 + 32 = 121.
+    /// Total allocation is 153 — the remainder is forward-compat
+    /// padding so new fields don't require a migration.
     pub const SIZE: usize = 8 + 32 + 32 + 8 + 8 + 1 + 64;
+}
+
+#[account]
+pub struct TreasuryConfig {
+    pub admin: Pubkey,
+    /// Two-step rotation: proposed next admin, or Pubkey::default().
+    pub pending_admin: Pubkey,
+    pub bump: u8,
+}
+
+impl TreasuryConfig {
+    /// 8 (discriminator) + 32 + 32 + 1 = 73, padded for forward-compat.
+    pub const SIZE: usize = 8 + 32 + 32 + 1 + 64;
 }
 
 // ============================================================================
@@ -310,6 +524,40 @@ pub struct FeeReceived {
     pub total_received_lamports: u64,
 }
 
+#[event]
+pub struct ConfigInitialized {
+    pub config: Pubkey,
+    pub admin: Pubkey,
+}
+
+#[event]
+pub struct ConfigAdminProposed {
+    pub config: Pubkey,
+    pub current_admin: Pubkey,
+    pub pending_admin: Pubkey,
+}
+
+#[event]
+pub struct ConfigAdminRotated {
+    pub config: Pubkey,
+    pub old_admin: Pubkey,
+    pub new_admin: Pubkey,
+}
+
+#[event]
+pub struct PlatformAuthorityProposed {
+    pub treasury: Pubkey,
+    pub current_authority: Pubkey,
+    pub pending_authority: Pubkey,
+}
+
+#[event]
+pub struct PlatformAuthorityRotated {
+    pub treasury: Pubkey,
+    pub old_authority: Pubkey,
+    pub new_authority: Pubkey,
+}
+
 // ============================================================================
 // Errors
 // ============================================================================
@@ -326,4 +574,6 @@ pub enum TreasuryError {
     AuthorityMismatch,
     #[msg("integer overflow on total_paid_lamports")]
     Overflow,
+    #[msg("authority pubkey cannot be the default zero pubkey")]
+    InvalidAuthority,
 }

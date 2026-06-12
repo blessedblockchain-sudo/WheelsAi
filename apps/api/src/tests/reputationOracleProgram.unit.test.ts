@@ -35,8 +35,11 @@ const ADD_ATTESTOR_DISC = Buffer.from([
 const REMOVE_ATTESTOR_DISC = Buffer.from([
   108, 232, 239, 229, 84, 249, 29, 22,
 ]);
-const TRANSFER_ADMIN_DISC = Buffer.from([
-  42, 242, 66, 106, 228, 10, 111, 156,
+const PROPOSE_ADMIN_DISC = Buffer.from([
+  121, 214, 199, 212, 87, 39, 117, 234,
+]);
+const ACCEPT_ADMIN_DISC = Buffer.from([
+  112, 42, 45, 90, 116, 181, 13, 170,
 ]);
 const INITIALIZE_AGENT_REPUTATION_DISC = Buffer.from([
   172, 124, 66, 185, 57, 229, 118, 26,
@@ -189,27 +192,50 @@ test("buildRemoveAttestorIx: data uses remove_attestor disc", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// transfer_admin
+// propose_admin / accept_admin (two-step rotation)
 // ---------------------------------------------------------------------------
 
-test("buildTransferAdminIx: data is disc + new_admin pubkey", async () => {
+test("buildProposeAdminIx: data is disc + new_admin pubkey", async () => {
   setupEnv();
-  const { buildTransferAdminIx } = await import(
+  const { buildProposeAdminIx } = await import(
     "../lib/programs/reputationOracle.js"
   );
-  const ix = buildTransferAdminIx({ admin: ADMIN, newAdmin: NEW_ADMIN });
+  const ix = buildProposeAdminIx({ admin: ADMIN, newAdmin: NEW_ADMIN });
+  // TransferAdmin accounts: 1. config (mut), 2. admin (signer, ro)
   assert.equal(ix.keys.length, 2);
+  assert.equal(ix.keys[0]!.isWritable, true);
+  assert.equal(ix.keys[0]!.isSigner, false);
   assert.equal(ix.keys[1]!.pubkey.toBase58(), ADMIN.toBase58());
   assert.equal(ix.keys[1]!.isSigner, true);
+  assert.equal(ix.keys[1]!.isWritable, false);
   assert.equal(ix.data.length, 8 + 32);
   assert.deepEqual(
     Array.from(ix.data.subarray(0, 8)),
-    Array.from(TRANSFER_ADMIN_DISC),
+    Array.from(PROPOSE_ADMIN_DISC),
   );
   assert.deepEqual(
     Array.from(ix.data.subarray(8)),
     Array.from(NEW_ADMIN.toBuffer()),
   );
+});
+
+test("buildAcceptAdminIx: account metas + data is disc only", async () => {
+  setupEnv();
+  const { buildAcceptAdminIx, deriveOracleConfigPda } = await import(
+    "../lib/programs/reputationOracle.js"
+  );
+  const ix = buildAcceptAdminIx({ newAdmin: NEW_ADMIN });
+  const [config] = deriveOracleConfigPda();
+  // AcceptAdmin accounts: 1. config (mut), 2. new_admin (signer, ro)
+  assert.equal(ix.keys.length, 2);
+  assert.equal(ix.keys[0]!.pubkey.toBase58(), config.toBase58());
+  assert.equal(ix.keys[0]!.isWritable, true);
+  assert.equal(ix.keys[0]!.isSigner, false);
+  assert.equal(ix.keys[1]!.pubkey.toBase58(), NEW_ADMIN.toBase58());
+  assert.equal(ix.keys[1]!.isSigner, true);
+  assert.equal(ix.keys[1]!.isWritable, false);
+  assert.equal(ix.data.length, 8);
+  assert.deepEqual(Array.from(ix.data), Array.from(ACCEPT_ADMIN_DISC));
 });
 
 // ---------------------------------------------------------------------------
@@ -421,7 +447,8 @@ test("all reputation-oracle discriminators are distinct", () => {
     INITIALIZE_ORACLE_DISC,
     ADD_ATTESTOR_DISC,
     REMOVE_ATTESTOR_DISC,
-    TRANSFER_ADMIN_DISC,
+    PROPOSE_ADMIN_DISC,
+    ACCEPT_ADMIN_DISC,
     INITIALIZE_AGENT_REPUTATION_DISC,
     SUBMIT_ATTESTATION_DISC,
   ].map((b) => b.toString("hex"));

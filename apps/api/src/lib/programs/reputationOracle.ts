@@ -14,7 +14,8 @@
  *   initialize_oracle()                              → 8 bytes (disc only)
  *   add_attestor(attestor: Pubkey)                   → 8 + 32
  *   remove_attestor(attestor: Pubkey)                → 8 + 32
- *   transfer_admin(new_admin: Pubkey)                → 8 + 32
+ *   propose_admin(new_admin: Pubkey)                 → 8 + 32
+ *   accept_admin()                                   → 8 bytes (disc only)
  *   initialize_agent_reputation()                    → 8 bytes (disc only)
  *   submit_attestation(uptime_seconds_delta: u64,
  *                      message_count_delta: u64,
@@ -78,7 +79,8 @@ function discriminator(ixName: string): Buffer {
 const INITIALIZE_ORACLE_DISC = discriminator("initialize_oracle");
 const ADD_ATTESTOR_DISC = discriminator("add_attestor");
 const REMOVE_ATTESTOR_DISC = discriminator("remove_attestor");
-const TRANSFER_ADMIN_DISC = discriminator("transfer_admin");
+const PROPOSE_ADMIN_DISC = discriminator("propose_admin");
+const ACCEPT_ADMIN_DISC = discriminator("accept_admin");
 const INITIALIZE_AGENT_REPUTATION_DISC = discriminator(
   "initialize_agent_reputation",
 );
@@ -188,25 +190,48 @@ export function buildRemoveAttestorIx(
 }
 
 // ---------------------------------------------------------------------------
-// transfer_admin
+// propose_admin / accept_admin (two-step rotation)
 // ---------------------------------------------------------------------------
 
-export interface BuildTransferAdminIxInput {
+export interface BuildProposeAdminIxInput {
+  /** Current admin — must sign (has_one). */
   admin: PublicKey;
+  /** Proposed successor admin. */
   newAdmin: PublicKey;
 }
 
-export function buildTransferAdminIx(
-  input: BuildTransferAdminIxInput,
+export function buildProposeAdminIx(
+  input: BuildProposeAdminIxInput,
 ): TransactionInstruction {
   const [config] = deriveOracleConfigPda();
   return new TransactionInstruction({
     programId: REPUTATION_ORACLE_PROGRAM_ID,
     keys: [
+      // TransferAdmin accounts struct: 1. config (mut), 2. admin (signer)
       { pubkey: config, isSigner: false, isWritable: true },
       { pubkey: input.admin, isSigner: true, isWritable: false },
     ],
-    data: Buffer.concat([TRANSFER_ADMIN_DISC, input.newAdmin.toBuffer()]),
+    data: Buffer.concat([PROPOSE_ADMIN_DISC, input.newAdmin.toBuffer()]),
+  });
+}
+
+export interface BuildAcceptAdminIxInput {
+  /** The pending admin — must sign and match config.pending_admin. */
+  newAdmin: PublicKey;
+}
+
+export function buildAcceptAdminIx(
+  input: BuildAcceptAdminIxInput,
+): TransactionInstruction {
+  const [config] = deriveOracleConfigPda();
+  return new TransactionInstruction({
+    programId: REPUTATION_ORACLE_PROGRAM_ID,
+    keys: [
+      // AcceptAdmin accounts struct: 1. config (mut), 2. new_admin (signer)
+      { pubkey: config, isSigner: false, isWritable: true },
+      { pubkey: input.newAdmin, isSigner: true, isWritable: false },
+    ],
+    data: Buffer.from(ACCEPT_ADMIN_DISC),
   });
 }
 

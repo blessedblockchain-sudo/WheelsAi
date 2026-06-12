@@ -115,11 +115,15 @@ fn ix_remove_attestor(
     }
 }
 
-fn ix_transfer_admin(
+fn ix_propose_admin(
     config: &Pubkey,
     admin: &Pubkey,
     new_admin: Pubkey,
 ) -> Instruction {
+    // Two-step rotation, step 1. Reuses the TransferAdmin accounts
+    // struct (config + current admin signer); the instruction data
+    // discriminator is sha256("global:propose_admin")[..8], which
+    // `instruction::ProposeAdmin` computes for us.
     let accounts = accounts::TransferAdmin {
         config: *config,
         admin: *admin,
@@ -127,7 +131,20 @@ fn ix_transfer_admin(
     Instruction {
         program_id: PROGRAM_ID,
         accounts: accounts.to_account_metas(None),
-        data: instruction::TransferAdmin { new_admin }.data(),
+        data: instruction::ProposeAdmin { new_admin }.data(),
+    }
+}
+
+fn ix_accept_admin(config: &Pubkey, new_admin: &Pubkey) -> Instruction {
+    // Two-step rotation, step 2: the proposed admin signs.
+    let accounts = accounts::AcceptAdmin {
+        config: *config,
+        new_admin: *new_admin,
+    };
+    Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accounts.to_account_metas(None),
+        data: instruction::AcceptAdmin {}.data(),
     }
 }
 
@@ -222,6 +239,7 @@ fn initialize_oracle_creates_singleton_config_with_caller_as_admin() {
     assert_eq!(state.admin, admin.pubkey());
     assert_eq!(state.attestor_count, 0);
     assert_eq!(state.attestors, [Pubkey::default(); MAX_ATTESTORS]);
+    assert_eq!(state.pending_admin, Pubkey::default());
 }
 
 #[test]
@@ -389,27 +407,56 @@ fn remove_attestor_rejects_unknown() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: transfer_admin
+// Tests: propose_admin / accept_admin (two-step rotation)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn transfer_admin_rotates_authority() {
+fn propose_then_accept_admin_rotates_authority() {
     let (mut svm, admin) = boot_svm();
     let config = bootstrap_oracle(&mut svm, &admin);
 
     let new_admin = Keypair::new();
     svm.airdrop(&new_admin.pubkey(), LAMPORTS_PER_SOL).unwrap();
 
+    // Step 1: current admin proposes.
     send(
         &mut svm,
         &admin,
         &[],
-        &[ix_transfer_admin(&config, &admin.pubkey(), new_admin.pubkey())],
+        &[ix_propose_admin(&config, &admin.pubkey(), new_admin.pubkey())],
     )
-    .expect("transfer");
+    .expect("propose");
+
+    let state = fetch_config(&svm, &config);
+    assert_eq!(state.admin, admin.pubkey(), "propose must not rotate yet");
+    assert_eq!(state.pending_admin, new_admin.pubkey());
+
+    // Old admin keeps power until accept: add_attestor still works.
+    let interim_attestor = Pubkey::new_unique();
+    send(
+        &mut svm,
+        &admin,
+        &[],
+        &[ix_add_attestor(&config, &admin.pubkey(), interim_attestor)],
+    )
+    .expect("old admin still has power before accept");
+
+    // Step 2: the proposed admin accepts.
+    send(
+        &mut svm,
+        &new_admin,
+        &[],
+        &[ix_accept_admin(&config, &new_admin.pubkey())],
+    )
+    .expect("accept");
 
     let state = fetch_config(&svm, &config);
     assert_eq!(state.admin, new_admin.pubkey());
+    assert_eq!(
+        state.pending_admin,
+        Pubkey::default(),
+        "pending cleared after accept",
+    );
 
     // Old admin can no longer add attestors.
     let err = send(
@@ -418,7 +465,7 @@ fn transfer_admin_rotates_authority() {
         &[],
         &[ix_add_attestor(&config, &admin.pubkey(), Pubkey::new_unique())],
     );
-    assert!(err.is_err(), "old admin must lose authority");
+    assert!(err.is_err(), "old admin must lose authority after accept");
 
     // New admin succeeds.
     let attestor = Pubkey::new_unique();
@@ -429,6 +476,83 @@ fn transfer_admin_rotates_authority() {
         &[ix_add_attestor(&config, &new_admin.pubkey(), attestor)],
     )
     .expect("new admin can add");
+}
+
+#[test]
+fn accept_admin_without_pending_proposal_fails() {
+    let (mut svm, admin) = boot_svm();
+    let config = bootstrap_oracle(&mut svm, &admin);
+
+    let opportunist = Keypair::new();
+    svm.airdrop(&opportunist.pubkey(), LAMPORTS_PER_SOL).unwrap();
+
+    // No propose_admin happened — pending_admin is Pubkey::default().
+    let err = send(
+        &mut svm,
+        &opportunist,
+        &[],
+        &[ix_accept_admin(&config, &opportunist.pubkey())],
+    );
+    assert!(err.is_err(), "accept with no pending proposal must fail");
+
+    let state = fetch_config(&svm, &config);
+    assert_eq!(state.admin, admin.pubkey(), "admin unchanged");
+    assert_eq!(state.pending_admin, Pubkey::default());
+}
+
+#[test]
+fn accept_admin_by_non_pending_key_fails() {
+    let (mut svm, admin) = boot_svm();
+    let config = bootstrap_oracle(&mut svm, &admin);
+
+    let new_admin = Keypair::new();
+    let mallory = Keypair::new();
+    svm.airdrop(&mallory.pubkey(), LAMPORTS_PER_SOL).unwrap();
+
+    send(
+        &mut svm,
+        &admin,
+        &[],
+        &[ix_propose_admin(&config, &admin.pubkey(), new_admin.pubkey())],
+    )
+    .expect("propose");
+
+    // mallory ≠ pending_admin — accept must fail.
+    let err = send(
+        &mut svm,
+        &mallory,
+        &[],
+        &[ix_accept_admin(&config, &mallory.pubkey())],
+    );
+    assert!(err.is_err(), "accept by a key != pending must fail");
+
+    let state = fetch_config(&svm, &config);
+    assert_eq!(state.admin, admin.pubkey(), "admin unchanged");
+    assert_eq!(
+        state.pending_admin,
+        new_admin.pubkey(),
+        "pending proposal untouched",
+    );
+}
+
+#[test]
+fn propose_admin_by_non_admin_fails() {
+    let (mut svm, admin) = boot_svm();
+    let config = bootstrap_oracle(&mut svm, &admin);
+
+    let rando = Keypair::new();
+    svm.airdrop(&rando.pubkey(), LAMPORTS_PER_SOL).unwrap();
+
+    let err = send(
+        &mut svm,
+        &rando,
+        &[],
+        &[ix_propose_admin(&config, &rando.pubkey(), rando.pubkey())],
+    );
+    assert!(err.is_err(), "non-admin propose must fail");
+
+    let state = fetch_config(&svm, &config);
+    assert_eq!(state.pending_admin, Pubkey::default(), "no proposal recorded");
 }
 
 // ---------------------------------------------------------------------------

@@ -18,8 +18,10 @@ function setupEnv() {
 // emit further trades.
 //
 // Indexer-driver iterates this list and runs runTokenTradeIndexerTick
-// per token. Returns the minimal { id, mintAddress } shape — the per-
-// tick context is otherwise built by the dep-builder per token.
+// per token. Returns the minimal { id, mintAddress, status,
+// tradeIndexCursor } shape (plan D7): `status` gates the graduation
+// check and `tradeIndexCursor` is the per-token high-water mark the
+// pagination loop fetches down to. Nothing else is over-fetched.
 
 type Status = "BONDING" | "GRADUATED" | "FAILED";
 
@@ -27,6 +29,7 @@ interface FakeToken {
   id: string;
   mintAddress: string;
   status: Status;
+  tradeIndexCursor?: Date | null;
 }
 
 function makePrismaStub(tokens: FakeToken[]) {
@@ -52,6 +55,7 @@ const sample = (overrides: Partial<FakeToken> = {}): FakeToken => ({
   id: "tok_1",
   mintAddress: "MintAddr_1",
   status: "BONDING",
+  tradeIndexCursor: null,
   ...overrides,
 });
 
@@ -122,25 +126,53 @@ test("loadActiveTokensByPrisma uses status: { in: [BONDING, GRADUATED] } in the 
 // Field projection
 // ============================================
 
-test("loadActiveTokensByPrisma returns the minimal { id, mintAddress } shape", async () => {
-  // The indexer's per-tick input only needs id + mintAddress. The
-  // loader explicitly selects those — no over-fetching of pumpfunUrl,
-  // creatorAddress, etc. for what would be an idle scan.
+test("loadActiveTokensByPrisma returns the minimal { id, mintAddress, status, tradeIndexCursor } shape", async () => {
+  // The outer-tick deps builder needs exactly these four: id +
+  // mintAddress for the tick, status for the graduation gate,
+  // tradeIndexCursor for the pagination high-water mark. No
+  // over-fetching of pumpfunUrl, creatorAddress, etc. for what would
+  // be an idle scan.
   const { loadActiveTokensByPrisma } = await import(
     "../services/loadActiveTokensByPrisma.js"
   );
+  const cursor = new Date("2026-06-01T00:00:00Z");
   const stub = makePrismaStub([
-    sample({ id: "t", mintAddress: "MintXYZ", status: "BONDING" }),
+    sample({
+      id: "t",
+      mintAddress: "MintXYZ",
+      status: "BONDING",
+      tradeIndexCursor: cursor,
+    }),
   ]);
   const result = await loadActiveTokensByPrisma({
     prisma: stub.prisma as any,
   });
-  assert.deepEqual(Object.keys(result[0]!).sort(), ["id", "mintAddress"]);
+  assert.deepEqual(Object.keys(result[0]!).sort(), [
+    "id",
+    "mintAddress",
+    "status",
+    "tradeIndexCursor",
+  ]);
   assert.equal(result[0]!.id, "t");
   assert.equal(result[0]!.mintAddress, "MintXYZ");
+  assert.equal(result[0]!.status, "BONDING");
+  assert.equal(result[0]!.tradeIndexCursor!.toISOString(), cursor.toISOString());
 });
 
-test("loadActiveTokensByPrisma requests select: { id, mintAddress } from Prisma", async () => {
+test("loadActiveTokensByPrisma surfaces a null cursor as null (never-indexed token)", async () => {
+  // Null = never indexed; the deps builder maps it to epoch so the
+  // first tick fetches the token's full history.
+  const { loadActiveTokensByPrisma } = await import(
+    "../services/loadActiveTokensByPrisma.js"
+  );
+  const stub = makePrismaStub([sample({ id: "fresh" })]);
+  const result = await loadActiveTokensByPrisma({
+    prisma: stub.prisma as any,
+  });
+  assert.equal(result[0]!.tradeIndexCursor, null);
+});
+
+test("loadActiveTokensByPrisma requests select: { id, mintAddress, status, tradeIndexCursor } from Prisma", async () => {
   const { loadActiveTokensByPrisma } = await import(
     "../services/loadActiveTokensByPrisma.js"
   );
@@ -149,6 +181,8 @@ test("loadActiveTokensByPrisma requests select: { id, mintAddress } from Prisma"
   assert.deepEqual(stub.observed.findManyArgs.select, {
     id: true,
     mintAddress: true,
+    status: true,
+    tradeIndexCursor: true,
   });
 });
 

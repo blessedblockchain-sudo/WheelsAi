@@ -64,6 +64,8 @@ import {
   stopFeeRouterQueue,
   startReputationAttestationQueue,
   stopReputationAttestationQueue,
+  startDeploymentStatusQueue,
+  stopDeploymentStatusQueue,
   assertQueueRedisReady,
 } from "./queues/index.js";
 
@@ -255,6 +257,7 @@ async function main() {
   await startPaymentReapQueue();
   await startFeeRouterQueue();
   await startReputationAttestationQueue();
+  await startDeploymentStatusQueue();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
@@ -269,6 +272,7 @@ async function main() {
       await stopPaymentReapQueue();
       await stopFeeRouterQueue();
       await stopReputationAttestationQueue();
+      await stopDeploymentStatusQueue();
       await app.close();
       process.exit(0);
     });

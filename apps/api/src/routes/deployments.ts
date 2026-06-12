@@ -642,25 +642,11 @@ async function submitToNosana(
       });
     }
 
-    // Start health check polling (simulate for now)
-    setTimeout(async () => {
-      try {
-        // Mark nodes as healthy and deployment as running
-        await prisma.deploymentNode.updateMany({
-          where: { deploymentId },
-          data: { healthStatus: "healthy", latencyMs: 50 },
-        });
-
-        await prisma.deployment.update({
-          where: { id: deploymentId },
-          data: { status: "running" },
-        });
-
-        logger.info({ deploymentId }, "Deployment is now running");
-      } catch (err) {
-        logger.error({ err, deploymentId }, "Failed to update deployment status");
-      }
-    }, 5000);
+    // Status stays "provisioning" until the deployment-status worker
+    // (queues/deployment-status.queue.ts) OBSERVES the Nosana job
+    // running (plan D8). Node healthStatus likewise stays "unknown"
+    // until a real health check runs — the old code fabricated
+    // healthy/50ms here on a 5s timer.
 
     logger.info(
       { deploymentId, nosanaId: nosanaDeployment.id },

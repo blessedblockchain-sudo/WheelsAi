@@ -546,18 +546,10 @@ async function submitAgentToNosana(
       },
     });
 
-    // Simulate deployment completion (in production, poll Nosana status)
-    setTimeout(async () => {
-      try {
-        await prisma.agentDeployment.update({
-          where: { id: deploymentId },
-          data: { status: "running" },
-        });
-        logger.info({ deploymentId }, "Agent deployment is now running");
-      } catch (err) {
-        logger.error({ err, deploymentId }, "Failed to update agent deployment status");
-      }
-    }, 8000);
+    // Status stays "deploying" until the deployment-status worker
+    // (queues/deployment-status.queue.ts) OBSERVES the Nosana job
+    // running — no fabricated timer flip (plan D8), and the transition
+    // survives restarts because it is derived from chain state.
 
     logger.info({ deploymentId, nosanaId: nosanaDeployment.id }, "Agent submitted to Nosana");
   } catch (error: any) {

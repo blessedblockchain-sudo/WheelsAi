@@ -404,6 +404,39 @@ export class NosanaClient {
     }
   }
 
+  /** Map a raw SDK job onto our NosanaJob shape. */
+  private toNosanaJob(
+    jobId: string,
+    sdkJob: {
+      node?: unknown;
+      market?: { toBase58?: () => string };
+      state: string | number;
+      timeStart?: number | null;
+      timeEnd?: number | null;
+      price?: number | null;
+    }
+  ): NosanaJob {
+    const nodeStr = sdkJob.node ? String(sdkJob.node) : "";
+    const hasRealNode = nodeStr && nodeStr !== SYSTEM_PROGRAM_ZERO_PUBKEY;
+    const nodeUrl = hasRealNode ? `https://${nodeStr}.node.nos.ci` : undefined;
+    const nodePubkey = hasRealNode ? nodeStr : undefined;
+
+    return {
+      id: jobId,
+      market: sdkJob.market?.toBase58?.() ?? "",
+      status: this.mapJobState(sdkJob.state),
+      nodeUrl,
+      nodePubkey,
+      startTime: sdkJob.timeStart
+        ? new Date(sdkJob.timeStart * 1000)
+        : undefined,
+      endTime: sdkJob.timeEnd
+        ? new Date(sdkJob.timeEnd * 1000)
+        : undefined,
+      cost: sdkJob.price ? sdkJob.price / 1e6 : undefined,
+    };
+  }
+
   /**
    * Query on-chain job status for a given job address.
    * Falls back to a "running" stub if the RPC call fails (e.g. mock IDs).
@@ -425,26 +458,7 @@ export class NosanaClient {
 
     try {
       const sdkJob = await sdk.jobs.get(jobId);
-
-      const nodeStr = sdkJob.node ? String(sdkJob.node) : "";
-      const hasRealNode = nodeStr && nodeStr !== SYSTEM_PROGRAM_ZERO_PUBKEY;
-      const nodeUrl = hasRealNode ? `https://${nodeStr}.node.nos.ci` : undefined;
-      const nodePubkey = hasRealNode ? nodeStr : undefined;
-
-      return {
-        id: jobId,
-        market: sdkJob.market?.toBase58?.() ?? "",
-        status: this.mapJobState(sdkJob.state),
-        nodeUrl,
-        nodePubkey,
-        startTime: sdkJob.timeStart
-          ? new Date(sdkJob.timeStart * 1000)
-          : undefined,
-        endTime: sdkJob.timeEnd
-          ? new Date(sdkJob.timeEnd * 1000)
-          : undefined,
-        cost: sdkJob.price ? sdkJob.price / 1e6 : undefined,
-      };
+      return this.toNosanaJob(jobId, sdkJob);
     } catch (error) {
       logger.warn(
         { jobId, error: (error as Error).message },
@@ -458,6 +472,26 @@ export class NosanaClient {
         startTime: new Date(),
       };
     }
+  }
+
+  /**
+   * Strict job-state read for the deployment-status poller (plan D8).
+   *
+   * Unlike getJobStatus this THROWS on SDK/RPC failure instead of
+   * returning a "running" stub — the poller must leave rows untouched
+   * when the chain can't be read, and a fabricated "running" would be
+   * exactly the lie D8 removes. Mock IDs also throw: mock handling is
+   * env-gated at the tick layer (ALLOW_NOSANA_MOCK), not here.
+   */
+  async getJobStatusStrict(jobId: string): Promise<NosanaJob> {
+    const sdk = this.requireSdk();
+
+    if (jobId.startsWith("mock_job_") || jobId.startsWith("mock_deploy_")) {
+      throw new Error(`Mock Nosana id cannot be queried on-chain: ${jobId}`);
+    }
+
+    const sdkJob = await sdk.jobs.get(jobId);
+    return this.toNosanaJob(jobId, sdkJob);
   }
 
   /**

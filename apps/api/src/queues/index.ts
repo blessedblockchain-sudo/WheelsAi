@@ -25,3 +25,7 @@ export {
   startReputationAttestationQueue,
   stopReputationAttestationQueue,
 } from "./reputation-attestation.queue.js";
+export {
+  startDeploymentStatusQueue,
+  stopDeploymentStatusQueue,
+} from "./deployment-status.queue.js";

@@ -2105,6 +2105,12 @@ model AgentToken {
   // successful submit_attestation. Usage records with periodEnd > this
   // cursor contribute to the next attestation. Null = never attested.
   lastOnChainAttestationAt     DateTime? @map("last_on_chain_attestation_at")
+  // Per-token high-water-mark cursor for the trade indexer (plan D7):
+  // timestamp of the newest trade fetched from the launchpad API. The
+  // indexer paginates each tick until it reaches this cursor, so bursts
+  // larger than one page are not silently dropped. Null = never indexed
+  // (fetch from epoch).
+  tradeIndexCursor             DateTime? @map("trade_index_cursor")
   createdAt         DateTime    @default(now()) @map("created_at")
   updatedAt         DateTime    @updatedAt @map("updated_at")
 

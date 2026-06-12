@@ -169,6 +169,12 @@ const envSchema = z.object({
   // deployments each enforce it). Nosana jobs are platform-paid, so the
   // cap plus the credit reservation bound the platform's exposure.
   MAX_ACTIVE_DEPLOYMENTS_PER_ORG: z.coerce.number().int().min(1).default(5),
+
+  // Deployment-status BullMQ worker (plan D8): polls Nosana job state
+  // for non-terminal model/agent deployments and persists OBSERVED
+  // transitions — replaces the deleted setTimeout status simulation.
+  // Set to 0 to disable.
+  DEPLOYMENT_STATUS_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
 });
 
 export class EnvValidationError extends Error {}

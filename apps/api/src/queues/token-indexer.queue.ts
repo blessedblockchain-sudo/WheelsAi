@@ -1,8 +1,16 @@
 import { Queue, Worker } from "bullmq";
 
 import { env } from "../config/env.js";
+import { prisma } from "../lib/prisma.js";
+import {
+  createSnapshot,
+  graduateToken,
+  updateTokenStats,
+} from "../services/agentToken.js";
+import { buildTokenIndexerOuterTickDeps } from "../services/buildTokenIndexerOuterTickDeps.js";
+import { getPumpFunClient } from "../services/pumpfun.js";
+import { runTokenIndexerOuterTick } from "../services/runTokenIndexerOuterTick.js";
 import { createLogger } from "../utils/logger.js";
-import { runTokenIndexerTick } from "../services/tokenIndexer.js";
 import { getQueueConnectionOpts } from "./connection.js";
 
 const QUEUE_NAME = "token-indexer";
@@ -46,10 +54,29 @@ export async function startTokenIndexerQueue(): Promise<void> {
     }
   );
 
+  // Cursor-based indexer (plan D7): per-token Postgres high-water-mark
+  // cursors with pagination-until-cursor, so bursts larger than one page
+  // are not silently dropped. Composes the legacy per-token behaviors
+  // (stats refresh, graduation check, price snapshot) after trade
+  // indexing — see buildTokenIndexerOuterTickDeps.
   worker = new Worker(
     QUEUE_NAME,
     async (_job) => {
-      await runTokenIndexerTick();
+      const client = getPumpFunClient();
+      const deps = buildTokenIndexerOuterTickDeps({
+        prisma,
+        getTradesPage: (mintAddress, limit, offset) =>
+          client.getTokenTrades(mintAddress, limit, offset),
+        stats: {
+          getTokenInfo: (mintAddress) => client.getTokenInfo(mintAddress),
+          updateTokenStats,
+          graduateToken,
+          createSnapshot,
+        },
+        now: () => new Date(),
+      });
+      const result = await runTokenIndexerOuterTick({ now: new Date() }, deps);
+      logger.info(result, "Token indexer tick complete");
     },
     {
       connection,

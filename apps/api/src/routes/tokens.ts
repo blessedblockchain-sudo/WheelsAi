@@ -12,7 +12,8 @@ import {
   getTokenChart,
   getLeaderboard,
 } from "../services/agentToken.js";
-import { getIndexerMetrics } from "../services/tokenIndexer.js";
+import { prisma } from "../lib/prisma.js";
+import { loadIndexerHealthByPrisma } from "../services/loadIndexerHealthByPrisma.js";
 import {
   ELIGIBILITY_DEFAULTS,
   CREATOR_LOCKUP_DAYS,
@@ -243,13 +244,20 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
-  // GET /indexer/metrics - Get indexer health metrics
+  // GET /indexer/metrics - Indexer health derived from the per-token
+  // trade_index_cursor columns (plan D7). The previous payload mirrored
+  // in-memory counters of a deleted setInterval worker that the BullMQ
+  // indexer never wrote — it reported a stopped indexer regardless of
+  // reality. Cursor freshness is durable and replica-independent.
   app.get(
     "/indexer/metrics",
     { preHandler: [requireAuth] },
     async (request, reply) => {
       try {
-        const result = await getIndexerMetrics();
+        // `as never`: repo convention for the load*ByPrisma stubs — the
+        // loader types the narrow Prisma surface it needs; the real
+        // client satisfies it structurally but not generically.
+        const result = await loadIndexerHealthByPrisma({ prisma: prisma as never });
 
         return reply.send(result);
       } catch (error) {

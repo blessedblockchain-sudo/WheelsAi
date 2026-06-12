@@ -9,7 +9,6 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("x402-settlement-worker");
 
 let connectionInstance: Connection | null = null;
-let settlementInterval: NodeJS.Timeout | null = null;
 let isTickRunning = false;
 let lastMetricsPruneAt: number | null = null;
 const lastCriticalAlertNotificationAt = new Map<string, number>();
@@ -288,61 +287,6 @@ export async function pruneX402SettlementMetricsHistory(): Promise<number> {
   `;
 }
 
-/**
- * @deprecated Use BullMQ queue instead — call `startX402Queue()` from `../queues/index.js`.
- */
-export function startX402SettlementWorker(): () => void {
-  workerMetrics.enabled = env.X402_SETTLEMENT_WORKER_ENABLED;
-
-  if (!env.X402_SETTLEMENT_WORKER_ENABLED) {
-    logger.info("X402 settlement worker disabled");
-    return () => {};
-  }
-
-  if (settlementInterval) {
-    return stopX402SettlementWorker;
-  }
-
-  logger.info(
-    {
-      intervalMs: env.X402_SETTLEMENT_INTERVAL_MS,
-      batchSize: env.X402_SETTLEMENT_BATCH_SIZE,
-      maxRetries: env.X402_SETTLEMENT_MAX_RETRIES,
-      submitTransactions: env.X402_SUBMIT_TRANSACTIONS,
-      metricsRetentionDays: env.X402_METRICS_RETENTION_DAYS,
-      metricsPruneIntervalMinutes: env.X402_METRICS_PRUNE_INTERVAL_MINUTES,
-    },
-    "Starting X402 settlement worker"
-  );
-
-  const runTick = () => {
-    void runX402SettlementTick().catch((error) => {
-      logger.error({ error }, "X402 settlement tick failed");
-    });
-  };
-
-  settlementInterval = setInterval(runTick, env.X402_SETTLEMENT_INTERVAL_MS);
-  workerMetrics.running = true;
-  workerMetrics.startedAt = new Date().toISOString();
-  void runTick();
-
-  return stopX402SettlementWorker;
-}
-
-/**
- * @deprecated Use BullMQ queue instead — call `stopX402Queue()` from `../queues/index.js`.
- */
-export function stopX402SettlementWorker(): void {
-  if (!settlementInterval) {
-    return;
-  }
-
-  clearInterval(settlementInterval);
-  settlementInterval = null;
-  workerMetrics.running = false;
-  logger.info("Stopped X402 settlement worker");
-}
-
 export async function runX402SettlementTick(): Promise<void> {
   if (isTickRunning) {
     return;
@@ -350,6 +294,13 @@ export async function runX402SettlementTick(): Promise<void> {
 
   isTickRunning = true;
   const tickStart = Date.now();
+  if (!workerMetrics.startedAt) {
+    // First settlement tick executed by this process — honest per-replica
+    // "since when has this worker been doing work" (the BullMQ shell in
+    // queues/x402-settlement.queue.ts owns scheduling; the deleted
+    // setInterval twin used to fake this at registration time).
+    workerMetrics.startedAt = new Date().toISOString();
+  }
 
   try {
     const payments = await prisma.x402Payment.findMany({
@@ -422,7 +373,14 @@ export async function runX402SettlementTick(): Promise<void> {
 }
 
 export function getX402SettlementWorkerMetrics(): WorkerMetrics {
-  return { ...workerMetrics };
+  // enabled/running are config-derived: the BullMQ shell
+  // (queues/x402-settlement.queue.ts) starts iff
+  // X402_SETTLEMENT_WORKER_ENABLED. There is no per-process setInterval
+  // whose liveness could be reported here any more, and with
+  // multi-replica BullMQ workers a process-local "running" flag was a
+  // lie anyway — any replica may execute the next tick.
+  const enabled = env.X402_SETTLEMENT_WORKER_ENABLED;
+  return { ...workerMetrics, enabled, running: enabled };
 }
 
 async function settlePayment(payment: X402Payment): Promise<SettlementOutcome> {

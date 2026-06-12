@@ -6,9 +6,13 @@
  * emit further trades, so polling them would burn cycles on dead
  * mints.
  *
- * Returns the minimal { id, mintAddress } shape the indexer's per-tick
- * input requires. The dep-builder builds the per-token deps map per
- * iteration; nothing else needs over-fetching at the outer loop.
+ * Returns the { id, mintAddress, status, tradeIndexCursor } shape the
+ * outer-tick deps builder requires: `status` gates the graduation
+ * check (only BONDING rows may graduate — re-running graduateToken on
+ * a GRADUATED row would reset the creator lockup), and
+ * `tradeIndexCursor` is the per-token high-water mark the pagination
+ * loop fetches down to (plan D7). Nothing else is over-fetched at the
+ * outer loop.
  */
 
 interface PrismaStub {
@@ -17,8 +21,20 @@ interface PrismaStub {
       where: {
         status: { in: Array<"BONDING" | "GRADUATED"> };
       };
-      select: { id: true; mintAddress: true };
-    }) => Promise<Array<{ id: string; mintAddress: string }>>;
+      select: {
+        id: true;
+        mintAddress: true;
+        status: true;
+        tradeIndexCursor: true;
+      };
+    }) => Promise<
+      Array<{
+        id: string;
+        mintAddress: string;
+        status: string;
+        tradeIndexCursor: Date | null;
+      }>
+    >;
   };
 }
 
@@ -29,6 +45,8 @@ export interface LoadActiveTokensDeps {
 export interface ActiveTokenRow {
   id: string;
   mintAddress: string;
+  status: string;
+  tradeIndexCursor: Date | null;
 }
 
 export async function loadActiveTokensByPrisma(
@@ -36,10 +54,20 @@ export async function loadActiveTokensByPrisma(
 ): Promise<ActiveTokenRow[]> {
   const rows = await deps.prisma.agentToken.findMany({
     where: { status: { in: ["BONDING", "GRADUATED"] } },
-    select: { id: true, mintAddress: true },
+    select: {
+      id: true,
+      mintAddress: true,
+      status: true,
+      tradeIndexCursor: true,
+    },
   });
   // Explicit projection — Prisma's select narrows in production, but
   // the loader's contract is the narrow shape regardless of how the
   // upstream client behaves.
-  return rows.map((r) => ({ id: r.id, mintAddress: r.mintAddress }));
+  return rows.map((r) => ({
+    id: r.id,
+    mintAddress: r.mintAddress,
+    status: r.status,
+    tradeIndexCursor: r.tradeIndexCursor ?? null,
+  }));
 }

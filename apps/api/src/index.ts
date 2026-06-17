@@ -8,6 +8,7 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 
 import { installBigIntJsonSerializer } from "./lib/bigintJson.js";
+import { globalErrorHandler } from "./lib/errorHandler.js";
 
 // Precision-safe BigInt JSON serialization (Prisma surfaces BigInt columns
 // API-wide) — installed before any route can serialize a response. The
@@ -228,27 +229,9 @@ async function main() {
   await app.register(agentTreasuryRoutes, { prefix: "/api" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
 
-  // Global error handler
-  app.setErrorHandler((error, request, reply) => {
-    app.log.error(error);
-
-    if (error.validation) {
-      return reply.status(400).send({
-        error: "Validation Error",
-        message: error.message,
-        details: error.validation,
-      });
-    }
-
-    const statusCode = error.statusCode ?? 500;
-    const message =
-      statusCode === 500 ? "Internal Server Error" : error.message;
-
-    return reply.status(statusCode).send({
-      error: statusCode === 500 ? "InternalError" : (error.name ?? "Error"),
-      message,
-    });
-  });
+  // Global error handler — maps ZodError (bare .parse() in routes) to 400,
+  // Fastify schema-validation to 400, else statusCode-aware fallback (F1).
+  app.setErrorHandler(globalErrorHandler);
 
   // Start server
   try {

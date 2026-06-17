@@ -32,6 +32,8 @@ interface PrismaStub {
         tokenAmount: number;
         solAmount: number;
         priceUsd: number;
+        solLamports: bigint;
+        tokenAmountRaw: bigint;
         timestamp: Date;
       }>
     >;
@@ -56,6 +58,8 @@ export async function loadAllAgentTokenTrades(
       tokenAmount: true,
       solAmount: true,
       priceUsd: true,
+      solLamports: true,
+      tokenAmountRaw: true,
       timestamp: true,
     },
   });
@@ -70,6 +74,8 @@ export async function loadAllAgentTokenTrades(
     tokenAmount: r.tokenAmount,
     solAmount: r.solAmount,
     priceUsd: r.priceUsd,
+    solLamports: r.solLamports,
+    tokenAmountRaw: r.tokenAmountRaw,
     timestamp: r.timestamp,
   }));
 }

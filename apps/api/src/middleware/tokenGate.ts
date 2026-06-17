@@ -3,6 +3,7 @@ import { Redis } from "ioredis";
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
+import { tokensToRaw, rawToTokens } from "../lib/tokenUnits.js";
 
 const logger = createLogger("token-gate");
 
@@ -187,13 +188,22 @@ export function requireTokenHolding(minBalance: number = 1) {
       });
     }
 
-    // Look up holder record, with cache
-    const holderCacheKey = `tokengate:holder:${token.id}:${walletAddress}`;
-    let currentBalance: number;
+    // The access decision is made in integer raw token units (D9): the
+    // Float `balance` column accumulates rounding error and loses precision
+    // near the 1e15-raw supply ceiling, so we compare `balanceRaw` instead.
+    // minBalance is expressed in whole tokens (default 1).
+    const minBalanceRaw = tokensToRaw(minBalance);
 
-    const cachedBalance = await cacheGet<number>(holderCacheKey);
+    // Look up holder record, with cache. The cache stores the raw balance
+    // as a decimal string (BigInt isn't JSON-serializable); a versioned key
+    // (`:raw:`) ensures stale numeric entries written by the pre-D9 code
+    // are never reinterpreted as raw units.
+    const holderCacheKey = `tokengate:holder:raw:${token.id}:${walletAddress}`;
+    let currentBalanceRaw: bigint;
+
+    const cachedBalance = await cacheGet<string>(holderCacheKey);
     if (cachedBalance !== null) {
-      currentBalance = cachedBalance;
+      currentBalanceRaw = BigInt(cachedBalance);
     } else {
       const holder = await prisma.agentTokenHolder.findUnique({
         where: {
@@ -202,26 +212,34 @@ export function requireTokenHolding(minBalance: number = 1) {
             walletAddress,
           },
         },
-        select: { balance: true },
+        select: { balanceRaw: true },
       });
 
-      currentBalance = holder ? Number(holder.balance) : 0;
-      await cacheSet(holderCacheKey, currentBalance, HOLDER_TTL_SECONDS);
+      currentBalanceRaw = holder ? holder.balanceRaw : 0n;
+      await cacheSet(
+        holderCacheKey,
+        currentBalanceRaw.toString(),
+        HOLDER_TTL_SECONDS,
+      );
     }
 
-    if (currentBalance < minBalance) {
+    if (currentBalanceRaw < minBalanceRaw) {
       return reply.status(403).send({
         error: "Forbidden",
         message: `Insufficient ${token.symbol} holdings to access this agent`,
         tokenSymbol: token.symbol,
         mintAddress: token.mintAddress,
         requiredBalance: minBalance,
-        currentBalance,
+        currentBalance: rawToTokens(currentBalanceRaw),
       });
     }
 
     logger.debug(
-      { walletAddress, tokenSymbol: token.symbol, balance: currentBalance },
+      {
+        walletAddress,
+        tokenSymbol: token.symbol,
+        balance: rawToTokens(currentBalanceRaw),
+      },
       "Token gate passed"
     );
   };

@@ -200,9 +200,10 @@ test("token gate returns 403 with proper error shape when token balance is insuf
       },
     },
   });
-  // Holder record exists but with zero balance
+  // Holder record exists but with zero balance. The gate reads the
+  // integer balanceRaw column (D9), not the Float balance.
   prismaAny.agentTokenHolder.findUnique = async () => ({
-    balance: 0,
+    balanceRaw: 0n,
   });
 
   const app = Fastify();
@@ -259,21 +260,26 @@ test("token gate passes through when holder has sufficient token balance", async
   const origAgentTokenHolderFindUnique = prismaAny.agentTokenHolder.findUnique;
 
   prismaAny.deployment.findFirst = async () => ({ id: "dep_1" });
+  // Distinct listing/token/slug/wallet from the insufficient-balance test
+  // above: the gate caches the resolved listing (by slug) and the holder
+  // balance (by token+wallet) in Redis with a short TTL, so reusing them
+  // would let that test's cached zero balance leak in and fail this one.
   prismaAny.agentDeployment.findFirst = async () => ({
     agent: {
       listing: {
-        id: "listing_1",
+        id: "listing_5",
         pricingModel: "tokenized",
         agentToken: {
-          id: "token_1",
+          id: "token_5",
           symbol: "AGENT",
-          mintAddress: "MintAddress1111111111111111111111111",
+          mintAddress: "MintAddress5555555555555555555555555",
         },
       },
     },
   });
+  // 500 whole tokens in raw units (× 1e6) — comfortably over the min of 100.
   prismaAny.agentTokenHolder.findUnique = async () => ({
-    balance: 500,
+    balanceRaw: 500_000_000n,
   });
 
   const app = Fastify();
@@ -282,7 +288,7 @@ test("token gate passes through when holder has sufficient token balance", async
     (request as any).auth = {
       userId: "user_1",
       orgId: "org_1",
-      walletAddress: "WalletABC123456789012345678901234567890",
+      walletAddress: "WalletSUFFICIENT9012345678901234567890",
       type: "jwt",
     };
   });
@@ -293,7 +299,7 @@ test("token gate passes through when holder has sufficient token balance", async
 
   const response = await app.inject({
     method: "GET",
-    url: "/test/tokenized-deploy",
+    url: "/test/tokenized-deploy-sufficient",
   });
 
   assert.equal(response.statusCode, 200);
@@ -430,8 +436,9 @@ test("token gate resolves listing via :id param when deploymentSlug is absent", 
     };
   };
 
+  // 50 whole tokens in raw units (× 1e6) — over the min of 10.
   prismaAny.agentTokenHolder.findUnique = async () => ({
-    balance: 50,
+    balanceRaw: 50_000_000n,
   });
 
   const app = Fastify();

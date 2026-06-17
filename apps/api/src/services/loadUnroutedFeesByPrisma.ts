@@ -18,18 +18,24 @@
  * The per-treasury batch is bounded by `limit` (default 500) so one
  * very active token can't grow an unbounded fee_receive batch.
  *
- * Fee math (UNCHANGED from the pre-batch router — D9 owns the
- * Float→integer migration; do not touch the semantics here):
- *   feeAmountLamports = floor(sumSolAmount * 0.01 * 1e9)
- * Floor rounding is intentional — never overpay. A batch whose fee
- * floors to 0 lamports is NOT claimed (trades stay NULL) so sub-lamport
- * volume keeps accumulating until it crosses 1 lamport with later trades.
+ * Fee math (integer — remediation D9): the 1% fee is computed entirely in
+ * BigInt lamports, summing the trades' `sol_lamports` column (the raw
+ * integer derived once at the indexer boundary) — never the Float
+ * `sol_amount`. So no float error compounds across a batch and the
+ * conservation invariant Σ routed ≤ 1% Σ volume holds exactly:
+ *   feeAmountLamports = (sumLamports * FEE_BPS) / 10000   // BigInt, floors
+ * BigInt division truncates toward zero = floor for non-negative volume —
+ * never overpay. A batch whose fee floors to 0 lamports is NOT claimed
+ * (trades stay NULL) so sub-lamport volume keeps accumulating until it
+ * crosses 1 lamport with later trades.
  */
 
+import { BPS_DENOMINATOR } from "../lib/tokenUnits.js";
 import type { UnroutedFeeRow } from "./runFeeRouterTick.js";
 
-const LAMPORTS_PER_SOL = 1_000_000_000;
-const FEE_RATE = 0.01;
+/** Platform fee: 1% of routed SOL volume, in basis points. */
+const FEE_BPS = 100n;
+const BPS_DENOM = BigInt(BPS_DENOMINATOR);
 
 /** Per-treasury per-tick trade cap (D6a: "bounded batch size"). */
 export const DEFAULT_FEE_BATCH_TRADE_LIMIT = 500;
@@ -62,7 +68,7 @@ interface PrismaStub {
     }) => Promise<
       Array<{
         id: string;
-        solAmount: number;
+        solLamports: bigint;
         timestamp: Date;
       }>
     >;
@@ -103,24 +109,23 @@ export async function loadUnroutedFeesByPrisma(
       },
       orderBy: { timestamp: "asc" },
       take: limit,
-      select: { id: true, solAmount: true, timestamp: true },
+      select: { id: true, solLamports: true, timestamp: true },
     });
     if (trades.length === 0) continue;
 
-    let sumSol = 0;
+    let sumLamports = 0n;
     let latestTs = trades[0]!.timestamp;
     const tradeIds: string[] = [];
     for (const t of trades) {
-      sumSol += t.solAmount;
+      sumLamports += t.solLamports;
       tradeIds.push(t.id);
       if (t.timestamp > latestTs) latestTs = t.timestamp;
     }
-    // Floor: never overpay. Sub-lamport volume stays UNCLAIMED (trades
-    // keep feeRoutingBatchId NULL) until later trades push it over.
-    const feeAmountLamports = BigInt(
-      Math.floor(sumSol * FEE_RATE * LAMPORTS_PER_SOL),
-    );
-    if (feeAmountLamports <= BigInt(0)) continue;
+    // 1% in BigInt — division truncates toward zero (floor for ≥0 volume),
+    // so we never overpay. Sub-lamport volume stays UNCLAIMED (trades keep
+    // feeRoutingBatchId NULL) until later trades push it over.
+    const feeAmountLamports = (sumLamports * FEE_BPS) / BPS_DENOM;
+    if (feeAmountLamports <= 0n) continue;
 
     rows.push({
       treasuryId: treasury.id,

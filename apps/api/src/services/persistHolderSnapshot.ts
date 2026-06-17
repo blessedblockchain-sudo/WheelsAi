@@ -27,6 +27,7 @@ interface HolderRowToWrite {
   walletAddress: string;
   balance: number;
   percentage: number;
+  balanceRaw: bigint;
 }
 
 interface HolderTxStub {
@@ -64,6 +65,7 @@ export async function persistHolderSnapshot(
       walletAddress: h.walletAddress,
       balance: h.balance,
       percentage: h.percentage,
+      balanceRaw: h.balanceRaw,
     }));
 
     await tx.agentTokenHolder.createMany({ data });

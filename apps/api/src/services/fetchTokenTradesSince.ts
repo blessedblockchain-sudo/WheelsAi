@@ -22,6 +22,7 @@
  * to the next token.
  */
 
+import { solToLamports, tokensToRaw } from "../lib/tokenUnits.js";
 import type { TokenTrade } from "./pumpfun.js";
 import type { IndexerTradeRow } from "./tokenTradeIndexer.js";
 
@@ -50,9 +51,14 @@ function toIndexerRow(trade: TokenTrade): IndexerTradeRow {
     txSignature: trade.txSignature,
     traderAddress: trade.traderAddress,
     side: trade.side,
+    // Keep the human-unit Floats for display, and derive the integer raw
+    // units HERE — the single boundary where upstream Float data enters
+    // the system (D9). Every money path reads the raw fields below.
     tokenAmount: trade.tokenAmount,
     solAmount: trade.solAmount,
     priceUsd: trade.priceUsd,
+    solLamports: solToLamports(trade.solAmount),
+    tokenAmountRaw: tokensToRaw(trade.tokenAmount),
     timestamp: new Date(trade.timestamp),
   };
 }

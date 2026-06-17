@@ -75,10 +75,12 @@ const sampleHolder = (overrides: Partial<{
   walletAddress: string;
   balance: number;
   percentage: number;
+  balanceRaw: bigint;
 }> = {}) => ({
   walletAddress: "Alice",
   balance: 1_000,
   percentage: 50,
+  balanceRaw: 1_000_000_000n, // 1_000 tokens × 1e6
   ...overrides,
 });
 
@@ -174,6 +176,7 @@ test("persistHolderSnapshot persists wallet/balance/percentage verbatim", async 
           walletAddress: "Whale",
           balance: 999_999.5,
           percentage: 42.42,
+          balanceRaw: 999_999_500_000n,
         },
       ],
       totalBalance: 1_000_000,
@@ -184,6 +187,8 @@ test("persistHolderSnapshot persists wallet/balance/percentage verbatim", async 
   assert.equal(row.walletAddress, "Whale");
   assert.equal(row.balance, 999_999.5);
   assert.equal(row.percentage, 42.42);
+  // balanceRaw is the access-decision source of truth — persisted verbatim.
+  assert.equal(row.balanceRaw, 999_999_500_000n);
 });
 
 test("persistHolderSnapshot does not leak unrelated keys onto the row", async () => {

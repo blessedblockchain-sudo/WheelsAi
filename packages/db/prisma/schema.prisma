@@ -329,7 +329,11 @@ model AgentContributor {
   agentId      String    @map("agent_id") @db.Uuid
   userId       String    @map("user_id") @db.Uuid
   role         String    @default("contributor") // 'owner', 'contributor', 'reviewer'
-  revenueShare Float     @default(0) @map("revenue_share") // 0.0 to 1.0
+  revenueShare Float     @default(0) @map("revenue_share") // 0.0 to 1.0 (display mirror)
+  // Basis points (0–10000) — integer source of truth for revenue-split
+  // math + the ≤100% invariant (remediation D9). revenueShare is kept as
+  // a derived display mirror (= bps / 10000).
+  revenueShareBps Int    @default(0) @map("revenue_share_bps")
   addedBy      String?   @map("added_by") @db.Uuid
   acceptedAt   DateTime? @map("accepted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
@@ -2207,6 +2211,16 @@ model AgentTokenTrade {
   solAmount     Float    @map("sol_amount")
   tokenAmount   Float    @map("token_amount")
   priceUsd      Float    @map("price_usd")
+  // Integer raw units — the money-path source of truth (remediation D9).
+  // The Float columns above are retained for display/charts only.
+  // solLamports = SOL × 1e9; tokenAmountRaw = tokens × 1e6 (pump.fun mints
+  // are 6 decimals). Converted ONCE at the indexer boundary
+  // (fetchTokenTradesSince); fee summation reads solLamports and holder
+  // balances read tokenAmountRaw — never the Floats — so no float error
+  // compounds across the trade stream and large values don't lose
+  // precision near 2^53.
+  solLamports    BigInt   @map("sol_lamports")
+  tokenAmountRaw BigInt   @map("token_amount_raw")
   timestamp     DateTime
   // Row-identity fee routing (remediation D6a). Null = this trade's 1%
   // fee has not been claimed by any fee-routing batch yet; the fee
@@ -2282,6 +2296,9 @@ model AgentTokenHolder {
   walletAddress String   @map("wallet_address")
   balance       Float
   percentage    Float
+  // Integer raw token units (tokens × 1e6). The token-gate access
+  // decision reads THIS, not the Float `balance` (display only) — D9.
+  balanceRaw    BigInt   @map("balance_raw")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   token         AgentToken @relation(fields: [tokenId], references: [id], onDelete: Cascade)

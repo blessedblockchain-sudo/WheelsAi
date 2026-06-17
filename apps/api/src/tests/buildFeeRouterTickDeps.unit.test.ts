@@ -19,6 +19,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
 
+import { solToLamports } from "../lib/tokenUnits.js";
+
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? "error";
@@ -58,17 +60,21 @@ function makePrismaStub(opts: {
   const agentTokenTrade = {
     async findMany(args: any) {
       log.push({ type: "trades.findMany", args });
-      return (opts.trades ?? []).filter((t) => {
-        if (args.where?.tokenId && t.tokenId !== args.where.tokenId) return false;
-        // Row-identity predicate: only unstamped trades qualify.
-        if (
-          "feeRoutingBatchId" in (args.where ?? {}) &&
-          args.where.feeRoutingBatchId === null &&
-          (t.feeRoutingBatchId ?? null) !== null
-        )
-          return false;
-        return true;
-      });
+      return (opts.trades ?? [])
+        .filter((t) => {
+          if (args.where?.tokenId && t.tokenId !== args.where.tokenId) return false;
+          // Row-identity predicate: only unstamped trades qualify.
+          if (
+            "feeRoutingBatchId" in (args.where ?? {}) &&
+            args.where.feeRoutingBatchId === null &&
+            (t.feeRoutingBatchId ?? null) !== null
+          )
+            return false;
+          return true;
+        })
+        // The loader reads the integer solLamports column (D9); derive it
+        // from the fixtures' readable SOL value here.
+        .map((t) => ({ ...t, solLamports: solToLamports(t.solAmount) }));
     },
     async updateMany(args: any) {
       log.push({ type: "trades.updateMany", args });

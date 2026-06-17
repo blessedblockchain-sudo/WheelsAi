@@ -8,6 +8,7 @@ import { buildPumpfunCreateRequest } from "./pumpfunTxBuilder.js";
 import { submitPumpfunCreate } from "./submitPumpfunCreate.js";
 import { deriveCreatorKeypair } from "./creatorKeypairs.js";
 import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
+import { solToLamports, tokensToRaw } from "../lib/tokenUnits.js";
 import {
   ELIGIBILITY_DEFAULTS,
   CREATOR_LOCKUP_DAYS,
@@ -493,6 +494,10 @@ export async function getTokenTrades(tokenId: string, page = 1, limit = 50) {
  * Record a trade from the indexer (idempotent)
  */
 export async function recordTrade(params: RecordTradeParams) {
+  // Integer raw units are the money-path source of truth (D9); keep them
+  // in lock-step with the Float mirrors on both create and update.
+  const solLamports = solToLamports(params.solAmount);
+  const tokenAmountRaw = tokensToRaw(params.tokenAmount);
   return prisma.agentTokenTrade.upsert({
     where: { txSignature: params.txSignature },
     create: {
@@ -503,6 +508,8 @@ export async function recordTrade(params: RecordTradeParams) {
       solAmount: params.solAmount,
       tokenAmount: params.tokenAmount,
       priceUsd: params.priceUsd,
+      solLamports,
+      tokenAmountRaw,
       timestamp: params.timestamp,
     },
     update: {
@@ -511,6 +518,8 @@ export async function recordTrade(params: RecordTradeParams) {
       solAmount: params.solAmount,
       tokenAmount: params.tokenAmount,
       priceUsd: params.priceUsd,
+      solLamports,
+      tokenAmountRaw,
       timestamp: params.timestamp,
     },
   });
@@ -550,10 +559,12 @@ export async function updateHolders(tokenId: string, holders: HolderData[]) {
         walletAddress: holder.walletAddress,
         balance: holder.balance,
         percentage: holder.percentage,
+        balanceRaw: tokensToRaw(holder.balance),
       },
       update: {
         balance: holder.balance,
         percentage: holder.percentage,
+        balanceRaw: tokensToRaw(holder.balance),
       },
     })
   );

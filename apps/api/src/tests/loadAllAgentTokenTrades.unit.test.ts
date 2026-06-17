@@ -29,6 +29,8 @@ interface FakeTrade {
   tokenAmount: number;
   solAmount: number;
   priceUsd: number;
+  solLamports: bigint;
+  tokenAmountRaw: bigint;
   timestamp: Date;
   // Schema-side columns the loader should drop:
   id: string;
@@ -65,6 +67,8 @@ const sampleTrade = (overrides: Partial<FakeTrade> = {}): FakeTrade => ({
   tokenAmount: 1_000,
   solAmount: 0.5,
   priceUsd: 0.001,
+  solLamports: 500_000_000n,
+  tokenAmountRaw: 1_000_000_000n,
   timestamp: new Date("2026-04-26T12:00:00Z"),
   createdAt: new Date("2026-04-26T12:01:00Z"),
   ...overrides,
@@ -133,10 +137,11 @@ test("loadAllAgentTokenTrades orders trades ascending by timestamp", async () =>
 
 test("loadAllAgentTokenTrades projects only the IndexerTradeRow contract (drops id, createdAt)", async () => {
   // toHolderTrade() in the indexer reads only traderAddress / side /
-  // tokenAmount / timestamp. The loader still needs txSignature,
-  // solAmount, priceUsd because that's the IndexerTradeRow shape —
-  // but `id` and `createdAt` are schema artifacts the indexer never
-  // sees and shouldn't depend on.
+  // tokenAmountRaw / timestamp. The loader still needs txSignature,
+  // solAmount/solLamports, tokenAmount/tokenAmountRaw, priceUsd because
+  // that's the IndexerTradeRow shape (D9 added the integer raw columns) —
+  // but `id` and `createdAt` are schema artifacts the indexer never sees
+  // and shouldn't depend on.
   const { loadAllAgentTokenTrades } = await import(
     "../services/loadAllAgentTokenTrades.js"
   );
@@ -149,8 +154,10 @@ test("loadAllAgentTokenTrades projects only the IndexerTradeRow contract (drops 
     "priceUsd",
     "side",
     "solAmount",
+    "solLamports",
     "timestamp",
     "tokenAmount",
+    "tokenAmountRaw",
     "traderAddress",
     "txSignature",
   ]);

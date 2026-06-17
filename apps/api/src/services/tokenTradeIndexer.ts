@@ -28,9 +28,15 @@ export interface IndexerTradeRow {
   txSignature: string;
   traderAddress: string;
   side: "buy" | "sell";
+  // Float human units — display/charts only (D9).
   tokenAmount: number;
   solAmount: number;
   priceUsd: number;
+  // Integer raw units — the money-path source of truth (D9). Derived once
+  // at the indexer boundary; fee summation reads solLamports, holder
+  // balances read tokenAmountRaw.
+  solLamports: bigint;
+  tokenAmountRaw: bigint;
   timestamp: Date;
 }
 
@@ -38,8 +44,11 @@ export interface IndexerHolderSnapshotPayload {
   tokenId: string;
   holders: Array<{
     walletAddress: string;
+    // Display Floats (D9). The integer `balanceRaw` is what the token gate
+    // reads; balance/percentage are derived for the UI.
     balance: number;
     percentage: number;
+    balanceRaw: bigint;
   }>;
   totalBalance: number;
 }
@@ -86,7 +95,7 @@ function toHolderTrade(row: IndexerTradeRow): HolderTrade {
   return {
     traderAddress: row.traderAddress,
     side: row.side,
-    tokenAmount: row.tokenAmount,
+    tokenAmountRaw: row.tokenAmountRaw,
     timestamp: row.timestamp,
   };
 }

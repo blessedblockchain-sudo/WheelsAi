@@ -29,6 +29,8 @@ interface IndexerTradeRow {
   tokenAmount: number;
   solAmount: number;
   priceUsd: number;
+  solLamports: bigint;
+  tokenAmountRaw: bigint;
   timestamp: Date;
 }
 
@@ -62,6 +64,8 @@ const sampleRow = (overrides: Partial<IndexerTradeRow> = {}): IndexerTradeRow =>
   tokenAmount: 1_000,
   solAmount: 0.5,
   priceUsd: 0.001,
+  solLamports: 500_000_000n, // 0.5 SOL
+  tokenAmountRaw: 1_000_000_000n, // 1_000 tokens × 1e6
   timestamp: new Date("2026-04-26T12:00:00Z"),
   ...overrides,
 });
@@ -123,6 +127,8 @@ test("persistAgentTokenTrades writes the full IndexerTradeRow shape verbatim", a
           tokenAmount: 12345.6789,
           solAmount: 0.42,
           priceUsd: 0.0009,
+          solLamports: 420_000_000n,
+          tokenAmountRaw: 12_345_678_900n,
           timestamp: ts,
         },
       ],
@@ -137,6 +143,9 @@ test("persistAgentTokenTrades writes the full IndexerTradeRow shape verbatim", a
   assert.equal(row.tokenAmount, 12345.6789);
   assert.equal(row.solAmount, 0.42);
   assert.equal(row.priceUsd, 0.0009);
+  // Integer raw units carried verbatim — the money-path source of truth.
+  assert.equal(row.solLamports, 420_000_000n);
+  assert.equal(row.tokenAmountRaw, 12_345_678_900n);
   assert.equal((row.timestamp as Date).toISOString(), ts.toISOString());
 });
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { tokensToRaw } from "../lib/tokenUnits.js";
+
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? "error";
@@ -23,19 +25,22 @@ function setupEnv() {
 interface FakeTrade {
   traderAddress: string;
   side: "buy" | "sell";
-  tokenAmount: number;
+  // Money-path integer raw units (D9). The `t()` helper takes whole tokens
+  // for readability and converts (× 1e6) so the balance/totalBalance
+  // assertions below read in human units.
+  tokenAmountRaw: bigint;
   timestamp: Date;
 }
 
 const t = (
   trader: string,
   side: "buy" | "sell",
-  tokenAmount: number,
+  wholeTokens: number,
   hours = 0,
 ): FakeTrade => ({
   traderAddress: trader,
   side,
-  tokenAmount,
+  tokenAmountRaw: tokensToRaw(wholeTokens),
   timestamp: new Date(`2026-04-26T${String(12 + hours).padStart(2, "0")}:00:00Z`),
 });
 
@@ -62,6 +67,9 @@ test("computeHolderSnapshot reports a single trader's full balance after one buy
   });
   assert.equal(result.holders.length, 1);
   assert.equal(result.holders[0]!.walletAddress, "Alice");
+  // Integer raw units (1_000_000 tokens × 1e6) is the source of truth; the
+  // Float `balance` is derived for display (D9).
+  assert.equal(result.holders[0]!.balanceRaw, 1_000_000_000_000n);
   assert.equal(result.holders[0]!.balance, 1_000_000);
   assert.equal(result.holders[0]!.percentage, 100);
 });

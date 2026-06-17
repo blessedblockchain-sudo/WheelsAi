@@ -1,11 +1,22 @@
 import { prisma } from "@wheelsai/db";
 
+import {
+  fractionToBps,
+  bpsToFraction,
+  BPS_DENOMINATOR,
+} from "../lib/tokenUnits.js";
+
+const USER_SELECT = {
+  id: true,
+  email: true,
+  displayName: true,
+  walletAddress: true,
+} as const;
+
 export async function listContributors(agentId: string) {
   return prisma.agentContributor.findMany({
     where: { agentId },
-    include: {
-      user: { select: { id: true, email: true, displayName: true, walletAddress: true } },
-    },
+    include: { user: { select: USER_SELECT } },
     orderBy: [{ role: "asc" }, { createdAt: "asc" }],
   });
 }
@@ -17,16 +28,23 @@ export async function addContributor(
   revenueShare: number,
   addedBy: string
 ) {
-  // Validate total revenue share
+  // Validate the total revenue share in integer basis points (D9). The
+  // old Float sum could reject a legitimate split — 0.1 + 0.2 + 0.7 sums
+  // to 1.0000000000000002 > 1.0 in IEEE-754; 1000 + 2000 + 7000 = 10000
+  // is exact.
+  const shareBps = fractionToBps(revenueShare);
   const existing = await prisma.agentContributor.findMany({
     where: { agentId },
-    select: { revenueShare: true },
+    select: { revenueShareBps: true },
   });
 
-  const totalExisting = existing.reduce((sum, c) => sum + c.revenueShare, 0);
-  if (totalExisting + revenueShare > 1.0) {
+  const totalExistingBps = existing.reduce(
+    (sum, c) => sum + c.revenueShareBps,
+    0,
+  );
+  if (totalExistingBps + shareBps > BPS_DENOMINATOR) {
     throw new Error(
-      `Total revenue share would exceed 100%. Current: ${(totalExisting * 100).toFixed(1)}%, adding: ${(revenueShare * 100).toFixed(1)}%`
+      `Total revenue share would exceed 100%. Current: ${(totalExistingBps / 100).toFixed(1)}%, adding: ${(shareBps / 100).toFixed(1)}%`
     );
   }
 
@@ -35,12 +53,12 @@ export async function addContributor(
       agentId,
       userId,
       role,
-      revenueShare,
       addedBy,
+      revenueShareBps: shareBps,
+      // Float mirror, derived from the bps source of truth (display only).
+      revenueShare: bpsToFraction(shareBps),
     },
-    include: {
-      user: { select: { id: true, email: true, displayName: true, walletAddress: true } },
-    },
+    include: { user: { select: USER_SELECT } },
   });
 }
 
@@ -49,26 +67,35 @@ export async function updateContributor(
   agentId: string,
   updates: { role?: string; revenueShare?: number }
 ) {
+  const data: { role?: string; revenueShareBps?: number; revenueShare?: number } =
+    {};
+  if (updates.role !== undefined) data.role = updates.role;
+
   if (updates.revenueShare !== undefined) {
+    const shareBps = fractionToBps(updates.revenueShare);
     const existing = await prisma.agentContributor.findMany({
       where: { agentId, id: { not: contributorId } },
-      select: { revenueShare: true },
+      select: { revenueShareBps: true },
     });
 
-    const totalOthers = existing.reduce((sum, c) => sum + c.revenueShare, 0);
-    if (totalOthers + updates.revenueShare > 1.0) {
+    const totalOthersBps = existing.reduce(
+      (sum, c) => sum + c.revenueShareBps,
+      0,
+    );
+    if (totalOthersBps + shareBps > BPS_DENOMINATOR) {
       throw new Error(
-        `Total revenue share would exceed 100%. Others: ${(totalOthers * 100).toFixed(1)}%, setting: ${(updates.revenueShare * 100).toFixed(1)}%`
+        `Total revenue share would exceed 100%. Others: ${(totalOthersBps / 100).toFixed(1)}%, setting: ${(shareBps / 100).toFixed(1)}%`
       );
     }
+
+    data.revenueShareBps = shareBps;
+    data.revenueShare = bpsToFraction(shareBps);
   }
 
   return prisma.agentContributor.update({
     where: { id: contributorId },
-    data: updates,
-    include: {
-      user: { select: { id: true, email: true, displayName: true, walletAddress: true } },
-    },
+    data,
+    include: { user: { select: USER_SELECT } },
   });
 }
 

@@ -12,15 +12,17 @@
  *   - at least one AgentTokenTrade with feeRoutingBatchId NULL
  *
  * Aggregate per row:
- *   - sum(trade.solAmount) over the unstamped trades (bounded by limit)
- *   - feeAmountLamports = floor(sumSolAmount * 0.01 * LAMPORTS_PER_SOL)
- *     (math UNCHANGED from the watermark-era loader — pinned below)
+ *   - sum(trade.solLamports) over the unstamped trades (bounded by limit) —
+ *     integer raw units, never the Float solAmount (D9)
+ *   - feeAmountLamports = (sumLamports * 100) / 10000  (BigInt, floors)
  *   - tradeIds = the claimed identities (the batch stamps exactly these)
  *   - latestTradeTimestamp = max(trade.timestamp) (display cursor target)
  *
- * Rounding: floor — never overpay the treasury. A sub-lamport batch is
- * NOT emitted, leaving its trades unstamped to accumulate with later
- * volume.
+ * Rounding: BigInt division truncates toward zero = floor — never overpay
+ * the treasury. A sub-lamport batch is NOT emitted, leaving its trades
+ * unstamped to accumulate with later volume. The fixtures below specify
+ * volume in readable SOL; the stub derives the solLamports column the
+ * loader actually reads.
  *
  * REGRESSION (the D6a bug): a late-arriving trade — older timestamp,
  * inserted AFTER previous batches routed — is still NULL-stamped and
@@ -30,6 +32,8 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import { solToLamports } from "../lib/tokenUnits.js";
 
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
@@ -104,7 +108,12 @@ function makePrismaStub(opts: {
           if (typeof args.take === "number") {
             matched = matched.slice(0, args.take);
           }
-          return matched;
+          // The loader reads the integer solLamports column (D9); derive it
+          // from the fixtures' readable SOL value here.
+          return matched.map((tr) => ({
+            ...tr,
+            solLamports: solToLamports(tr.solAmount),
+          }));
         },
       },
     },
@@ -163,10 +172,10 @@ test("loadUnroutedFeesByPrisma selects trades by feeRoutingBatchId IS NULL — n
 });
 
 // ============================================
-// Aggregation — 1% lamports math pinned UNCHANGED (D9 owns Float fixes)
+// Aggregation — 1% fee computed in integer BigInt lamports (D9)
 // ============================================
 
-test("loadUnroutedFeesByPrisma aggregates sum(solAmount) * 0.01 → floor lamports", async () => {
+test("loadUnroutedFeesByPrisma aggregates sum(solLamports) * 1% → floor lamports", async () => {
   setupEnv();
   const { loadUnroutedFeesByPrisma } = await import(
     "../services/loadUnroutedFeesByPrisma.js"
@@ -426,4 +435,71 @@ test("loadUnroutedFeesByPrisma sets latestTradeTimestamp to the max of the inclu
     { prisma: stub.prisma as any },
   );
   assert.equal(result[0]!.latestTradeTimestamp.toISOString(), "2026-04-26T11:45:00.000Z");
+});
+
+// ============================================
+// Conservation property (D9): Σ routed ≤ 1% Σ volume, never negative
+// ============================================
+
+test("loadUnroutedFeesByPrisma never routes more than 1% of volume (conservation property)", async () => {
+  setupEnv();
+  const { loadUnroutedFeesByPrisma } = await import(
+    "../services/loadUnroutedFeesByPrisma.js"
+  );
+
+  // Deterministic mulberry32 PRNG so any failure reproduces exactly.
+  let s = 0x2f6e2b1 >>> 0;
+  const rand = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let x = s;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+
+  for (let iter = 0; iter < 250; iter += 1) {
+    const count = 1 + Math.floor(rand() * 50);
+    const trades = Array.from({ length: count }, (_, i) => ({
+      id: `t${i}`,
+      tokenId: "tok_a",
+      // Volume spans dust (1e-7 SOL) up to a ~85 SOL whale buy.
+      solAmount: rand() * 85 + 1e-7,
+      timestamp: new Date(Date.UTC(2026, 3, 26, 0, 0, i)),
+    }));
+    const stub = makePrismaStub({
+      treasuries: [
+        {
+          id: "treas_a",
+          programInitialized: true,
+          token: { id: "tok_a", mintAddress: "MintA" },
+        },
+      ],
+      trades,
+    });
+
+    const rows = await loadUnroutedFeesByPrisma(
+      { now: NOW },
+      { prisma: stub.prisma as any },
+    );
+
+    const sumLamports = trades.reduce(
+      (acc, tr) => acc + solToLamports(tr.solAmount),
+      0n,
+    );
+    const expectedFee = (sumLamports * 100n) / 10_000n;
+
+    if (expectedFee <= 0n) {
+      assert.equal(rows.length, 0, "sub-lamport fee emits no batch");
+      continue;
+    }
+
+    assert.equal(rows.length, 1);
+    const fee = rows[0]!.feeAmountLamports;
+    // Conservation: the routed fee never exceeds 1% of the summed volume…
+    assert.ok(fee * 100n <= sumLamports, `fee ${fee} > 1% of ${sumLamports}`);
+    // …is never negative…
+    assert.ok(fee >= 0n, `fee ${fee} is negative`);
+    // …and equals the exact integer-floored 1%.
+    assert.equal(fee, expectedFee);
+  }
 });

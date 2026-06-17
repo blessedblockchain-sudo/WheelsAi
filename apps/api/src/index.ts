@@ -7,10 +7,12 @@ import sensible from "@fastify/sensible";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 
-// BigInt JSON serialization support (used by Prisma for BigInt columns)
-(BigInt.prototype as any).toJSON = function () {
-  return Number(this);
-};
+import { installBigIntJsonSerializer } from "./lib/bigintJson.js";
+
+// Precision-safe BigInt JSON serialization (Prisma surfaces BigInt columns
+// API-wide) — installed before any route can serialize a response. The
+// naive `Number(bigint)` corrupts values above 2^53; see the module (D9).
+installBigIntJsonSerializer();
 
 import { env } from "./config/env.js";
 import { logger } from "./utils/logger.js";

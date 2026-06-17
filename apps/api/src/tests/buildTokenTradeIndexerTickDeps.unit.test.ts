@@ -136,6 +136,8 @@ test("buildTokenTradeIndexerTickDeps persistTrades stamps tokenId from input", a
       tokenAmount: 1_000,
       solAmount: 0.5,
       priceUsd: 0.001,
+      solLamports: 500_000_000n,
+      tokenAmountRaw: 1_000_000_000n,
       timestamp: new Date("2026-04-26T12:00:00Z"),
     },
   ]);
@@ -164,6 +166,8 @@ test("buildTokenTradeIndexerTickDeps persistTrades returns inserted-count from c
       tokenAmount: 1_000,
       solAmount: 0.5,
       priceUsd: 0.001,
+      solLamports: 500_000_000n,
+      tokenAmountRaw: 1_000_000_000n,
       timestamp: new Date(),
     },
   ]);
@@ -209,7 +213,14 @@ test("buildTokenTradeIndexerTickDeps persistHolderSnapshot wraps writes in a $tr
   });
   await deps.persistHolderSnapshot({
     tokenId: "tok_1",
-    holders: [{ walletAddress: "Alice", balance: 100, percentage: 100 }],
+    holders: [
+      {
+        walletAddress: "Alice",
+        balance: 100,
+        percentage: 100,
+        balanceRaw: 100_000_000n,
+      },
+    ],
     totalBalance: 100,
   });
   const types = stub.log.map((c) => c.type);

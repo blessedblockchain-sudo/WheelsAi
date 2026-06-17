@@ -28,6 +28,8 @@ interface PrismaStub {
         tokenAmount: number;
         solAmount: number;
         priceUsd: number;
+        solLamports: bigint;
+        tokenAmountRaw: bigint;
         timestamp: Date;
       }>;
       skipDuplicates: true;
@@ -58,6 +60,9 @@ export async function persistAgentTokenTrades(
     tokenAmount: r.tokenAmount,
     solAmount: r.solAmount,
     priceUsd: r.priceUsd,
+    // Integer raw units carried straight from the indexer boundary (D9).
+    solLamports: r.solLamports,
+    tokenAmountRaw: r.tokenAmountRaw,
     timestamp: r.timestamp,
   }));
 

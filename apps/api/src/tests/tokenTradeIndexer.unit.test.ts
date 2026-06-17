@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { solToLamports, tokensToRaw } from "../lib/tokenUnits.js";
+
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? "error";
@@ -32,9 +34,13 @@ interface TradeRow {
   tokenAmount: number;
   solAmount: number;
   priceUsd: number;
+  solLamports: bigint;
+  tokenAmountRaw: bigint;
   timestamp: Date;
 }
 
+// `amount` is read as whole tokens, so the holder-balance / totalBalance
+// assertions below stay in human units (D9 sums tokenAmountRaw internally).
 const trade = (
   sig: string,
   trader: string,
@@ -48,6 +54,8 @@ const trade = (
   tokenAmount: amount,
   solAmount: amount * 0.000001,
   priceUsd: 0.001,
+  solLamports: solToLamports(amount * 0.000001),
+  tokenAmountRaw: tokensToRaw(amount),
   timestamp: new Date(`2026-04-26T${String(12 + hour).padStart(2, "0")}:00:00Z`),
 });
 

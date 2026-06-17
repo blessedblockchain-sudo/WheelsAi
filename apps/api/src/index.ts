@@ -47,6 +47,11 @@ import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
 import { createPartialSignTokenRoutesProduction } from "./routes/tokenLaunchPartialSignBindings.js";
+import {
+  createPublicAgentRoutesProduction,
+  createAgentDetailRoutesProduction,
+  createAgentListRoutesProduction,
+} from "./routes/transparencyBindings.js";
 import { playgroundRoutes } from "./routes/playground.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
 import {
@@ -205,6 +210,17 @@ async function main() {
       "WALLET_MASTER_KEY unset — /api/tokens/launch/{prepare,submit} disabled",
     );
   }
+  // Transparency surfaces (remediation E1) — complete, tested route
+  // factories that were never registered. publicAgent is the public
+  // per-agent substance feed ("agents that pay for their own compute",
+  // visible to holders/regulators); agentDetail/agentList are the
+  // slug-keyed dashboard substance feeds. The authed feeds mount under
+  // /api/feed because their /agents and /agents/:slug paths would collide
+  // with the legacy id-keyed agentRoutes at /api/agents.
+  await app.register(createPublicAgentRoutesProduction(), { prefix: "/api" });
+  await app.register(createAgentListRoutesProduction(), { prefix: "/api/feed" });
+  await app.register(createAgentDetailRoutesProduction(), { prefix: "/api/feed" });
+
   await app.register(playgroundRoutes, { prefix: "/api" });
   await app.register(collaborationRoutes, { prefix: "/api/agents" });
   // Treasury read routes — runway / payments / chart at /api/agents/:slug/*

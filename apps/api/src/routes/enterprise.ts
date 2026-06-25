@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { authenticate } from "../middleware/auth.js";
+import { authenticate, requireRole } from "../middleware/auth.js";
 import {
   createAuditLog,
   getAuditLogs,
@@ -27,7 +27,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   // ============================================
 
   // Get audit logs
-  app.get("/audit-logs", async (request, reply) => {
+  app.get("/audit-logs", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId } = request.user as { orgId: string };
     const {
       action,
@@ -65,7 +65,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Get audit log summary
-  app.get("/audit-logs/summary", async (request, reply) => {
+  app.get("/audit-logs/summary", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId } = request.user as { orgId: string };
     const { days } = request.query as { days?: string };
 
@@ -104,7 +104,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Create team invite
-  app.post("/team/invites", async (request, reply) => {
+  app.post("/team/invites", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
     const { email, role } = request.body as { email: string; role?: string };
 
@@ -142,7 +142,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Revoke team invite
-  app.delete("/team/invites/:inviteId", async (request, reply) => {
+  app.delete("/team/invites/:inviteId", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
     const { inviteId } = request.params as { inviteId: string };
 
@@ -170,7 +170,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Update member role
-  app.patch("/team/:memberId/role", async (request, reply) => {
+  app.patch("/team/:memberId/role", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
     const { memberId } = request.params as { memberId: string };
     const { role } = request.body as { role: string };
@@ -207,7 +207,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Remove team member
-  app.delete("/team/:memberId", async (request, reply) => {
+  app.delete("/team/:memberId", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
     const { memberId } = request.params as { memberId: string };
 
@@ -239,7 +239,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   // ============================================
 
   // Get SSO config
-  app.get("/sso", async (request, reply) => {
+  app.get("/sso", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId } = request.user as { orgId: string };
     const config = await getSsoConfig(orgId);
 
@@ -250,7 +250,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Configure SAML SSO
-  app.post("/sso/saml", async (request, reply) => {
+  app.post("/sso/saml", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
     const { entityId, ssoUrl, certificate, allowedDomains, autoProvision, defaultRole } =
       request.body as {
@@ -304,7 +304,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Configure OIDC SSO
-  app.post("/sso/oidc", async (request, reply) => {
+  app.post("/sso/oidc", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
     const { clientId, clientSecret, issuer, scopes, allowedDomains, autoProvision, defaultRole } =
       request.body as {
@@ -360,7 +360,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Disable SSO
-  app.post("/sso/disable", async (request, reply) => {
+  app.post("/sso/disable", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
 
     try {
@@ -386,7 +386,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   });
 
   // Delete SSO config
-  app.delete("/sso", async (request, reply) => {
+  app.delete("/sso", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
 
     try {

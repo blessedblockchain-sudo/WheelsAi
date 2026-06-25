@@ -18,11 +18,17 @@ type LegacyJwtUser = JwtPayload & {
 declare module "fastify" {
   interface FastifyRequest {
     auth: {
-      userId: string;
+      // null for API-key principals — an API key belongs to an org, not a
+      // user, so there is no user identity behind it (F4). Routes that act on
+      // behalf of a user (2FA, accept-invite) must guard against null.
+      userId: string | null;
       orgId: string;
       orgName?: string;
       email?: string;
       walletAddress?: string;
+      // Org role ('owner' | 'admin' | 'member'), baked into the JWT at login
+      // from the selected membership. Absent for API-key principals (F4).
+      role?: string | null;
       type: "jwt" | "api_key";
       scopes?: string[];
     } | null;
@@ -115,7 +121,7 @@ async function tryApiKeyAuth(
       if (!validated) return null;
 
       return {
-        userId: "", // API keys don't have a user context
+        userId: null, // API keys have no user context (F4)
         orgId: validated.orgId,
         type: "api_key",
         scopes: validated.scopes,
@@ -155,6 +161,7 @@ async function tryBearerAuth(
       orgId: decoded.orgId,
       email: decoded.email,
       walletAddress: decoded.walletAddress,
+      role: decoded.role,
       type: "jwt",
     };
   } catch (error) {
@@ -188,6 +195,7 @@ async function tryCookieAuth(
       orgId: decoded.orgId,
       email: decoded.email,
       walletAddress: decoded.walletAddress,
+      role: decoded.role,
       type: "jwt",
     };
   } catch (error) {
@@ -197,9 +205,13 @@ async function tryCookieAuth(
 }
 
 function toLegacyUser(auth: NonNullable<FastifyRequest["auth"]>): LegacyJwtUser {
+  // The legacy `request.user` shape predates nullable userId; coerce the
+  // API-key (null) case to "" so ~90 existing `request.user.id` callers keep
+  // their string typing. New code should read `request.auth.userId` and
+  // handle null explicitly (F4).
   return {
-    id: auth.userId,
-    userId: auth.userId,
+    id: auth.userId ?? "",
+    userId: auth.userId ?? "",
     orgId: auth.orgId,
     organizationId: auth.orgId,
     email: auth.email,
@@ -262,6 +274,40 @@ export async function requireJwtAuth(
       message: "Session authentication required",
     });
   }
+}
+
+/**
+ * Require one of the given organization roles (remediation F4).
+ *
+ * Org role ('owner' | 'admin' | 'member') is baked into the JWT at login from
+ * the selected membership and surfaced on `request.auth.role`. Use this on
+ * privileged actions a freshly-invited `member` must not perform: reading
+ * audit logs, configuring SSO, minting credits, requesting payouts, and
+ * member management.
+ *
+ * Policy: an org-scoped API key acts with org authority and BYPASSES the
+ * per-user role check — role gating applies only to JWT (human) sessions. For
+ * per-user identity actions (2FA), use `requireJwtAuth` instead, which refuses
+ * API keys outright.
+ */
+export function requireRole(...allowedRoles: string[]) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.auth) {
+      return reply.status(401).send({
+        error: "unauthenticated",
+        message: "Authentication required",
+      });
+    }
+
+    if (request.auth.type === "api_key") return;
+
+    if (!request.auth.role || !allowedRoles.includes(request.auth.role)) {
+      return reply.status(403).send({
+        error: "insufficient_role",
+        message: `Requires role: ${allowedRoles.join(" or ")}`,
+      });
+    }
+  };
 }
 
 // ============================================

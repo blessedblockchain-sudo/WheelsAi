@@ -1,7 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import {
@@ -398,7 +398,7 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
    */
   app.post(
     "/payouts",
-    { preHandler: [requireAuth] },
+    { preHandler: [requireAuth, requireRole("owner", "admin")] },
     async (request, reply) => {
       const { orgId } = request.auth!;
       const body = z

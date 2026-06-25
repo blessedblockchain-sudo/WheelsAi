@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { requireAuth } from "../middleware/auth.js";
+import { requireJwtAuth } from "../middleware/auth.js";
 import {
   setup2FA,
   verify2FASetup,
@@ -21,9 +21,9 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   // ============================================
 
   // Get 2FA status
-  app.get("/status", { preHandler: requireAuth }, async (request, reply) => {
+  app.get("/status", { preHandler: requireJwtAuth }, async (request, reply) => {
     try {
-      const status = await get2FAStatus(request.auth!.userId);
+      const status = await get2FAStatus(request.auth!.userId!);
       return reply.send(status);
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });
@@ -31,9 +31,9 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   });
 
   // Setup 2FA (generates secret + QR code)
-  app.post("/setup", { preHandler: requireAuth }, async (request, reply) => {
+  app.post("/setup", { preHandler: requireJwtAuth }, async (request, reply) => {
     try {
-      const result = await setup2FA(request.auth!.userId);
+      const result = await setup2FA(request.auth!.userId!);
       return reply.send(result);
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });
@@ -41,9 +41,9 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   });
 
   // Verify setup (user enters first TOTP code to confirm)
-  app.post<{ Body: { token: string } }>("/verify-setup", { preHandler: requireAuth }, async (request, reply) => {
+  app.post<{ Body: { token: string } }>("/verify-setup", { preHandler: requireJwtAuth }, async (request, reply) => {
     try {
-      const result = await verify2FASetup(request.auth!.userId, request.body.token);
+      const result = await verify2FASetup(request.auth!.userId!, request.body.token);
       return reply.send(result);
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });
@@ -51,9 +51,9 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   });
 
   // Disable 2FA
-  app.post<{ Body: { token: string } }>("/disable", { preHandler: requireAuth }, async (request, reply) => {
+  app.post<{ Body: { token: string } }>("/disable", { preHandler: requireJwtAuth }, async (request, reply) => {
     try {
-      const result = await disable2FA(request.auth!.userId, request.body.token);
+      const result = await disable2FA(request.auth!.userId!, request.body.token);
       return reply.send(result);
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });
@@ -63,10 +63,10 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   // Regenerate backup codes
   app.post<{ Body: { token: string } }>(
     "/backup-codes/regenerate",
-    { preHandler: requireAuth },
+    { preHandler: requireJwtAuth },
     async (request, reply) => {
       try {
-        const result = await regenerateBackupCodes(request.auth!.userId, request.body.token);
+        const result = await regenerateBackupCodes(request.auth!.userId!, request.body.token);
         return reply.send(result);
       } catch (error: any) {
         return reply.status(400).send({ error: error.message });
@@ -77,10 +77,10 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   // Set recovery email
   app.post<{ Body: { email: string } }>(
     "/recovery-email",
-    { preHandler: requireAuth },
+    { preHandler: requireJwtAuth },
     async (request, reply) => {
       try {
-        const result = await setRecoveryEmail(request.auth!.userId, request.body.email);
+        const result = await setRecoveryEmail(request.auth!.userId!, request.body.email);
         return reply.send(result);
       } catch (error: any) {
         return reply.status(400).send({ error: error.message });

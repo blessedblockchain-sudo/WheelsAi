@@ -77,10 +77,13 @@ test("POST /checkout returns 501 checkout_not_implemented when the mock path is 
 
   const app = Fastify({ logger: false });
   app.addHook("onRequest", async (request) => {
-    // Stand in for the global auth hook: requireAuth only checks presence.
+    // Stand in for the global auth hook. /checkout is now role-gated (F4), so
+    // the principal needs an owner/admin role or requireRole would 403 before
+    // the 501 gate this test asserts.
     (request as unknown as { auth: unknown }).auth = {
       userId: "user_1",
       orgId: "org_1",
+      role: "owner",
       type: "jwt",
     };
   });

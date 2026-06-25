@@ -91,6 +91,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       userId: user.id,
       orgId: org.id,
       email: user.email ?? undefined,
+      role: "owner", // a new user owns their freshly-created org
     };
 
     const { accessToken } = generateTokens(app, payload);
@@ -152,6 +153,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       userId: user.id,
       orgId: primaryMembership.org.id,
       email: user.email ?? undefined,
+      role: primaryMembership.role,
     };
 
     const { accessToken } = generateTokens(app, payload);
@@ -242,6 +244,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       userId: user.id,
       orgId: primaryMembership.org.id,
       walletAddress: user.walletAddress ?? undefined,
+      role: primaryMembership.role,
     };
 
     const { accessToken } = generateTokens(app, payload);
@@ -325,13 +328,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
    * Refresh token
    */
   app.post("/refresh", { preHandler: [requireJwtAuth] }, async (request, reply) => {
-    const { userId, orgId, email, walletAddress } = request.auth!;
+    const { userId, orgId, email, walletAddress, role } = request.auth!;
 
     const payload: JwtPayload = {
-      userId,
+      userId: userId!, // requireJwtAuth guarantees a JWT principal (non-null userId)
       orgId,
       email,
       walletAddress,
+      role: role ?? undefined,
     };
 
     const { accessToken } = generateTokens(app, payload);

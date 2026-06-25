@@ -1,5 +1,5 @@
 import { FastifyPluginAsync } from "fastify";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 
@@ -127,7 +127,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
   // behind ALLOW_MOCK_CHECKOUT, which env.ts refuses to boot with in
   // production. When Stripe lands, credits must only be granted from a
   // signature-verified webhook with an idempotency key.
-  fastify.post<{ Body: CheckoutBody }>("/checkout", async (request, reply) => {
+  fastify.post<{ Body: CheckoutBody }>("/checkout", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { amount } = request.body;
     const orgId = request.auth!.orgId;
 

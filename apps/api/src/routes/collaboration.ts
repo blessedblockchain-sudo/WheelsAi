@@ -44,6 +44,9 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
 
       const orgId = request.auth!.orgId;
       const currentUserId = request.auth!.userId;
+      // Inviting a contributor is attributed to the acting user; an API-key
+      // principal has no user identity behind it (F4).
+      if (!currentUserId) return reply.forbidden("User session required");
 
       const agent = await prisma.agent.findFirst({ where: { id: agentId, orgId } });
       if (!agent) return reply.notFound("Agent not found");
@@ -119,6 +122,9 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
         .parse(request.params);
 
       const userId = request.auth!.userId;
+      // Accepting an invitation is a per-user action — an API key cannot be the
+      // accepting user (F4).
+      if (!userId) return reply.forbidden("User session required");
 
       try {
         const contributor = await acceptInvitation(contributorId, userId);

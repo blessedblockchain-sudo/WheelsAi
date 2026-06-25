@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   createCustomDomain,
   getCustomDomains,
@@ -52,7 +52,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Create custom domain
   app.post("/", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const body = request.body as {
         domain: string;
@@ -100,7 +100,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Update domain
   app.patch("/:id", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as {
@@ -123,7 +123,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Delete domain
   app.delete("/:id", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
@@ -141,7 +141,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Verify domain ownership
   app.post("/:id/verify", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
@@ -159,7 +159,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Re-verify domain (get new token)
   app.post("/:id/reverify", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 
@@ -181,7 +181,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Toggle domain active status
   app.post("/:id/toggle", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const { id } = request.params as { id: string };
       const body = request.body as { isActive: boolean };
@@ -229,7 +229,7 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
 
   // Renew SSL certificate
   app.post("/:id/ssl/renew", {
-    preHandler: [requireAuth],
+    preHandler: [requireAuth, requireRole("owner", "admin")],
     handler: async (request) => {
       const { id } = request.params as { id: string };
 

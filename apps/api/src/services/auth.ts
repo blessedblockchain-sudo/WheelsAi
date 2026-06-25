@@ -334,6 +334,10 @@ export interface JwtPayload {
   orgId: string;
   email?: string;
   walletAddress?: string;
+  // Org role for the selected membership ('owner' | 'admin' | 'member').
+  // Optional so already-issued tokens stay decodable; an absent role fails
+  // closed on role-gated routes (F4).
+  role?: string;
   jti?: string;
 }
 

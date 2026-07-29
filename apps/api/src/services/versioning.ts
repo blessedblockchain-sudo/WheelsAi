@@ -4,6 +4,56 @@ import { prisma } from "@wheelsai/db";
 // Types
 // ============================================
 
+/**
+ * Every exported function in this module takes an AgentScope rather than a
+ * bare agentId, and resolves it through assertAgentInOrg() before touching
+ * AgentVersion rows.
+ *
+ * This used to be a bare `agentId: string` with no tenancy check anywhere in
+ * the route or the service. Because AgentVersion snapshots `sourceCode`,
+ * `systemPrompt`, and `env` (the agent's environment variables), any
+ * authenticated user who knew or guessed an agent UUID could read another
+ * org's source and secrets — and rollbackToVersion's
+ * `prisma.agent.update({where:{id: agentId}})` let them overwrite that org's
+ * live agent config.
+ *
+ * The scope is an object, not a trailing parameter, so that adding it is a
+ * compile error at every call site instead of a silently-skippable argument.
+ */
+export interface AgentScope {
+  agentId: string;
+  /** The caller's organization, from `request.auth.orgId`. */
+  orgId: string;
+}
+
+/**
+ * Thrown when the agent does not exist OR belongs to another org. The two
+ * cases are deliberately indistinguishable to the caller — distinguishing
+ * them turns this API into an agent-ID existence oracle.
+ */
+export class AgentNotFoundError extends Error {
+  readonly statusCode = 404;
+  constructor() {
+    super("Agent not found");
+    this.name = "AgentNotFoundError";
+  }
+}
+
+/**
+ * Resolve an AgentScope, or throw. Must be the first await in every exported
+ * function that reaches AgentVersion/AgentVersionDiff/Agent rows.
+ */
+async function assertAgentInOrg({ agentId, orgId }: AgentScope): Promise<void> {
+  const agent = await prisma.agent.findFirst({
+    where: { id: agentId, orgId },
+    select: { id: true },
+  });
+
+  if (!agent) {
+    throw new AgentNotFoundError();
+  }
+}
+
 export type ChangeType = "major" | "minor" | "patch";
 
 export interface CreateVersionInput {
@@ -35,20 +85,23 @@ export interface VersionSnapshot {
  * Create a new version of an agent
  */
 export async function createAgentVersion(
-  agentId: string,
+  scope: AgentScope,
   userId: string,
   input: CreateVersionInput = {}
 ) {
-  // Get the agent
-  const agent = await prisma.agent.findUnique({
-    where: { id: agentId },
+  const { agentId, orgId } = scope;
+
+  // Scoped read: doubles as the tenancy check, so no separate
+  // assertAgentInOrg round-trip is needed here.
+  const agent = await prisma.agent.findFirst({
+    where: { id: agentId, orgId },
     include: {
       graph: true,
     },
   });
 
   if (!agent) {
-    throw new Error("Agent not found");
+    throw new AgentNotFoundError();
   }
 
   // Get the latest version number
@@ -122,12 +175,14 @@ export async function createAgentVersion(
  * Get all versions of an agent
  */
 export async function getAgentVersions(
-  agentId: string,
+  scope: AgentScope,
   options: {
     limit?: number;
     offset?: number;
   } = {}
 ) {
+  await assertAgentInOrg(scope);
+  const { agentId } = scope;
   const { limit = 20, offset = 0 } = options;
 
   const [versions, total] = await Promise.all([
@@ -159,10 +214,12 @@ export async function getAgentVersions(
 /**
  * Get a specific version of an agent
  */
-export async function getAgentVersion(agentId: string, version: string) {
+export async function getAgentVersion(scope: AgentScope, version: string) {
+  await assertAgentInOrg(scope);
+
   return prisma.agentVersion.findUnique({
     where: {
-      agentId_version: { agentId, version },
+      agentId_version: { agentId: scope.agentId, version },
     },
   });
 }
@@ -170,9 +227,11 @@ export async function getAgentVersion(agentId: string, version: string) {
 /**
  * Get the latest version of an agent
  */
-export async function getLatestVersion(agentId: string) {
+export async function getLatestVersion(scope: AgentScope) {
+  await assertAgentInOrg(scope);
+
   return prisma.agentVersion.findFirst({
-    where: { agentId, isLatest: true },
+    where: { agentId: scope.agentId, isLatest: true },
   });
 }
 
@@ -180,10 +239,13 @@ export async function getLatestVersion(agentId: string) {
  * Rollback agent to a specific version
  */
 export async function rollbackToVersion(
-  agentId: string,
+  scope: AgentScope,
   version: string,
   userId: string
 ) {
+  await assertAgentInOrg(scope);
+  const { agentId } = scope;
+
   const targetVersion = await prisma.agentVersion.findUnique({
     where: {
       agentId_version: { agentId, version },
@@ -230,7 +292,7 @@ export async function rollbackToVersion(
   }
 
   // Create a new version to record the rollback
-  const newVersion = await createAgentVersion(agentId, userId, {
+  const newVersion = await createAgentVersion(scope, userId, {
     changeLog: `Rolled back to version ${version}`,
     changeType: "patch",
     tags: ["rollback"],
@@ -243,10 +305,13 @@ export async function rollbackToVersion(
  * Compare two versions
  */
 export async function compareVersions(
-  agentId: string,
+  scope: AgentScope,
   fromVersion: string,
   toVersion: string
 ) {
+  await assertAgentInOrg(scope);
+  const { agentId } = scope;
+
   // Check if diff already exists
   const existingDiff = await prisma.agentVersionDiff.findUnique({
     where: {
@@ -265,7 +330,10 @@ export async function compareVersions(
 /**
  * Delete a version (only if not latest and not published)
  */
-export async function deleteVersion(agentId: string, version: string) {
+export async function deleteVersion(scope: AgentScope, version: string) {
+  await assertAgentInOrg(scope);
+  const { agentId } = scope;
+
   const targetVersion = await prisma.agentVersion.findUnique({
     where: {
       agentId_version: { agentId, version },
@@ -437,7 +505,10 @@ async function createVersionDiff(
 /**
  * Get version history with diffs
  */
-export async function getVersionHistory(agentId: string, limit: number = 10) {
+export async function getVersionHistory(scope: AgentScope, limit: number = 10) {
+  await assertAgentInOrg(scope);
+  const { agentId } = scope;
+
   const versions = await prisma.agentVersion.findMany({
     where: { agentId },
     orderBy: { versionNumber: "desc" },
@@ -494,13 +565,15 @@ export async function getVersionHistory(agentId: string, limit: number = 10) {
  * Tag a version for release
  */
 export async function tagVersion(
-  agentId: string,
+  scope: AgentScope,
   version: string,
   tags: string[]
 ) {
+  await assertAgentInOrg(scope);
+
   return prisma.agentVersion.update({
     where: {
-      agentId_version: { agentId, version },
+      agentId_version: { agentId: scope.agentId, version },
     },
     data: {
       tags: { push: tags },
@@ -511,10 +584,12 @@ export async function tagVersion(
 /**
  * Mark a version as published
  */
-export async function publishVersion(agentId: string, version: string) {
+export async function publishVersion(scope: AgentScope, version: string) {
+  await assertAgentInOrg(scope);
+
   return prisma.agentVersion.update({
     where: {
-      agentId_version: { agentId, version },
+      agentId_version: { agentId: scope.agentId, version },
     },
     data: {
       isPublished: true,

@@ -1,0 +1,212 @@
+# GitLab CI — port of .github/workflows/ci.yml
+#
+# The GitHub pipeline is unreachable while the GitHub account is suspended,
+# and GitLab does not read .github/workflows. This file is the working
+# pipeline; keep the two in sync until one of them is deleted.
+#
+# Job graph mirrors the original exactly (build gates on lint+typecheck,
+# test/e2e gate on build), expressed with `needs:` so independent jobs still
+# run concurrently rather than waiting on a whole stage.
+#
+# The one substantive difference from GitHub Actions: service containers are
+# reachable by ALIAS, not localhost. Postgres is at `postgres:5432` and Redis
+# at `redis:6379`, so every DATABASE_URL/REDIS_URL below differs from the
+# GitHub file even though nothing else about the step changed.
+
+image: node:20
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+stages:
+  - verify
+  - build
+  - test
+  - quarantine
+
+variables:
+  # npm's cache dir, kept inside the project so GitLab can cache it.
+  npm_config_cache: "$CI_PROJECT_DIR/.npm"
+  POSTGRES_USER: wheelsai
+  POSTGRES_PASSWORD: wheelsai
+  POSTGRES_DB: wheelsai_test
+  # Service aliases, not localhost — see the header note.
+  DATABASE_URL: "postgresql://wheelsai:wheelsai@postgres:5432/wheelsai_test"
+  REDIS_URL: "redis://redis:6379"
+  JWT_SECRET: "test-secret-key-for-ci-only-32chars"
+
+# Cache the npm download cache rather than node_modules: `npm ci` deletes
+# node_modules on every run anyway, so caching it buys nothing and risks
+# serving a stale tree across lockfile changes.
+.npm_cache: &npm_cache
+  key:
+    files:
+      - package-lock.json
+  paths:
+    - .npm/
+  policy: pull-push
+
+.node_setup: &node_setup
+  cache:
+    <<: *npm_cache
+  before_script:
+    - npm ci --prefer-offline --no-audit --fund=false
+
+lint:
+  stage: verify
+  <<: *node_setup
+  script:
+    # db:generate first: the type-aware lint rules resolve @prisma/client,
+    # which does not exist until the client is generated.
+    - npm run db:generate
+    - npm run lint
+
+typecheck:
+  stage: verify
+  <<: *node_setup
+  script:
+    - npm run db:generate
+    - npm run typecheck
+
+build:
+  stage: build
+  needs: [lint, typecheck]
+  <<: *node_setup
+  script:
+    - npm run db:generate
+    - npm run build
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - apps/api/dist/
+      - apps/web/.next/
+      - packages/*/dist/
+
+# The blocking test gate: 1250 cases, ~35s, no infra required.
+# Deliberately NOT `npm run test` (turbo -> api `test`), which also pulls in
+# the integration tier — that tier hangs forever, see `test:integration`.
+unit:
+  stage: test
+  needs: [build]
+  <<: *node_setup
+  script:
+    - npm run db:generate
+    - npm run test:unit -w @wheelsai/api
+
+# Schema/migration integrity. Split out from the unit gate because it is the
+# only blocking job that needs a live database.
+migrations:
+  stage: test
+  needs: [build]
+  <<: *node_setup
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+  script:
+    # GitLab only waits for the service port to open, which Postgres does
+    # before it will accept queries. Without this, `migrate diff` intermittently
+    # fails with "the database system is starting up".
+    - apt-get update -qq && apt-get install -y -qq postgresql-client >/dev/null
+    - |
+      for i in $(seq 1 30); do
+        pg_isready -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" && break
+        echo "waiting for postgres ($i/30)"; sleep 2
+      done
+    # The drift check needs its OWN database, not the app one. `migrate diff`
+    # applies the whole migration chain to the shadow DB and does NOT clean up
+    # after itself — it leaves all 75 tables behind with no _prisma_migrations
+    # row. Pointing it at $DATABASE_URL (as the GitHub workflow did) therefore
+    # makes the very next `migrate deploy` die with:
+    #   P3005: The database schema is not empty.
+    # Verified locally against postgres:15 before this file was committed.
+    - PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgres -U "$POSTGRES_USER" -d postgres -c 'CREATE DATABASE wheelsai_shadow;'
+    - npm run db:generate
+    # Fails the build when schema.prisma has drifted from the migration chain
+    # (e.g. a hand-edited schema with no accompanying migration).
+    - >-
+      npx prisma migrate diff
+      --from-migrations packages/db/prisma/migrations
+      --to-schema-datamodel packages/db/prisma/schema.prisma
+      --shadow-database-url "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/wheelsai_shadow"
+      --exit-code
+    - npm run migrate:deploy -w @wheelsai/db
+
+# ---------------------------------------------------------------------------
+# Quarantine: tiers that are currently RED. Both are allow_failure so they
+# cannot block a merge, but they still run and still report, so the breakage
+# stays visible instead of being silently deleted. Move each back into the
+# `test` stage (and drop allow_failure) as it goes green.
+#
+# Neither has ever run in CI — the GitHub pipeline died at the lint job on all
+# 65 of its runs, so nothing downstream was ever executed. Both were verified
+# locally on 2026-07-29 against postgres:15 + redis:7.
+#
+# Explicit `timeout:` on both: the integration tier HANGS rather than failing,
+# and GitLab's default 1h job timeout would burn the whole free CI allowance
+# on a single run.
+# ---------------------------------------------------------------------------
+
+# Status: 1 of 4 files passes.
+#   - token-gate.integration.test.ts  hangs after its assertions pass (open
+#     handle keeps the event loop alive; the runner never exits)
+#   - x402.integration.test.ts        same
+#   - wallet-auth.integration.test.ts fails outright: it assigns to an ES
+#     module export ("Cannot assign to read only property 'generateNonce' of
+#     object '[object Module]'"). Needs the patch-the-object approach used in
+#     versioningTenancy.unit.test.ts, not module-binding assignment.
+#   - nosana.integration.test.ts      passes
+test:integration:
+  stage: quarantine
+  needs: [build]
+  allow_failure: true
+  timeout: 10m
+  <<: *node_setup
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+    - name: redis:7-alpine
+      alias: redis
+  script:
+    - apt-get update -qq && apt-get install -y -qq postgresql-client >/dev/null
+    - |
+      for i in $(seq 1 30); do
+        pg_isready -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" && break
+        echo "waiting for postgres ($i/30)"; sleep 2
+      done
+    - npm run db:generate
+    - npm run migrate:deploy -w @wheelsai/db
+    - npm run test:integration -w @wheelsai/api
+
+# Status: 27 of 30 specs fail. The specs assert literal marketing copy
+# ("Welcome back", "you@example.com", section headings) that drifted when the
+# theme was unified; they were never run against the current pages. They also
+# only ever assert static rendering — no login, no API — so even green they
+# would not prove a flow works (see finding I3 in REMEDIATION_PLAN.md).
+e2e:
+  stage: quarantine
+  needs: [build]
+  allow_failure: true
+  timeout: 15m
+  <<: *node_setup
+  variables:
+    # playwright.config.ts keys off CI: forbids .only, retries twice, and
+    # starts its own web server rather than reusing a local one.
+    CI: "true"
+  script:
+    - npm run db:generate
+    # Installs the exact browser build this Playwright version pins. Do not
+    # swap for a cached/global browser — a mismatched build fails every spec
+    # with "Executable doesn't exist".
+    - npx playwright install --with-deps chromium
+    - npm run test:e2e -w apps/web
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - apps/web/playwright-report/
+      - apps/web/test-results/

@@ -122,11 +122,25 @@ test("verifyPrepareToken rejects a tampered signature", () => {
     payload: baseFields,
     secret: SECRET,
   });
-  // Flip the last char of the signature segment.
+  // Tamper by flipping a bit in the DECODED signature, then re-encoding.
+  //
+  // The previous version flipped the last character of the base64url segment,
+  // which is flaky at ~6%: a 32-byte digest encodes to 43 base64url chars, so
+  // the final char carries 4 significant bits plus 2 padding bits. Sixteen
+  // characters are therefore possible in that position, and the one that
+  // shares its top 4 bits with "a" (0b011010) is "Y" (0b011000) — whenever the
+  // signature happened to end in "Y", flipping it to "a" produced a DIFFERENT
+  // STRING that decodes to IDENTICAL BYTES, so verification correctly
+  // succeeded and the assertion below blew up. Measured over 4000 signatures:
+  // 239/4000 = 6.0% collision rate, every one of them a "Y".
+  //
+  // (That malleability is a property of base64, not a flaw in the HMAC check —
+  // verifyPrepareToken compares decoded bytes, which is right. Only the test's
+  // tampering strategy was wrong.)
   const parts = token.split(".");
-  const lastChar = parts[2]!.slice(-1);
-  const flipped = lastChar === "a" ? "b" : "a";
-  const tampered = `${parts[0]}.${parts[1]}.${parts[2]!.slice(0, -1)}${flipped}`;
+  const sigBytes = Buffer.from(parts[2]!, "base64url");
+  sigBytes[0] ^= 0xff; // always changes the bytes, never just the encoding
+  const tampered = `${parts[0]}.${parts[1]}.${sigBytes.toString("base64url")}`;
 
   const result = verifyPrepareToken({ token: tampered, secret: SECRET });
   assert.equal(result.ok, false);

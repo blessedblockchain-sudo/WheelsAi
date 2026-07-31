@@ -23,6 +23,8 @@ import { authRoutes } from "./routes/auth.js";
 import { deploymentRoutes } from "./routes/deployments.js";
 import { modelRoutes } from "./routes/models.js";
 import { healthRoutes } from "./routes/health.js";
+import { createMetricsRoutes } from "./routes/metrics.js";
+import { buildMetricsRuntime } from "./services/buildMetricsDeps.js";
 import { inferenceRoutes } from "./routes/inference.js";
 import { billingRoutes } from "./routes/billing.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -168,6 +170,27 @@ async function main() {
   // Register auth plugins (JWT, cookies)
   await registerAuthPlugins(app);
 
+  // Prometheus metrics (H1). Registered before the feature routes so the
+  // onResponse timing hook below sees every one of them. Both fly tomls have
+  // pointed `[metrics] path = "/metrics"` at this app since the first deploy
+  // config; until now that scrape returned 404.
+  const metrics = buildMetricsRuntime();
+  await app.register(
+    createMetricsRoutes({ registry: metrics.registry, token: env.METRICS_TOKEN }),
+  );
+  app.addHook("onResponse", async (request, reply) => {
+    // routeOptions.url is the PATTERN ("/api/agents/:agentId"), so ids never
+    // become label values and cardinality stays bounded. Unmatched requests
+    // collapse to a single "unmatched" series rather than one per 404 path,
+    // which is what a scanner would otherwise blow the metric store up with.
+    metrics.observeRequest({
+      method: request.method,
+      route: request.routeOptions?.url ?? "unmatched",
+      statusCode: reply.statusCode,
+      durationSeconds: reply.elapsedTime / 1000,
+    });
+  });
+
   // Register routes
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(authRoutes, { prefix: "/api/auth" });
@@ -274,6 +297,7 @@ async function main() {
       await stopFeeRouterQueue();
       await stopReputationAttestationQueue();
       await stopDeploymentStatusQueue();
+      await metrics.close();
       await app.close();
       process.exit(0);
     });

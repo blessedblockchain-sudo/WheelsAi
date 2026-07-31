@@ -148,6 +148,13 @@ const envSchema = z.object({
   // the reputation-oracle program's admin add_attestor instruction.
   REPUTATION_ATTESTATION_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
   REPUTATION_ATTESTOR_PRIVATE_KEY: z.string().optional(),
+  // Bearer token guarding GET /metrics (H1). Optional: Fly's built-in
+  // Prometheus scraper reaches the app over the private 6PN network and
+  // cannot attach headers, so leaving this unset keeps `[metrics]` in the
+  // fly tomls working out of the box. Set it when the app is reachable from
+  // anywhere the scrape path is not, and the route demands
+  // `Authorization: Bearer <token>`.
+  METRICS_TOKEN: z.string().optional(),
   // Dev-only: when true, nosana.submitJob returns mock_job_* IDs if the SDK fails.
   // Forced to false in production.
   ALLOW_NOSANA_MOCK: z

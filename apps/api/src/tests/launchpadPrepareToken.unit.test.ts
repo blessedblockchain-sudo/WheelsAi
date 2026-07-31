@@ -139,7 +139,7 @@ test("verifyPrepareToken rejects a tampered signature", () => {
   // tampering strategy was wrong.)
   const parts = token.split(".");
   const sigBytes = Buffer.from(parts[2]!, "base64url");
-  sigBytes[0] ^= 0xff; // always changes the bytes, never just the encoding
+  sigBytes[0] = sigBytes[0]! ^ 0xff; // always changes the bytes, never just the encoding
   const tampered = `${parts[0]}.${parts[1]}.${sigBytes.toString("base64url")}`;
 
   const result = verifyPrepareToken({ token: tampered, secret: SECRET });

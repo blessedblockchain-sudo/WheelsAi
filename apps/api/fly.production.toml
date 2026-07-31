@@ -35,7 +35,11 @@ primary_region = "lax"
   grace_period = "10s"
   interval = "30s"
   method = "GET"
-  path = "/health"
+  # Readiness, not liveness (H5). /health returns 200 unconditionally, so an
+  # instance with an unreachable database stayed in the load balancer serving
+  # 500s. /health/ready probes Postgres and Redis and answers 503 when either
+  # is gone, which is what actually removes the machine from rotation.
+  path = "/health/ready"
   timeout = "5s"
 
 [[vm]]

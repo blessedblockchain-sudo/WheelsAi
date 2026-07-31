@@ -182,6 +182,9 @@ model CreditBalance {
   balanceCents BigInt  @default(0) @map("balance_cents")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
+  // Cascade is correct here, unlike the tables above (G6): this row is derived
+  // current state, reconstructible by summing credit_transactions. Losing it
+  // with the org loses no history.
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("credit_balances")
@@ -197,7 +200,13 @@ model CreditTransaction {
   balanceAfter BigInt   @map("balance_after")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // Restrict, not Cascade (G6): this table IS the billing audit trail. A
+  // cascade meant deleting an organization silently destroyed every record of
+  // what it had been charged. Postgres now refuses the delete, forcing
+  // whoever implements account deletion to make an explicit decision —
+  // export, anonymise, or archive — instead of losing the evidence by
+  // default. See also usage_records and x402_payments.
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
 
   @@index([orgId, createdAt])
   @@map("credit_transactions")
@@ -226,8 +235,14 @@ model UsageRecord {
   // computeSeconds. costCents is kept for backwards compat during rollout.
   actualCostCents BigInt @default(0) @map("actual_cost_cents")
 
-  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  deployment Deployment   @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  // Restrict on both (G6): usage is the basis every credit charge is computed
+  // from, so it has to outlive the org and the deployment it describes.
+  // Neither hard delete is reachable today (DELETE /api/deployments only sets
+  // status='stopped', and nothing deletes an organization at all), so this
+  // closes the hole before someone opens it — e.g. when account deletion
+  // ships for GDPR.
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  deployment Deployment   @relation(fields: [deploymentId], references: [id], onDelete: Restrict)
 
   @@unique([orgId, deploymentId, periodStart])
   @@index([orgId, periodStart])
@@ -520,7 +535,9 @@ model X402Payment {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
-  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // Restrict (G6): these are real payments received on-chain. Same reasoning
+  // as credit_transactions.
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
 
   @@index([orgId, createdAt])
   @@index([txSignature])

@@ -19,6 +19,39 @@ class ApiError extends Error {
   }
 }
 
+/**
+ * Read a response body without assuming it is JSON.
+ *
+ * `res.json()` throws on anything that is not well-formed JSON, including two
+ * cases this client hits routinely:
+ *
+ *   - 204 No Content, which the API returns from its DELETE routes. The body
+ *     is empty, so json() threw "Unexpected end of JSON input" and every
+ *     successful delete surfaced in the UI as a failure.
+ *   - a non-JSON error body — an nginx/Fly 502 HTML page, a proxy timeout,
+ *     a rate-limit text response. json() threw a SyntaxError whose message is
+ *     about parsing, so the real status was lost and the user got
+ *     "Unexpected token '<'" instead of "the server is down".
+ *
+ * Reads once as text and parses opportunistically, so a body that is not JSON
+ * is still returned to the caller rather than destroying the response.
+ */
+async function readBody(res: Response): Promise<unknown> {
+  // 204/205 are defined to have no body; don't even read.
+  if (res.status === 204 || res.status === 205) return null;
+
+  const text = await res.text();
+  if (text === "") return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Not JSON. Hand back the raw text — ApiError carries it as `data`, which
+    // is far more useful when debugging than a parser error.
+    return text;
+  }
+}
+
 async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
   const { method = "GET", body, headers = {} } = options;
 
@@ -32,7 +65,10 @@ async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
     credentials: "include",
   });
 
-  const data = await res.json();
+  // Status first: an error response must surface its real status even when
+  // the body is unreadable. Previously the body was parsed before res.ok was
+  // consulted, so a malformed error body masked the status entirely.
+  const data = await readBody(res);
 
   if (!res.ok) {
     throw new ApiError(res.status, res.statusText, data);

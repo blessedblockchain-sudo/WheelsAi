@@ -19,7 +19,6 @@ export function Navbar() {
     { href: "#how-it-works", label: "How It Works" },
     { href: "#frameworks", label: "Frameworks" },
     { href: "#pricing", label: "Pricing" },
-    { href: "/explore", label: "Explore" },
     { href: "/marketplace", label: "Marketplace" },
   ];
 
@@ -64,7 +63,7 @@ export function Navbar() {
             Sign In
           </Link>
           <Link
-            href="/waitlist"
+            href="/register"
             prefetch={false}
             className="btn-glow-navy text-sm h-9 px-5 py-2"
           >
@@ -105,7 +104,7 @@ export function Navbar() {
               Sign In
             </Link>
             <Link
-              href="/waitlist"
+              href="/register"
               prefetch={false}
               className="btn-glow-navy text-sm h-9 px-5 py-2 w-full text-center"
             >

@@ -1,10 +1,10 @@
 import { Zap, Users, Globe, Shield } from "lucide-react";
 
 const trustSignals = [
-  { icon: Globe, label: "10+ Channels", sublabel: "Deploy everywhere" },
-  { icon: Users, label: "500+ Builders", sublabel: "Growing community" },
-  { icon: Zap, label: "Instant Responses", sublabel: "Optimized inference" },
-  { icon: Shield, label: "Secure by Default", sublabel: "Enterprise-ready" },
+  { icon: Globe, label: "3 Chat Channels", sublabel: "Discord, Telegram & Slack" },
+  { icon: Users, label: "Open Beta", sublabel: "$5 free credits at signup" },
+  { icon: Zap, label: "Instant Responses", sublabel: "Streaming inference" },
+  { icon: Shield, label: "Secure by Default", sublabel: "2FA & encrypted secrets" },
 ];
 
 export function SocialProof() {

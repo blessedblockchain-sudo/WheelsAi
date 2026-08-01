@@ -15,15 +15,16 @@ export function FinalCTA() {
         </h2>
         <p className="mt-6 text-lg text-navy-200/60 max-w-2xl mx-auto">
           Turn your AI agent idea into a business. Pick a framework or import
-          from GitHub, deploy everywhere, and start earning. No credit card required.
+          from GitHub, deploy on decentralized GPU, and set your pricing.
+          Start with $5 in free credits — no card required.
         </p>
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
           <Link
-            href="/waitlist"
+            href="/register"
             prefetch={false}
             className="btn-glow-navy text-base px-10 py-4 h-auto"
           >
-            Join the Beta
+            Start Building Free
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
           <Link

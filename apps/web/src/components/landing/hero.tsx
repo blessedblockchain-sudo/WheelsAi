@@ -66,13 +66,13 @@ export function Hero() {
         <p className="mx-auto mt-6 max-w-2xl text-lg sm:text-xl leading-relaxed text-navy-200/60">
           Frameworks fragmented. Hosting scattered. Monetization impossible.
           WheelsAI eliminates all of it — pick your framework, import from GitHub,
-          deploy to 10+ channels, and earn 90% revenue.
+          deploy on decentralized GPU, and set your price.
         </p>
 
         {/* CTAs */}
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
-          <Link href="/waitlist" prefetch={false} className="btn-glow-navy text-base px-8 py-3 h-auto">
-            Join the Beta
+          <Link href="/register" prefetch={false} className="btn-glow-navy text-base px-8 py-3 h-auto">
+            Start Building Free
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>
           <Link
@@ -87,16 +87,16 @@ export function Hero() {
         {/* Feature highlights */}
         <div className="mt-16 grid grid-cols-3 gap-8 max-w-lg mx-auto">
           <div className="text-center">
-            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">6+</div>
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">6</div>
             <div className="text-sm text-navy-200/60 mt-1">Frameworks</div>
           </div>
           <div className="text-center">
-            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">10+</div>
-            <div className="text-sm text-navy-200/60 mt-1">Deploy Channels</div>
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">21</div>
+            <div className="text-sm text-navy-200/60 mt-1">Models</div>
           </div>
           <div className="text-center">
-            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">90%</div>
-            <div className="text-sm text-navy-200/60 mt-1">Revenue Share</div>
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">3</div>
+            <div className="text-sm text-navy-200/60 mt-1">Chat Channels</div>
           </div>
         </div>
       </div>

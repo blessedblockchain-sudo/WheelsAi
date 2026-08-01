@@ -86,17 +86,18 @@ export default function BillingPage() {
 
     try {
       const { checkoutUrl } = await billingApi.createCheckout(pkg.amount);
-      // In production, redirect to Stripe checkout
-      // window.location.href = checkoutUrl;
-      toast.success(`Redirecting to checkout for $${pkg.price}...`);
-      // Simulated for demo
-      setTimeout(() => {
-        toast.success(`Added $${pkg.amount + pkg.bonus} in credits!`);
-        loadBillingData();
-      }, 1500);
+      window.location.href = checkoutUrl;
     } catch (error) {
-      toast.error("Failed to create checkout session");
-    } finally {
+      const status = error instanceof Error && "status" in error
+        ? (error as { status: number }).status
+        : null;
+      if (status === 501) {
+        toast.info(
+          "Card payments are coming soon — every new account starts with $5 in free credits."
+        );
+      } else {
+        toast.error("Failed to create checkout session");
+      }
       setIsPurchasing(null);
     }
   }
@@ -241,7 +242,7 @@ export default function BillingPage() {
             </div>
 
             <p className="mt-4 text-center text-sm text-gray-500">
-              Secure payment powered by Stripe. Credits never expire.
+              Card payments are coming soon. Credits never expire.
             </p>
           </CardContent>
         </Card>

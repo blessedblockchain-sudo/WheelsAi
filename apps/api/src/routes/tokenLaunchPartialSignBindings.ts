@@ -19,6 +19,7 @@ import { env } from "../config/env.js";
 import { getSolanaConnection } from "../lib/solana.js";
 import { getLaunchpadAdapter } from "../services/launchpad/index.js";
 import { loadEligibilityStateByPrisma } from "../services/loadEligibilityState.js";
+import { readAgentReputationFromChain } from "../services/readAgentReputationFromChain.js";
 import {
   createPartialSignTokenRoutes,
   type PartialSignTokenRouteDeps,
@@ -42,6 +43,35 @@ const PUMPFUN_FRONTEND_BASE = "https://pump.fun";
 
 async function noopGetCreatorAddress(): Promise<string> {
   return "ignored-by-partial-sign-route";
+}
+
+/**
+ * Exported for the wiring regression test (A3): the on-chain reputation
+ * reader MUST be part of the eligibility deps. It is optional on the
+ * loader, so omitting it here compiled fine while silently pinning every
+ * launch decision to the off-chain PublisherProfile mirror — the exact
+ * bug this factory had.
+ */
+export function buildEligibilityDeps(): Parameters<
+  typeof loadEligibilityStateByPrisma
+>[1] {
+  return {
+    // The companion service declares a loose PrismaStub shape so it can
+    // be tested with a mock; the real Prisma client is structurally
+    // compatible at runtime but its types are stricter.
+    prisma: prisma as unknown as Parameters<
+      typeof loadEligibilityStateByPrisma
+    >[1]["prisma"],
+    getCreatorAddress: noopGetCreatorAddress,
+    // Preferred path (plan A4): the gate reads the score holders can
+    // independently verify on-chain. RPC errors fall through to the
+    // off-chain mirror inside the loader.
+    readOnChainReputation: (mintAddress: string) =>
+      readAgentReputationFromChain(
+        { mint: new PublicKey(mintAddress) },
+        { connection: getSolanaConnection() },
+      ),
+  };
 }
 
 // ============================================
@@ -176,18 +206,7 @@ export function createPartialSignTokenRoutesProduction() {
 
   const deps: PartialSignTokenRouteDeps = {
     loadEligibilityState: ({ agentId, orgId }) =>
-      loadEligibilityStateByPrisma(
-        { agentId, orgId },
-        {
-          // The companion service declares a loose PrismaStub shape so
-          // it can be tested with a mock; the real Prisma client is
-          // structurally compatible at runtime but its types are stricter.
-          prisma: prisma as unknown as Parameters<
-            typeof loadEligibilityStateByPrisma
-          >[1]["prisma"],
-          getCreatorAddress: noopGetCreatorAddress,
-        },
-      ),
+      loadEligibilityStateByPrisma({ agentId, orgId }, buildEligibilityDeps()),
     resolveAgentListingId: async ({ agentId, orgId }) => {
       // AgentListing has no orgId column — org scope lives on the
       // related Agent. Join through agent to enforce that the caller's

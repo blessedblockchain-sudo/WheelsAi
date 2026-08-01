@@ -1,5 +1,6 @@
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
+import { updatePublisherReputation } from "./reputation.js";
 
 const logger = createLogger("marketplace-service");
 
@@ -272,6 +273,18 @@ export async function createReview(
   reviewerId: string,
   data: { rating: number; title?: string; content?: string }
 ) {
+  // The review moves the publisher's social score, so we need to know
+  // whose reputation to recalc — and a review against a nonexistent
+  // listing should fail here, not on the FK.
+  const listing = await prisma.agentListing.findUnique({
+    where: { id: listingId },
+    select: { publisherId: true },
+  });
+
+  if (!listing) {
+    throw new Error("Listing not found");
+  }
+
   // Check if user has already reviewed
   const existing = await prisma.agentReview.findUnique({
     where: {
@@ -303,6 +316,15 @@ export async function createReview(
 
   // Update listing stats
   await updateListingRatingStats(listingId);
+
+  // Reviews feed the social leg of the reputation score; recalc so the
+  // token-eligibility gate can actually move without a manual recalc.
+  updatePublisherReputation(listing.publisherId).catch((err) =>
+    logger.error(
+      { err, listingId, publisherId: listing.publisherId },
+      "Failed to recalc publisher reputation after review"
+    )
+  );
 
   return review;
 }
@@ -755,6 +777,14 @@ export async function installAgent(listingId: string, buyerId: string) {
 
   // Update publisher stats
   await updatePublisherStats(listing.publisherId);
+
+  // Installs feed the usage/social legs of the reputation score.
+  updatePublisherReputation(listing.publisherId).catch((err) =>
+    logger.error(
+      { err, listingId, publisherId: listing.publisherId },
+      "Failed to recalc publisher reputation after install"
+    )
+  );
 
   logger.info({ listingId, buyerId, agentId: clonedAgent.id }, "Agent installed from marketplace");
 

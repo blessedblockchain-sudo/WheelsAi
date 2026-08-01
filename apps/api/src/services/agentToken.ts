@@ -111,7 +111,12 @@ export async function checkTokenEligibility(
       include: {
         agent: {
           include: {
+            // Running only — the enforcement path (loadEligibilityState)
+            // counts uptime from the oldest RUNNING deployment; counting
+            // any-status rows here made the preview promise an
+            // eligibility the gate then refused.
             deployments: {
+              where: { status: "running" },
               orderBy: { createdAt: "asc" },
               take: 1,
             },
@@ -162,7 +167,7 @@ export async function checkTokenEligibility(
       listing.agent.deployments.length > 0 ? listing.agent.deployments[0] : null;
 
     if (!oldestDeployment) {
-      reasons.push("Agent must have at least one deployment");
+      reasons.push("Agent must have at least one running deployment");
     } else {
       const deploymentAge = Date.now() - oldestDeployment.createdAt.getTime();
       const deploymentDays = deploymentAge / (1000 * 60 * 60 * 24);

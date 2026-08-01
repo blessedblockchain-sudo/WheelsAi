@@ -171,7 +171,8 @@ export interface GpuTier {
   id: string;
   name: string;
   vram: number;
-  available: number;
+  // Derived from the same market table billing meters against — the one
+  // price a tier has anywhere in the product.
   pricePerHour: number;
 }
 

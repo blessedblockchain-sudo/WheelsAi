@@ -202,7 +202,6 @@ export default function ModelsPage() {
                   </p>
                   <p className="text-xs text-gray-500">/hour</p>
                   <p className="mt-2 text-sm text-gray-600">{tier.vram}GB VRAM</p>
-                  <p className="text-xs text-gray-500">{tier.available} available</p>
                 </div>
               ))}
             </div>

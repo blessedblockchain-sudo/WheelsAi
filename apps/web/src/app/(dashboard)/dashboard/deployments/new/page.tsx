@@ -19,20 +19,23 @@ type Step = "model" | "config" | "review";
 type Engine = "vllm" | "ollama";
 type SimplifiedTier = "basic" | "standard" | "premium" | "enterprise";
 
+// Prices intentionally NOT hand-typed here: each tier's price is looked
+// up from the fetched gpuTiers, which the API derives from the same
+// market table billing meters against. Three surfaces used to disagree
+// ($0.35 vs $0.25 vs a $0.54 metered rate for the same GPU).
 interface SimplifiedTierOption {
   id: SimplifiedTier;
   label: string;
-  price: string;
   recommended?: boolean;
   /** Substring matched against GpuTier.id returned from the API. */
   gpuIdFragment: string;
 }
 
 const SIMPLIFIED_TIERS: SimplifiedTierOption[] = [
-  { id: "basic",      label: "Basic",      price: "~$0.15/hr", gpuIdFragment: "3060" },
-  { id: "standard",   label: "Standard",   price: "~$0.35/hr", gpuIdFragment: "4070", recommended: true },
-  { id: "premium",    label: "Premium",    price: "~$0.50/hr", gpuIdFragment: "4090" },
-  { id: "enterprise", label: "Enterprise", price: "~$1.50/hr", gpuIdFragment: "a100" },
+  { id: "basic",      label: "Basic",      gpuIdFragment: "3060" },
+  { id: "standard",   label: "Standard",   gpuIdFragment: "4070", recommended: true },
+  { id: "premium",    label: "Premium",    gpuIdFragment: "4090" },
+  { id: "enterprise", label: "Enterprise", gpuIdFragment: "a100" },
 ];
 
 interface EngineOption {
@@ -415,7 +418,14 @@ export default function NewDeploymentPage() {
                               </Badge>
                             )}
                           </div>
-                          <span className="text-sm text-gray-500">{tier.price}</span>
+                          <span className="text-sm text-gray-500">
+                            {(() => {
+                              const gpu = gpuTiers.find((g) =>
+                                g.id.includes(tier.gpuIdFragment)
+                              );
+                              return gpu ? `$${gpu.pricePerHour.toFixed(2)}/hr` : "—";
+                            })()}
+                          </span>
                         </div>
                       </div>
                     ))}
@@ -468,7 +478,7 @@ export default function NewDeploymentPage() {
                               </span>
                             </div>
                             <div className="mt-1 text-sm text-gray-500">
-                              {gpu.vram}GB VRAM &middot; {gpu.available} available
+                              {gpu.vram}GB VRAM
                             </div>
                           </div>
                         ))}

@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { getAllFreeModels, getAvailableFreeModels } from "../config/free-models.js";
+import { MARKETS } from "../services/nosana.js";
 
 // Model catalog - in MVP this is seeded data, in production fetched from DB
 const MODEL_CATALOG = [
@@ -422,44 +423,19 @@ const MODEL_CATALOG = [
   },
 ];
 
-// GPU tiers with availability (mock data for MVP)
-const GPU_TIERS = [
-  {
-    id: "3060",
-    name: "RTX 3060",
-    vram: 12,
-    available: 150,
-    pricePerHour: 0.15,
-  },
-  {
-    id: "4070",
-    name: "RTX 4070",
-    vram: 12,
-    available: 80,
-    pricePerHour: 0.25,
-  },
-  {
-    id: "4090",
-    name: "RTX 4090",
-    vram: 24,
-    available: 45,
-    pricePerHour: 0.45,
-  },
-  {
-    id: "a100",
-    name: "A100 40GB",
-    vram: 40,
-    available: 20,
-    pricePerHour: 1.5,
-  },
-  {
-    id: "h100",
-    name: "H100 80GB",
-    vram: 80,
-    available: 5,
-    pricePerHour: 3.0,
-  },
-];
+// GPU tiers derived from the SAME market table compute metering and
+// treasury settlement bill against (services/nosana.ts MARKETS). This
+// used to be a second hand-typed table whose prices disagreed with both
+// the wizard AND the metered rate — a user picked "$0.25/hr" and was
+// billed $0.54. One source of truth; if MARKETS moves, every surface
+// moves. Availability counts were invented ("150 available") and are
+// intentionally absent until the market-sync worker reports real ones.
+const GPU_TIERS = Object.entries(MARKETS).map(([id, market]) => ({
+  id,
+  name: market.name,
+  vram: market.vram,
+  pricePerHour: Math.round(market.pricePerSecond * 3600 * 100) / 100,
+}));
 
 export const modelRoutes: FastifyPluginAsync = async (app) => {
   // List free models

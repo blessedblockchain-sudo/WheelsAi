@@ -16,14 +16,14 @@ const steps = [
     step: "02",
     title: "Deploy",
     description:
-      "One-click deploy to 10+ channels — Discord, Telegram, Slack, Twitter, WhatsApp, Web, API, and more. We handle the infrastructure.",
+      "One-click deploy to Discord, Telegram, Slack, and an OpenAI-compatible API — on decentralized per-second GPU. We handle the infrastructure.",
   },
   {
     icon: Store,
     step: "03",
     title: "Monetize",
     description:
-      "List on the marketplace for free. Choose your pricing: free, per-request, or subscription. You keep 90% of every dollar earned.",
+      "List on the marketplace for free. Choose your pricing: free, per-request, monthly, or tokenized. Every earning is verifiable on-chain.",
   },
   {
     icon: TrendingUp,

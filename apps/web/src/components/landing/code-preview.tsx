@@ -5,8 +5,8 @@ const bullets = [
   "Always-on availability with auto-scaling",
   "Enterprise-grade reliability",
   "Real-time streaming responses",
-  "Deploy to Discord, Telegram, Slack & 10+ channels",
-  "Free marketplace listing, 90% revenue share",
+  "Deploy to Discord, Telegram & Slack",
+  "Free marketplace listing with verifiable receipts",
 ];
 
 const terminalLines = [

@@ -15,7 +15,7 @@ import { Footer } from "@/components/landing/footer";
 export const metadata: Metadata = {
   title: "WheelsAI — Build, Deploy & Monetize AI Agents",
   description:
-    "Solve AI agent fragmentation. Build with Mastra, ElizaOS, LangChain or import from GitHub. Deploy to 10+ channels. Earn 90% revenue.",
+    "Solve AI agent fragmentation. Build with Mastra, ElizaOS, LangChain or import from GitHub. Deploy on decentralized per-second GPU. Monetize with verifiable on-chain receipts.",
 };
 
 export default function HomePage() {

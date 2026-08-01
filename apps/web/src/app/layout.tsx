@@ -16,7 +16,7 @@ export const metadata: Metadata = {
     template: "%s | WheelsAI",
   },
   description:
-    "Solve AI agent fragmentation. Build with any framework, import from GitHub, deploy to 10+ channels, and earn 90% revenue on the marketplace.",
+    "Solve AI agent fragmentation. Build with any framework, import from GitHub, deploy on decentralized GPU, and monetize with on-chain receipts.",
   keywords: [
     "AI agents",
     "agent marketplace",

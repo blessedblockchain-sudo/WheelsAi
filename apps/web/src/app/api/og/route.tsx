@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
   const title = searchParams.get("title") || "Build, Deploy & Monetize AI Agents";
   const description =
     searchParams.get("description") ||
-    "One platform. Any framework. 10+ channels. 90% revenue.";
+    "One platform. Any framework. Decentralized GPU. On-chain receipts.";
 
   return new ImageResponse(
     (
@@ -97,7 +97,7 @@ export async function GET(request: NextRequest) {
             marginTop: "48px",
           }}
         >
-          {["6+ Frameworks", "10+ Channels", "90% Revenue"].map((badge) => (
+          {["6 Frameworks", "21 Models", "On-chain Receipts"].map((badge) => (
             <div
               key={badge}
               style={{

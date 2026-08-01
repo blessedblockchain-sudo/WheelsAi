@@ -49,9 +49,9 @@ const pillars = [
     features: [
       {
         icon: Globe,
-        title: "10+ Channels, One Deploy",
+        title: "Chat Channels + API",
         description:
-          "Discord, Telegram, Slack, Twitter, WhatsApp, Web, API — publish everywhere from a single click.",
+          "Discord, Telegram, and Slack connectors plus an OpenAI-compatible API — one deploy covers them all.",
       },
       {
         icon: Cpu,
@@ -80,9 +80,9 @@ const pillars = [
       },
       {
         icon: Coins,
-        title: "90% Revenue Share",
+        title: "Four Pricing Models",
         description:
-          "Keep 90% of everything you earn. Payouts in SOL, USDC, or platform credits — your choice.",
+          "Free, per-request, monthly, or tokenized — you set the price, and every sale is backed by on-chain receipts.",
       },
       {
         icon: BarChart3,

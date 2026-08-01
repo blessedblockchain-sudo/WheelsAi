@@ -102,6 +102,16 @@ const envSchema = z.object({
   PINATA_API_KEY: z.string().optional(),
   PINATA_SECRET_KEY: z.string().optional(),
 
+  // Dataset object storage (S3 or any S3-compatible store, e.g. R2).
+  // All three of AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY /
+  // DATASETS_BUCKET must be set for dataset uploads to be enabled;
+  // otherwise the dataset routes refuse with an honest 503
+  // (isDatasetStorageConfigured in services/dataset.ts).
+  AWS_REGION: z.string().optional(),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  DATASETS_BUCKET: z.string().optional(),
+
   // Inference Proxy
   INFERENCE_TIMEOUT_MS: z.coerce.number().default(30000),
   MAX_RETRIES: z.coerce.number().default(2),

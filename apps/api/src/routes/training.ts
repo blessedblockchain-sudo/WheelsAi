@@ -20,6 +20,8 @@ import {
   generateUploadUrl,
   validateDataset,
   estimateDatasetStats,
+  isDatasetStorageConfigured,
+  deleteDatasetObject,
 } from "../services/dataset.js";
 import { getNosanaClient } from "../services/nosana.js";
 
@@ -132,6 +134,17 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   app.post("/datasets", { preHandler: [requireAuth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const body = createDatasetSchema.parse(request.body);
+
+    // Refuse up front when object storage isn't provisioned — without
+    // credentials the presign call crashes mid-request with an opaque
+    // credential-provider 500 (and would strand a Dataset row).
+    if (!isDatasetStorageConfigured()) {
+      return reply.status(503).send({
+        error: "dataset_storage_not_configured",
+        message:
+          "Dataset uploads are not available: object storage is not configured on this deployment.",
+      });
+    }
 
     // Check for duplicate name
     const existing = await prisma.dataset.findFirst({
@@ -265,8 +278,9 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
       return reply.badRequest(`Dataset is used by ${usedByJobs} training job(s) and cannot be deleted`);
     }
 
-    // Delete from S3 would go here
-    // await deleteFromS3(dataset.storageUrl);
+    // Best-effort object deletion; an S3 failure is logged, never blocks
+    // the DB delete (the object becomes an orphan to sweep, not a wedge).
+    await deleteDatasetObject(dataset.storageUrl);
 
     await prisma.dataset.delete({
       where: { id: datasetId },

@@ -2,7 +2,13 @@
 // Handles dataset upload, validation, and management
 
 import { createLogger } from "../utils/logger.js";
-import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const logger = createLogger("dataset-service");
@@ -67,6 +73,33 @@ const s3Client = new S3Client({
 });
 
 const BUCKET_NAME = process.env.DATASETS_BUCKET || "wheelsai-datasets";
+
+/**
+ * Whether dataset storage is actually usable. Without credentials the
+ * presign call crashes mid-request with a credential-provider error; the
+ * routes use this to refuse up front with an honest 503 instead.
+ */
+export function isDatasetStorageConfigured(): boolean {
+  return Boolean(
+    process.env.AWS_ACCESS_KEY_ID &&
+      process.env.AWS_SECRET_ACCESS_KEY &&
+      process.env.DATASETS_BUCKET,
+  );
+}
+
+/**
+ * Best-effort S3 object deletion for a dataset's storageUrl. Failures are
+ * logged, not thrown — an orphaned object must not block the DB delete.
+ */
+export async function deleteDatasetObject(storageUrl: string): Promise<void> {
+  try {
+    const { bucket, key } = parseS3Url(storageUrl);
+    await s3Client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+    logger.info({ storageUrl }, "Deleted dataset object from S3");
+  } catch (error) {
+    logger.warn({ error, storageUrl }, "Failed to delete dataset object from S3");
+  }
+}
 
 // ============================================
 // Expected Schemas by Format
@@ -249,7 +282,7 @@ export async function validateDataset(
 // JSONL Validation
 // ============================================
 
-function validateJsonl(
+export function validateJsonl(
   content: string,
   sizeBytes: number,
   errors: ValidationError[],
@@ -326,7 +359,7 @@ function validateJsonl(
 // CSV Validation
 // ============================================
 
-function validateCsv(
+export function validateCsv(
   content: string,
   sizeBytes: number,
   errors: ValidationError[],
@@ -432,7 +465,7 @@ function parseS3Url(url: string): { bucket: string; key: string } {
   throw new Error("Invalid S3 URL format");
 }
 
-function detectFormat(row: Record<string, any>): "alpaca" | "sharegpt" | "completion" | "text" | "unknown" {
+export function detectFormat(row: Record<string, any>): "alpaca" | "sharegpt" | "completion" | "text" | "unknown" {
   if ("instruction" in row && "output" in row) {
     return "alpaca";
   }

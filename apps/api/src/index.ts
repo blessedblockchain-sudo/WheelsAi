@@ -57,6 +57,7 @@ import {
 } from "./routes/transparencyBindings.js";
 import { playgroundRoutes } from "./routes/playground.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
+import { createChannelWebhookRoutesProduction } from "./routes/channelWebhookBindings.js";
 import {
   startX402Queue,
   stopX402Queue,
@@ -76,6 +77,8 @@ import {
   stopReputationAttestationQueue,
   startDeploymentStatusQueue,
   stopDeploymentStatusQueue,
+  startAgentMessageQueue,
+  stopAgentMessageQueue,
   assertQueueRedisReady,
 } from "./queues/index.js";
 
@@ -247,6 +250,12 @@ async function main() {
 
   await app.register(playgroundRoutes, { prefix: "/api" });
   await app.register(collaborationRoutes, { prefix: "/api/agents" });
+  // Inbound chat-channel webhooks (plan A6) — the complete, tested stack
+  // that was never mounted (Wave 0). Platform webhook URL:
+  //   POST /api/channels/webhooks/:deploymentId/:platform
+  await app.register(createChannelWebhookRoutesProduction(), {
+    prefix: "/api/channels",
+  });
   // Treasury read routes — runway / payments / chart at /api/agents/:slug/*
   const { agentTreasuryRoutes } = await import("./routes/agent-treasury.js");
   await app.register(agentTreasuryRoutes, { prefix: "/api" });
@@ -282,6 +291,7 @@ async function main() {
   await startFeeRouterQueue();
   await startReputationAttestationQueue();
   await startDeploymentStatusQueue();
+  await startAgentMessageQueue();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
@@ -297,6 +307,7 @@ async function main() {
       await stopFeeRouterQueue();
       await stopReputationAttestationQueue();
       await stopDeploymentStatusQueue();
+      await stopAgentMessageQueue();
       await metrics.close();
       await app.close();
       process.exit(0);

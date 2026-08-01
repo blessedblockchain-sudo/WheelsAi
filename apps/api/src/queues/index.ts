@@ -29,3 +29,7 @@ export {
   startDeploymentStatusQueue,
   stopDeploymentStatusQueue,
 } from "./deployment-status.queue.js";
+export {
+  startAgentMessageQueue,
+  stopAgentMessageQueue,
+} from "./agent-message.queue.js";

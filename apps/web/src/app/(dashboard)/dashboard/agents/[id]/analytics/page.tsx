@@ -164,9 +164,6 @@ export default function AgentAnalyticsPage() {
   const projection = analytics?.projection;
   const dailyCostDollars = projection ? (projection.dailyAverage / 100).toFixed(2) : null;
 
-  // Determine whether this agent has a token (placeholder: false until token API is wired)
-  const hasToken = false;
-
   return (
     <div className="flex flex-col">
       <Header
@@ -352,43 +349,10 @@ export default function AgentAnalyticsPage() {
           </Card>
         </div>
 
-        {/* Token Performance — only shown if agent has an associated token */}
-        {hasToken && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5 text-green-500" />
-                Token Performance
-              </CardTitle>
-              <CardDescription>
-                Live bonding curve data from the token marketplace
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {[
-                  { label: "Token Price", value: "$0.042" },
-                  { label: "Market Cap", value: "$42,000" },
-                  { label: "24h Volume", value: "$1,250" },
-                  { label: "Holders", value: "89" },
-                ].map(({ label, value }) => (
-                  <div
-                    key={label}
-                    className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800"
-                  >
-                    <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                      {label}
-                    </p>
-                    <p className="mt-1 text-xl font-bold text-gray-900 dark:text-gray-100">{value}</p>
-                  </div>
-                ))}
-              </div>
-              <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">
-                Token data is live from the bonding curve
-              </p>
-            </CardContent>
-          </Card>
-        )}
+        {/* Hardcoded "Token Performance" card removed (W0-2): it showed
+            invented numbers ($0.042 / 89 holders) captioned "live from the
+            bonding curve". Real token stats return with the trade-feed
+            build (match-up roadmap, Wave 2). */}
 
         {/* Cost Breakdown */}
         <Card>

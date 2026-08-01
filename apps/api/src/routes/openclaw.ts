@@ -294,8 +294,12 @@ export const openclawRoutes: FastifyPluginAsync = async (app) => {
       const { id } = deploymentParamsSchema.parse(request.params);
       await getDeployment(id, getOrgId(request));
 
-      return reply.send({
-        logs: "",
+      // Honest 501, not an empty string pretending to be a log stream:
+      // log retrieval from the Nosana job is not built yet (match-up
+      // roadmap, Wave 3 with the OpenClaw runtime image).
+      return reply.status(501).send({
+        error: "logs_not_implemented",
+        message: "Log streaming is not available yet.",
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

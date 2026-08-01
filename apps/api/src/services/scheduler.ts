@@ -181,27 +181,14 @@ export async function triggerTask(id: string, orgId: string) {
   const task = await prisma.scheduledTask.findFirst({ where: { id, orgId } });
   if (!task) throw new Error("Task not found");
 
-  const execution = await prisma.taskExecution.create({
-    data: { taskId: id, status: "running", input: task.payload as any, triggeredBy: "manual", startedAt: new Date() },
-  });
-
-  // Simulate async execution
-  const durationMs = Math.floor(Math.random() * 2000) + 500;
-  setTimeout(async () => {
-    try {
-      const nextRunAt = calculateNextRun(task.scheduleType, task.cronExpression, task.intervalSeconds, task.scheduledAt, task.timezone);
-      await prisma.taskExecution.update({
-        where: { id: execution.id },
-        data: { status: "success", completedAt: new Date(), durationMs, output: { message: "Task executed successfully" } as any },
-      });
-      await prisma.scheduledTask.update({
-        where: { id: task.id },
-        data: { lastRunAt: new Date(), lastRunStatus: "success", lastRunDurationMs: durationMs, lastError: null, nextRunAt, totalRuns: { increment: 1 }, successfulRuns: { increment: 1 } },
-      });
-    } catch (err) { console.error("Execution error:", err); }
-  }, durationMs);
-
-  return execution;
+  // The execution engine does not exist yet (match-up roadmap, Wave 1:
+  // a BullMQ worker consuming nextRunAt and invoking the real agent).
+  // Until it does, refuse honestly — the previous behavior here wrote a
+  // fabricated "Task executed successfully" row on a random-delay timer,
+  // which poisoned every success-rate stat on the page.
+  throw new Error(
+    "Task execution is not live yet — the scheduler currently manages task definitions only. Execution ships with the scheduler worker.",
+  );
 }
 
 export async function getTaskExecutions(taskId: string, orgId: string, options: {

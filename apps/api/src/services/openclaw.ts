@@ -84,14 +84,9 @@ function decryptConfigSafely(
   }
 }
 
-function fallbackPublicUrlForDeployment(deployment: OpenClawDeploymentRecord): string {
-  return `https://${deployment.agent.slug}.${env.OPENCLAW_SUBDOMAIN_BASE}`;
-}
-
 function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
   definition: NosanaJobDefinition;
   marketTier: string;
-  fallbackPublicUrl: string;
 } {
   const modelConfig = asRecord(deployment.agent.modelConfig);
   const marketTier = normalizeGpuTier(modelConfig.gpuTier);
@@ -145,14 +140,7 @@ function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
   return {
     definition,
     marketTier,
-    fallbackPublicUrl: fallbackPublicUrlForDeployment(deployment),
   };
-}
-
-function isRecoverableNosanaError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const message = error.message.toLowerCase();
-  return message.includes("wallet not configured") || message.includes("unknown market tier");
 }
 
 function getEncryptionKey(): Buffer {
@@ -568,7 +556,7 @@ export async function startDeployment(id: string, orgId: string) {
     },
   });
 
-  const { definition, marketTier, fallbackPublicUrl } = buildOpenClawJobDefinition(deployment);
+  const { definition, marketTier } = buildOpenClawJobDefinition(deployment);
 
   try {
     const nosana = await getNosanaClient();
@@ -583,7 +571,11 @@ export async function startDeployment(id: string, orgId: string) {
       data: {
         status: jobStatus?.status === "running" ? "RUNNING" : "DEPLOYING",
         nosanaJobId: job.id,
-        publicUrl: jobStatus?.nodeUrl ?? fallbackPublicUrl,
+        // Only a REAL node URL, or nothing. The old fallback invented
+        // https://<slug>.openclaw.wheelsai.com — a hostname nothing
+        // serves — and the UI rendered it as "Access your deployed
+        // agent". No URL until the node reports one.
+        publicUrl: jobStatus?.nodeUrl ?? null,
         healthStatus: jobStatus?.status === "running" ? "healthy" : "unknown",
         healthLastCheck: new Date(),
       },
@@ -602,28 +594,10 @@ export async function startDeployment(id: string, orgId: string) {
 
     return updated;
   } catch (error) {
-    if (isRecoverableNosanaError(error)) {
-      logger.warn(
-        { error, id, marketTier },
-        "Nosana unavailable for OpenClaw start, using fallback runtime status"
-      );
-
-      return prisma.openClawDeployment.update({
-        where: { id },
-        data: {
-          status: "RUNNING",
-          nosanaJobId: null,
-          publicUrl: fallbackPublicUrl,
-          healthStatus: "degraded",
-          healthLastCheck: new Date(),
-        },
-        include: {
-          channels: true,
-          agent: true,
-        },
-      });
-    }
-
+    // No "recoverable" carve-out: the old path treated wallet-not-
+    // configured / unknown-market as recoverable and marked the
+    // deployment RUNNING with an invented URL — a deployment that never
+    // existed anywhere. A submit that didn't reach Nosana is FAILED.
     logger.error({ error, id }, "Failed to start OpenClaw deployment");
 
     await prisma.openClawDeployment.update({

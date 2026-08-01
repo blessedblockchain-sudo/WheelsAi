@@ -552,43 +552,58 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
         return reply.serviceUnavailable("No healthy nodes available");
       }
 
+      // Real proxy to the healthy node (W0-3). This used to return a
+      // hardcoded mock even when a healthy node existed — now that the
+      // status tick genuinely probes node health (A2), the gate above is
+      // meaningful and the playground answers with real model output.
       try {
-        // For development, return a mock response
-        // In production, this would proxy to the actual node
-        const mockResponse = {
-          id: `chatcmpl-${Date.now()}`,
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model: deployment.model.displayName,
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant" as const,
-                content: `This is a mock response from ${deployment.model.displayName}. In production, this request would be proxied to: ${node.nodeUrl}`,
-              },
-              finish_reason: "stop",
-            },
-          ],
-          usage: {
-            prompt_tokens: body.messages.reduce((acc, m) => acc + m.content.length / 4, 0),
-            completion_tokens: 50,
-            total_tokens: body.messages.reduce((acc, m) => acc + m.content.length / 4, 0) + 50,
-          },
-        };
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 60_000);
+        let response: Response;
+        try {
+          response = await fetch(`${node.nodeUrl}/v1/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messages: body.messages,
+              temperature: body.temperature,
+              max_tokens: body.max_tokens,
+              // Streaming lands with the SSE plumbing; keep the node call
+              // non-streaming regardless of the client flag for now.
+              stream: false,
+            }),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
 
-        // In production, proxy to node:
-        // const response = await fetch(`${node.nodeUrl}/v1/chat/completions`, {
-        //   method: 'POST',
-        //   headers: { 'Content-Type': 'application/json' },
-        //   body: JSON.stringify(body),
-        // });
-        // return response.json();
+        if (!response.ok) {
+          logger.error(
+            { deploymentId, nodeId: node.id, status: response.status },
+            "Node returned non-OK for playground chat"
+          );
+          return reply.status(502).send({
+            error: "Bad Gateway",
+            message: `Inference node responded ${response.status}`,
+          });
+        }
 
-        return mockResponse;
+        return await response.json();
       } catch (error) {
         logger.error({ error, deploymentId, nodeId: node.id }, "Chat request failed");
-        return reply.internalServerError("Failed to process chat request");
+        // Same demotion the /v1 proxy applies: an unreachable node is not
+        // healthy; the status tick promotes it again when /health recovers.
+        await prisma.deploymentNode
+          .updateMany({
+            where: { id: node.id },
+            data: { healthStatus: "unhealthy" },
+          })
+          .catch(() => {});
+        return reply.status(502).send({
+          error: "Bad Gateway",
+          message: "Failed to reach the inference node",
+        });
       }
     }
   );

@@ -22,7 +22,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { deploymentsApi, type DeploymentDetail } from "@/lib/api";
+import { API_BASE_URL, deploymentsApi, type DeploymentDetail } from "@/lib/api";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "success",
@@ -111,7 +111,11 @@ export default function DeploymentDetailPage() {
     return null;
   }
 
-  const endpoint = deployment.endpoint || `https://api.wheelsai.io/v1/${deployment.slug}`;
+  // The real API origin this app talks to — not an aspirational hostname.
+  const endpoint = deployment.endpoint || `${API_BASE_URL}/v1/${deployment.slug}`;
+  const healthyNodeCount = deployment.nodes.filter(
+    (n) => n.healthStatus === "healthy"
+  ).length;
 
   return (
     <div className="flex flex-col">
@@ -197,8 +201,19 @@ export default function DeploymentDetailPage() {
           </CardContent>
         </Card>
 
-        {/* Endpoint */}
-        {deployment.status === "running" && (
+        {/* Endpoint — only once a node has actually passed a health
+            check; a running job whose nodes are still "unknown" cannot
+            serve this URL yet, and showing it would be a lie. */}
+        {deployment.status === "running" && healthyNodeCount === 0 && (
+          <Card className="mb-6 border-amber-300 bg-amber-50">
+            <CardContent className="py-4 text-sm text-amber-800">
+              Deployment is running; awaiting the first successful node
+              health check before the API endpoint goes live. This
+              usually resolves within a minute.
+            </CardContent>
+          </Card>
+        )}
+        {deployment.status === "running" && healthyNodeCount > 0 && (
           <Card className="mb-6">
             <CardHeader>
               <CardTitle className="text-base">API Endpoint</CardTitle>

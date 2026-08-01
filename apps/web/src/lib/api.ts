@@ -2,6 +2,13 @@
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
+/**
+ * The API origin the app is actually talking to — for user-facing surfaces
+ * that print endpoint URLs (deployment cards, code snippets). Never
+ * hardcode a hostname in a component: api.wheelsai.io isn't deployed.
+ */
+export const API_BASE_URL = API_URL;
+
 interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;

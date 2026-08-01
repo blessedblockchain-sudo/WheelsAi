@@ -32,11 +32,14 @@ interface FakeAgent {
     gpuTier: string;
     replicas: number;
     status: string;
+    modelDeploymentId: string | null;
   }>;
   openclawDeployment: {
     channels: Array<{ platform: string; enabled: boolean }>;
   } | null;
   listing: {
+    id: string;
+    publisherId: string;
     agentToken: {
       treasury: {
         id: string;
@@ -56,11 +59,23 @@ interface FakePayment {
   createdAt: Date;
 }
 
+interface FakeUsage {
+  deploymentId: string;
+  computeSeconds: bigint;
+  requestCount: number;
+}
+
 function makePrismaStub(opts: {
   agents: FakeAgent[];
   payments?: FakePayment[];
+  usage?: FakeUsage[];
 }) {
-  const observed: { agentArgs?: any; aggArgs?: any; manyArgs?: any } = {};
+  const observed: {
+    agentArgs?: any;
+    aggArgs?: any;
+    manyArgs?: any;
+    usageAggArgs?: any;
+  } = {};
   return {
     observed,
     prisma: {
@@ -94,8 +109,50 @@ function makePrismaStub(opts: {
             .slice(0, take);
         },
       },
+      usageRecord: {
+        async aggregate({ where, _sum }: any) {
+          observed.usageAggArgs = { where, _sum };
+          const rows = (opts.usage ?? []).filter((u) =>
+            where.deploymentId.in.includes(u.deploymentId),
+          );
+          let computeSeconds = 0n;
+          let requestCount = 0;
+          for (const r of rows) {
+            computeSeconds += r.computeSeconds;
+            requestCount += r.requestCount;
+          }
+          return {
+            _sum: {
+              computeSeconds: rows.length === 0 ? null : computeSeconds,
+              requestCount: rows.length === 0 ? null : requestCount,
+            },
+          };
+        },
+      },
     },
   };
+}
+
+/**
+ * Deps bundle for the loader: prisma stub + an eligibility check that
+ * records its calls. Override `eligibility` for the throw/false cases.
+ */
+function makeDeps(
+  stub: ReturnType<typeof makePrismaStub>,
+  opts: {
+    eligibility?: (listingId: string, publisherId: string) => Promise<{ eligible: boolean }>;
+  } = {},
+) {
+  const eligibilityCalls: Array<{ listingId: string; publisherId: string }> = [];
+  const deps = {
+    prisma: stub.prisma as any,
+    checkEligibility: async (listingId: string, publisherId: string) => {
+      eligibilityCalls.push({ listingId, publisherId });
+      if (opts.eligibility) return opts.eligibility(listingId, publisherId);
+      return { eligible: true };
+    },
+  };
+  return { deps, eligibilityCalls };
 }
 
 const baseAgent: FakeAgent = {
@@ -106,12 +163,14 @@ const baseAgent: FakeAgent = {
   framework: "elizaos",
   createdAt: new Date("2026-04-20T00:00:00Z"),
   deployments: [
-    { gpuTier: "4090", replicas: 2, status: "running" },
+    { gpuTier: "4090", replicas: 2, status: "running", modelDeploymentId: "md_1" },
   ],
   openclawDeployment: {
     channels: [{ platform: "discord", enabled: true }],
   },
   listing: {
+    id: "listing_1",
+    publisherId: "org_pub",
     agentToken: {
       treasury: {
         id: "treasury_1",
@@ -134,7 +193,7 @@ test("loadPublicAgentByPrisma returns null when slug does not exist", async () =
   const stub = makePrismaStub({ agents: [] });
   const result = await loadPublicAgentByPrisma(
     { slug: "missing", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.equal(result, null);
 });
@@ -148,7 +207,7 @@ test("loadPublicAgentByPrisma returns null for a private agent (isPublic=false)"
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.equal(result, null);
   // Confirm the SQL filter was applied (not just filtered in code).
@@ -178,7 +237,7 @@ test("loadPublicAgentByPrisma returns the full public-safe shape", async () => {
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
 
   assert.ok(result);
@@ -251,7 +310,7 @@ test("loadPublicAgentByPrisma sums cumulativeComputePaid across CONFIRMED paymen
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
 
   assert.ok(result);
@@ -279,7 +338,7 @@ test("loadPublicAgentByPrisma returns 0n cumulative when no CONFIRMED payments e
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.ok(result);
   assert.equal(result.treasury?.cumulativeComputePaidLamports, 0n);
@@ -298,7 +357,7 @@ test("loadPublicAgentByPrisma returns treasury=null when token+treasury missing"
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.ok(result);
   assert.equal(result.treasury, null);
@@ -336,7 +395,7 @@ test("loadPublicAgentByPrisma orders payments desc by createdAt and respects the
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 1 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.ok(result);
   assert.equal(result.recentPayments.length, 1);
@@ -364,7 +423,7 @@ test("loadPublicAgentByPrisma scopes the payments query to this agent's treasury
   });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.ok(result);
   assert.deepEqual(result.recentPayments, []);
@@ -382,7 +441,7 @@ test("loadPublicAgentByPrisma exposes channels but not orgId or internal IDs", a
   const stub = makePrismaStub({ agents: [baseAgent] });
   const result = await loadPublicAgentByPrisma(
     { slug: "eliza", paymentsLimit: 10 },
-    { prisma: stub.prisma as any },
+    makeDeps(stub).deps,
   );
   assert.ok(result);
   // The shape's TypeScript type already excludes orgId. Sanity check no
@@ -393,4 +452,138 @@ test("loadPublicAgentByPrisma exposes channels but not orgId or internal IDs", a
   for (const c of result.channels) {
     assert.deepEqual(Object.keys(c).sort(), ["enabled", "platform"]);
   }
+});
+
+// ============================================
+// Uptime aggregate (plan A5) — Σ computeSeconds over the agent's
+// model deployments, the same rows the attestation worker sums
+// ============================================
+
+test("loadPublicAgentByPrisma aggregates uptime across the agent's model deployments (deduped, null ids skipped)", async () => {
+  const { loadPublicAgentByPrisma } = await import(
+    "../services/loadPublicAgent.js"
+  );
+  const stub = makePrismaStub({
+    agents: [
+      {
+        ...baseAgent,
+        deployments: [
+          { gpuTier: "4090", replicas: 1, status: "running", modelDeploymentId: "md_1" },
+          // Same model deployment referenced twice — must be deduped.
+          { gpuTier: "4090", replicas: 1, status: "stopped", modelDeploymentId: "md_1" },
+          { gpuTier: "A100", replicas: 1, status: "running", modelDeploymentId: "md_2" },
+          // No model deployment — contributes nothing.
+          { gpuTier: "T4", replicas: 1, status: "failed", modelDeploymentId: null },
+        ],
+      },
+    ],
+    usage: [
+      { deploymentId: "md_1", computeSeconds: 3_600n, requestCount: 10 },
+      { deploymentId: "md_2", computeSeconds: 1_800n, requestCount: 5 },
+      // Another agent's deployment — must NOT be included.
+      { deploymentId: "md_other", computeSeconds: 999_999n, requestCount: 999 },
+    ],
+  });
+  const result = await loadPublicAgentByPrisma(
+    { slug: "eliza", paymentsLimit: 10 },
+    makeDeps(stub).deps,
+  );
+  assert.ok(result);
+  assert.equal(result.uptime?.totalComputeSeconds, 5_400n);
+  assert.equal(result.uptime?.totalRequests, 15);
+  assert.deepEqual(stub.observed.usageAggArgs.where.deploymentId.in.sort(), [
+    "md_1",
+    "md_2",
+  ]);
+});
+
+test("loadPublicAgentByPrisma returns uptime=null when the agent has no model deployments (no empty IN clause)", async () => {
+  const { loadPublicAgentByPrisma } = await import(
+    "../services/loadPublicAgent.js"
+  );
+  const stub = makePrismaStub({
+    agents: [
+      {
+        ...baseAgent,
+        deployments: [
+          { gpuTier: "4090", replicas: 1, status: "running", modelDeploymentId: null },
+        ],
+      },
+    ],
+  });
+  const result = await loadPublicAgentByPrisma(
+    { slug: "eliza", paymentsLimit: 10 },
+    makeDeps(stub).deps,
+  );
+  assert.ok(result);
+  assert.equal(result.uptime, null);
+  assert.equal(stub.observed.usageAggArgs, undefined); // query skipped
+});
+
+test("loadPublicAgentByPrisma returns uptime zeros (not null) when deployments exist but have no usage yet", async () => {
+  const { loadPublicAgentByPrisma } = await import(
+    "../services/loadPublicAgent.js"
+  );
+  const stub = makePrismaStub({ agents: [baseAgent] }); // md_1, no usage rows
+  const result = await loadPublicAgentByPrisma(
+    { slug: "eliza", paymentsLimit: 10 },
+    makeDeps(stub).deps,
+  );
+  assert.ok(result);
+  assert.equal(result.uptime?.totalComputeSeconds, 0n);
+  assert.equal(result.uptime?.totalRequests, 0);
+});
+
+// ============================================
+// Eligibility badge (plan A5) — boolean only, listing-scoped
+// ============================================
+
+test("loadPublicAgentByPrisma checks eligibility with the listing's own id + publisherId", async () => {
+  const { loadPublicAgentByPrisma } = await import(
+    "../services/loadPublicAgent.js"
+  );
+  const stub = makePrismaStub({ agents: [baseAgent] });
+  const { deps, eligibilityCalls } = makeDeps(stub);
+  const result = await loadPublicAgentByPrisma(
+    { slug: "eliza", paymentsLimit: 10 },
+    deps,
+  );
+  assert.ok(result);
+  assert.deepEqual(result.eligibility, { eligible: true });
+  assert.deepEqual(eligibilityCalls, [
+    { listingId: "listing_1", publisherId: "org_pub" },
+  ]);
+});
+
+test("loadPublicAgentByPrisma returns eligibility=null when the agent has no listing", async () => {
+  const { loadPublicAgentByPrisma } = await import(
+    "../services/loadPublicAgent.js"
+  );
+  const stub = makePrismaStub({ agents: [{ ...baseAgent, listing: null }] });
+  const { deps, eligibilityCalls } = makeDeps(stub);
+  const result = await loadPublicAgentByPrisma(
+    { slug: "eliza", paymentsLimit: 10 },
+    deps,
+  );
+  assert.ok(result);
+  assert.equal(result.eligibility, null);
+  assert.deepEqual(eligibilityCalls, []);
+});
+
+test("loadPublicAgentByPrisma degrades eligibility to null when the check throws (public page must not 500)", async () => {
+  const { loadPublicAgentByPrisma } = await import(
+    "../services/loadPublicAgent.js"
+  );
+  const stub = makePrismaStub({ agents: [baseAgent] });
+  const { deps } = makeDeps(stub, {
+    eligibility: async () => {
+      throw new Error("eligibility backend down");
+    },
+  });
+  const result = await loadPublicAgentByPrisma(
+    { slug: "eliza", paymentsLimit: 10 },
+    deps,
+  );
+  assert.ok(result);
+  assert.equal(result.eligibility, null);
 });

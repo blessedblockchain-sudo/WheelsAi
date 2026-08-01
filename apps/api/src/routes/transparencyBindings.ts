@@ -29,6 +29,7 @@
 
 import { prisma } from "@wheelsai/db";
 
+import { checkTokenEligibility } from "../services/agentToken.js";
 import { loadAgentDetailByPrisma } from "../services/loadAgentDetail.js";
 import { loadAgentListByPrisma } from "../services/loadAgentList.js";
 import { loadPublicAgentByPrisma } from "../services/loadPublicAgent.js";
@@ -48,7 +49,16 @@ export function createPublicAgentRoutesProduction() {
     loadPublicAgent: (slug) =>
       loadPublicAgentByPrisma(
         { slug, paymentsLimit: PUBLIC_RECENT_PAYMENTS_LIMIT },
-        { prisma: prisma as unknown as PublicAgentPrisma },
+        {
+          prisma: prisma as unknown as PublicAgentPrisma,
+          // The listing's own publisherId, not the caller's — this is
+          // "does this listing clear its own substance gate", and only
+          // the boolean crosses the public boundary.
+          checkEligibility: async (listingId, publisherId) => {
+            const result = await checkTokenEligibility(listingId, publisherId);
+            return { eligible: result.eligible };
+          },
+        },
       ),
   });
 }

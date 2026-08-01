@@ -55,6 +55,11 @@ const fullPublicAgent = {
     balanceLamports: LAMPORTS_PER_SOL, // 1 SOL
     cumulativeComputePaidLamports: 4_500_000n,
   },
+  uptime: {
+    totalComputeSeconds: 5_400n, // 1.5 hours
+    totalRequests: 15,
+  },
+  eligibility: { eligible: true },
   deployments: [
     { gpuTier: "4090", replicas: 2, status: "running" },
   ],
@@ -224,4 +229,47 @@ test("GET /a/:slug exposes deployment count + tier but not internal job IDs", as
     assert.ok(!("nosanaJobIds" in d));
     assert.ok(!("id" in d));
   }
+});
+
+// ============================================
+// Uptime + eligibility (plan A5)
+// ============================================
+
+test("GET /a/:slug serializes uptime as exact seconds string + rounded hours", async () => {
+  const app = await makeApp({ loadPublicAgent: async () => fullPublicAgent });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  const body = res.json();
+  assert.deepEqual(body.uptime, {
+    totalComputeSeconds: "5400",
+    totalComputeHours: 1.5,
+    totalRequests: 15,
+  });
+});
+
+test("GET /a/:slug exposes eligibility as a bare boolean — the gate's reasons stay private", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () => ({
+      ...fullPublicAgent,
+      eligibility: { eligible: false },
+    }),
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  const body = res.json();
+  assert.deepEqual(body.eligibility, { eligible: false });
+});
+
+test("GET /a/:slug serializes uptime=null and eligibility=null for a fresh unlisted agent", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () => ({
+      ...fullPublicAgent,
+      treasury: null,
+      recentPayments: [],
+      uptime: null,
+      eligibility: null,
+    }),
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  const body = res.json();
+  assert.equal(body.uptime, null);
+  assert.equal(body.eligibility, null);
 });

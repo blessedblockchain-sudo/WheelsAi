@@ -152,6 +152,10 @@ export async function getListingBySlug(slug: string) {
       agent: {
         select: {
           id: true,
+          // slug + isPublic let the detail page link to the public
+          // /a/:slug transparency feed (only when the agent is public).
+          slug: true,
+          isPublic: true,
           framework: true,
           tags: true,
           systemPrompt: true,
@@ -639,6 +643,10 @@ function formatListingForPublic(listing: any) {
           id: listing.agent.id,
           framework: listing.agent.framework,
           tags: listing.agent.tags,
+          // Present only on selects that ask for them (getListingBySlug);
+          // undefined elsewhere.
+          slug: listing.agent.slug,
+          isPublic: listing.agent.isPublic,
         }
       : undefined,
   };

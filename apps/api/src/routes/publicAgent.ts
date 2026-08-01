@@ -38,6 +38,22 @@ export interface PublicAgentDetail {
     balanceLamports: bigint;
     cumulativeComputePaidLamports: bigint;
   } | null;
+  /**
+   * Σ computeSeconds / requestCount over the agent's UsageRecords — the
+   * same derivation the on-chain attestation worker aggregates, so the
+   * public figure matches what holders can verify on-chain. Null when
+   * the agent has no model deployments (nothing measurable yet).
+   */
+  uptime: {
+    totalComputeSeconds: bigint;
+    totalRequests: number;
+  } | null;
+  /**
+   * Whether the agent currently clears the token-launch substance gate.
+   * Boolean only — the gate's reasons stay private to the publisher.
+   * Null when the agent has no listing (gate not applicable).
+   */
+  eligibility: { eligible: boolean } | null;
   deployments: Array<{ gpuTier: string; replicas: number; status: string }>;
   channels: Array<{ platform: string; enabled: boolean }>;
   recentPayments: Array<{
@@ -82,6 +98,21 @@ function serialize(detail: PublicAgentDetail) {
           cumulativeComputePaidLamports:
             detail.treasury.cumulativeComputePaidLamports.toString(),
         }
+      : null,
+    uptime: detail.uptime
+      ? {
+          totalComputeSeconds: detail.uptime.totalComputeSeconds.toString(),
+          // Rounded hours for display; the exact seconds string is the
+          // verifiable figure.
+          totalComputeHours:
+            Math.round(
+              (Number(detail.uptime.totalComputeSeconds) / 3600) * 100,
+            ) / 100,
+          totalRequests: detail.uptime.totalRequests,
+        }
+      : null,
+    eligibility: detail.eligibility
+      ? { eligible: detail.eligibility.eligible }
       : null,
     deployments: detail.deployments.map((d) => ({
       gpuTier: d.gpuTier,

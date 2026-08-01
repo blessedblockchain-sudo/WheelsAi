@@ -351,19 +351,126 @@ test("loadAgentListByPrisma forwards sort='name' as orderBy { name: 'asc' }", as
   assert.deepEqual(stub.observed.findArgs.orderBy, { name: "asc" });
 });
 
-test("loadAgentListByPrisma falls back to createdAt desc for sort='treasury_balance_desc' (in-DB ordering on a nested relation isn't expressible in vanilla Prisma yet)", async () => {
+test("sort='treasury_balance_desc' orders funded treasuries first, balance desc, untokenized last (the substance sort)", async () => {
   const { loadAgentListByPrisma } = await import(
     "../services/loadAgentList.js"
   );
-  const stub = makePrismaStub({ agents: [baseAgent()] });
-  await loadAgentListByPrisma(
+  const stub = makePrismaStub({
+    agents: [
+      baseAgent({
+        id: "a_broke",
+        slug: "broke",
+        createdAt: new Date("2026-04-27T00:00:00Z"),
+        listing: null, // untokenized — must sort LAST despite being newest
+      }),
+      baseAgent({
+        id: "a_small",
+        slug: "small",
+        createdAt: new Date("2026-04-26T00:00:00Z"),
+        listing: {
+          agentToken: {
+            status: "BONDING",
+            treasury: { solBalanceLamports: 5n },
+          },
+        },
+      }),
+      baseAgent({
+        id: "a_rich",
+        slug: "rich",
+        createdAt: new Date("2026-04-25T00:00:00Z"),
+        listing: {
+          agentToken: {
+            status: "GRADUATED",
+            treasury: { solBalanceLamports: LAMPORTS_PER_SOL },
+          },
+        },
+      }),
+    ],
+  });
+  const result = await loadAgentListByPrisma(
     { orgId: "org_1", limit: 20, offset: 0, sort: "treasury_balance_desc" },
     { prisma: stub.prisma as any },
   );
-  // Documented fallback — the route accepts the sort enum so the loader
-  // doesn't 500 on it. A future denormalized field on Agent will let us
-  // do real treasury_balance_desc ordering.
-  assert.deepEqual(stub.observed.findArgs.orderBy, { createdAt: "desc" });
+  assert.deepEqual(
+    result.agents.map((a) => a.id),
+    ["a_rich", "a_small", "a_broke"],
+  );
+});
+
+test("sort='treasury_balance_desc' paginates AFTER the in-memory order (no skip/take pushed into SQL)", async () => {
+  const { loadAgentListByPrisma } = await import(
+    "../services/loadAgentList.js"
+  );
+  const agents = [
+    baseAgent({
+      id: "a_null",
+      slug: "n",
+      listing: null,
+      createdAt: new Date("2026-04-28T00:00:00Z"),
+    }),
+    baseAgent({
+      id: "a_mid",
+      slug: "m",
+      createdAt: new Date("2026-04-26T00:00:00Z"),
+      listing: {
+        agentToken: { status: "BONDING", treasury: { solBalanceLamports: 500n } },
+      },
+    }),
+    baseAgent({
+      id: "a_top",
+      slug: "t",
+      createdAt: new Date("2026-04-25T00:00:00Z"),
+      listing: {
+        agentToken: { status: "BONDING", treasury: { solBalanceLamports: 900n } },
+      },
+    }),
+  ];
+  const stub = makePrismaStub({ agents });
+  const page2 = await loadAgentListByPrisma(
+    { orgId: "org_1", limit: 1, offset: 1, sort: "treasury_balance_desc" },
+    { prisma: stub.prisma as any },
+  );
+  // Substance order is [a_top, a_mid, a_null]; offset 1 / limit 1 → a_mid.
+  // If skip/take had been pushed into SQL (createdAt order), the page
+  // would have been a_mid-by-accident only if orders coincided — they
+  // don't here: createdAt order is [a_null, a_mid, a_top].
+  assert.deepEqual(page2.agents.map((a) => a.id), ["a_mid"]);
+  assert.equal(stub.observed.findArgs.skip, undefined);
+  assert.equal(stub.observed.findArgs.take, undefined);
+});
+
+test("sort='treasury_balance_desc' keeps createdAt desc as the tiebreak between equal balances", async () => {
+  const { loadAgentListByPrisma } = await import(
+    "../services/loadAgentList.js"
+  );
+  const stub = makePrismaStub({
+    agents: [
+      baseAgent({
+        id: "a_old_tie",
+        slug: "old",
+        createdAt: new Date("2026-04-20T00:00:00Z"),
+        listing: {
+          agentToken: { status: "BONDING", treasury: { solBalanceLamports: 7n } },
+        },
+      }),
+      baseAgent({
+        id: "a_new_tie",
+        slug: "new",
+        createdAt: new Date("2026-04-27T00:00:00Z"),
+        listing: {
+          agentToken: { status: "BONDING", treasury: { solBalanceLamports: 7n } },
+        },
+      }),
+    ],
+  });
+  const result = await loadAgentListByPrisma(
+    { orgId: "org_1", limit: 20, offset: 0, sort: "treasury_balance_desc" },
+    { prisma: stub.prisma as any },
+  );
+  assert.deepEqual(
+    result.agents.map((a) => a.id),
+    ["a_new_tie", "a_old_tie"],
+  );
 });
 
 // ============================================

@@ -9,9 +9,17 @@
  *   - aggregates cumulativeComputePaidLamports across status='CONFIRMED'
  *     payments only — failed/pending compute does not count toward the
  *     publicly displayed "paid to date" figure
+ *   - aggregates uptime (Σ computeSeconds / requestCount) across the
+ *     UsageRecords of the agent's model deployments — the same rows the
+ *     attestation worker sums, so the public figure matches what lands
+ *     on-chain. No orgId in the where: the deployment ids themselves
+ *     derive from the loaded agent, which is the tenancy anchor here.
+ *   - eligibility is a DI'd check (checkTokenEligibility underneath).
+ *     Only the boolean crosses the public boundary; a thrown check
+ *     degrades to null rather than 500ing the public page.
  *
- * Two SQL trips when a treasury exists: agent + nested includes, then
- * computePayment.aggregate + findMany run in parallel.
+ * SQL trips: agent + nested includes, then the payment aggregate/list,
+ * usage aggregate, and eligibility check run concurrently.
  */
 
 import type { PublicAgentDetail } from "../routes/publicAgent.js";
@@ -27,11 +35,16 @@ interface AgentRow {
     gpuTier: string;
     replicas: number;
     status: string;
+    /** Internal only — feeds the usage aggregate, never the response. */
+    modelDeploymentId: string | null;
   }>;
   openclawDeployment: {
     channels: Array<{ platform: string; enabled: boolean }>;
   } | null;
   listing: {
+    /** Internal only — both feed the eligibility check, never the response. */
+    id: string;
+    publisherId: string;
     agentToken: {
       treasury: {
         id: string;
@@ -67,6 +80,14 @@ interface PrismaStub {
       take: number;
     }) => Promise<PaymentRow[]>;
   };
+  usageRecord: {
+    aggregate: (args: {
+      where: { deploymentId: { in: string[] } };
+      _sum: { computeSeconds: true; requestCount: true };
+    }) => Promise<{
+      _sum: { computeSeconds: bigint | null; requestCount: number | null };
+    }>;
+  };
 }
 
 export interface LoadPublicAgentInput {
@@ -76,6 +97,15 @@ export interface LoadPublicAgentInput {
 
 export interface LoadPublicAgentDeps {
   prisma: PrismaStub;
+  /**
+   * Substance-gate check (checkTokenEligibility in production). Receives
+   * the listing's own id + publisherId — NOT caller-derived, so this is
+   * "does this listing clear its own gate", not an authz surface.
+   */
+  checkEligibility: (
+    listingId: string,
+    publisherId: string,
+  ) => Promise<{ eligible: boolean }>;
 }
 
 export async function loadPublicAgentByPrisma(
@@ -86,7 +116,12 @@ export async function loadPublicAgentByPrisma(
     where: { slug: input.slug, isPublic: true },
     include: {
       deployments: {
-        select: { gpuTier: true, replicas: true, status: true },
+        select: {
+          gpuTier: true,
+          replicas: true,
+          status: true,
+          modelDeploymentId: true,
+        },
       },
       openclawDeployment: {
         select: {
@@ -95,6 +130,8 @@ export async function loadPublicAgentByPrisma(
       },
       listing: {
         select: {
+          id: true,
+          publisherId: true,
           agentToken: {
             select: {
               treasury: {
@@ -116,35 +153,75 @@ export async function loadPublicAgentByPrisma(
   const treasuryRow = agent.listing?.agentToken?.treasury ?? null;
   const channels = agent.openclawDeployment?.channels ?? [];
 
-  let treasury: PublicAgentDetail["treasury"] = null;
-  let recentPayments: PublicAgentDetail["recentPayments"] = [];
+  // Dedupe the model-deployment ids the usage aggregate keys off (empty-set
+  // short-circuit: Postgres rejects a literal IN () and we'd waste the trip).
+  const modelDeploymentIds = Array.from(
+    new Set(
+      agent.deployments
+        .map((d) => d.modelDeploymentId)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  );
 
-  if (treasuryRow) {
-    const [agg, payments] = await Promise.all([
-      deps.prisma.computePayment.aggregate({
-        where: { treasuryId: treasuryRow.id, status: "CONFIRMED" },
-        _sum: { amountLamports: true },
-      }),
-      deps.prisma.computePayment.findMany({
-        where: { treasuryId: treasuryRow.id },
-        orderBy: { createdAt: "desc" },
-        take: input.paymentsLimit,
-      }),
-    ]);
-
-    treasury = {
-      address: treasuryRow.treasuryPdaAddress,
-      balanceLamports: treasuryRow.solBalanceLamports,
-      cumulativeComputePaidLamports: agg._sum.amountLamports ?? 0n,
-    };
-
-    recentPayments = payments.map((p) => ({
-      amountLamports: p.amountLamports,
-      status: p.status,
-      txSignature: p.txSignature,
-      paidAt: p.paidAt,
-    }));
-  }
+  const [paymentsPart, uptimePart, eligibilityPart] = await Promise.all([
+    (async () => {
+      if (!treasuryRow) {
+        return {
+          treasury: null as PublicAgentDetail["treasury"],
+          recentPayments: [] as PublicAgentDetail["recentPayments"],
+        };
+      }
+      const [agg, payments] = await Promise.all([
+        deps.prisma.computePayment.aggregate({
+          where: { treasuryId: treasuryRow.id, status: "CONFIRMED" },
+          _sum: { amountLamports: true },
+        }),
+        deps.prisma.computePayment.findMany({
+          where: { treasuryId: treasuryRow.id },
+          orderBy: { createdAt: "desc" },
+          take: input.paymentsLimit,
+        }),
+      ]);
+      return {
+        treasury: {
+          address: treasuryRow.treasuryPdaAddress,
+          balanceLamports: treasuryRow.solBalanceLamports,
+          cumulativeComputePaidLamports: agg._sum.amountLamports ?? 0n,
+        } as PublicAgentDetail["treasury"],
+        recentPayments: payments.map((p) => ({
+          amountLamports: p.amountLamports,
+          status: p.status,
+          txSignature: p.txSignature,
+          paidAt: p.paidAt,
+        })),
+      };
+    })(),
+    (async (): Promise<PublicAgentDetail["uptime"]> => {
+      if (modelDeploymentIds.length === 0) return null;
+      const agg = await deps.prisma.usageRecord.aggregate({
+        where: { deploymentId: { in: modelDeploymentIds } },
+        _sum: { computeSeconds: true, requestCount: true },
+      });
+      return {
+        totalComputeSeconds: agg._sum.computeSeconds ?? 0n,
+        totalRequests: agg._sum.requestCount ?? 0,
+      };
+    })(),
+    (async (): Promise<PublicAgentDetail["eligibility"]> => {
+      if (!agent.listing) return null;
+      try {
+        const result = await deps.checkEligibility(
+          agent.listing.id,
+          agent.listing.publisherId,
+        );
+        return { eligible: result.eligible };
+      } catch {
+        // A failed check must not 500 the public page; "unknown" beats
+        // fabricating either answer.
+        return null;
+      }
+    })(),
+  ]);
 
   return {
     agent: {
@@ -153,7 +230,9 @@ export async function loadPublicAgentByPrisma(
       framework: agent.framework,
       createdAt: agent.createdAt,
     },
-    treasury,
+    treasury: paymentsPart.treasury,
+    uptime: uptimePart,
+    eligibility: eligibilityPart,
     deployments: agent.deployments.map((d) => ({
       gpuTier: d.gpuTier,
       replicas: d.replicas,
@@ -163,6 +242,6 @@ export async function loadPublicAgentByPrisma(
       platform: c.platform,
       enabled: c.enabled,
     })),
-    recentPayments,
+    recentPayments: paymentsPart.recentPayments,
   };
 }

@@ -18,10 +18,17 @@
  *   newest                  → orderBy { createdAt: desc }
  *   oldest                  → orderBy { createdAt: asc }
  *   name                    → orderBy { name: asc }
- *   treasury_balance_desc   → falls back to createdAt desc until we
- *                             denormalize the balance onto Agent.
- *                             (Prisma can't orderBy a deeply nested
- *                             relation field cleanly today.)
+ *   treasury_balance_desc   → the substance sort: funded treasuries
+ *                             first (balance desc), untokenized agents
+ *                             last, createdAt desc as the tiebreak.
+ *                             Ordered in memory: Prisma can traverse the
+ *                             to-one chain in orderBy but can't control
+ *                             NULLS placement through a null relation
+ *                             (Postgres DESC = NULLS FIRST — empty
+ *                             agents would top the "substance" sort).
+ *                             The list is org-scoped, so the full fetch
+ *                             is bounded; pagination is applied after
+ *                             the in-memory order.
  */
 
 import type {
@@ -51,8 +58,8 @@ interface PrismaStub {
       where: { orgId: string };
       include: unknown;
       orderBy: unknown;
-      skip: number;
-      take: number;
+      skip?: number;
+      take?: number;
     }) => Promise<AgentRow[]>;
     count: (args: { where: { orgId: string } }) => Promise<number>;
   };
@@ -78,11 +85,30 @@ function buildOrderBy(sort: AgentListSort): unknown {
     case "name":
       return { name: "asc" };
     case "treasury_balance_desc":
-      // TODO: needs a denormalized Agent.treasuryBalanceLamports column to
-      // order by efficiently. Until then, fall back to newest so the route
-      // doesn't break on the enum value.
+      // Stable base order for the in-memory substance sort (also the
+      // tiebreak between equal balances).
       return { createdAt: "desc" };
   }
+}
+
+function rowBalance(row: AgentRow): bigint | null {
+  return row.listing?.agentToken?.treasury?.solBalanceLamports ?? null;
+}
+
+/**
+ * Substance order: funded treasuries first (balance desc), untokenized
+ * agents last, input order (createdAt desc) preserved between ties.
+ */
+function sortByTreasuryBalanceDesc(rows: AgentRow[]): AgentRow[] {
+  return [...rows].sort((a, b) => {
+    const balA = rowBalance(a);
+    const balB = rowBalance(b);
+    if (balA === null && balB === null) return 0;
+    if (balA === null) return 1;
+    if (balB === null) return -1;
+    if (balA === balB) return 0;
+    return balA > balB ? -1 : 1;
+  });
 }
 
 function mapTokenStatus(
@@ -118,6 +144,11 @@ export async function loadAgentListByPrisma(
   input: LoadAgentListInput,
   deps: LoadAgentListDeps,
 ): Promise<AgentListResult> {
+  // The substance sort orders in memory (see header), so it must load the
+  // full org-scoped set and paginate after ordering; the scalar sorts
+  // paginate in SQL as before.
+  const inMemorySort = input.sort === "treasury_balance_desc";
+
   const [rows, totalCount] = await Promise.all([
     deps.prisma.agent.findMany({
       where: { orgId: input.orgId },
@@ -137,14 +168,20 @@ export async function loadAgentListByPrisma(
         },
       },
       orderBy: buildOrderBy(input.sort),
-      skip: input.offset,
-      take: input.limit,
+      ...(inMemorySort ? {} : { skip: input.offset, take: input.limit }),
     }),
     deps.prisma.agent.count({ where: { orgId: input.orgId } }),
   ]);
 
+  const page = inMemorySort
+    ? sortByTreasuryBalanceDesc(rows).slice(
+        input.offset,
+        input.offset + input.limit,
+      )
+    : rows;
+
   return {
-    agents: rows.map(mapEntry),
+    agents: page.map(mapEntry),
     totalCount,
   };
 }

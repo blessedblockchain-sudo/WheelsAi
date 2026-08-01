@@ -20,6 +20,7 @@ import {
   TrendingUp,
   TrendingDown,
   BarChart3,
+  ShieldCheck,
 } from "lucide-react";
 import {
   marketplaceApi,
@@ -305,12 +306,9 @@ export default function ListingDetailPage() {
                   </div>
                   <p className="mt-1 text-gray-600">
                     by{" "}
-                    <Link
-                      href={`/marketplace/publisher/${listing.publisherId}`}
-                      className="text-primary-600 hover:text-primary-700"
-                    >
+                    <span className="font-medium text-gray-900">
                       {listing.publisherName}
-                    </Link>
+                    </span>
                   </p>
                   <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
                     <div className="flex items-center gap-1 text-yellow-600">
@@ -741,6 +739,16 @@ export default function ListingDetailPage() {
                 </button>
               )}
 
+              {listing.agent?.slug && listing.agent?.isPublic && (
+                <Link
+                  href={`/a/${listing.agent.slug}`}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm font-medium text-green-700 hover:bg-green-100"
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                  On-chain transparency
+                </Link>
+              )}
+
               <p className="mt-3 text-center text-xs text-gray-500">
                 Sign in to deploy this agent to your account
               </p>
@@ -830,10 +838,10 @@ export default function ListingDetailPage() {
                     {listing.publisherName}
                   </div>
                   <Link
-                    href={`/marketplace/publisher/${listing.publisherId}`}
+                    href="/marketplace/leaderboard"
                     className="text-sm text-primary-600 hover:text-primary-700"
                   >
-                    View Profile
+                    Publisher leaderboard
                   </Link>
                 </div>
               </div>

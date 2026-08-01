@@ -970,8 +970,49 @@ export interface MarketplaceListing {
     id: string;
     framework: string;
     tags: string[];
+    // Present on the detail endpoint only (getListingBySlug select) —
+    // used to link to the public /a/:slug transparency page.
+    slug?: string;
+    isPublic?: boolean;
   };
 }
+
+// ============================================
+// Public Agent Transparency Feed (/api/a/:slug)
+// ============================================
+
+export interface PublicAgentDetail {
+  agent: {
+    name: string;
+    slug: string;
+    framework: string;
+    createdAt: string;
+  };
+  treasury: {
+    address: string;
+    balanceLamports: string;
+    balanceSol: number;
+    cumulativeComputePaidLamports: string;
+  } | null;
+  uptime: {
+    totalComputeSeconds: string;
+    totalComputeHours: number;
+    totalRequests: number;
+  } | null;
+  eligibility: { eligible: boolean } | null;
+  deployments: Array<{ gpuTier: string; replicas: number; status: string }>;
+  channels: Array<{ platform: string; enabled: boolean }>;
+  recentPayments: Array<{
+    amountLamports: string;
+    status: string;
+    txSignature: string | null;
+    paidAt: string | null;
+  }>;
+}
+
+export const publicAgentApi = {
+  get: (slug: string) => api<PublicAgentDetail>(`/api/a/${slug}`),
+};
 
 export interface MarketplaceCategory {
   id: string;

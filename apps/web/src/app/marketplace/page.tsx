@@ -14,6 +14,7 @@ import {
   ChevronDown,
   Coins,
   TrendingUp,
+  ShieldCheck,
 } from "lucide-react";
 import {
   marketplaceApi,
@@ -141,8 +142,19 @@ function AgentCard({
       </div>
 
       <div className="mt-4 flex items-center justify-between">
-        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
-          {listing.agent?.framework || "custom"}
+        <span className="flex items-center gap-2">
+          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
+            {listing.agent?.framework || "custom"}
+          </span>
+          {listing.pricingModel === "tokenized" && (
+            <span
+              className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700"
+              title="Tokenized agent — treasury and compute payments are publicly verifiable on-chain"
+            >
+              <ShieldCheck className="h-3 w-3" />
+              Receipts
+            </span>
+          )}
         </span>
         {hasTokenPrice ? (
           <span className="flex items-center gap-1 font-semibold text-cyan-600">

@@ -93,18 +93,59 @@ lookup+payment is exercised in the C1 mainnet spike.
 **Seeded directly:** the `ComputePayment` row (`seed-test-payment.ts`), i.e.
 the settlement worker (usage → payment amounts) did not produce it.
 
-## Not yet run (the money-in legs)
+## The money-in legs (run 2026-08-01, same day — loop CLOSED)
 
-1. **Fee router** — sweeping trading fees into the treasury PDA
-   (`FEE_ROUTER_WALLET_PRIVATE_KEY` + interval). The PDA was funded by a
-   direct transfer instead.
-2. **Reputation attestation** — on-chain `AgentReputation` writes
-   (attestor key + `add_attestor` + interval). Requires checking whether the
-   deployed reputation-oracle binary also predates current source (the
-   agent-treasury one did).
+Both remaining legs ran through production worker code. The reputation-oracle
+program was indeed stale like the treasury one (same deploy era, predated the
+attestor whitelist): extended +10,240 bytes and upgraded to slot 480532518.
 
-Both are the natural next step of this runbook; the scripts and the funded
-payer remain in place (`.devnet/` — gitignored).
+### Reputation attestation
+
+| Step | Signature | Result |
+|---|---|---|
+| `add_attestor` (`init-oracle.ts`; Phase 1A OracleConfig `4oP6tMXVR41zuB3pyZcRL6DNmxwwNq6jHdgQsYydTXZx` was compatible; admin = deploy keypair) | `b6SWYmWyaDxz5xj7eQQqP4WH3VrfMVBz8MCHNxkkAkbUk6W4x9xGLne2HDeawNnx8W7Ytca6tTe1dPSHUomzy9i` | Attestor `2k8BMK…GsFn` whitelisted |
+| `initialize_agent_reputation` for the WheelsHelper mint (`bootstrap-reputation.ts`) | `43tzj5PbwPm2S4eKwPSSpZ9jtTsPSLL2rHLJ9EoxJrP53urRcf8pUtGprVZk9u5hpmG641pfEKL6yAJMLtqQ3GXb` | AgentReputation PDA created |
+| `submit_attestation` via the production attestation tick (`run-d10-attestation.ts` — aggregation, scoring, signing, mirror; zero substitutions) | `614fm83jTrbT2ose5rwqtR81QoXnSSAtNHmj8V4w3Jx8zpvxBbpqovBrhSR3wWMWvLhNc3yJB9YfSQb9tFj4Hwed` | On-chain PDA reads: uptime 5,400s · 42 messages · score 39 · attestationCount 1. DB mirror CONFIRMED |
+
+The bootstrap surfaced and fixed a real bug: a malformed `mintAddress`
+(the six demo seed tokens) crashed the whole batch instead of failing that
+row, and the program takes the mint as an `UncheckedAccount`, so a
+parseable-but-nonexistent mint would have acquired a real reputation PDA.
+The script now isolates per row AND requires the mint to exist on-chain —
+all six demo tokens were skipped with explicit reasons.
+
+### Fee-router sweep
+
+Seeded 3 unrouted trades totaling 10.5 SOL volume (`seed-d10-trades.ts` —
+see Caveats), funded the router wallet `2BCAtYMSvv8ukVDjS6wrinG51bkXrCcLVHzN8CyHyxMp`,
+then one production fee-router tick (`run-d10-feerouter.ts` — claim-first
+batch protocol, BigInt fee math, `fee_receive`, same-tick confirmation):
+
+| Step | Signature | Result |
+|---|---|---|
+| `fee_receive` batch (3 trades, 1% of volume) | `3gVPug66FDQHDeK8Eo51MKEsJBX8PhKuSRmCv2mdvxwDobRa7pdn5UL1tpvFVC9HNWhsWBz9B6x5dR5j1unWRF2Y` | Batch CONFIRMED, exactly 105,000,000 lamports; treasury PDA 0.49195576 → 0.59695576 SOL |
+
+### The complete loop, publicly served
+
+`GET /api/a/wheels-helper` after all legs: treasury **0.597 SOL** (fees in),
+cumulative compute paid **0.01 SOL** with its finalized signature (money
+out), uptime **1.5h / 42 requests — byte-identical to the on-chain
+attestation** (the "public figure matches what holders can verify"
+invariant, working), one running deployment, and an honest
+`eligibility: false` (reputation 39 < 50, deployment age 0 days — the gate
+does not flatter the house token).
+
+### Updated caveats
+
+Real, production code paths: everything in the original list PLUS the
+attestation tick (aggregation → score → sign → submit → mirror, zero
+substitutions) and the fee-router tick (batching → 1% BigInt math →
+`fee_receive` → confirm, zero substitutions).
+
+Seeded rows (each honestly labeled in-DB): the usage record
+(`seed-d10-usage.ts` — devnet has no Nosana host producing real metering)
+and the trades (`seed-d10-trades.ts` — the trade indexer's real upstream
+is the C1/Wave-2 build). The worker code consuming them is unmodified.
 
 ## Reproduce
 

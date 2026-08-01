@@ -104,11 +104,34 @@ async function main() {
   let dbOnly = 0;
 
   for (const row of rows) {
-    const mint = new PublicKey(row.mintAddress);
+    // Per-row isolation: a malformed mintAddress (legacy/demo rows) must
+    // fail THIS row, not crash the batch — the header promises rerun-safe.
+    let mint: PublicKey;
+    try {
+      mint = new PublicKey(row.mintAddress);
+    } catch {
+      console.error(
+        `[bootstrap-reputation] tokenId=${row.id} mintAddress "${row.mintAddress}" is not a valid pubkey; skipping`,
+      );
+      failed += 1;
+      continue;
+    }
     const [pda] = deriveAgentReputationPda(mint);
 
     let onChain = false;
     try {
+      // initialize_agent_reputation takes the mint as an UncheckedAccount
+      // (seed only), so the PROGRAM would happily allocate a reputation
+      // PDA for a mint that was never created. Guard here: no on-chain
+      // mint account → this token never actually launched → no PDA.
+      const mintAccount = await connection.getAccountInfo(mint);
+      if (!mintAccount) {
+        console.error(
+          `[bootstrap-reputation] tokenId=${row.id} mint ${mint.toBase58()} does not exist on-chain; skipping`,
+        );
+        failed += 1;
+        continue;
+      }
       onChain = await isPdaAccountInitialized(
         { pda, expectedDiscriminator: AGENT_REPUTATION_ACCOUNT_DISCRIMINATOR },
         { connection },

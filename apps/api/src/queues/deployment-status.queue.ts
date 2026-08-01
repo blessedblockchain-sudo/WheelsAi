@@ -61,6 +61,7 @@ export async function startDeploymentStatusQueue(): Promise<void> {
         // during an outage (getJobStatus's "running" stub would be the
         // exact fabrication D8 removes).
         getJobStatus: (jobId) => client.getJobStatusStrict(jobId),
+        checkNodeHealth: (nodeUrl) => client.checkNodeHealth(nodeUrl),
         allowMock: env.ALLOW_NOSANA_MOCK,
       });
       const result = await runDeploymentStatusTick({ now: new Date() }, deps);

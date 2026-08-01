@@ -30,9 +30,16 @@ function job(status: NosanaJob["status"]): NosanaJob {
   return { id: "job_1", market: "M", status };
 }
 
+type StubNode = { id: string; nodeUrl: string; healthStatus: string };
+
 function makePrismaStub(opts: {
   agentRows?: Array<{ id: string; status: string; nosanaJobIds: string[] }>;
-  modelRows?: Array<{ id: string; status: string; nosanaJobIds: string[] }>;
+  modelRows?: Array<{
+    id: string;
+    status: string;
+    nosanaJobIds: string[];
+    nodes?: StubNode[];
+  }>;
 }) {
   const calls: Array<{ op: string; args: any }> = [];
   return {
@@ -51,10 +58,19 @@ function makePrismaStub(opts: {
       deployment: {
         findMany: async (args: any) => {
           calls.push({ op: "deployment.findMany", args });
-          return opts.modelRows ?? [];
+          return (opts.modelRows ?? []).map((r) => ({
+            ...r,
+            nodes: r.nodes ?? [],
+          }));
         },
         updateMany: async (args: any) => {
           calls.push({ op: "deployment.updateMany", args });
+          return { count: 1 };
+        },
+      },
+      deploymentNode: {
+        updateMany: async (args: any) => {
+          calls.push({ op: "deploymentNode.updateMany", args });
           return { count: 1 };
         },
       },
@@ -65,6 +81,9 @@ function makePrismaStub(opts: {
 async function buildDeps(opts: {
   stub: ReturnType<typeof makePrismaStub>;
   getJobStatus?: (jobId: string) => Promise<NosanaJob>;
+  checkNodeHealth?: (
+    nodeUrl: string,
+  ) => Promise<{ healthy: boolean; latencyMs: number }>;
   allowMock?: boolean;
   polled?: string[];
 }) {
@@ -80,6 +99,8 @@ async function buildDeps(opts: {
         opts.polled?.push(jobId);
         return job("running");
       }),
+    checkNodeHealth:
+      opts.checkNodeHealth ?? (async () => ({ healthy: true, latencyMs: 40 })),
     allowMock: opts.allowMock ?? false,
   });
 }
@@ -88,16 +109,29 @@ async function buildDeps(opts: {
 // loadDeployments — both tables, non-terminal, job ids present
 // ============================================
 
-test("loadDeployments merges agent + model rows tagged with their kind", async () => {
+test("loadDeployments merges agent + model rows tagged with their kind; model rows carry nodes", async () => {
   const stub = makePrismaStub({
     agentRows: [{ id: "a1", status: "deploying", nosanaJobIds: ["j1"] }],
-    modelRows: [{ id: "m1", status: "provisioning", nosanaJobIds: ["j2"] }],
+    modelRows: [
+      {
+        id: "m1",
+        status: "provisioning",
+        nosanaJobIds: ["j2"],
+        nodes: [{ id: "n1", nodeUrl: "https://n1.node.nos.ci", healthStatus: "unknown" }],
+      },
+    ],
   });
   const deps = await buildDeps({ stub });
   const rows = await deps.loadDeployments();
   assert.deepEqual(rows, [
     { kind: "agent", id: "a1", status: "deploying", nosanaJobIds: ["j1"] },
-    { kind: "model", id: "m1", status: "provisioning", nosanaJobIds: ["j2"] },
+    {
+      kind: "model",
+      id: "m1",
+      status: "provisioning",
+      nosanaJobIds: ["j2"],
+      nodes: [{ id: "n1", nodeUrl: "https://n1.node.nos.ci", healthStatus: "unknown" }],
+    },
   ]);
 });
 
@@ -128,6 +162,10 @@ test("loadDeployments filters to non-terminal statuses and non-empty job ids (pe
     "degraded",
   ]);
   assert.deepEqual(modelFind.args.where.nosanaJobIds, { isEmpty: false });
+  // The model branch also loads nodes for the health probe (plan A2).
+  assert.deepEqual(modelFind.args.select.nodes, {
+    select: { id: true, nodeUrl: true, healthStatus: true },
+  });
 });
 
 test("loadDeployments polls 'running' rows too — job end must be observable", async () => {
@@ -263,6 +301,71 @@ test("persistTransition records lastError on agent failure; model rows have no l
   });
   const modelUpdate = stub.calls.find((c) => c.op === "deployment.updateMany")!;
   assert.equal("lastError" in modelUpdate.args.data, false);
+});
+
+// ============================================
+// Node health — probe seam + race-safe persistence (plan A2)
+// ============================================
+
+test("checkNodeHealth passes the node URL through to the client probe", async () => {
+  const probed: string[] = [];
+  const deps = await buildDeps({
+    stub: makePrismaStub({}),
+    checkNodeHealth: async (nodeUrl) => {
+      probed.push(nodeUrl);
+      return { healthy: false, latencyMs: 123 };
+    },
+  });
+  const result = await deps.checkNodeHealth("https://n1.node.nos.ci");
+  assert.deepEqual(result, { healthy: false, latencyMs: 123 });
+  assert.deepEqual(probed, ["https://n1.node.nos.ci"]);
+});
+
+test("persistNodeHealth updateManys the probe result by node id (race-safe, no P2025)", async () => {
+  const stub = makePrismaStub({});
+  const deps = await buildDeps({ stub });
+  await deps.persistNodeHealth({
+    nodeId: "n1",
+    healthStatus: "healthy",
+    latencyMs: 42,
+    checkedAt: NOW,
+  });
+  const update = stub.calls.find((c) => c.op === "deploymentNode.updateMany")!;
+  assert.deepEqual(update.args.where, { id: "n1" });
+  assert.deepEqual(update.args.data, {
+    healthStatus: "healthy",
+    lastHealthCheck: NOW,
+    latencyMs: 42,
+  });
+});
+
+test("composition: a running model row's unknown node is probed and written healthy through the real tick", async () => {
+  // The A2 acceptance test: this write is what makes /v1 servable —
+  // inference selects nodes WHERE healthStatus = 'healthy'.
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const stub = makePrismaStub({
+    modelRows: [
+      {
+        id: "m1",
+        status: "running",
+        nosanaJobIds: ["JobPubkey1"],
+        nodes: [{ id: "n1", nodeUrl: "https://n1.node.nos.ci", healthStatus: "unknown" }],
+      },
+    ],
+  });
+  const deps = await buildDeps({
+    stub,
+    getJobStatus: async () => job("running"),
+    checkNodeHealth: async () => ({ healthy: true, latencyMs: 55 }),
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(result.nodesProbed, 1);
+  const nodeUpdate = stub.calls.find((c) => c.op === "deploymentNode.updateMany")!;
+  assert.deepEqual(nodeUpdate.args.where, { id: "n1" });
+  assert.equal(nodeUpdate.args.data.healthStatus, "healthy");
+  assert.equal(nodeUpdate.args.data.latencyMs, 55);
 });
 
 // ============================================

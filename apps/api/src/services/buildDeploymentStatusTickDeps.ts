@@ -3,11 +3,18 @@
  *
  * Wires for runDeploymentStatusTick:
  *   loadDeployments    → AgentDeployment + model Deployment rows in
- *                        non-terminal states that have Nosana job ids
+ *                        non-terminal states that have Nosana job ids;
+ *                        model rows carry their DeploymentNodes for the
+ *                        health probe (agents have no nodes relation)
  *   getJobState        → NosanaClient.getJobStatusStrict (THROWS on
  *                        SDK/RPC failure so rows stay untouched), with
  *                        the env-gated dev mock short-circuit
  *   persistTransition  → compare-and-set updateMany on {id, fromStatus}
+ *   checkNodeHealth    → NosanaClient.checkNodeHealth (HTTP /health
+ *                        probe, never throws)
+ *   persistNodeHealth  → updateMany by node id (race-safe: the node may
+ *                        have been cascade-deleted with its deployment
+ *                        between load and write — count=0 beats P2025)
  *
  * Status vocabularies (schema comments are the source of truth):
  *   AgentDeployment: pending | building | deploying | running | stopped | failed
@@ -25,6 +32,7 @@ import type { NosanaJob } from "./nosana.js";
 import type {
   DeploymentStatusRow,
   DeploymentStatusTickDeps,
+  NodeHealthObservation,
 } from "./runDeploymentStatusTick.js";
 
 /** Everything except stopped/failed — rows worth polling. */
@@ -41,7 +49,7 @@ export const MODEL_DEPLOYMENT_NON_TERMINAL_STATUSES = [
   "degraded",
 ];
 
-interface DeploymentDelegateStub {
+interface AgentDeploymentDelegateStub {
   findMany: (args: {
     where: {
       status: { in: string[] };
@@ -61,32 +69,86 @@ interface DeploymentDelegateStub {
   }) => Promise<{ count: number }>;
 }
 
+interface ModelDeploymentDelegateStub {
+  findMany: (args: {
+    where: {
+      status: { in: string[] };
+      nosanaJobIds: { isEmpty: false };
+    };
+    select: {
+      id: true;
+      status: true;
+      nosanaJobIds: true;
+      nodes: { select: { id: true; nodeUrl: true; healthStatus: true } };
+    };
+  }) => Promise<
+    Array<{
+      id: string;
+      status: string;
+      nosanaJobIds: string[];
+      nodes: Array<{ id: string; nodeUrl: string; healthStatus: string }>;
+    }>
+  >;
+  updateMany: (args: {
+    where: { id: string; status: string };
+    data: {
+      status: string;
+      stoppedAt?: Date;
+    };
+  }) => Promise<{ count: number }>;
+}
+
+interface DeploymentNodeDelegateStub {
+  updateMany: (args: {
+    where: { id: string };
+    data: {
+      healthStatus: string;
+      lastHealthCheck: Date;
+      latencyMs: number;
+    };
+  }) => Promise<{ count: number }>;
+}
+
 type DeploymentStatusPrismaSurface =
-  | Pick<PrismaClient, "agentDeployment" | "deployment">
+  | Pick<PrismaClient, "agentDeployment" | "deployment" | "deploymentNode">
   | {
-      agentDeployment: DeploymentDelegateStub;
-      deployment: DeploymentDelegateStub;
+      agentDeployment: AgentDeploymentDelegateStub;
+      deployment: ModelDeploymentDelegateStub;
+      deploymentNode: DeploymentNodeDelegateStub;
     };
 
 // Type-level guard: the stub findMany/updateMany args must remain valid
-// Prisma args for both delegates.
+// Prisma args for their delegates.
 type _AgentArgsCheck = Parameters<
-  DeploymentDelegateStub["findMany"]
+  AgentDeploymentDelegateStub["findMany"]
 >[0] extends Prisma.AgentDeploymentFindManyArgs
   ? true
   : never;
 type _ModelArgsCheck = Parameters<
-  DeploymentDelegateStub["findMany"]
+  ModelDeploymentDelegateStub["findMany"]
 >[0] extends Prisma.DeploymentFindManyArgs
   ? true
   : never;
-const _argsCheck: [_AgentArgsCheck, _ModelArgsCheck] = [true, true];
+type _NodeArgsCheck = Parameters<
+  DeploymentNodeDelegateStub["updateMany"]
+>[0] extends Prisma.DeploymentNodeUpdateManyArgs
+  ? true
+  : never;
+const _argsCheck: [_AgentArgsCheck, _ModelArgsCheck, _NodeArgsCheck] = [
+  true,
+  true,
+  true,
+];
 void _argsCheck;
 
 export interface BuildDeploymentStatusTickDepsInput {
   prisma: DeploymentStatusPrismaSurface;
   /** Strict read — must THROW on SDK/RPC failure (getJobStatusStrict). */
   getJobStatus: (jobId: string) => Promise<NosanaJob>;
+  /** HTTP /health probe (NosanaClient.checkNodeHealth — never throws). */
+  checkNodeHealth: (
+    nodeUrl: string,
+  ) => Promise<{ healthy: boolean; latencyMs: number }>;
   /**
    * env.ALLOW_NOSANA_MOCK. Dev-only: mock ids are treated as running
    * instead of being polled on-chain. Production boot REJECTS the flag
@@ -105,8 +167,9 @@ export function buildDeploymentStatusTickDeps(
   input: BuildDeploymentStatusTickDepsInput,
 ): DeploymentStatusTickDeps {
   const prisma = input.prisma as {
-    agentDeployment: DeploymentDelegateStub;
-    deployment: DeploymentDelegateStub;
+    agentDeployment: AgentDeploymentDelegateStub;
+    deployment: ModelDeploymentDelegateStub;
+    deploymentNode: DeploymentNodeDelegateStub;
   };
 
   return {
@@ -124,7 +187,12 @@ export function buildDeploymentStatusTickDeps(
             status: { in: MODEL_DEPLOYMENT_NON_TERMINAL_STATUSES },
             nosanaJobIds: { isEmpty: false },
           },
-          select: { id: true, status: true, nosanaJobIds: true },
+          select: {
+            id: true,
+            status: true,
+            nosanaJobIds: true,
+            nodes: { select: { id: true, nodeUrl: true, healthStatus: true } },
+          },
         }),
       ]);
 
@@ -140,6 +208,7 @@ export function buildDeploymentStatusTickDeps(
           id: r.id,
           status: r.status,
           nosanaJobIds: r.nosanaJobIds,
+          nodes: r.nodes,
         })),
       ];
       return rows;
@@ -182,6 +251,22 @@ export function buildDeploymentStatusTickDeps(
       return prisma.deployment.updateMany({
         where: { id: t.id, status: t.fromStatus },
         data: base,
+      });
+    },
+
+    checkNodeHealth: (nodeUrl) => input.checkNodeHealth(nodeUrl),
+
+    persistNodeHealth: async (obs: NodeHealthObservation) => {
+      // updateMany, not update: the node may have been cascade-deleted
+      // with its deployment between load and write — count=0 beats a
+      // thrown P2025 killing the row's remaining probes.
+      await prisma.deploymentNode.updateMany({
+        where: { id: obs.nodeId },
+        data: {
+          healthStatus: obs.healthStatus,
+          lastHealthCheck: obs.checkedAt,
+          latencyMs: obs.latencyMs,
+        },
       });
     },
   };

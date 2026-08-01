@@ -17,11 +17,26 @@
  *   4. otherwise persistTransition (CAS on {id, fromStatus}) — a
  *      concurrent writer (user-initiated stop, another replica's tick)
  *      wins and this tick's stale observation becomes a no-op
+ *   5. probe each of the row's nodes over HTTP and persist the result
+ *      (model rows only — AgentDeployment has no nodes relation)
+ *
+ * Node health (plan A2): this tick is the ONLY writer that can mark a
+ * DeploymentNode healthy. Before it existed nothing ever did — /v1
+ * selects healthy nodes, so every inference request 503'd forever
+ * (inference.ts demotes to unhealthy on proxy failure but nothing
+ * promoted). Health is persisted on EVERY probe, not only on change:
+ * lastHealthCheck is a freshness signal the deploy UI reads. Nodes
+ * with an empty nodeUrl (mock/fallback rows mint "") are not probed
+ * and stay "unknown" — there is nothing to probe, and unknown is the
+ * honest answer.
  *
  * Failure semantics:
  *   - getJobState throw (SDK/RPC outage) → that row is counted failed
  *     and left UNTOUCHED; remaining rows still run (per-row isolation).
  *     An RPC outage must never fabricate or destroy deployment status.
+ *   - node probes are isolated PER NODE and run even when the row's
+ *     job-state read failed — an RPC outage says nothing about whether
+ *     a node's HTTP endpoint is up.
  *   - loadDeployments errors bubble — if the candidate set can't be
  *     read there is nothing to isolate, and BullMQ should see the
  *     failure.
@@ -31,12 +46,20 @@ export type NosanaJobPollState = "queued" | "running" | "completed" | "failed";
 
 export type DeploymentKind = "agent" | "model";
 
+export interface DeploymentNodeRow {
+  id: string;
+  nodeUrl: string;
+  healthStatus: string;
+}
+
 export interface DeploymentStatusRow {
   kind: DeploymentKind;
   id: string;
   /** Current persisted status — the CAS guard for the transition. */
   status: string;
   nosanaJobIds: string[];
+  /** Model rows only — AgentDeployment has no nodes relation. */
+  nodes?: DeploymentNodeRow[];
 }
 
 export interface DeploymentStatusTransition {
@@ -51,6 +74,13 @@ export interface DeploymentStatusTickInput {
   now: Date;
 }
 
+export interface NodeHealthObservation {
+  nodeId: string;
+  healthStatus: "healthy" | "unhealthy";
+  latencyMs: number;
+  checkedAt: Date;
+}
+
 export interface DeploymentStatusTickDeps {
   loadDeployments: () => Promise<DeploymentStatusRow[]>;
   /** Strict job-state read — THROWS on SDK/RPC failure. */
@@ -59,6 +89,12 @@ export interface DeploymentStatusTickDeps {
   persistTransition: (
     transition: DeploymentStatusTransition,
   ) => Promise<{ count: number }>;
+  /** HTTP probe of a node's /health (checkNodeHealth never throws by contract). */
+  checkNodeHealth: (
+    nodeUrl: string,
+  ) => Promise<{ healthy: boolean; latencyMs: number }>;
+  /** Race-safe write of a probe result (updateMany by node id). */
+  persistNodeHealth: (observation: NodeHealthObservation) => Promise<void>;
 }
 
 export interface DeploymentStatusTickResult {
@@ -66,6 +102,9 @@ export interface DeploymentStatusTickResult {
   transitioned: number;
   unchanged: number;
   failed: number;
+  nodesProbed: number;
+  nodesUnhealthy: number;
+  nodeProbesFailed: number;
 }
 
 /**
@@ -118,6 +157,9 @@ export async function runDeploymentStatusTick(
   let transitioned = 0;
   let unchanged = 0;
   let failed = 0;
+  let nodesProbed = 0;
+  let nodesUnhealthy = 0;
+  let nodeProbesFailed = 0;
 
   for (const row of rows) {
     try {
@@ -129,28 +171,58 @@ export async function runDeploymentStatusTick(
       const next = mapJobStatesToDeploymentStatus(row.kind, states);
       if (next === null || next === row.status) {
         unchanged += 1;
-        continue;
-      }
-
-      const { count } = await deps.persistTransition({
-        kind: row.kind,
-        id: row.id,
-        fromStatus: row.status,
-        toStatus: next,
-        observedAt: input.now,
-      });
-      if (count > 0) {
-        transitioned += 1;
       } else {
-        // CAS miss — a concurrent writer already moved the row.
-        unchanged += 1;
+        const { count } = await deps.persistTransition({
+          kind: row.kind,
+          id: row.id,
+          fromStatus: row.status,
+          toStatus: next,
+          observedAt: input.now,
+        });
+        if (count > 0) {
+          transitioned += 1;
+        } else {
+          // CAS miss — a concurrent writer already moved the row.
+          unchanged += 1;
+        }
       }
     } catch {
       // SDK/RPC error (or persist failure) — row left untouched, the
       // next tick retries. Other rows still run.
       failed += 1;
     }
+
+    // Node health probes — outside the status try/catch: an RPC outage
+    // says nothing about a node's HTTP endpoint, so a blinded row still
+    // gets its nodes probed. Isolated per node so one bad persist can't
+    // stop the rest.
+    for (const node of row.nodes ?? []) {
+      // Mock/fallback rows mint empty URLs; nothing to probe → the node
+      // honestly stays "unknown" rather than being fabricated unhealthy.
+      if (!node.nodeUrl) continue;
+      try {
+        const probe = await deps.checkNodeHealth(node.nodeUrl);
+        await deps.persistNodeHealth({
+          nodeId: node.id,
+          healthStatus: probe.healthy ? "healthy" : "unhealthy",
+          latencyMs: probe.latencyMs,
+          checkedAt: input.now,
+        });
+        nodesProbed += 1;
+        if (!probe.healthy) nodesUnhealthy += 1;
+      } catch {
+        nodeProbesFailed += 1;
+      }
+    }
   }
 
-  return { scanned: rows.length, transitioned, unchanged, failed };
+  return {
+    scanned: rows.length,
+    transitioned,
+    unchanged,
+    failed,
+    nodesProbed,
+    nodesUnhealthy,
+    nodeProbesFailed,
+  };
 }

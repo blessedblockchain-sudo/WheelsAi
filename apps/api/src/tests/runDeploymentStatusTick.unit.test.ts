@@ -22,6 +22,7 @@ import type {
   DeploymentKind,
   DeploymentStatusRow,
   DeploymentStatusTransition,
+  NodeHealthObservation,
   NosanaJobPollState,
 } from "../services/runDeploymentStatusTick.js";
 
@@ -41,12 +42,19 @@ function makeDeps(opts: {
   rows: DeploymentStatusRow[];
   jobStates?: Record<string, NosanaJobPollState | Error>;
   persistCount?: number;
+  /** Probe result (or throw) per nodeUrl; default healthy/40ms. */
+  nodeProbes?: Record<string, { healthy: boolean; latencyMs: number } | Error>;
+  persistNodeHealthError?: Error;
 }) {
   const transitions: DeploymentStatusTransition[] = [];
   const polledJobs: string[] = [];
+  const probedUrls: string[] = [];
+  const nodeHealthWrites: NodeHealthObservation[] = [];
   return {
     transitions,
     polledJobs,
+    probedUrls,
+    nodeHealthWrites,
     deps: {
       loadDeployments: async () => opts.rows,
       getJobState: async (jobId: string) => {
@@ -58,6 +66,16 @@ function makeDeps(opts: {
       persistTransition: async (t: DeploymentStatusTransition) => {
         transitions.push(t);
         return { count: opts.persistCount ?? 1 };
+      },
+      checkNodeHealth: async (nodeUrl: string) => {
+        probedUrls.push(nodeUrl);
+        const probe = opts.nodeProbes?.[nodeUrl];
+        if (probe instanceof Error) throw probe;
+        return probe ?? { healthy: true, latencyMs: 40 };
+      },
+      persistNodeHealth: async (obs: NodeHealthObservation) => {
+        if (opts.persistNodeHealthError) throw opts.persistNodeHealthError;
+        nodeHealthWrites.push(obs);
       },
     },
   };
@@ -268,10 +286,157 @@ test("loadDeployments errors bubble so BullMQ records the tick failure", async (
         },
         getJobState: async () => "running" as const,
         persistTransition: async () => ({ count: 1 }),
+        checkNodeHealth: async () => ({ healthy: true, latencyMs: 1 }),
+        persistNodeHealth: async () => {},
       },
     ),
     /DB unreachable/,
   );
+});
+
+// ============================================
+// Node health probes (plan A2) — the only writer that can mark a
+// DeploymentNode healthy. /v1 selects healthy nodes; before this
+// existed every inference request 503'd forever.
+// ============================================
+
+function modelRowWithNode(
+  overrides: Partial<DeploymentStatusRow> = {},
+): DeploymentStatusRow {
+  return row({
+    kind: "model",
+    id: "m1",
+    status: "running",
+    nosanaJobIds: ["job_1"],
+    nodes: [{ id: "n1", nodeUrl: "https://node1.node.nos.ci", healthStatus: "unknown" }],
+    ...overrides,
+  });
+}
+
+test("an ok probe flips a node unknown → healthy with latency and checkedAt", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, nodeHealthWrites } = makeDeps({
+    rows: [modelRowWithNode()],
+    jobStates: { job_1: "running" },
+    nodeProbes: { "https://node1.node.nos.ci": { healthy: true, latencyMs: 42 } },
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.deepEqual(nodeHealthWrites, [
+    {
+      nodeId: "n1",
+      healthStatus: "healthy",
+      latencyMs: 42,
+      checkedAt: NOW,
+    },
+  ]);
+  assert.equal(result.nodesProbed, 1);
+  assert.equal(result.nodesUnhealthy, 0);
+});
+
+test("a failed probe marks the node unhealthy", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, nodeHealthWrites } = makeDeps({
+    rows: [modelRowWithNode()],
+    jobStates: { job_1: "running" },
+    nodeProbes: { "https://node1.node.nos.ci": { healthy: false, latencyMs: 5001 } },
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(nodeHealthWrites[0]!.healthStatus, "unhealthy");
+  assert.equal(result.nodesUnhealthy, 1);
+});
+
+test("health is persisted even when unchanged — lastHealthCheck is a freshness signal", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, nodeHealthWrites } = makeDeps({
+    rows: [
+      modelRowWithNode({
+        nodes: [
+          { id: "n1", nodeUrl: "https://node1.node.nos.ci", healthStatus: "healthy" },
+        ],
+      }),
+    ],
+    jobStates: { job_1: "running" },
+  });
+  await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(nodeHealthWrites.length, 1);
+});
+
+test("nodes with an empty nodeUrl are not probed — mock/fallback rows stay unknown", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, probedUrls, nodeHealthWrites } = makeDeps({
+    rows: [
+      modelRowWithNode({
+        nodes: [{ id: "n1", nodeUrl: "", healthStatus: "unknown" }],
+      }),
+    ],
+    jobStates: { job_1: "running" },
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.deepEqual(probedUrls, []);
+  assert.deepEqual(nodeHealthWrites, []);
+  assert.equal(result.nodesProbed, 0);
+});
+
+test("agent rows carry no nodes and trigger no probes", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, probedUrls } = makeDeps({
+    rows: [row({ kind: "agent", status: "running" })],
+    jobStates: { job_1: "running" },
+  });
+  await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.deepEqual(probedUrls, []);
+});
+
+test("a probe-persist throw is isolated: the row's status observation still lands and the tick completes", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, transitions } = makeDeps({
+    rows: [
+      modelRowWithNode({ status: "provisioning" }),
+      modelRowWithNode({
+        id: "m2",
+        status: "provisioning",
+        nodes: [{ id: "n2", nodeUrl: "https://node2.node.nos.ci", healthStatus: "unknown" }],
+      }),
+    ],
+    jobStates: { job_1: "running" },
+    persistNodeHealthError: new Error("DB write failed"),
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  // Both rows still transitioned provisioning → running.
+  assert.deepEqual(
+    transitions.map((t) => t.toStatus),
+    ["running", "running"],
+  );
+  assert.equal(result.nodeProbesFailed, 2);
+  assert.equal(result.nodesProbed, 0);
+});
+
+test("an RPC outage on the job read does not blind the health probe", async () => {
+  // Chain reads and node HTTP endpoints fail independently — a blinded
+  // row still gets its nodes probed.
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps, nodeHealthWrites } = makeDeps({
+    rows: [modelRowWithNode()],
+    jobStates: { job_1: new Error("RPC unreachable") },
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(result.failed, 1);
+  assert.equal(result.nodesProbed, 1);
+  assert.equal(nodeHealthWrites[0]!.healthStatus, "healthy");
 });
 
 // ============================================

@@ -1,5 +1,8 @@
 import { prisma } from "@wheelsai/db";
 
+import { executeScheduledTask } from "./executeScheduledTask.js";
+import { buildProductionExecutorDeps } from "./scheduledTaskExecutorProduction.js";
+
 // ============================================
 // Cron Parser (simplified MVP)
 // ============================================
@@ -181,14 +184,70 @@ export async function triggerTask(id: string, orgId: string) {
   const task = await prisma.scheduledTask.findFirst({ where: { id, orgId } });
   if (!task) throw new Error("Task not found");
 
-  // The execution engine does not exist yet (match-up roadmap, Wave 1:
-  // a BullMQ worker consuming nextRunAt and invoking the real agent).
-  // Until it does, refuse honestly — the previous behavior here wrote a
-  // fabricated "Task executed successfully" row on a random-delay timer,
-  // which poisoned every success-rate stat on the page.
-  throw new Error(
-    "Task execution is not live yet — the scheduler currently manages task definitions only. Execution ships with the scheduler worker.",
-  );
+  // Real inline run through the SAME engine the scheduler worker uses
+  // (Wave 1 — replaces the W0-2 honest refusal, which itself replaced a
+  // fabricated-success setTimeout). Synchronous: the caller gets the
+  // finished execution, not a promise of one.
+  const execution = await prisma.taskExecution.create({
+    data: {
+      taskId: id,
+      status: "running",
+      input: task.payload as never,
+      triggeredBy: "manual",
+      startedAt: new Date(),
+    },
+  });
+
+  const startedAt = Date.now();
+  let outcome: { status: "success" | "failed"; output?: unknown; error?: string };
+  try {
+    const { output } = await executeScheduledTask(
+      {
+        id: task.id,
+        orgId: task.orgId,
+        agentId: task.agentId,
+        name: task.name,
+        taskType: task.taskType,
+        payload: task.payload,
+        timeout: task.timeout,
+      },
+      buildProductionExecutorDeps(),
+    );
+    outcome = { status: "success", output };
+  } catch (err) {
+    outcome = {
+      status: "failed",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  const durationMs = Date.now() - startedAt;
+
+  const finished = await prisma.taskExecution.update({
+    where: { id: execution.id },
+    data: {
+      status: outcome.status,
+      completedAt: new Date(),
+      durationMs,
+      ...(outcome.status === "success"
+        ? { output: outcome.output as never }
+        : { error: outcome.error }),
+    },
+  });
+  await prisma.scheduledTask.update({
+    where: { id: task.id },
+    data: {
+      lastRunAt: new Date(),
+      lastRunStatus: outcome.status,
+      lastRunDurationMs: durationMs,
+      lastError: outcome.status === "failed" ? outcome.error : null,
+      totalRuns: { increment: 1 },
+      ...(outcome.status === "success"
+        ? { successfulRuns: { increment: 1 } }
+        : { failedRuns: { increment: 1 } }),
+    },
+  });
+
+  return finished;
 }
 
 export async function getTaskExecutions(taskId: string, orgId: string, options: {

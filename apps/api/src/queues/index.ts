@@ -33,3 +33,7 @@ export {
   startAgentMessageQueue,
   stopAgentMessageQueue,
 } from "./agent-message.queue.js";
+export {
+  startSchedulerQueue,
+  stopSchedulerQueue,
+} from "./scheduler.queue.js";

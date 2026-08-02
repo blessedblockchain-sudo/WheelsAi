@@ -821,17 +821,16 @@ function CreateTaskModal({
             <label className="block text-sm font-medium text-foreground mb-1">
               Task Type
             </label>
+            {/* Only the types the execution engine actually runs — the
+                other four advertised here were backed by nothing and are
+                offered again when their executors exist. */}
             <select
               value={form.taskType}
               onChange={(e) => updateForm({ taskType: e.target.value })}
               className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
             >
-              <option value="agent_run">Agent Run</option>
-              <option value="data_sync">Data Sync</option>
-              <option value="health_check">Health Check</option>
-              <option value="report">Report Generation</option>
-              <option value="cleanup">Cleanup</option>
-              <option value="custom">Custom</option>
+              <option value="agent_run">Agent Run — prompt your agent on a schedule</option>
+              <option value="webhook">Webhook — POST to a URL on a schedule</option>
             </select>
           </div>
 

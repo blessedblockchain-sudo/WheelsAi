@@ -192,6 +192,10 @@ const envSchema = z.object({
   // transitions — replaces the deleted setTimeout status simulation.
   // Set to 0 to disable.
   DEPLOYMENT_STATUS_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
+
+  // Scheduler BullMQ worker (Wave 1): fires due ScheduledTask rows
+  // through the real execution engine. Set to 0 to disable.
+  SCHEDULER_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
 });
 
 export class EnvValidationError extends Error {}

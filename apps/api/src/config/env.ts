@@ -196,6 +196,16 @@ const envSchema = z.object({
   // Scheduler BullMQ worker (Wave 1): fires due ScheduledTask rows
   // through the real execution engine. Set to 0 to disable.
   SCHEDULER_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
+
+  // Uptime-prober BullMQ worker (Wave 1): probes due UptimeMonitors and
+  // records real up/down events + rolling stats. Each monitor still
+  // honors its own checkIntervalSeconds. Set to 0 to disable.
+  UPTIME_PROBER_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
+
+  // Alert-evaluator BullMQ worker (Wave 1): evaluates enabled AlertRules
+  // against real usage/uptime metrics and fires alerts + notifications.
+  // Set to 0 to disable.
+  ALERT_EVALUATOR_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
 });
 
 export class EnvValidationError extends Error {}

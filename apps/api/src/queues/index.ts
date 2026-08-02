@@ -37,3 +37,11 @@ export {
   startSchedulerQueue,
   stopSchedulerQueue,
 } from "./scheduler.queue.js";
+export {
+  startUptimeProberQueue,
+  stopUptimeProberQueue,
+} from "./uptime-prober.queue.js";
+export {
+  startAlertEvaluatorQueue,
+  stopAlertEvaluatorQueue,
+} from "./alert-evaluator.queue.js";

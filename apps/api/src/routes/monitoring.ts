@@ -1,5 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.js";
+import { triggerWebhook } from "../services/webhooks.js";
 import {
   createAlertChannel,
   getAlertChannels,
@@ -335,6 +336,14 @@ export async function monitoringRoutes(app: FastifyInstance) {
 
     try {
       const alert = await resolveAlert(alertId, orgId, userId);
+
+      triggerWebhook(
+        orgId,
+        "alert.resolved",
+        { alertId: alert.id, title: alert.title, severity: alert.severity },
+        alert.resourceType,
+        alert.resourceId ?? undefined,
+      ).catch(() => {});
 
       return reply.send({
         success: true,

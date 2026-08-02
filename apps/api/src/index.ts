@@ -81,6 +81,10 @@ import {
   stopAgentMessageQueue,
   startSchedulerQueue,
   stopSchedulerQueue,
+  startUptimeProberQueue,
+  stopUptimeProberQueue,
+  startAlertEvaluatorQueue,
+  stopAlertEvaluatorQueue,
   assertQueueRedisReady,
 } from "./queues/index.js";
 
@@ -295,6 +299,8 @@ async function main() {
   await startDeploymentStatusQueue();
   await startAgentMessageQueue();
   await startSchedulerQueue();
+  await startUptimeProberQueue();
+  await startAlertEvaluatorQueue();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
@@ -312,6 +318,8 @@ async function main() {
       await stopDeploymentStatusQueue();
       await stopAgentMessageQueue();
       await stopSchedulerQueue();
+      await stopUptimeProberQueue();
+      await stopAlertEvaluatorQueue();
       await metrics.close();
       await app.close();
       process.exit(0);

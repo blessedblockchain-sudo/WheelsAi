@@ -1,5 +1,7 @@
 import { prisma } from "@wheelsai/db";
 
+import { buildProductionExecutorDeps } from "./scheduledTaskExecutorProduction.js";
+
 // ============================================
 // Types
 // ============================================
@@ -315,7 +317,7 @@ export async function runTestSuite(
   });
 
   // Execute tests asynchronously
-  executeTests(testRun.id, suite, options.deploymentId).catch((err) => {
+  executeTests(testRun.id, orgId, suite, options.deploymentId).catch((err) => {
     console.error("Test execution failed:", err);
   });
 
@@ -324,6 +326,7 @@ export async function runTestSuite(
 
 async function executeTests(
   runId: string,
+  orgId: string,
   suite: {
     id: string;
     agentId: string;
@@ -354,11 +357,18 @@ async function executeTests(
       endpoint = deployment?.endpoint || null;
     }
 
+    // One invoker for the whole run: the deployed endpoint when the run
+    // targets a deployment, otherwise the agent's own model.
+    const invoke = (inputType: string, input: any, timeout: number) =>
+      endpoint
+        ? callAgentViaEndpoint(inputType, input, endpoint, timeout)
+        : callAgentViaModel(suite.agentId, orgId, inputType, input);
+
     // Execute tests
     if (suite.parallel) {
       // Run in parallel
       const promises = suite.testCases.map((testCase) =>
-        executeTestCase(runId, testCase, suite.timeout, suite.retries, endpoint)
+        executeTestCase(runId, testCase, suite.timeout, suite.retries, invoke)
       );
       const parallelResults = await Promise.all(promises);
       results.push(...parallelResults);
@@ -370,7 +380,7 @@ async function executeTests(
           testCase,
           suite.timeout,
           suite.retries,
-          endpoint
+          invoke
         );
         results.push(result);
 
@@ -443,7 +453,7 @@ async function executeTestCase(
   },
   timeout: number,
   maxRetries: number,
-  endpoint: string | null
+  invoke: (inputType: string, input: any, timeout: number) => Promise<any>
 ): Promise<{ status: TestStatus; durationMs: number }> {
   let attempt = 1;
   let lastError: string | null = null;
@@ -453,10 +463,9 @@ async function executeTestCase(
 
     try {
       // Execute the test
-      const actualOutput = await callAgent(
+      const actualOutput = await invoke(
         testCase.inputType,
         testCase.input,
-        endpoint,
         timeout
       );
 
@@ -513,23 +522,25 @@ async function executeTestCase(
   return { status: "error", durationMs: 0 };
 }
 
-async function callAgent(
+/**
+ * Invoke the agent under test (Wave 1 — this used to return a hardcoded
+ * "This is a simulated response for testing purposes.", so every suite
+ * graded a constant and the pass rates were fiction).
+ *
+ * Two real paths, in preference order:
+ *   1. A deployment endpoint → proxy the OpenAI-compatible route at
+ *      temperature 0 (deterministic, tests the deployed artifact).
+ *   2. No deployment → invoke the agent's configured model through the
+ *      SAME executor the scheduler and playground use. Suites are
+ *      useful before a GPU deployment exists, and the path is shared,
+ *      so "tested" and "run" mean the same thing.
+ */
+async function callAgentViaEndpoint(
   inputType: string,
   input: any,
-  endpoint: string | null,
+  endpoint: string,
   timeout: number
 ): Promise<any> {
-  // In a real implementation, this would call the agent deployment
-  // For now, simulate a response
-
-  if (!endpoint) {
-    // Simulate response for testing
-    return {
-      role: "assistant",
-      content: "This is a simulated response for testing purposes.",
-    };
-  }
-
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -558,7 +569,35 @@ async function callAgent(
   }
 }
 
-async function runAssertion(
+async function callAgentViaModel(
+  agentId: string,
+  orgId: string,
+  inputType: string,
+  input: any
+): Promise<any> {
+  const deps = buildProductionExecutorDeps();
+  const agent = await deps.loadAgent(agentId, orgId);
+  if (!agent) {
+    throw new Error(`agent ${agentId} not found for test run`);
+  }
+  const prompt =
+    inputType === "message"
+      ? typeof input === "string"
+        ? input
+        : JSON.stringify(input)
+      : // conversation input: use the last user turn as the prompt
+        Array.isArray(input)
+        ? String(
+            [...input].reverse().find((m) => m?.role === "user")?.content ??
+              JSON.stringify(input),
+          )
+        : JSON.stringify(input);
+
+  const result = await deps.runAgentChat({ agent, prompt });
+  return { role: "assistant", content: result.content };
+}
+
+export async function runAssertion(
   assertionType: AssertionType,
   actual: any,
   expected: any,
@@ -608,17 +647,20 @@ async function runAssertion(
       }
 
     case "semantic": {
-      // Simplified semantic similarity (in production, use embeddings)
+      // Honest labeling: this is Jaccard WORD OVERLAP, not embedding
+      // similarity — calling it "semantic" in the result overclaimed.
+      // True semantic scoring arrives with the embeddings build (RAG,
+      // Wave 2); until then the details say what was actually measured.
       const words1 = new Set(actualContent.toLowerCase().split(/\s+/));
       const words2 = new Set(expectedContent.toLowerCase().split(/\s+/));
       const intersection = new Set([...words1].filter((x) => words2.has(x)));
       const union = new Set([...words1, ...words2]);
-      const similarity = intersection.size / union.size;
+      const similarity = union.size === 0 ? 0 : intersection.size / union.size;
       const threshold = tolerance ?? 0.5;
 
       return {
         passed: similarity >= threshold,
-        details: `Semantic similarity: ${(similarity * 100).toFixed(1)}% (threshold: ${threshold * 100}%)`,
+        details: `Word-overlap similarity: ${(similarity * 100).toFixed(1)}% (threshold: ${threshold * 100}%; embedding-based semantic scoring not yet available)`,
         score: similarity,
       };
     }
@@ -645,29 +687,19 @@ async function runAssertion(
       }
 
     case "function":
-      if (!customScript) {
-        return {
-          passed: false,
-          details: "No custom assertion function provided",
-        };
-      }
-      try {
-        // Execute custom assertion (sandboxed in production)
-        const fn = new Function(
-          "actual",
-          "expected",
-          `
-          ${customScript}
-          return { passed: result, details: message || '' };
-        `
-        );
-        return fn(actual, expected);
-      } catch (e: any) {
-        return {
-          passed: false,
-          details: `Custom assertion error: ${e.message}`,
-        };
-      }
+      // SECURITY: the previous implementation ran user-supplied script
+      // via new Function() directly in the API process — arbitrary code
+      // execution for any org user, with access to env, Prisma, and the
+      // wallet keys. Custom assertions stay disabled until a real
+      // isolate exists; failing closed with a clear reason beats an RCE
+      // dressed up as a feature. (The old comment claimed "sandboxed in
+      // production" — it never was.)
+      void customScript;
+      return {
+        passed: false,
+        details:
+          "Custom function assertions are disabled: they require a sandboxed runtime that does not exist yet. Use exact, contains, regex, or json_schema.",
+      };
 
     default:
       return {

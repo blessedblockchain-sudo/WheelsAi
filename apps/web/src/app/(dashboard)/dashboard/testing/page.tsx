@@ -1,7 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { testingApi, agentsApi, TestSuite, TestRun, Agent } from "@/lib/api";
+import {
+  testingApi,
+  agentsApi,
+  TestSuite,
+  TestRun,
+  TestCase,
+  Agent,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -88,6 +95,18 @@ export default function TestingPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedSuite, setSelectedSuite] = useState<TestSuite | null>(null);
 
+  // Test-case authoring (Wave 1): the suite detail panel had no way to
+  // create cases, so "Run" was permanently disabled on every suite.
+  const [cases, setCases] = useState<TestCase[]>([]);
+  const [loadingCases, setLoadingCases] = useState(false);
+  const [savingCase, setSavingCase] = useState(false);
+  const [caseForm, setCaseForm] = useState({
+    name: "",
+    input: "",
+    assertionType: "contains" as TestCase["assertionType"],
+    expected: "",
+  });
+
   // Form state
   const [form, setForm] = useState({
     agentId: "",
@@ -152,6 +171,66 @@ export default function TestingPage() {
       setSuites(suites.filter((s) => s.id !== id));
     } catch (error) {
       console.error("Failed to delete suite:", error);
+    }
+  }
+
+  async function loadCases(suiteId: string) {
+    setLoadingCases(true);
+    try {
+      const res = await testingApi.getCases(suiteId);
+      setCases(res.data);
+    } catch {
+      setCases([]);
+    } finally {
+      setLoadingCases(false);
+    }
+  }
+
+  function openSuite(suite: TestSuite) {
+    setSelectedSuite(suite);
+    setCases([]);
+    setCaseForm({ name: "", input: "", assertionType: "contains", expected: "" });
+    loadCases(suite.id);
+  }
+
+  async function addCase() {
+    if (!selectedSuite || !caseForm.name.trim() || !caseForm.input.trim()) return;
+    setSavingCase(true);
+    try {
+      await testingApi.createCase(selectedSuite.id, {
+        name: caseForm.name.trim(),
+        inputType: "message",
+        input: caseForm.input.trim(),
+        assertionType: caseForm.assertionType,
+        expected: caseForm.expected.trim(),
+      });
+      setCaseForm({ name: "", input: "", assertionType: caseForm.assertionType, expected: "" });
+      await loadCases(selectedSuite.id);
+      // totalTests drives the Run button's enabled state.
+      setSelectedSuite({
+        ...selectedSuite,
+        totalTests: selectedSuite.totalTests + 1,
+      });
+      loadData();
+    } catch (error: any) {
+      alert(`Failed to add test case: ${error.message}`);
+    } finally {
+      setSavingCase(false);
+    }
+  }
+
+  async function removeCase(caseId: string) {
+    if (!selectedSuite) return;
+    try {
+      await testingApi.deleteCase(selectedSuite.id, caseId);
+      await loadCases(selectedSuite.id);
+      setSelectedSuite({
+        ...selectedSuite,
+        totalTests: Math.max(0, selectedSuite.totalTests - 1),
+      });
+      loadData();
+    } catch (error: any) {
+      alert(`Failed to delete test case: ${error.message}`);
     }
   }
 
@@ -312,7 +391,7 @@ export default function TestingPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setSelectedSuite(suite)}
+                        onClick={() => openSuite(suite)}
                       >
                         View
                       </Button>
@@ -523,6 +602,102 @@ export default function TestingPage() {
                   </p>
                 </div>
               )}
+
+              {/* Test cases — authoring lives here so a suite can
+                  actually be run (Wave 1). */}
+              <div className="border rounded-lg p-4">
+                <h3 className="font-medium mb-3">Test Cases</h3>
+
+                {loadingCases ? (
+                  <p className="text-sm text-muted-foreground">Loading cases…</p>
+                ) : cases.length === 0 ? (
+                  <p className="text-sm text-muted-foreground mb-3">
+                    No cases yet. Add one below — a suite needs at least one
+                    case before it can run.
+                  </p>
+                ) : (
+                  <ul className="space-y-2 mb-4">
+                    {cases.map((c) => (
+                      <li
+                        key={c.id}
+                        className="flex items-start justify-between gap-3 rounded border p-3 text-sm"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-medium">{c.name}</div>
+                          <div className="text-muted-foreground truncate">
+                            {String(c.input)}
+                          </div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            {c.assertionType}
+                            {c.expected ? ` → “${String(c.expected)}”` : ""}
+                          </div>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => removeCase(c.id)}
+                        >
+                          Remove
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="space-y-2 border-t pt-3">
+                  <Input
+                    placeholder="Case name (e.g. answers billing question)"
+                    value={caseForm.name}
+                    onChange={(e) =>
+                      setCaseForm({ ...caseForm, name: e.target.value })
+                    }
+                  />
+                  <Textarea
+                    placeholder="Input message sent to the agent"
+                    rows={2}
+                    value={caseForm.input}
+                    onChange={(e) =>
+                      setCaseForm({ ...caseForm, input: e.target.value })
+                    }
+                  />
+                  <div className="flex gap-2">
+                    <select
+                      className="rounded-md border bg-background px-3 py-2 text-sm"
+                      value={caseForm.assertionType}
+                      onChange={(e) =>
+                        setCaseForm({
+                          ...caseForm,
+                          assertionType: e.target
+                            .value as TestCase["assertionType"],
+                        })
+                      }
+                    >
+                      <option value="contains">contains</option>
+                      <option value="exact">exact</option>
+                      <option value="regex">regex</option>
+                      <option value="semantic">word overlap</option>
+                      <option value="json_schema">json schema</option>
+                    </select>
+                    <Input
+                      placeholder="Expected"
+                      value={caseForm.expected}
+                      onChange={(e) =>
+                        setCaseForm({ ...caseForm, expected: e.target.value })
+                      }
+                    />
+                  </div>
+                  <Button
+                    onClick={addCase}
+                    disabled={
+                      savingCase || !caseForm.name.trim() || !caseForm.input.trim()
+                    }
+                    className="w-full"
+                  >
+                    <PlusIcon className="w-4 h-4 mr-2" />
+                    {savingCase ? "Adding…" : "Add Test Case"}
+                  </Button>
+                </div>
+              </div>
 
               <div className="flex gap-2">
                 <Button

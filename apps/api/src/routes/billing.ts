@@ -2,6 +2,14 @@ import { FastifyPluginAsync } from "fastify";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
+import { grantCredits } from "../services/creditGrant.js";
+import {
+  CREDIT_PACKAGES,
+  MAX_PURCHASE_DOLLARS,
+  MIN_PURCHASE_DOLLARS,
+  bonusForAmount,
+  validatePurchaseAmount,
+} from "../services/creditPackages.js";
 
 interface CheckoutBody {
   amount: number;
@@ -121,6 +129,14 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     };
   });
 
+  // Credit packages + bonus tiers, served so the buyer is shown exactly
+  // the ladder the grant math uses (B2/T1 — these were duplicated).
+  fastify.get("/packages", async () => ({
+    packages: CREDIT_PACKAGES,
+    minPurchase: MIN_PURCHASE_DOLLARS,
+    maxPurchase: MAX_PURCHASE_DOLLARS,
+  }));
+
   // Create checkout session.
   // Real Stripe checkout is not implemented yet. The mock path below grants
   // credits with no payment — credits buy real GPU compute, so it is gated
@@ -138,64 +154,29 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       });
     }
 
-    if (!amount || Number.isNaN(amount) || amount < 5) {
+    const amountError = validatePurchaseAmount(amount);
+    if (amountError) {
       return reply.status(400).send({
         error: "Bad Request",
-        message: "Minimum purchase amount is $5",
+        message: amountError,
       });
     }
 
-    const amountCents = Math.round(amount * 100);
-    const amountCentsBigInt = BigInt(amountCents);
-
-    let bonusAmount = 0;
-    if (amount >= 500) bonusAmount = 100;
-    else if (amount >= 100) bonusAmount = 15;
-    else if (amount >= 50) bonusAmount = 5;
+    const bonusAmount = bonusForAmount(amount);
 
     // Balance mutation and ledger rows commit atomically — a crash between
-    // them must never desync the running balance from the ledger.
+    // them must never desync the running balance from the ledger. The
+    // grant itself goes through the one shared service every rail uses
+    // (B2/T1), so the dev path and the real rails cannot drift.
     await prisma.$transaction(async (tx) => {
-      const balanceAfterPurchase = await tx.creditBalance.upsert({
-        where: { orgId },
-        update: {
-          balanceCents: { increment: amountCentsBigInt },
-        },
-        create: {
-          orgId,
-          balanceCents: amountCentsBigInt,
-        },
+      await grantCredits(tx as never, {
+        orgId,
+        amountCents: BigInt(Math.round(amount * 100)),
+        bonusCents: BigInt(bonusAmount * 100),
+        referenceId: `development_mock:${Date.now()}`,
+        description: `Credit purchase: $${amount}`,
+        labelPrefix: "[dev-mock] ",
       });
-
-      await tx.creditTransaction.create({
-        data: {
-          orgId,
-          amountCents: amountCentsBigInt,
-          type: "purchase",
-          description: `Credit purchase: $${amount}`,
-          referenceId: "development_mock",
-          balanceAfter: balanceAfterPurchase.balanceCents,
-        },
-      });
-
-      if (bonusAmount > 0) {
-        const bonusCentsBigInt = BigInt(bonusAmount * 100);
-        const balanceAfterBonus = await tx.creditBalance.update({
-          where: { orgId },
-          data: { balanceCents: { increment: bonusCentsBigInt } },
-        });
-
-        await tx.creditTransaction.create({
-          data: {
-            orgId,
-            amountCents: bonusCentsBigInt,
-            type: "bonus",
-            description: `Bonus credits: $${bonusAmount}`,
-            referenceId: "development_bonus",
-            balanceAfter: balanceAfterBonus.balanceCents,
-          },
-        });
-      }
     });
 
     return {

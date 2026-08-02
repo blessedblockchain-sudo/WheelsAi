@@ -26,14 +26,18 @@ import {
   type UsageSummary,
   type X402MetricsHistoryPoint,
   type X402MetricsResponse,
+  type CreditPackage,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-const creditPackages = [
-  { amount: 10, bonus: 0, price: 10, popular: false },
-  { amount: 50, bonus: 5, price: 50, popular: true },
-  { amount: 100, bonus: 15, price: 100, popular: false },
-  { amount: 500, bonus: 100, price: 500, popular: false },
+// Fallback only — the real ladder is served by GET /api/billing/packages
+// so what the buyer sees is what the grant math uses (B2/T1). A second
+// hardcoded copy here is how "$100 → +$15" drifts from what's granted.
+const fallbackPackages: CreditPackage[] = [
+  { amount: 10, bonus: 0 },
+  { amount: 50, bonus: 5, popular: true },
+  { amount: 100, bonus: 15 },
+  { amount: 500, bonus: 100 },
 ];
 
 export default function BillingPage() {
@@ -72,8 +76,16 @@ export default function BillingPage() {
     }
   }
 
+  const [creditPackages, setCreditPackages] =
+    useState<CreditPackage[]>(fallbackPackages);
+
   useEffect(() => {
     loadBillingData();
+    // Serve-side ladder wins over the local fallback.
+    billingApi
+      .getPackages()
+      .then((res) => setCreditPackages(res.packages))
+      .catch(() => {});
   }, []);
 
   async function handlePurchase(packageIndex: number) {

@@ -458,9 +458,23 @@ export interface X402MetricsHistoryPoint {
   };
 }
 
+export interface CreditPackage {
+  amount: number;
+  bonus: number;
+  popular?: boolean;
+}
+
 export const billingApi = {
   getBalance: () =>
     api<{ balance: CreditBalance }>("/api/billing/balance"),
+
+  /** The credit ladder the grant math actually uses (B2/T1). */
+  getPackages: () =>
+    api<{
+      packages: CreditPackage[];
+      minPurchase: number;
+      maxPurchase: number;
+    }>("/api/billing/packages"),
 
   getTransactions: () =>
     api<{ transactions: CreditTransaction[] }>("/api/billing/transactions"),

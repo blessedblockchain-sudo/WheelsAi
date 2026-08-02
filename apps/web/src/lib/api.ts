@@ -231,6 +231,9 @@ export interface DeploymentDetail extends Deployment {
   };
   nodes: Array<{
     id: string;
+    // Nosana host pubkey (mock rows use node_N placeholders) — links to
+    // the public Nosana dashboard so the decentralized GPU is verifiable.
+    nosanaNodeId: string;
     healthStatus: string;
     latencyMs: number | null;
   }>;
@@ -613,7 +616,7 @@ export interface Agent {
   name: string;
   slug: string;
   description: string | null;
-  framework: "mastra" | "langchain" | "autogen" | "custom";
+  framework: "mastra" | "langchain" | "autogen" | "elizaos" | "crewai" | "custom";
   version: string;
   tags: string[];
   isPublic: boolean;
@@ -3446,7 +3449,10 @@ export const templateApi = {
   get: (idOrSlug: string) => api<AgentTemplate>(`/api/templates/${idOrSlug}`),
   getCategories: () => api<{ categories: string[] }>("/api/templates/categories"),
   getStats: () => api<{ total: number; published: number; featured: number; totalUsage: number }>("/api/templates/stats"),
-  use: (templateId: string, data: { name: string; slug: string; description?: string }) => api<any>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
+  use: (templateId: string, data: { name: string; slug: string; description?: string }) =>
+    // The route returns the created Agent row (201) — the caller redirects
+    // to it instead of stranding the user on the gallery (INT-B2).
+    api<{ id: string; name: string; slug: string }>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
 };
 
 // ============================================

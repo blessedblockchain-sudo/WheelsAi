@@ -16,6 +16,8 @@ const frameworkColors: Record<string, string> = {
   mastra: "bg-purple-100 text-purple-700",
   langchain: "bg-green-100 text-green-700",
   autogen: "bg-blue-100 text-blue-700",
+  elizaos: "bg-cyan-100 text-cyan-700",
+  crewai: "bg-orange-100 text-orange-700",
   custom: "bg-gray-100 text-gray-700",
 };
 

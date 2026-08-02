@@ -367,13 +367,26 @@ export default function DeploymentDetailPage() {
                         }`}
                       />
                       <div>
-                        <p className="font-medium">Node {i + 1}</p>
+                        <p className="font-medium">Nosana host {i + 1}</p>
                         <p className="text-sm text-gray-500">{node.healthStatus}</p>
                       </div>
                     </div>
-                    {node.latencyMs && (
-                      <span className="text-sm text-gray-500">{node.latencyMs}ms latency</span>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {node.latencyMs && (
+                        <span className="text-sm text-gray-500">{node.latencyMs}ms latency</span>
+                      )}
+                      {node.nosanaNodeId && !node.nosanaNodeId.startsWith("node_") && (
+                        <a
+                          href={`https://dashboard.nosana.com/host/${node.nosanaNodeId}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
+                        >
+                          View on Nosana
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

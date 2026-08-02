@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { modelsApi, deploymentsApi, type Model, type GpuTier } from "@/lib/api";
+import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Step = "model" | "config" | "review";
@@ -313,7 +313,9 @@ export default function NewDeploymentPage() {
               <CardHeader>
                 <CardTitle>Configure Deployment</CardTitle>
                 <CardDescription>
-                  Deploying {selectedModel.displayName}
+                  Deploying {selectedModel.displayName} on Nosana&apos;s
+                  decentralized GPU network — billed per second of real
+                  compute, not per month.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -589,7 +591,12 @@ export default function NewDeploymentPage() {
                   </div>
                   <div className="flex items-center justify-between p-4">
                     <span className="text-gray-600">GPU</span>
-                    <span className="font-medium">{selectedGpu.name}</span>
+                    <span className="font-medium">
+                      {selectedGpu.name}
+                      <span className="ml-2 text-sm font-normal text-gray-500">
+                        via Nosana
+                      </span>
+                    </span>
                   </div>
                   <div className="flex items-center justify-between p-4">
                     <span className="text-gray-600">Replicas</span>
@@ -611,9 +618,11 @@ export default function NewDeploymentPage() {
                     <div>
                       <p className="font-medium text-primary-900">Ready to deploy</p>
                       <p className="mt-1 text-sm text-primary-700">
-                        Your endpoint will be available at:{" "}
+                        Runs as a Nosana GPU job. Once a host passes its
+                        health check, your OpenAI-compatible endpoint goes
+                        live at:{" "}
                         <code className="rounded bg-primary-100 px-1">
-                          https://api.wheelsai.io/v1/{name}
+                          {API_BASE_URL}/v1/{name}
                         </code>
                       </p>
                       {selectedEngine === "ollama" && (

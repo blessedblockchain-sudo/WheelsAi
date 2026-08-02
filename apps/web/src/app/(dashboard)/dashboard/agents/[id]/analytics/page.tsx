@@ -166,9 +166,13 @@ export default function AgentAnalyticsPage() {
 
   return (
     <div className="flex flex-col">
+      {/* Honest scope (INT-B3): getDashboard aggregates the WHOLE
+          workspace — per-agent filtering is a backend build (Wave 1
+          analytics snapshots). Until then the title must not claim
+          agent-level numbers. */}
       <Header
-        title={`${agent.name} — Analytics`}
-        description="Performance insights and cost breakdown for this agent"
+        title="Workspace Analytics"
+        description={`Usage and cost across your whole workspace — viewed from ${agent.name}. Per-agent breakdowns are coming.`}
       />
 
       <div className="p-8 space-y-8">

@@ -2,12 +2,27 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Box, Bot, Cpu, Zap, DollarSign, ArrowRight } from "lucide-react";
+import { Box, Bot, Cpu, Zap, DollarSign, ArrowRight, Github } from "lucide-react";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { deploymentsApi, billingApi, modelsApi, type Deployment } from "@/lib/api";
+import {
+  agentsApi,
+  deploymentsApi,
+  billingApi,
+  type Agent,
+  type Deployment,
+} from "@/lib/api";
+
+const frameworkColors: Record<string, string> = {
+  mastra: "bg-purple-100 text-purple-700",
+  langchain: "bg-green-100 text-green-700",
+  autogen: "bg-blue-100 text-blue-700",
+  elizaos: "bg-cyan-100 text-cyan-700",
+  crewai: "bg-orange-100 text-orange-700",
+  custom: "bg-gray-100 text-gray-700",
+};
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -32,25 +47,27 @@ const statusColors: Record<string, "success" | "warning" | "destructive" | "seco
 };
 
 export default function DashboardPage() {
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [agentTotal, setAgentTotal] = useState(0);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [creditBalance, setCreditBalance] = useState(0);
   const [totalRequests, setTotalRequests] = useState(0);
-  const [modelCount, setModelCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [deploymentsData, balanceData, usageData, modelsData] = await Promise.all([
+        const [agentsData, deploymentsData, balanceData, usageData] = await Promise.all([
+          agentsApi.list().catch(() => ({ agents: [], total: 0 })),
           deploymentsApi.list(),
           billingApi.getBalance().catch(() => ({ balance: { available: 0 } })),
           billingApi.getUsage().catch(() => ({ usage: { requests: 0 } })),
-          modelsApi.list().catch(() => ({ models: [] })),
         ]);
+        setAgents(agentsData.agents);
+        setAgentTotal(agentsData.total);
         setDeployments(deploymentsData.deployments);
         setCreditBalance(balanceData.balance.available);
         setTotalRequests(usageData.usage.requests);
-        setModelCount(modelsData.models.length);
       } catch (error) {
         console.error("Failed to load dashboard data:", error);
       } finally {
@@ -66,11 +83,43 @@ export default function DashboardPage() {
     <div className="flex flex-col">
       <Header
         title="Dashboard"
-        description="Overview of your AI deployments and usage"
-        action={{ label: "New Deployment", href: "/dashboard/deployments/new" }}
+        description="Build, deploy, and monetize your AI agents"
+        action={{ label: "Create Agent", href: "/dashboard/agents/new" }}
       />
 
       <div className="p-8">
+        {/* BUILD on-ramp (INT-B1): the 2-minute path — import from GitHub,
+            chat via real inference. Leads the page because BUILD leads. */}
+        <Card className="mb-8 border-primary-200 bg-gradient-to-r from-primary-50 to-purple-50 dark:border-primary-800 dark:from-primary-900/20 dark:to-purple-900/20">
+          <CardContent className="flex flex-col items-start justify-between gap-4 py-6 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-4">
+              <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-600">
+                <Github className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+                  Import an agent from GitHub
+                </h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Mastra, ElizaOS, LangChain, AutoGen, CrewAI, or custom —
+                  chat with it in minutes.
+                </p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-3">
+              <Link href="/dashboard/agents/new">
+                <Button>
+                  Import from GitHub
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
+              </Link>
+              <Link href="/dashboard/templates">
+                <Button variant="outline">Browse templates</Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Stats */}
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Card>
@@ -127,7 +176,9 @@ export default function DashboardPage() {
               <Bot className="h-4 w-4 text-gray-400 dark:text-gray-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{modelCount || 0}</div>
+              {/* Real agent count — this stat used to show the MODEL
+                  catalog length (21 for everyone, forever). */}
+              <div className="text-2xl font-bold">{agentTotal}</div>
               <Link
                 href="/dashboard/agents"
                 className="text-xs text-primary-600 hover:underline"
@@ -136,6 +187,73 @@ export default function DashboardPage() {
               </Link>
             </CardContent>
           </Card>
+        </div>
+
+        {/* Recent Agents — first list on the page (BUILD leads) */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Recent Agents
+            </h2>
+            <Link
+              href="/dashboard/agents"
+              className="text-sm text-primary-600 hover:underline"
+            >
+              View all
+            </Link>
+          </div>
+
+          {isLoading ? (
+            <div className="mt-4 space-y-4">
+              {[1, 2].map((i) => (
+                <div
+                  key={i}
+                  className="h-16 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800"
+                />
+              ))}
+            </div>
+          ) : agents.length === 0 ? (
+            <Card className="mt-4">
+              <CardContent className="flex flex-col items-center justify-center py-10">
+                <Bot className="h-10 w-10 text-gray-300 dark:text-gray-600" />
+                <h3 className="mt-3 font-medium text-gray-900 dark:text-gray-100">
+                  No agents yet
+                </h3>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  Import one from GitHub or start from a template.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {agents.slice(0, 5).map((agent) => (
+                <Link key={agent.id} href={`/dashboard/agents/${agent.id}`}>
+                  <Card className="transition-shadow hover:shadow-md">
+                    <CardContent className="flex items-center justify-between py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                          <Bot className="h-5 w-5 text-primary-600 dark:text-primary-400" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-gray-900 dark:text-gray-100">
+                            {agent.name}
+                          </span>
+                          <span
+                            className={`rounded px-2 py-0.5 text-xs font-medium ${
+                              frameworkColors[agent.framework] ?? frameworkColors.custom
+                            }`}
+                          >
+                            {agent.framework}
+                          </span>
+                        </div>
+                      </div>
+                      <ArrowRight className="h-5 w-5 text-gray-400" />
+                    </CardContent>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Recent Deployments */}
@@ -225,17 +343,33 @@ export default function DashboardPage() {
         {/* Quick Actions */}
         <div className="mt-8">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Quick Actions</h2>
-          <div className="mt-4 grid gap-4 md:grid-cols-3">
-            <Link href="/dashboard/deployments/new">
+          <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <Link href="/dashboard/agents/new">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
                   <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
-                    <Cpu className="h-6 w-6 text-primary-600 dark:text-primary-400" />
+                    <Bot className="h-6 w-6 text-primary-600 dark:text-primary-400" />
+                  </div>
+                  <div>
+                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Create Agent</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Import from GitHub or start fresh
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </Link>
+
+            <Link href="/dashboard/deployments/new">
+              <Card className="cursor-pointer transition-shadow hover:shadow-md">
+                <CardContent className="flex items-center gap-4 py-6">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/30">
+                    <Cpu className="h-6 w-6 text-blue-600 dark:text-blue-400" />
                   </div>
                   <div>
                     <h3 className="font-medium text-gray-900 dark:text-gray-100">Deploy Model</h3>
                     <p className="text-sm text-gray-500 dark:text-gray-400">
-                      Launch a new inference endpoint
+                      GPU inference on Nosana
                     </p>
                   </div>
                 </CardContent>

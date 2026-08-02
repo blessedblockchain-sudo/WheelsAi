@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   Search,
   Filter,
@@ -274,6 +275,7 @@ function UseTemplateModal({
   template: AgentTemplate;
   onClose: () => void;
 }) {
+  const router = useRouter();
   const [name, setName] = useState(template.title);
   const [agentSlug, setAgentSlug] = useState(slugify(template.title));
   const [description, setDescription] = useState(template.description);
@@ -292,15 +294,16 @@ function UseTemplateModal({
     setError("");
 
     try {
-      await templateApi.use(template.id, {
+      const created = await templateApi.use(template.id, {
         name: name.trim(),
         slug: agentSlug.trim(),
         description: description.trim() || undefined,
       });
-      onClose();
+      // Land the user on their new agent instead of silently closing the
+      // modal over the gallery (INT-B2).
+      router.push(`/dashboard/agents/${created.id}`);
     } catch (err: any) {
       setError(err.message || "Failed to create agent from template");
-    } finally {
       setSubmitting(false);
     }
   }

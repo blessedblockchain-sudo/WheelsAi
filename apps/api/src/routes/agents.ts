@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
+import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { getNosanaClient } from "../services/nosana.js";
@@ -197,6 +198,16 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
     logger.info({ agentId: agent.id, orgId }, "Agent created");
 
+    // Webhook emission (Wave 1) — the 16 subscribable events existed but
+    // nothing ever fired one. Fire-and-forget, house pattern.
+    triggerWebhook(
+      orgId,
+      "agent.created",
+      { agentId: agent.id, name: agent.name, slug: agent.slug },
+      "agent",
+      agent.id,
+    ).catch((err) => logger.error({ err }, "webhook agent.created failed"));
+
     reply.status(201);
     return {
       agent: {
@@ -243,6 +254,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       },
     });
 
+    triggerWebhook(
+      orgId,
+      "agent.updated",
+      { agentId: updatedAgent.id, name: updatedAgent.name },
+      "agent",
+      updatedAgent.id,
+    ).catch((err) => logger.error({ err }, "webhook agent.updated failed"));
+
     return { agent: updatedAgent };
   });
 
@@ -278,6 +297,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     await prisma.agent.delete({ where: { id: agentId } });
 
     logger.info({ agentId, orgId }, "Agent deleted");
+
+    triggerWebhook(
+      orgId,
+      "agent.deleted",
+      { agentId, name: agent.name },
+      "agent",
+      agentId,
+    ).catch((err) => logger.error({ err }, "webhook agent.deleted failed"));
 
     return { message: "Agent deleted" };
   });

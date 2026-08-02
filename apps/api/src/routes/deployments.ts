@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
+import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import {
   getNosanaClient,
@@ -235,6 +236,14 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
       logger.error({ err, deploymentId: deployment.id }, "Failed to submit to Nosana");
     });
 
+    triggerWebhook(
+      orgId,
+      "deployment.started",
+      { deploymentId: deployment.id, name: deployment.name, slug: deployment.slug },
+      "deployment",
+      deployment.id,
+    ).catch((err) => logger.error({ err }, "webhook deployment.started failed"));
+
     reply.status(201);
     return {
       deployment: {
@@ -339,6 +348,14 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
       });
 
       logger.info({ deploymentId }, "Deployment stopped");
+
+      triggerWebhook(
+        orgId,
+        "deployment.stopped",
+        { deploymentId, name: deployment.name },
+        "deployment",
+        deploymentId,
+      ).catch((err) => logger.error({ err }, "webhook deployment.stopped failed"));
 
       return { message: "Deployment stopped" };
     }

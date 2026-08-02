@@ -4,6 +4,7 @@ import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
+import { triggerWebhook } from "../services/webhooks.js";
 import {
   generateTrainingJobDefinition,
   estimateTrainingCost,
@@ -498,6 +499,14 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
       logger.error({ err, jobId: job.id }, "Failed to submit training job");
     });
 
+    triggerWebhook(
+      orgId,
+      "training.started",
+      { jobId: job.id, name: job.name },
+      "training",
+      job.id,
+    ).catch((err) => logger.error({ err }, "webhook training.started failed"));
+
     reply.status(201);
     return {
       job: {
@@ -662,6 +671,16 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     });
 
     logger.info({ jobId, status: body.status, progress: body.progress }, "Training job webhook");
+
+    if (body.status === "completed" || body.status === "failed") {
+      triggerWebhook(
+        job.orgId,
+        body.status === "completed" ? "training.completed" : "training.failed",
+        { jobId, name: job.name, ...(body.error ? { error: body.error } : {}) },
+        "training",
+        jobId,
+      ).catch((err) => logger.error({ err }, "webhook training terminal failed"));
+    }
 
     return { received: true };
   });

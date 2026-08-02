@@ -45,3 +45,7 @@ export {
   startAlertEvaluatorQueue,
   stopAlertEvaluatorQueue,
 } from "./alert-evaluator.queue.js";
+export {
+  startAnalyticsSnapshotQueue,
+  stopAnalyticsSnapshotQueue,
+} from "./analytics-snapshot.queue.js";

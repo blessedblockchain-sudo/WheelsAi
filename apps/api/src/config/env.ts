@@ -207,6 +207,11 @@ const envSchema = z.object({
   // Set to 0 to disable.
   ALERT_EVALUATOR_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
 
+  // Analytics-snapshot BullMQ worker (Wave 1): maintains today's rolling
+  // daily snapshot + finalizes yesterday's for orgs with recent usage.
+  // Set to 0 to disable.
+  ANALYTICS_SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(0).default(3_600_000),
+
   // Platform curation key (Wave 1): gates the marketplace isFeatured
   // toggle — curation is an OPERATOR action, not a publisher one. The
   // route reads process.env at request time (rotation without reboot);

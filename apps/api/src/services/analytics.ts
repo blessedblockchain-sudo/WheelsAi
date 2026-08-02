@@ -300,6 +300,33 @@ export async function createDailySnapshot(orgId: string, date: Date) {
     }
   }
 
+  // Per-AGENT rollup (Wave 1): the agentStats column existed with no
+  // writer, which is why per-agent analytics had to be retitled
+  // "Workspace Analytics" (INT-B3). Agents reach usage through their
+  // AgentDeployment.modelDeploymentId join.
+  const agentStats: Record<string, any> = {};
+  const agentDeployments = await prisma.agentDeployment.findMany({
+    where: { agent: { orgId }, modelDeploymentId: { not: null } },
+    select: { agentId: true, modelDeploymentId: true },
+  });
+  for (const link of agentDeployments) {
+    const stats = link.modelDeploymentId
+      ? deploymentStats[link.modelDeploymentId]
+      : undefined;
+    if (!stats) continue;
+    const existing = agentStats[link.agentId] ?? {
+      requests: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      costCents: 0,
+    };
+    existing.requests += stats.requests;
+    existing.tokensIn += stats.tokensIn;
+    existing.tokensOut += stats.tokensOut;
+    existing.costCents += stats.costCents;
+    agentStats[link.agentId] = existing;
+  }
+
   return prisma.analyticsSnapshot.upsert({
     where: {
       orgId_snapshotType_periodStart: {
@@ -323,6 +350,7 @@ export async function createDailySnapshot(orgId: string, date: Date) {
       p99LatencyMs: latencies[p99Index] || null,
       errorRate: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : null,
       deploymentStats,
+      agentStats,
     },
     update: {
       totalRequests: BigInt(totalRequests),
@@ -335,6 +363,7 @@ export async function createDailySnapshot(orgId: string, date: Date) {
       p99LatencyMs: latencies[p99Index] || null,
       errorRate: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : null,
       deploymentStats,
+      agentStats,
     },
   });
 }

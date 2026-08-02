@@ -59,51 +59,72 @@ const overviewItem: NavItem = {
   icon: LayoutDashboard,
 };
 
+/**
+ * The nav IS the positioning (B1 / INT-X1): three groups matching the
+ * three verbs — Build, Deploy, Monetize — in that order, because BUILD
+ * leads. Everything stays VISIBLE (the match-up directive supersedes
+ * the old plan to flag-gate the breadth behind a default-off
+ * "Advanced" group: surfaces tell the truth about their state instead
+ * of hiding). Groups are still collapsible — that's a user preference,
+ * not a default.
+ *
+ * Three nav lies fixed here:
+ *   - "Browse Agents" opened the publisher's OWN listings manager →
+ *     renamed "My Listings", with a real "Browse Marketplace" pointing
+ *     at the public marketplace.
+ *   - "Playground" pointed at the deployment chat, which is a GPU/model
+ *     surface, not the agent one → "GPU Playground" under Deploy (it
+ *     proxies to a real healthy node since W0-3); the per-agent
+ *     playground lives on each agent under Build.
+ *   - The entire Deploy leg was buried in a collapsed group.
+ */
 const navGroups: NavGroup[] = [
   {
     label: "Build",
     items: [
       { name: "My Agents", href: "/dashboard/agents", icon: Bot },
       { name: "Create Agent", href: "/dashboard/agents/new", icon: Plus },
-      { name: "Playground", href: "/dashboard/playground", icon: MessageSquare },
       { name: "Templates", href: "/dashboard/templates", icon: FileCode },
-    ],
-  },
-  {
-    label: "Marketplace",
-    items: [
-      { name: "Browse Agents", href: "/dashboard/marketplace", icon: Store },
-      ...(featureFlags.tokenUi
-        ? [{ name: "Token Marketplace", href: "/dashboard/marketplace/tokens", icon: Coins } as NavItem]
-        : []),
-      { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
-      { name: "Revenue", href: "/dashboard/marketplace/revenue", icon: DollarSign },
-      { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },
-    ],
-  },
-  {
-    label: "Advanced",
-    items: [
-      { name: "OpenClaw", href: "/dashboard/openclaw", icon: Sparkles },
-      { name: "Deployments", href: "/dashboard/deployments", icon: Box },
-      { name: "Models", href: "/dashboard/models", icon: Cpu },
-      { name: "Training", href: "/dashboard/training", icon: GraduationCap },
-      { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
       { name: "Knowledge", href: "/dashboard/knowledge", icon: Database },
       { name: "Memory", href: "/dashboard/memory", icon: Brain },
+      { name: "Training", href: "/dashboard/training", icon: GraduationCap },
+      { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
       { name: "Orchestration", href: "/dashboard/orchestrations", icon: GitBranch },
       { name: "Scheduler", href: "/dashboard/scheduler", icon: Clock },
+    ],
+  },
+  {
+    label: "Deploy",
+    items: [
+      { name: "Deployments", href: "/dashboard/deployments", icon: Box },
+      { name: "Models", href: "/dashboard/models", icon: Cpu },
+      { name: "GPU Playground", href: "/dashboard/playground", icon: MessageSquare },
+      { name: "OpenClaw", href: "/dashboard/openclaw", icon: Sparkles },
       { name: "Monitoring", href: "/dashboard/monitoring", icon: Bell },
       { name: "Domains", href: "/dashboard/domains", icon: Globe },
       { name: "Integrations", href: "/dashboard/integrations", icon: Plug },
-      { name: "Analytics", href: "/dashboard/analytics", icon: BarChart3 },
+    ],
+  },
+  {
+    label: "Monetize",
+    items: [
+      { name: "Browse Marketplace", href: "/marketplace", icon: Store },
+      { name: "My Listings", href: "/dashboard/marketplace", icon: Upload },
+      { name: "Installed Agents", href: "/dashboard/marketplace/installs", icon: Bot },
+      { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
+      { name: "Revenue", href: "/dashboard/marketplace/revenue", icon: DollarSign },
+      { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },
+      ...(featureFlags.tokenUi
+        ? [{ name: "Tokens", href: "/dashboard/marketplace/tokens", icon: Coins } as NavItem]
+        : []),
+      { name: "Billing", href: "/dashboard/billing", icon: CreditCard },
     ],
   },
   {
     label: "Account",
     items: [
       { name: "API Keys", href: "/dashboard/keys", icon: Key },
-      { name: "Billing", href: "/dashboard/billing", icon: CreditCard },
+      { name: "Usage Analytics", href: "/dashboard/analytics", icon: BarChart3 },
       { name: "Settings", href: "/dashboard/settings", icon: Settings },
       { name: "Branding", href: "/dashboard/settings/branding", icon: Sparkles },
     ],
@@ -113,9 +134,9 @@ const navGroups: NavGroup[] = [
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({
-    "Advanced": true,
-  });
+  // Every group starts EXPANDED: the three verbs are the product, and
+  // a collapsed leg is an invisible leg.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const { resolvedTheme, setTheme } = useTheme();
 
   const handleSignOut = async () => {
@@ -171,14 +192,7 @@ export function Sidebar() {
                 onClick={() => toggleGroup(group.label)}
                 className="flex w-full items-center justify-between px-3 py-1"
               >
-                <span
-                  className={cn(
-                    "font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500",
-                    group.label === "Advanced"
-                      ? "text-[9px] opacity-60"
-                      : "text-[10px]"
-                  )}
-                >
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
                   {group.label}
                 </span>
                 <ChevronDown

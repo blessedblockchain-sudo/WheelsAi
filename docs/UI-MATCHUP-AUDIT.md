@@ -197,18 +197,27 @@ deleted in Wave 0 regardless (INT-B3).
 
 Sequenced by dependency, not importance. Sizes are the audit's per-item calls.
 
-**Wave 0 — truth + free wins (all S, no blockers):**
-residue purge (this commit) · mount the channel stack (webhook route +
-agent-message worker) · de-mock the deployment playground + endpoint cards ·
-remove the fabricated-success writers (scheduler/orchestration setTimeout rows,
-OpenClaw fake RUNNING/URLs, hidden token card) so every surface shows its real
-state · S3 env provisioning for datasets · unified pricing module.
+**Wave 0 — truth + free wins (all S, no blockers): ✅ COMPLETE 2026-08-01**
+residue purge (`d760787`) · channel stack mounted (`49f1dcf`) · playground +
+endpoint cards de-mocked (`78ef18e`) · fabricated-success writers removed
+(`8c88d31`) · dataset storage honesty + real delete (`71922a1`) · unified
+pricing module (`61906c7`).
 
-**Wave 1 — cheap engines (S-M each):**
-scheduler execution worker · alert evaluator + uptime prober · test-case
-editor + real test runner · webhook event emission · market-sync worker (real
-prices + availability) · analytics snapshots worker · `isFeatured` curation
-writer.
+**Wave 1 — cheap engines (S-M each): ✅ COMPLETE 2026-08-02** (except
+market-sync, deferred to C1 — its value is real mainnet market addresses)
+scheduler execution worker (`8bc6978`) · webhook emission, 8 sites
+(`a80eaae`) · uptime prober + alert evaluator (`33a1d31`) · tick-observed
+deployment events (`2f7b403`) · `isFeatured` curation writer (`332e000`) ·
+analytics snapshots + per-agent rollup (`d601203`) · real test runner +
+case editor (`b980c86`).
+
+Three things Wave 1 found that the audit hadn't: the assertion engine ran
+**user-supplied JavaScript via `new Function()` in the API process** (RCE for
+any authenticated user, behind a comment claiming it was sandboxed — now fails
+closed); the "semantic" assertion reported word overlap as semantic similarity
+(now labeled honestly); and `latency_p95` alert rules cannot be computed from
+the per-window aggregates that exist, so the evaluator skips and counts them
+rather than approximating a fabricated percentile.
 
 **Wave 2 — keystone data + money (L each; some pair with Phase B tickets):**
 pgvector RAG + memory wired into chat paths · token trade feed (WS consumer +

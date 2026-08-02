@@ -22,9 +22,11 @@ import {
   BarChart3,
   ShieldCheck,
 } from "lucide-react";
+import { toast } from "sonner";
 import {
   marketplaceApi,
   tokenApi,
+  ApiError,
   type MarketplaceListing,
   type MarketplaceReview,
   type AgentToken,
@@ -32,6 +34,8 @@ import {
   type TokenSnapshot,
 } from "@/lib/api";
 import { TokenChart } from "@/components/dashboard/token-chart";
+import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
+import { useSession } from "@/hooks/use-session";
 
 function formatPrice(listing: MarketplaceListing): string {
   if (listing.pricingModel === "free") return "Free";
@@ -126,6 +130,14 @@ export default function ListingDetailPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
 
+  // Install flow (INT-M1) — the buyer conversion.
+  const { authed } = useSession();
+  const [installState, setInstallState] = useState<{
+    installed: boolean;
+    clonedAgentId: string | null;
+  } | null>(null);
+  const [installing, setInstalling] = useState(false);
+
   // Token data
   const [tokenData, setTokenData] = useState<AgentToken | null>(null);
   const [chartData, setChartData] = useState<TokenSnapshot[]>([]);
@@ -186,6 +198,49 @@ export default function ListingDetailPage() {
     }
   }, [slug]);
 
+  useEffect(() => {
+    if (!authed || !listing) return;
+    let cancelled = false;
+    marketplaceApi
+      .checkInstallStatus(listing.id)
+      .then((res) => {
+        if (!cancelled) {
+          setInstallState({
+            installed: res.isInstalled,
+            clonedAgentId: res.install?.clonedAgentId ?? null,
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setInstallState({ installed: false, clonedAgentId: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authed, listing]);
+
+  async function handleInstall() {
+    if (!listing || installing) return;
+    setInstalling(true);
+    try {
+      const res = await marketplaceApi.installAgent(listing.id);
+      setInstallState({ installed: true, clonedAgentId: res.clonedAgent.id });
+      toast.success(`${listing.title} installed — it's now in your agents`);
+    } catch (error) {
+      const message =
+        error instanceof ApiError &&
+        typeof error.data === "object" &&
+        error.data !== null &&
+        "message" in error.data &&
+        typeof (error.data as { message?: unknown }).message === "string"
+          ? (error.data as { message: string }).message
+          : "Failed to install agent";
+      toast.error(message);
+    } finally {
+      setInstalling(false);
+    }
+  }
+
   const hasToken = listing?.pricingModel === "tokenized" && tokenData !== null;
 
   if (isLoading) {
@@ -244,17 +299,7 @@ export default function ListingDetailPage() {
             </div>
             <span className="text-xl font-bold">WheelsAI</span>
           </Link>
-          <div className="flex items-center gap-4">
-            <Link
-              href="/login"
-              className="text-sm font-medium text-gray-600 hover:text-gray-900"
-            >
-              Sign in
-            </Link>
-            <Link href="/register" className="btn-primary">
-              Get Started
-            </Link>
-          </div>
+          <MarketplaceAuthNav />
         </div>
       </header>
 
@@ -721,13 +766,37 @@ export default function ListingDetailPage() {
                 )}
               </div>
 
-              <Link
-                href="/login"
-                className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700"
-              >
-                <Play className="h-4 w-4" />
-                Deploy Agent
-              </Link>
+              {/* Install CTA (INT-M1) — the buyer conversion */}
+              {authed && installState?.installed ? (
+                <Link
+                  href={
+                    installState.clonedAgentId
+                      ? `/dashboard/agents/${installState.clonedAgentId}`
+                      : "/dashboard/marketplace/installs"
+                  }
+                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-green-600 px-4 py-3 font-medium text-white hover:bg-green-700"
+                >
+                  <CheckCircle className="h-4 w-4" />
+                  Installed — Open in Dashboard
+                </Link>
+              ) : authed ? (
+                <button
+                  onClick={handleInstall}
+                  disabled={installing || installState === null}
+                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Download className="h-4 w-4" />
+                  {installing ? "Installing…" : "Install Agent"}
+                </button>
+              ) : (
+                <Link
+                  href={`/login?next=/marketplace/${slug}`}
+                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700"
+                >
+                  <Play className="h-4 w-4" />
+                  Sign in to install
+                </Link>
+              )}
 
               {hasToken && (
                 <button
@@ -750,7 +819,11 @@ export default function ListingDetailPage() {
               )}
 
               <p className="mt-3 text-center text-xs text-gray-500">
-                Sign in to deploy this agent to your account
+                {authed
+                  ? installState?.installed
+                    ? "Installed as a private copy in your workspace."
+                    : "Installs a private copy of this agent into your workspace."
+                  : "Sign in to install this agent to your account."}
               </p>
             </div>
 

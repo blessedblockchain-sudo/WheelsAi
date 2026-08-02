@@ -24,6 +24,7 @@ import {
   type AgentToken,
 } from "@/lib/api";
 import { TokenCard, type TokenCardData } from "@/components/dashboard/token-card";
+import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
 
 const SORT_OPTIONS = [
   { value: "popular", label: "Most Popular" },
@@ -330,17 +331,7 @@ function MarketplaceContent() {
               Docs
             </Link>
           </nav>
-          <div className="flex items-center gap-4">
-            <Link
-              href="/login"
-              className="text-sm font-medium text-gray-600 hover:text-gray-900"
-            >
-              Sign in
-            </Link>
-            <Link href="/register" className="btn-primary">
-              Get Started
-            </Link>
-          </div>
+          <MarketplaceAuthNav />
         </div>
       </header>
 

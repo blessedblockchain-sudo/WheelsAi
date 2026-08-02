@@ -17,6 +17,18 @@ interface LoginForm {
   password: string;
 }
 
+/**
+ * Post-login destination. Honors ?next= from the dashboard middleware /
+ * install CTAs, but only same-origin paths: must start with "/" and not
+ * "//" (protocol-relative would be an open redirect).
+ */
+function safeNextPath(): string {
+  if (typeof window === "undefined") return "/dashboard";
+  const next = new URLSearchParams(window.location.search).get("next");
+  if (next && next.startsWith("/") && !next.startsWith("//")) return next;
+  return "/dashboard";
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
@@ -32,7 +44,7 @@ export default function LoginPage() {
     try {
       await authApi.login(data.email, data.password);
       toast.success("Welcome back!");
-      router.push("/dashboard");
+      router.push(safeNextPath());
     } catch (error) {
       if (error instanceof ApiError) {
         const message =

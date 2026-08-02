@@ -55,9 +55,21 @@ interface AgentDeploymentDelegateStub {
       status: { in: string[] };
       nosanaJobIds: { isEmpty: false };
     };
-    select: { id: true; status: true; nosanaJobIds: true };
+    // AgentDeployment has no orgId column — the org comes through the
+    // agent join (webhook emission needs it).
+    select: {
+      id: true;
+      status: true;
+      nosanaJobIds: true;
+      agent: { select: { orgId: true } };
+    };
   }) => Promise<
-    Array<{ id: string; status: string; nosanaJobIds: string[] }>
+    Array<{
+      id: string;
+      status: string;
+      nosanaJobIds: string[];
+      agent: { orgId: string };
+    }>
   >;
   updateMany: (args: {
     where: { id: string; status: string };
@@ -77,6 +89,7 @@ interface ModelDeploymentDelegateStub {
     };
     select: {
       id: true;
+      orgId: true;
       status: true;
       nosanaJobIds: true;
       nodes: { select: { id: true; nodeUrl: true; healthStatus: true } };
@@ -84,6 +97,7 @@ interface ModelDeploymentDelegateStub {
   }) => Promise<
     Array<{
       id: string;
+      orgId: string;
       status: string;
       nosanaJobIds: string[];
       nodes: Array<{ id: string; nodeUrl: string; healthStatus: string }>;
@@ -155,6 +169,8 @@ export interface BuildDeploymentStatusTickDepsInput {
    * (validateEnv), so this branch cannot run there.
    */
   allowMock: boolean;
+  /** Webhook emission for observed transitions (queue wires triggerWebhook). */
+  emitTransition: DeploymentStatusTickDeps["emitTransition"];
 }
 
 function isMockNosanaId(jobId: string): boolean {
@@ -180,7 +196,12 @@ export function buildDeploymentStatusTickDeps(
             status: { in: AGENT_DEPLOYMENT_NON_TERMINAL_STATUSES },
             nosanaJobIds: { isEmpty: false },
           },
-          select: { id: true, status: true, nosanaJobIds: true },
+          select: {
+            id: true,
+            status: true,
+            nosanaJobIds: true,
+            agent: { select: { orgId: true } },
+          },
         }),
         prisma.deployment.findMany({
           where: {
@@ -189,6 +210,7 @@ export function buildDeploymentStatusTickDeps(
           },
           select: {
             id: true,
+            orgId: true,
             status: true,
             nosanaJobIds: true,
             nodes: { select: { id: true, nodeUrl: true, healthStatus: true } },
@@ -200,12 +222,14 @@ export function buildDeploymentStatusTickDeps(
         ...agentRows.map((r) => ({
           kind: "agent" as const,
           id: r.id,
+          orgId: r.agent.orgId,
           status: r.status,
           nosanaJobIds: r.nosanaJobIds,
         })),
         ...modelRows.map((r) => ({
           kind: "model" as const,
           id: r.id,
+          orgId: r.orgId,
           status: r.status,
           nosanaJobIds: r.nosanaJobIds,
           nodes: r.nodes,
@@ -269,5 +293,7 @@ export function buildDeploymentStatusTickDeps(
         },
       });
     },
+
+    emitTransition: input.emitTransition,
   };
 }

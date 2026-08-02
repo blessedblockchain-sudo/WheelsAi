@@ -32,6 +32,7 @@ function row(overrides: Partial<DeploymentStatusRow> = {}): DeploymentStatusRow 
   return {
     kind: "agent",
     id: "dep_1",
+    orgId: "org_1",
     status: "deploying",
     nosanaJobIds: ["job_1"],
     ...overrides,
@@ -45,16 +46,19 @@ function makeDeps(opts: {
   /** Probe result (or throw) per nodeUrl; default healthy/40ms. */
   nodeProbes?: Record<string, { healthy: boolean; latencyMs: number } | Error>;
   persistNodeHealthError?: Error;
+  emitError?: Error;
 }) {
   const transitions: DeploymentStatusTransition[] = [];
   const polledJobs: string[] = [];
   const probedUrls: string[] = [];
   const nodeHealthWrites: NodeHealthObservation[] = [];
+  const emitted: DeploymentStatusTransition[] = [];
   return {
     transitions,
     polledJobs,
     probedUrls,
     nodeHealthWrites,
+    emitted,
     deps: {
       loadDeployments: async () => opts.rows,
       getJobState: async (jobId: string) => {
@@ -76,6 +80,10 @@ function makeDeps(opts: {
       persistNodeHealth: async (obs: NodeHealthObservation) => {
         if (opts.persistNodeHealthError) throw opts.persistNodeHealthError;
         nodeHealthWrites.push(obs);
+      },
+      emitTransition: async (t: DeploymentStatusTransition) => {
+        if (opts.emitError) throw opts.emitError;
+        emitted.push(t);
       },
     },
   };
@@ -148,6 +156,7 @@ test("tick persists an observed transition with CAS fields", async () => {
     {
       kind: "agent",
       id: "dep_1",
+      orgId: "org_1",
       fromStatus: "deploying",
       toStatus: "running",
       observedAt: NOW,
@@ -288,6 +297,7 @@ test("loadDeployments errors bubble so BullMQ records the tick failure", async (
         persistTransition: async () => ({ count: 1 }),
         checkNodeHealth: async () => ({ healthy: true, latencyMs: 1 }),
         persistNodeHealth: async () => {},
+        emitTransition: async () => {},
       },
     ),
     /DB unreachable/,
@@ -461,4 +471,44 @@ test("two identical ticks observe identically (pure function of rows + chain, no
   const second = await run();
   assert.deepEqual(first.result, second.result);
   assert.deepEqual(first.transitions, second.transitions);
+});
+
+// ============================================
+// Tick-observed webhook emission (Wave 1)
+// ============================================
+
+test("a CAS-winning transition is emitted; a CAS loser is not", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const winner = makeDeps({
+    rows: [row({ status: "deploying" })],
+    jobStates: { job_1: "running" },
+  });
+  await runDeploymentStatusTick({ now: NOW }, winner.deps);
+  assert.equal(winner.emitted.length, 1);
+  assert.equal(winner.emitted[0]!.toStatus, "running");
+  assert.equal(winner.emitted[0]!.orgId, "org_1");
+
+  const loser = makeDeps({
+    rows: [row({ status: "deploying" })],
+    jobStates: { job_1: "running" },
+    persistCount: 0, // concurrent writer won the CAS
+  });
+  await runDeploymentStatusTick({ now: NOW }, loser.deps);
+  assert.equal(loser.emitted.length, 0);
+});
+
+test("an emitTransition throw never fails the row", async () => {
+  const { runDeploymentStatusTick } = await import(
+    "../services/runDeploymentStatusTick.js"
+  );
+  const { deps } = makeDeps({
+    rows: [row({ status: "deploying" })],
+    jobStates: { job_1: "running" },
+    emitError: new Error("webhook store down"),
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(result.transitioned, 1);
+  assert.equal(result.failed, 0);
 });

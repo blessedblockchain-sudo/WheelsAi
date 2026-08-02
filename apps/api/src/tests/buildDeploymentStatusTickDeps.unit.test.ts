@@ -33,9 +33,15 @@ function job(status: NosanaJob["status"]): NosanaJob {
 type StubNode = { id: string; nodeUrl: string; healthStatus: string };
 
 function makePrismaStub(opts: {
-  agentRows?: Array<{ id: string; status: string; nosanaJobIds: string[] }>;
+  agentRows?: Array<{
+    id: string;
+    status: string;
+    nosanaJobIds: string[];
+    agent?: { orgId: string };
+  }>;
   modelRows?: Array<{
     id: string;
+    orgId?: string;
     status: string;
     nosanaJobIds: string[];
     nodes?: StubNode[];
@@ -48,7 +54,10 @@ function makePrismaStub(opts: {
       agentDeployment: {
         findMany: async (args: any) => {
           calls.push({ op: "agentDeployment.findMany", args });
-          return opts.agentRows ?? [];
+          return (opts.agentRows ?? []).map((r) => ({
+            ...r,
+            agent: r.agent ?? { orgId: "org_1" },
+          }));
         },
         updateMany: async (args: any) => {
           calls.push({ op: "agentDeployment.updateMany", args });
@@ -60,6 +69,7 @@ function makePrismaStub(opts: {
           calls.push({ op: "deployment.findMany", args });
           return (opts.modelRows ?? []).map((r) => ({
             ...r,
+            orgId: r.orgId ?? "org_1",
             nodes: r.nodes ?? [],
           }));
         },
@@ -102,6 +112,7 @@ async function buildDeps(opts: {
     checkNodeHealth:
       opts.checkNodeHealth ?? (async () => ({ healthy: true, latencyMs: 40 })),
     allowMock: opts.allowMock ?? false,
+    emitTransition: async () => {},
   });
 }
 
@@ -124,10 +135,11 @@ test("loadDeployments merges agent + model rows tagged with their kind; model ro
   const deps = await buildDeps({ stub });
   const rows = await deps.loadDeployments();
   assert.deepEqual(rows, [
-    { kind: "agent", id: "a1", status: "deploying", nosanaJobIds: ["j1"] },
+    { kind: "agent", id: "a1", orgId: "org_1", status: "deploying", nosanaJobIds: ["j1"] },
     {
       kind: "model",
       id: "m1",
+      orgId: "org_1",
       status: "provisioning",
       nosanaJobIds: ["j2"],
       nodes: [{ id: "n1", nodeUrl: "https://n1.node.nos.ci", healthStatus: "unknown" }],
@@ -152,6 +164,7 @@ test("loadDeployments filters to non-terminal statuses and non-empty job ids (pe
     id: true,
     status: true,
     nosanaJobIds: true,
+    agent: { select: { orgId: true } },
   });
 
   const modelFind = stub.calls.find((c) => c.op === "deployment.findMany")!;
@@ -242,6 +255,7 @@ test("persistTransition CASes on {id, status: fromStatus} for agent rows", async
   await deps.persistTransition({
     kind: "agent",
     id: "a1",
+    orgId: "org_1",
     fromStatus: "deploying",
     toStatus: "running",
     observedAt: NOW,
@@ -258,6 +272,7 @@ test("persistTransition records stoppedAt on terminal transitions (both kinds)",
   await deps.persistTransition({
     kind: "model",
     id: "m1",
+    orgId: "org_1",
     fromStatus: "running",
     toStatus: "stopped",
     observedAt: NOW,
@@ -268,6 +283,7 @@ test("persistTransition records stoppedAt on terminal transitions (both kinds)",
   await deps.persistTransition({
     kind: "agent",
     id: "a1",
+    orgId: "org_1",
     fromStatus: "running",
     toStatus: "stopped",
     observedAt: NOW,
@@ -283,6 +299,7 @@ test("persistTransition records lastError on agent failure; model rows have no l
   await deps.persistTransition({
     kind: "agent",
     id: "a1",
+    orgId: "org_1",
     fromStatus: "running",
     toStatus: "failed",
     observedAt: NOW,
@@ -295,6 +312,7 @@ test("persistTransition records lastError on agent failure; model rows have no l
   await deps.persistTransition({
     kind: "model",
     id: "m1",
+    orgId: "org_1",
     fromStatus: "running",
     toStatus: "failed",
     observedAt: NOW,

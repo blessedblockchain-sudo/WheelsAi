@@ -55,6 +55,8 @@ export interface DeploymentNodeRow {
 export interface DeploymentStatusRow {
   kind: DeploymentKind;
   id: string;
+  /** Owning org — carried so observed transitions can emit webhooks. */
+  orgId: string;
   /** Current persisted status — the CAS guard for the transition. */
   status: string;
   nosanaJobIds: string[];
@@ -65,6 +67,7 @@ export interface DeploymentStatusRow {
 export interface DeploymentStatusTransition {
   kind: DeploymentKind;
   id: string;
+  orgId: string;
   fromStatus: string;
   toStatus: string;
   observedAt: Date;
@@ -95,6 +98,13 @@ export interface DeploymentStatusTickDeps {
   ) => Promise<{ healthy: boolean; latencyMs: number }>;
   /** Race-safe write of a probe result (updateMany by node id). */
   persistNodeHealth: (observation: NodeHealthObservation) => Promise<void>;
+  /**
+   * Fired after a transition WINS its CAS — the tick-observed side of
+   * the deployment.* webhook events (running/failed and job-ended
+   * stopped; the user-initiated started/stopped emit at the routes).
+   * Best-effort: a throw here never fails the row.
+   */
+  emitTransition: (transition: DeploymentStatusTransition) => Promise<void>;
 }
 
 export interface DeploymentStatusTickResult {
@@ -172,15 +182,21 @@ export async function runDeploymentStatusTick(
       if (next === null || next === row.status) {
         unchanged += 1;
       } else {
-        const { count } = await deps.persistTransition({
+        const transition = {
           kind: row.kind,
           id: row.id,
+          orgId: row.orgId,
           fromStatus: row.status,
           toStatus: next,
           observedAt: input.now,
-        });
+        };
+        const { count } = await deps.persistTransition(transition);
         if (count > 0) {
           transitioned += 1;
+          // Only the CAS winner announces — a loser emitting would
+          // duplicate the event from whichever writer actually moved
+          // the row.
+          await deps.emitTransition(transition).catch(() => {});
         } else {
           // CAS miss — a concurrent writer already moved the row.
           unchanged += 1;

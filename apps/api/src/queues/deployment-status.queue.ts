@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { buildDeploymentStatusTickDeps } from "../services/buildDeploymentStatusTickDeps.js";
 import { getNosanaClient } from "../services/nosana.js";
 import { runDeploymentStatusTick } from "../services/runDeploymentStatusTick.js";
+import { triggerWebhook } from "../services/webhooks.js";
 import { createLogger } from "../utils/logger.js";
 import { getQueueConnectionOpts } from "./connection.js";
 
@@ -63,6 +64,34 @@ export async function startDeploymentStatusQueue(): Promise<void> {
         getJobStatus: (jobId) => client.getJobStatusStrict(jobId),
         checkNodeHealth: (nodeUrl) => client.checkNodeHealth(nodeUrl),
         allowMock: env.ALLOW_NOSANA_MOCK,
+        // Tick-observed deployment.* events (running / failed / job-ended
+        // stopped). degraded has no event type — skipped.
+        emitTransition: async (t) => {
+          const eventType =
+            t.toStatus === "running"
+              ? ("deployment.running" as const)
+              : t.toStatus === "failed"
+                ? ("deployment.failed" as const)
+                : t.toStatus === "stopped"
+                  ? ("deployment.stopped" as const)
+                  : null;
+          if (!eventType) return;
+          await triggerWebhook(
+            t.orgId,
+            eventType,
+            {
+              deploymentId: t.id,
+              deploymentKind: t.kind,
+              fromStatus: t.fromStatus,
+              toStatus: t.toStatus,
+              observedAt: t.observedAt.toISOString(),
+            },
+            "deployment",
+            t.id,
+          ).catch((err) =>
+            logger.error({ err, eventType }, "tick webhook emission failed"),
+          );
+        },
       });
       const result = await runDeploymentStatusTick({ now: new Date() }, deps);
       logger.info(result, "Deployment status tick complete");

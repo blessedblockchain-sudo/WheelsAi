@@ -106,6 +106,24 @@ export interface AuthResponse {
   token: string;
 }
 
+/**
+ * A 2FA-gated login answers with a challenge instead of a session (B5) —
+ * no cookie is set until the code is verified at /login/2fa.
+ */
+export interface TwoFactorChallengeResponse {
+  requires2FA: true;
+  challengeToken: string;
+  expiresAt: string;
+}
+
+export type LoginResponse = AuthResponse | TwoFactorChallengeResponse;
+
+export function isTwoFactorChallenge(
+  res: LoginResponse,
+): res is TwoFactorChallengeResponse {
+  return (res as TwoFactorChallengeResponse).requires2FA === true;
+}
+
 export const authApi = {
   register: (email: string, password: string) =>
     api<AuthResponse>("/api/auth/register", {
@@ -114,9 +132,16 @@ export const authApi = {
     }),
 
   login: (email: string, password: string) =>
-    api<AuthResponse>("/api/auth/login", {
+    api<LoginResponse>("/api/auth/login", {
       method: "POST",
       body: { email, password },
+    }),
+
+  /** Redeem a 2FA challenge for a session (B5). */
+  completeTwoFactorLogin: (challengeToken: string, token: string) =>
+    api<AuthResponse>("/api/auth/login/2fa", {
+      method: "POST",
+      body: { challengeToken, token },
     }),
 
   logout: () =>
@@ -133,8 +158,10 @@ export const authApi = {
       body: { walletAddress },
     }),
 
+  // Can answer with a 2FA challenge instead of a session (B5) — a wallet
+  // signature is one factor, so 2FA gates this door too.
   walletVerify: (walletAddress: string, signature: string, nonce: string) =>
-    api<AuthResponse>("/api/auth/wallet/verify", {
+    api<LoginResponse>("/api/auth/wallet/verify", {
       method: "POST",
       body: { walletAddress, signature, nonce },
     }),
@@ -3483,8 +3510,9 @@ export const twoFactorApi = {
   disable: (token: string) => api<{ success: boolean; message: string }>("/api/2fa/disable", { method: "POST", body: { token } }),
   regenerateBackupCodes: (token: string) => api<{ backupCodes: string[] }>("/api/2fa/backup-codes/regenerate", { method: "POST", body: { token } }),
   setRecoveryEmail: (email: string) => api<{ success: boolean }>("/api/2fa/recovery-email", { method: "POST", body: { email } }),
-  createChallenge: (userId: string) => api<{ required: boolean; challengeToken?: string; expiresAt?: string }>("/api/2fa/challenge", { method: "POST", body: { userId } }),
-  verifyChallenge: (challengeToken: string, token: string) => api<{ userId: string; valid: boolean }>("/api/2fa/challenge/verify", { method: "POST", body: { challengeToken, token } }),
+  // The public challenge endpoints were removed in B5 (user-enumeration
+  // oracle); the login flow mints and redeems challenges itself via
+  // authApi.login + authApi.completeTwoFactorLogin.
 };
 
 // ============================================

@@ -197,6 +197,23 @@ export async function findUserByEmail(email: string) {
   });
 }
 
+/**
+ * Load a user with memberships by id — used by the 2FA login completion
+ * (B5), which knows only the userId the validated challenge carries.
+ */
+export async function findUserById(userId: string) {
+  return prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      memberships: {
+        include: {
+          org: true,
+        },
+      },
+    },
+  });
+}
+
 export async function findUserByWallet(walletAddress: string) {
   return prisma.user.findUnique({
     where: { walletAddress },

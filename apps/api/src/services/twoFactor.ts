@@ -255,8 +255,16 @@ export async function validateChallenge(challengeToken: string, totpToken: strin
   if (challenge.isUsed) throw new Error("Challenge already used");
   if (challenge.expiresAt < new Date()) throw new Error("Challenge expired");
 
+  // verify2FA answers {valid: true, method: "none"} when the user has no
+  // ENABLED 2FA — a deliberate "skip" for optional step-up callers, and
+  // an auth BYPASS here: since B5 this challenge is what mints a
+  // session, so a holder of a challenge token whose 2FA was disabled
+  // (or never existed) would pass with any six digits. A challenge may
+  // only be redeemed by a real second factor.
   const result = await verify2FA(challenge.userId, totpToken);
-  if (!result.valid) throw new Error("Invalid verification code");
+  if (!result.valid || result.method === "none") {
+    throw new Error("Invalid verification code");
+  }
 
   await prisma.twoFactorChallenge.update({
     where: { id: challenge.id },

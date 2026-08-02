@@ -7,8 +7,6 @@ import {
   regenerateBackupCodes,
   get2FAStatus,
   setRecoveryEmail,
-  createChallenge,
-  validateChallenge,
 } from "../services/twoFactor.js";
 
 // ============================================
@@ -92,26 +90,17 @@ export async function twoFactorRoutes(app: FastifyInstance) {
   // Public routes (login flow)
   // ============================================
 
-  // Create a 2FA challenge (called during login when 2FA is required)
-  app.post<{ Body: { userId: string } }>("/challenge", async (request, reply) => {
-    try {
-      const result = await createChallenge(request.body.userId);
-      if (!result) {
-        return reply.send({ required: false });
-      }
-      return reply.send({ required: true, ...result });
-    } catch (error: any) {
-      return reply.status(400).send({ error: error.message });
-    }
-  });
-
-  // Validate a 2FA challenge (user submits TOTP code)
-  app.post<{ Body: { challengeToken: string; token: string } }>("/challenge/verify", async (request, reply) => {
-    try {
-      const result = await validateChallenge(request.body.challengeToken, request.body.token);
-      return reply.send(result);
-    } catch (error: any) {
-      return reply.status(400).send({ error: error.message });
-    }
-  });
+  // The public POST /challenge and /challenge/verify routes that used to
+  // live here are GONE (B5):
+  //
+  //   - /challenge accepted a raw userId from anyone and answered
+  //     `{required: true|false}` — an unauthenticated oracle for "does
+  //     this user id exist and have 2FA on", plus a way to mint
+  //     challenge rows for other people at will.
+  //   - /challenge/verify consumed a challenge but issued no session, so
+  //     it could only ever burn a legitimate user's challenge.
+  //
+  // Challenges are now minted by POST /api/auth/login (and the wallet
+  // login) only after the first factor passes, and redeemed for a real
+  // session by POST /api/auth/login/2fa.
 }

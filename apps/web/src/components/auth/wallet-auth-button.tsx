@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import bs58 from "bs58";
 
 import { Button } from "@/components/ui/button";
-import { authApi } from "@/lib/api";
+import { authApi, isTwoFactorChallenge } from "@/lib/api";
 
 export function WalletAuthButton() {
   const router = useRouter();
@@ -60,9 +60,23 @@ export function WalletAuthButton() {
         const signatureBase58 = bs58.encode(signatureBytes);
 
         // Step 4: Verify with the backend
-        await authApi.walletVerify(publicKey.toBase58(), signatureBase58, nonce);
+        const res = await authApi.walletVerify(
+          publicKey.toBase58(),
+          signatureBase58,
+          nonce,
+        );
 
         if (!isMountedRef.current) return;
+
+        if (isTwoFactorChallenge(res)) {
+          // 2FA is enabled on this account: the signature alone does not
+          // sign you in. Hand off to the dedicated verification step.
+          toast.info("Enter your authentication code to finish signing in.");
+          router.push(
+            `/login?challenge=${encodeURIComponent(res.challengeToken)}`,
+          );
+          return;
+        }
 
         toast.success("Wallet connected!");
         router.push("/dashboard");

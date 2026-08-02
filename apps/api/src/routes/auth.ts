@@ -5,6 +5,7 @@ import {
   verifyPassword,
   createUser,
   findUserByEmail,
+  findUserById,
   findOrCreateUserByWallet,
   generateNonce,
   getNonce,
@@ -23,6 +24,7 @@ import {
   clearAuthCookie,
 } from "../middleware/auth.js";
 import { blockJwt } from "../services/auth.js";
+import { createChallenge, validateChallenge } from "../services/twoFactor.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auth-routes");
@@ -148,6 +150,22 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
+    // 2FA gate (B5). Until now the second factor was collected in
+    // settings and then never asked for — a user who enabled it was no
+    // safer than one who hadn't. createChallenge returns null when the
+    // user has no 2FA, so the common path is unchanged.
+    const challenge = await createChallenge(user.id);
+    if (challenge) {
+      logger.info({ userId: user.id }, "Login awaiting 2FA challenge");
+      // NO cookie, NO token: the session is issued only by
+      // POST /login/2fa after the code checks out.
+      return {
+        requires2FA: true,
+        challengeToken: challenge.challengeToken,
+        expiresAt: challenge.expiresAt,
+      };
+    }
+
     // Generate JWT
     const payload: JwtPayload = {
       userId: user.id,
@@ -176,6 +194,103 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       token: accessToken,
     };
   });
+
+  /**
+   * Complete a 2FA-gated login (B5).
+   *
+   * This is the ONLY place a challenge turns into a session: it
+   * validates the challenge + code (validateChallenge marks the
+   * challenge used, so a code can't be replayed), then does the same
+   * membership lookup → generateTokens → setAuthCookie the password
+   * path does. Rate-limited like /login: the challenge token is the
+   * bearer of a half-authenticated session and brute-forcing six
+   * digits must not be cheap.
+   */
+  app.post(
+    "/login/2fa",
+    {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["Auth"],
+        description: "Complete a login that requires two-factor authentication",
+        body: {
+          type: "object",
+          properties: {
+            challengeToken: { type: "string" },
+            token: { type: "string" },
+          },
+          required: ["challengeToken", "token"],
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = z
+        .object({
+          challengeToken: z.string().min(1),
+          token: z.string().min(1),
+        })
+        .parse(request.body);
+
+      let userId: string;
+      try {
+        const result = await validateChallenge(body.challengeToken, body.token);
+        userId = result.userId;
+      } catch (err) {
+        // Invalid / expired / already-used challenge, or a wrong code.
+        // One shape for all of them — don't tell an attacker which.
+        logger.warn(
+          { err: (err as Error).message },
+          "2FA challenge validation failed",
+        );
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "Invalid or expired verification code",
+        });
+      }
+
+      const user = await findUserById(userId);
+      if (!user) {
+        return reply.status(401).send({
+          error: "Unauthorized",
+          message: "Invalid or expired verification code",
+        });
+      }
+
+      const primaryMembership = user.memberships.find((m) => m.role === "owner");
+      if (!primaryMembership) {
+        return reply.status(500).send({
+          error: "Internal Error",
+          message: "User has no organization",
+        });
+      }
+
+      const payload: JwtPayload = {
+        userId: user.id,
+        orgId: primaryMembership.org.id,
+        email: user.email ?? undefined,
+        walletAddress: user.walletAddress ?? undefined,
+        role: primaryMembership.role,
+      };
+
+      const { accessToken } = generateTokens(app, payload);
+      setAuthCookie(reply, accessToken);
+
+      logger.info({ userId: user.id }, "User completed 2FA login");
+
+      return {
+        user: {
+          id: user.id,
+          email: user.email,
+          createdAt: user.createdAt,
+        },
+        organization: {
+          id: primaryMembership.org.id,
+          name: primaryMembership.org.name,
+        },
+        token: accessToken,
+      };
+    },
+  );
 
   // ==========================================
   // Wallet Authentication
@@ -237,6 +352,18 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         error: "Internal Error",
         message: "User has no organization",
       });
+    }
+
+    // Same 2FA gate as the password path (B5) — a wallet signature is
+    // one factor, and enabling 2FA must cover every door.
+    const walletChallenge = await createChallenge(user.id);
+    if (walletChallenge) {
+      logger.info({ userId: user.id }, "Wallet login awaiting 2FA challenge");
+      return {
+        requires2FA: true,
+        challengeToken: walletChallenge.challengeToken,
+        expiresAt: walletChallenge.expiresAt,
+      };
     }
 
     // Generate JWT

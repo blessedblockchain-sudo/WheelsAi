@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
@@ -265,6 +267,51 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
       }
     }
   );
+
+  /**
+   * PATCH /listings/:id/featured — platform curation (Wave 1).
+   *
+   * Nothing ever wrote AgentListing.isFeatured, so every "Featured"
+   * section was permanently empty. Curation is an OPERATOR action, not
+   * a publisher one (self-featuring defeats the point), so this is
+   * gated by PLATFORM_ADMIN_KEY via the x-admin-key header rather than
+   * org auth. Read from process.env at request time so key rotation
+   * doesn't need a reboot. Unset ⇒ honest 503.
+   */
+  app.patch("/listings/:id/featured", async (request, reply) => {
+    const adminKey = process.env.PLATFORM_ADMIN_KEY;
+    if (!adminKey) {
+      return reply.status(503).send({
+        error: "curation_not_configured",
+        message: "PLATFORM_ADMIN_KEY is not set on this deployment.",
+      });
+    }
+    const presented = request.headers["x-admin-key"];
+    const presentedHash = crypto
+      .createHash("sha256")
+      .update(typeof presented === "string" ? presented : "")
+      .digest();
+    const expectedHash = crypto.createHash("sha256").update(adminKey).digest();
+    if (!crypto.timingSafeEqual(presentedHash, expectedHash)) {
+      return reply.status(401).send({ error: "invalid_admin_key" });
+    }
+
+    const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+    const { isFeatured } = z
+      .object({ isFeatured: z.boolean() })
+      .parse(request.body);
+
+    const { count } = await prisma.agentListing.updateMany({
+      where: { id },
+      data: { isFeatured },
+    });
+    if (count === 0) {
+      return reply.notFound("Listing not found");
+    }
+
+    logger.info({ listingId: id, isFeatured }, "Listing curation updated");
+    return { listing: { id, isFeatured } };
+  });
 
   /**
    * GET /my-listings - Get current user's listings

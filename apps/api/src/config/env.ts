@@ -206,6 +206,12 @@ const envSchema = z.object({
   // against real usage/uptime metrics and fires alerts + notifications.
   // Set to 0 to disable.
   ALERT_EVALUATOR_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
+
+  // Platform curation key (Wave 1): gates the marketplace isFeatured
+  // toggle — curation is an OPERATOR action, not a publisher one. The
+  // route reads process.env at request time (rotation without reboot);
+  // declared here for documentation. Unset ⇒ curation endpoint 503s.
+  PLATFORM_ADMIN_KEY: z.string().min(16).optional(),
 });
 
 export class EnvValidationError extends Error {}

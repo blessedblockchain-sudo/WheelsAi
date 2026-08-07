@@ -29,7 +29,12 @@ interface AgentRow {
   id: string;
   orgId: string;
   name: string;
-  deployments: Array<{ status: string; createdAt: Date }>;
+  deployments: Array<{
+    id: string;
+    status: string;
+    createdAt: Date;
+    modelDeploymentId: string | null;
+  }>;
   listing: {
     status: string;
     agentToken: { id: string; mintAddress: string } | null;
@@ -48,6 +53,17 @@ interface PrismaStub {
       where: { orgId: string };
       select: unknown;
     }) => Promise<{ orgId: string; reputationScore: number } | null>;
+  };
+  x402Payment: {
+    count: (args: {
+      where: {
+        status: string;
+        OR: Array<
+          | { agentDeploymentId: { in: string[] } }
+          | { deploymentId: { in: string[] } }
+        >;
+      };
+    }) => Promise<number>;
   };
 }
 
@@ -88,7 +104,12 @@ export async function loadEligibilityStateByPrisma(
       where: { id: input.agentId, orgId: input.orgId },
       include: {
         deployments: {
-          select: { status: true, createdAt: true },
+          select: {
+            id: true,
+            status: true,
+            createdAt: true,
+            modelDeploymentId: true,
+          },
         },
         listing: {
           select: {
@@ -106,6 +127,29 @@ export async function loadEligibilityStateByPrisma(
   ]);
 
   if (!agent) return null;
+
+  // Sybil discount input (B4/T7): SETTLED x402 payments attributed to
+  // this agent — via its own agent deployments, or via the model
+  // deployments it is bound to. The second clause over-attributes when a
+  // model deployment is shared across agents; acceptable because each
+  // counted payment is still real money received on-chain, and the
+  // discount is capped in the gate.
+  const agentDeploymentIds = agent.deployments.map((d) => d.id);
+  const modelDeploymentIds = agent.deployments
+    .map((d) => d.modelDeploymentId)
+    .filter((id): id is string => id != null);
+  let settledPaidRequests = 0;
+  if (agentDeploymentIds.length > 0 || modelDeploymentIds.length > 0) {
+    settledPaidRequests = await deps.prisma.x402Payment.count({
+      where: {
+        status: "settled",
+        OR: [
+          { agentDeploymentId: { in: agentDeploymentIds } },
+          { deploymentId: { in: modelDeploymentIds } },
+        ],
+      },
+    });
+  }
 
   // Oldest running deployment determines uptime.
   const running = agent.deployments.filter((d) => d.status === "running");
@@ -149,5 +193,6 @@ export async function loadEligibilityStateByPrisma(
     hasPublishedListing,
     alreadyTokenized,
     creatorAddress,
+    settledPaidRequests,
   };
 }

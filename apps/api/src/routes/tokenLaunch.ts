@@ -66,6 +66,8 @@ export interface EligibilityState {
   hasPublishedListing: boolean;
   alreadyTokenized: boolean;
   creatorAddress: string;
+  /** Settled x402 payments attributed to this agent (sybil discount, B4/T7). */
+  settledPaidRequests: number;
 }
 
 export interface PersistAgentTokenInput {
@@ -145,6 +147,7 @@ export function createTokenRoutes(
         hasPublishedListing: state.hasPublishedListing,
         alreadyTokenized: state.alreadyTokenized,
         creatorAddress: state.creatorAddress,
+        settledPaidRequests: state.settledPaidRequests,
       });
       if (!eligibility.eligible) {
         return reply.status(400).send({

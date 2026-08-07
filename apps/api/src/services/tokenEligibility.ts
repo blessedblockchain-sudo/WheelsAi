@@ -26,6 +26,23 @@ export const ELIGIBILITY_DEFAULTS = {
 } as const;
 
 /**
+ * Sybil discount (B4/T7): every SETTLED x402 payment attributed to the
+ * agent shaves one point off the reputation requirement, capped at half
+ * the default threshold.
+ *
+ * Why this is sybil-resistant where raw usage is not: reputation is fed
+ * by usage the org can generate against itself for free. A settled x402
+ * payment is money that verifiably left a wallet on-chain and landed in
+ * the PLATFORM treasury — even "self"-payment forfeits real funds, so
+ * the signal is costly by construction. The cap keeps paid traffic from
+ * fully substituting for observed behavior: at best it halves the
+ * reputation bar, and every other gate (uptime, listing, not-already-
+ * tokenized, creator wallet) stays hard.
+ */
+export const PAID_REQUEST_DISCOUNT_POINTS = 1;
+export const MAX_PAID_DISCOUNT_POINTS = 25;
+
+/**
  * Days the creator's allocation is locked after launch. Single source of
  * truth — imported by the launch routes and the legacy custodial path so
  * the number can't drift across the codebase (or the UI that displays it).
@@ -45,6 +62,12 @@ export interface EligibilityInput {
   hasPublishedListing: boolean;
   alreadyTokenized: boolean;
   creatorAddress: string;
+  /**
+   * Count of SETTLED x402 payments attributed to this agent's
+   * deployments (confirmed on-chain into the platform treasury).
+   * Discounts the reputation requirement — see the constants above.
+   */
+  settledPaidRequests?: number;
   minReputation?: number;
   minDeploymentAgeDays?: number;
 }
@@ -60,7 +83,13 @@ export function checkTokenEligibility(input: EligibilityInput): EligibilityResul
 
   const reasons: EligibilityReason[] = [];
 
-  if (input.reputationScore < minReputation) {
+  const paidDiscount = Math.min(
+    Math.max(input.settledPaidRequests ?? 0, 0) * PAID_REQUEST_DISCOUNT_POINTS,
+    MAX_PAID_DISCOUNT_POINTS,
+  );
+  const effectiveMinReputation = minReputation - paidDiscount;
+
+  if (input.reputationScore < effectiveMinReputation) {
     reasons.push("reputation_too_low");
   }
   if (input.deploymentAgeDays < minDeploymentAgeDays) {

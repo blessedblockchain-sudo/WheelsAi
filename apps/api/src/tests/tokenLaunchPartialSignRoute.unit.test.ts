@@ -33,6 +33,7 @@ const eligibleState = () => ({
   hasPublishedListing: true,
   alreadyTokenized: false,
   creatorAddress: "ignored-by-partial-sign-route",
+  settledPaidRequests: 0,
 });
 
 // Deterministic mint keypair so we can predict the prepared mintAddress.

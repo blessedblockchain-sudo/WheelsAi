@@ -28,7 +28,12 @@ interface FakeAgent {
   id: string;
   orgId: string;
   name: string;
-  deployments: Array<{ status: string; createdAt: Date }>;
+  deployments: Array<{
+    id?: string;
+    status: string;
+    createdAt: Date;
+    modelDeploymentId?: string | null;
+  }>;
   listing: {
     status: string;
     agentToken: { id: string; mintAddress?: string } | null;
@@ -38,8 +43,9 @@ interface FakeAgent {
 function makePrismaStub(opts: {
   agents: FakeAgent[];
   publisherProfiles?: Array<{ orgId: string; reputationScore: number }>;
+  settledPayments?: number;
 }) {
-  const observed: { agentArgs?: any; profileArgs?: any } = {};
+  const observed: { agentArgs?: any; profileArgs?: any; x402Args?: any } = {};
   return {
     observed,
     prisma: {
@@ -60,6 +66,12 @@ function makePrismaStub(opts: {
             (opts.publisherProfiles ?? []).find((p) => p.orgId === where.orgId) ??
             null
           );
+        },
+      },
+      x402Payment: {
+        async count({ where }: any) {
+          observed.x402Args = { where };
+          return opts.settledPayments ?? 0;
         },
       },
     },
@@ -153,6 +165,71 @@ test("loadEligibilityStateByPrisma returns the full EligibilityState shape", asy
     result.creatorAddress,
     "PaYer11111111111111111111111111111111111111",
   );
+  assert.equal(result.settledPaidRequests, 0);
+});
+
+// ============================================
+// Sybil discount input (B4/T7)
+// ============================================
+
+test("loadEligibilityStateByPrisma counts SETTLED x402 payments attributed to the agent", async () => {
+  const { loadEligibilityStateByPrisma } = await import(
+    "../services/loadEligibilityState.js"
+  );
+  const stub = makePrismaStub({
+    agents: [
+      {
+        ...baseAgent,
+        deployments: [
+          {
+            id: "ad_1",
+            status: "running",
+            createdAt: new Date("2026-04-12T00:00:00Z"),
+            modelDeploymentId: "md_9",
+          },
+        ],
+      },
+    ],
+    publisherProfiles: [{ orgId: "org_1", reputationScore: 67 }],
+    settledPayments: 12,
+  });
+  const result = await loadEligibilityStateByPrisma(
+    { agentId: "agent_1", orgId: "org_1", now: NOW },
+    {
+      prisma: stub.prisma as any,
+      getCreatorAddress: async () => "P",
+    },
+  );
+  assert.ok(result);
+  assert.equal(result.settledPaidRequests, 12);
+  // Only SETTLED payments count (confirmed on-chain), attributed through
+  // the agent's own deployments OR the model deployments it is bound to.
+  assert.equal(stub.observed.x402Args.where.status, "settled");
+  assert.deepEqual(stub.observed.x402Args.where.OR, [
+    { agentDeploymentId: { in: ["ad_1"] } },
+    { deploymentId: { in: ["md_9"] } },
+  ]);
+});
+
+test("loadEligibilityStateByPrisma skips the x402 count entirely when the agent has no deployments", async () => {
+  const { loadEligibilityStateByPrisma } = await import(
+    "../services/loadEligibilityState.js"
+  );
+  const stub = makePrismaStub({
+    agents: [{ ...baseAgent, deployments: [] }],
+    publisherProfiles: [{ orgId: "org_1", reputationScore: 67 }],
+    settledPayments: 99, // must NOT be read
+  });
+  const result = await loadEligibilityStateByPrisma(
+    { agentId: "agent_1", orgId: "org_1", now: NOW },
+    {
+      prisma: stub.prisma as any,
+      getCreatorAddress: async () => "P",
+    },
+  );
+  assert.ok(result);
+  assert.equal(result.settledPaidRequests, 0);
+  assert.equal(stub.observed.x402Args, undefined, "count never queried");
 });
 
 // ============================================

@@ -256,3 +256,103 @@ test("ELIGIBILITY_DEFAULTS exposes 50 + 7 so the UI can render the same numbers 
   assert.equal(ELIGIBILITY_DEFAULTS.minReputation, 50);
   assert.equal(ELIGIBILITY_DEFAULTS.minDeploymentAgeDays, 7);
 });
+
+// ============================================
+// Sybil discount (B4/T7)
+// ============================================
+
+test("settled x402 payments discount the reputation requirement 1:1", async () => {
+  const { checkTokenEligibility } = await import(
+    "../services/tokenEligibility.js"
+  );
+  // Score 30 fails the default 50 bar…
+  const without = checkTokenEligibility({
+    reputationScore: 30,
+    deploymentAgeDays: 14,
+    hasPublishedListing: true,
+    alreadyTokenized: false,
+    creatorAddress: "x",
+  });
+  assert.ok(!without.eligible && without.reasons.includes("reputation_too_low"));
+
+  // …but 20 on-chain-paid requests lower the bar to exactly 30.
+  const withPaid = checkTokenEligibility({
+    reputationScore: 30,
+    deploymentAgeDays: 14,
+    hasPublishedListing: true,
+    alreadyTokenized: false,
+    creatorAddress: "x",
+    settledPaidRequests: 20,
+  });
+  assert.ok(withPaid.eligible, JSON.stringify(withPaid));
+});
+
+test("the paid discount is capped — volume can never substitute for half the bar", async () => {
+  const { checkTokenEligibility, MAX_PAID_DISCOUNT_POINTS } = await import(
+    "../services/tokenEligibility.js"
+  );
+  assert.equal(MAX_PAID_DISCOUNT_POINTS, 25);
+  // Even absurd paid volume leaves an effective bar of 25.
+  const r = checkTokenEligibility({
+    reputationScore: 24,
+    deploymentAgeDays: 14,
+    hasPublishedListing: true,
+    alreadyTokenized: false,
+    creatorAddress: "x",
+    settledPaidRequests: 10_000,
+  });
+  assert.ok(!r.eligible && r.reasons.includes("reputation_too_low"));
+  const atCap = checkTokenEligibility({
+    reputationScore: 25,
+    deploymentAgeDays: 14,
+    hasPublishedListing: true,
+    alreadyTokenized: false,
+    creatorAddress: "x",
+    settledPaidRequests: 10_000,
+  });
+  assert.ok(atCap.eligible);
+});
+
+test("the discount touches ONLY reputation — every other gate stays hard", async () => {
+  const { checkTokenEligibility } = await import(
+    "../services/tokenEligibility.js"
+  );
+  const r = checkTokenEligibility({
+    reputationScore: 100,
+    deploymentAgeDays: 1, // under the 7-day bar
+    hasPublishedListing: false,
+    alreadyTokenized: true,
+    creatorAddress: "",
+    settledPaidRequests: 10_000,
+  });
+  assert.ok(!r.eligible);
+  assert.deepEqual(r.reasons, [
+    "already_tokenized",
+    "creator_address_missing",
+    "listing_not_published",
+    "uptime_insufficient",
+  ]);
+});
+
+test("negative or absent settledPaidRequests never RAISES the bar", async () => {
+  const { checkTokenEligibility } = await import(
+    "../services/tokenEligibility.js"
+  );
+  const absent = checkTokenEligibility({
+    reputationScore: 50,
+    deploymentAgeDays: 14,
+    hasPublishedListing: true,
+    alreadyTokenized: false,
+    creatorAddress: "x",
+  });
+  assert.ok(absent.eligible);
+  const negative = checkTokenEligibility({
+    reputationScore: 50,
+    deploymentAgeDays: 14,
+    hasPublishedListing: true,
+    alreadyTokenized: false,
+    creatorAddress: "x",
+    settledPaidRequests: -5,
+  });
+  assert.ok(negative.eligible);
+});

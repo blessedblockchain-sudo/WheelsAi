@@ -223,6 +223,7 @@ export function createPartialSignTokenRoutes(
         hasPublishedListing: state.hasPublishedListing,
         alreadyTokenized: state.alreadyTokenized,
         creatorAddress: walletAddress,
+        settledPaidRequests: state.settledPaidRequests,
       });
       if (!eligibility.eligible) {
         return reply.status(400).send({

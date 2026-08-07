@@ -12,6 +12,8 @@ import { solToLamports, tokensToRaw } from "../lib/tokenUnits.js";
 import {
   ELIGIBILITY_DEFAULTS,
   CREATOR_LOCKUP_DAYS,
+  MAX_PAID_DISCOUNT_POINTS,
+  PAID_REQUEST_DISCOUNT_POINTS,
 } from "./tokenEligibility.js";
 
 const logger = createLogger("agent-token-service");
@@ -149,16 +151,51 @@ export async function checkTokenEligibility(
       reasons.push("Token already exists for this agent listing");
     }
 
-    // Check publisher reputation
-    const publisherProfile = await prisma.publisherProfile.findUnique({
-      where: { orgId: listing.publisherId },
-    });
+    // Check publisher reputation, with the sybil discount (B4/T7): every
+    // SETTLED x402 payment attributed to this agent shaves a point off the
+    // requirement, capped — same math as the enforcement gate
+    // (services/tokenEligibility.ts), so the public badge and the launch
+    // route can't disagree.
+    const [publisherProfile, agentDeployments] = await Promise.all([
+      prisma.publisherProfile.findUnique({
+        where: { orgId: listing.publisherId },
+      }),
+      prisma.agentDeployment.findMany({
+        where: { agentId: listing.agent.id },
+        select: { id: true, modelDeploymentId: true },
+      }),
+    ]);
+
+    let settledPaidRequests = 0;
+    const agentDeploymentIds = agentDeployments.map((d) => d.id);
+    const modelDeploymentIds = agentDeployments
+      .map((d) => d.modelDeploymentId)
+      .filter((id): id is string => id !== null);
+    if (agentDeploymentIds.length > 0 || modelDeploymentIds.length > 0) {
+      settledPaidRequests = await prisma.x402Payment.count({
+        where: {
+          status: "settled",
+          OR: [
+            { agentDeploymentId: { in: agentDeploymentIds } },
+            { deploymentId: { in: modelDeploymentIds } },
+          ],
+        },
+      });
+    }
+    const paidDiscount = Math.min(
+      settledPaidRequests * PAID_REQUEST_DISCOUNT_POINTS,
+      MAX_PAID_DISCOUNT_POINTS
+    );
+    const effectiveMinReputation = MIN_REPUTATION_SCORE - paidDiscount;
 
     if (!publisherProfile) {
       reasons.push("Publisher profile not found");
-    } else if (publisherProfile.reputationScore < MIN_REPUTATION_SCORE) {
+    } else if (publisherProfile.reputationScore < effectiveMinReputation) {
       reasons.push(
-        `Publisher reputation score (${publisherProfile.reputationScore}) must be at least ${MIN_REPUTATION_SCORE}`
+        `Publisher reputation score (${publisherProfile.reputationScore}) must be at least ${effectiveMinReputation}` +
+          (paidDiscount > 0
+            ? ` (${MIN_REPUTATION_SCORE} minus ${paidDiscount} for on-chain-paid usage)`
+            : "")
       );
     }
 

@@ -16,7 +16,8 @@ import { globalErrorHandler } from "./lib/errorHandler.js";
 installBigIntJsonSerializer();
 
 import { env } from "./config/env.js";
-import { logger } from "./utils/logger.js";
+import { createLogger, logger } from "./utils/logger.js";
+import { initSentry, registerSentryErrorCapture } from "./lib/sentry.js";
 import { BAGS_ADAPTER_IMPLEMENTED } from "./services/launchpad/bagsAdapter.js";
 import { registerAuthPlugins } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.js";
@@ -105,10 +106,28 @@ async function main() {
     process.exit(1);
   }
 
+  // Error tracking (B7): a no-op without SENTRY_DSN. Init also installs
+  // Sentry's default uncaught-exception/unhandled-rejection handlers,
+  // which is what catches worker crashes outside the request path.
+  const sentryEnabled = initSentry({
+    dsn: env.SENTRY_DSN,
+    environment: env.NODE_ENV,
+  });
+  createLogger("sentry").info(
+    { sentry: sentryEnabled },
+    sentryEnabled ? "Sentry error tracking enabled" : "Sentry disabled (no SENTRY_DSN)",
+  );
+
   const app = Fastify({
     logger: logger as any,
     trustProxy: true,
   });
+
+  if (sentryEnabled) {
+    // onError hook (not setErrorHandler) — composes with the
+    // globalErrorHandler below and only reports 5xx-class errors.
+    registerSentryErrorCapture(app);
+  }
 
   // Register plugins
   await app.register(cors, {

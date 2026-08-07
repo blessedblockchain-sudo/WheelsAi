@@ -165,6 +165,11 @@ const envSchema = z.object({
   // anywhere the scrape path is not, and the route demands
   // `Authorization: Bearer <token>`.
   METRICS_TOKEN: z.string().optional(),
+  // Error tracking (B7). Optional — unset disables Sentry entirely.
+  SENTRY_DSN: z
+    .string()
+    .optional()
+    .transform((value) => (value && value.trim().length > 0 ? value : undefined)),
   // Dev-only: when true, nosana.submitJob returns mock_job_* IDs if the SDK fails.
   // Forced to false in production.
   ALLOW_NOSANA_MOCK: z
@@ -302,6 +307,20 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   if (data.WALLET_TOPUPS_ENABLED && !data.WALLET_MASTER_KEY) {
     throw new EnvValidationError(
       "WALLET_TOPUPS_ENABLED requires WALLET_MASTER_KEY — deposit addresses are derived from it"
+    );
+  }
+
+  // SOLANA_RPC_URL defaults to DEVNET. With SOLANA_NETWORK=mainnet-beta
+  // and the URL unset (exactly what fly.production.toml shipped), every
+  // consumer silently talks to devnet while believing it's on mainnet —
+  // payments "confirm" against the wrong chain. Mainnet mode therefore
+  // demands an explicitly non-devnet RPC URL, in every environment (B7).
+  if (
+    data.SOLANA_NETWORK === "mainnet-beta" &&
+    (!data.SOLANA_RPC_URL || data.SOLANA_RPC_URL.includes("devnet"))
+  ) {
+    throw new EnvValidationError(
+      "SOLANA_NETWORK=mainnet-beta requires an explicitly set, non-devnet SOLANA_RPC_URL (the default is the devnet endpoint — mainnet mode would silently verify against the wrong chain)"
     );
   }
 

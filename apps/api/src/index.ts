@@ -89,6 +89,8 @@ import {
   stopAlertEvaluatorQueue,
   startAnalyticsSnapshotQueue,
   stopAnalyticsSnapshotQueue,
+  startPayoutExecutorQueue,
+  stopPayoutExecutorQueue,
   assertQueueRedisReady,
 } from "./queues/index.js";
 
@@ -330,6 +332,7 @@ async function main() {
   await startUptimeProberQueue();
   await startAlertEvaluatorQueue();
   await startAnalyticsSnapshotQueue();
+  await startPayoutExecutorQueue();
 
   // Graceful shutdown
   const signals = ["SIGINT", "SIGTERM"];
@@ -350,6 +353,7 @@ async function main() {
       await stopUptimeProberQueue();
       await stopAlertEvaluatorQueue();
       await stopAnalyticsSnapshotQueue();
+      await stopPayoutExecutorQueue();
       await metrics.close();
       await app.close();
       process.exit(0);

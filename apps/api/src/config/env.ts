@@ -237,6 +237,25 @@ const envSchema = z.object({
   // Set to 0 to disable.
   ANALYTICS_SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(0).default(3_600_000),
 
+  // Payout-executor BullMQ worker (W2 money keystone): settles requested
+  // CreatorPayout rows — credits grants and/or on-chain crypto transfers
+  // from the platform payout wallet. Set to 0 to disable (the default:
+  // the executor only runs where PAYOUTS_ENABLED is on and, for crypto,
+  // WALLET_MASTER_KEY funds the payout wallet).
+  PAYOUT_EXECUTOR_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
+  PAYOUT_EXECUTOR_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
+  // Master gate for payouts. When off, the executor never runs and the
+  // credits/crypto rails stay dormant. Crypto payouts additionally need
+  // WALLET_MASTER_KEY (the payout wallet is derived from it).
+  PAYOUTS_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  // SOL/USD quote for crypto_sol payouts — operator-stated (no oracle in
+  // the path), mirroring the wallet-topup SOL rail. Required only when a
+  // crypto_sol payout is actually settled.
+  PAYOUT_SOL_PRICE_USD: z.coerce.number().positive().optional(),
+
   // Platform curation key (Wave 1): gates the marketplace isFeatured
   // toggle — curation is an OPERATOR action, not a publisher one. The
   // route reads process.env at request time (rotation without reboot);
@@ -307,6 +326,19 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   if (data.WALLET_TOPUPS_ENABLED && !data.WALLET_MASTER_KEY) {
     throw new EnvValidationError(
       "WALLET_TOPUPS_ENABLED requires WALLET_MASTER_KEY — deposit addresses are derived from it"
+    );
+  }
+  // The payout executor can settle in credits with no wallet, but the
+  // instant it needs to run the crypto rail it needs the payout wallet.
+  // Requiring the key whenever the executor is scheduled keeps a crypto
+  // payout from failing at settle time for a reason config already knew.
+  if (
+    data.PAYOUTS_ENABLED &&
+    data.PAYOUT_EXECUTOR_INTERVAL_MS > 0 &&
+    !data.WALLET_MASTER_KEY
+  ) {
+    throw new EnvValidationError(
+      "PAYOUTS_ENABLED with the executor scheduled requires WALLET_MASTER_KEY — the platform payout wallet is derived from it"
     );
   }
 

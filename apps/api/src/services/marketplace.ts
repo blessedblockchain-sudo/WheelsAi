@@ -1021,25 +1021,34 @@ export async function requestPayout(
   const grossRevenue = Math.round(pendingAmount / CREATOR_REVENUE_SHARE);
   const platformFee = grossRevenue - pendingAmount;
 
-  // Create payout request
-  const payout = await prisma.creatorPayout.create({
-    data: {
-      publisherId,
-      amountCents: BigInt(pendingAmount),
-      payoutMethod,
-      payoutAddress,
-      status: "pending",
-      grossRevenueCents: BigInt(grossRevenue),
-      platformFeeCents: BigInt(platformFee),
-      periodStart: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
-      periodEnd: new Date(),
-    },
-  });
-
-  // Reset pending payout in profile
-  await prisma.publisherProfile.update({
-    where: { orgId: publisherId },
-    data: { pendingPayoutCents: 0 },
+  // Requesting a payout RESERVES the pending balance into the payout row:
+  // create the row AND zero pendingPayoutCents in ONE transaction. Before
+  // this was two separate writes, so a crash between them either lost the
+  // reservation (row exists, balance still pending → double-payable) or
+  // stranded it. The reservation is released back to pendingPayoutCents
+  // only if the executor later fails the payout (see the payout-executor
+  // tick's failAndRestore). Deducting off the CURRENT balance inside the
+  // transaction also prevents a payout that races with fresh revenue from
+  // zeroing income that accrued after the amount was snapshotted.
+  const payout = await prisma.$transaction(async (tx) => {
+    const created = await tx.creatorPayout.create({
+      data: {
+        publisherId,
+        amountCents: BigInt(pendingAmount),
+        payoutMethod,
+        payoutAddress,
+        status: "pending",
+        grossRevenueCents: BigInt(grossRevenue),
+        platformFeeCents: BigInt(platformFee),
+        periodStart: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
+        periodEnd: new Date(),
+      },
+    });
+    await tx.publisherProfile.update({
+      where: { orgId: publisherId },
+      data: { pendingPayoutCents: { decrement: BigInt(pendingAmount) } },
+    });
+    return created;
   });
 
   logger.info({ publisherId, payoutId: payout.id, amount: pendingAmount }, "Payout requested");

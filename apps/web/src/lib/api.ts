@@ -464,6 +464,37 @@ export interface CreditPackage {
   popular?: boolean;
 }
 
+/** Which payment rails are actually live on this deployment (B2/T5). */
+export interface BillingRails {
+  stripeCheckout: boolean;
+  mockCheckout: boolean;
+  wallet: boolean;
+  walletAssets: string[];
+  network: "devnet" | "mainnet-beta";
+}
+
+export interface TopupPrepareResponse {
+  topupId: string;
+  /** Full unsigned transaction for wallet.signTransaction. */
+  unsignedTxBase64: string;
+  depositAddress: string;
+  asset: "SOL" | "USDC";
+  amountUsd: number;
+  bonusUsd: number;
+  quotedSolPriceUsd?: number;
+  expiresAt: string;
+}
+
+export interface TopupSettleResponse {
+  status: "credited" | "submitted" | "prepared" | "failed" | "expired";
+  txSignature?: string;
+  grantedUsd?: number;
+  balanceUsd?: number;
+  alreadyCredited?: boolean;
+  pendingConfirmation?: boolean;
+  reason?: string;
+}
+
 export const billingApi = {
   getBalance: () =>
     api<{ balance: CreditBalance }>("/api/billing/balance"),
@@ -474,7 +505,29 @@ export const billingApi = {
       packages: CreditPackage[];
       minPurchase: number;
       maxPurchase: number;
+      rails: BillingRails;
     }>("/api/billing/packages"),
+
+  // Wallet top-up rail (B2/T5): prepare → wallet signs the EXACT
+  // server-built transaction → submit (byte-equality verified server
+  // side) → credits granted only after on-chain confirmation.
+  prepareTopup: (body: { amountUsd: number; asset: "SOL" | "USDC" }) =>
+    api<TopupPrepareResponse>("/api/billing/topups/prepare", {
+      method: "POST",
+      body,
+    }),
+
+  submitTopup: (topupId: string, signedTxBase64: string) =>
+    api<TopupSettleResponse>(`/api/billing/topups/${topupId}/submit`, {
+      method: "POST",
+      body: { signedTxBase64 },
+    }),
+
+  reconcileTopup: (topupId: string) =>
+    api<TopupSettleResponse>(`/api/billing/topups/${topupId}/reconcile`, {
+      method: "POST",
+      body: {},
+    }),
 
   getTransactions: () =>
     api<{ transactions: CreditTransaction[] }>("/api/billing/transactions"),

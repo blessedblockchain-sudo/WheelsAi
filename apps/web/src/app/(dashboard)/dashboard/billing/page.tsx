@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+import { VersionedTransaction } from "@solana/web3.js";
 import {
   CreditCard,
   Activity,
@@ -12,6 +15,7 @@ import {
   ArrowDownRight,
   AlertTriangle,
   CheckCircle2,
+  Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -21,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   billingApi,
+  type BillingRails,
   type CreditBalance,
   type CreditTransaction,
   type UsageSummary,
@@ -48,6 +53,10 @@ export default function BillingPage() {
   const [x402History, setX402History] = useState<X402MetricsHistoryPoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPurchasing, setIsPurchasing] = useState<number | null>(null);
+  const [isWalletPaying, setIsWalletPaying] = useState<number | null>(null);
+  const [rails, setRails] = useState<BillingRails | null>(null);
+  const { publicKey, connected, signTransaction } = useWallet();
+  const { setVisible } = useWalletModal();
 
   async function loadBillingData() {
     try {
@@ -81,10 +90,14 @@ export default function BillingPage() {
 
   useEffect(() => {
     loadBillingData();
-    // Serve-side ladder wins over the local fallback.
+    // Serve-side ladder wins over the local fallback; `rails` tells us
+    // which payment paths this deployment actually supports.
     billingApi
       .getPackages()
-      .then((res) => setCreditPackages(res.packages))
+      .then((res) => {
+        setCreditPackages(res.packages);
+        setRails(res.rails ?? null);
+      })
       .catch(() => {});
   }, []);
 
@@ -111,6 +124,91 @@ export default function BillingPage() {
         toast.error("Failed to create checkout session");
       }
       setIsPurchasing(null);
+    }
+  }
+
+  // Wallet top-up (B2/T5): the server builds the exact transfer, the
+  // wallet signs it unchanged, submit is byte-equality-verified and
+  // credits land only after on-chain confirmation.
+  async function handleWalletPurchase(packageIndex: number) {
+    const pkg = creditPackages[packageIndex];
+    if (!pkg || !rails?.wallet || rails.walletAssets.length === 0) return;
+    if (!connected || !publicKey) {
+      setVisible(true);
+      return;
+    }
+    if (!signTransaction) {
+      toast.error(
+        "This wallet doesn't support transaction signing — try a different wallet."
+      );
+      return;
+    }
+
+    const asset = rails.walletAssets[0] as "SOL" | "USDC";
+    setIsWalletPaying(packageIndex);
+    try {
+      const prepared = await billingApi.prepareTopup({
+        amountUsd: pkg.amount,
+        asset,
+      });
+
+      const txBytes = Uint8Array.from(atob(prepared.unsignedTxBase64), (c) =>
+        c.charCodeAt(0)
+      );
+      const tx = VersionedTransaction.deserialize(txBytes);
+      const signedTx = await signTransaction(tx);
+
+      const signedBytes = signedTx.serialize();
+      let binary = "";
+      for (let i = 0; i < signedBytes.length; i++) {
+        binary += String.fromCharCode(signedBytes[i]!);
+      }
+      const signedTxBase64 = btoa(binary);
+
+      let settled = await billingApi.submitTopup(
+        prepared.topupId,
+        signedTxBase64
+      );
+      // 202 pending-confirmation path: the tx is broadcast but not yet
+      // confirmed — reconcile settles it against the chain.
+      for (
+        let attempt = 0;
+        settled.status === "submitted" && attempt < 12;
+        attempt++
+      ) {
+        await new Promise((r) => setTimeout(r, 2_500));
+        settled = await billingApi.reconcileTopup(prepared.topupId);
+      }
+
+      if (settled.status === "credited") {
+        toast.success(
+          settled.grantedUsd
+            ? `Credits added — ${formatCurrency(settled.grantedUsd)} granted`
+            : "Credits added"
+        );
+        loadBillingData();
+      } else if (settled.status === "submitted") {
+        toast.info(
+          "Payment broadcast — confirmation is still pending. Your balance updates once it lands."
+        );
+      } else {
+        toast.error(
+          settled.reason
+            ? `Top-up ${settled.status}: ${settled.reason}`
+            : `Top-up ${settled.status}`
+        );
+      }
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Wallet payment failed";
+      // Wallet-adapter user rejections read like "User rejected the request".
+      if (/reject/i.test(message)) {
+        toast.info("Transaction canceled in wallet");
+      } else {
+        toast.error(message);
+      }
+    } finally {
+      setIsWalletPaying(null);
     }
   }
 
@@ -249,12 +347,32 @@ export default function BillingPage() {
                   >
                     Purchase
                   </Button>
+                  {rails?.wallet && rails.walletAssets.length > 0 && (
+                    <Button
+                      className="mt-2 w-full"
+                      variant="outline"
+                      onClick={() => handleWalletPurchase(index)}
+                      isLoading={isWalletPaying === index}
+                    >
+                      <Wallet className="mr-2 h-4 w-4" />
+                      Pay with Wallet
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
 
             <p className="mt-4 text-center text-sm text-gray-500">
-              Card payments are coming soon. Credits never expire.
+              {rails?.wallet && rails.walletAssets.length > 0 ? (
+                <>
+                  Wallet payments ({rails.walletAssets.join("/")}
+                  {rails.network === "devnet" ? ", devnet" : ""}) are live —
+                  your wallet signs the exact transfer our server prepares.
+                  Card payments are coming soon. Credits never expire.
+                </>
+              ) : (
+                <>Card payments are coming soon. Credits never expire.</>
+              )}
             </p>
           </CardContent>
         </Card>

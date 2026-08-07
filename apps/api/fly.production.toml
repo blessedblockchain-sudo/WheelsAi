@@ -18,6 +18,12 @@ primary_region = "lax"
   API_HOST = "0.0.0.0"
   LOG_LEVEL = "info"
   SOLANA_NETWORK = "mainnet-beta"
+  # SOLANA_RPC_URL is deliberately NOT set here: it may carry an API key
+  # (Helius/Triton), so it lives in `flyctl secrets`. The env schema's
+  # default is the DEVNET endpoint and the API refuses to boot on
+  # mainnet-beta without an explicit non-devnet URL (B7) — a deploy
+  # without the secret fails loudly instead of silently talking to the
+  # wrong chain.
 
 [http_service]
   internal_port = 4000

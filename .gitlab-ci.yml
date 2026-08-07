@@ -26,6 +26,7 @@ stages:
   - build
   - test
   - quarantine
+  - deploy
 
 variables:
   # npm's cache dir, kept inside the project so GitLab can cache it.
@@ -181,6 +182,72 @@ test:integration:
     - npm run db:generate
     - npm run migrate:deploy -w @wheelsai/db
     - npm run test:integration -w @wheelsai/api
+
+# ---------------------------------------------------------------------------
+# Deploy (B7): port of .github/workflows/deploy-staging.yml. Manual trigger,
+# and the jobs only APPEAR when FLY_API_TOKEN exists (Settings > CI/CD >
+# Variables, masked+protected) — without the token there is nothing to run.
+#
+# flyctl runs from the REPO ROOT: the Dockerfiles COPY package.json,
+# turbo.json, and packages/ from the monorepo root, so the build context
+# must be the root. Migrations run via the release_command in the fly
+# tomls — no migration step here.
+#
+# The web job passes NEXT_PUBLIC_* as --build-arg: Next.js bakes those into
+# the browser bundle at BUILD time. The old GitHub workflow deployed web
+# without them, which shipped a bundle pointing at http://localhost:4000.
+# ---------------------------------------------------------------------------
+
+.fly_deploy: &fly_deploy
+  stage: deploy
+  needs: [unit, migrations]
+  image: node:20
+  cache: []
+  before_script:
+    - curl -L https://fly.io/install.sh | sh
+    - export PATH="$HOME/.fly/bin:$PATH"
+    - flyctl version
+
+deploy:staging:api:
+  <<: *fly_deploy
+  resource_group: deploy-staging-api
+  rules:
+    - if: '$FLY_API_TOKEN && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  script:
+    - flyctl deploy --config apps/api/fly.staging.toml --dockerfile apps/api/Dockerfile --remote-only
+    # Readiness, not liveness: /health/ready probes Postgres + Redis.
+    - |
+      for i in $(seq 1 12); do
+        if curl -fsS --max-time 10 https://wheelsai-api-staging.fly.dev/health/ready; then
+          echo "API healthy"; exit 0
+        fi
+        echo "waiting for API health ($i/12)..."; sleep 10
+      done
+      echo "API health check failed after deploy"; exit 1
+
+deploy:staging:web:
+  <<: *fly_deploy
+  resource_group: deploy-staging-web
+  rules:
+    - if: '$FLY_API_TOKEN && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: true
+  script:
+    - >-
+      flyctl deploy --config apps/web/fly.staging.toml
+      --dockerfile apps/web/Dockerfile --remote-only
+      --build-arg NEXT_PUBLIC_API_URL=https://wheelsai-api-staging.fly.dev
+      --build-arg NEXT_PUBLIC_APP_URL=https://wheelsai-web-staging.fly.dev
+    - |
+      for i in $(seq 1 12); do
+        if curl -fsS --max-time 10 https://wheelsai-web-staging.fly.dev/api/health; then
+          echo "Web healthy"; exit 0
+        fi
+        echo "waiting for web health ($i/12)..."; sleep 10
+      done
+      echo "Web health check failed after deploy"; exit 1
 
 # Status: 27 of 30 specs fail. The specs assert literal marketing copy
 # ("Welcome back", "you@example.com", section headings) that drifted when the

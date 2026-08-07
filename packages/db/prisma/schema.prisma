@@ -54,6 +54,8 @@ model Organization {
   agentWallets  AgentWallet[]
   x402Payments  X402Payment[]
   x402SettlementMetrics X402SettlementMetric[]
+  stripePurchases StripePurchase[]
+  walletTopUps    WalletTopUp[]
 
   // Marketplace relations
   publisherProfile   PublisherProfile?
@@ -210,6 +212,90 @@ model CreditTransaction {
 
   @@index([orgId, createdAt])
   @@map("credit_transactions")
+}
+
+// Purchase-intent row for the Stripe rail (B2/T2). One row per Checkout
+// Session, created BEFORE redirecting the buyer to Stripe. The webhook
+// grants credits only by winning the status CAS created→completed on
+// this row — that CAS is the idempotency barrier that makes Stripe's
+// at-least-once event delivery safe.
+model StripePurchase {
+  id              String    @id @default(uuid()) @db.Uuid
+  orgId           String    @map("org_id") @db.Uuid
+  stripeSessionId String    @unique @map("stripe_session_id")
+  // Paid amount in cents. The grant = amountCents + bonusCents.
+  amountCents     BigInt    @map("amount_cents")
+  // Bonus SNAPSHOT at checkout creation — the buyer was quoted this
+  // number. If the ladder changes before the webhook arrives, the quote
+  // wins, not the current ladder.
+  bonusCents      BigInt    @default(0) @map("bonus_cents")
+  status          String    @default("created") // 'created' | 'completed' | 'failed' | 'expired'
+  completedAt     DateTime? @map("completed_at")
+  failureReason   String?   @map("failure_reason")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  // Restrict (G6): a record of money changing hands. Same reasoning as
+  // credit_transactions.
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  @@index([orgId, createdAt])
+  @@index([status])
+  @@map("stripe_purchases")
+}
+
+// Purchase-intent row for the Solana wallet rail (B2/T2). One row per
+// prepared top-up transaction. The server builds the UNSIGNED transfer,
+// stores its exact message bytes here, and /submit accepts a signed
+// transaction only if its message bytes equal unsignedMessageB64 — the
+// user provably signed exactly what we prepared (recipient, amount,
+// blockhash all pinned).
+model WalletTopUp {
+  id             String    @id @default(uuid()) @db.Uuid
+  orgId          String    @map("org_id") @db.Uuid
+  asset          String    // 'USDC' (production rail) | 'SOL' (devnet test rail)
+  network        String    // 'solana:devnet' | 'solana:mainnet' — mirrors x402_payments
+  // Credit value of the top-up in USD cents (pre-bonus). The grant =
+  // amountUsdCents + bonusCents.
+  amountUsdCents BigInt    @map("amount_usd_cents")
+  // Bonus snapshot at prepare time — same quote-wins rule as
+  // stripe_purchases.
+  bonusCents     BigInt    @default(0) @map("bonus_cents")
+  // On-chain amount in base units (lamports / USDC-6dp) as a string,
+  // mirroring x402_payments.amount_raw.
+  amountRaw      String    @map("amount_raw")
+  // SOL rail only: the SOL/USD quote used to convert amountUsdCents to
+  // lamports, recorded so the grant is auditable against the quote.
+  quotedSolPriceUsd Float? @map("quoted_sol_price_usd")
+  // The wallet that must sign — pinned at prepare, cross-checked at
+  // submit against the authenticated user.
+  payerAddress   String    @map("payer_address")
+  // Per-org deposit address (HKDF from WALLET_MASTER_KEY, salt
+  // "wheelsai-topup-v1"): funds are attributable on-chain by address
+  // alone, and sweepable because the key is re-derivable.
+  depositAddress String    @map("deposit_address")
+  // Exact serialized message bytes of the prepared transaction — the
+  // byte-equality anchor for /submit.
+  unsignedMessageB64 String @map("unsigned_message_b64")
+  // The submitted transaction's signature. UNIQUE is the double-credit
+  // guard: one on-chain transaction can never credit two rows.
+  txSignature    String?   @unique @map("tx_signature")
+  status         String    @default("prepared") // 'prepared' | 'submitting' | 'submitted' | 'credited' | 'failed' | 'expired'
+  failureReason  String?   @map("failure_reason")
+  // Blockhash validity horizon: past this, the prepared tx can never
+  // land and the row is re-preparable, never revivable.
+  expiresAt      DateTime  @map("expires_at")
+  creditedAt     DateTime? @map("credited_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  // Restrict (G6): a record of money changing hands. Same reasoning as
+  // credit_transactions.
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  @@index([orgId, createdAt])
+  @@index([status])
+  @@map("wallet_topups")
 }
 
 // ============================================

@@ -305,6 +305,25 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     );
   }
 
+  // x402 payments flow to TREASURY_WALLET_ADDRESS, and its default is the
+  // all-ones System Program address — an address NOBODY controls. An
+  // enabled x402 rail advertising that as payTo directs client funds into
+  // a black hole, so the combination is refused everywhere, not just in
+  // production (a dev client following the 402 would burn real devnet
+  // funds too).
+  if (data.X402_ENABLED) {
+    if (data.TREASURY_WALLET_ADDRESS === "11111111111111111111111111111111") {
+      throw new EnvValidationError(
+        "X402_ENABLED requires a real TREASURY_WALLET_ADDRESS — the default is the System Program address, which nobody controls; payments sent there are unrecoverable"
+      );
+    }
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(data.TREASURY_WALLET_ADDRESS)) {
+      throw new EnvValidationError(
+        "TREASURY_WALLET_ADDRESS must be a base58 Solana public key"
+      );
+    }
+  }
+
   return data;
 }
 

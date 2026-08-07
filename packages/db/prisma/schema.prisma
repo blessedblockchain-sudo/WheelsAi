@@ -283,8 +283,12 @@ model WalletTopUp {
   status         String    @default("prepared") // 'prepared' | 'submitting' | 'submitted' | 'credited' | 'failed' | 'expired'
   failureReason  String?   @map("failure_reason")
   // Blockhash validity horizon: past this, the prepared tx can never
-  // land and the row is re-preparable, never revivable.
+  // land and the row is re-preparable, never revivable. expiresAt is the
+  // wall-clock UX horizon; lastValidBlockHeight is the CHAIN truth —
+  // reconcile declares a submitted tx dead only when the current block
+  // height has passed it.
   expiresAt      DateTime  @map("expires_at")
+  lastValidBlockHeight BigInt @map("last_valid_block_height")
   creditedAt     DateTime? @map("credited_at")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")

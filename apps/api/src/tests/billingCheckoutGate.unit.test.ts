@@ -58,6 +58,39 @@ test("validateEnv: ENCRYPTION_KEY must differ from JWT_SECRET in production", as
   );
 });
 
+test("validateEnv: ALLOW_DEVNET_WALLET_TOPUPS is boot-fatal in production", async () => {
+  const { validateEnv, EnvValidationError } = await import("../config/env.js");
+  assert.throws(
+    () => validateEnv({ ...PROD_BASE, ALLOW_DEVNET_WALLET_TOPUPS: "true" }),
+    EnvValidationError
+  );
+});
+
+test("validateEnv: WALLET_TOPUPS_ENABLED demands WALLET_MASTER_KEY in every environment", async () => {
+  const { validateEnv, EnvValidationError } = await import("../config/env.js");
+  // Without the master key there are no deposit addresses to derive —
+  // a config contradiction, not a runtime 500.
+  assert.throws(
+    () =>
+      validateEnv({
+        NODE_ENV: "development",
+        DATABASE_URL: PROD_BASE.DATABASE_URL,
+        JWT_SECRET: PROD_BASE.JWT_SECRET,
+        WALLET_TOPUPS_ENABLED: "true",
+      }),
+    EnvValidationError
+  );
+  assert.doesNotThrow(() =>
+    validateEnv({
+      NODE_ENV: "development",
+      DATABASE_URL: PROD_BASE.DATABASE_URL,
+      JWT_SECRET: PROD_BASE.JWT_SECRET,
+      WALLET_TOPUPS_ENABLED: "true",
+      WALLET_MASTER_KEY: "c".repeat(32),
+    })
+  );
+});
+
 test("validateEnv: mock checkout is allowed outside production", async () => {
   const { validateEnv } = await import("../config/env.js");
   const data = validateEnv({

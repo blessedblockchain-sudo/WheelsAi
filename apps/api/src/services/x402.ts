@@ -26,8 +26,9 @@ const logger = createLogger("x402");
 // Constants
 // ============================================
 
-// USDC token addresses
-const USDC_MINT = {
+// USDC token addresses. Exported: the wallet top-up rail (B2/T5) uses
+// the same mints — one source so the rails can't drift.
+export const USDC_MINT = {
   mainnet: new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
   devnet: new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
 };

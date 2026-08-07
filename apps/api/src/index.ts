@@ -50,6 +50,7 @@ import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
 import { createPartialSignTokenRoutesProduction } from "./routes/tokenLaunchPartialSignBindings.js";
+import { createWalletTopupRoutesProduction } from "./routes/walletTopupBindings.js";
 import {
   createPublicAgentRoutesProduction,
   createAgentDetailRoutesProduction,
@@ -210,6 +211,12 @@ async function main() {
   await app.register(agentRoutes, { prefix: "/api/agents" });
   await app.register(trainingRoutes, { prefix: "/api/training" });
   await app.register(billingRoutes, { prefix: "/api/billing" });
+  // Wallet top-up rail (B2/T5): /api/billing/topups/*. Always mounted —
+  // when WALLET_TOPUPS_ENABLED is false the routes answer 501 honestly
+  // instead of 404ing.
+  await app.register(createWalletTopupRoutesProduction(), {
+    prefix: "/api/billing",
+  });
   await app.register(settingsRoutes, { prefix: "/api/settings" });
   await app.register(marketplaceRoutes, { prefix: "/api/marketplace" });
   await app.register(reputationRoutes, { prefix: "/api/reputation" });

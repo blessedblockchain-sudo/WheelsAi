@@ -14,6 +14,8 @@ import { Connection } from "@solana/web3.js";
 
 import { env } from "../config/env.js";
 
+export { MEMO_PROGRAM_ID } from "./memoProgram.js";
+
 let instance: Connection | null = null;
 
 export function getSolanaConnection(): Connection {

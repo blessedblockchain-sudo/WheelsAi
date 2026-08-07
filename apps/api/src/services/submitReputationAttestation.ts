@@ -28,11 +28,8 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 
+import { MEMO_PROGRAM_ID } from "../lib/memoProgram.js";
 import type { ReputationAttestationPayload } from "./reputationAttestation.js";
-
-const MEMO_PROGRAM_ID = new PublicKey(
-  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
-);
 
 // Solana caps tx size to ~1232 bytes; instruction overhead leaves ~566
 // bytes for memo data in a single-ix tx. Stay under that.

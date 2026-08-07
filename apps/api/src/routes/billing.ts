@@ -131,10 +131,29 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
 
   // Credit packages + bonus tiers, served so the buyer is shown exactly
   // the ladder the grant math uses (B2/T1 — these were duplicated).
+  // `rails` tells the UI which payment paths are actually live on this
+  // deployment, so it never renders a button the API would refuse.
   fastify.get("/packages", async () => ({
     packages: CREDIT_PACKAGES,
     minPurchase: MIN_PURCHASE_DOLLARS,
     maxPurchase: MAX_PURCHASE_DOLLARS,
+    rails: {
+      // Flips when Stripe Checkout (B2/T3) lands with real keys.
+      stripeCheckout: false,
+      mockCheckout: env.ALLOW_MOCK_CHECKOUT,
+      wallet: env.WALLET_TOPUPS_ENABLED,
+      walletAssets: env.WALLET_TOPUPS_ENABLED
+        ? [
+            ...(env.ALLOW_DEVNET_WALLET_TOPUPS &&
+            env.SOLANA_NETWORK === "devnet" &&
+            env.WALLET_TOPUP_SOL_PRICE_USD
+              ? ["SOL"]
+              : []),
+            "USDC",
+          ]
+        : [],
+      network: env.SOLANA_NETWORK,
+    },
   }));
 
   // Create checkout session.

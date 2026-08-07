@@ -178,6 +178,26 @@ const envSchema = z.object({
     .union([z.boolean(), z.string()])
     .transform((value) => value === true || value === "true")
     .default(false),
+  // Wallet top-up rail (B2/T5): master gate for /api/billing/topups/*.
+  // When false the endpoints answer 501, mirroring the checkout honesty
+  // gate. Enabling requires WALLET_MASTER_KEY (checked below) — the
+  // per-org deposit addresses are derived from it.
+  WALLET_TOPUPS_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  // Dev-only: enables the SOL asset on the top-up rail, priced by the
+  // operator-stated WALLET_TOPUP_SOL_PRICE_USD quote instead of an
+  // oracle. This is the devnet TESTING rail — forbidden in production,
+  // where the wallet rail is USDC-only (1 USDC = $1, no oracle needed).
+  ALLOW_DEVNET_WALLET_TOPUPS: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  // SOL/USD quote for the devnet SOL rail. Deliberately operator-stated,
+  // not defaulted — a made-up default price would grant made-up credit
+  // amounts. Recorded on every WalletTopUp row as quotedSolPriceUsd.
+  WALLET_TOPUP_SOL_PRICE_USD: z.coerce.number().positive().optional(),
 
   // GitHub Integration
   GITHUB_TOKEN: z.string().optional(),
@@ -260,6 +280,11 @@ export function validateEnv(raw: Record<string, string | undefined>) {
         "ALLOW_MOCK_CHECKOUT must not be enabled in production"
       );
     }
+    if (data.ALLOW_DEVNET_WALLET_TOPUPS) {
+      throw new EnvValidationError(
+        "ALLOW_DEVNET_WALLET_TOPUPS must not be enabled in production — the SOL rail grants credits from an operator-stated quote, not an oracle"
+      );
+    }
     if (data.X402_ENABLED && !data.X402_SUBMIT_TRANSACTIONS) {
       throw new EnvValidationError(
         "X402_ENABLED requires X402_SUBMIT_TRANSACTIONS in production — verification-only mode accepts payments that never land on-chain"
@@ -270,6 +295,14 @@ export function validateEnv(raw: Record<string, string | undefined>) {
         "X402_ENABLED requires X402_SETTLEMENT_WORKER_ENABLED in production — without the worker, verified payments are never settled on-chain"
       );
     }
+  }
+
+  // Config contradictions that are wrong in EVERY environment — catch them
+  // at boot, not as a runtime 500 on the first prepare request.
+  if (data.WALLET_TOPUPS_ENABLED && !data.WALLET_MASTER_KEY) {
+    throw new EnvValidationError(
+      "WALLET_TOPUPS_ENABLED requires WALLET_MASTER_KEY — deposit addresses are derived from it"
+    );
   }
 
   return data;

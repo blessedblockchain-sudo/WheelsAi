@@ -2,12 +2,17 @@
 // PostgreSQL with Prisma ORM
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // postgresqlExtensions lets the datasource declare `vector` so Prisma
+  // creates it in the shadow database during migrate/diff — without it,
+  // every migration run fails on the unknown `vector` type (W2 RAG).
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
 }
 
 // ============================================
@@ -1616,7 +1621,13 @@ model MemoryContext {
 
   // Content
   content         String   @db.Text // The actual memory content
-  embedding       Bytes?   // Vector embedding for semantic search
+  // pgvector column (W2 RAG) — same unspecified-dimension reasoning as
+  // document_chunks.embedding_vec. Replaces a `Bytes?` column that had
+  // zero writers.
+  embeddingVec    Unsupported("vector")?  @map("embedding_vec")
+  embeddingModel  String?  @map("embedding_model")
+  embeddingDims   Int?     @map("embedding_dims")
+  embeddedAt      DateTime? @map("embedded_at")
 
   // Importance and decay
   importance      Float    @default(0.5) // 0-1 importance score
@@ -1870,8 +1881,18 @@ model DocumentChunk {
   content         String   @db.Text
   chunkIndex      Int      @map("chunk_index")
 
-  embedding       Bytes?
+  // pgvector column (W2 RAG). Deliberately UNSPECIFIED dimension: the
+  // embedding model is operator-configurable (768/1536/3072 all exist),
+  // and pinning a dimension here would force a migration to change model.
+  // The cost is exact sequential cosine search instead of an ANN index —
+  // correct, and fine at current scale. Pin the dimension and add an HNSW
+  // index once a model is settled on.
+  // The previous `embedding Bytes?` column is gone: it had zero writers
+  // and zero rows, and two embedding columns invites "which one is real?".
+  embeddingVec    Unsupported("vector")?  @map("embedding_vec")
   embeddingModel  String?  @map("embedding_model")
+  embeddingDims   Int?     @map("embedding_dims")
+  embeddedAt      DateTime? @map("embedded_at")
 
   metadata        Json?
   tokenCount      Int      @default(0) @map("token_count")

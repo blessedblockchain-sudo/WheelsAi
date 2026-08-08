@@ -2,7 +2,11 @@ version: "3.8"
 
 services:
   postgres:
-    image: postgres:15-alpine
+    # pgvector's official image = stock PostgreSQL 15 + the `vector`
+    # extension (W2 RAG). Plain postgres:15 cannot CREATE EXTENSION vector,
+    # so semantic search has nowhere to store embeddings. Drop-in for the
+    # existing data volume — same PG major, same on-disk format.
+    image: pgvector/pgvector:pg15
     container_name: wheelsai-postgres
     restart: unless-stopped
     ports:

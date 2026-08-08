@@ -104,7 +104,7 @@ migrations:
   needs: [build]
   <<: *node_setup
   services:
-    - name: postgres:15-alpine
+    - name: pgvector/pgvector:pg15
       alias: postgres
     - name: redis:7-alpine
       alias: redis
@@ -168,7 +168,7 @@ test:integration:
   timeout: 10m
   <<: *node_setup
   services:
-    - name: postgres:15-alpine
+    - name: pgvector/pgvector:pg15
       alias: postgres
     - name: redis:7-alpine
       alias: redis

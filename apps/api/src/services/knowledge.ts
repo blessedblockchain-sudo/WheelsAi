@@ -1,5 +1,12 @@
 import { prisma } from "@wheelsai/db";
 
+import { resolveEmbeddingConfig } from "../config/embeddings.js";
+import { createLogger } from "../utils/logger.js";
+import { createEmbeddings } from "./embeddings.js";
+import { persistChunkEmbedding, searchChunksByVector } from "./vectorSearch.js";
+
+const logger = createLogger("knowledge-service");
+
 // ============================================
 // Knowledge Base CRUD
 // ============================================
@@ -114,7 +121,6 @@ export async function addDocument(knowledgeBaseId: string, orgId: string, input:
     },
   });
 
-  // Simulate chunking (in production, this would be async with a queue)
   const chunks = chunkText(input.content, kb.chunkSize, kb.chunkOverlap);
   await prisma.documentChunk.createMany({
     data: chunks.map((content, index) => ({
@@ -123,6 +129,14 @@ export async function addDocument(knowledgeBaseId: string, orgId: string, input:
       chunkIndex: index,
       tokenCount: Math.ceil(content.length / 4), // rough estimate
     })),
+  });
+
+  // Embed the new chunks when a provider is configured (W2 RAG). A
+  // provider failure must NOT fail the upload — the document is already
+  // stored and searchable by keyword, and the backfill worker picks up
+  // anything left unembedded.
+  await embedDocumentChunks(doc.id).catch((err) => {
+    logger.warn({ err, documentId: doc.id }, "inline chunk embedding failed; backfill will retry");
   });
 
   // Update document and KB stats
@@ -216,6 +230,17 @@ export async function deleteDocument(docId: string, knowledgeBaseId: string, org
 // Search / Query
 // ============================================
 
+/**
+ * Searches a knowledge base, semantically when embeddings are available
+ * and by keyword otherwise — and REPORTS WHICH (`mode`). The two are not
+ * equivalent, so the caller and the UI are told which one answered rather
+ * than being left to assume the better one (W2 RAG).
+ *
+ * Semantic requires both an embedding provider (env) and chunks that have
+ * actually been embedded; either missing falls back to keyword with
+ * `fallbackReason` explaining it. A provider error also falls back — a
+ * degraded search beats a 500 on a search box.
+ */
 export async function searchKnowledgeBase(knowledgeBaseId: string, orgId: string, input: {
   query: string;
   limit?: number;
@@ -226,10 +251,20 @@ export async function searchKnowledgeBase(knowledgeBaseId: string, orgId: string
 
   const { query, limit = 5 } = input;
 
+  const semantic = await trySemanticSearch(knowledgeBaseId, query, limit);
+  if (semantic.ok) return semantic.payload;
+  const fallbackReason = semantic.reason;
+
   // Keyword-based search using database filtering to avoid loading all chunks into memory
   const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (queryWords.length === 0) {
-    return { results: [], query, totalChunksSearched: 0 };
+    return {
+      results: [],
+      query,
+      totalChunksSearched: 0,
+      mode: "keyword" as const,
+      fallbackReason,
+    };
   }
 
   // Use database-level filtering: find chunks containing at least one query word
@@ -267,6 +302,140 @@ export async function searchKnowledgeBase(knowledgeBaseId: string, orgId: string
     })),
     query,
     totalChunksSearched,
+    // Word-overlap ranking, NOT semantic similarity. Named so the caller
+    // can say so too (same doctrine as the test runner's relabeled
+    // "semantic" assertion).
+    mode: "keyword" as const,
+    fallbackReason,
+  };
+}
+
+/**
+ * Embeds every not-yet-embedded chunk of a document. No-op when no
+ * provider is configured. Shared by the upload path and the backfill
+ * worker so both produce identical rows.
+ */
+export async function embedDocumentChunks(documentId: string): Promise<number> {
+  const config = resolveEmbeddingConfig();
+  if (!config) return 0;
+
+  const pending = await prisma.documentChunk.findMany({
+    where: { documentId, embeddedAt: null },
+    select: { id: true, content: true },
+    orderBy: { chunkIndex: "asc" },
+  });
+  if (pending.length === 0) return 0;
+
+  const embedded = await createEmbeddings({
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+    input: pending.map((c) => c.content),
+  });
+
+  for (const [i, chunk] of pending.entries()) {
+    const vector = embedded.vectors[i];
+    if (!vector) continue;
+    await persistChunkEmbedding(prisma as never, {
+      chunkId: chunk.id,
+      vector,
+      model: config.model,
+      dimensions: embedded.dimensions,
+    });
+  }
+  return pending.length;
+}
+
+interface SemanticSearchPayload {
+  results: Array<{
+    chunkId: string;
+    documentId: string;
+    documentTitle: string;
+    content: string;
+    score: number;
+    chunkIndex: number;
+  }>;
+  query: string;
+  totalChunksSearched: number;
+  mode: "semantic";
+  embeddingModel: string;
+  fallbackReason: string | null;
+}
+
+type SemanticAttempt =
+  | { ok: true; payload: SemanticSearchPayload }
+  | { ok: false; reason: string };
+
+/**
+ * Attempts semantic search. Returns the reason it could not answer —
+ * no provider, nothing embedded yet, or a provider failure — rather than
+ * a bare null, so the caller can report WHY the result is keyword-ranked.
+ * The reason is returned (not stored) because concurrent searches would
+ * otherwise overwrite each other's explanation.
+ */
+async function trySemanticSearch(
+  knowledgeBaseId: string,
+  query: string,
+  limit: number,
+): Promise<SemanticAttempt> {
+  const config = resolveEmbeddingConfig();
+  if (!config) {
+    return { ok: false, reason: "embeddings not configured (set EMBEDDING_PROVIDER)" };
+  }
+  if (query.trim().length === 0) {
+    return { ok: false, reason: "empty query" };
+  }
+
+  let embedded;
+  try {
+    embedded = await createEmbeddings({
+      baseUrl: config.baseUrl,
+      apiKey: config.apiKey,
+      model: config.model,
+      input: [query],
+    });
+  } catch (err) {
+    logger.warn(
+      { err, knowledgeBaseId },
+      "embedding query failed; falling back to keyword search",
+    );
+    return {
+      ok: false,
+      reason: `embedding provider error: ${(err as Error).message}`,
+    };
+  }
+
+  const queryVector = embedded.vectors[0];
+  if (!queryVector) {
+    return { ok: false, reason: "embedding provider returned no vector" };
+  }
+
+  const results = await searchChunksByVector(prisma as never, {
+    knowledgeBaseId,
+    queryVector,
+    dimensions: embedded.dimensions,
+    limit,
+  });
+
+  if (results.length === 0) {
+    // Nothing embedded with THIS model yet (backfill hasn't run, or the
+    // model changed). Keyword can still answer, so let it.
+    return {
+      ok: false,
+      reason: `no chunks embedded with ${config.model} yet`,
+    };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      results,
+      query,
+      totalChunksSearched: results.length,
+      mode: "semantic",
+      embeddingModel: config.model,
+      fallbackReason: null,
+    },
   };
 }
 

@@ -124,6 +124,18 @@ const envSchema = z.object({
   GROQ_API_KEY: z.string().optional(),
   GOOGLE_GEMINI_API_KEY: z.string().optional(),
   TOGETHER_API_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+
+  // Embeddings (W2 RAG). Unset/"none" ⇒ semantic search is unavailable
+  // and the knowledge path reports mode:"keyword" honestly. Valid
+  // providers expose an OpenAI-compatible /embeddings endpoint;
+  // validateEnv refuses groq BY NAME (chat-only, no embeddings route).
+  EMBEDDING_PROVIDER: z.string().optional(),
+  EMBEDDING_MODEL: z.string().optional(),
+  // Backfill worker: embeds rows that predate the provider being turned
+  // on. 0 disables.
+  EMBEDDING_BACKFILL_INTERVAL_MS: z.coerce.number().int().min(0).default(0),
+  EMBEDDING_BACKFILL_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
   FREE_TIER_RPM: z.coerce.number().default(20),
   FREE_TIER_RPD: z.coerce.number().default(200),
 
@@ -354,6 +366,41 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError(
       "SOLANA_NETWORK=mainnet-beta requires an explicitly set, non-devnet SOLANA_RPC_URL (the default is the devnet endpoint — mainnet mode would silently verify against the wrong chain)"
     );
+  }
+
+  // Embeddings: a configured provider must actually be able to serve
+  // embeddings and must have its key + model. Groq is refused BY NAME
+  // because it is the platform's most commonly configured key and serves
+  // chat only — misconfiguring it would 404 on the first search instead
+  // of failing here (W2 RAG).
+  const embeddingProvider = data.EMBEDDING_PROVIDER;
+  if (embeddingProvider && embeddingProvider !== "none") {
+    if (embeddingProvider === "groq") {
+      throw new EnvValidationError(
+        "EMBEDDING_PROVIDER=groq is not valid — Groq serves chat completions only and has no /embeddings endpoint. Use openai, together, or google."
+      );
+    }
+    const providerKeys: Record<string, keyof typeof data> = {
+      openai: "OPENAI_API_KEY",
+      together: "TOGETHER_API_KEY",
+      google: "GOOGLE_GEMINI_API_KEY",
+    };
+    const keyName = providerKeys[embeddingProvider];
+    if (!keyName) {
+      throw new EnvValidationError(
+        `Unknown EMBEDDING_PROVIDER "${embeddingProvider}" — valid values are openai, together, google, or none`
+      );
+    }
+    if (!data[keyName]) {
+      throw new EnvValidationError(
+        `EMBEDDING_PROVIDER=${embeddingProvider} requires ${String(keyName)}`
+      );
+    }
+    if (!data.EMBEDDING_MODEL) {
+      throw new EnvValidationError(
+        "EMBEDDING_PROVIDER requires EMBEDDING_MODEL — the embedding model is never guessed (its dimensions define every stored vector)"
+      );
+    }
   }
 
   // x402 payments flow to TREASURY_WALLET_ADDRESS, and its default is the

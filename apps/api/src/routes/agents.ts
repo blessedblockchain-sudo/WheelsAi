@@ -42,9 +42,29 @@ const createAgentSchema = z.object({
   env: z.record(z.string()).default({}),
   tags: z.array(z.string()).default([]),
   isPublic: z.boolean().default(false),
+  // Optional RAG grounding (W2): bind a knowledge base and the agent's
+  // chat answers get grounded in retrieved passages. null unbinds.
+  knowledgeBaseId: z.string().uuid().nullable().optional(),
 });
 
 const updateAgentSchema = createAgentSchema.partial();
+
+/**
+ * A knowledge base may only be bound by the org that owns it. Without
+ * this check any authenticated user could point their agent at another
+ * tenant's knowledge base and read its documents back out through chat
+ * grounding — the retrieval path trusts the binding.
+ */
+async function assertKnowledgeBaseOwned(
+  knowledgeBaseId: string,
+  orgId: string,
+): Promise<boolean> {
+  const kb = await prisma.knowledgeBase.findFirst({
+    where: { id: knowledgeBaseId, orgId },
+    select: { id: true },
+  });
+  return kb !== null;
+}
 
 const deployAgentSchema = z.object({
   gpuTier: z.string(),
@@ -177,6 +197,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       slug = `${baseSlug}-${counter}`;
     }
 
+    if (
+      body.knowledgeBaseId &&
+      !(await assertKnowledgeBaseOwned(body.knowledgeBaseId, orgId))
+    ) {
+      return reply.badRequest("Knowledge base not found");
+    }
+
     const agent = await prisma.agent.create({
       data: {
         orgId,
@@ -193,6 +220,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         env: body.env,
         tags: body.tags,
         isPublic: body.isPublic,
+        knowledgeBaseId: body.knowledgeBaseId ?? null,
       },
     });
 
@@ -234,6 +262,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
     if (!agent) {
       return reply.notFound("Agent not found");
+    }
+
+    if (
+      updates.knowledgeBaseId &&
+      !(await assertKnowledgeBaseOwned(updates.knowledgeBaseId, orgId))
+    ) {
+      return reply.badRequest("Knowledge base not found");
     }
 
     // Increment version on significant changes

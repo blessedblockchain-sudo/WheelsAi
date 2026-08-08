@@ -12,6 +12,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { checkFreeTierLimit } from "../middleware/free-tier-limit.js";
 import { resolveModelForPlayground, runChat, type ChatMessage } from "../services/mastra-runtime.js";
 import { isFreeModel, getAvailableFreeModels, getAllFreeModels } from "../config/free-models.js";
+import { retrieveContextForAgent } from "../services/agentRetrieval.js";
+import { buildAgentRetrievalDeps } from "../services/buildAgentRetrievalDeps.js";
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 
@@ -94,6 +96,24 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
         );
       }
 
+      // RAG grounding (W2): only for agents bound to a knowledge base.
+      // Unbound agents take the identical path they always did.
+      let retrieval: Awaited<ReturnType<typeof retrieveContextForAgent>> = null;
+      const lastUserMessage = [...body.messages]
+        .reverse()
+        .find((m) => m.role === "user");
+      if (agent.knowledgeBaseId && lastUserMessage) {
+        try {
+          retrieval = await retrieveContextForAgent(
+            { agentId, orgId, query: lastUserMessage.content },
+            buildAgentRetrievalDeps(),
+          );
+        } catch (err) {
+          // Retrieval is an enhancement — never fail the chat over it.
+          logger.warn({ err, agentId }, "retrieval failed; answering ungrounded");
+        }
+      }
+
       const agentConfig = {
         name: agent.name,
         systemPrompt: agent.systemPrompt ?? undefined,
@@ -105,13 +125,24 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
         },
       };
 
+      // Grounding rides as its own system turn ahead of the conversation,
+      // so the user's own message is never rewritten.
+      const chatMessages = (
+        retrieval
+          ? [
+              { role: "system", content: retrieval.contextBlock },
+              ...body.messages,
+            ]
+          : body.messages
+      ) as ChatMessage[];
+
       // Streaming response
       if (body.stream) {
         try {
           const stream = await runChat(
             resolved,
             agentConfig,
-            body.messages as ChatMessage[],
+            chatMessages,
             true
           );
 
@@ -145,7 +176,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
         const result = await runChat(
           resolved,
           agentConfig,
-          body.messages as ChatMessage[],
+          chatMessages,
           false
         );
 
@@ -158,6 +189,21 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           content: result.content,
           model: modelId,
           usage: result.usage,
+          // What grounded this answer, and by which retrieval mode — so
+          // the UI can cite sources and never imply "semantic" when the
+          // passages were word-overlap matched.
+          retrieval: retrieval
+            ? {
+                mode: retrieval.mode,
+                fallbackReason: retrieval.fallbackReason,
+                sources: retrieval.sources.map((s) => ({
+                  chunkId: s.chunkId,
+                  documentId: s.documentId,
+                  documentTitle: s.documentTitle,
+                  score: s.score,
+                })),
+              }
+            : null,
         };
       } catch (err) {
         logger.error({ err, agentId, modelId }, "Chat error");

@@ -410,6 +410,13 @@ model Agent {
   env           Json     @default("{}") // Environment variables (encrypted sensitive values)
   secrets       Bytes?   // Encrypted secrets blob
 
+  // Optional RAG grounding (W2): when set, agent chat retrieves relevant
+  // chunks from this knowledge base and grounds the answer in them.
+  // Nullable by design — unbound agents behave exactly as before.
+  // SetNull on delete: losing the knowledge base must un-ground the agent,
+  // never delete it.
+  knowledgeBaseId String? @map("knowledge_base_id") @db.Uuid
+
   // Metadata
   version       String   @default("1.0.0")
   isPublic      Boolean  @default(false) @map("is_public")
@@ -419,6 +426,7 @@ model Agent {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   org           Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  knowledgeBase KnowledgeBase?    @relation("AgentKnowledgeBase", fields: [knowledgeBaseId], references: [id], onDelete: SetNull)
   deployments   AgentDeployment[]
   contributors  AgentContributor[]
   listing       AgentListing?
@@ -1830,12 +1838,15 @@ model KnowledgeBase {
   totalChunks   Int      @default(0) @map("total_chunks")
   totalSizeBytes BigInt  @default(0) @map("total_size_bytes")
 
+  // Legacy denormalized list with no foreign key — superseded by the
+  // Agent.knowledgeBaseId relation below, which the RAG path reads.
   agentIds      String[] @default([]) @map("agent_ids")
 
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   documents     KnowledgeDocument[]
+  groundedAgents Agent[] @relation("AgentKnowledgeBase")
 
   @@unique([orgId, name])
   @@index([orgId])

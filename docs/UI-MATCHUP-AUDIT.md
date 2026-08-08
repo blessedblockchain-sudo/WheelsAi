@@ -220,10 +220,16 @@ the per-window aggregates that exist, so the evaluator skips and counts them
 rather than approximating a fabricated percentile.
 
 **Wave 2 — keystone data + money (L each; some pair with Phase B tickets):**
-pgvector RAG + memory wired into chat paths · token trade feed (WS consumer +
-backfill; supersedes/absorbs B6) · marketplace metering + payout executor
-(pairs with B2-B4 payments) · orchestration engine · graph linear interpreter
-(stage 1 of builder runtime) · Slack OAuth + GitHub App.
+✅ marketplace payout executor (`940060e`, devnet-proven `7d6b9a8` — the
+"90% revenue" re-entry gate; its money-IN half, `recordMarketplaceUsage`,
+still has zero callers and remains open) · ✅ pgvector RAG + memory
+(`51ac173` + `75fae92` + `45e3d28`; plumbing verified against real
+Postgres — semantic quality unproven until an embedding provider key
+exists) · ✅ orchestration engine (`dad6d3d`, proven with live
+multi-agent inference) · **open:** token trade feed (WS consumer +
+backfill; supersedes/absorbs B6) · marketplace per-request metering
+caller · graph linear interpreter (stage 1 of builder runtime) · Slack
+OAuth + GitHub App.
 
 **Wave 3 — heavy/externally gated (L-XL):**
 training execution (containers + real Nosana markets — C1-gated) · OpenClaw

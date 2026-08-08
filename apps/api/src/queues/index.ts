@@ -53,3 +53,7 @@ export {
   startPayoutExecutorQueue,
   stopPayoutExecutorQueue,
 } from "./payout-executor.queue.js";
+export {
+  startEmbeddingBackfillQueue,
+  stopEmbeddingBackfillQueue,
+} from "./embedding-backfill.queue.js";

@@ -17,6 +17,8 @@
  * All IO is injected so unit tests run without models, fetch, or Prisma.
  */
 
+import { assertUrlAllowed } from "../lib/ssrfGuard.js";
+
 export interface ScheduledTaskForExecution {
   id: string;
   orgId: string;
@@ -83,6 +85,12 @@ export async function executeScheduledTask(
     const url = payload.url;
     if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
       throw new Error("webhook task requires a payload.url (http/https)");
+    }
+    // The URL is user-supplied, so it is an SSRF vector into our own
+    // network. Resolve and validate before firing (lib/ssrfGuard.ts).
+    const verdict = await assertUrlAllowed(url);
+    if (!verdict.ok) {
+      throw new Error(`webhook URL refused: ${verdict.reason}`);
     }
     const controller = new AbortController();
     const timer = setTimeout(

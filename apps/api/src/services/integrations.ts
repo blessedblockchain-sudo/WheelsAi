@@ -1,6 +1,8 @@
 import { prisma } from "@wheelsai/db";
 import crypto from "crypto";
 
+import { safeFetch } from "../lib/ssrfGuard.js";
+
 // ============================================
 // Types
 // ============================================
@@ -315,7 +317,7 @@ export async function sendDiscordMessage(
     throw new Error("Discord webhook URL not configured");
   }
 
-  const response = await fetch(config.webhookUrl, {
+  const response = await safeFetch(config.webhookUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -365,7 +367,7 @@ export async function triggerZapierWebhook(
     throw new Error("Zapier webhook URL not configured");
   }
 
-  const response = await fetch(config.webhookUrl, {
+  const response = await safeFetch(config.webhookUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -419,7 +421,7 @@ export async function triggerMakeWebhook(
     throw new Error("Make webhook URL not configured");
   }
 
-  const response = await fetch(config.webhookUrl, {
+  const response = await safeFetch(config.webhookUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -466,7 +468,7 @@ export async function triggerN8nWebhook(
     throw new Error("n8n webhook URL not configured");
   }
 
-  const response = await fetch(config.webhookUrl, {
+  const response = await safeFetch(config.webhookUrl, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

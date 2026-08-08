@@ -6,6 +6,8 @@
  */
 
 import { createLogger } from "../utils/logger.js";
+import { evaluateArithmetic } from "../lib/arithmetic.js";
+import { safeFetch } from "../lib/ssrfGuard.js";
 import { isFreeModel, resolveFreeModelConfig } from "../config/free-models.js";
 
 const logger = createLogger("mastra-runtime");
@@ -50,16 +52,13 @@ interface AgentPlaygroundConfig {
 function createCalculatorExecutor() {
   return async (input: { expression: string }): Promise<string> => {
     try {
-      // Safe math evaluation — only allows numbers and basic operators
-      const sanitized = input.expression.replace(/[^0-9+\-*/().%\s]/g, "");
-      if (sanitized !== input.expression) {
-        return "Error: Expression contains invalid characters. Only numbers and +, -, *, /, (), %, . are allowed.";
-      }
-      const fn = new Function(`"use strict"; return (${sanitized});`);
-      const result = fn();
-      return String(result);
-    } catch {
-      return `Error: Could not evaluate expression "${input.expression}"`;
+      // Parsed, not evaluated. The previous implementation sanitized the
+      // expression and handed it to `new Function` — tight enough in
+      // practice, but one regex edit away from remote code execution.
+      // A parser cannot fail that way (lib/arithmetic.ts).
+      return String(evaluateArithmetic(input.expression));
+    } catch (err) {
+      return `Error: ${err instanceof Error ? err.message : "could not evaluate expression"}`;
     }
   };
 }
@@ -72,35 +71,18 @@ function createHttpRequestExecutor() {
     body?: string;
   }): Promise<string> => {
     try {
-      // SSRF protection — block private/internal IPs
-      const url = new URL(input.url);
-      const blockedHosts = [
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
-        "169.254.169.254", // AWS metadata
-        "metadata.google.internal",
-      ];
-      if (
-        blockedHosts.includes(url.hostname) ||
-        url.hostname.startsWith("10.") ||
-        url.hostname.startsWith("172.") ||
-        url.hostname.startsWith("192.168.")
-      ) {
-        return "Error: Requests to internal/private addresses are not allowed.";
-      }
-
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
-
-      const res = await fetch(input.url, {
+      // SSRF protection. The URL here comes from the MODEL, so it is
+      // fully attacker-influenced by anyone who can prompt the agent.
+      // safeFetch resolves the host and validates every address, and
+      // re-validates each redirect hop — the previous hostname-only
+      // blocklist was bypassable with a name that resolves to 127.0.0.1,
+      // an encoded literal like http://2130706433/, or a 302.
+      const res = await safeFetch(input.url, {
         method: input.method || "GET",
         headers: input.headers,
         body: input.body,
-        signal: controller.signal,
+        timeoutMs: 10_000,
       });
-
-      clearTimeout(timeout);
 
       const text = await res.text();
       // Truncate large responses

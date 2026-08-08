@@ -1,4 +1,5 @@
 import { prisma } from "@wheelsai/db";
+import { safeFetch } from "../lib/ssrfGuard.js";
 
 // ============================================
 // Alert Channels
@@ -556,7 +557,7 @@ async function sendSlackNotification(config: SlackConfig, payload: NotificationP
     ],
   };
 
-  const response = await fetch(config.webhookUrl, {
+  const response = await safeFetch(config.webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -590,7 +591,7 @@ async function sendDiscordNotification(config: DiscordConfig, payload: Notificat
     ],
   };
 
-  const response = await fetch(config.webhookUrl, {
+  const response = await safeFetch(config.webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -623,7 +624,7 @@ async function sendWebhookNotification(config: WebhookConfig, payload: Notificat
     headers["X-Webhook-Signature"] = signature;
   }
 
-  const response = await fetch(config.url, {
+  const response = await safeFetch(config.url, {
     method: config.method || "POST",
     headers,
     body: JSON.stringify(payload),

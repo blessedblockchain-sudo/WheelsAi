@@ -29,7 +29,7 @@ import {
   Layers,
   Zap,
 } from "lucide-react";
-import { agentsApi, agentGraphApi, type GraphNode, type GraphEdge, type GraphTemplate } from "@/lib/api";
+import { agentsApi, agentGraphApi, type GraphNode, type GraphEdge, type GraphTemplate, type GraphRunResult } from "@/lib/api";
 
 // Node type definitions with icons and colors
 const NODE_TYPES = {
@@ -182,6 +182,36 @@ export default function AgentBuilderPage() {
       console.error("Failed to load builder:", error);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // --- Run (W2 linear interpreter) ---
+  const [running, setRunning] = useState(false);
+  const [runInput, setRunInput] = useState("");
+  const [runResult, setRunResult] = useState<GraphRunResult | null>(null);
+  const [showRunPanel, setShowRunPanel] = useState(false);
+
+  async function handleRun() {
+    setRunning(true);
+    setShowRunPanel(true);
+    setRunResult(null);
+    try {
+      // Save first: the server runs the SAVED graph, so running an
+      // unsaved canvas would execute something the author isn't looking at.
+      await agentGraphApi.saveGraph(agentId, { nodes, edges, viewport });
+      const res = await agentGraphApi.runGraph(agentId, runInput);
+      setRunResult(res.data);
+    } catch (error) {
+      setRunResult({
+        executionId: "",
+        status: "failed",
+        output: null,
+        error: error instanceof Error ? error.message : "Run failed",
+        trace: [],
+        durationMs: 0,
+      });
+    } finally {
+      setRunning(false);
     }
   }
 
@@ -418,7 +448,9 @@ export default function AgentBuilderPage() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-background">
+    // `relative` anchors the run panel below; without it the panel would
+    // position against the viewport by luck rather than by design.
+    <div className="relative h-screen flex flex-col bg-background">
       {/* Header */}
       <div className="h-14 border-b flex items-center justify-between px-4 bg-card">
         <div className="flex items-center gap-4">
@@ -462,6 +494,16 @@ export default function AgentBuilderPage() {
           >
             <LayoutTemplate className="h-4 w-4" />
             Templates
+          </button>
+
+          <button
+            onClick={handleRun}
+            disabled={running || nodes.length === 0}
+            title={nodes.length === 0 ? "Add nodes to run this graph" : "Save and run this graph"}
+            className="flex items-center gap-2 px-3 py-1.5 border rounded-lg hover:bg-accent transition-colors text-sm disabled:opacity-50"
+          >
+            <Play className="h-4 w-4" />
+            {running ? "Running..." : "Run"}
           </button>
 
           <button
@@ -977,6 +1019,108 @@ export default function AgentBuilderPage() {
                 </button>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Run panel — the node-by-node trace of the last run (W2). */}
+      {showRunPanel && (
+        <div className="absolute bottom-0 left-0 right-0 max-h-[45%] border-t bg-card shadow-lg flex flex-col z-20">
+          <div className="flex items-center gap-2 px-4 py-2 border-b">
+            <Play className="h-4 w-4" />
+            <span className="text-sm font-semibold">Run</span>
+            {runResult && (
+              <span
+                className={
+                  runResult.status === "completed"
+                    ? "text-xs px-2 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                    : "text-xs px-2 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                }
+              >
+                {runResult.status} · {runResult.durationMs}ms
+              </span>
+            )}
+            <button
+              onClick={() => setShowRunPanel(false)}
+              className="ml-auto p-1 hover:bg-accent rounded"
+              aria-label="Close run panel"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="p-3 border-b flex gap-2">
+            <input
+              value={runInput}
+              onChange={(e) => setRunInput(e.target.value)}
+              placeholder="Input for the graph's input node"
+              className="flex-1 px-3 py-1.5 text-sm border rounded-lg bg-background"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !running) handleRun();
+              }}
+            />
+            <button
+              onClick={handleRun}
+              disabled={running}
+              className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-lg disabled:opacity-50"
+            >
+              {running ? "Running..." : "Run"}
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {running && (
+              <p className="text-sm text-muted-foreground">Executing graph…</p>
+            )}
+
+            {runResult?.error && (
+              <div className="text-sm rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 p-3">
+                {runResult.error}
+              </div>
+            )}
+
+            {runResult?.trace.map((entry) => (
+              <div
+                key={entry.nodeId}
+                className="rounded-lg border p-2 text-xs space-y-1"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">{entry.label}</span>
+                  <span className="text-muted-foreground">{entry.nodeType}</span>
+                  <span
+                    className={
+                      entry.status === "success"
+                        ? "px-1.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                        : entry.status === "refused"
+                          ? "px-1.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                          : "px-1.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                    }
+                  >
+                    {entry.status}
+                  </span>
+                  <span className="ml-auto text-muted-foreground">
+                    {entry.durationMs}ms
+                  </span>
+                </div>
+                {entry.output && (
+                  <pre className="whitespace-pre-wrap break-words text-muted-foreground">
+                    {entry.output.slice(0, 400)}
+                  </pre>
+                )}
+                {entry.error && (
+                  <p className="text-red-600 dark:text-red-400">{entry.error}</p>
+                )}
+              </div>
+            ))}
+
+            {runResult?.status === "completed" && (
+              <div className="rounded-lg border border-green-300 bg-green-50 dark:bg-green-900/20 p-3 text-sm">
+                <div className="font-medium mb-1">Output</div>
+                <pre className="whitespace-pre-wrap break-words">
+                  {runResult.output}
+                </pre>
+              </div>
+            )}
           </div>
         </div>
       )}

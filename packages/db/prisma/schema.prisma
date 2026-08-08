@@ -986,8 +986,36 @@ model AgentGraph {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  executions    AgentGraphExecution[]
 
   @@map("agent_graphs")
+}
+
+// One run of a visual graph through the linear interpreter (W2). The
+// builder could draw and compile a graph but nothing executed it; this
+// records what actually happened, node by node, so a run is inspectable
+// rather than a disappearing response.
+model AgentGraphExecution {
+  id            String   @id @default(uuid()) @db.Uuid
+  graphId       String   @map("graph_id") @db.Uuid
+  agentId       String   @map("agent_id") @db.Uuid
+
+  status        String   @default("running") // 'running' | 'completed' | 'failed'
+  input         String?  @db.Text
+  output        String?  @db.Text
+  error         String?  @db.Text
+  // Per-node record: type, status (success/failed/refused), timing, and
+  // the value that entered and left the node.
+  trace         Json     @default("[]")
+
+  startedAt     DateTime @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  durationMs    Int?     @map("duration_ms")
+
+  graph         AgentGraph @relation(fields: [graphId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, startedAt])
+  @@map("agent_graph_executions")
 }
 
 // ============================================

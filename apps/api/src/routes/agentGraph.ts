@@ -9,6 +9,7 @@ import {
   compileGraph,
   type AgentGraphData,
 } from "../services/agentGraph.js";
+import { getGraphExecutions, runAgentGraph } from "../services/runAgentGraph.js";
 
 export async function agentGraphRoutes(app: FastifyInstance) {
   // All routes require authentication
@@ -133,6 +134,46 @@ export async function agentGraphRoutes(app: FastifyInstance) {
   // ============================================
   // Compilation / Validation
   // ============================================
+
+  // ============================================
+  // Execution (W2 — linear interpreter, stage 1)
+  // ============================================
+
+  // Run the graph. Compiling only produced an ORDER; this walks it.
+  app.post("/agents/:agentId/graph/run", async (request, reply) => {
+    const { orgId } = request.auth!;
+    const { agentId } = request.params as { agentId: string };
+    const body = (request.body ?? {}) as { input?: unknown };
+    const input = typeof body.input === "string" ? body.input : "";
+
+    try {
+      const result = await runAgentGraph(agentId, orgId, input);
+      // A failed RUN is a 200 with status:"failed" — the trace is the
+      // useful part, and the request itself succeeded. Only a bad
+      // request (no graph, empty graph, wrong agent) is a 4xx.
+      return reply.send({ success: true, data: result });
+    } catch (error: any) {
+      return reply.status(400).send({ success: false, error: error.message });
+    }
+  });
+
+  // Run history for the builder's run panel.
+  app.get("/agents/:agentId/graph/executions", async (request, reply) => {
+    const { orgId } = request.auth!;
+    const { agentId } = request.params as { agentId: string };
+    const { limit } = request.query as { limit?: string };
+
+    try {
+      const executions = await getGraphExecutions(
+        agentId,
+        orgId,
+        limit ? Math.min(Number(limit) || 20, 100) : 20,
+      );
+      return reply.send({ success: true, data: executions });
+    } catch (error: any) {
+      return reply.status(400).send({ success: false, error: error.message });
+    }
+  });
 
   // Compile graph for execution
   app.post("/agents/:agentId/graph/compile", async (request, reply) => {

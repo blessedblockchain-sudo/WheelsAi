@@ -1825,6 +1825,38 @@ export interface CompiledGraph {
   edges: Record<string, GraphEdge>;
 }
 
+/** One node's record from a graph run (W2 linear interpreter). */
+export interface GraphTraceEntry {
+  nodeId: string;
+  nodeType: string;
+  label: string;
+  /** `refused` = the interpreter deliberately will not run this node. */
+  status: "success" | "failed" | "refused";
+  input: string | null;
+  output: string | null;
+  error: string | null;
+  durationMs: number;
+}
+
+export interface GraphRunResult {
+  executionId: string;
+  status: "completed" | "failed";
+  output: string | null;
+  error: string | null;
+  trace: GraphTraceEntry[];
+  durationMs: number;
+}
+
+export interface GraphExecutionRow {
+  id: string;
+  status: string;
+  input: string | null;
+  output: string | null;
+  error: string | null;
+  startedAt: string;
+  durationMs: number | null;
+}
+
 export const agentGraphApi = {
   // Get agent graph
   getGraph: (agentId: string) =>
@@ -1866,6 +1898,20 @@ export const agentGraphApi = {
     api<{ success: boolean; data: GraphValidation }>(
       `/api/agents/${agentId}/graph/validate`,
       { method: "POST", body: data }
+    ),
+
+  // Run the graph through the linear interpreter (W2). Compiling only
+  // produces an execution ORDER; this actually walks it.
+  runGraph: (agentId: string, input: string) =>
+    api<{ success: boolean; data: GraphRunResult }>(
+      `/api/agents/${agentId}/graph/run`,
+      { method: "POST", body: { input } }
+    ),
+
+  // Past runs, newest first.
+  getGraphExecutions: (agentId: string, limit = 20) =>
+    api<{ success: boolean; data: GraphExecutionRow[] }>(
+      `/api/agents/${agentId}/graph/executions?limit=${limit}`
     ),
 
   // Compile graph for execution

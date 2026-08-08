@@ -148,8 +148,12 @@ export async function updateIntegration(
   integrationId: string,
   input: UpdateIntegrationInput
 ) {
-  return prisma.integration.update({
-    where: { id: integrationId },
+  // orgId is part of the WHERE, not just a parameter that gets ignored.
+  // Route-level pre-checks existed for some callers but not all, and a
+  // guard that lives only at the call site is one new caller away from a
+  // cross-tenant write.
+  const updated = await prisma.integration.updateMany({
+    where: { id: integrationId, orgId },
     data: {
       name: input.name,
       config: input.config as any,
@@ -157,81 +161,42 @@ export async function updateIntegration(
       isEnabled: input.isEnabled,
     },
   });
+  if (updated.count === 0) {
+    throw new Error("Integration not found");
+  }
+  return prisma.integration.findFirstOrThrow({ where: { id: integrationId, orgId } });
 }
 
 export async function deleteIntegration(orgId: string, integrationId: string) {
-  return prisma.integration.delete({
-    where: { id: integrationId },
+  const deleted = await prisma.integration.deleteMany({
+    where: { id: integrationId, orgId },
   });
+  if (deleted.count === 0) {
+    throw new Error("Integration not found");
+  }
+  return { success: true };
 }
 
 // ============================================
 // OAuth Flow Support
 // ============================================
 
-export function generateOAuthState(orgId: string, integrationType: IntegrationType): string {
-  const payload = {
-    orgId,
-    type: integrationType,
-    nonce: crypto.randomBytes(16).toString("hex"),
-    timestamp: Date.now(),
-  };
-
-  return Buffer.from(JSON.stringify(payload)).toString("base64url");
-}
-
-export function parseOAuthState(state: string): {
-  orgId: string;
-  type: IntegrationType;
-  nonce: string;
-  timestamp: number;
-} | null {
-  try {
-    const payload = JSON.parse(Buffer.from(state, "base64url").toString());
-    // Check if state is expired (15 minutes)
-    if (Date.now() - payload.timestamp > 15 * 60 * 1000) {
-      return null;
-    }
-    return payload;
-  } catch {
-    return null;
-  }
-}
-
-export async function completeOAuthFlow(
-  orgId: string,
-  integrationId: string,
-  credentials: {
-    accessToken: string;
-    refreshToken?: string;
-    expiresAt?: Date;
-    externalId?: string;
-    externalName?: string;
-  }
-) {
-  // Encrypt tokens before storing
-  const encryptedAccessToken = encryptToken(credentials.accessToken);
-  const encryptedRefreshToken = credentials.refreshToken
-    ? encryptToken(credentials.refreshToken)
-    : null;
-
-  return prisma.integration.update({
-    where: { id: integrationId },
-    data: {
-      accessToken: encryptedAccessToken,
-      refreshToken: encryptedRefreshToken,
-      tokenExpiresAt: credentials.expiresAt,
-      externalId: credentials.externalId,
-      externalName: credentials.externalName,
-      isConnected: true,
-      lastError: null,
-    },
-  });
-}
+// OAuth state generation/parsing used to live here. It was removed, not
+// replaced in place: `generateOAuthState` emitted UNSIGNED base64url JSON
+// containing the orgId, and `parseOAuthState` checked expiry using the
+// timestamp from that same attacker-supplied blob. Anyone could mint a
+// state binding an install to any organization. `completeOAuthFlow` went
+// with them — it was the only writer of `isConnected` and had zero
+// callers. The replacement is services/signedState.ts (HMAC-signed,
+// server-side TTL) plus a single-use nonce; see services/oauthStateStore.ts.
 
 export async function disconnectIntegration(orgId: string, integrationId: string) {
-  return prisma.integration.update({
-    where: { id: integrationId },
+  // This was the one LIVE cross-org IDOR: the route had no ownership
+  // pre-check and this function accepted orgId and never used it, so any
+  // authenticated user could disconnect any organization's integration
+  // by id.
+  const updated = await prisma.integration.updateMany({
+    where: { id: integrationId, orgId },
     data: {
       accessToken: null,
       refreshToken: null,
@@ -241,6 +206,10 @@ export async function disconnectIntegration(orgId: string, integrationId: string
       externalName: null,
     },
   });
+  if (updated.count === 0) {
+    throw new Error("Integration not found");
+  }
+  return prisma.integration.findFirstOrThrow({ where: { id: integrationId, orgId } });
 }
 
 // ============================================
@@ -248,13 +217,17 @@ export async function disconnectIntegration(orgId: string, integrationId: string
 // ============================================
 
 export async function sendSlackMessage(
+  orgId: string,
   integrationId: string,
   channel: string,
   message: string,
   blocks?: any[]
 ) {
-  const integration = await prisma.integration.findUnique({
-    where: { id: integrationId },
+  // Scoped read: a sender that resolves by bare id would let any caller
+  // fire another organization's configured webhook (and, via the test
+  // endpoint's stored response, read what it returned).
+  const integration = await prisma.integration.findFirst({
+    where: { id: integrationId, orgId },
   });
 
   if (!integration || integration.type !== "slack" || !integration.accessToken) {
@@ -300,12 +273,16 @@ export async function sendSlackMessage(
 }
 
 export async function sendDiscordMessage(
+  orgId: string,
   integrationId: string,
   content: string,
   embeds?: any[]
 ) {
-  const integration = await prisma.integration.findUnique({
-    where: { id: integrationId },
+  // Scoped read: a sender that resolves by bare id would let any caller
+  // fire another organization's configured webhook (and, via the test
+  // endpoint's stored response, read what it returned).
+  const integration = await prisma.integration.findFirst({
+    where: { id: integrationId, orgId },
   });
 
   if (!integration || integration.type !== "discord") {
@@ -351,11 +328,15 @@ export async function sendDiscordMessage(
 }
 
 export async function triggerZapierWebhook(
+  orgId: string,
   integrationId: string,
   data: Record<string, any>
 ) {
-  const integration = await prisma.integration.findUnique({
-    where: { id: integrationId },
+  // Scoped read: a sender that resolves by bare id would let any caller
+  // fire another organization's configured webhook (and, via the test
+  // endpoint's stored response, read what it returned).
+  const integration = await prisma.integration.findFirst({
+    where: { id: integrationId, orgId },
   });
 
   if (!integration || integration.type !== "zapier") {
@@ -405,11 +386,15 @@ export async function triggerZapierWebhook(
 }
 
 export async function triggerMakeWebhook(
+  orgId: string,
   integrationId: string,
   data: Record<string, any>
 ) {
-  const integration = await prisma.integration.findUnique({
-    where: { id: integrationId },
+  // Scoped read: a sender that resolves by bare id would let any caller
+  // fire another organization's configured webhook (and, via the test
+  // endpoint's stored response, read what it returned).
+  const integration = await prisma.integration.findFirst({
+    where: { id: integrationId, orgId },
   });
 
   if (!integration || integration.type !== "make") {
@@ -452,11 +437,15 @@ export async function triggerMakeWebhook(
 }
 
 export async function triggerN8nWebhook(
+  orgId: string,
   integrationId: string,
   data: Record<string, any>
 ) {
-  const integration = await prisma.integration.findUnique({
-    where: { id: integrationId },
+  // Scoped read: a sender that resolves by bare id would let any caller
+  // fire another organization's configured webhook (and, via the test
+  // endpoint's stored response, read what it returned).
+  const integration = await prisma.integration.findFirst({
+    where: { id: integrationId, orgId },
   });
 
   if (!integration || integration.type !== "n8n") {
@@ -552,14 +541,30 @@ export async function getIntegrationEvents(
 // ============================================
 
 import { env } from "../config/env.js";
-const ENCRYPTION_KEY = env.ENCRYPTION_KEY || env.JWT_SECRET;
+
 const ALGORITHM = "aes-256-gcm";
+
+/**
+ * Derives a guaranteed-valid 32-byte key.
+ *
+ * The previous derivation was `getEncryptionKey()`
+ * against an env var validated as `z.string().min(32)` — CHARACTERS, not
+ * hex. `Buffer.from(x, "hex")` stops at the first non-hex character, so a
+ * normal passphrase silently produced a short (often empty) key and
+ * createCipheriv threw at runtime. sha256 always yields exactly 32 bytes
+ * from any input. Read lazily, so rotating the secret does not require a
+ * process restart to take effect.
+ */
+function getEncryptionKey(): Buffer {
+  const secret = env.ENCRYPTION_KEY || env.JWT_SECRET;
+  return crypto.createHash("sha256").update(secret).digest();
+}
 
 function encryptToken(token: string): Buffer {
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(
     ALGORITHM,
-    Buffer.from(ENCRYPTION_KEY, "hex").slice(0, 32),
+    getEncryptionKey(),
     iv
   );
 
@@ -578,7 +583,7 @@ function decryptToken(encryptedBuffer: Buffer): string {
 
   const decipher = crypto.createDecipheriv(
     ALGORITHM,
-    Buffer.from(ENCRYPTION_KEY, "hex").slice(0, 32),
+    getEncryptionKey(),
     iv
   );
   decipher.setAuthTag(authTag);

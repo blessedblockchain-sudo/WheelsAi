@@ -428,6 +428,14 @@ export async function webhooksRoutes(app: FastifyInstance) {
       const orgId = request.user!.orgId;
       const { integrationId } = request.params;
 
+      // Defense in depth: the service is org-scoped now, and the route
+      // pre-checks too — the other mutating routes already did, and this
+      // one's omission was the live cross-org IDOR.
+      const existing = await getIntegration(orgId, integrationId);
+      if (!existing) {
+        return reply.status(404).send({ error: "Integration not found" });
+      }
+
       const integration = await disconnectIntegration(orgId, integrationId);
 
       return reply.send(integration);
@@ -490,6 +498,7 @@ export async function webhooksRoutes(app: FastifyInstance) {
       switch (integration.type) {
         case "slack":
           result = await sendSlackMessage(
+            orgId,
             integrationId,
             payload?.channel || "general",
             payload?.message || "Test message from WheelsAI"
@@ -497,26 +506,27 @@ export async function webhooksRoutes(app: FastifyInstance) {
           break;
         case "discord":
           result = await sendDiscordMessage(
+            orgId,
             integrationId,
             payload?.content || "Test message from WheelsAI"
           );
           break;
         case "zapier":
-          result = await triggerZapierWebhook(integrationId, {
+          result = await triggerZapierWebhook(orgId, integrationId, {
             test: true,
             message: "Test from WheelsAI",
             ...payload,
           });
           break;
         case "make":
-          result = await triggerMakeWebhook(integrationId, {
+          result = await triggerMakeWebhook(orgId, integrationId, {
             test: true,
             message: "Test from WheelsAI",
             ...payload,
           });
           break;
         case "n8n":
-          result = await triggerN8nWebhook(integrationId, {
+          result = await triggerN8nWebhook(orgId, integrationId, {
             test: true,
             message: "Test from WheelsAI",
             ...payload,

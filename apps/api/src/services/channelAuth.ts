@@ -18,7 +18,7 @@ import nacl from "tweetnacl";
 // Constant-time helpers
 // ============================================
 
-function timingSafeEqualHex(a: string, b: string): boolean {
+export function timingSafeEqualHex(a: string, b: string): boolean {
   let bufA: Buffer;
   let bufB: Buffer;
   try {

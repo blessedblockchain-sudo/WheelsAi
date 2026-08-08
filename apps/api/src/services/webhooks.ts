@@ -601,15 +601,10 @@ export async function testWebhook(orgId: string, webhookId: string) {
 // Signature Verification (for consumers)
 // ============================================
 
-export function verifyWebhookSignature(
-  payload: string,
-  signature: string,
-  secret: string
-): boolean {
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
-
-  return `sha256=${expectedSignature}` === signature;
-}
+// verifyWebhookSignature was removed. It built the right `sha256=` shape
+// but compared with `===`, which short-circuits on the first differing
+// byte and leaks the expected HMAC to a timing attacker. It had zero
+// callers, so it was a trap for the next person to wire an inbound
+// webhook. Use timingSafeEqualHex from services/channelAuth.ts, which
+// guards non-hex input and length mismatch before crypto.timingSafeEqual
+// (that function THROWS on unequal lengths, which is attacker-reachable).

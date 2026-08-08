@@ -226,10 +226,11 @@ still has zero callers and remains open) · ✅ pgvector RAG + memory
 (`51ac173` + `75fae92` + `45e3d28`; plumbing verified against real
 Postgres — semantic quality unproven until an embedding provider key
 exists) · ✅ orchestration engine (`dad6d3d`, proven with live
-multi-agent inference) · **open:** token trade feed (WS consumer +
-backfill; supersedes/absorbs B6) · marketplace per-request metering
-caller · graph linear interpreter (stage 1 of builder runtime) · Slack
-OAuth + GitHub App.
+multi-agent inference) · ✅ graph linear interpreter (`844305f`, proven
+with live inference; `code`/`api`/`loop`/`parallel`/`merge`/`tool` nodes
+refuse by name with reasons — full graph execution stays Wave 3) ·
+**open:** token trade feed (WS consumer + backfill; supersedes/absorbs
+B6) · marketplace per-request metering caller · Slack OAuth + GitHub App.
 
 **Wave 3 — heavy/externally gated (L-XL):**
 training execution (containers + real Nosana markets — C1-gated) · OpenClaw

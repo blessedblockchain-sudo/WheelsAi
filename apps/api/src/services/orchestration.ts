@@ -1,5 +1,8 @@
 import { prisma } from "@wheelsai/db";
 
+import { buildOrchestrationExecutorDeps } from "./buildOrchestrationExecutorDeps.js";
+import { runOrchestrationExecution } from "./runOrchestrationExecution.js";
+
 // ============================================
 // Orchestration CRUD
 // ============================================
@@ -129,14 +132,132 @@ export async function executeOrchestration(id: string, orgId: string, input: {
   if (!orch) throw new Error("Orchestration not found");
   if (!orch.isEnabled) throw new Error("Orchestration is disabled");
 
-  // The execution engine does not exist yet (match-up roadmap, Wave 2:
-  // sequential/parallel/conditional/pipeline over the real agent
-  // invocation paths). Until it does, refuse honestly — the previous
-  // behavior wrote fabricated per-step "success" results on random-delay
-  // timers, which made every success-rate and duration stat fiction.
-  throw new Error(
-    "Orchestration execution is not live yet — workflows can be defined but not run. Execution ships with the orchestration engine.",
+  // Live engine (W2) — replaces the Wave-0 honest refusal, which itself
+  // replaced a setTimeout that fabricated per-step "success" rows on
+  // random delays and made every success-rate and duration stat fiction.
+  // Everything below is observed: real agent invocations through the
+  // shared playground-parity path, real timings, real failures.
+  const startedAt = new Date();
+  const execution = await prisma.orchestrationExecution.create({
+    data: {
+      orchestrationId: orch.id,
+      status: "running",
+      input: (input.input ?? {}) as never,
+      triggeredBy: input.triggeredBy || "manual",
+      startedAt,
+    },
+  });
+
+  const definition = {
+    id: orch.id,
+    orgId,
+    executionMode: orch.executionMode,
+    maxConcurrency: orch.maxConcurrency,
+    timeout: orch.timeout,
+    steps: orch.steps.map((s) => ({
+      id: s.id,
+      name: s.name,
+      stepOrder: s.stepOrder,
+      dependsOn: s.dependsOn,
+      agentId: s.agentId,
+      inputMapping: s.inputMapping,
+      outputMapping: s.outputMapping,
+      condition: s.condition,
+      onError: s.onError,
+      fallbackAgentId: s.fallbackAgentId,
+      maxRetries: s.maxRetries,
+      timeoutMs: s.timeoutMs,
+    })),
+  };
+
+  let result: Awaited<ReturnType<typeof runOrchestrationExecution>>;
+  try {
+    // The orchestration-level timeout bounds the WHOLE run, on top of any
+    // per-step timeout — a workflow of individually-fast steps can still
+    // run away.
+    result = await Promise.race([
+      runOrchestrationExecution(
+        definition,
+        (input.input ?? {}) as Record<string, unknown>,
+        buildOrchestrationExecutorDeps(execution.id),
+      ),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`orchestration timed out after ${orch.timeout}ms`)),
+          orch.timeout,
+        ),
+      ),
+    ]);
+  } catch (err) {
+    // A plan error (cycle, unknown dependency) or the run timeout. The
+    // execution row records it rather than leaving a row stuck "running".
+    const message = err instanceof Error ? err.message : String(err);
+    const completedAt = new Date();
+    const failed = await prisma.orchestrationExecution.update({
+      where: { id: execution.id },
+      data: {
+        status: "failed",
+        error: message,
+        completedAt,
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+      },
+    });
+    await recordRunStats(orch.id, false, completedAt.getTime() - startedAt.getTime());
+    return failed;
+  }
+
+  const completedAt = new Date();
+  const durationMs = completedAt.getTime() - startedAt.getTime();
+  const finished = await prisma.orchestrationExecution.update({
+    where: { id: execution.id },
+    data: {
+      status: result.status,
+      progress: 100,
+      output: result.output as never,
+      context: result.context as never,
+      error: result.error,
+      failedStepId: result.failedStepId,
+      completedAt,
+      durationMs,
+    },
+    include: { stepResults: { orderBy: { createdAt: "asc" } } },
+  });
+
+  await recordRunStats(orch.id, result.status === "completed", durationMs);
+  return finished;
+}
+
+/**
+ * Rolls the orchestration's run counters forward. avgDurationMs is a
+ * running mean over totalRuns, so it stays correct without storing every
+ * duration.
+ */
+async function recordRunStats(
+  orchestrationId: string,
+  success: boolean,
+  durationMs: number,
+): Promise<void> {
+  const current = await prisma.orchestration.findUnique({
+    where: { id: orchestrationId },
+    select: { totalRuns: true, avgDurationMs: true },
+  });
+  const priorRuns = current?.totalRuns ?? 0;
+  const priorAvg = current?.avgDurationMs ?? 0;
+  const nextAvg = Math.round(
+    (priorAvg * priorRuns + durationMs) / (priorRuns + 1),
   );
+
+  await prisma.orchestration.update({
+    where: { id: orchestrationId },
+    data: {
+      totalRuns: { increment: 1 },
+      ...(success
+        ? { successfulRuns: { increment: 1 } }
+        : { failedRuns: { increment: 1 } }),
+      avgDurationMs: nextAvg,
+      lastRunAt: new Date(),
+    },
+  });
 }
 
 export async function getExecution(executionId: string, orchestrationId: string, orgId: string) {

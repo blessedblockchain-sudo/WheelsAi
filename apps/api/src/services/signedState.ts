@@ -22,15 +22,28 @@
  * (services/oauthStateStore.ts). Signed AND one-shot; neither alone.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 const HEADER = "wheelsai-state-v1";
 const DEFAULT_TTL_SECONDS = 600;
 const MIN_SECRET_LENGTH = 16;
+/**
+ * An OAuth round trip is a browser redirect, not a session. A caller
+ * passing a large ttlSeconds would turn a state token into a
+ * near-permanent org-binding credential, so the ceiling is enforced here
+ * rather than trusted to call sites.
+ */
+const MAX_TTL_SECONDS = 900;
 
 export interface StatePayload {
   /** What this state authorizes, e.g. "slack-install". Checked on verify. */
   purpose: string;
+  /**
+   * Server-generated, unguessable, and the key the single-use store
+   * consumes. Minted HERE so "signed AND one-shot" is a property of the
+   * mechanism rather than a instruction a caller can skip.
+   */
+  nonce: string;
   /** Server-set issued-at (unix seconds). */
   iat: number;
   /** Server-set expiry (unix seconds). */
@@ -46,6 +59,7 @@ export interface SignStateInput {
 }
 
 export type StateVerifyFailure =
+  | "bad_secret"
   | "malformed"
   | "wrong_header"
   | "bad_signature"
@@ -72,10 +86,21 @@ export function signState(input: SignStateInput): string {
     throw new Error("signState: payload.purpose is required");
   }
 
+  const ttl = input.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+  if (!Number.isFinite(ttl) || ttl <= 0 || ttl > MAX_TTL_SECONDS) {
+    throw new Error(`signState: ttlSeconds must be between 1 and ${MAX_TTL_SECONDS}`);
+  }
+
   const now = (input.now ?? (() => new Date()))();
   const iat = Math.floor(now.getTime() / 1000);
-  const exp = iat + (input.ttlSeconds ?? DEFAULT_TTL_SECONDS);
-  const payload: StatePayload = { ...input.payload, iat, exp };
+  // Spread FIRST so iat/exp/nonce cannot be overridden by the caller's
+  // payload — a caller-supplied exp would defeat expiry entirely.
+  const payload: StatePayload = {
+    ...input.payload,
+    nonce: randomBytes(32).toString("hex"),
+    iat,
+    exp: iat + ttl,
+  };
 
   const headerB64 = b64url(Buffer.from(HEADER, "utf8"));
   const payloadB64 = b64url(Buffer.from(JSON.stringify(payload), "utf8"));
@@ -86,12 +111,26 @@ export function signState(input: SignStateInput): string {
 export interface VerifyStateInput {
   token: string;
   secret: string;
-  /** Refuses a token minted for a different flow. */
-  expectedPurpose?: string;
+  /**
+   * Required. Purpose binding is only a guarantee if every caller opts
+   * in, and an optional security check is one the next caller forgets —
+   * a state minted for "github-install" would otherwise be accepted by
+   * the Slack callback.
+   */
+  expectedPurpose: string;
   now?: () => Date;
 }
 
 export function verifyState(input: VerifyStateInput): StateVerifyResult {
+  // The same secret invariant signState enforces. Without this, the
+  // module's guarantee held only on the mint path — the one path an
+  // attacker never touches — and a caller wiring verifyState with an
+  // empty or short secret would accept tokens signState would refuse to
+  // produce.
+  if (!input.secret || input.secret.length < MIN_SECRET_LENGTH) {
+    return { ok: false, reason: "bad_secret" };
+  }
+
   const parts = input.token.split(".");
   if (parts.length !== 3) return { ok: false, reason: "malformed" };
   const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
@@ -136,7 +175,7 @@ export function verifyState(input: VerifyStateInput): StateVerifyResult {
   if (Math.floor(now.getTime() / 1000) >= payload.exp) {
     return { ok: false, reason: "expired" };
   }
-  if (input.expectedPurpose && payload.purpose !== input.expectedPurpose) {
+  if (payload.purpose !== input.expectedPurpose) {
     return { ok: false, reason: "wrong_purpose" };
   }
 

@@ -114,8 +114,11 @@ export async function updateTestSuite(
   suiteId: string,
   updates: Partial<CreateTestSuiteInput>
 ) {
-  return prisma.testSuite.update({
-    where: { id: suiteId },
+  // orgId was accepted and never used — any authenticated user could
+  // rewrite any organization's suite by id, with no route pre-check to
+  // compensate.
+  const updated = await prisma.testSuite.updateMany({
+    where: { id: suiteId, orgId },
     data: {
       name: updates.name,
       description: updates.description,
@@ -125,12 +128,20 @@ export async function updateTestSuite(
       tags: updates.tags,
     },
   });
+  if (updated.count === 0) {
+    throw new Error("Test suite not found");
+  }
+  return prisma.testSuite.findFirstOrThrow({ where: { id: suiteId, orgId } });
 }
 
 export async function deleteTestSuite(orgId: string, suiteId: string) {
-  return prisma.testSuite.delete({
-    where: { id: suiteId },
+  const deleted = await prisma.testSuite.deleteMany({
+    where: { id: suiteId, orgId },
   });
+  if (deleted.count === 0) {
+    throw new Error("Test suite not found");
+  }
+  return { success: true };
 }
 
 // ============================================
@@ -207,8 +218,11 @@ export async function updateTestCase(
     throw new Error("Test suite not found");
   }
 
-  return prisma.testCase.update({
-    where: { id: testCaseId },
+  // Constrain the CHILD to the verified suite. Checking only the suite
+  // lets a caller pass a testCaseId belonging to someone else's suite —
+  // the ownership check passes and the write lands on their row.
+  const updatedCase = await prisma.testCase.updateMany({
+    where: { id: testCaseId, suiteId },
     data: {
       name: updates.name,
       description: updates.description,
@@ -222,6 +236,10 @@ export async function updateTestCase(
       customScript: updates.customScript,
     },
   });
+  if (updatedCase.count === 0) {
+    throw new Error("Test case not found in this suite");
+  }
+  return prisma.testCase.findFirstOrThrow({ where: { id: testCaseId, suiteId } });
 }
 
 export async function deleteTestCase(orgId: string, suiteId: string, testCaseId: string) {
@@ -234,9 +252,12 @@ export async function deleteTestCase(orgId: string, suiteId: string, testCaseId:
     throw new Error("Test suite not found");
   }
 
-  await prisma.testCase.delete({
-    where: { id: testCaseId },
+  const deletedCase = await prisma.testCase.deleteMany({
+    where: { id: testCaseId, suiteId },
   });
+  if (deletedCase.count === 0) {
+    throw new Error("Test case not found in this suite");
+  }
 
   // Update suite test count
   await prisma.testSuite.update({
@@ -259,10 +280,14 @@ export async function toggleTestCase(
     throw new Error("Test suite not found");
   }
 
-  return prisma.testCase.update({
-    where: { id: testCaseId },
+  const toggled = await prisma.testCase.updateMany({
+    where: { id: testCaseId, suiteId },
     data: { isEnabled },
   });
+  if (toggled.count === 0) {
+    throw new Error("Test case not found in this suite");
+  }
+  return prisma.testCase.findFirstOrThrow({ where: { id: testCaseId, suiteId } });
 }
 
 // ============================================
@@ -350,11 +375,19 @@ async function executeTests(
     // Get deployment endpoint if provided
     let endpoint: string | null = null;
     if (deploymentId) {
-      const deployment = await prisma.agentDeployment.findUnique({
-        where: { id: deploymentId },
+      // Scope the deployment to the caller's org (AgentDeployment carries
+      // no orgId, so join through its agent). Unscoped, a caller could
+      // name ANY deployment id and have the run POST attacker-chosen
+      // prompts to it — then read the response back out of the stored
+      // test results.
+      const deployment = await prisma.agentDeployment.findFirst({
+        where: { id: deploymentId, agent: { orgId } },
         select: { endpoint: true },
       });
-      endpoint = deployment?.endpoint || null;
+      if (!deployment) {
+        throw new Error("Deployment not found");
+      }
+      endpoint = deployment.endpoint || null;
     }
 
     // One invoker for the whole run: the deployed endpoint when the run
@@ -783,13 +816,17 @@ export async function cancelTestRun(orgId: string, suiteId: string, runId: strin
     throw new Error("Test suite not found");
   }
 
-  return prisma.testRun.update({
-    where: { id: runId },
+  const cancelled = await prisma.testRun.updateMany({
+    where: { id: runId, suiteId },
     data: {
       status: "cancelled",
       completedAt: new Date(),
     },
   });
+  if (cancelled.count === 0) {
+    throw new Error("Test run not found in this suite");
+  }
+  return prisma.testRun.findFirstOrThrow({ where: { id: runId, suiteId } });
 }
 
 // ============================================

@@ -268,7 +268,14 @@ export async function getTaskExecutions(taskId: string, orgId: string, options: 
 export async function cancelExecution(executionId: string, taskId: string, orgId: string) {
   const task = await prisma.scheduledTask.findFirst({ where: { id: taskId, orgId } });
   if (!task) throw new Error("Task not found");
-  return prisma.taskExecution.update({ where: { id: executionId }, data: { status: "cancelled", completedAt: new Date() } });
+  // Constrain the execution to the verified task — checking only the task
+  // lets a caller cancel another org's execution by id.
+  const cancelled = await prisma.taskExecution.updateMany({
+    where: { id: executionId, taskId },
+    data: { status: "cancelled", completedAt: new Date() },
+  });
+  if (cancelled.count === 0) throw new Error("Execution not found for this task");
+  return prisma.taskExecution.findFirstOrThrow({ where: { id: executionId, taskId } });
 }
 
 export async function getSchedulerStats(orgId: string) {

@@ -1,5 +1,6 @@
 import { prisma } from "@wheelsai/db";
 import crypto from "crypto";
+import { safeFetch } from "../lib/ssrfGuard.js";
 
 // ============================================
 // Types
@@ -193,8 +194,8 @@ export async function updateWebhook(
   webhookId: string,
   input: UpdateWebhookInput
 ) {
-  return prisma.webhook.update({
-    where: { id: webhookId },
+  const updated = await prisma.webhook.updateMany({
+    where: { id: webhookId, orgId },
     data: {
       name: input.name,
       description: input.description,
@@ -208,22 +209,33 @@ export async function updateWebhook(
       isEnabled: input.isEnabled,
     },
   });
+  if (updated.count === 0) {
+    throw new Error("Webhook not found");
+  }
+  return prisma.webhook.findFirstOrThrow({ where: { id: webhookId, orgId } });
 }
 
 export async function deleteWebhook(orgId: string, webhookId: string) {
-  return prisma.webhook.delete({
-    where: { id: webhookId },
+  const deleted = await prisma.webhook.deleteMany({
+    where: { id: webhookId, orgId },
   });
+  if (deleted.count === 0) {
+    throw new Error("Webhook not found");
+  }
+  return { success: true };
 }
 
 export async function regenerateWebhookSecret(orgId: string, webhookId: string) {
   const secret = crypto.randomBytes(32).toString("hex");
 
-  return prisma.webhook.update({
-    where: { id: webhookId },
+  const rotated = await prisma.webhook.updateMany({
+    where: { id: webhookId, orgId },
     data: { secret },
-    select: { id: true, secret: true },
   });
+  if (rotated.count === 0) {
+    throw new Error("Webhook not found");
+  }
+  return { id: webhookId, secret };
 }
 
 // ============================================
@@ -322,11 +334,11 @@ async function deliverWebhook(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), webhook.timeoutSeconds * 1000);
 
-    const response = await fetch(webhook.url, {
+    const response = await safeFetch(webhook.url, {
       method: "POST",
       headers,
       body: payloadString,
-      signal: controller.signal,
+      timeoutMs: webhook.timeoutSeconds * 1000,
     });
 
     clearTimeout(timeout);
@@ -546,11 +558,11 @@ export async function testWebhook(orgId: string, webhookId: string) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), webhook.timeoutSeconds * 1000);
 
-    const response = await fetch(webhook.url, {
+    const response = await safeFetch(webhook.url, {
       method: "POST",
       headers,
       body: payloadString,
-      signal: controller.signal,
+      timeoutMs: webhook.timeoutSeconds * 1000,
     });
 
     clearTimeout(timeout);

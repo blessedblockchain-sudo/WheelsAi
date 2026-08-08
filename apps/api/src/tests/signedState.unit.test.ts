@@ -19,7 +19,7 @@ test("a signed state round-trips with its payload", () => {
     payload: { purpose: "slack-install", orgId: "org-1", deploymentId: "dep-1" },
     secret: SECRET,
   });
-  const result = verifyState({ token, secret: SECRET });
+  const result = verifyState({ token, secret: SECRET, expectedPurpose: "slack-install" });
   assert.ok(result.ok);
   assert.equal(result.payload.orgId, "org-1");
   assert.equal(result.payload.purpose, "slack-install");
@@ -35,7 +35,7 @@ test("THE FORGERY: a hand-made base64 payload is rejected", () => {
       exp: 9_999_999_999,
     }),
   ).toString("base64url");
-  const result = verifyState({ token: forged, secret: SECRET });
+  const result = verifyState({ token: forged, secret: SECRET, expectedPurpose: "slack-install" });
   assert.equal(result.ok, false);
   // Three parts required, so a bare payload is malformed.
   assert.equal((result as { reason: string }).reason, "malformed");
@@ -55,7 +55,7 @@ test("tampering with the payload invalidates the signature", () => {
       exp: 9_999_999_999,
     }),
   ).toString("base64url");
-  const result = verifyState({ token: `${h}.${swapped}.${sig}`, secret: SECRET });
+  const result = verifyState({ token: `${h}.${swapped}.${sig}`, secret: SECRET, expectedPurpose: "slack-install" });
   assert.equal(result.ok, false);
   assert.equal((result as { reason: string }).reason, "bad_signature");
 });
@@ -65,7 +65,7 @@ test("a token signed with a different secret is rejected", () => {
     payload: { purpose: "slack-install" },
     secret: "another-secret-0123456789abcdefgh",
   });
-  const result = verifyState({ token, secret: SECRET });
+  const result = verifyState({ token, secret: SECRET, expectedPurpose: "slack-install" });
   assert.equal((result as { reason: string }).reason, "bad_signature");
 });
 
@@ -79,12 +79,18 @@ test("expiry is SERVER-set and enforced after signature verification", () => {
   });
   // Still valid inside the window.
   assert.ok(
-    verifyState({ token, secret: SECRET, now: () => new Date(t0.getTime() + 30_000) }).ok,
+    verifyState({
+      token,
+      secret: SECRET,
+      expectedPurpose: "slack-install",
+      now: () => new Date(t0.getTime() + 30_000),
+    }).ok,
   );
   // Expired after it.
   const late = verifyState({
     token,
     secret: SECRET,
+    expectedPurpose: "slack-install",
     now: () => new Date(t0.getTime() + 61_000),
   });
   assert.equal((late as { reason: string }).reason, "expired");
@@ -102,6 +108,7 @@ test("a caller cannot extend its own expiry — exp is not read from input", () 
   const late = verifyState({
     token,
     secret: SECRET,
+    expectedPurpose: "slack-install",
     now: () => new Date(t0.getTime() + 61_000),
   });
   assert.equal(
@@ -126,7 +133,7 @@ test("a state minted for one flow is refused by another", () => {
 
 test("malformed tokens fail typed, never throw", () => {
   for (const token of ["", "a", "a.b", "....", "a.b.c.d"]) {
-    const result = verifyState({ token, secret: SECRET });
+    const result = verifyState({ token, secret: SECRET, expectedPurpose: "slack-install" });
     assert.equal(result.ok, false, JSON.stringify(token));
   }
 });
@@ -187,4 +194,79 @@ test("the Redis store uses SET NX EX and treats DEL=1 as the single winner", asy
   assert.equal(await store.consume("n1"), true);
   delResult = 0; // another replica already deleted it
   assert.equal(await store.consume("n1"), false, "loser of the race gets false");
+});
+
+// ============================================
+// Hardening from the adversarial verification pass
+// ============================================
+
+test("verifyState enforces the SAME secret invariant as signState", () => {
+  // Previously the >=16-char rule existed only on the mint path — the one
+  // path an attacker never touches — so a caller wiring an empty secret
+  // would accept tokens signState refuses to produce.
+  const token = signState({
+    payload: { purpose: "slack-install", orgId: "org-1" },
+    secret: SECRET,
+  });
+  for (const weak of ["", "short"]) {
+    const result = verifyState({
+      token,
+      secret: weak,
+      expectedPurpose: "slack-install",
+    });
+    assert.equal(result.ok, false);
+    assert.equal((result as { reason: string }).reason, "bad_secret");
+  }
+});
+
+test("purpose binding is REQUIRED, so a callback cannot forget it", () => {
+  // A type-level guarantee: omitting expectedPurpose does not compile.
+  // @ts-expect-error expectedPurpose is required
+  const bad = () => verifyState({ token: "x.y.z", secret: SECRET });
+  assert.equal(typeof bad, "function");
+});
+
+test("the nonce is minted by the mechanism, not left to the caller", () => {
+  const a = signState({ payload: { purpose: "slack-install" }, secret: SECRET });
+  const b = signState({ payload: { purpose: "slack-install" }, secret: SECRET });
+  const nonceOf = (t: string) =>
+    JSON.parse(Buffer.from(t.split(".")[1]!, "base64url").toString()).nonce;
+  assert.equal(typeof nonceOf(a), "string");
+  assert.equal(nonceOf(a).length, 64, "32 random bytes, hex");
+  assert.notEqual(nonceOf(a), nonceOf(b), "each state gets its own nonce");
+});
+
+test("a caller cannot override the server-minted nonce or timestamps", () => {
+  const token = signState({
+    payload: {
+      purpose: "slack-install",
+      nonce: "attacker-chosen",
+      iat: 1,
+      exp: 9_999_999_999,
+    },
+    secret: SECRET,
+    ttlSeconds: 60,
+    now: () => new Date("2026-01-01T00:00:00Z"),
+  });
+  const payload = JSON.parse(
+    Buffer.from(token.split(".")[1]!, "base64url").toString(),
+  );
+  assert.notEqual(payload.nonce, "attacker-chosen");
+  assert.notEqual(payload.exp, 9_999_999_999);
+});
+
+test("TTL is bounded — a state token cannot become a long-lived credential", () => {
+  assert.throws(
+    () =>
+      signState({
+        payload: { purpose: "slack-install" },
+        secret: SECRET,
+        ttlSeconds: 60 * 60 * 24 * 365,
+      }),
+    /ttlSeconds must be between/,
+  );
+  assert.throws(
+    () => signState({ payload: { purpose: "x" }, secret: SECRET, ttlSeconds: 0 }),
+    /ttlSeconds must be between/,
+  );
 });

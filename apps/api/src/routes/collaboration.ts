@@ -107,7 +107,7 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
       const agent = await prisma.agent.findFirst({ where: { id: agentId, orgId } });
       if (!agent) return reply.notFound("Agent not found");
 
-      await removeContributor(contributorId);
+      await removeContributor(contributorId, agentId);
       return { message: "Contributor removed" };
     }
   );

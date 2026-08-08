@@ -294,9 +294,17 @@ export async function getExecutions(orchestrationId: string, orgId: string, opti
 export async function cancelExecution(executionId: string, orchestrationId: string, orgId: string) {
   const orch = await prisma.orchestration.findFirst({ where: { id: orchestrationId, orgId } });
   if (!orch) throw new Error("Orchestration not found");
-  return prisma.orchestrationExecution.update({
-    where: { id: executionId },
+  // Same child-scoping rule as the scheduler: the orchestration is
+  // verified above, so the execution must be constrained to it.
+  const cancelled = await prisma.orchestrationExecution.updateMany({
+    where: { id: executionId, orchestrationId },
     data: { status: "cancelled", completedAt: new Date() },
+  });
+  if (cancelled.count === 0) {
+    throw new Error("Execution not found for this orchestration");
+  }
+  return prisma.orchestrationExecution.findFirstOrThrow({
+    where: { id: executionId, orchestrationId },
   });
 }
 

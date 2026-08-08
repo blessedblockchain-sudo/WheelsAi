@@ -169,6 +169,32 @@ export interface CreateAlertRuleInput {
 /**
  * Create an alert rule
  */
+
+/**
+ * Alert channels hold plaintext delivery config — Slack/Discord webhook
+ * URLs, custom webhook secrets, PagerDuty integration keys. Attaching an
+ * arbitrary channelId to a rule you own, then reading the rule back with
+ * its joined channels, turns "link a channel" into a cross-org secret
+ * read. Every attachment is therefore filtered to channels the caller's
+ * org actually owns (W2 security sweep).
+ */
+async function ownedChannelIds(
+  orgId: string,
+  channelIds: string[],
+): Promise<string[]> {
+  if (channelIds.length === 0) return [];
+  const owned = await prisma.alertChannel.findMany({
+    where: { id: { in: channelIds }, orgId },
+    select: { id: true },
+  });
+  const ownedSet = new Set(owned.map((c) => c.id));
+  const rejected = channelIds.filter((id) => !ownedSet.has(id));
+  if (rejected.length > 0) {
+    throw new Error("One or more alert channels were not found");
+  }
+  return channelIds;
+}
+
 export async function createAlertRule(orgId: string, input: CreateAlertRuleInput) {
   const rule = await prisma.alertRule.create({
     data: {
@@ -187,10 +213,11 @@ export async function createAlertRule(orgId: string, input: CreateAlertRuleInput
     },
   });
 
-  // Link channels
-  if (input.channelIds.length > 0) {
+  // Link channels — only ones this org owns.
+  const linkable = await ownedChannelIds(orgId, input.channelIds);
+  if (linkable.length > 0) {
     await prisma.alertRuleChannel.createMany({
-      data: input.channelIds.map((channelId) => ({
+      data: linkable.map((channelId) => ({
         ruleId: rule.id,
         channelId,
       })),
@@ -272,9 +299,10 @@ export async function updateAlertRule(
       where: { ruleId },
     });
 
-    if (updates.channelIds.length > 0) {
+    const linkable = await ownedChannelIds(orgId, updates.channelIds);
+    if (linkable.length > 0) {
       await prisma.alertRuleChannel.createMany({
-        data: updates.channelIds.map((channelId) => ({
+        data: linkable.map((channelId) => ({
           ruleId,
           channelId,
         })),

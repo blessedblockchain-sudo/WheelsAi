@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { FastifyInstance } from "fastify";
 import { requireAuth } from "../middleware/auth.js";
 import {
@@ -10,6 +11,47 @@ import {
   deleteTemplate,
   getTemplateStats,
 } from "../services/templates.js";
+
+/**
+ * Platform-admin gate for the GLOBAL template catalog (W2 security sweep).
+ *
+ * AgentTemplate rows are platform-wide, and `/:templateId/use` clones a
+ * template's sourceCode into the calling org's agent. So write access to
+ * this catalog is write access to code other organizations will run —
+ * `requireAuth` (any signed-in user) was the wrong bar entirely, despite
+ * the "Admin:" comments on these routes.
+ *
+ * Mirrors the marketplace curation gate: PLATFORM_ADMIN_KEY via
+ * x-admin-key, read at request time so rotation needs no reboot,
+ * constant-time compared, honest 503 when unset.
+ */
+function requirePlatformAdmin(
+  request: { headers: Record<string, unknown> },
+  reply: {
+    status: (code: number) => { send: (body: unknown) => unknown };
+  },
+): boolean {
+  const adminKey = process.env.PLATFORM_ADMIN_KEY;
+  if (!adminKey) {
+    reply.status(503).send({
+      error: "template_admin_not_configured",
+      message: "PLATFORM_ADMIN_KEY is not set on this deployment.",
+    });
+    return false;
+  }
+  const presented = request.headers["x-admin-key"];
+  const presentedHash = crypto
+    .createHash("sha256")
+    .update(typeof presented === "string" ? presented : "")
+    .digest();
+  const expectedHash = crypto.createHash("sha256").update(adminKey).digest();
+  if (!crypto.timingSafeEqual(presentedHash, expectedHash)) {
+    reply.status(401).send({ error: "invalid_admin_key" });
+    return false;
+  }
+  return true;
+}
+
 
 // ============================================
 // Agent Templates / Starter Kits Routes
@@ -115,6 +157,7 @@ export async function templateRoutes(app: FastifyInstance) {
     };
   }>("/", { preHandler: requireAuth }, async (request, reply) => {
     try {
+      if (!requirePlatformAdmin(request as never, reply as never)) return;
       const template = await createTemplate(request.body);
       return reply.status(201).send(template);
     } catch (error: any) {
@@ -128,6 +171,7 @@ export async function templateRoutes(app: FastifyInstance) {
     Body: Record<string, any>;
   }>("/:templateId", { preHandler: requireAuth }, async (request, reply) => {
     try {
+      if (!requirePlatformAdmin(request as never, reply as never)) return;
       const template = await updateTemplate(request.params.templateId, request.body);
       return reply.send(template);
     } catch (error: any) {
@@ -141,6 +185,7 @@ export async function templateRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       try {
+        if (!requirePlatformAdmin(request as never, reply as never)) return;
         await deleteTemplate(request.params.templateId);
         return reply.status(204).send();
       } catch (error: any) {

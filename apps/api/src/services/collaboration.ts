@@ -92,15 +92,31 @@ export async function updateContributor(
     data.revenueShare = bpsToFraction(shareBps);
   }
 
-  return prisma.agentContributor.update({
-    where: { id: contributorId },
+  // Constrain to the agent the ROUTE verified. The route checks the agent
+  // belongs to the caller's org, but the contributor row was resolved by
+  // bare id — so a caller could pass a contributorId from another org's
+  // agent and rewrite its revenue split.
+  const updated = await prisma.agentContributor.updateMany({
+    where: { id: contributorId, agentId },
     data,
+  });
+  if (updated.count === 0) {
+    throw new Error("Contributor not found for this agent");
+  }
+  return prisma.agentContributor.findFirstOrThrow({
+    where: { id: contributorId, agentId },
     include: { user: { select: USER_SELECT } },
   });
 }
 
-export async function removeContributor(contributorId: string) {
-  return prisma.agentContributor.delete({ where: { id: contributorId } });
+export async function removeContributor(contributorId: string, agentId: string) {
+  const deleted = await prisma.agentContributor.deleteMany({
+    where: { id: contributorId, agentId },
+  });
+  if (deleted.count === 0) {
+    throw new Error("Contributor not found for this agent");
+  }
+  return { success: true };
 }
 
 export async function acceptInvitation(contributorId: string, userId: string) {

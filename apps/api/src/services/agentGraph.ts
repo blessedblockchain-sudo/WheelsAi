@@ -197,6 +197,13 @@ function validateGraph(graph: AgentGraphData) {
 // Graph Templates
 // ============================================
 
+// NOTE: llm nodes here deliberately carry NO `model`. The interpreter
+// falls back to the agent's own configured model, then to the first
+// available free model (buildGraphInterpreterDeps). These templates used
+// to ship `model: "default"`, which is not a model id — every template
+// applied from the builder failed on its first run with
+// "Unknown model provider: default", which is the most obvious click on
+// that screen.
 export const graphTemplates: Record<string, AgentGraphData> = {
   simple_chat: {
     nodes: [
@@ -216,7 +223,6 @@ export const graphTemplates: Record<string, AgentGraphData> = {
         data: {
           label: "LLM Response",
           config: {
-            model: "default",
             temperature: 0.7,
             systemPrompt: "You are a helpful assistant.",
           },
@@ -279,7 +285,6 @@ export const graphTemplates: Record<string, AgentGraphData> = {
         data: {
           label: "Generate Answer",
           config: {
-            model: "default",
             temperature: 0.3,
             systemPrompt: "Answer based on the provided context.",
           },
@@ -322,7 +327,6 @@ export const graphTemplates: Record<string, AgentGraphData> = {
         data: {
           label: "Plan Action",
           config: {
-            model: "default",
             temperature: 0.5,
             systemPrompt: "Decide which tool to use based on user request.",
           },
@@ -377,7 +381,6 @@ export const graphTemplates: Record<string, AgentGraphData> = {
         data: {
           label: "Format Response",
           config: {
-            model: "default",
             temperature: 0.7,
           },
         },

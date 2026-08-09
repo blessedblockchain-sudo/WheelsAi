@@ -9,6 +9,7 @@ import swaggerUi from "@fastify/swagger-ui";
 
 import { installBigIntJsonSerializer } from "./lib/bigintJson.js";
 import { globalErrorHandler } from "./lib/errorHandler.js";
+import { sanitizeErrorPayloadHook } from "./lib/sanitizeErrorPayload.js";
 
 // Precision-safe BigInt JSON serialization (Prisma surfaces BigInt columns
 // API-wide) — installed before any route can serialize a response. The
@@ -229,6 +230,14 @@ async function main() {
       durationSeconds: reply.elapsedTime / 1000,
     });
   });
+
+  // Scrub internal detail from EVERY outgoing error body. ~109 route
+  // handlers catch their own errors and echo `error.message`, which
+  // bypasses the error handler below — and Prisma renders failed calls
+  // with an absolute path, a source code frame, and the data payload
+  // (secrets included). Registered here, before the routes, for the same
+  // encapsulation reason as the error handler.
+  app.addHook("onSend", sanitizeErrorPayloadHook as never);
 
   // Global error handler — maps ZodError (bare .parse() in routes) to 400,
   // Fastify schema-validation to 400, else statusCode-aware fallback (F1).

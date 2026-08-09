@@ -230,6 +230,17 @@ async function main() {
     });
   });
 
+  // Global error handler — maps ZodError (bare .parse() in routes) to 400,
+  // Fastify schema-validation to 400, else statusCode-aware fallback (F1).
+  //
+  // MUST be installed BEFORE the route plugins below. `register()` creates
+  // an encapsulated child context that captures the error handler present
+  // at registration time, so setting it afterwards leaves every route on
+  // Fastify's default handler — which returns 500 for a ZodError and
+  // echoes internal error messages. That is exactly what was happening:
+  // an invalid uuid path param answered 500 with the raw Zod issue list.
+  app.setErrorHandler(globalErrorHandler);
+
   // Register routes
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(authRoutes, { prefix: "/api/auth" });
@@ -313,10 +324,6 @@ async function main() {
   const { agentTreasuryRoutes } = await import("./routes/agent-treasury.js");
   await app.register(agentTreasuryRoutes, { prefix: "/api" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
-
-  // Global error handler — maps ZodError (bare .parse() in routes) to 400,
-  // Fastify schema-validation to 400, else statusCode-aware fallback (F1).
-  app.setErrorHandler(globalErrorHandler);
 
   // Start server
   try {

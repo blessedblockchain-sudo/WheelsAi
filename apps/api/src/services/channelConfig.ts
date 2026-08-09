@@ -33,7 +33,11 @@ type DecryptFn = (cipher: string) => Record<string, unknown>;
 interface PrismaStub {
   openClawChannel: {
     findFirst: (args: {
-      where: { deploymentId: string; platform: string };
+      // Either key: by our deployment, or by the platform's own
+      // workspace id (the distributed-app events path).
+      where:
+        | { deploymentId: string; platform: string }
+        | { platform: string; externalId: string };
     }) => Promise<
       | {
           id: string;
@@ -51,6 +55,7 @@ interface PrismaStub {
     }) => Promise<{ id: string; publicUrl: string | null } | null>;
   };
 }
+
 
 export interface ChannelConfigDeps {
   prisma: PrismaStub;
@@ -87,6 +92,36 @@ export async function resolveChannelConfig(
     where: { deploymentId, platform },
   });
   if (!row || !row.enabled) return null;
+  return decodeInboundConfig(row, deploymentId, platform, deps);
+}
+
+/**
+ * Resolves a channel by the PLATFORM's own workspace id rather than by
+ * our deploymentId.
+ *
+ * A distributed Slack app has exactly one Events Request URL, so an
+ * inbound event cannot carry a deploymentId — it identifies itself by
+ * `team_id`. This is the lookup that makes one shared events endpoint
+ * possible without a second copy of the channel stack.
+ */
+export async function resolveChannelConfigByExternalId(
+  platform: string,
+  externalId: string,
+  deps: ChannelConfigDeps,
+): Promise<InboundChannelConfig | null> {
+  const row = await deps.prisma.openClawChannel.findFirst({
+    where: { platform, externalId },
+  });
+  if (!row || !row.enabled) return null;
+  return decodeInboundConfig(row, row.deploymentId, platform, deps);
+}
+
+function decodeInboundConfig(
+  row: { configEncrypted: string; deploymentId: string },
+  deploymentId: string,
+  platform: string,
+  deps: ChannelConfigDeps,
+): InboundChannelConfig | null {
 
   const config = decryptOrWarn(row.configEncrypted, deps, {
     deploymentId,

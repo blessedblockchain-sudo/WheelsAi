@@ -2213,11 +2213,27 @@ model OpenClawChannel {
   platform        String
   configEncrypted String   @map("config_encrypted") @db.Text
   enabled         Boolean  @default(true)
+
+  // The platform's own id for the installed workspace/server (Slack
+  // team_id). A distributed Slack app has ONE Events Request URL, so
+  // inbound events carry a team id and nothing else we control —
+  // resolving deployment-by-team is only possible if we record it.
+  externalId      String?  @map("external_id")
+  externalName    String?  @map("external_name")
+
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   deployment      OpenClawDeployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
 
+  // One channel row per (deployment, platform): the resolver did
+  // findFirst with no ordering, so duplicates made resolution arbitrary.
+  @@unique([deploymentId, platform])
+  // One workspace installs into at most one deployment. The second
+  // install REFUSES with a named reason rather than silently stealing
+  // the first one's events. (Postgres permits many NULL external_ids, so
+  // manually-configured rows are unaffected.)
+  @@unique([platform, externalId])
   @@index([deploymentId])
   @@map("openclaw_channels")
 }

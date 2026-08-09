@@ -219,6 +219,24 @@ const envSchema = z.object({
   // GitHub Integration
   GITHUB_TOKEN: z.string().optional(),
 
+  // Public origins. OAuth redirect URIs must be absolute and reachable
+  // by Slack/GitHub, so they cannot be derived from the request.
+  PUBLIC_API_URL: z.string().url().optional(),
+  PUBLIC_WEB_URL: z.string().url().optional(),
+
+  // Slack distributed app (W2). Master gate; the routes stay mounted and
+  // answer 501 when off, because Slack must be able to probe the Events
+  // URL before anything is installed.
+  SLACK_OAUTH_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  SLACK_CLIENT_ID: z.string().optional(),
+  SLACK_CLIENT_SECRET: z.string().optional(),
+  // App-level signing secret — an app configuration value, not an OAuth
+  // artifact, and the key inbound event verification uses.
+  SLACK_SIGNING_SECRET: z.string().optional(),
+
   // Per-org cap on concurrently active GPU deployments (model + agent
   // deployments each enforce it). Nosana jobs are platform-paid, so the
   // cap plus the credit reservation bound the platform's exposure.
@@ -316,6 +334,19 @@ export function validateEnv(raw: Record<string, string | undefined>) {
         "ALLOW_MOCK_CHECKOUT must not be enabled in production"
       );
     }
+    for (const [name, value] of [
+      ["PUBLIC_API_URL", data.PUBLIC_API_URL],
+      ["PUBLIC_WEB_URL", data.PUBLIC_WEB_URL],
+    ] as const) {
+      if (!value) continue;
+      // An http redirect_uri puts the OAuth code in cleartext, and
+      // Slack/GitHub will not call localhost anyway.
+      if (!value.startsWith("https://") || /localhost|127\.0\.0\.1/.test(value)) {
+        throw new EnvValidationError(
+          `${name} must be an https URL on a public host in production`
+        );
+      }
+    }
     if (data.ALLOW_DEVNET_WALLET_TOPUPS) {
       throw new EnvValidationError(
         "ALLOW_DEVNET_WALLET_TOPUPS must not be enabled in production — the SOL rail grants credits from an operator-stated quote, not an oracle"
@@ -366,6 +397,23 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError(
       "SOLANA_NETWORK=mainnet-beta requires an explicitly set, non-devnet SOLANA_RPC_URL (the default is the devnet endpoint — mainnet mode would silently verify against the wrong chain)"
     );
+  }
+
+  // Slack: an enabled install flow with missing credentials would 302 a
+  // user to a Slack URL that cannot complete, or accept events it cannot
+  // verify. Fail at boot instead, in every environment.
+  if (data.SLACK_OAUTH_ENABLED) {
+    const missing = [
+      !data.SLACK_CLIENT_ID && "SLACK_CLIENT_ID",
+      !data.SLACK_CLIENT_SECRET && "SLACK_CLIENT_SECRET",
+      !data.SLACK_SIGNING_SECRET && "SLACK_SIGNING_SECRET",
+      !data.PUBLIC_API_URL && "PUBLIC_API_URL",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new EnvValidationError(
+        `SLACK_OAUTH_ENABLED requires ${missing.join(", ")}`
+      );
+    }
   }
 
   // Embeddings: a configured provider must actually be able to serve

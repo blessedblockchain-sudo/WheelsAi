@@ -53,6 +53,10 @@ import { tokenRoutes } from "./routes/tokens.js";
 import { createPartialSignTokenRoutesProduction } from "./routes/tokenLaunchPartialSignBindings.js";
 import { createWalletTopupRoutesProduction } from "./routes/walletTopupBindings.js";
 import {
+  createSlackOAuthRoutesProduction,
+  createSlackEventsRoutesProduction,
+} from "./routes/slackOAuthBindings.js";
+import {
   createPublicAgentRoutesProduction,
   createAgentDetailRoutesProduction,
   createAgentListRoutesProduction,
@@ -234,6 +238,17 @@ async function main() {
   await app.register(agentRoutes, { prefix: "/api/agents" });
   await app.register(trainingRoutes, { prefix: "/api/training" });
   await app.register(billingRoutes, { prefix: "/api/billing" });
+  // Slack install + the distributed-app events endpoint (W2). Both are
+  // ALWAYS mounted and answer 501 when Slack is unconfigured: Slack must
+  // be able to probe the Events Request URL before any install exists,
+  // and a 404 would make "not configured" look like "broken".
+  await app.register(createSlackOAuthRoutesProduction(), {
+    prefix: "/api/integrations",
+  });
+  await app.register(createSlackEventsRoutesProduction(), {
+    prefix: "/api/channels",
+  });
+
   // Wallet top-up rail (B2/T5): /api/billing/topups/*. Always mounted —
   // when WALLET_TOPUPS_ENABLED is false the routes answer 501 honestly
   // instead of 404ing.

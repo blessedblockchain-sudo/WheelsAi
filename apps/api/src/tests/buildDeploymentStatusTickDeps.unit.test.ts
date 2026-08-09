@@ -134,14 +134,26 @@ test("loadDeployments merges agent + model rows tagged with their kind; model ro
   });
   const deps = await buildDeps({ stub });
   const rows = await deps.loadDeployments();
+  // The reservation columns ride along so the tick can refund a terminal
+  // deployment's credit hold without a second query.
   assert.deepEqual(rows, [
-    { kind: "agent", id: "a1", orgId: "org_1", status: "deploying", nosanaJobIds: ["j1"] },
+    {
+      kind: "agent",
+      id: "a1",
+      orgId: "org_1",
+      status: "deploying",
+      nosanaJobIds: ["j1"],
+      reservationCents: undefined,
+      reservationReleasedAt: undefined,
+    },
     {
       kind: "model",
       id: "m1",
       orgId: "org_1",
       status: "provisioning",
       nosanaJobIds: ["j2"],
+      reservationCents: undefined,
+      reservationReleasedAt: undefined,
       nodes: [{ id: "n1", nodeUrl: "https://n1.node.nos.ci", healthStatus: "unknown" }],
     },
   ]);
@@ -164,6 +176,8 @@ test("loadDeployments filters to non-terminal statuses and non-empty job ids (pe
     id: true,
     status: true,
     nosanaJobIds: true,
+    reservationCents: true,
+    reservationReleasedAt: true,
     agent: { select: { orgId: true } },
   });
 

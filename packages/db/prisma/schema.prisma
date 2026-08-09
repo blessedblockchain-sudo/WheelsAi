@@ -151,6 +151,13 @@ model Deployment {
   updatedAt    DateTime  @updatedAt @map("updated_at")
   stoppedAt    DateTime? @map("stopped_at")
 
+  // Credit reservation taken at admission (deploymentCreditGate). Stored
+  // so the release refunds the EXACT amount held, rather than recomputing
+  // it from a price table that may have changed since. releasedAt is the
+  // idempotency key: the release CASes on it being null.
+  reservationCents      BigInt?   @map("reservation_cents")
+  reservationReleasedAt DateTime? @map("reservation_released_at")
+
   org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   model        Model            @relation(fields: [modelId], references: [id])
   nodes        DeploymentNode[]
@@ -496,6 +503,13 @@ model AgentDeployment {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
   stoppedAt     DateTime? @map("stopped_at")
+
+  // Credit reservation taken at admission (deploymentCreditGate). Stored
+  // so the release refunds the EXACT amount held, rather than recomputing
+  // it from a price table that may have changed since. releasedAt is the
+  // idempotency key: the release CASes on it being null.
+  reservationCents      BigInt?   @map("reservation_cents")
+  reservationReleasedAt DateTime? @map("reservation_released_at")
 
   agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
 

@@ -12,6 +12,14 @@
  * Later metered billing (inference route / treasury settlement) charges
  * actual usage; the reservation is the admission ticket, recorded in the
  * ledger as a `deployment_reservation` row so it is auditable.
+ *
+ * A ticket that is never torn up is just a fee. Until
+ * `releaseDeploymentReservation` existed, nothing ever gave the hold
+ * back: a deployment that FAILED kept the org's money having delivered
+ * no capacity, and a deployment that ran kept it on top of the metered
+ * usage it was also charged for. The release closes both, and runs when
+ * the deployment reaches a terminal state — the admission the ticket
+ * bought is over either way, and actual consumption is billed separately.
  */
 
 import { getPricePerSecond } from "./computeMetering.js";
@@ -111,4 +119,99 @@ export async function reserveDeploymentCredits(
   });
 
   return { ok: true, reservedCents: requiredCents };
+}
+
+
+// ============================================
+// Release
+// ============================================
+
+/**
+ * Structural surface for the release. `updateMany` on the deployment is
+ * the idempotency barrier — see below.
+ */
+export interface ReleaseReservationPrisma extends CreditReservationPrisma {
+  creditBalance: CreditReservationPrisma["creditBalance"] & {
+    update(args: {
+      where: { orgId: string };
+      data: { balanceCents: { increment: bigint } };
+    }): Promise<{ balanceCents: bigint }>;
+  };
+  deployment: {
+    updateMany(args: {
+      where: { id: string; reservationReleasedAt: null };
+      data: { reservationReleasedAt: Date };
+    }): Promise<{ count: number }>;
+  };
+  agentDeployment: {
+    updateMany(args: {
+      where: { id: string; reservationReleasedAt: null };
+      data: { reservationReleasedAt: Date };
+    }): Promise<{ count: number }>;
+  };
+}
+
+export interface ReleaseDeploymentReservationArgs {
+  tx: ReleaseReservationPrisma;
+  kind: "model" | "agent";
+  deploymentId: string;
+  orgId: string;
+  /** The amount actually held, read from the deployment row. */
+  reservationCents: bigint;
+  reason: string;
+  now?: () => Date;
+}
+
+export type ReleaseDeploymentReservationResult =
+  | { released: true; amountCents: bigint }
+  | { released: false; reason: "already_released" | "nothing_reserved" };
+
+/**
+ * Gives a deployment's credit hold back, exactly once.
+ *
+ * Run INSIDE a prisma.$transaction. The CAS is
+ * `updateMany({ where: { id, reservationReleasedAt: null } })`: whoever
+ * flips it from null wins, and only the winner credits the balance. Two
+ * concurrent status ticks observing the same failure therefore refund
+ * once, not twice — the same shape as the payout executor's
+ * processing→completed claim.
+ */
+export async function releaseDeploymentReservation(
+  args: ReleaseDeploymentReservationArgs,
+): Promise<ReleaseDeploymentReservationResult> {
+  if (args.reservationCents <= 0n) {
+    return { released: false, reason: "nothing_reserved" };
+  }
+  const now = (args.now ?? (() => new Date()))();
+
+  const table =
+    args.kind === "agent" ? args.tx.agentDeployment : args.tx.deployment;
+  const claimed = await table.updateMany({
+    where: { id: args.deploymentId, reservationReleasedAt: null },
+    data: { reservationReleasedAt: now },
+  });
+  if (claimed.count === 0) {
+    return { released: false, reason: "already_released" };
+  }
+
+  const after = await args.tx.creditBalance.update({
+    where: { orgId: args.orgId },
+    data: { balanceCents: { increment: args.reservationCents } },
+  });
+
+  await args.tx.creditTransaction.create({
+    data: {
+      orgId: args.orgId,
+      amountCents: args.reservationCents,
+      type: "deployment_reservation_release",
+      description: `GPU deployment reservation released (${args.reason})`,
+      // The deployment id — so a hold and its release are correlatable in
+      // the ledger, which the original `deploy:<model>:<timestamp>`
+      // reference made impossible.
+      referenceId: args.deploymentId,
+      balanceAfter: after.balanceCents,
+    },
+  });
+
+  return { released: true, amountCents: args.reservationCents };
 }

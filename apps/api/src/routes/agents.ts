@@ -9,9 +9,19 @@ import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { getNosanaClient } from "../services/nosana.js";
 import { parseGitHubUrl, detectFramework } from "../services/github-import.js";
-import { reserveDeploymentCredits } from "../services/deploymentCreditGate.js";
+import {
+  releaseDeploymentReservation,
+  reserveDeploymentCredits,
+} from "../services/deploymentCreditGate.js";
 
 const logger = createLogger("agent-routes");
+
+/** Rolls the deployment row back with a failed credit admission. */
+class InsufficientCreditsError extends Error {
+  constructor(readonly requiredCents: bigint) {
+    super("insufficient_credits");
+  }
+}
 
 // ============================================
 // Schemas
@@ -396,36 +406,54 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    const reservation = await prisma.$transaction((tx) =>
-      reserveDeploymentCredits({
-        tx,
-        orgId,
-        gpuTier: body.gpuTier,
-        replicas: body.replicas,
-        referenceId: `agent-deploy:${agentId}:${Date.now()}`,
-      })
-    );
-    if (!reservation.ok) {
-      return reply.status(402).send({
-        error: "insufficient_credits",
-        message: `Deploying requires a reservation of $${(
-          Number(reservation.requiredCents) / 100
-        ).toFixed(2)} in credits. Add credits and retry.`,
-      });
-    }
+    // Deployment row + credit reservation in ONE transaction, referenced
+    // by the deployment id. Reserving separately meant a failure before
+    // the row existed charged the org for nothing, against a reference
+    // (`agent-deploy:<agentId>:<timestamp>`) that could not be traced
+    // back to any deployment.
+    let deployment: { id: string; status: string; gpuTier: string; replicas: number };
+    try {
+      deployment = await prisma.$transaction(async (tx) => {
+        const created = await tx.agentDeployment.create({
+          data: {
+            agentId,
+            gpuTier: body.gpuTier,
+            replicas: body.replicas,
+            modelDeploymentId: body.modelDeploymentId,
+            externalModelUrl: body.externalModelUrl,
+            status: "pending",
+            nosanaJobIds: [],
+          },
+        });
 
-    // Create agent deployment
-    const deployment = await prisma.agentDeployment.create({
-      data: {
-        agentId,
-        gpuTier: body.gpuTier,
-        replicas: body.replicas,
-        modelDeploymentId: body.modelDeploymentId,
-        externalModelUrl: body.externalModelUrl,
-        status: "pending",
-        nosanaJobIds: [],
-      },
-    });
+        const reservation = await reserveDeploymentCredits({
+          tx: tx as never,
+          orgId,
+          gpuTier: body.gpuTier,
+          replicas: body.replicas,
+          referenceId: created.id,
+        });
+        if (!reservation.ok) {
+          throw new InsufficientCreditsError(reservation.requiredCents);
+        }
+
+        await tx.agentDeployment.update({
+          where: { id: created.id },
+          data: { reservationCents: reservation.reservedCents },
+        });
+        return created;
+      });
+    } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        return reply.status(402).send({
+          error: "insufficient_credits",
+          message: `Deploying requires a reservation of $${(
+            Number(err.requiredCents) / 100
+          ).toFixed(2)} in credits. Add credits and retry.`,
+        });
+      }
+      throw err;
+    }
 
     logger.info({ agentId, deploymentId: deployment.id }, "Agent deployment created");
 
@@ -624,6 +652,31 @@ async function submitAgentToNosana(
         lastError: error.message || "Unknown error",
       },
     });
+
+    // No submit, no capacity — release the admission hold. A row that
+    // failed to submit carries no Nosana job ids, so the status worker
+    // never polls it and would never release it.
+    try {
+      const row = await prisma.agentDeployment.findUnique({
+        where: { id: deploymentId },
+        select: { reservationCents: true, agent: { select: { orgId: true } } },
+      });
+      if (row?.reservationCents && row.reservationCents > 0n) {
+        await prisma.$transaction((tx) =>
+          releaseDeploymentReservation({
+            tx: tx as never,
+            kind: "agent",
+            deploymentId,
+            orgId: row.agent.orgId,
+            reservationCents: row.reservationCents!,
+            reason: "submit_failed",
+          }),
+        );
+      }
+    } catch (refundErr) {
+      // Never mask the original submit error with a refund failure.
+      logger.error({ refundErr, deploymentId }, "failed to release agent deployment reservation");
+    }
 
     throw error;
   }

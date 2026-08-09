@@ -11,9 +11,22 @@ import {
   generateJobDefinition,
   type ModelDeploymentConfig,
 } from "../services/nosana.js";
-import { reserveDeploymentCredits } from "../services/deploymentCreditGate.js";
+import {
+  releaseDeploymentReservation,
+  reserveDeploymentCredits,
+} from "../services/deploymentCreditGate.js";
 
 const logger = createLogger("deployment-routes");
+
+/**
+ * Signals a failed admission from inside the create transaction, so the
+ * deployment row rolls back with it instead of being left orphaned.
+ */
+class InsufficientCreditsError extends Error {
+  constructor(readonly requiredCents: bigint) {
+    super("insufficient_credits");
+  }
+}
 
 // ============================================
 // Schemas
@@ -163,24 +176,6 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    const reservation = await prisma.$transaction((tx) =>
-      reserveDeploymentCredits({
-        tx,
-        orgId,
-        gpuTier: body.gpuTier,
-        replicas: body.replicas,
-        referenceId: `deploy:${body.modelId}:${Date.now()}`,
-      })
-    );
-    if (!reservation.ok) {
-      return reply.status(402).send({
-        error: "insufficient_credits",
-        message: `Deploying requires a reservation of $${(
-          Number(reservation.requiredCents) / 100
-        ).toFixed(2)} in credits. Add credits and retry.`,
-      });
-    }
-
     // Generate slug from name
     const baseSlug = body.name
       .toLowerCase()
@@ -204,21 +199,65 @@ export const deploymentRoutes: FastifyPluginAsync = async (app) => {
       gpuMemoryUtilization: 0.9,
     };
 
-    // Create deployment in database
-    const deployment = await prisma.deployment.create({
-      data: {
-        orgId,
-        name: body.name,
-        slug,
-        modelId: body.modelId,
-        engine: body.engine,
-        gpuTier: body.gpuTier,
-        replicas: body.replicas,
-        config,
-        status: "pending",
-        nosanaJobIds: [],
-      },
-    });
+    // Create the deployment and take its credit reservation in ONE
+    // transaction. Reserving first in a separate transaction meant a
+    // failure before the row existed left the org charged with nothing to
+    // show for it — and the old `deploy:<model>:<timestamp>` reference
+    // could not be traced back to any deployment, so the money was
+    // unrecoverable even by hand. The reserved amount is stored on the
+    // row so the release refunds exactly what was held.
+    let deployment: {
+      id: string;
+      name: string;
+      slug: string;
+      status: string;
+    };
+    try {
+      deployment = await prisma.$transaction(async (tx) => {
+        const created = await tx.deployment.create({
+          data: {
+            orgId,
+            name: body.name,
+            slug,
+            modelId: body.modelId,
+            engine: body.engine,
+            gpuTier: body.gpuTier,
+            replicas: body.replicas,
+            config,
+            status: "pending",
+            nosanaJobIds: [],
+          },
+        });
+
+        const reservation = await reserveDeploymentCredits({
+          tx: tx as never,
+          orgId,
+          gpuTier: body.gpuTier,
+          replicas: body.replicas,
+          referenceId: created.id,
+        });
+        if (!reservation.ok) {
+          // Roll the deployment back with the failed admission.
+          throw new InsufficientCreditsError(reservation.requiredCents);
+        }
+
+        await tx.deployment.update({
+          where: { id: created.id },
+          data: { reservationCents: reservation.reservedCents },
+        });
+        return created;
+      });
+    } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        return reply.status(402).send({
+          error: "insufficient_credits",
+          message: `Deploying requires a reservation of $${(
+            Number(err.requiredCents) / 100
+          ).toFixed(2)} in credits. Add credits and retry.`,
+        });
+      }
+      throw err;
+    }
 
     logger.info(
       { deploymentId: deployment.id, modelId: body.modelId },
@@ -692,6 +731,52 @@ async function submitToNosana(
       data: { status: "failed" },
     });
 
+    // Submit never happened, so no capacity was ever delivered — give the
+    // admission hold back. This is the path that actually fires in
+    // practice (a submit failure leaves the row with NO job ids, so the
+    // status worker never polls it and would never release it either).
+    await refundDeploymentReservation("model", deploymentId, "submit_failed");
+
     throw error;
+  }
+}
+
+
+/**
+ * Releases a deployment's credit hold after a terminal outcome that the
+ * status worker will never observe.
+ *
+ * The worker only polls rows carrying Nosana job ids; a deployment that
+ * failed to submit has none, so without this the org stays charged for a
+ * deployment that never existed. Best-effort by design — a refund
+ * failure must not mask the original submit error.
+ */
+async function refundDeploymentReservation(
+  kind: "model" | "agent",
+  deploymentId: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const row =
+      kind === "model"
+        ? await prisma.deployment.findUnique({
+            where: { id: deploymentId },
+            select: { orgId: true, reservationCents: true },
+          })
+        : null;
+    if (!row?.reservationCents || row.reservationCents <= 0n) return;
+
+    await prisma.$transaction((tx) =>
+      releaseDeploymentReservation({
+        tx: tx as never,
+        kind,
+        deploymentId,
+        orgId: row.orgId,
+        reservationCents: row.reservationCents!,
+        reason,
+      }),
+    );
+  } catch (err) {
+    logger.error({ err, deploymentId }, "failed to release deployment reservation");
   }
 }

@@ -34,6 +34,7 @@ import type {
   DeploymentStatusTickDeps,
   NodeHealthObservation,
 } from "./runDeploymentStatusTick.js";
+import { releaseDeploymentReservation } from "./deploymentCreditGate.js";
 
 /** Everything except stopped/failed — rows worth polling. */
 export const AGENT_DEPLOYMENT_NON_TERMINAL_STATUSES = [
@@ -61,6 +62,8 @@ interface AgentDeploymentDelegateStub {
       id: true;
       status: true;
       nosanaJobIds: true;
+      reservationCents: true;
+      reservationReleasedAt: true;
       agent: { select: { orgId: true } };
     };
   }) => Promise<
@@ -68,6 +71,8 @@ interface AgentDeploymentDelegateStub {
       id: string;
       status: string;
       nosanaJobIds: string[];
+      reservationCents: bigint | null;
+      reservationReleasedAt: Date | null;
       agent: { orgId: string };
     }>
   >;
@@ -92,6 +97,8 @@ interface ModelDeploymentDelegateStub {
       orgId: true;
       status: true;
       nosanaJobIds: true;
+      reservationCents: true;
+      reservationReleasedAt: true;
       nodes: { select: { id: true; nodeUrl: true; healthStatus: true } };
     };
   }) => Promise<
@@ -100,6 +107,8 @@ interface ModelDeploymentDelegateStub {
       orgId: string;
       status: string;
       nosanaJobIds: string[];
+      reservationCents: bigint | null;
+      reservationReleasedAt: Date | null;
       nodes: Array<{ id: string; nodeUrl: string; healthStatus: string }>;
     }>
   >;
@@ -124,8 +133,15 @@ interface DeploymentNodeDelegateStub {
 }
 
 type DeploymentStatusPrismaSurface =
-  | Pick<PrismaClient, "agentDeployment" | "deployment" | "deploymentNode">
+  | Pick<
+      PrismaClient,
+      "agentDeployment" | "deployment" | "deploymentNode" | "$transaction"
+    >
   | {
+      // $transaction is needed for the reservation release: the CAS flag
+      // and the credit must move together or a crash between them either
+      // double-refunds or loses the refund.
+      $transaction: <T>(fn: (tx: unknown) => Promise<T>) => Promise<T>;
       agentDeployment: AgentDeploymentDelegateStub;
       deployment: ModelDeploymentDelegateStub;
       deploymentNode: DeploymentNodeDelegateStub;
@@ -183,6 +199,7 @@ export function buildDeploymentStatusTickDeps(
   input: BuildDeploymentStatusTickDepsInput,
 ): DeploymentStatusTickDeps {
   const prisma = input.prisma as {
+    $transaction: <T>(fn: (tx: unknown) => Promise<T>) => Promise<T>;
     agentDeployment: AgentDeploymentDelegateStub;
     deployment: ModelDeploymentDelegateStub;
     deploymentNode: DeploymentNodeDelegateStub;
@@ -200,6 +217,8 @@ export function buildDeploymentStatusTickDeps(
             id: true,
             status: true,
             nosanaJobIds: true,
+            reservationCents: true,
+            reservationReleasedAt: true,
             agent: { select: { orgId: true } },
           },
         }),
@@ -213,6 +232,8 @@ export function buildDeploymentStatusTickDeps(
             orgId: true,
             status: true,
             nosanaJobIds: true,
+            reservationCents: true,
+            reservationReleasedAt: true,
             nodes: { select: { id: true, nodeUrl: true, healthStatus: true } },
           },
         }),
@@ -225,6 +246,8 @@ export function buildDeploymentStatusTickDeps(
           orgId: r.agent.orgId,
           status: r.status,
           nosanaJobIds: r.nosanaJobIds,
+          reservationCents: r.reservationCents,
+          reservationReleasedAt: r.reservationReleasedAt,
         })),
         ...modelRows.map((r) => ({
           kind: "model" as const,
@@ -232,6 +255,8 @@ export function buildDeploymentStatusTickDeps(
           orgId: r.orgId,
           status: r.status,
           nosanaJobIds: r.nosanaJobIds,
+          reservationCents: r.reservationCents,
+          reservationReleasedAt: r.reservationReleasedAt,
           nodes: r.nodes,
         })),
       ];
@@ -295,5 +320,22 @@ export function buildDeploymentStatusTickDeps(
     },
 
     emitTransition: input.emitTransition,
+
+    // Refund the admission hold. The CAS on reservationReleasedAt lives
+    // inside releaseDeploymentReservation, and the whole thing runs in
+    // one transaction so the flag and the credit move together.
+    releaseReservation: async (args) => {
+      const result = await prisma.$transaction((tx: unknown) =>
+        releaseDeploymentReservation({
+          tx: tx as never,
+          kind: args.kind,
+          deploymentId: args.id,
+          orgId: args.orgId,
+          reservationCents: args.reservationCents,
+          reason: args.reason,
+        }),
+      );
+      return { released: result.released };
+    },
   };
 }

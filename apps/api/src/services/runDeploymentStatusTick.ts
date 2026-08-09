@@ -62,6 +62,9 @@ export interface DeploymentStatusRow {
   nosanaJobIds: string[];
   /** Model rows only — AgentDeployment has no nodes relation. */
   nodes?: DeploymentNodeRow[];
+  /** Credit hold taken at admission; null once released. */
+  reservationCents?: bigint | null;
+  reservationReleasedAt?: Date | null;
 }
 
 export interface DeploymentStatusTransition {
@@ -105,6 +108,20 @@ export interface DeploymentStatusTickDeps {
    * Best-effort: a throw here never fails the row.
    */
   emitTransition: (transition: DeploymentStatusTransition) => Promise<void>;
+  /**
+   * Gives the admission credit hold back when a deployment reaches a
+   * terminal state. Idempotent by CAS on reservationReleasedAt, so a
+   * concurrent tick cannot double-refund. Best-effort at THIS layer: a
+   * throw is counted and retried next tick rather than failing the row's
+   * status transition, which has already been persisted.
+   */
+  releaseReservation?: (args: {
+    kind: DeploymentKind;
+    id: string;
+    orgId: string;
+    reservationCents: bigint;
+    reason: string;
+  }) => Promise<{ released: boolean }>;
 }
 
 export interface DeploymentStatusTickResult {
@@ -113,6 +130,7 @@ export interface DeploymentStatusTickResult {
   unchanged: number;
   failed: number;
   nodesProbed: number;
+  reservationsReleased: number;
   nodesUnhealthy: number;
   nodeProbesFailed: number;
 }
@@ -158,6 +176,9 @@ export function mapJobStatesToDeploymentStatus(
   return null;
 }
 
+/** States where the deployment will never deliver further capacity. */
+const TERMINAL_STATUSES = new Set(["failed", "stopped"]);
+
 export async function runDeploymentStatusTick(
   input: DeploymentStatusTickInput,
   deps: DeploymentStatusTickDeps,
@@ -168,6 +189,7 @@ export async function runDeploymentStatusTick(
   let unchanged = 0;
   let failed = 0;
   let nodesProbed = 0;
+  let reservationsReleased = 0;
   let nodesUnhealthy = 0;
   let nodeProbesFailed = 0;
 
@@ -197,6 +219,33 @@ export async function runDeploymentStatusTick(
           // duplicate the event from whichever writer actually moved
           // the row.
           await deps.emitTransition(transition).catch(() => {});
+
+          // A terminal deployment's admission hold is over: `failed`
+          // delivered no capacity at all, and `stopped` has already been
+          // billed for what it actually consumed by metering. Holding
+          // either forever turns the ticket into a silent fee.
+          if (
+            TERMINAL_STATUSES.has(next) &&
+            deps.releaseReservation &&
+            row.reservationCents &&
+            row.reservationCents > 0n &&
+            !row.reservationReleasedAt
+          ) {
+            try {
+              const outcome = await deps.releaseReservation({
+                kind: row.kind,
+                id: row.id,
+                orgId: row.orgId,
+                reservationCents: row.reservationCents,
+                reason: next,
+              });
+              if (outcome.released) reservationsReleased += 1;
+            } catch {
+              // The status change is already committed; the refund is
+              // retried on a later tick (the row still has a null
+              // reservationReleasedAt, which is what selects it).
+            }
+          }
         } else {
           // CAS miss — a concurrent writer already moved the row.
           unchanged += 1;
@@ -238,6 +287,7 @@ export async function runDeploymentStatusTick(
     unchanged,
     failed,
     nodesProbed,
+    reservationsReleased,
     nodesUnhealthy,
     nodeProbesFailed,
   };

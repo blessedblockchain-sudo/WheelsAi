@@ -232,8 +232,12 @@ refuse by name with reasons — full graph execution stays Wave 3) ·
 ✅ Slack OAuth + GitHub App (`075cee0` + `668447e`; both refuse honestly
 until their apps are registered — neither is provable without a public
 HTTPS URL, and outbound Slack replies additionally need a running
-OpenClaw node) · **open:** token trade feed (WS consumer + backfill;
-supersedes/absorbs B6) · marketplace per-request metering caller.
+OpenClaw node) ✅ marketplace per-request metering
+(`28be183`; charge → settle/refund proven against real Postgres, incl.
+the concurrency guard — docs/MARKETPLACE-METERING-RUN.md; also closed the
+uninstall bypass that left paid clones runnable for free) ·
+**open:** token trade feed (WS consumer + backfill; supersedes/absorbs
+B6).
 
 **Wave 3 — heavy/externally gated (L-XL):**
 training execution (containers + real Nosana markets — C1-gated) · OpenClaw

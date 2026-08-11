@@ -68,3 +68,6 @@ pitch-deck-*.html
 apps/api/dbg.ts
 apps/api/scratch.ts
 apps/api/*.debug.ts
+
+# Devnet-only throwaway keypairs (D10 smoke test)
+.devnet/

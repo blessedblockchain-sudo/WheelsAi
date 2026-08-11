@@ -57,6 +57,7 @@ import {
   createSlackOAuthRoutesProduction,
   createSlackEventsRoutesProduction,
 } from "./routes/slackOAuthBindings.js";
+import { createGitHubAppRoutesProduction } from "./routes/githubAppBindings.js";
 import {
   createPublicAgentRoutesProduction,
   createAgentDetailRoutesProduction,
@@ -267,6 +268,13 @@ async function main() {
   });
   await app.register(createSlackEventsRoutesProduction(), {
     prefix: "/api/channels",
+  });
+
+  // GitHub App: install/callback + the push webhook (W2). Always mounted
+  // and 501 when unconfigured — GitHub must be able to reach the webhook
+  // URL during App setup, before anything is installed.
+  await app.register(createGitHubAppRoutesProduction(), {
+    prefix: "/api/integrations",
   });
 
   // Wallet top-up rail (B2/T5): /api/billing/topups/*. Always mounted —

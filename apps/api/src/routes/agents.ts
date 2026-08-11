@@ -8,7 +8,12 @@ import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { getNosanaClient } from "../services/nosana.js";
-import { parseGitHubUrl, detectFramework } from "../services/github-import.js";
+import {
+  parseGitHubUrl,
+  detectFramework,
+  GitHubRepoNotFoundError,
+} from "../services/github-import.js";
+import { getOrgInstallationToken } from "./githubAppBindings.js";
 import {
   releaseDeploymentReservation,
   reserveDeploymentCredits,
@@ -102,9 +107,39 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const repoInfo = parseGitHubUrl(githubUrl);
-      const config = await detectFramework(repoInfo.owner, repoInfo.repo);
+      // Per-ORG installation token, or none. The previous implementation
+      // attached the PLATFORM's GITHUB_TOKEN to every user's import,
+      // which made this endpoint a confused deputy: any authenticated
+      // user could probe — and read dependency files from — every
+      // private repo that token could see. Scope now comes from GitHub:
+      // an installation token only reaches its own installation's repos.
+      const token = (await getOrgInstallationToken(request.auth!.orgId)) ?? undefined;
+      const config = await detectFramework(repoInfo.owner, repoInfo.repo, {
+        token,
+        // Honour /tree/<branch> instead of silently reading the default.
+        ref: repoInfo.branch,
+      });
       return { config, repoInfo };
     } catch (err) {
+      if (err instanceof GitHubRepoNotFoundError) {
+        // GitHub returns 404 for "does not exist" and "private, and you
+        // cannot see it" alike, so the useful thing is to say what to do
+        // about it rather than guess which one happened.
+        const hasInstall = Boolean(await getOrgInstallationToken(request.auth!.orgId));
+        return reply.status(404).send(
+          hasInstall
+            ? {
+                error: "repo_not_in_installation",
+                message:
+                  "That repository is not covered by your GitHub App installation. Add it under the installation's repository access, then try again.",
+              }
+            : {
+                error: "github_app_not_connected",
+                message:
+                  "Repository not found, or it is private. Connect the WheelsAI GitHub App to import private repositories.",
+              },
+        );
+      }
       return reply.badRequest(err instanceof Error ? err.message : "Failed to import from GitHub");
     }
   });

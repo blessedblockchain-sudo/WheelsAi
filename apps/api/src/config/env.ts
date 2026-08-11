@@ -237,6 +237,18 @@ const envSchema = z.object({
   // artifact, and the key inbound event verification uses.
   SLACK_SIGNING_SECRET: z.string().optional(),
 
+  // GitHub App (W2). Installation ids are stored; installation TOKENS are
+  // minted on demand and never persisted.
+  GITHUB_APP_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_SLUG: z.string().optional(),
+  /** PEM, or base64-encoded PEM (env transport mangles newlines). */
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_WEBHOOK_SECRET: z.string().min(16).optional(),
+
   // Per-org cap on concurrently active GPU deployments (model + agent
   // deployments each enforce it). Nosana jobs are platform-paid, so the
   // cap plus the credit reservation bound the platform's exposure.
@@ -413,6 +425,28 @@ export function validateEnv(raw: Record<string, string | undefined>) {
       throw new EnvValidationError(
         `SLACK_OAUTH_ENABLED requires ${missing.join(", ")}`
       );
+    }
+  }
+
+  // GitHub App: an enabled App with missing credentials would 302 users to
+  // a GitHub page that cannot complete, or accept webhooks it cannot
+  // verify. A malformed private key is boot-fatal too — otherwise every
+  // import 500s at runtime with an error nobody connects back to config.
+  if (data.GITHUB_APP_ENABLED) {
+    const missing = [
+      !data.GITHUB_APP_ID && "GITHUB_APP_ID",
+      !data.GITHUB_APP_SLUG && "GITHUB_APP_SLUG",
+      !data.GITHUB_APP_PRIVATE_KEY && "GITHUB_APP_PRIVATE_KEY",
+      !data.GITHUB_WEBHOOK_SECRET && "GITHUB_WEBHOOK_SECRET",
+      !data.PUBLIC_API_URL && "PUBLIC_API_URL",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new EnvValidationError(
+        `GITHUB_APP_ENABLED requires ${missing.join(", ")}`
+      );
+    }
+    if (!/^\d+$/.test(data.GITHUB_APP_ID!)) {
+      throw new EnvValidationError("GITHUB_APP_ID must be numeric");
     }
   }
 

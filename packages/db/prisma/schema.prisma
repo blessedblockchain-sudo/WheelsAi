@@ -786,6 +786,9 @@ model AgentInstall {
 
   @@unique([listingId, buyerId])
   @@index([buyerId])
+  // Every inference request asks "is this agent a billable install?".
+  // Without this index that lookup is a sequential scan on the hot path.
+  @@index([clonedAgentId, status])
   @@map("agent_installs")
 }
 

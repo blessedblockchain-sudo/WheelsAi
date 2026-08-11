@@ -9,6 +9,7 @@
  */
 
 import { prisma } from "../lib/prisma.js";
+import { withMarketplaceMetering } from "./marketplaceMeteringProduction.js";
 import {
   resolveModelForPlayground,
   runChat,
@@ -26,6 +27,7 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
         where: { id: agentId, orgId },
         select: {
           id: true,
+          orgId: true,
           name: true,
           systemPrompt: true,
           tools: true,
@@ -51,26 +53,34 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
       }
 
       const resolved = resolveModelForPlayground(modelId, agentEnv);
-      const result = await runChat(
-        resolved,
-        {
-          name: (agent as AgentForExecution).name,
-          systemPrompt: agent.systemPrompt ?? undefined,
-          tools: (agent.tools as never[]) ?? [],
-          modelConfig: {
-            externalModel: modelId,
-            temperature:
-              typeof modelConfig.temperature === "number"
-                ? modelConfig.temperature
-                : 0.7,
-            maxTokens:
-              typeof modelConfig.maxTokens === "number"
-                ? modelConfig.maxTokens
-                : 4096,
-          },
-        },
-        [{ role: "user", content: prompt }] as ChatMessage[],
-        false,
+      // Every non-interactive invocation of an installed marketplace
+      // agent is billable: charge the buyer before the model runs, refund
+      // if it throws. Agents that are not per-request installs pass
+      // straight through.
+      const result = await withMarketplaceMetering(
+        { agentId: agent.id, orgId: agent.orgId },
+        () =>
+          runChat(
+            resolved,
+            {
+              name: (agent as AgentForExecution).name,
+              systemPrompt: agent.systemPrompt ?? undefined,
+              tools: (agent.tools as never[]) ?? [],
+              modelConfig: {
+                externalModel: modelId,
+                temperature:
+                  typeof modelConfig.temperature === "number"
+                    ? modelConfig.temperature
+                    : 0.7,
+                maxTokens:
+                  typeof modelConfig.maxTokens === "number"
+                    ? modelConfig.maxTokens
+                    : 4096,
+              },
+            },
+            [{ role: "user", content: prompt }] as ChatMessage[],
+            false,
+          ),
       );
       return { content: result.content, usage: result.usage };
     },

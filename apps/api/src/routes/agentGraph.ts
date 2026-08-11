@@ -9,6 +9,10 @@ import {
   compileGraph,
   type AgentGraphData,
 } from "../services/agentGraph.js";
+import {
+  MarketplaceLicenceRevokedError,
+  MarketplacePaymentRequiredError,
+} from "../services/marketplaceMetering.js";
 import { getGraphExecutions, runAgentGraph } from "../services/runAgentGraph.js";
 
 export async function agentGraphRoutes(app: FastifyInstance) {
@@ -153,6 +157,18 @@ export async function agentGraphRoutes(app: FastifyInstance) {
       // request (no graph, empty graph, wrong agent) is a 4xx.
       return reply.send({ success: true, data: result });
     } catch (error: any) {
+      if (error instanceof MarketplaceLicenceRevokedError) {
+        return reply.status(403).send({ success: false, error: error.message });
+      }
+      // "You owe your publisher money" is not a malformed request.
+      if (error instanceof MarketplacePaymentRequiredError) {
+        return reply.status(402).send({
+          success: false,
+          error: error.message,
+          requiredCents: Number(error.requiredCents),
+          balanceCents: Number(error.balanceCents),
+        });
+      }
       return reply.status(400).send({ success: false, error: error.message });
     }
   });

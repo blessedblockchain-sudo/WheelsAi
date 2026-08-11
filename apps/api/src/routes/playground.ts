@@ -13,6 +13,7 @@ import { checkFreeTierLimit } from "../middleware/free-tier-limit.js";
 import { resolveModelForPlayground, runChat, type ChatMessage } from "../services/mastra-runtime.js";
 import { isFreeModel, getAvailableFreeModels, getAllFreeModels } from "../config/free-models.js";
 import { retrieveContextForAgent } from "../services/agentRetrieval.js";
+import { beginMarketplaceMetering } from "../services/marketplaceMeteringProduction.js";
 import { buildAgentRetrievalDeps } from "../services/buildAgentRetrievalDeps.js";
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
@@ -114,6 +115,33 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      // Marketplace metering (W2): if this agent is a per-request
+      // install, the buyer pays their publisher for THIS request. Charged
+      // before a single token is generated, refunded if generation fails,
+      // and answered as 402 before any response bytes are written — the
+      // streaming branch cannot take that back once it has flushed a
+      // header.
+      const metering = await beginMarketplaceMetering({ agentId, orgId });
+      if (metering && !metering.ok && metering.reason === "licence_revoked") {
+        return reply.status(403).send({
+          error: "LicenceRevoked",
+          message: `This agent came from the marketplace listing "${metering.listingTitle}" and stopped working when you uninstalled it. Reinstall it to use it again.`,
+        });
+      }
+      if (metering && !metering.ok) {
+        return reply.status(402).send({
+          error: "PaymentRequired",
+          message: `"${metering.listingTitle}" is billed per request by its publisher. This request costs ${(
+            Number(metering.requiredCents) / 100
+          ).toFixed(4)} USD and your balance is ${(
+            Number(metering.balanceCents) / 100
+          ).toFixed(2)} USD.`,
+          requiredCents: Number(metering.requiredCents),
+          balanceCents: Number(metering.balanceCents),
+        });
+      }
+      const meter = metering?.ok ? metering.handle : null;
+
       const agentConfig = {
         name: agent.name,
         systemPrompt: agent.systemPrompt ?? undefined,
@@ -164,9 +192,13 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
             reply.raw.end();
           }
 
+          await meter?.settle();
           return;
         } catch (err) {
           logger.error({ err, agentId, modelId }, "Streaming chat error");
+          await meter?.refund(
+            err instanceof Error ? err.message : "streaming failed",
+          );
           return reply.internalServerError("Failed to stream chat response");
         }
       }
@@ -180,6 +212,8 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           false
         );
 
+        await meter?.settle();
+
         // Fire-and-forget usage tracking
         trackUsage(orgId, modelId, result.usage.inputTokens, result.usage.outputTokens).catch(
           (err) => logger.error({ err }, "Failed to track usage")
@@ -189,6 +223,15 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           content: result.content,
           model: modelId,
           usage: result.usage,
+          // What this answer cost the buyer and who it went to. A charge
+          // the user only discovers on their statement is a charge we hid.
+          billing: meter
+            ? {
+                listingTitle: meter.charge.install.listingTitle,
+                chargedCents: Number(meter.charge.grossCents),
+                creatorCents: Number(meter.charge.creatorCents),
+              }
+            : null,
           // What grounded this answer, and by which retrieval mode — so
           // the UI can cite sources and never imply "semantic" when the
           // passages were word-overlap matched.
@@ -207,6 +250,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
         };
       } catch (err) {
         logger.error({ err, agentId, modelId }, "Chat error");
+        await meter?.refund(err instanceof Error ? err.message : "chat failed");
         const message = err instanceof Error ? err.message : "Chat failed";
         return reply.status(502).send({
           error: "ModelError",

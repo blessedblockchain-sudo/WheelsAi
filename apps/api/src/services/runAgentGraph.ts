@@ -18,6 +18,11 @@ import {
   loadGraphAgentContext,
 } from "./buildGraphInterpreterDeps.js";
 import {
+  MarketplaceLicenceRevokedError,
+  MarketplacePaymentRequiredError,
+} from "./marketplaceMetering.js";
+import { beginMarketplaceMetering } from "./marketplaceMeteringProduction.js";
+import {
   runGraph,
   type GraphRunResult,
   type InterpretableEdge,
@@ -50,6 +55,24 @@ export async function runAgentGraph(
     throw new Error("Graph is empty");
   }
 
+  // One graph RUN is one billable request, not one per llm node — a graph
+  // that fans out to five nodes is still one thing the buyer asked for,
+  // and per-node billing would make the same agent cost a different
+  // amount depending on internal wiring the buyer cannot see. Charging
+  // BEFORE the execution row exists means an unpayable run is a clean 402
+  // rather than a "failed" run in the buyer's history.
+  const metering = await beginMarketplaceMetering({ agentId, orgId });
+  if (metering && !metering.ok) {
+    throw metering.reason === "licence_revoked"
+      ? new MarketplaceLicenceRevokedError(metering.listingTitle)
+      : new MarketplacePaymentRequiredError({
+          requiredCents: metering.requiredCents,
+          balanceCents: metering.balanceCents,
+          listingTitle: metering.listingTitle,
+        });
+  }
+  const meter = metering?.ok ? metering.handle : null;
+
   const startedAt = new Date();
   const execution = await prisma.agentGraphExecution.create({
     data: {
@@ -69,6 +92,15 @@ export async function runAgentGraph(
     // rather than leaving a row stuck "running".
     const message = err instanceof Error ? err.message : String(err);
     result = { status: "failed", output: null, error: message, trace: [] };
+  }
+
+  // The interpreter returns `failed` rather than throwing when a node
+  // fails, so settling on "no exception" would bill the buyer for a run
+  // that produced nothing. Settle on delivered output only.
+  if (result.status === "failed") {
+    await meter?.refund(result.error ?? "graph run failed");
+  } else {
+    await meter?.settle();
   }
 
   const completedAt = new Date();

@@ -101,6 +101,15 @@ export default function PlaygroundPage() {
           ...prev,
           { role: "assistant", content: result.content },
         ]);
+        // Marketplace installs bill per request. Say so at the moment the
+        // money moves rather than leaving it to the credit statement.
+        if (result.billing) {
+          toast.info(
+            `Charged $${(result.billing.chargedCents / 100).toFixed(4)} to "${result.billing.listingTitle}" — $${(
+              result.billing.creatorCents / 100
+            ).toFixed(4)} to the publisher.`
+          );
+        }
       }
       setRequestCount((c) => c + 1);
     } catch (err: any) {

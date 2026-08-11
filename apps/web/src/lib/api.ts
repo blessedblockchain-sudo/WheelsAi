@@ -588,6 +588,16 @@ export interface PlaygroundAgentChatResponse {
     inputTokens: number;
     outputTokens: number;
   };
+  /**
+   * Present only when the agent is a per-request marketplace install:
+   * what this message cost and how much of it went to the publisher.
+   * Null for agents you built yourself.
+   */
+  billing: {
+    listingTitle: string;
+    chargedCents: number;
+    creatorCents: number;
+  } | null;
 }
 
 export interface PlaygroundModel {

@@ -31,6 +31,8 @@ export interface ScheduledTaskForExecution {
 
 export interface AgentForExecution {
   id: string;
+  /** Carried so downstream billing (marketplace metering) can scope. */
+  orgId: string;
   name: string;
   systemPrompt: string | null;
   tools: unknown;

@@ -1088,76 +1088,14 @@ export async function getPayoutHistory(publisherId: string) {
   }));
 }
 
-// Record marketplace usage (called when agent makes requests)
-export async function recordMarketplaceUsage(
-  listingId: string,
-  installId: string,
-  requestCount: number
-) {
-  const listing = await prisma.agentListing.findUnique({
-    where: { id: listingId },
-  });
-
-  if (!listing || listing.pricingModel !== "per_request") {
-    return null;
-  }
-
-  const pricePerRequest = Number(listing.pricePerRequestCents) || 0;
-  const grossAmount = pricePerRequest * requestCount;
-  const platformFee = Math.round(grossAmount * PLATFORM_FEE_SHARE);
-  const creatorAmount = grossAmount - platformFee;
-
-  // Get install to find buyer
-  const install = await prisma.agentInstall.findUnique({
-    where: { id: installId },
-  });
-
-  if (!install) {
-    return null;
-  }
-
-  // Create revenue record
-  const revenue = await prisma.marketplaceRevenue.create({
-    data: {
-      listingId,
-      installId,
-      buyerId: install.buyerId,
-      publisherId: listing.publisherId,
-      type: "per_request",
-      grossAmountCents: BigInt(grossAmount),
-      platformFeeCents: BigInt(platformFee),
-      creatorAmountCents: BigInt(creatorAmount),
-      requestCount,
-      status: "settled",
-      settledAt: new Date(),
-    },
-  });
-
-  // Update install stats
-  await prisma.agentInstall.update({
-    where: { id: installId },
-    data: {
-      totalRequests: { increment: requestCount },
-      totalSpentCents: { increment: grossAmount },
-    },
-  });
-
-  // Update listing stats
-  await prisma.agentListing.update({
-    where: { id: listingId },
-    data: {
-      totalRequests: { increment: requestCount },
-    },
-  });
-
-  // Update publisher pending payout
-  await prisma.publisherProfile.update({
-    where: { orgId: listing.publisherId },
-    data: {
-      totalRevenueCents: { increment: creatorAmount },
-      pendingPayoutCents: { increment: creatorAmount },
-    },
-  });
-
-  return revenue;
-}
+/**
+ * Per-request marketplace billing lives in services/marketplaceMetering.ts.
+ *
+ * What used to be here — `recordMarketplaceUsage` — had zero callers, and
+ * that was the only thing keeping it harmless: it wrote a `settled`
+ * revenue row and incremented the publisher's pendingPayoutCents WITHOUT
+ * ever debiting the buyer. Wiring it up would have made the platform owe
+ * creators real payouts against revenue it never collected. The
+ * replacement charges the buyer first, settles only on delivery, and
+ * refunds when the agent fails.
+ */

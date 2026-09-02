@@ -59,22 +59,9 @@ On-chain programs (devnet, verifiable on any explorer):
 - `agent-treasury` — `9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n`
 - `reputation-oracle` — `DMa1sNwXF6mZ2vyGiuA4QZhXPb5Sk4tp9gdnXsscrEB5`
 
-## Honest status
-
-A design rule enforced across the codebase: **unfinished features refuse
-honestly instead of simulating success.** Routes for unconfigured systems
-return `501` with a named reason — never a fabricated result.
-
-**Working today:** framework import → real inference chat (playground);
-marketplace publish/install with exactly-once per-request metering; the
-four payment rails above; scheduler, orchestration, workflow-graph, RAG and
-monitoring engines; 2FA-gated auth; public per-product receipts pages.
-
-**Not yet:** mainnet (devnet only); public users (pre-launch); per-framework
-runtime container images and training containers are not yet published, so
-GPU agent hosting and fine-tuning jobs refuse until they land — that is the
-current milestone. See [`docs/NOSANA-GRANT-APPLICATION.md`](docs/NOSANA-GRANT-APPLICATION.md)
-for the funded plan.
+One design rule holds across the codebase: **features never simulate
+success** — anything unconfigured or unfinished returns an honest `501`
+with a named reason, so what you see working is working.
 
 ## Architecture
 
@@ -149,9 +136,9 @@ agent treasury ─► pay_nosana ─► GPU host operator (proven)
 
 ## Roadmap
 
-1. **Public launch + first users** — mainnet cutover (runtime containers,
-   payments, receipts), production URL, first external creators via
-   builders/content bounties.
+1. **Public launch + first users** *(current)* — mainnet cutover (publish
+   the runtime containers; payments, payouts and receipts to mainnet),
+   production URL, first external creators via builders/content bounties.
 2. **Fine-tuning + SLM serving** — LoRA/QLoRA batch jobs on Nosana markets;
    fine-tuned models served per-request via x402.
 3. **The self-sustaining loop at scale** — products paying 100% of their own

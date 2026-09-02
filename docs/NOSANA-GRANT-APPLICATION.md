@@ -191,25 +191,32 @@ $30,000
 
 ## How do you plan to utilize the grant funds?
 
-Four uses, each tied to a milestone: (1) **Development** — full-time founder
-work taking the proven devnet loop to mainnet: publishing the per-framework
-agent runtime containers and the training containers, and running the first
-production workloads on paid Nosana hosts. (2) **Security** — an independent
+Four uses, each tied to a milestone: (1) **Development** — founder-led
+engineering taking the proven devnet loop to mainnet: publishing the
+per-framework agent runtime containers and the training containers, sealed
+installs, and the creator onboarding flow. (2) **Security** — an independent
 review of our two Anchor programs (agent-treasury, reputation-oracle) before
 real funds flow through them at scale; they move money, so they get audited
-first. (3) **Compute** — Nosana GPU spend for our reference products and
-fine-tuning runs; this portion of the grant flows directly back to Nosana
-host operators as paid jobs. (4) **Launch** — production deployment,
-contract frontend help for creator onboarding, and operational costs (RPC,
-storage, monitoring).
+first. (3) **Compute — the platform serves models itself.** From launch,
+WheelsAI runs baseline chat and embedding models for its users, keeps
+reference products running 24/7, and executes fine-tuning runs — all as
+paid, per-second Nosana jobs. This portion of the grant flows directly back
+to Nosana host operators. (4) **Infrastructure & launch** — production
+hosting for the API and web app, managed Postgres/Redis, S3-compatible
+object storage for datasets and model artifacts, RPC endpoints, monitoring
+and alerting, plus contract frontend/design work for creator onboarding.
 
 ## Budget Overview
 
-- Founder, full-time, 6 months: $12,000
+- Core development (founder-led engineering through the three milestones): $10,000
 - Independent security review of the two on-chain programs (pre-mainnet): $8,000
-- Nosana GPU spend + mainnet operations (RPC, hosting, storage, monitoring): $4,000
-- Contract frontend/design engineering (creator onboarding surfaces): $4,000
-- Contingency and operational/legal costs: $2,000
+- Nosana GPU compute — platform-served models (baseline chat + embeddings),
+  reference products running 24/7, and fine-tuning runs: $5,000
+- Platform infrastructure: production hosting (API + web), managed
+  Postgres/Redis, S3-compatible object storage for datasets and model
+  artifacts, RPC endpoints, monitoring/alerting, domains: $4,000
+- Contract frontend/design engineering (creator onboarding surfaces): $2,000
+- Contingency and operational/legal costs: $1,000
 
 **Total: $30,000.** If GPU credits are provided through the program's support
 track, the compute line shifts into development and security.

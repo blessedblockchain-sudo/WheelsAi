@@ -1,3 +1,20 @@
+The sequence turns proven engineering into compounding Nosana demand. M1
+exists because a proven system sitting on devnet earns nobody anything —
+launch and acquisition come first, and the bounty rounds make the first
+cohort costed and measurable instead of hoped for. M2 adds the most
+GPU-intensive workload class (training) and our margin engine (serving
+fine-tuned SLMs per-token on per-second GPUs), multiplying GPU demand per
+user. M3 is the durability proof: a product that pays for its own compute
+out of its own revenue is recurring Nosana demand that outlives the grant —
+the difference between funding a demo and funding a permanent demand source
+for the network. The feature list is the shortest path through those
+milestones; sealed installs is the one non-obvious priority, and it exists
+because we scrutinized our own revenue model: without it, per-request
+revenue does not reliably recur, and the creator side of the market erodes.
+Every milestone is acceptance-testable with artifacts the committee can
+verify without trusting us: transaction signatures, public receipts pages,
+and a live product URL.
+
 # Nosana Grants Program — Application Text
 
 **Program:** Nosana Grants ($5,000–$50,000, non-dilutive, milestone-released)
@@ -256,23 +273,30 @@ is a recurring, per-second-metered job on their GPUs, paid on-chain.
 
 ## Describe three major milestones that you plan to achieve within six months of starting your project.
 
-**M1 (months 1–2): Mainnet on Nosana.** Publish the agent runtime containers
-and training containers; run at least 3 reference products 24/7 on real,
-paid mainnet Nosana hosts; `pay_nosana` host payments and usage attestations
-live on mainnet with public receipts pages. *Acceptance: verifiable on-chain
-signatures + public receipt URLs.*
+**M1 (months 1–2): Public launch + first users.** The build is largely
+proven; this milestone takes it public. Mainnet cutover of the proven rails
+(runtime containers published; payments, payouts and receipts live on
+mainnet), production deployment at a public URL, and the security review
+underway — then acquisition starts immediately: builders bounty round 1 and
+content season 1 on Superteam Earn. *Acceptance: live product URL, ≥ 10
+external products deployed with public receipts pages, and the first real
+creator payout — transaction signature included.*
 
-**M2 (months 3–4): Public launch + first external creators.** Production
-deployment on a public URL; independent security review of both programs
-completed; the first 10–20 external creators onboarded; first real creator
-payout settled on mainnet. *Acceptance: live product URL + the payout
-transaction signature.*
+**M2 (months 3–4): Fine-tuning + SLM serving live.** Training containers on
+Nosana markets; LoRA/QLoRA batch jobs running; fine-tuned models deployable
+behind the OpenAI-compatible endpoint with per-request x402 payment. The
+"best fine-tuned SLM" challenge bounty runs here — every entry is paid
+Nosana training jobs. *Acceptance: a paid fine-tune job and a paid inference
+request against its output model, both on Nosana, both receipted.*
 
-**M3 (months 5–6): Fine-tuning and SLM serving live.** LoRA/QLoRA batch
-jobs running on Nosana markets; fine-tuned models deployable behind the
-OpenAI-compatible endpoint with per-request x402 payment. *Acceptance: a
-paid fine-tune job and a paid inference request against its output model,
-both on Nosana, both receipted.*
+**M3 (months 5–6): The self-sustaining loop at scale.** Products paying for
+their own Nosana compute out of their own earnings on mainnet — treasury
+auto top-ups, no human in the loop — with distribution expanded (chat
+channels 3 → 10) so hosted products meet users where they are, and a public
+growth report: products live, GPU-hours billed, total paid to Nosana host
+operators, every figure receipted. *Acceptance: at least one product
+covering 100% of its compute from its own revenue for 30 consecutive days,
+plus the published report.*
 
 ## Describe which product-level features will be prioritized during the development of your project.
 

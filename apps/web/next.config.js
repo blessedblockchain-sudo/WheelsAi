@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  output: "standalone",
+  // standalone feeds the Fly/Docker image; Netlify's Next runtime requires
+  // the default output, so its build env sets NEXT_DISABLE_STANDALONE=1.
+  output: process.env.NEXT_DISABLE_STANDALONE === "1" ? undefined : "standalone",
   transpilePackages: ["@wheelsai/shared", "@wheelsai/types"],
   async headers() {
     return [

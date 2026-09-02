@@ -69,8 +69,8 @@ publish a clean public mirror (roadmap item C3).
 
 ## Project Website
 
-Leave blank, or: "Staging deployment in progress; local-first development,
-full deploy runbook written (docs/DEPLOY-RUNBOOK.md)."
+https://wheelsai.netlify.app (landing + marketplace shell; the API/backend
+gets its public URL at milestone 1's mainnet cutover)
 
 ## Demo Link
 
@@ -342,7 +342,7 @@ denominated in on-chain, publicly verifiable artifacts rather than reports.
 ## Pre-submit checklist
 
 - [ ] Public repo link (GitLab visibility flip after history scan, or clean mirror)
-- [ ] 2-minute demo recording uploaded (servers: web :3002, api :4000)
+- [ ] 2-minute demo recording uploaded (run servers locally; landing already live at wheelsai.netlify.app)
 - [ ] Rebuilt pitch deck attached and consistent with this text
 - [ ] `[YOU]` fields answered: funding history, team, start date, Twitter
 - [ ] Deck contact slide: remove suspended GitHub link

@@ -1,0 +1,15 @@
+# Netlify hosting for apps/web (landing + marketplace shell).
+# Monorepo: install runs at the repo root (npm workspaces), build targets
+# the web workspace. The API is NOT hosted here — NEXT_PUBLIC_API_URL stays
+# unset until the API has a public URL, and the landing page needs none.
+
+[build]
+  command = "npm run build -w @wheelsai/web"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NEXT_DISABLE_STANDALONE = "1"
+  NODE_VERSION = "22"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

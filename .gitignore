@@ -71,3 +71,7 @@ apps/api/*.debug.ts
 
 # Devnet-only throwaway keypairs (D10 smoke test)
 .devnet/
+
+# Netlify CLI state + deno artifacts
+.netlify/
+deno.lock

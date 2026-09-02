@@ -201,25 +201,35 @@ first. (3) **Compute — the platform serves models itself.** From launch,
 WheelsAI runs baseline chat and embedding models for its users, keeps
 reference products running 24/7, and executes fine-tuning runs — all as
 paid, per-second Nosana jobs. This portion of the grant flows directly back
-to Nosana host operators. (4) **Infrastructure & launch** — production
-hosting for the API and web app, managed Postgres/Redis, S3-compatible
-object storage for datasets and model artifacts, RPC endpoints, monitoring
-and alerting, plus contract frontend/design work for creator onboarding.
+to Nosana host operators. (4) **Infrastructure & community** — production hosting
+for the API and web app, managed Postgres/Redis, S3-compatible object
+storage for datasets and model artifacts, RPC endpoints, monitoring and
+alerting — plus structured user acquisition through Superteam Earn bounty
+seasons that reward verified usage (deployed products with live receipts
+pages) and creator content, so the first cohort of users is costed and
+measurable rather than hoped for.
 
 ## Budget Overview
 
-- Core development (founder-led engineering through the three milestones): $10,000
-- Independent security review of the two on-chain programs (pre-mainnet): $8,000
 - Nosana GPU compute — platform-served models (baseline chat + embeddings),
-  reference products running 24/7, and fine-tuning runs: $5,000
+  reference products running 24/7, and fine-tuning runs: $10,000
+- Independent security review of the two on-chain programs (pre-mainnet): $8,000
+- Community growth via Superteam Earn bounties: $5,000 — three "first users"
+  bounty seasons ($1,000 each) rewarding verified usage (a deployed product
+  with a live receipts page — not sign-ups), three content bounty seasons
+  ($500 each: demos, tutorials, integration guides), and design/dev
+  micro-bounties ($500)
 - Platform infrastructure: production hosting (API + web), managed
   Postgres/Redis, S3-compatible object storage for datasets and model
-  artifacts, RPC endpoints, monitoring/alerting, domains: $4,000
-- Contract frontend/design engineering (creator onboarding surfaces): $2,000
+  artifacts, RPC endpoints, monitoring/alerting, domains: $3,500
+- Core development (founder allocation): $2,500
 - Contingency and operational/legal costs: $1,000
 
-**Total: $30,000.** If GPU credits are provided through the program's support
-track, the compute line shifts into development and security.
+**Total: $30,000.** Over 80% of the budget goes outward — to Nosana host
+operators, an independent auditor, community bounties, and infrastructure;
+the founder allocation is deliberately minimal. If GPU credits are provided
+through the program's support track, the compute line shifts into
+development and security.
 
 ## Describe the profile of your end users, their needs, and how those needs are fulfilled by your project.
 

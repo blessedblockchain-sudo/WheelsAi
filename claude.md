@@ -1,6 +1,10 @@
 # WheelsAI — Technical Architecture & Execution Plan
 
-> **Living document for building WheelsAI from zero to production**
+> **HISTORICAL (2026-09-02):** the original day-one architecture and
+> execution plan, preserved as-is. Much of it has since been built,
+> revised, or superseded — the current state of the project is
+> [README.md](README.md); the audit that reshaped the last two months is
+> [docs/UI-MATCHUP-AUDIT.md](docs/UI-MATCHUP-AUDIT.md).
 > Last updated: 2026-01-06
 
 ---

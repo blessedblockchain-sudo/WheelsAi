@@ -1,5 +1,16 @@
 # WheelsAI Remediation — Detailed Execution Spec
 
+> **STATUS (2026-09-02): HISTORICAL — this plan has been executed.**
+> This is the June 2026 audit spec, preserved as the record of what was
+> found and fixed. The present-tense findings below ("live fund-loss
+> endpoints", "the closed loop cannot run end-to-end", "CI has never run")
+> describe the codebase **before** remediation. Since then: the fund-loss
+> P0s are closed, the closed loop is proven end-to-end on devnet
+> ([docs/D10-RUN.md](docs/D10-RUN.md)), four payment rails carry written
+> proof runs (`docs/*-RUN.md`), the unit suite is at 1,666 tests, and the
+> origin of record moved from GitHub to GitLab. The current state of the
+> project is described in [README.md](README.md).
+
 **Audience:** an implementing model (Opus 4.8) with no prior context. Everything needed is in this document plus the repo at `/home/bprime/Bounties/WheelsAi`. Findings below were produced by a 56-agent deep review (June 2026) and the P0/P1s were adversarially re-verified against the code — but ALWAYS re-read the cited file before editing; line numbers drift.
 
 ## Context

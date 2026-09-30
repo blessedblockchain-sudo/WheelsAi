@@ -4,6 +4,11 @@ import nacl from "tweetnacl";
 import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
 import { Redis } from "ioredis";
+import {
+  createAttemptLimiter,
+  LOGIN_POLICY,
+  TWO_FACTOR_POLICY,
+} from "../lib/attemptLimiter.js";
 
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
@@ -52,10 +57,26 @@ redisClient.on("error", (err) => {
   logger.error({ err }, "Redis client error");
 });
 
+// lazyConnect keeps imports (and unit tests) from opening a socket, but with
+// the offline queue disabled the FIRST command after boot failed with
+// "Stream isn't writeable": the first wallet login after every deploy
+// errored and the first blocklist check failed open. Connect on first use.
+let connecting: Promise<void> | null = null;
+async function redis(): Promise<Redis> {
+  if (redisClient.status === "wait") {
+    connecting ??= redisClient.connect().catch((err) => {
+      connecting = null;
+      throw err;
+    });
+  }
+  if (connecting && redisClient.status !== "ready") await connecting;
+  return redisClient;
+}
+
 export async function generateNonce(walletAddress: string): Promise<string> {
   const nonce = `WheelsAI authentication request.\n\nWallet: ${walletAddress}\nNonce: ${nanoid(32)}\nTimestamp: ${Date.now()}`;
   try {
-    await redisClient.set(`${NONCE_PREFIX}${walletAddress}`, nonce, "EX", NONCE_TTL_SECONDS);
+    await (await redis()).set(`${NONCE_PREFIX}${walletAddress}`, nonce, "EX", NONCE_TTL_SECONDS);
   } catch (err) {
     logger.error({ err, walletAddress }, "Failed to store nonce in Redis");
     throw new Error("Nonce storage unavailable, please try again");
@@ -65,7 +86,7 @@ export async function generateNonce(walletAddress: string): Promise<string> {
 
 export async function getNonce(walletAddress: string): Promise<string | null> {
   try {
-    return await redisClient.get(`${NONCE_PREFIX}${walletAddress}`);
+    return await (await redis()).get(`${NONCE_PREFIX}${walletAddress}`);
   } catch (err) {
     logger.error({ err, walletAddress }, "Failed to retrieve nonce from Redis");
     return null;
@@ -74,7 +95,7 @@ export async function getNonce(walletAddress: string): Promise<string | null> {
 
 export async function consumeNonce(walletAddress: string): Promise<boolean> {
   try {
-    const deleted = await redisClient.del(`${NONCE_PREFIX}${walletAddress}`);
+    const deleted = await (await redis()).del(`${NONCE_PREFIX}${walletAddress}`);
     return deleted > 0;
   } catch (err) {
     logger.error({ err, walletAddress }, "Failed to delete nonce from Redis");
@@ -366,7 +387,7 @@ const JWT_BLOCKLIST_PREFIX = "jwt:blocked:";
 
 export async function blockJwt(jti: string, expiresInSeconds: number): Promise<void> {
   try {
-    await redisClient.set(
+    await (await redis()).set(
       `${JWT_BLOCKLIST_PREFIX}${jti}`,
       "1",
       "EX",
@@ -379,7 +400,7 @@ export async function blockJwt(jti: string, expiresInSeconds: number): Promise<v
 
 export async function isJwtBlocked(jti: string): Promise<boolean> {
   try {
-    const result = await redisClient.get(`${JWT_BLOCKLIST_PREFIX}${jti}`);
+    const result = await (await redis()).get(`${JWT_BLOCKLIST_PREFIX}${jti}`);
     return result !== null;
   } catch (err) {
     logger.error({ err, jti }, "Failed to check JWT blocklist");
@@ -393,3 +414,24 @@ export interface ApiKeyPayload {
   orgId: string;
   scopes: string[];
 }
+
+// ============================================
+// Per-subject authentication failure caps
+// ============================================
+
+const attemptStore = {
+  incr: async (key: string) => (await redis()).incr(key),
+  expire: async (key: string, seconds: number) => (await redis()).expire(key, seconds),
+  get: async (key: string) => (await redis()).get(key),
+  del: async (key: string) => (await redis()).del(key),
+};
+
+const reportLimiterError = (err: unknown) =>
+  logger.error({ err }, "Auth attempt limiter unavailable; per-IP limits still apply");
+
+export const loginAttempts = createAttemptLimiter(attemptStore, LOGIN_POLICY, reportLimiterError);
+export const twoFactorAttempts = createAttemptLimiter(
+  attemptStore,
+  TWO_FACTOR_POLICY,
+  reportLimiterError,
+);

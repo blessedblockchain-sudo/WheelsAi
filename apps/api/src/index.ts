@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { Redis } from "ioredis";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -130,7 +131,11 @@ async function main() {
 
   const app = Fastify({
     logger: logger as any,
-    trustProxy: true,
+    // Trust exactly the proxies in front of us (Fly's edge = 1 hop). With
+    // `true`, request.ip was the LEFTMOST X-Forwarded-For entry, which the
+    // client writes, so every per-IP rate limit could be bypassed by
+    // rotating that header.
+    trustProxy: env.TRUST_PROXY_HOPS,
   });
 
   if (sentryEnabled) {
@@ -149,9 +154,27 @@ async function main() {
     contentSecurityPolicy: false,
   });
 
+  // Counters live in Redis so limits hold across machines (an in-memory
+  // store gave each machine its own budget). If Redis is unreachable the
+  // limiter lets requests through rather than taking the API down.
+  const rateLimitRedis = new Redis(env.REDIS_URL, {
+    connectTimeout: 2000,
+    maxRetriesPerRequest: 1,
+    enableOfflineQueue: false,
+  });
+  rateLimitRedis.on("error", (err) =>
+    createLogger("rate-limit").warn({ err }, "rate-limit Redis error"),
+  );
+  app.addHook("onClose", async () => {
+    rateLimitRedis.disconnect();
+  });
   await app.register(rateLimit, {
     max: 100,
     timeWindow: "1 minute",
+    redis: rateLimitRedis,
+    nameSpace: "wheelsai-rl:",
+    skipOnError: true,
+    keyGenerator: (request) => request.ip,
   });
 
   await app.register(sensible);

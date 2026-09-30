@@ -16,6 +16,10 @@ const envSchema = z.object({
 
   // Redis
   REDIS_URL: z.string().default("redis://localhost:6379"),
+  // Number of reverse proxies in front of the API whose X-Forwarded-For
+  // entries are trusted (Fly's edge = 1). The client IP is taken that many
+  // hops from the right, never the attacker-controlled leftmost entry.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
 
   // Auth
   JWT_SECRET: z.string().min(32),

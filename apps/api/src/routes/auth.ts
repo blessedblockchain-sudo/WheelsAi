@@ -23,7 +23,7 @@ import {
   setAuthCookie,
   clearAuthCookie,
 } from "../middleware/auth.js";
-import { blockJwt } from "../services/auth.js";
+import { blockJwt, loginAttempts, twoFactorAttempts } from "../services/auth.js";
 import { createChallenge, validateChallenge } from "../services/twoFactor.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -123,9 +123,21 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/login", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } }, schema: { tags: ["Auth"], description: "Login with email and password", body: { type: "object", properties: { email: { type: "string" }, password: { type: "string" } }, required: ["email", "password"] } } }, async (request, reply) => {
     const body = loginSchema.parse(request.body);
 
+    // Per-account cap on top of the per-IP limit: guesses spread across
+    // many IPs still stop at LOGIN_POLICY.maxFailures per window.
+    if (await loginAttempts.isLocked(body.email)) {
+      return reply.status(429).send({
+        error: "too_many_attempts",
+        message: "Too many failed sign-in attempts. Try again in 15 minutes.",
+      });
+    }
+
     // Find user
     const user = await findUserByEmail(body.email);
     if (!user || !user.passwordHash) {
+      // Counted for unknown emails too, so lockout timing can't reveal
+      // which addresses have accounts.
+      await loginAttempts.recordFailure(body.email);
       return reply.status(401).send({
         error: "Unauthorized",
         message: "Invalid email or password",
@@ -135,11 +147,13 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     // Verify password
     const valid = await verifyPassword(user.passwordHash, body.password);
     if (!valid) {
+      await loginAttempts.recordFailure(body.email);
       return reply.status(401).send({
         error: "Unauthorized",
         message: "Invalid email or password",
       });
     }
+    await loginAttempts.clear(body.email);
 
     // Get primary organization
     const primaryMembership = user.memberships.find((m) => m.role === "owner");
@@ -231,11 +245,22 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         })
         .parse(request.body);
 
+      // A challenge allows TWO_FACTOR_POLICY.maxFailures wrong codes in
+      // total, however many IPs they come from; then the user signs in again.
+      if (await twoFactorAttempts.isLocked(body.challengeToken)) {
+        return reply.status(429).send({
+          error: "too_many_attempts",
+          message: "Too many incorrect codes. Please sign in again.",
+        });
+      }
+
       let userId: string;
       try {
         const result = await validateChallenge(body.challengeToken, body.token);
         userId = result.userId;
+        await twoFactorAttempts.clear(body.challengeToken);
       } catch (err) {
+        await twoFactorAttempts.recordFailure(body.challengeToken);
         // Invalid / expired / already-used challenge, or a wrong code.
         // One shape for all of them — don't tell an attacker which.
         logger.warn(

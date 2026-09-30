@@ -40,6 +40,8 @@ export default function SettingsPage() {
   // Form state
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
+  const [emailPassword, setEmailPassword] = useState("");
+  const [sendingVerification, setSendingVerification] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -67,8 +69,18 @@ export default function SettingsPage() {
   async function handleSaveProfile() {
     setIsSaving(true);
     try {
-      await settingsApi.updateProfile({ displayName, email });
-      toast.success("Profile updated");
+      const emailChanged = email.trim().toLowerCase() !== (profile?.email ?? "").toLowerCase();
+      const res = await settingsApi.updateProfile({
+        displayName,
+        ...(emailChanged ? { email, currentPassword: emailPassword || undefined } : {}),
+      });
+      setProfile(res.profile);
+      setEmailPassword("");
+      toast.success(
+        emailChanged && res.verificationSent
+          ? `Profile updated. We sent a verification link to ${res.profile.email}.`
+          : "Profile updated"
+      );
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to update profile"));
     } finally {
@@ -221,14 +233,48 @@ export default function SettingsPage() {
                       onChange={(e) => setEmail(e.target.value)}
                       className="mt-1"
                     />
-                    {profile?.emailVerified ? (
-                      <p className="mt-1 text-sm text-green-600">Verified</p>
-                    ) : (
-                      <p className="mt-1 text-sm text-yellow-600">
+                    {email.trim().toLowerCase() !== (profile?.email ?? "").toLowerCase() ? (
+                      <div className="mt-3">
+                        <label className="block text-sm font-medium text-foreground" htmlFor="email-current-password">
+                          Current password
+                        </label>
+                        <Input
+                          id="email-current-password"
+                          type="password"
+                          autoComplete="current-password"
+                          value={emailPassword}
+                          onChange={(e) => setEmailPassword(e.target.value)}
+                          className="mt-1"
+                        />
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Required to change the email on an account with a password.
+                        </p>
+                      </div>
+                    ) : profile?.emailVerified ? (
+                      <p className="mt-1 text-sm text-green-500">Verified</p>
+                    ) : profile?.email ? (
+                      <p className="mt-1 text-sm text-yellow-500">
                         Not verified.{" "}
-                        <button className="underline">Send verification email</button>
+                        <button
+                          type="button"
+                          className="underline disabled:opacity-60"
+                          disabled={sendingVerification}
+                          onClick={async () => {
+                            setSendingVerification(true);
+                            try {
+                              await authApi.requestEmailVerification();
+                              toast.success(`Verification link sent to ${profile.email}`);
+                            } catch (err) {
+                              toast.error(getErrorMessage(err, "Could not send the verification email"));
+                            } finally {
+                              setSendingVerification(false);
+                            }
+                          }}
+                        >
+                          Send verification email
+                        </button>
                       </p>
-                    )}
+                    ) : null}
                   </div>
 
                   <div>

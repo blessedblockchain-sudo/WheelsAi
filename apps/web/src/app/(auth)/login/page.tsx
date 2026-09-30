@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { authApi, ApiError, getErrorMessage, isTwoFactorChallenge } from "@/lib/api";
+import { safeNextPath, withNext } from "@/lib/safe-next";
 import { WalletAuthButton } from "@/components/auth/wallet-auth-button";
 
 interface LoginForm {
@@ -18,17 +19,6 @@ interface LoginForm {
   password: string;
 }
 
-/**
- * Post-login destination. Honors ?next= from the dashboard middleware /
- * install CTAs, but only same-origin paths: must start with "/" and not
- * "//" (protocol-relative would be an open redirect).
- */
-function safeNextPath(): string {
-  if (typeof window === "undefined") return "/dashboard";
-  const next = new URLSearchParams(window.location.search).get("next");
-  if (next && next.startsWith("/") && !next.startsWith("//")) return next;
-  return "/dashboard";
-}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -171,9 +161,12 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <Label htmlFor="password">
-              Password
-            </Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password">Password</Label>
+              <Link href="/forgot-password" className="text-xs text-primary-600 hover:underline">
+                Forgot password?
+              </Link>
+            </div>
             <Input
               id="password"
               type="password"
@@ -206,7 +199,7 @@ export default function LoginPage() {
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
-          <Link href="/register" className="font-medium text-primary-600 hover:underline">
+          <Link href={withNext("/register")} className="font-medium text-primary-600 hover:underline">
             Sign up
           </Link>
         </p>

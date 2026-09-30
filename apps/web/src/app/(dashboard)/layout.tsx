@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { SolanaWalletProvider } from "@/components/providers/solana-wallet-provider";
 import { ThemeProvider } from "@/components/providers/theme-provider";
 import { BrandingProvider } from "@/components/providers/branding-provider";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
+import { VerifyEmailBanner } from "@/components/dashboard/verify-email-banner";
 
 export default function DashboardLayout({
   children,
@@ -14,6 +16,21 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const pathname = usePathname();
+
+  // The mobile drawer used to stay open over the page after navigating.
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mobileMenuOpen]);
 
   return (
     <ThemeProvider>
@@ -57,6 +74,7 @@ export default function DashboardLayout({
                   <span className="text-lg font-bold text-foreground">WheelsAI</span>
                 </div>
 
+                <VerifyEmailBanner />
                 <main className="flex-1 overflow-auto">{children}</main>
               </div>
             </div>

@@ -128,6 +128,7 @@ export interface User {
   id: string;
   email?: string;
   walletAddress?: string;
+  emailVerified?: boolean;
   createdAt: string;
 }
 
@@ -140,6 +141,8 @@ export interface AuthResponse {
   user: User;
   organization: Organization;
   token: string;
+  /** Registration only: whether the verification email went out. */
+  emailVerificationSent?: boolean;
 }
 
 /**
@@ -182,6 +185,31 @@ export const authApi = {
 
   logout: () =>
     api<{ message: string }>("/api/auth/logout", { method: "POST" }),
+
+  /** (Re)send the verification link to the signed-in user's email. */
+  requestEmailVerification: () =>
+    api<{ sent: boolean; alreadyVerified?: boolean }>("/api/auth/email/verify/request", {
+      method: "POST",
+    }),
+
+  /** Redeem a verification link; the first one grants the signup bonus. */
+  confirmEmail: (token: string) =>
+    api<{ verified: boolean; bonusGrantedCents: number }>("/api/auth/email/verify/confirm", {
+      method: "POST",
+      body: { token },
+    }),
+
+  forgotPassword: (email: string) =>
+    api<{ message: string }>("/api/auth/password/forgot", {
+      method: "POST",
+      body: { email },
+    }),
+
+  resetPassword: (token: string, password: string) =>
+    api<{ reset: boolean }>("/api/auth/password/reset", {
+      method: "POST",
+      body: { token, password },
+    }),
 
   me: () =>
     api<{ user: User; organization: Organization; authType: string }>(
@@ -703,8 +731,8 @@ export const settingsApi = {
   getProfile: () =>
     api<{ profile: UserProfile }>("/api/settings/profile"),
 
-  updateProfile: (updates: { displayName?: string; email?: string }) =>
-    api<{ profile: UserProfile }>("/api/settings/profile", {
+  updateProfile: (updates: { displayName?: string; email?: string; currentPassword?: string }) =>
+    api<{ profile: UserProfile; verificationSent?: boolean }>("/api/settings/profile", {
       method: "PATCH",
       body: updates,
     }),

@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { authApi, ApiError, getErrorMessage } from "@/lib/api";
+import { safeNextPath, withNext } from "@/lib/safe-next";
 import { WalletAuthButton } from "@/components/auth/wallet-auth-button";
 
 interface RegisterForm {
@@ -35,9 +36,13 @@ export default function RegisterPage() {
   async function onSubmit(data: RegisterForm) {
     setIsLoading(true);
     try {
-      await authApi.register(data.email, data.password);
-      toast.success("Account created! You have $5 in free credits.");
-      router.push("/dashboard");
+      const res = await authApi.register(data.email, data.password);
+      toast.success(
+        res.emailVerificationSent
+          ? "Account created. Check your email: verifying it adds your $5 in free credits."
+          : "Account created. Verify your email from the dashboard to add your $5 in free credits."
+      );
+      router.push(safeNextPath());
     } catch (error) {
       // Server-side validation messages ("Email already registered") are
       // shown verbatim; transport failures get a generic retry prompt.
@@ -126,7 +131,7 @@ export default function RegisterPage() {
 
         <div className="mt-4 rounded-lg bg-primary/10 p-4">
           <p className="text-sm text-primary-700">
-            <span className="font-semibold">$5 free credits</span> included with every new account
+            <span className="font-semibold">$5 free credits</span> with every new account, added when you verify your email
           </p>
         </div>
 
@@ -145,7 +150,7 @@ export default function RegisterPage() {
 
         <p className="mt-6 text-center text-sm text-muted-foreground">
           Already have an account?{" "}
-          <Link href="/login" className="font-medium text-primary-600 hover:underline">
+          <Link href={withNext("/login")} className="font-medium text-primary-600 hover:underline">
             Sign in
           </Link>
         </p>

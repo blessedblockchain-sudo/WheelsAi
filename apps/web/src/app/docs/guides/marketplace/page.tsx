@@ -1,0 +1,189 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+
+import { CodeBlock } from "@/components/marketing/code-block";
+import { DocPage } from "@/components/marketing/docs/doc-page";
+import { Callout, DocTable } from "@/components/marketing/prose";
+
+export const metadata: Metadata = {
+  title: "Publish to the marketplace",
+  description:
+    "List a WheelsAI agent on the marketplace, choose free, per-request, monthly or tokenized pricing, understand the 90/10 revenue split, installs and payouts.",
+};
+
+const toc = [
+  { id: "publish", title: "Publish a listing" },
+  { id: "pricing", title: "Pricing models" },
+  { id: "free", title: "Free", sub: true },
+  { id: "per-request", title: "Per request", sub: true },
+  { id: "monthly", title: "Monthly", sub: true },
+  { id: "tokenized", title: "Tokenized", sub: true },
+  { id: "split", title: "Revenue split" },
+  { id: "installs", title: "What buyers get" },
+  { id: "payouts", title: "Getting paid" },
+  { id: "receipts", title: "Public receipts" },
+];
+
+export default function MarketplaceGuidePage() {
+  return (
+    <DocPage
+      href="/docs/guides/marketplace"
+      title="Publish to the marketplace"
+      lead="Turn an agent into a product other teams can install. You choose how buyers pay; WheelsAI meters every use, keeps a ledger row for every cent, and pays out your share."
+      toc={toc}
+    >
+      <h2 id="publish">Publish a listing</h2>
+      <p>
+        In the dashboard go to <strong>Marketplace → Publish</strong> (<code>/dashboard/marketplace/publish</code>), pick one of
+        your agents, and fill in the listing: a title (3 to 100 characters), a short description (10 to 280), an optional long
+        description, README, icon and screenshots, a category (customer support, coding, research, automation, creative or other)
+        and a pricing model. A listing starts as a draft; publishing makes it visible in the{" "}
+        <Link href="/marketplace">marketplace</Link>.
+      </p>
+      <p>The same flow over the API:</p>
+      <CodeBlock
+        language="bash"
+        code={`# 1. Create the listing (draft)
+curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "agentId": "'"$AGENT_ID"'",
+    "title": "Changelog Writer",
+    "shortDescription": "Turns merged pull requests into a readable changelog.",
+    "category": "coding",
+    "pricingModel": "per_request",
+    "pricePerRequestCents": 2
+  }'
+
+# 2. Publish it
+curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY"`}
+      />
+      <Callout title="Your secrets stay yours">
+        <p>
+          When a buyer installs your agent they get its prompt, tools, model settings and code, but never its environment
+          variables. Provider keys and bot tokens you set on the agent are not copied; buyers set their own.
+        </p>
+      </Callout>
+
+      <h2 id="pricing">Pricing models</h2>
+      <DocTable
+        caption="Marketplace pricing models"
+        columns={[
+          { key: "model", label: "Model" },
+          { key: "value", label: "API value" },
+          { key: "buyer", label: "What the buyer pays" },
+        ]}
+        rows={[
+          { model: "Free", value: <code>free</code>, buyer: "Nothing." },
+          {
+            model: "Per request",
+            value: <code>per_request</code>,
+            buyer: <>A fixed price per run, from 1 cent to $1,000 (<code>pricePerRequestCents</code>), charged from credits.</>,
+          },
+          {
+            model: "Monthly",
+            value: <code>monthly</code>,
+            buyer: <>A fixed price per 30-day period, from $1 (<code>monthlyPriceCents</code>), charged from credits.</>,
+          },
+          {
+            model: "Tokenized (token gated)",
+            value: <code>tokenized</code>,
+            buyer: "Free until the agent's token launches; after that, buyers must hold at least 1 of the token.",
+          },
+        ]}
+      />
+
+      <h3 id="free">Free</h3>
+      <p>
+        Anyone can install and run the agent. Installing still creates a licence: uninstalling ends it, and the buyer&apos;s copy
+        stops running.
+      </p>
+
+      <h3 id="per-request">Per request</h3>
+      <p>Every run of an installed per-request agent goes through three steps, each committed atomically:</p>
+      <ol>
+        <li>
+          <strong>Charge</strong> before the agent runs. The price is debited from the buyer&apos;s credits only if the balance
+          covers it, so concurrent requests cannot overdraw. A buyer who cannot pay gets <code>402</code> and nothing runs.
+        </li>
+        <li>
+          <strong>Settle</strong> after the answer is delivered: the revenue is recorded and your share accrues.
+        </li>
+        <li>
+          <strong>Refund</strong> if the run fails: the buyer is credited back and nobody earns from a failed request.
+        </li>
+      </ol>
+      <p>
+        This applies wherever the agent runs: playground chat (streaming or not), scheduled tasks, orchestrations, the test
+        runner and visual-builder graph runs. A graph run is billed once per run, not per step. A non-streaming chat response tells
+        the buyer what the request cost and how much went to you.
+      </p>
+
+      <h3 id="monthly">Monthly</h3>
+      <p>
+        Installing a monthly listing charges the first 30-day period from the buyer&apos;s credits in the same transaction as the
+        install. If the balance is too low the install fails with <code>402</code> and nothing is written. A renewal worker
+        charges each following period once. If a renewal cannot be paid the subscription goes <code>past_due</code> and is
+        retried during a 3-day grace period, then expires and suspends the install. Buyers can cancel (the subscription stops at
+        the end of the paid period) or resume, and uninstalling ends it immediately. A monthly install only runs while its
+        subscription grants access.
+      </p>
+
+      <h3 id="tokenized">Tokenized</h3>
+      <p>
+        A tokenized listing is free until its agent token launches. From then on, installing it and running the buyer&apos;s
+        copy (chat, graph runs, scheduled tasks, workflows and test runs) require a wallet linked to someone in the buyer&apos;s
+        organization to hold at least 1 token. Holdings are read from indexed on-chain balances. An install without the holding
+        answers <code>403</code> <code>token_required</code> with the token&apos;s symbol and mint address.
+      </p>
+      <p>The token itself can only be launched once the agent has earned it. The launch is checked at submit time for:</p>
+      <ul>
+        <li>a published marketplace listing,</li>
+        <li>
+          a reputation score of at least 50, built from attested usage (settled x402 payments lower the bar by one point each,
+          up to 25 points),
+        </li>
+        <li>at least 7 days since the agent was first deployed,</li>
+        <li>a creator wallet address, and no existing token.</li>
+      </ul>
+      <p>
+        The creator signs the launch in their own wallet; WheelsAI never holds the creator&apos;s keys. The creator&apos;s
+        allocation is locked for 30 days after launch. A tokenized agent gets an on-chain treasury (the{" "}
+        <code>agent-treasury</code> Solana program) that can pay for the agent&apos;s Nosana compute. Start from{" "}
+        <strong>Marketplace → Tokens → Create</strong>.
+      </p>
+
+      <h2 id="split">Revenue split</h2>
+      <p>
+        Creators keep <strong>90%</strong> of what buyers pay; the platform fee is <strong>10%</strong>. The split is computed in
+        whole cents so that the fee plus your share always equals exactly what the buyer paid.
+      </p>
+
+      <h2 id="installs">What buyers get</h2>
+      <p>
+        Installing creates a copy of the agent in the buyer&apos;s organization, linked to the install. Reinstalling reuses the
+        same copy. Uninstalling revokes the licence: the copy refuses to run (<code>403</code>) until it is reinstalled. Buyers
+        can leave a 1 to 5 star review with a title and text.
+      </p>
+
+      <h2 id="payouts">Getting paid</h2>
+      <p>
+        Your earnings accrue as a pending payout balance, visible under <strong>Marketplace → Revenue</strong>. Once it reaches
+        $10.00 you can request a payout as credits, USDC or SOL (crypto payouts need a destination address). One payout request
+        can be open at a time, and requesting a payout requires a signed-in owner or admin: API keys cannot request payouts, so a
+        leaked key cannot redirect your earnings. Crypto payouts are sent by a payout worker when payouts are enabled on the
+        server.
+      </p>
+
+      <h2 id="receipts">Public receipts</h2>
+      <p>
+        Every public agent has a transparency page at <code>/a/&#123;slug&#125;</code>. It shows the agent&apos;s treasury
+        balance, the compute it has paid for with transaction signatures you can open in a Solana explorer, its deployments and
+        enabled channels, and whether it currently clears the token-launch bar. Buyers can check it before installing. Read{" "}
+        <Link href="/blog/every-earning-has-a-receipt">why every earning on WheelsAI has a receipt</Link>.
+      </p>
+    </DocPage>
+  );
+}

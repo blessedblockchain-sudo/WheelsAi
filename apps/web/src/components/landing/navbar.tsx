@@ -14,11 +14,12 @@ export function Navbar() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  // "/#..." so the section links also work from pages other than home.
   const navLinks = [
-    { href: "#features", label: "Features" },
-    { href: "#how-it-works", label: "How It Works" },
-    { href: "#frameworks", label: "Frameworks" },
-    { href: "#pricing", label: "Pricing" },
+    { href: "/#features", label: "Features" },
+    { href: "/#how-it-works", label: "How It Works" },
+    { href: "/#frameworks", label: "Frameworks" },
+    { href: "/#pricing", label: "Pricing" },
     { href: "/marketplace", label: "Marketplace" },
   ];
 

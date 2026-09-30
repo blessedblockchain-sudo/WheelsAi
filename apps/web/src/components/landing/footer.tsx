@@ -5,11 +5,13 @@ const columns = [
   {
     title: "Product",
     links: [
-      { label: "Features", href: "#features" },
-      { label: "Pricing", href: "#pricing" },
+      // "/#..." so the section links also work from pages other than home.
+      { label: "Features", href: "/#features" },
+      { label: "Pricing", href: "/#pricing" },
       { label: "Explore Agents", href: "/marketplace" },
       { label: "Marketplace", href: "/marketplace" },
-      { label: "Templates", href: "/dashboard/templates" },
+      // Public gallery: /dashboard/templates bounces logged-out visitors to login.
+      { label: "Templates", href: "/templates" },
     ],
   },
   {
@@ -35,10 +37,14 @@ const columns = [
   {
     title: "Community",
     links: [
-      { label: "Discord", href: "#" },
-      { label: "Twitter", href: "#" },
-      { label: "GitHub", href: "#" },
-      { label: "Telegram", href: "#" },
+      // No public Discord, GitHub or Telegram exists yet, so these reach the
+      // team through the contact form. [FOUNDER: replace with the real
+      // Discord invite, public GitHub URL and Telegram link when they exist.]
+      { label: "Discord", href: "/contact?topic=other" },
+      // [FOUNDER: confirm the X handle is live] (from docs/NOSANA-GRANT-APPLICATION.md)
+      { label: "Twitter", href: "https://x.com/Wheels_Ai" },
+      { label: "GitHub", href: "/contact?topic=other" },
+      { label: "Telegram", href: "/contact?topic=other" },
     ],
   },
 ];

@@ -39,7 +39,7 @@
     "@wheelsai/db": "*",
     "@wheelsai/shared": "*",
     "@wheelsai/types": "*",
-    "argon2": "^0.31.2",
+    "argon2": "^0.45.1",
     "bs58": "^5.0.0",
     "bullmq": "^5.1.0",
     "dotenv": "^16.3.1",

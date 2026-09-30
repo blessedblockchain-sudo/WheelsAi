@@ -377,7 +377,7 @@ export const customerSupportAgent = new Agent({
   name: "customer-support-bot",
   instructions: \`You are a helpful and empathetic customer support agent.
 Resolve issues quickly and escalate when necessary.\`,
-  model: groq("llama-3.3-70b-versatile"),
+  model: groq("openai/gpt-oss-120b"),
   tools: {
     searchKnowledgeBase: {
       description: "Search the knowledge base for relevant articles",
@@ -521,7 +521,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_community.tools import DuckDuckGoSearchRun
 
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
+    model="openai/gpt-oss-120b",
     temperature=0.4,
     max_tokens=4096,
 )
@@ -604,7 +604,7 @@ export const contentWriterAgent = new Agent({
   instructions: \`You are a skilled content writer and marketing strategist.
 Create engaging, SEO-optimized content tailored to the brand voice and target audience.
 Always research trends before writing.\`,
-  model: groq("llama-3.3-70b-versatile"),
+  model: groq("openai/gpt-oss-120b"),
   tools: { trendResearchTool },
 });`,
     env: { GROQ_API_KEY: "", SERP_API_KEY: "" },
@@ -654,7 +654,7 @@ export const tradingSignalCharacter: Character = {
   modelProvider: ModelProviderName.GROQ,
   clients: [Clients.DIRECT],
   settings: {
-    model: "llama-3.3-70b-versatile",
+    model: "openai/gpt-oss-120b",
     temperature: 0.1,
     maxOutputTokens: 4096,
     secrets: {
@@ -729,7 +729,7 @@ Base all analysis on the provided market data. Include risk warnings.\`,
     sourceCode: `from crewai import Agent, Task, Crew, Process
 from langchain_groq import ChatGroq
 
-llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.5)
+llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5)
 
 # Specialist agents
 researcher = Agent(

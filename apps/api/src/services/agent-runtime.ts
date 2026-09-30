@@ -7,6 +7,10 @@
 
 import { createLogger } from "../utils/logger.js";
 import type { NosanaJobDefinition } from "./nosana.js";
+import {
+  DEFAULT_FREE_MODEL_ID,
+  freeModelProviderAndName,
+} from "../config/free-models.js";
 
 const logger = createLogger("agent-runtime");
 
@@ -144,7 +148,7 @@ function getRuntimeImage(framework: string): string {
  * Get external provider URL for a model identifier
  */
 function getExternalProviderUrl(modelId: string): string {
-  // Handle free/ prefix: free/groq/llama-3.3-70b → groq
+  // free/<provider>/<id> → <provider>
   let provider: string;
   if (modelId.startsWith("free/")) {
     const parts = modelId.split("/");
@@ -189,22 +193,35 @@ function shouldUseGpu(agent: AgentConfig["agent"]): boolean {
 // ============================================
 
 /**
+ * Split an agent's model id into provider + upstream model name.
+ * `free/...` ids resolve through the free-model catalog so a retired
+ * upstream model is fixed in one place; unknown free ids fall back to the
+ * default free model. Other ids are `provider/model`.
+ */
+export function resolveProviderModel(
+  externalModel: string | undefined,
+  fallback = "openai/gpt-4",
+): { provider: string; modelName: string } {
+  const id = externalModel || fallback;
+  if (id.startsWith("free/")) {
+    return (
+      freeModelProviderAndName(id) ??
+      freeModelProviderAndName(DEFAULT_FREE_MODEL_ID) ?? {
+        provider: "groq",
+        modelName: "openai/gpt-oss-120b",
+      }
+    );
+  }
+  const [provider, ...rest] = id.split("/");
+  return { provider: provider || "openai", modelName: rest.join("/") || "gpt-4" };
+}
+
+
+/**
  * Generate Mastra-specific agent configuration
  */
 export function generateMastraConfig(agent: AgentConfig["agent"]): Record<string, any> {
-  const externalModel = agent.modelConfig.externalModel || "openai/gpt-4";
-
-  // Handle free/ prefix: free/groq/llama-3.3-70b → provider: groq, name: llama-3.3-70b-versatile
-  let provider: string;
-  let modelName: string;
-  if (externalModel.startsWith("free/")) {
-    const parts = externalModel.split("/");
-    provider = parts[1] || "groq";
-    modelName = parts.slice(2).join("/") || "llama-3.3-70b-versatile";
-  } else {
-    provider = externalModel.split("/")[0] || "openai";
-    modelName = externalModel.split("/")[1] || "gpt-4";
-  }
+  const { provider, modelName } = resolveProviderModel(agent.modelConfig.externalModel);
 
   return {
     agent: {
@@ -277,6 +294,10 @@ export function generateAutoGenConfig(agent: AgentConfig["agent"]): Record<strin
  * Generate ElizaOS-specific agent configuration
  */
 export function generateElizaOSConfig(agent: AgentConfig["agent"]): Record<string, any> {
+  const { provider, modelName } = resolveProviderModel(
+    agent.modelConfig.externalModel,
+    DEFAULT_FREE_MODEL_ID,
+  );
   return {
     name: agent.name,
     bio: agent.systemPrompt ? [agent.systemPrompt] : [],
@@ -290,10 +311,10 @@ export function generateElizaOSConfig(agent: AgentConfig["agent"]): Record<strin
       post: [],
     },
     adjectives: [],
-    modelProvider: agent.modelConfig.externalModel?.split("/")[0] || "groq",
-    model: agent.modelConfig.externalModel?.split("/").slice(1).join("/") || "llama-3.3-70b-versatile",
+    modelProvider: provider,
+    model: modelName,
     settings: {
-      model: agent.modelConfig.externalModel || "groq/llama-3.3-70b-versatile",
+      model: `${provider}/${modelName}`,
       temperature: agent.modelConfig.temperature,
       maxOutputTokens: agent.modelConfig.maxTokens,
     },

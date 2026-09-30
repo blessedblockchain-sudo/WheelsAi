@@ -603,11 +603,13 @@ function PublishWizardContent() {
                         Token Gated
                       </label>
                       <p className="text-sm text-muted-foreground">
-                        Access requires holding your agent's token. Tokenize your agent
-                        on pump.fun to create a bonding curve token.
+                        Buyers need at least 1 of your agent&apos;s token, held in a
+                        wallet linked to their organization. Until you launch the
+                        token, the listing is free to install and run.
                       </p>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Requires: reputation score &ge; 50, agent uptime &ge; 7 days
+                        You can launch the token on pump.fun once the agent
+                        qualifies: reputation score &ge; 50 and 7 days of uptime.
                       </p>
                     </div>
                   </div>

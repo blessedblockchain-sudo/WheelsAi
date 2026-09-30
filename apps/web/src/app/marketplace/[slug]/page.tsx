@@ -237,6 +237,16 @@ export default function ListingDetailPage() {
         toast.error(getErrorMessage(error, "Not enough credits"), {
           action: { label: "Add credits", onClick: () => router.push("/dashboard/billing") },
         });
+      } else if (
+        error instanceof ApiError &&
+        (error.data as { error?: string } | null)?.error === "token_required"
+      ) {
+        toast.error(getErrorMessage(error, "This agent is token-gated"), {
+          duration: 12000,
+          action: tokenData
+            ? { label: `Get ${tokenData.symbol}`, onClick: () => setActiveTab("token") }
+            : { label: "Link a wallet", onClick: () => router.push("/dashboard/settings") },
+        });
       } else {
         toast.error(getErrorMessage(error, "Failed to install agent"));
       }
@@ -764,7 +774,7 @@ export default function ListingDetailPage() {
                         {listing.pricingModel === "per_request"
                           ? "Pay only for what you use"
                           : listing.pricingModel === "tokenized"
-                          ? "Hold tokens to access this agent"
+                          ? "Free until this agent's token launches, then for token holders"
                           : "Billed monthly"}
                       </p>
                     )}
@@ -836,6 +846,8 @@ export default function ListingDetailPage() {
                     ? "Installed as a private copy in your workspace."
                     : isMonthly
                     ? `Charges ${monthlyPrice} from your credits now and every 30 days. Cancel anytime from Installed Agents.`
+                    : hasToken
+                    ? `Requires at least 1 ${tokenData!.symbol} in a wallet linked to your organization.`
                     : "Installs a private copy of this agent into your workspace."
                   : "Sign in to install this agent to your account."}
               </p>

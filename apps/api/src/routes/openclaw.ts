@@ -16,6 +16,7 @@ import {
   removeChannel,
   SUPPORTED_PLATFORMS,
 } from "../services/openclaw.js";
+import type { TelegramWebhookResult } from "../services/telegramWebhook.js";
 
 const logger = createLogger("openclaw-routes");
 
@@ -89,13 +90,15 @@ function toModelConfig(value: unknown): Record<string, unknown> {
   return {};
 }
 
-function serializeChannel(channel: ChannelRecord) {
+function serializeChannel(channel: ChannelRecord & { webhook?: TelegramWebhookResult }) {
   return {
     id: channel.id,
     platform: channel.platform,
     enabled: channel.enabled,
     createdAt: channel.createdAt,
     updatedAt: channel.updatedAt,
+    // Telegram only: whether Telegram now delivers to this deployment.
+    ...(channel.webhook && { webhook: channel.webhook }),
   };
 }
 

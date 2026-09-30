@@ -3,6 +3,11 @@ import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
 import { openJson, sealJson } from "../lib/secretBox.js";
 import { getNosanaClient, type NosanaJobDefinition } from "./nosana.js";
+import {
+  registerTelegramWebhook,
+  unregisterTelegramWebhook,
+  type TelegramWebhookResult,
+} from "./telegramWebhook.js";
 
 const logger = createLogger("openclaw-service");
 
@@ -247,6 +252,22 @@ export async function createDeployment(params: CreateDeploymentParams) {
     agentId: result.agentId,
   });
 
+  // Telegram only delivers once the bot is pointed at us. A refusal here
+  // leaves the channel saved; saving it again retries the registration.
+  for (const channel of channels) {
+    if (channel.platform !== "telegram") continue;
+    await registerTelegramWebhook({
+      botToken: String(channel.config.botToken ?? ""),
+      deploymentId: result.id,
+      publicApiUrl: env.PUBLIC_API_URL,
+    }).catch((err) =>
+      logger.warn("Telegram webhook registration failed", {
+        deploymentId: result.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
+  }
+
   return result;
 }
 
@@ -400,6 +421,17 @@ export async function addChannel(
     throw new Error(`Unsupported platform: ${params.platform}`);
   }
 
+  // Register with Telegram first: a token Telegram refuses is reported
+  // now instead of being saved as a channel that never receives anything.
+  let webhook: TelegramWebhookResult | undefined;
+  if (params.platform === "telegram") {
+    webhook = await registerTelegramWebhook({
+      botToken: String(params.config.botToken ?? ""),
+      deploymentId,
+      publicApiUrl: env.PUBLIC_API_URL,
+    });
+  }
+
   const channel = await prisma.openClawChannel.create({
     data: {
       deploymentId,
@@ -411,7 +443,7 @@ export async function addChannel(
 
   logger.info("Channel added", { channelId: channel.id, platform: params.platform });
 
-  return channel;
+  return { ...channel, webhook };
 }
 
 interface UpdateChannelParams {
@@ -424,7 +456,13 @@ export async function updateChannel(
   orgId: string,
   params: UpdateChannelParams
 ) {
-  logger.info("Updating channel", { channelId, orgId, params });
+  // Never log `params.config`: it holds bot tokens and signing secrets.
+  logger.info("Updating channel", {
+    channelId,
+    orgId,
+    configChanged: params.config !== undefined,
+    enabled: params.enabled,
+  });
 
   // Verify ownership through deployment
   const channel = await prisma.openClawChannel.findUnique({
@@ -452,6 +490,22 @@ export async function updateChannel(
     updateData.enabled = params.enabled;
   }
 
+  let webhook: TelegramWebhookResult | undefined;
+  if (channel.platform === "telegram") {
+    const current = decryptConfig(channel.configEncrypted);
+    const botToken = String((params.config ?? current).botToken ?? "");
+    const enabled = params.enabled ?? channel.enabled;
+    if (enabled) {
+      webhook = await registerTelegramWebhook({
+        botToken,
+        deploymentId: channel.deploymentId,
+        publicApiUrl: env.PUBLIC_API_URL,
+      });
+    } else {
+      await unregisterTelegramWebhook({ botToken });
+    }
+  }
+
   const updated = await prisma.openClawChannel.update({
     where: { id: channelId },
     data: updateData,
@@ -459,7 +513,7 @@ export async function updateChannel(
 
   logger.info("Channel updated", { channelId });
 
-  return updated;
+  return { ...updated, webhook };
 }
 
 export async function removeChannel(channelId: string, orgId: string) {
@@ -479,6 +533,11 @@ export async function removeChannel(channelId: string, orgId: string) {
 
   if (!channel || channel.deployment.agent.orgId !== orgId) {
     throw new Error("Channel not found or access denied");
+  }
+
+  if (channel.platform === "telegram") {
+    const config = decryptConfig(channel.configEncrypted);
+    await unregisterTelegramWebhook({ botToken: String(config.botToken ?? "") });
   }
 
   await prisma.openClawChannel.delete({

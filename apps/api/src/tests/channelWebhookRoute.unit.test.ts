@@ -211,8 +211,8 @@ test("channel webhook route enqueues a valid Telegram text message", async () =>
       text: "gm",
     },
   });
-  const secret = crypto.createHash("sha256").update(botToken).digest();
-  const signature = crypto.createHmac("sha256", secret).update(body).digest("hex");
+  const { telegramWebhookSecret } = await import("../services/channelAuth.js");
+  const secretToken = telegramWebhookSecret(botToken, "dep_tg");
   const enqueued: any[] = [];
   const app = await buildApp({
     resolveChannelConfig: async (): Promise<ChannelConfig> => ({
@@ -231,7 +231,7 @@ test("channel webhook route enqueues a valid Telegram text message", async () =>
     payload: body,
     headers: {
       "content-type": "application/json",
-      "x-telegram-signature": signature,
+      "x-telegram-bot-api-secret-token": secretToken,
     },
   });
   assert.equal(res.statusCode, 204);
@@ -240,7 +240,7 @@ test("channel webhook route enqueues a valid Telegram text message", async () =>
   assert.equal(enqueued[0].message.userName, "bob");
 });
 
-test("channel webhook route rejects a bad Telegram signature with 401", async () => {
+test("channel webhook route rejects a wrong Telegram secret token with 401", async () => {
   const botToken = "123456:TEST";
   const body = JSON.stringify({ update_id: 1, message: { message_id: 5, chat: { id: 1 }, from: { id: 2 }, text: "x" } });
   const enqueued: any[] = [];
@@ -260,7 +260,7 @@ test("channel webhook route rejects a bad Telegram signature with 401", async ()
     payload: body,
     headers: {
       "content-type": "application/json",
-      "x-telegram-signature": "deadbeef",
+      "x-telegram-bot-api-secret-token": "deadbeef",
     },
   });
   assert.equal(res.statusCode, 401);

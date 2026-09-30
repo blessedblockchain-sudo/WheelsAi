@@ -55,23 +55,37 @@ export function verifyDiscordSignature(input: DiscordVerifyInput): boolean {
 }
 
 // ============================================
-// Telegram — HMAC-SHA256 over body, keyed by SHA256(bot_token)
+// Telegram — webhook secret_token
 // ============================================
+//
+// Telegram does not sign webhook bodies. When a webhook is registered with
+// setWebhook({ secret_token }), every update carries that value in the
+// X-Telegram-Bot-Api-Secret-Token header. We derive the secret per
+// deployment from the bot token, so nothing extra is stored and a secret
+// for one deployment is useless against another.
+
+export function telegramWebhookSecret(botToken: string, deploymentId: string): string {
+  // 64 hex chars: inside Telegram's 1-256 [A-Za-z0-9_-] limit.
+  return crypto
+    .createHmac("sha256", botToken)
+    .update(`wheelsai:telegram-webhook:${deploymentId}`)
+    .digest("hex");
+}
 
 export interface TelegramVerifyInput {
   botToken: string;
-  body: string;
-  signature: string;
+  deploymentId: string;
+  /** The X-Telegram-Bot-Api-Secret-Token header. */
+  secretToken: string;
 }
 
-export function verifyTelegramSignature(input: TelegramVerifyInput): boolean {
+export function verifyTelegramSecretToken(input: TelegramVerifyInput): boolean {
   try {
-    const secret = crypto.createHash("sha256").update(input.botToken).digest();
-    const expected = crypto
-      .createHmac("sha256", secret)
-      .update(input.body)
-      .digest("hex");
-    return timingSafeEqualHex(expected, input.signature);
+    if (!input.botToken || !input.deploymentId) return false;
+    return timingSafeEqualHex(
+      telegramWebhookSecret(input.botToken, input.deploymentId),
+      input.secretToken,
+    );
   } catch {
     return false;
   }

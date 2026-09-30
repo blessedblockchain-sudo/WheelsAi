@@ -79,54 +79,28 @@ test("verifyDiscordSignature rejects malformed hex input without throwing", asyn
 });
 
 // ============================================
-// Telegram — SHA256 HMAC with bot token (see "secret_token" webhook mode)
+// Telegram — webhook secret_token (Telegram does not sign bodies)
 // ============================================
 
-function buildTelegramFixture() {
-  // Telegram's webhook "secret_token" mode: a static token is sent in the
-  // X-Telegram-Bot-Api-Secret-Token header and we compare it in constant time.
-  // Some deployments additionally verify an HMAC of the raw body using the
-  // bot token's SHA256 as the key — we test the HMAC verifier here.
-  const botToken = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11";
-  const body = JSON.stringify({ update_id: 1, message: { text: "hi" } });
-  const secret = crypto.createHash("sha256").update(botToken).digest();
-  const signature = crypto.createHmac("sha256", secret).update(body).digest("hex");
-  return { botToken, body, signature };
-}
+const TG_TOKEN = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11";
 
-test("verifyTelegramSignature returns true for a well-formed fixture", async () => {
+test("verifyTelegramSecretToken accepts the secret registered for this deployment", async () => {
   setupEnv();
-  const { verifyTelegramSignature } = await import("../services/channelAuth.js");
-  const { botToken, body, signature } = buildTelegramFixture();
-  assert.equal(verifyTelegramSignature({ botToken, body, signature }), true);
+  const { telegramWebhookSecret, verifyTelegramSecretToken } = await import("../services/channelAuth.js");
+  const secretToken = telegramWebhookSecret(TG_TOKEN, "dep_1");
+  // Telegram limits secret_token to 1-256 chars of [A-Za-z0-9_-].
+  assert.match(secretToken, /^[A-Za-z0-9_-]{1,256}$/);
+  assert.equal(verifyTelegramSecretToken({ botToken: TG_TOKEN, deploymentId: "dep_1", secretToken }), true);
 });
 
-test("verifyTelegramSignature rejects a tampered body", async () => {
-  const { verifyTelegramSignature } = await import("../services/channelAuth.js");
-  const { botToken, body, signature } = buildTelegramFixture();
-  assert.equal(
-    verifyTelegramSignature({ botToken, body: body.replace("hi", "hello"), signature }),
-    false
-  );
-});
-
-test("verifyTelegramSignature rejects a wrong bot token", async () => {
-  const { verifyTelegramSignature } = await import("../services/channelAuth.js");
-  const { body, signature } = buildTelegramFixture();
-  assert.equal(
-    verifyTelegramSignature({ botToken: "999:WRONG", body, signature }),
-    false
-  );
-});
-
-test("verifyTelegramSignature is constant-time against length mismatch", async () => {
-  const { verifyTelegramSignature } = await import("../services/channelAuth.js");
-  const { botToken, body } = buildTelegramFixture();
-  // Short signature must return false without throwing.
-  assert.equal(
-    verifyTelegramSignature({ botToken, body, signature: "deadbeef" }),
-    false
-  );
+test("verifyTelegramSecretToken rejects another deployment's secret, a wrong token, and junk", async () => {
+  const { telegramWebhookSecret, verifyTelegramSecretToken } = await import("../services/channelAuth.js");
+  const secretToken = telegramWebhookSecret(TG_TOKEN, "dep_1");
+  assert.equal(verifyTelegramSecretToken({ botToken: TG_TOKEN, deploymentId: "dep_2", secretToken }), false);
+  assert.equal(verifyTelegramSecretToken({ botToken: "999:WRONG", deploymentId: "dep_1", secretToken }), false);
+  for (const junk of ["", "deadbeef", "not-hex!", secretToken.slice(0, -2)]) {
+    assert.equal(verifyTelegramSecretToken({ botToken: TG_TOKEN, deploymentId: "dep_1", secretToken: junk }), false, junk);
+  }
 });
 
 // ============================================

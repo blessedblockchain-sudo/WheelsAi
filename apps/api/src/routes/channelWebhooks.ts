@@ -21,7 +21,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import {
   verifyDiscordSignature,
-  verifyTelegramSignature,
+  verifyTelegramSecretToken,
   verifySlackSignature,
 } from "../services/channelAuth.js";
 import {
@@ -108,11 +108,10 @@ export function createChannelWebhookRoutes(
             signature,
           });
         } else if (config.credentials.kind === "telegram") {
-          const signature = String(request.headers["x-telegram-signature"] ?? "");
-          verified = verifyTelegramSignature({
+          verified = verifyTelegramSecretToken({
             botToken: config.credentials.botToken,
-            body: rawBody,
-            signature,
+            deploymentId,
+            secretToken: String(request.headers["x-telegram-bot-api-secret-token"] ?? ""),
           });
         } else if (config.credentials.kind === "slack") {
           const signature = String(request.headers["x-slack-signature"] ?? "");

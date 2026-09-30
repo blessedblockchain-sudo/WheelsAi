@@ -5,6 +5,7 @@
  */
 
 import { Redis } from "ioredis";
+import { getOrgPlan } from "../services/orgPlan.js";
 import { env } from "../config/env.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -45,6 +46,14 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
   const r = getRedis();
   const now = Math.floor(Date.now() / 1000);
 
+  // "Priority model access": paid plans get a multiple of the free-model
+  // limits. A plan lookup failure falls back to the Starter limits.
+  const multiplier = await getOrgPlan(orgId)
+    .then(({ limits }) => limits.modelRateMultiplier)
+    .catch(() => 1);
+  const RPM_LIMIT = env.FREE_TIER_RPM * multiplier;
+  const RPD_LIMIT = env.FREE_TIER_RPD * multiplier;
+
   const rpmKey = `free:rpm:${orgId}`;
   const rpdKey = `free:rpd:${orgId}`;
 
@@ -59,7 +68,7 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
     const results = await pipe.exec();
     if (!results) {
       // Redis unavailable — allow request (fail open)
-      return { allowed: true, remaining: { rpm: env.FREE_TIER_RPM, rpd: env.FREE_TIER_RPD }, resetAt: { rpm: now + 60, rpd: now + 86400 } };
+      return { allowed: true, remaining: { rpm: RPM_LIMIT, rpd: RPD_LIMIT }, resetAt: { rpm: now + 60, rpd: now + 86400 } };
     }
 
     const rpmCount = (results[0]?.[1] as number) ?? 1;
@@ -75,10 +84,10 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
       await r.expire(rpdKey, 86400);
     }
 
-    const rpmRemaining = Math.max(0, env.FREE_TIER_RPM - rpmCount);
-    const rpdRemaining = Math.max(0, env.FREE_TIER_RPD - rpdCount);
+    const rpmRemaining = Math.max(0, RPM_LIMIT - rpmCount);
+    const rpdRemaining = Math.max(0, RPD_LIMIT - rpdCount);
 
-    const allowed = rpmCount <= env.FREE_TIER_RPM && rpdCount <= env.FREE_TIER_RPD;
+    const allowed = rpmCount <= RPM_LIMIT && rpdCount <= RPD_LIMIT;
 
     if (!allowed) {
       // Undo the increment since we're rejecting
@@ -96,6 +105,6 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
   } catch (err) {
     logger.error({ err }, "Rate limit check failed, allowing request");
     // Fail open
-    return { allowed: true, remaining: { rpm: env.FREE_TIER_RPM, rpd: env.FREE_TIER_RPD }, resetAt: { rpm: now + 60, rpd: now + 86400 } };
+    return { allowed: true, remaining: { rpm: RPM_LIMIT, rpd: RPD_LIMIT }, resetAt: { rpm: now + 60, rpd: now + 86400 } };
   }
 }

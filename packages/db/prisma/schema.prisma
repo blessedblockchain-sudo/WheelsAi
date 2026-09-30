@@ -67,6 +67,7 @@ model Organization {
   // Set once, by the compare-and-swap that grants the signup bonus after
   // the owner verifies an email. Null = bonus not yet granted.
   signupBonusGrantedAt DateTime? @map("signup_bonus_granted_at")
+  subscription         OrgSubscription?
 
   branding  Json?    @default("{}")
 
@@ -259,6 +260,10 @@ model StripePurchase {
   id              String    @id @default(uuid()) @db.Uuid
   orgId           String    @map("org_id") @db.Uuid
   stripeSessionId String    @unique @map("stripe_session_id")
+  // Set when the session completes; refunds arrive keyed by it.
+  stripePaymentIntentId String? @unique @map("stripe_payment_intent_id")
+  // Cents already clawed back by refunds (never more than amount + bonus).
+  refundedCents   BigInt    @default(0) @map("refunded_cents")
   // Paid amount in cents. The grant = amountCents + bonusCents.
   amountCents     BigInt    @map("amount_cents")
   // Bonus SNAPSHOT at checkout creation — the buyer was quoted this
@@ -278,6 +283,55 @@ model StripePurchase {
   @@index([orgId, createdAt])
   @@index([status])
   @@map("stripe_purchases")
+}
+
+// The organization's platform plan (Starter / Pro / Enterprise). Pro is
+// driven by Stripe subscription webhooks; Enterprise is set by an operator.
+// No row means Starter.
+model OrgSubscription {
+  orgId                String    @id @map("org_id") @db.Uuid
+  plan                 String    @default("starter") // 'starter' | 'pro' | 'enterprise'
+  // Stripe subscription status ('trialing' | 'active' | 'past_due' |
+  // 'canceled' | 'unpaid' | 'incomplete' | 'incomplete_expired' | 'paused'),
+  // or 'manual' for operator-granted plans.
+  status               String    @default("none")
+  stripeCustomerId     String?   @unique @map("stripe_customer_id")
+  stripeSubscriptionId String?   @unique @map("stripe_subscription_id")
+  currentPeriodEnd     DateTime? @map("current_period_end")
+  trialEndsAt          DateTime? @map("trial_ends_at")
+  trialUsedAt          DateTime? @map("trial_used_at")
+  cancelAtPeriodEnd    Boolean   @default(false) @map("cancel_at_period_end")
+  // Webhooks can arrive out of order; older events never overwrite newer.
+  lastStripeEventAt    DateTime? @map("last_stripe_event_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  @@map("org_subscriptions")
+}
+
+// Stripe webhook idempotency: an event id is processed at most once.
+model StripeEvent {
+  id          String   @id // Stripe event id (evt_...)
+  type        String
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("stripe_events")
+}
+
+// "Contact sales" requests from the website.
+model ContactRequest {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  email     String
+  company   String?
+  topic     String   @default("enterprise") // 'enterprise' | 'support' | 'other'
+  message   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("contact_requests")
 }
 
 // Purchase-intent row for the Solana wallet rail (B2/T2). One row per
@@ -739,6 +793,8 @@ model AgentListing {
   readme            String?   @db.Text
 
   // Pricing
+  // Pro and Enterprise publishers rank ahead within the same sort.
+  priorityPlacement Boolean   @default(false) @map("priority_placement")
   pricingModel      String    @map("pricing_model") // 'free', 'per_request', 'monthly', 'tokenized'
   pricePerRequestCents BigInt? @map("price_per_request_cents")
   monthlyPriceCents BigInt?   @map("monthly_price_cents")

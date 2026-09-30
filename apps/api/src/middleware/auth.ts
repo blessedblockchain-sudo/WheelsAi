@@ -1,4 +1,5 @@
 import { FastifyRequest, FastifyReply, FastifyInstance } from "fastify";
+import { meterApiCall } from "../services/orgPlan.js";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCookie from "@fastify/cookie";
 
@@ -235,6 +236,11 @@ export async function requireAuth(
       error: "Unauthorized",
       message: "Authentication required",
     });
+  }
+  // Programmatic use counts against the plan's monthly API calls: every
+  // API-key request, and every request to the OpenAI-compatible /v1 API.
+  if (request.auth.type === "api_key" || request.url.startsWith("/v1/")) {
+    await meterApiCall(request.auth.orgId);
   }
 }
 

@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { assertFeature } from "../services/orgPlan.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import {
   createCustomDomain,
@@ -61,6 +62,9 @@ export const domainsRoutes: FastifyPluginAsync = async (app) => {
         forceHttps?: boolean;
         headers?: Record<string, string>;
       };
+
+      // Custom domains are a Pro feature (throws PlanLimitError -> 403).
+      await assertFeature(request.auth!.orgId, "customDomains", "Custom domains");
 
       try {
         const domain = await createCustomDomain(request.auth!.orgId, body);

@@ -1,5 +1,6 @@
 import { prisma } from "@wheelsai/db";
 import { openAgentEnv, sealAgentEnv } from "./agentSecrets.js";
+import { assertCanCreateAgent } from "./orgPlan.js";
 
 // ============================================
 // Agent Templates CRUD
@@ -69,6 +70,9 @@ export async function useTemplate(templateId: string, orgId: string, input: {
 }) {
   const template = await prisma.agentTemplate.findFirst({ where: { id: templateId, isPublished: true } });
   if (!template) throw new Error("Template not found");
+
+  // Templates create agents too, so they count toward the plan.
+  await assertCanCreateAgent(orgId);
 
   // Create agent from template
   const agent = await prisma.agent.create({

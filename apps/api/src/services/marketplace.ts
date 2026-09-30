@@ -1,4 +1,5 @@
 import { prisma } from "@wheelsai/db";
+import { getOrgPlan } from "./orgPlan.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
 
@@ -118,7 +119,11 @@ export async function searchListings(params: ListingSearchParams) {
   const [listings, total] = await Promise.all([
     prisma.agentListing.findMany({
       where,
-      orderBy,
+      // Pro/Enterprise publishers rank first within popularity, rating and
+      // recency sorts; an explicit price sort stays a pure price order.
+      orderBy: sortBy === "price_low" || sortBy === "price_high"
+        ? orderBy
+        : [{ priorityPlacement: "desc" }, orderBy],
       skip,
       take: limit,
       include: {
@@ -438,8 +443,14 @@ export async function createListing(
     counter++;
   }
 
+  // Paid plans rank ahead in the marketplace from the first publish.
+  const { limits: planLimits } = await getOrgPlan(orgId).catch(() => ({
+    limits: { priorityPlacement: false },
+  }));
+
   const listing = await prisma.agentListing.create({
     data: {
+      priorityPlacement: planLimits.priorityPlacement,
       agentId: params.agentId,
       title: params.title,
       slug,

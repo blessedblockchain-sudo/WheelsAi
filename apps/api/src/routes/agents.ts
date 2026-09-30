@@ -8,6 +8,7 @@ import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { mergeAgentEnv, redactAgentEnv, sealAgentEnv } from "../services/agentSecrets.js";
+import { assertCanCreateAgent } from "../services/orgPlan.js";
 import { getNosanaClient } from "../services/nosana.js";
 import {
   parseGitHubUrl,
@@ -254,6 +255,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     ) {
       return reply.badRequest("Knowledge base not found");
     }
+
+    // Starter includes up to 3 agents (marketplace installs don't count).
+    await assertCanCreateAgent(orgId);
 
     const agent = await prisma.agent.create({
       data: {

@@ -14,6 +14,7 @@
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
+import { PlanLimitError } from "../services/plans.js";
 
 export function globalErrorHandler(
   error: FastifyError,
@@ -21,6 +22,18 @@ export function globalErrorHandler(
   reply: FastifyReply,
 ) {
   request.log.error(error);
+
+  // Plan limits read the same everywhere: what was hit, which plan, and
+  // where to upgrade. Quota exhaustion is 429; a feature/size limit is 403.
+  if (error instanceof PlanLimitError) {
+    return reply.status(error.limit === "monthlyApiCalls" ? 429 : 403).send({
+      error: error.code,
+      message: error.message,
+      plan: error.plan,
+      limit: error.limit,
+      upgradeUrl: "/dashboard/billing?upgrade=pro",
+    });
+  }
 
   if (error instanceof ZodError) {
     return reply.status(400).send({

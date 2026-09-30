@@ -1,5 +1,5 @@
 # ---- Dependencies Stage ----
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 
 RUN apk add --no-cache libc6-compat
 
@@ -17,7 +17,7 @@ COPY apps/web ./apps/web
 RUN npm ci
 
 # ---- Build Stage ----
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 RUN apk add --no-cache libc6-compat
 
@@ -43,7 +43,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build --workspace=@wheelsai/web
 
 # ---- Production Stage ----
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
@@ -58,7 +58,9 @@ ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
 # Copy standalone build
-COPY --from=builder /app/apps/web/public ./public
+# Standalone monorepo layout: server.js is at apps/web/server.js and serves
+# public/ relative to itself, so public/ must sit next to it.
+COPY --from=builder /app/apps/web/public ./apps/web/public
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
 
@@ -68,6 +70,6 @@ EXPOSE 3000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1
 
 CMD ["node", "apps/web/server.js"]

@@ -13,7 +13,7 @@
 # at `redis:6379`, so every DATABASE_URL/REDIS_URL below differs from the
 # GitHub file even though nothing else about the step changed.
 
-image: node:20
+image: node:22
 
 workflow:
   rules:
@@ -201,7 +201,7 @@ test:integration:
 .fly_deploy: &fly_deploy
   stage: deploy
   needs: [unit, migrations]
-  image: node:20
+  image: node:22
   cache: []
   before_script:
     - curl -L https://fly.io/install.sh | sh

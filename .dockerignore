@@ -17,10 +17,21 @@ node_modules
 *.swp
 *.swo
 
-# Environment files
+# Environment files (at every depth: a root-only pattern let
+# apps/api/.env and apps/web/.env.local into image layers)
 .env
 .env.*
+**/.env
+**/.env.*
 !.env.example
+!**/.env.example
+
+# Local build and deploy artifacts
+**/.next
+**/.netlify
+target
+.devnet
+*.pdf
 
 # Logs
 *.log

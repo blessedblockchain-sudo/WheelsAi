@@ -10,6 +10,13 @@ import {
   projectMonthlyCost,
   getSpendingAlerts,
 } from "../services/analytics.js";
+import { assertFeature } from "../services/orgPlan.js";
+import {
+  clampExportDays,
+  DAILY_COLUMNS,
+  DEPLOYMENT_COLUMNS,
+  toCsv,
+} from "../services/analyticsExport.js";
 
 export async function analyticsRoutes(app: FastifyInstance) {
   // All analytics routes require authentication
@@ -148,6 +155,34 @@ export async function analyticsRoutes(app: FastifyInstance) {
       success: true,
       data: alerts,
     });
+  });
+
+  // Export usage as CSV or JSON (Pro and above)
+  app.get("/export", async (request, reply) => {
+    const { orgId } = request.user as { orgId: string };
+    const query = request.query as { days?: string; format?: string; dataset?: string };
+    const days = clampExportDays(query.days);
+    const format = query.format === "json" ? "json" : "csv";
+    const dataset = query.dataset === "deployments" ? "deployments" : "daily";
+
+    await assertFeature(orgId, "advancedAnalytics", "Analytics export");
+
+    const rows =
+      dataset === "deployments"
+        ? await getDeploymentMetrics(orgId, days)
+        : await getUsageTimeSeries(orgId, days, "daily");
+    const stamp = new Date().toISOString().slice(0, 10);
+    const filename = `wheelsai-${dataset}-${days}d-${stamp}.${format}`;
+
+    reply.header("content-disposition", `attachment; filename="${filename}"`);
+    if (format === "json") {
+      return reply.type("application/json").send({ dataset, period: { days }, rows });
+    }
+    const csv =
+      dataset === "deployments"
+        ? toCsv(rows as unknown as Record<string, unknown>[], DEPLOYMENT_COLUMNS as never)
+        : toCsv(rows as unknown as Record<string, unknown>[], DAILY_COLUMNS as never);
+    return reply.type("text/csv; charset=utf-8").send(csv);
   });
 
   // Get comprehensive dashboard data in one call

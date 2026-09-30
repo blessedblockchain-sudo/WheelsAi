@@ -1711,6 +1711,34 @@ export interface AnalyticsDashboard {
   projection: CostProjection;
 }
 
+/**
+ * Download usage analytics as a file (Pro and above). Resolves once the
+ * browser has been handed the file; rejects with an ApiError (403 on
+ * Starter) so callers can offer the upgrade.
+ */
+export async function downloadAnalyticsExport(opts: {
+  days: number;
+  format: "csv" | "json";
+  dataset: "daily" | "deployments";
+}): Promise<void> {
+  const qs = new URLSearchParams({ days: String(opts.days), format: opts.format, dataset: opts.dataset });
+  const res = await fetch(`${API_URL}/api/analytics/export?${qs}`, { credentials: "include" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new ApiError(res.status, res.statusText, data);
+  }
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `wheelsai-${opts.dataset}.${opts.format}`;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const analyticsApi = {
   getOverview: (days = 30) =>
     api<{ success: boolean; data: UsageMetrics; period: { days: number } }>(

@@ -31,6 +31,8 @@ import {
   analyticsApi,
   type AgentDetail,
   type AnalyticsDashboard,
+  ApiError,
+  downloadAnalyticsExport,
   getErrorMessage,
 } from "@/lib/api";
 
@@ -93,6 +95,24 @@ export default function AgentAnalyticsPage() {
 
   const [analytics, setAnalytics] = useState<AnalyticsDashboard | null>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(true);
+  const [exporting, setExporting] = useState<string | null>(null);
+
+  async function handleExport(dataset: "daily" | "deployments", format: "csv" | "json", label: string) {
+    setExporting(label);
+    try {
+      await downloadAnalyticsExport({ days: 30, format, dataset });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 403) {
+        toast.error(getErrorMessage(err, "Analytics export is included in the Pro plan"), {
+          action: { label: "See plans", onClick: () => (window.location.href = "/dashboard/billing") },
+        });
+      } else {
+        toast.error(getErrorMessage(err, "Export failed"));
+      }
+    } finally {
+      setExporting(null);
+    }
+  }
 
   useEffect(() => {
     async function loadAgent() {
@@ -422,21 +442,33 @@ export default function AgentAnalyticsPage() {
         </Card>
 
         {/* Export Data */}
-        <div className="flex items-center justify-between rounded-lg border border-border bg-muted p-4">
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="font-medium text-foreground">Export Data</p>
             <p className="text-sm text-muted-foreground">
-              Download analytics as CSV or JSON
+              Daily usage and per-deployment metrics for the last 30 days, as CSV or JSON
             </p>
           </div>
-          <div className="group relative">
-            <Button variant="outline" disabled>
-              <Download className="mr-2 h-4 w-4" />
-              Export
-            </Button>
-            <span className="pointer-events-none absolute bottom-full right-0 mb-2 whitespace-nowrap rounded bg-gray-900 px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-100 dark:text-gray-900">
-              Coming soon
-            </span>
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ["daily", "csv", "Daily CSV"],
+                ["deployments", "csv", "Deployments CSV"],
+                ["daily", "json", "JSON"],
+              ] as const
+            ).map(([dataset, format, label]) => (
+              <Button
+                key={label}
+                variant="outline"
+                size="sm"
+                isLoading={exporting === label}
+                disabled={exporting !== null}
+                onClick={() => handleExport(dataset, format, label)}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                {label}
+              </Button>
+            ))}
           </div>
         </div>
       </div>

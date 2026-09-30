@@ -980,6 +980,19 @@ export async function getPublisherRevenue(publisherId: string) {
   };
 }
 
+/**
+ * The balance changed between the snapshot and the reservation (a
+ * concurrent payout request won, or revenue was restored/adjusted).
+ * Nothing was written; the caller may retry and will see the new balance.
+ */
+export class PayoutReservationConflictError extends Error {
+  readonly code = "payout_reservation_conflict";
+  constructor() {
+    super("Your payout balance changed while this request was processing. Please try again.");
+    this.name = "PayoutReservationConflictError";
+  }
+}
+
 export async function requestPayout(
   publisherId: string,
   payoutMethod: "credits" | "crypto_usdc" | "crypto_sol",
@@ -1030,7 +1043,21 @@ export async function requestPayout(
   // tick's failAndRestore). Deducting off the CURRENT balance inside the
   // transaction also prevents a payout that races with fresh revenue from
   // zeroing income that accrued after the amount was snapshotted.
+  //
+  // The decrement is CONDITIONAL on the balance still covering the amount.
+  // An unconditional decrement let two concurrent requests both pass the
+  // pending-payout check above, both reserve the full balance, drive
+  // pendingPayoutCents negative, and get paid twice by the executor. Under
+  // Postgres row locking the second request re-reads the committed balance
+  // and matches zero rows, so exactly one reservation wins.
   const payout = await prisma.$transaction(async (tx) => {
+    const reserved = await tx.publisherProfile.updateMany({
+      where: { orgId: publisherId, pendingPayoutCents: { gte: BigInt(pendingAmount) } },
+      data: { pendingPayoutCents: { decrement: BigInt(pendingAmount) } },
+    });
+    if (reserved.count !== 1) {
+      throw new PayoutReservationConflictError();
+    }
     const created = await tx.creatorPayout.create({
       data: {
         publisherId,
@@ -1043,10 +1070,6 @@ export async function requestPayout(
         periodStart: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
         periodEnd: new Date(),
       },
-    });
-    await tx.publisherProfile.update({
-      where: { orgId: publisherId },
-      data: { pendingPayoutCents: { decrement: BigInt(pendingAmount) } },
     });
     return created;
   });

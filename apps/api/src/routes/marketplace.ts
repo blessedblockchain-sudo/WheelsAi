@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireJwtAuth, requireRole } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import {
@@ -26,6 +26,7 @@ import {
   checkInstallStatus,
   getPublisherRevenue,
   requestPayout,
+  PayoutReservationConflictError,
   getPayoutHistory,
   PRICING_MODELS,
 } from "../services/marketplace.js";
@@ -443,9 +444,12 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
   /**
    * POST /payouts - Request a payout
    */
+  // Human sessions only: the caller supplies the payout address, so an
+  // API key (which bypasses role checks) must never be able to redirect a
+  // creator's earnings.
   app.post(
     "/payouts",
-    { preHandler: [requireAuth, requireRole("owner", "admin")] },
+    { preHandler: [requireAuth, requireJwtAuth, requireRole("owner", "admin")] },
     async (request, reply) => {
       const { orgId } = request.auth!;
       const body = z
@@ -459,6 +463,9 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
         const result = await requestPayout(orgId, body.payoutMethod, body.payoutAddress);
         return reply.status(201).send(result);
       } catch (error: any) {
+        if (error instanceof PayoutReservationConflictError) {
+          return reply.status(409).send({ error: error.code, message: error.message });
+        }
         logger.error({ error, orgId }, "Failed to request payout");
         return reply.badRequest(error.message);
       }

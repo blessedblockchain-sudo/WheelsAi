@@ -308,6 +308,11 @@ const envSchema = z.object({
   // Set to 0 to disable.
   SUBSCRIPTION_RENEWAL_INTERVAL_MS: z.coerce.number().int().min(0).default(3_600_000),
 
+  // Public /status page: the organisation whose uptime monitors are public
+  // (the operator's own monitors of the platform's endpoints). Unset = the
+  // page says there are no public monitors yet.
+  STATUS_PAGE_ORG_ID: z.string().uuid().optional(),
+
   // Payout-executor BullMQ worker (W2 money keystone): settles requested
   // CreatorPayout rows — credits grants and/or on-chain crypto transfers
   // from the platform payout wallet. Set to 0 to disable (the default:

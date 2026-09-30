@@ -49,6 +49,7 @@ import { monitoringRoutes } from "./routes/monitoring.js";
 import { versioningRoutes } from "./routes/versioning.js";
 import { webhooksRoutes } from "./routes/webhooks.js";
 import { createPublicStatsRoutes } from "./routes/publicStats.js";
+import { statusRoutes } from "./routes/status.js";
 import { testingRoutes } from "./routes/testing.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { domainsRoutes } from "./routes/domains.js";
@@ -375,6 +376,7 @@ async function main() {
     }),
     { prefix: "/api" },
   ); // GET /api/public/stats
+  await app.register(statusRoutes, { prefix: "/api/status" }); // public /status page
   await app.register(collaborationRoutes, { prefix: "/api/agents" });
   // Inbound chat-channel webhooks (plan A6) — the complete, tested stack
   // that was never mounted (Wave 0). Platform webhook URL:

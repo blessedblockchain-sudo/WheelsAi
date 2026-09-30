@@ -34,8 +34,29 @@ model User {
   memberships        OrgMember[]
   contributions      AgentContributor[]
   twoFactorAuth      TwoFactorAuth?
+  emailTokens        EmailToken[]
 
   @@map("users")
+}
+
+// One-time links sent by email (verify address, reset password). Only the
+// SHA-256 of the token is stored; the token itself exists only in the
+// email. `email` pins the address the link was sent to, so a verification
+// link stops working if the account's email changes afterwards.
+model EmailToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  purpose   String // 'verify_email' | 'reset_password'
+  email     String
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@map("email_tokens")
 }
 
 model Organization {
@@ -43,6 +64,9 @@ model Organization {
   name      String
   ownerId   String   @map("owner_id") @db.Uuid
   createdAt DateTime @default(now()) @map("created_at")
+  // Set once, by the compare-and-swap that grants the signup bonus after
+  // the owner verifies an email. Null = bonus not yet granted.
+  signupBonusGrantedAt DateTime? @map("signup_bonus_granted_at")
 
   branding  Json?    @default("{}")
 

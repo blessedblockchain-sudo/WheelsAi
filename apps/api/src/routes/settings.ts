@@ -6,10 +6,15 @@ import nacl from "tweetnacl";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { hashPassword, verifyPassword, generateNonce, getNonce, consumeNonce } from "../services/auth.js";
+import { sendVerificationEmail } from "./emailAuth.js";
 
 const updateProfileSchema = z.object({
   displayName: z.string().max(100).optional(),
   email: z.string().email().optional(),
+  // Required to change the email of an account that has a password: a
+  // hijacked session must not be able to take over the account's
+  // recovery address.
+  currentPassword: z.string().min(1).optional(),
 }).strict();
 
 const changePasswordSchema = z.object({
@@ -67,7 +72,26 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // Update user profile
   fastify.patch("/profile", async (request, reply) => {
     const { userId } = request.user!;
-    const { displayName, email } = updateProfileSchema.parse(request.body);
+    const { displayName, email: requestedEmail, currentPassword } = updateProfileSchema.parse(request.body);
+
+    const current = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, passwordHash: true },
+    });
+    // Re-submitting the current address is not a change.
+    const email =
+      requestedEmail && requestedEmail.toLowerCase() !== current?.email?.toLowerCase()
+        ? requestedEmail
+        : undefined;
+
+    if (email && current?.passwordHash) {
+      if (!currentPassword || !(await verifyPassword(current.passwordHash, currentPassword))) {
+        return reply.status(403).send({
+          error: "reauthentication_required",
+          message: "Enter your current password to change your email.",
+        });
+      }
+    }
 
     // Check if email is already taken
     if (email) {
@@ -94,6 +118,12 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
       },
     });
 
+    // A new address is unverified until its link is used.
+    const verificationSent =
+      email && updatedUser.email
+        ? await sendVerificationEmail({ id: updatedUser.id, email: updatedUser.email })
+        : false;
+
     return {
       profile: {
         id: updatedUser.id,
@@ -103,6 +133,7 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
         emailVerified: updatedUser.emailVerified,
         createdAt: updatedUser.createdAt.toISOString(),
       },
+      verificationSent,
     };
   });
 

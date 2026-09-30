@@ -175,22 +175,13 @@ export async function createUser(input: CreateUserInput) {
       },
     });
 
-    // Initialize credit balance
+    // Start at zero. The $5 signup bonus is granted once, when the owner
+    // verifies an email (services/emailTokens.ts); granting it here made
+    // free credits farmable with throwaway, unverified accounts.
     await tx.creditBalance.create({
       data: {
         orgId: org.id,
-        balanceCents: 500, // $5.00 signup bonus
-      },
-    });
-
-    // Record bonus transaction
-    await tx.creditTransaction.create({
-      data: {
-        orgId: org.id,
-        amountCents: 500,
-        type: "bonus",
-        description: "Signup bonus",
-        balanceAfter: 500,
+        balanceCents: 0,
       },
     });
 

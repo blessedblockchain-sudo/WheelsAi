@@ -2,6 +2,7 @@ import "dotenv/config";
 import { Redis } from "ioredis";
 import { disconnectTokenGateCache } from "./middleware/tokenGate.js";
 import { syncModelCatalog, type ModelCatalogDb } from "./services/syncModelCatalog.js";
+import { emailAuthRoutes } from "./routes/emailAuth.js";
 import { prisma } from "./lib/prisma.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
@@ -282,6 +283,7 @@ async function main() {
   // Register routes
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(authRoutes, { prefix: "/api/auth" });
+  await app.register(emailAuthRoutes, { prefix: "/api/auth" });
   await app.register(modelRoutes, { prefix: "/api/models" });
   await app.register(deploymentRoutes, { prefix: "/api/deployments" });
   await app.register(agentRoutes, { prefix: "/api/agents" });

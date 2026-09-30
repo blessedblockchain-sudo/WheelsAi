@@ -236,6 +236,14 @@ const envSchema = z.object({
   PUBLIC_API_URL: z.string().url().optional(),
   PUBLIC_WEB_URL: z.string().url().optional(),
 
+  // Transactional email (verification, password reset, invites, alerts).
+  // "log" writes the message to the API log and is refused outside
+  // development; unset means email is not configured and the flows that
+  // need it answer 501.
+  EMAIL_PROVIDER: z.enum(["resend", "log"]).optional(),
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().optional(), // e.g. "WheelsAI <no-reply@wheelsai.app>"
+
   // Slack distributed app (W2). Master gate; the routes stay mounted and
   // answer 501 when off, because Slack must be able to probe the Events
   // URL before anything is installed.
@@ -384,6 +392,15 @@ export function validateEnv(raw: Record<string, string | undefined>) {
         "X402_ENABLED requires X402_SETTLEMENT_WORKER_ENABLED outside development — without the worker, verified payments are never settled on-chain"
       );
     }
+  }
+
+  if (deployed && data.EMAIL_PROVIDER === "log") {
+    throw new EnvValidationError(
+      "EMAIL_PROVIDER=log only writes emails to the API log; it is refused outside development"
+    );
+  }
+  if (data.EMAIL_PROVIDER === "resend" && (!data.RESEND_API_KEY || !data.EMAIL_FROM)) {
+    throw new EnvValidationError("EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM");
   }
 
   // Production only: staging may run the devnet SOL test rail.

@@ -24,6 +24,7 @@ import {
   clearAuthCookie,
 } from "../middleware/auth.js";
 import { blockJwt, loginAttempts, twoFactorAttempts } from "../services/auth.js";
+import { sendVerificationEmail } from "./emailAuth.js";
 import { createChallenge, validateChallenge } from "../services/twoFactor.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -103,6 +104,11 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
     logger.info({ userId: user.id }, "User registered via email");
 
+    // The $5 signup bonus arrives when this link is used.
+    const emailVerificationSent = user.email
+      ? await sendVerificationEmail({ id: user.id, email: user.email })
+      : false;
+
     return {
       user: {
         id: user.id,
@@ -114,6 +120,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
         name: org.name,
       },
       token: accessToken,
+      emailVerificationSent,
     };
   });
 
@@ -462,12 +469,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
    */
   app.get("/me", { preHandler: [requireAuth], schema: { tags: ["Auth"], description: "Get current user", security: [{ bearerAuth: [] }] } }, async (request, _reply) => {
     const { userId, orgId, email, walletAddress } = request.auth!;
+    // Read live: the JWT's claims predate a later verification.
+    const account = userId
+      ? await findUserById(userId).catch(() => null)
+      : null;
 
     return {
       user: {
         id: userId,
-        email,
+        email: account?.email ?? email,
         walletAddress,
+        emailVerified: account?.emailVerified ?? false,
       },
       organization: {
         id: orgId,

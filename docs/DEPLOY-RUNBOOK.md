@@ -56,6 +56,8 @@ Platform keys:
 | `WALLET_MASTER_KEY` | HKDF root for treasury/creator/deposit keys. Set ONCE, back it up; rotation changes every derived address. Required whenever token launch or wallet top-ups are enabled. |
 | `NOSANA_WALLET_PRIVATE_KEY` | GPU job submission |
 | `SENTRY_DSN` | optional — error tracking switches on when present |
+| `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM` | verification, password reset and alert emails. Without them those flows answer 501, and new accounts cannot verify, so they never receive the $5 signup credits. `EMAIL_PROVIDER=log` is refused outside development. |
+| `PUBLIC_WEB_URL` | the web origin used in email links (falls back to `CORS_ORIGIN`) |
 
 Optional rails (each is gated; endpoints answer 501 honestly until configured):
 

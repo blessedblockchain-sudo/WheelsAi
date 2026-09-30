@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { Redis } from "ioredis";
 import { disconnectTokenGateCache } from "./middleware/tokenGate.js";
+import { syncModelCatalog, type ModelCatalogDb } from "./services/syncModelCatalog.js";
+import { prisma } from "./lib/prisma.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -367,6 +369,15 @@ async function main() {
   const { agentTreasuryRoutes } = await import("./routes/agent-treasury.js");
   await app.register(agentTreasuryRoutes, { prefix: "/api" });
   await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
+
+  // The deployable model catalog lives in code; make sure the models table
+  // matches it before accepting traffic (a fresh database has no rows).
+  try {
+    const synced = await syncModelCatalog(prisma as unknown as ModelCatalogDb);
+    app.log.info({ models: synced }, "Model catalog synced");
+  } catch (err) {
+    app.log.error({ err }, "Model catalog sync failed; model deployments will 400 until it succeeds");
+  }
 
   // Start server
   try {

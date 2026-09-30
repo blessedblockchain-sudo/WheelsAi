@@ -482,9 +482,9 @@ function NewAgentContent() {
                       className="mt-1"
                     >
                       <optgroup label="Free Models (No API Key)">
-                        <option value="free/groq/llama-3.3-70b">Llama 3.3 70B - Groq (Free)</option>
-                        <option value="free/groq/llama-3.1-8b">Llama 3.1 8B Instant - Groq (Free)</option>
-                        <option value="free/groq/qwen3-32b">Qwen3 32B - Groq (Free)</option>
+                        <option value="free/groq/llama-3.3-70b">GPT-OSS 120B - Groq (Free)</option>
+                        <option value="free/groq/llama-3.1-8b">GPT-OSS 20B - Groq (Free)</option>
+                        <option value="free/groq/qwen3-32b">Qwen3.8 27B - Groq (Free)</option>
                         <option value="free/gemini/gemini-2.5-flash">Gemini 2.5 Flash - Google (Free)</option>
                         <option value="free/together/llama-3.1-8b">Llama 3.1 8B - Together (Free)</option>
                       </optgroup>
@@ -817,7 +817,7 @@ export const agent = new Agent({
   instructions: 'You are a helpful assistant.',
   model: {
     provider: 'groq',
-    name: 'llama-3.3-70b-versatile',
+    name: 'openai/gpt-oss-120b',
   },
   tools: [],
 });`;

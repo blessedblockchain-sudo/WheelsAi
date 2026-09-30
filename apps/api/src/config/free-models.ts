@@ -18,13 +18,15 @@ export interface FreeModelConfig {
   notes: string;
 }
 
+// Groq retired the Llama 3.x and qwen3-32b models these ids first pointed at;
+// the ids stay stable because agent rows and the web wizard store them.
 const FREE_MODEL_CATALOG: FreeModelConfig[] = [
   {
     id: "free/groq/llama-3.3-70b",
     provider: "groq",
-    modelName: "llama-3.3-70b-versatile",
-    displayName: "Llama 3.3 70B (Groq)",
-    contextLength: 8192,
+    modelName: "openai/gpt-oss-120b",
+    displayName: "GPT-OSS 120B (Groq)",
+    contextLength: 131072,
     baseUrl: "https://api.groq.com/openai/v1",
     envKey: "GROQ_API_KEY",
     notes: "Best free option, fast inference",
@@ -32,9 +34,9 @@ const FREE_MODEL_CATALOG: FreeModelConfig[] = [
   {
     id: "free/groq/llama-3.1-8b",
     provider: "groq",
-    modelName: "llama-3.1-8b-instant",
-    displayName: "Llama 3.1 8B Instant (Groq)",
-    contextLength: 8192,
+    modelName: "openai/gpt-oss-20b",
+    displayName: "GPT-OSS 20B (Groq)",
+    contextLength: 131072,
     baseUrl: "https://api.groq.com/openai/v1",
     envKey: "GROQ_API_KEY",
     notes: "Ultra-fast, lighter model",
@@ -42,12 +44,12 @@ const FREE_MODEL_CATALOG: FreeModelConfig[] = [
   {
     id: "free/groq/qwen3-32b",
     provider: "groq",
-    modelName: "qwen/qwen3-32b",
-    displayName: "Qwen3 32B (Groq)",
+    modelName: "qwen/qwen3.8-27b",
+    displayName: "Qwen3.8 27B (Groq)",
     contextLength: 32768,
     baseUrl: "https://api.groq.com/openai/v1",
     envKey: "GROQ_API_KEY",
-    notes: "Alibaba Qwen3, strong reasoning",
+    notes: "Alibaba Qwen, strong reasoning",
   },
   {
     id: "free/gemini/gemini-2.5-flash",
@@ -70,6 +72,21 @@ const FREE_MODEL_CATALOG: FreeModelConfig[] = [
     notes: "Free credits on signup",
   },
 ];
+
+/** The catalog entry new agents default to. */
+export const DEFAULT_FREE_MODEL_ID = "free/groq/llama-3.3-70b";
+
+/**
+ * Provider + upstream model name for a free model id, without needing the
+ * provider key. Used when generating runtime configs, where the key is
+ * injected into the container separately.
+ */
+export function freeModelProviderAndName(
+  modelId: string,
+): { provider: string; modelName: string } | null {
+  const model = FREE_MODEL_CATALOG.find((m) => m.id === modelId);
+  return model ? { provider: model.provider, modelName: model.modelName } : null;
+}
 
 /**
  * Returns free models whose provider API key is configured in env

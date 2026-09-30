@@ -333,16 +333,19 @@ export function setAuthCookie(
   reply.setCookie("wheelsai_token", token, {
     path: "/",
     httpOnly: true,
-    secure: env.NODE_ENV === "production",
+    secure: env.NODE_ENV !== "development",
     sameSite: "lax",
     signed: true,
     maxAge,
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
   });
 }
 
 export function clearAuthCookie(reply: FastifyReply) {
+  // Must match the domain it was set with, or the cookie survives logout.
   reply.clearCookie("wheelsai_token", {
     path: "/",
+    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
   });
 }
 

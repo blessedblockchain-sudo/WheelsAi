@@ -20,6 +20,14 @@ const envSchema = z.object({
   // entries are trusted (Fly's edge = 1). The client IP is taken that many
   // hops from the right, never the attacker-controlled leftmost entry.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(10).default(1),
+  // Parent domain for the session cookie (e.g. ".wheelsai.app") when the
+  // web app and API run on sibling subdomains. Without it the cookie is
+  // host-only: the API sees it, but the web app's middleware never does
+  // and bounces every signed-in user back to /login.
+  COOKIE_DOMAIN: z
+    .string()
+    .regex(/^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$/i, "COOKIE_DOMAIN must be a domain like .example.com")
+    .optional(),
 
   // Auth
   JWT_SECRET: z.string().min(32),
@@ -327,27 +335,30 @@ export function validateEnv(raw: Record<string, string | undefined>) {
 
   const data = result.data;
 
-  // Production safety checks
-  if (data.NODE_ENV === "production") {
+  // Safety checks for every deployed environment. Staging is a rehearsal
+  // of production with real keys: before, it skipped all of these and
+  // reflected any CORS origin with credentials.
+  const deployed = data.NODE_ENV !== "development";
+  if (deployed) {
     if (!data.ENCRYPTION_KEY) {
       throw new EnvValidationError(
-        "ENCRYPTION_KEY is required in production (must be distinct from JWT_SECRET)"
+        "ENCRYPTION_KEY is required outside development (must be distinct from JWT_SECRET)"
       );
     }
     if (data.ENCRYPTION_KEY === data.JWT_SECRET) {
       throw new EnvValidationError(
-        "ENCRYPTION_KEY must be distinct from JWT_SECRET in production"
+        "ENCRYPTION_KEY must be distinct from JWT_SECRET outside development"
       );
     }
     if (data.CORS_ORIGIN === "http://localhost:3000") {
-      throw new EnvValidationError("CORS_ORIGIN must be explicitly set in production");
+      throw new EnvValidationError("CORS_ORIGIN must be explicitly set outside development");
     }
     if (data.ALLOW_NOSANA_MOCK) {
-      throw new EnvValidationError("ALLOW_NOSANA_MOCK must not be enabled in production");
+      throw new EnvValidationError("ALLOW_NOSANA_MOCK must not be enabled outside development");
     }
     if (data.ALLOW_MOCK_CHECKOUT) {
       throw new EnvValidationError(
-        "ALLOW_MOCK_CHECKOUT must not be enabled in production"
+        "ALLOW_MOCK_CHECKOUT must not be enabled outside development"
       );
     }
     for (const [name, value] of [
@@ -359,25 +370,27 @@ export function validateEnv(raw: Record<string, string | undefined>) {
       // Slack/GitHub will not call localhost anyway.
       if (!value.startsWith("https://") || /localhost|127\.0\.0\.1/.test(value)) {
         throw new EnvValidationError(
-          `${name} must be an https URL on a public host in production`
+          `${name} must be an https URL on a public host outside development`
         );
       }
     }
-    if (data.ALLOW_DEVNET_WALLET_TOPUPS) {
-      throw new EnvValidationError(
-        "ALLOW_DEVNET_WALLET_TOPUPS must not be enabled in production — the SOL rail grants credits from an operator-stated quote, not an oracle"
-      );
-    }
     if (data.X402_ENABLED && !data.X402_SUBMIT_TRANSACTIONS) {
       throw new EnvValidationError(
-        "X402_ENABLED requires X402_SUBMIT_TRANSACTIONS in production — verification-only mode accepts payments that never land on-chain"
+        "X402_ENABLED requires X402_SUBMIT_TRANSACTIONS outside development — verification-only mode accepts payments that never land on-chain"
       );
     }
     if (data.X402_ENABLED && !data.X402_SETTLEMENT_WORKER_ENABLED) {
       throw new EnvValidationError(
-        "X402_ENABLED requires X402_SETTLEMENT_WORKER_ENABLED in production — without the worker, verified payments are never settled on-chain"
+        "X402_ENABLED requires X402_SETTLEMENT_WORKER_ENABLED outside development — without the worker, verified payments are never settled on-chain"
       );
     }
+  }
+
+  // Production only: staging may run the devnet SOL test rail.
+  if (data.NODE_ENV === "production" && data.ALLOW_DEVNET_WALLET_TOPUPS) {
+    throw new EnvValidationError(
+      "ALLOW_DEVNET_WALLET_TOPUPS must not be enabled in production — the SOL rail grants credits from an operator-stated quote, not an oracle"
+    );
   }
 
   // Config contradictions that are wrong in EVERY environment — catch them

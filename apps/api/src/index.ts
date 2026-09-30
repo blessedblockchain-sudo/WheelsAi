@@ -147,7 +147,8 @@ async function main() {
 
   // Register plugins
   await app.register(cors, {
-    origin: env.NODE_ENV === "production" ? env.CORS_ORIGIN : true,
+    // Reflect any origin only in local development.
+    origin: env.NODE_ENV === "development" ? true : env.CORS_ORIGIN,
     credentials: true,
   });
 

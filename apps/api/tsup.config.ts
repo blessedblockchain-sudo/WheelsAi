@@ -19,7 +19,9 @@ import { defineConfig } from "tsup";
  * (tsc --noEmit) is the gate, and CI's build job depends on it.
  */
 export default defineConfig({
-  entry: { index: "src/index.ts" },
+  // seal-agent-env: one-shot data migration shipped in the image so it can
+  // run with plain node (the runner has no tsx).
+  entry: { index: "src/index.ts", "seal-agent-env": "scripts/seal-agent-env.ts" },
   outDir: "dist",
   format: ["esm"],
   platform: "node",

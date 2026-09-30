@@ -3,6 +3,10 @@
 
 app = "wheelsai-api-staging"
 primary_region = "lax"
+# Give in-flight inference (30s timeout) and the BullMQ workers time to
+# drain on SIGTERM; Fly's default is a 5s SIGKILL.
+kill_signal = "SIGTERM"
+kill_timeout = "60s"
 
 [build]
   dockerfile = "Dockerfile"

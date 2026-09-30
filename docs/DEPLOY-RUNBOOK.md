@@ -29,15 +29,24 @@ flyctl redis attach wheelsai-redis-<env> --app wheelsai-api[-staging]
 `postgres attach` injects `DATABASE_URL`; `redis attach` injects
 `REDIS_URL`. Neither needs to be set by hand.
 
+Postgres must have the `vector` extension available (migration
+`20260808001344_pgvector_embeddings` runs `CREATE EXTENSION vector`).
+Redis must use `maxmemory-policy noeviction`, or BullMQ loses jobs.
+
+`TRUST_PROXY_HOPS` defaults to 1 (Fly's edge). Set it to 0 only if nothing
+sits in front of the API, or client IPs (and every per-IP rate limit)
+become attacker-controlled.
+
 ## 2. API secrets
 
-Boot-fatal without these in production (`validateEnv`):
+Boot-fatal without these outside development, staging included (`validateEnv`):
 
 | Secret | Note |
 | --- | --- |
 | `JWT_SECRET` | ≥32 chars |
 | `ENCRYPTION_KEY` | ≥32 chars, **must differ from JWT_SECRET** |
-| `CORS_ORIGIN` | the real web origin — localhost is refused in production |
+| `CORS_ORIGIN` | the real web origin — localhost is refused outside development (staging included) |
+| `COOKIE_DOMAIN` | the shared parent domain (e.g. `.wheelsai.app`) when web and API run on sibling subdomains; without it the web middleware never sees the session and loops users back to /login |
 | `SOLANA_RPC_URL` | **production only, and non-negotiable**: the schema default is the DEVNET endpoint, and `SOLANA_NETWORK=mainnet-beta` (set in `fly.production.toml`) refuses to boot without an explicit non-devnet URL. May carry an API key (Helius/Triton) — that's why it's a secret, not toml `[env]`. |
 
 Platform keys:
@@ -100,6 +109,19 @@ curl -fsS https://wheelsai-web-staging.fly.dev/api/health
 
 `/health/ready` is the readiness probe the Fly checks use; `/health`
 answers 200 unconditionally and proves nothing.
+
+## 6. One-time data steps after the first deploy
+
+- The model catalog syncs itself at boot (log line "Model catalog synced");
+  no seed step is needed for model deployments. Never run `seed-demo.ts`
+  against a real database.
+- Seal agent secrets written before encryption existed (run with the
+  API's `ENCRYPTION_KEY`; dry run first):
+
+  ```bash
+  flyctl ssh console -a wheelsai-api[-staging] -C "node apps/api/dist/seal-agent-env.js"
+  flyctl ssh console -a wheelsai-api[-staging] -C "node apps/api/dist/seal-agent-env.js --apply"
+  ```
 
 ## Known good / known gaps
 

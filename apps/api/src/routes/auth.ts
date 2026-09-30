@@ -489,6 +489,56 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /**
+   * Organizations the signed-in user belongs to. Login lands in the user's
+   * own org; before this there was no way to act inside a team one had
+   * been invited to.
+   */
+  app.get("/orgs", { preHandler: [requireJwtAuth] }, async (request) => {
+    const { userId, orgId } = request.auth!;
+    const user = await findUserById(userId!);
+    return {
+      organizations: (user?.memberships ?? []).map((m) => ({
+        id: m.org.id,
+        name: m.org.name,
+        role: m.role,
+        current: m.org.id === orgId,
+      })),
+    };
+  });
+
+  /** Re-issue the session for another organization the user belongs to. */
+  app.post(
+    "/switch-org",
+    { preHandler: [requireJwtAuth], config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const { orgId: targetOrgId } = z.object({ orgId: z.string().uuid() }).parse(request.body);
+      const { userId } = request.auth!;
+      const user = await findUserById(userId!);
+      const membership = user?.memberships.find((m) => m.org.id === targetOrgId);
+      if (!user || !membership) {
+        return reply.status(403).send({
+          error: "not_a_member",
+          message: "You are not a member of that organization.",
+        });
+      }
+      const payload: JwtPayload = {
+        userId: user.id,
+        orgId: membership.org.id,
+        email: user.email ?? undefined,
+        walletAddress: user.walletAddress ?? undefined,
+        role: membership.role,
+      };
+      const { accessToken } = generateTokens(app, payload);
+      setAuthCookie(reply, accessToken);
+      return {
+        organization: { id: membership.org.id, name: membership.org.name },
+        role: membership.role,
+        token: accessToken,
+      };
+    },
+  );
+
+  /**
    * Refresh token
    */
   app.post("/refresh", { preHandler: [requireJwtAuth] }, async (request, reply) => {

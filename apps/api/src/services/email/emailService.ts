@@ -123,3 +123,21 @@ export function passwordResetEmail(to: string, url: string): EmailMessage {
     ),
   };
 }
+
+export function teamInviteEmail(
+  to: string,
+  url: string,
+  orgName: string,
+  role: string,
+): EmailMessage {
+  return {
+    to,
+    subject: `You're invited to ${orgName} on WheelsAI`,
+    text: `You have been invited to join ${orgName} on WheelsAI as ${role}.\n\n${url}\n\nThe invite expires in 7 days and only works for ${to}.`,
+    html: layout(
+      `Join ${orgName} on WheelsAI`,
+      `You have been invited to join <strong>${escapeHtml(orgName)}</strong> as ${escapeHtml(role)}. The invite expires in 7 days and only works for ${escapeHtml(to)}.`,
+      { label: "Accept invite", url },
+    ),
+  };
+}

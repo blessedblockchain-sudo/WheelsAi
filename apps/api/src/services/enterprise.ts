@@ -116,12 +116,20 @@ export async function getAuditLogSummary(orgId: string, days: number = 30) {
 /**
  * Create a team invite
  */
+/** Roles an invite may grant. Ownership is never handed out by invite. */
+export const INVITABLE_ROLES = ["admin", "member"] as const;
+export type InvitableRole = (typeof INVITABLE_ROLES)[number];
+
 export async function createTeamInvite(
   orgId: string,
   invitedBy: string,
-  email: string,
+  rawEmail: string,
   role: string = "member"
 ) {
+  if (!(INVITABLE_ROLES as readonly string[]).includes(role)) {
+    throw new Error("Invites can grant the admin or member role only");
+  }
+  const email = rawEmail.trim().toLowerCase();
   // Check if user is already a member
   const existingUser = await prisma.user.findUnique({
     where: { email },
@@ -182,30 +190,47 @@ export async function acceptTeamInvite(token: string, userId: string) {
   }
 
   if (new Date() > invite.expiresAt) {
-    await prisma.teamInvite.update({
-      where: { id: invite.id },
+    await prisma.teamInvite.updateMany({
+      where: { id: invite.id, status: "pending" },
       data: { status: "expired" },
     });
     throw new Error("Invite has expired");
   }
 
-  // Add user to organization
-  await prisma.$transaction([
-    prisma.orgMember.create({
-      data: {
-        orgId: invite.orgId,
-        userId,
-        role: invite.role,
-      },
-    }),
-    prisma.teamInvite.update({
-      where: { id: invite.id },
-      data: {
-        status: "accepted",
-        acceptedAt: new Date(),
-      },
-    }),
-  ]);
+  // The invite belongs to the address it was sent to. Before this, anyone
+  // holding the link (forwarded, leaked) joined with the invited role.
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, emailVerified: true },
+  });
+  if (!user?.email || user.email.toLowerCase() !== invite.email.toLowerCase()) {
+    throw new Error(
+      `This invite was sent to ${invite.email}. Sign in with that email address to accept it.`
+    );
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Single use: only the request that flips pending -> accepted proceeds.
+    const claimed = await tx.teamInvite.updateMany({
+      where: { id: invite.id, status: "pending" },
+      data: { status: "accepted", acceptedAt: new Date() },
+    });
+    if (claimed.count !== 1) {
+      throw new Error("Invite is no longer valid");
+    }
+    const existing = await tx.orgMember.findFirst({
+      where: { orgId: invite.orgId, userId },
+    });
+    if (!existing) {
+      await tx.orgMember.create({
+        data: { orgId: invite.orgId, userId, role: invite.role },
+      });
+    }
+    // Holding a link sent to this inbox proves control of the address.
+    if (!user.emailVerified) {
+      await tx.user.update({ where: { id: userId }, data: { emailVerified: true } });
+    }
+  });
 
   return { orgId: invite.orgId, role: invite.role };
 }

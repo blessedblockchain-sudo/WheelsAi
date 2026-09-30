@@ -1,5 +1,9 @@
 import { FastifyInstance } from "fastify";
 import { authenticate, requireRole } from "../middleware/auth.js";
+import { z } from "zod";
+import { prisma } from "@wheelsai/db";
+import { webBaseUrl } from "./emailAuth.js";
+import { isEmailConfigured, sendEmail, teamInviteEmail } from "../services/email/emailService.js";
 import {
   createAuditLog,
   getAuditLogs,
@@ -16,6 +20,7 @@ import {
   configureOidcSso,
   disableSso,
   deleteSsoConfig,
+  INVITABLE_ROLES,
 } from "../services/enterprise.js";
 
 export async function enterpriseRoutes(app: FastifyInstance) {
@@ -106,14 +111,19 @@ export async function enterpriseRoutes(app: FastifyInstance) {
   // Create team invite
   app.post("/team/invites", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
     const { orgId, userId } = request.user as { orgId: string; userId: string };
-    const { email, role } = request.body as { email: string; role?: string };
-
-    if (!email) {
+    const parsed = z
+      .object({
+        email: z.string().email(),
+        role: z.enum(INVITABLE_ROLES).default("member"),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
       return reply.status(400).send({
         success: false,
-        error: "Email is required",
+        error: "A valid email is required, and role must be admin or member",
       });
     }
+    const { email, role } = parsed.data;
 
     try {
       const invite = await createTeamInvite(orgId, userId, email, role);
@@ -125,13 +135,32 @@ export async function enterpriseRoutes(app: FastifyInstance) {
         action: "invite",
         resource: "team",
         resourceId: invite.id,
-        details: { email, role: role || "member" },
+        details: { email: invite.email, role },
       });
+
+      const inviteUrl = `${webBaseUrl()}/invite?token=${encodeURIComponent(invite.token)}`;
+      let emailSent = false;
+      if (isEmailConfigured()) {
+        const org = await prisma.organization.findUnique({
+          where: { id: orgId },
+          select: { name: true },
+        });
+        try {
+          await sendEmail(teamInviteEmail(invite.email, inviteUrl, org?.name ?? "a team", role));
+          emailSent = true;
+        } catch (err) {
+          request.log.error({ err, inviteId: invite.id }, "Failed to email team invite");
+        }
+      }
 
       return reply.send({
         success: true,
         data: invite,
-        message: "Invite sent successfully",
+        inviteUrl,
+        emailSent,
+        message: emailSent
+          ? `Invite emailed to ${invite.email}`
+          : "Invite created. Email is not configured, so share the invite link directly.",
       });
     } catch (error: any) {
       return reply.status(400).send({

@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
-import { settingsApi, authApi, type UserProfile, type UserSettings } from "@/lib/api";
+import { settingsApi, authApi, type UserProfile, type UserSettings, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Tab = "profile" | "security" | "notifications" | "wallets";
@@ -56,7 +56,7 @@ export default function SettingsPage() {
         setDisplayName(profileData.profile.displayName || "");
         setEmail(profileData.profile.email);
       } catch (error) {
-        toast.error("Failed to load settings");
+        toast.error(getErrorMessage(error, "Failed to load settings"));
       } finally {
         setIsLoading(false);
       }
@@ -70,7 +70,7 @@ export default function SettingsPage() {
       await settingsApi.updateProfile({ displayName, email });
       toast.success("Profile updated");
     } catch (error) {
-      toast.error("Failed to update profile");
+      toast.error(getErrorMessage(error, "Failed to update profile"));
     } finally {
       setIsSaving(false);
     }
@@ -95,7 +95,7 @@ export default function SettingsPage() {
       setNewPassword("");
       setConfirmPassword("");
     } catch (error) {
-      toast.error("Failed to change password");
+      toast.error(getErrorMessage(error, "Failed to change password"));
     } finally {
       setIsSaving(false);
     }
@@ -106,7 +106,7 @@ export default function SettingsPage() {
       await authApi.logout();
       window.location.href = "/login";
     } catch (error) {
-      toast.error("Failed to log out");
+      toast.error(getErrorMessage(error, "Failed to log out"));
     }
   }
 
@@ -166,8 +166,8 @@ export default function SettingsPage() {
                   className={cn(
                     "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                     activeTab === tab.id
-                      ? "bg-primary-50 text-primary-700"
-                      : "text-gray-600 hover:bg-gray-100 hover:text-gray-900"
+                      ? "bg-primary/10 text-primary-700"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   )}
                 >
                   <tab.icon className="h-4 w-4" />
@@ -178,7 +178,7 @@ export default function SettingsPage() {
               <div className="pt-4">
                 <button
                   onClick={handleLogout}
-                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-500/10"
                 >
                   <LogOut className="h-4 w-4" />
                   Log out
@@ -200,7 +200,7 @@ export default function SettingsPage() {
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Display Name
                     </label>
                     <Input
@@ -212,7 +212,7 @@ export default function SettingsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Email Address
                     </label>
                     <Input
@@ -232,19 +232,19 @@ export default function SettingsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Account ID
                     </label>
-                    <code className="mt-1 block rounded bg-gray-100 px-3 py-2 text-sm">
+                    <code className="mt-1 block rounded bg-muted px-3 py-2 text-sm">
                       {profile?.id}
                     </code>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Member Since
                     </label>
-                    <p className="mt-1 text-gray-600">
+                    <p className="mt-1 text-muted-foreground">
                       {profile?.createdAt && new Date(profile.createdAt).toLocaleDateString()}
                     </p>
                   </div>
@@ -271,7 +271,7 @@ export default function SettingsPage() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         Current Password
                       </label>
                       <Input
@@ -283,7 +283,7 @@ export default function SettingsPage() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         New Password
                       </label>
                       <Input
@@ -296,7 +296,7 @@ export default function SettingsPage() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         Confirm New Password
                       </label>
                       <Input
@@ -330,7 +330,7 @@ export default function SettingsPage() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="font-medium">Authenticator App</p>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           Use an authenticator app to generate one-time codes
                         </p>
                       </div>
@@ -341,7 +341,7 @@ export default function SettingsPage() {
                   </CardContent>
                 </Card>
 
-                <Card className="border-red-200">
+                <Card className="border-red-500/30">
                   <CardHeader>
                     <CardTitle className="text-red-600">Danger Zone</CardTitle>
                   </CardHeader>
@@ -349,7 +349,7 @@ export default function SettingsPage() {
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="font-medium">Delete Account</p>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           Permanently delete your account and all associated data
                         </p>
                       </div>
@@ -398,7 +398,7 @@ export default function SettingsPage() {
                     >
                       <div>
                         <p className="font-medium">{notification.label}</p>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           {notification.description}
                         </p>
                       </div>
@@ -408,7 +408,7 @@ export default function SettingsPage() {
                           className="peer sr-only"
                           defaultChecked={notification.id !== "product_updates"}
                         />
-                        <div className="peer h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300"></div>
+                        <div className="peer h-6 w-11 rounded-full bg-input after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-border after:bg-white after:transition-all after:content-[''] peer-checked:bg-primary-600 peer-checked:after:translate-x-full peer-checked:after:border-white peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/40"></div>
                       </label>
                     </div>
                   ))}
@@ -462,7 +462,7 @@ function WalletsTab({
       if (err?.message?.includes("User rejected")) {
         toast.error("Signature rejected");
       } else {
-        toast.error("Failed to link wallet");
+        toast.error(getErrorMessage(err, "Failed to link wallet"));
       }
     } finally {
       setIsLinking(false);
@@ -495,7 +495,7 @@ function WalletsTab({
                 </div>
                 <div>
                   <p className="font-medium">Solana Wallet</p>
-                  <code className="text-sm text-gray-500">
+                  <code className="text-sm text-muted-foreground">
                     {profile.walletAddress.slice(0, 8)}...
                     {profile.walletAddress.slice(-8)}
                   </code>
@@ -506,7 +506,7 @@ function WalletsTab({
                 {connected && (
                   <button
                     onClick={() => disconnect()}
-                    className="p-1.5 rounded-md hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                    className="p-1.5 rounded-md hover:bg-muted text-gray-400 hover:text-foreground transition-colors"
                     title="Disconnect wallet"
                   >
                     <Unlink className="h-4 w-4" />
@@ -517,7 +517,7 @@ function WalletsTab({
           ) : (
             <div className="text-center py-8">
               <Wallet className="mx-auto h-12 w-12 text-gray-300" />
-              <p className="mt-4 text-gray-500">No wallets connected</p>
+              <p className="mt-4 text-muted-foreground">No wallets connected</p>
               <Button
                 className="mt-4"
                 onClick={handleConnectAndLink}
@@ -543,9 +543,9 @@ function WalletsTab({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-8 text-center">
+          <div className="rounded-lg border border-dashed border-border bg-muted p-8 text-center">
             <AlertTriangle className="mx-auto h-8 w-8 text-gray-400" />
-            <p className="mt-2 text-sm text-gray-500">
+            <p className="mt-2 text-sm text-muted-foreground">
               Agent wallets will be available in a future update
             </p>
           </div>

@@ -25,7 +25,7 @@ import {
   Select,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { agentsApi, marketplaceApi, type Agent, type CreateListingInput } from "@/lib/api";
+import { agentsApi, marketplaceApi, type Agent, type CreateListingInput, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
@@ -81,7 +81,7 @@ function PublishWizardContent() {
         const { agents } = await agentsApi.list();
         setAgents(agents);
       } catch (error) {
-        toast.error("Failed to load agents");
+        toast.error(getErrorMessage(error, "Failed to load agents"));
       } finally {
         setIsLoadingAgents(false);
       }
@@ -106,7 +106,7 @@ function PublishWizardContent() {
             monthlyPriceCents: listing.monthlyPriceCents || undefined,
           });
         } catch (error) {
-          toast.error("Failed to load listing");
+          toast.error(getErrorMessage(error, "Failed to load listing"));
         }
       }
       loadListing();
@@ -189,7 +189,7 @@ function PublishWizardContent() {
 
       router.push("/dashboard/marketplace");
     } catch (error: any) {
-      toast.error(error.message || "Failed to save listing");
+      toast.error(getErrorMessage(error, "Failed to save listing"));
     } finally {
       setIsLoading(false);
     }
@@ -214,10 +214,10 @@ function PublishWizardContent() {
                   className={cn(
                     "flex items-center gap-2 rounded-full px-4 py-2",
                     index === currentStep
-                      ? "bg-primary-100 text-primary-700"
+                      ? "bg-primary/15 text-primary-700"
                       : index < currentStep
-                        ? "bg-green-100 text-green-700"
-                        : "bg-gray-100 text-gray-500"
+                        ? "bg-green-500/10 text-green-500"
+                        : "bg-muted text-muted-foreground"
                   )}
                 >
                   {index < currentStep ? (
@@ -233,7 +233,7 @@ function PublishWizardContent() {
                   <div
                     className={cn(
                       "mx-2 h-0.5 w-8 sm:w-16",
-                      index < currentStep ? "bg-green-300" : "bg-gray-200"
+                      index < currentStep ? "bg-green-300" : "bg-muted"
                     )}
                   />
                 )}
@@ -250,7 +250,7 @@ function PublishWizardContent() {
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-semibold">Select an Agent</h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Choose which agent you want to publish to the marketplace
                   </p>
                 </div>
@@ -262,10 +262,10 @@ function PublishWizardContent() {
                 ) : agents.length === 0 ? (
                   <div className="py-12 text-center">
                     <Bot className="mx-auto h-12 w-12 text-gray-300" />
-                    <h3 className="mt-4 font-semibold text-gray-900">
+                    <h3 className="mt-4 font-semibold text-foreground">
                       No agents found
                     </h3>
-                    <p className="mt-2 text-sm text-gray-500">
+                    <p className="mt-2 text-sm text-muted-foreground">
                       Create an agent first before publishing to the marketplace
                     </p>
                     <Link href="/dashboard/agents/new">
@@ -284,23 +284,23 @@ function PublishWizardContent() {
                         className={cn(
                           "flex cursor-pointer items-center gap-4 rounded-lg border p-4 transition-colors",
                           formData.agentId === agent.id
-                            ? "border-primary-500 bg-primary-50"
-                            : "hover:bg-gray-50"
+                            ? "border-primary-500 bg-primary/10"
+                            : "hover:bg-muted"
                         )}
                         onClick={() => updateForm({ agentId: agent.id })}
                       >
                         <RadioGroupItem value={agent.id} id={agent.id} />
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
-                          <Bot className="h-5 w-5 text-gray-600" />
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                          <Bot className="h-5 w-5 text-muted-foreground" />
                         </div>
                         <div className="flex-1">
                           <label
                             htmlFor={agent.id}
-                            className="cursor-pointer font-medium text-gray-900"
+                            className="cursor-pointer font-medium text-foreground"
                           >
                             {agent.name}
                           </label>
-                          <p className="text-sm text-gray-500">
+                          <p className="text-sm text-muted-foreground">
                             {agent.framework} &middot; {agent.description || "No description"}
                           </p>
                         </div>
@@ -316,7 +316,7 @@ function PublishWizardContent() {
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-semibold">Listing Details</h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Provide information to help users discover your agent
                   </p>
                 </div>
@@ -332,7 +332,7 @@ function PublishWizardContent() {
                       className="mt-1"
                       maxLength={100}
                     />
-                    <p className="mt-1 text-xs text-gray-500">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       {formData.title.length}/100 characters
                     </p>
                   </div>
@@ -350,7 +350,7 @@ function PublishWizardContent() {
                       rows={2}
                       maxLength={280}
                     />
-                    <p className="mt-1 text-xs text-gray-500">
+                    <p className="mt-1 text-xs text-muted-foreground">
                       {formData.shortDescription.length}/280 characters
                     </p>
                   </div>
@@ -395,7 +395,7 @@ function PublishWizardContent() {
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-semibold">Pricing</h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Choose how you want to monetize your agent. You'll earn 90%
                     of all revenue.
                   </p>
@@ -416,8 +416,8 @@ function PublishWizardContent() {
                     className={cn(
                       "flex cursor-pointer items-start gap-4 rounded-lg border p-4 transition-colors",
                       formData.pricingModel === "free"
-                        ? "border-primary-500 bg-primary-50"
-                        : "hover:bg-gray-50"
+                        ? "border-primary-500 bg-primary/10"
+                        : "hover:bg-muted"
                     )}
                     onClick={() =>
                       updateForm({
@@ -431,11 +431,11 @@ function PublishWizardContent() {
                     <div>
                       <label
                         htmlFor="free"
-                        className="cursor-pointer font-medium text-gray-900"
+                        className="cursor-pointer font-medium text-foreground"
                       >
                         Free
                       </label>
-                      <p className="text-sm text-gray-500">
+                      <p className="text-sm text-muted-foreground">
                         Anyone can use your agent for free. Great for building reputation.
                       </p>
                     </div>
@@ -445,8 +445,8 @@ function PublishWizardContent() {
                     className={cn(
                       "rounded-lg border p-4 transition-colors",
                       formData.pricingModel === "per_request"
-                        ? "border-primary-500 bg-primary-50"
-                        : "hover:bg-gray-50"
+                        ? "border-primary-500 bg-primary/10"
+                        : "hover:bg-muted"
                     )}
                   >
                     <div
@@ -461,11 +461,11 @@ function PublishWizardContent() {
                       <div className="flex-1">
                         <label
                           htmlFor="per_request"
-                          className="cursor-pointer font-medium text-gray-900"
+                          className="cursor-pointer font-medium text-foreground"
                         >
                           Pay per Request
                         </label>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           Users pay for each request. Best for usage-based billing.
                         </p>
                       </div>
@@ -474,7 +474,7 @@ function PublishWizardContent() {
                       <div className="ml-8 mt-4">
                         <Label htmlFor="perRequestPrice">Price per Request</Label>
                         <div className="mt-1 flex items-center gap-2">
-                          <span className="text-gray-500">$</span>
+                          <span className="text-muted-foreground">$</span>
                           <Input
                             id="perRequestPrice"
                             type="number"
@@ -496,9 +496,9 @@ function PublishWizardContent() {
                             placeholder="0.01"
                             className="w-32"
                           />
-                          <span className="text-sm text-gray-500">per request</span>
+                          <span className="text-sm text-muted-foreground">per request</span>
                         </div>
-                        <p className="mt-1 text-xs text-gray-500">
+                        <p className="mt-1 text-xs text-muted-foreground">
                           You'll earn $
                           {(
                             ((formData.pricePerRequestCents || 0) / 100) *
@@ -514,8 +514,8 @@ function PublishWizardContent() {
                     className={cn(
                       "rounded-lg border p-4 transition-colors",
                       formData.pricingModel === "monthly"
-                        ? "border-primary-500 bg-primary-50"
-                        : "hover:bg-gray-50"
+                        ? "border-primary-500 bg-primary/10"
+                        : "hover:bg-muted"
                     )}
                   >
                     <div
@@ -530,11 +530,11 @@ function PublishWizardContent() {
                       <div className="flex-1">
                         <label
                           htmlFor="monthly"
-                          className="cursor-pointer font-medium text-gray-900"
+                          className="cursor-pointer font-medium text-foreground"
                         >
                           Monthly Subscription
                         </label>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           Users pay a fixed monthly fee. Best for predictable revenue.
                         </p>
                       </div>
@@ -543,7 +543,7 @@ function PublishWizardContent() {
                       <div className="ml-8 mt-4">
                         <Label htmlFor="monthlyPrice">Monthly Price</Label>
                         <div className="mt-1 flex items-center gap-2">
-                          <span className="text-gray-500">$</span>
+                          <span className="text-muted-foreground">$</span>
                           <Input
                             id="monthlyPrice"
                             type="number"
@@ -565,9 +565,9 @@ function PublishWizardContent() {
                             placeholder="9.99"
                             className="w-32"
                           />
-                          <span className="text-sm text-gray-500">per month</span>
+                          <span className="text-sm text-muted-foreground">per month</span>
                         </div>
-                        <p className="mt-1 text-xs text-gray-500">
+                        <p className="mt-1 text-xs text-muted-foreground">
                           You'll earn $
                           {(
                             ((formData.monthlyPriceCents || 0) / 100) *
@@ -583,8 +583,8 @@ function PublishWizardContent() {
                     className={cn(
                       "flex cursor-pointer items-start gap-4 rounded-lg border p-4 transition-colors",
                       formData.pricingModel === "tokenized"
-                        ? "border-primary-500 bg-primary-50"
-                        : "hover:bg-gray-50"
+                        ? "border-primary-500 bg-primary/10"
+                        : "hover:bg-muted"
                     )}
                     onClick={() =>
                       updateForm({
@@ -598,15 +598,15 @@ function PublishWizardContent() {
                     <div>
                       <label
                         htmlFor="tokenized"
-                        className="cursor-pointer font-medium text-gray-900"
+                        className="cursor-pointer font-medium text-foreground"
                       >
                         Token Gated
                       </label>
-                      <p className="text-sm text-gray-500">
+                      <p className="text-sm text-muted-foreground">
                         Access requires holding your agent's token. Tokenize your agent
                         on pump.fun to create a bonding curve token.
                       </p>
-                      <p className="mt-1 text-xs text-gray-500">
+                      <p className="mt-1 text-xs text-muted-foreground">
                         Requires: reputation score &ge; 50, agent uptime &ge; 7 days
                       </p>
                     </div>
@@ -620,41 +620,41 @@ function PublishWizardContent() {
               <div className="space-y-6">
                 <div>
                   <h2 className="text-lg font-semibold">Preview & Publish</h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Review your listing before publishing
                   </p>
                 </div>
 
-                <div className="rounded-lg border bg-gray-50 p-6">
+                <div className="rounded-lg border bg-muted p-6">
                   <div className="flex items-start gap-4">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-gradient-to-br from-primary-100 to-primary-200">
+                    <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/25">
                       <Bot className="h-8 w-8 text-primary-600" />
                     </div>
                     <div>
-                      <h3 className="text-xl font-bold text-gray-900">
+                      <h3 className="text-xl font-bold text-foreground">
                         {formData.title || "Untitled"}
                       </h3>
-                      <p className="text-gray-500">
+                      <p className="text-muted-foreground">
                         by Your Organization &middot;{" "}
                         {selectedAgent?.framework || "custom"}
                       </p>
                     </div>
                   </div>
 
-                  <p className="mt-4 text-gray-700">
+                  <p className="mt-4 text-foreground">
                     {formData.shortDescription || "No description"}
                   </p>
 
                   <div className="mt-4 flex flex-wrap gap-2">
-                    <span className="rounded-full bg-white px-3 py-1 text-sm text-gray-600">
+                    <span className="rounded-full bg-card px-3 py-1 text-sm text-muted-foreground">
                       {CATEGORIES.find((c) => c.value === formData.category)?.label}
                     </span>
                     <span
                       className={cn(
                         "rounded-full px-3 py-1 text-sm font-medium",
                         formData.pricingModel === "free"
-                          ? "bg-green-100 text-green-700"
-                          : "bg-primary-100 text-primary-700"
+                          ? "bg-green-500/10 text-green-500"
+                          : "bg-primary/15 text-primary-700"
                       )}
                     >
                       {formData.pricingModel === "free"
@@ -668,8 +668,8 @@ function PublishWizardContent() {
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-4">
-                  <p className="text-sm text-yellow-800">
+                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+                  <p className="text-sm text-yellow-500">
                     <strong>Note:</strong> Once published, your agent will be
                     visible to all WheelsAI users. You can always update or
                     archive your listing later.

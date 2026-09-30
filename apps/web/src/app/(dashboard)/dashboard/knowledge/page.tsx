@@ -22,7 +22,9 @@ import {
   type KnowledgeBase,
   type KnowledgeDocument,
   type SearchResult,
+  getErrorMessage,
 } from "@/lib/api";
+import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
 // Status badge color map
@@ -164,7 +166,7 @@ export default function KnowledgePage() {
       await loadData();
     } catch (error) {
       console.error("Failed to create knowledge base:", error);
-      alert((error as Error).message);
+      toast.error(getErrorMessage(error, "Failed to create knowledge base"));
     } finally {
       setCreating(false);
     }
@@ -218,7 +220,7 @@ export default function KnowledgePage() {
       await loadData();
     } catch (error) {
       console.error("Failed to add document:", error);
-      alert((error as Error).message);
+      toast.error(getErrorMessage(error, "Failed to add document"));
     } finally {
       setAddingDoc(false);
     }
@@ -265,7 +267,7 @@ export default function KnowledgePage() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 text-matrix-green animate-spin" />
+        <Loader2 className="h-8 w-8 text-primary animate-spin" />
       </div>
     );
   }
@@ -279,7 +281,7 @@ export default function KnowledgePage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-matrix-green tracking-wide">
+          <h1 className="text-2xl font-bold text-primary tracking-wide">
             Knowledge Bases
           </h1>
           <p className="text-gray-400 mt-1">
@@ -288,7 +290,7 @@ export default function KnowledgePage() {
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 transition-colors font-medium"
+          className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 transition-colors font-medium"
         >
           <Plus className="h-4 w-4" />
           New Knowledge Base
@@ -317,31 +319,31 @@ export default function KnowledgePage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-matrix-border">
+      <div className="flex gap-1 border-b border-border">
         <button
           onClick={() => setActiveTab("bases")}
           className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
             activeTab === "bases"
-              ? "text-matrix-green"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-primary"
+              : "text-muted-foreground hover:text-gray-300"
           }`}
         >
           Knowledge Bases
           {activeTab === "bases" && (
-            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-matrix-green" />
+            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
           )}
         </button>
         <button
           onClick={() => setActiveTab("search")}
           className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
             activeTab === "search"
-              ? "text-matrix-green"
-              : "text-gray-500 hover:text-gray-300"
+              ? "text-primary"
+              : "text-muted-foreground hover:text-gray-300"
           }`}
         >
           Search
           {activeTab === "search" && (
-            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-matrix-green" />
+            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
           )}
         </button>
       </div>
@@ -389,7 +391,7 @@ export default function KnowledgePage() {
                 onChange={(e) =>
                   setCreateForm({ ...createForm, name: e.target.value })
                 }
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
                 placeholder="My Knowledge Base"
               />
             </FieldGroup>
@@ -400,7 +402,7 @@ export default function KnowledgePage() {
                   setCreateForm({ ...createForm, description: e.target.value })
                 }
                 rows={3}
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30 resize-none"
+                className="w-full px-3 py-2 bg-background border border-input rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 resize-none"
                 placeholder="Describe what this knowledge base contains..."
               />
             </FieldGroup>
@@ -410,7 +412,7 @@ export default function KnowledgePage() {
                 onChange={(e) =>
                   setCreateForm({ ...createForm, embeddingModel: e.target.value })
                 }
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
               >
                 <option value="text-embedding-3-small">text-embedding-3-small</option>
                 <option value="text-embedding-3-large">text-embedding-3-large</option>
@@ -430,7 +432,7 @@ export default function KnowledgePage() {
                   }
                   min={64}
                   max={8192}
-                  className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                  className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
                 />
               </FieldGroup>
               <FieldGroup label="Chunk Overlap">
@@ -445,7 +447,7 @@ export default function KnowledgePage() {
                   }
                   min={0}
                   max={1024}
-                  className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                  className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
                 />
               </FieldGroup>
             </div>
@@ -454,14 +456,14 @@ export default function KnowledgePage() {
           <div className="flex justify-end gap-3 mt-6">
             <button
               onClick={() => setShowCreateModal(false)}
-              className="px-4 py-2 text-gray-400 hover:text-gray-200 hover:bg-matrix-surface rounded-lg transition-colors"
+              className="px-4 py-2 text-gray-400 hover:text-gray-200 hover:bg-muted rounded-lg transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={handleCreateKb}
               disabled={!createForm.name.trim() || creating}
-              className="flex items-center gap-2 px-4 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+              className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
             >
               {creating && <Loader2 className="h-4 w-4 animate-spin" />}
               Create
@@ -481,7 +483,7 @@ export default function KnowledgePage() {
                 onChange={(e) =>
                   setDocForm({ ...docForm, title: e.target.value })
                 }
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
                 placeholder="Document title"
               />
             </FieldGroup>
@@ -492,7 +494,7 @@ export default function KnowledgePage() {
                   setDocForm({ ...docForm, content: e.target.value })
                 }
                 rows={6}
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30 resize-none font-mono text-sm"
+                className="w-full px-3 py-2 bg-background border border-input rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 resize-none font-mono text-sm"
                 placeholder="Paste or type document content..."
               />
             </FieldGroup>
@@ -502,7 +504,7 @@ export default function KnowledgePage() {
                 onChange={(e) =>
                   setDocForm({ ...docForm, sourceType: e.target.value })
                 }
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
               >
                 <option value="text">Text</option>
                 <option value="url">URL</option>
@@ -516,7 +518,7 @@ export default function KnowledgePage() {
                 onChange={(e) =>
                   setDocForm({ ...docForm, tags: e.target.value })
                 }
-                className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-gray-200 placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
                 placeholder="docs, api, guide"
               />
             </FieldGroup>
@@ -525,14 +527,14 @@ export default function KnowledgePage() {
           <div className="flex justify-end gap-3 mt-6">
             <button
               onClick={() => setShowAddDocModal(false)}
-              className="px-4 py-2 text-gray-400 hover:text-gray-200 hover:bg-matrix-surface rounded-lg transition-colors"
+              className="px-4 py-2 text-gray-400 hover:text-gray-200 hover:bg-muted rounded-lg transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={handleAddDocument}
               disabled={!docForm.title.trim() || !docForm.content.trim() || addingDoc}
-              className="flex items-center gap-2 px-4 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+              className="flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
             >
               {addingDoc && <Loader2 className="h-4 w-4 animate-spin" />}
               Add Document
@@ -572,16 +574,16 @@ function KnowledgeBasesTab({
   if (knowledgeBases.length === 0) {
     return (
       <div className="text-center py-16">
-        <Database className="h-12 w-12 text-gray-600 mx-auto mb-4" />
+        <Database className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
         <h3 className="text-lg font-medium text-gray-300 mb-2">
           No knowledge bases yet
         </h3>
-        <p className="text-gray-500 mb-6">
+        <p className="text-muted-foreground mb-6">
           Create your first knowledge base to start adding documents and enable semantic search.
         </p>
         <button
           onClick={onCreateNew}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 transition-colors font-medium"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 transition-colors font-medium"
         >
           <Plus className="h-4 w-4" />
           New Knowledge Base
@@ -597,16 +599,16 @@ function KnowledgeBasesTab({
         return (
           <div
             key={kb.id}
-            className="rounded-xl border border-matrix-border bg-matrix-surface transition-all duration-200 hover:border-matrix-green/20"
+            className="rounded-xl border border-border bg-card transition-all duration-200 hover:border-primary/20"
           >
             {/* Card header */}
             <button
               onClick={() => onToggleExpand(kb.id)}
               className="w-full px-5 py-4 flex items-start gap-4 text-left"
             >
-              <div className="mt-0.5 text-gray-500">
+              <div className="mt-0.5 text-muted-foreground">
                 {isExpanded ? (
-                  <ChevronDown className="h-5 w-5 text-matrix-green" />
+                  <ChevronDown className="h-5 w-5 text-primary" />
                 ) : (
                   <ChevronRight className="h-5 w-5" />
                 )}
@@ -632,7 +634,7 @@ function KnowledgeBasesTab({
                   </p>
                 )}
 
-                <div className="flex items-center gap-5 mt-2 text-xs text-gray-500">
+                <div className="flex items-center gap-5 mt-2 text-xs text-muted-foreground">
                   <span className="flex items-center gap-1">
                     <FileText className="h-3.5 w-3.5" />
                     {kb.totalDocuments} document{kb.totalDocuments !== 1 ? "s" : ""}
@@ -658,7 +660,7 @@ function KnowledgeBasesTab({
               >
                 <button
                   onClick={() => onDeleteKb(kb.id)}
-                  className="p-2 text-gray-600 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+                  className="p-2 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
                   title="Delete knowledge base"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -668,12 +670,12 @@ function KnowledgeBasesTab({
 
             {/* Expanded documents section */}
             {isExpanded && (
-              <div className="border-t border-matrix-border px-5 py-4">
+              <div className="border-t border-border px-5 py-4">
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-sm font-medium text-gray-300">Documents</h4>
                   <button
                     onClick={() => onAddDoc(kb.id)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-md hover:bg-matrix-green/20 transition-colors font-medium"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary/10 text-primary border border-primary/30 rounded-md hover:bg-primary/20 transition-colors font-medium"
                   >
                     <Plus className="h-3 w-3" />
                     Add Document
@@ -682,11 +684,11 @@ function KnowledgeBasesTab({
 
                 {docsLoading ? (
                   <div className="flex items-center justify-center py-8">
-                    <Loader2 className="h-5 w-5 text-matrix-green animate-spin" />
+                    <Loader2 className="h-5 w-5 text-primary animate-spin" />
                   </div>
                 ) : expandedDocs.length === 0 ? (
-                  <div className="text-center py-8 text-gray-500 text-sm">
-                    <BookOpen className="h-8 w-8 mx-auto mb-2 text-gray-600" />
+                  <div className="text-center py-8 text-muted-foreground text-sm">
+                    <BookOpen className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
                     No documents yet. Add one to get started.
                   </div>
                 ) : (
@@ -694,14 +696,14 @@ function KnowledgeBasesTab({
                     {expandedDocs.map((doc) => (
                       <div
                         key={doc.id}
-                        className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-matrix-dark border border-matrix-border/60"
+                        className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-background border border-border/60"
                       >
-                        <FileText className="h-4 w-4 text-gray-500 shrink-0" />
+                        <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-gray-200 truncate">
                             {doc.title}
                           </p>
-                          <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
                             <span
                               className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${statusClasses(
                                 doc.status
@@ -713,7 +715,7 @@ function KnowledgeBasesTab({
                             <span>{doc.chunkCount} chunks</span>
                             <span>{formatBytes(doc.sizeBytes)}</span>
                             {doc.tags.length > 0 && (
-                              <span className="text-matrix-green-dim">
+                              <span className="text-primary">
                                 {doc.tags.join(", ")}
                               </span>
                             )}
@@ -721,7 +723,7 @@ function KnowledgeBasesTab({
                         </div>
                         <button
                           onClick={() => onDeleteDoc(kb.id, doc.id)}
-                          className="p-1.5 text-gray-600 hover:text-red-400 hover:bg-red-500/10 rounded transition-colors shrink-0"
+                          className="p-1.5 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 rounded transition-colors shrink-0"
                           title="Delete document"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -777,7 +779,7 @@ function SearchTab({
         <select
           value={searchKbId}
           onChange={(e) => onKbChange(e.target.value)}
-          className="px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30 sm:w-64"
+          className="px-3 py-2 bg-background border border-border rounded-lg text-gray-200 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 sm:w-64"
         >
           <option value="">Select Knowledge Base</option>
           {knowledgeBases.map((kb) => (
@@ -788,21 +790,21 @@ function SearchTab({
         </select>
 
         <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => onQueryChange(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Enter your semantic search query..."
-            className="w-full pl-10 pr-4 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+            className="w-full pl-10 pr-4 py-2 bg-background border border-border rounded-lg text-gray-200 placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
           />
         </div>
 
         <button
           onClick={onSearch}
           disabled={!searchKbId || !searchQuery.trim() || searching}
-          className="flex items-center justify-center gap-2 px-5 py-2 bg-matrix-green/10 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium shrink-0"
+          className="flex items-center justify-center gap-2 px-5 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium shrink-0"
         >
           {searching ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -816,7 +818,7 @@ function SearchTab({
       {/* Results */}
       {searchResults.length > 0 && (
         <div className="space-y-3">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} found
             {searchTotal > 0 && (
               <span> &middot; {searchTotal} chunks searched</span>
@@ -826,15 +828,15 @@ function SearchTab({
           {searchResults.map((result, idx) => (
             <div
               key={`${result.chunkId}-${idx}`}
-              className="rounded-lg border border-matrix-border bg-matrix-surface p-4"
+              className="rounded-lg border border-border bg-card p-4"
             >
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-matrix-green" />
+                  <FileText className="h-4 w-4 text-primary" />
                   <span className="text-sm font-medium text-gray-200">
                     {result.documentTitle}
                   </span>
-                  <span className="text-xs text-gray-500">
+                  <span className="text-xs text-muted-foreground">
                     Chunk #{result.chunkIndex}
                   </span>
                 </div>
@@ -851,14 +853,14 @@ function SearchTab({
       {/* Empty state for search */}
       {!searching && searchResults.length === 0 && searchQuery.trim() && searchKbId && (
         <div className="text-center py-12">
-          <AlertCircle className="h-10 w-10 text-gray-600 mx-auto mb-3" />
+          <AlertCircle className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
           <p className="text-gray-400">No results found for your query.</p>
         </div>
       )}
 
       {!searchKbId && (
         <div className="text-center py-12">
-          <Search className="h-10 w-10 text-gray-600 mx-auto mb-3" />
+          <Search className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
           <p className="text-gray-400">
             Select a knowledge base and enter a query to search.
           </p>
@@ -882,13 +884,13 @@ function StatCard({
   value: number;
 }) {
   return (
-    <div className="rounded-xl border border-matrix-border bg-matrix-surface p-4">
+    <div className="rounded-xl border border-border bg-card p-4">
       <div className="flex items-center gap-3">
-        <div className="p-2 rounded-lg bg-matrix-green/10">
-          <Icon className="h-4 w-4 text-matrix-green" />
+        <div className="p-2 rounded-lg bg-primary/10">
+          <Icon className="h-4 w-4 text-primary" />
         </div>
         <div>
-          <p className="text-xs text-gray-500 uppercase tracking-wider">{label}</p>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider">{label}</p>
           <p className="text-xl font-bold text-gray-100">{value}</p>
         </div>
       </div>
@@ -931,12 +933,12 @@ function Modal({
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative bg-matrix-surface border border-matrix-border rounded-xl p-6 w-full max-w-lg mx-4 shadow-2xl shadow-black/50">
+      <div className="relative bg-card border border-border rounded-xl p-6 w-full max-w-lg mx-4 shadow-2xl shadow-black/50">
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-lg font-bold text-gray-100">{title}</h2>
           <button
             onClick={onClose}
-            className="p-1.5 text-gray-500 hover:text-gray-300 hover:bg-matrix-dark rounded-lg transition-colors"
+            className="p-1.5 text-muted-foreground hover:text-gray-300 hover:bg-background rounded-lg transition-colors"
           >
             <X className="h-4 w-4" />
           </button>

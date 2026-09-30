@@ -25,6 +25,7 @@ import {
   getTokenBalance,
 } from "@/lib/pumpfun-trade";
 import { featureFlags } from "@/lib/feature-flags";
+import { getErrorMessage } from "@/lib/api";
 
 interface TokenTradePanelProps {
   tokenId: string;
@@ -205,7 +206,7 @@ function TokenTradePanelInner({
       setTimeout(() => setTradeState("idle"), 4000);
     } catch (err: any) {
       setTradeState("failed");
-      const msg = err?.message || "Transaction failed";
+      const msg = getErrorMessage(err, "Transaction failed");
       if (msg.includes("User rejected")) {
         toast.error("Transaction cancelled");
       } else {

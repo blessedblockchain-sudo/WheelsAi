@@ -24,8 +24,10 @@ import {
   type TaskExecution,
   type SchedulerStats,
   type Agent,
+  getErrorMessage,
 } from "@/lib/api";
 import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
+import { toast } from "sonner";
 
 type Tab = "tasks" | "executions";
 
@@ -145,7 +147,7 @@ export default function SchedulerPage() {
       loadData();
     } catch (error) {
       console.error("Failed to trigger task:", error);
-      alert((error as Error).message);
+      toast.error(getErrorMessage(error, "Failed to trigger task"));
     }
   }
 
@@ -155,7 +157,7 @@ export default function SchedulerPage() {
       loadData();
     } catch (error) {
       console.error("Failed to toggle task:", error);
-      alert((error as Error).message);
+      toast.error(getErrorMessage(error, "Failed to toggle task"));
     }
   }
 
@@ -202,7 +204,7 @@ export default function SchedulerPage() {
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-[#00ff00] text-black font-semibold rounded-lg hover:bg-[#00dd00] transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground font-semibold rounded-lg hover:bg-primary/90 transition-colors"
         >
           <Plus className="h-4 w-4" />
           New Task
@@ -245,14 +247,14 @@ export default function SchedulerPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-[#1e1e2e]">
+      <div className="flex gap-1 border-b border-border">
         {(["tasks", "executions"] as Tab[]).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${
               activeTab === tab
-                ? "border-[#00ff00] text-[#00ff00]"
+                ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -273,7 +275,7 @@ export default function SchedulerPage() {
               </p>
               <button
                 onClick={() => setShowCreateModal(true)}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-[#00ff00] text-black font-semibold rounded-lg hover:bg-[#00dd00] transition-colors"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground font-semibold rounded-lg hover:bg-primary/90 transition-colors"
               >
                 <Plus className="h-4 w-4" />
                 New Task
@@ -283,7 +285,7 @@ export default function SchedulerPage() {
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b border-[#1e1e2e]">
+                  <tr className="border-b border-border">
                     <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                       Name
                     </th>
@@ -307,13 +309,13 @@ export default function SchedulerPage() {
                     </th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[#1e1e2e]">
+                <tbody className="divide-y divide-border">
                   {tasks.map((task) => {
                     const agent = agents.find((a) => a.id === task.agentId);
                     return (
                       <tr
                         key={task.id}
-                        className="hover:bg-[#12121a]/50 transition-colors"
+                        className="hover:bg-muted/50 transition-colors"
                       >
                         <td className="px-4 py-3">
                           <div>
@@ -389,7 +391,7 @@ export default function SchedulerPage() {
                           <div className="flex items-center justify-end gap-1">
                             <button
                               onClick={() => handleTrigger(task.id)}
-                              className="p-1.5 rounded-md text-muted-foreground hover:text-[#00d4ff] hover:bg-[#00d4ff]/10 transition-colors"
+                              className="p-1.5 rounded-md text-muted-foreground hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
                               title="Trigger now"
                             >
                               <Zap className="h-4 w-4" />
@@ -446,7 +448,7 @@ export default function SchedulerPage() {
                 setSelectedTaskId(e.target.value);
                 loadExecutions(e.target.value);
               }}
-              className="px-3 py-1.5 bg-background border border-[#1e1e2e] rounded-lg text-sm text-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+              className="px-3 py-1.5 bg-background border border-border rounded-lg text-sm text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
             >
               {tasks.map((task) => (
                 <option key={task.id} value={task.id}>
@@ -458,7 +460,7 @@ export default function SchedulerPage() {
               onClick={() =>
                 loadExecutions(selectedTaskId || tasks[0]?.id)
               }
-              className="p-1.5 rounded-md text-muted-foreground hover:text-[#00ff00] hover:bg-[#00ff00]/10 transition-colors"
+              className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
               title="Refresh"
             >
               <RefreshCw className="h-4 w-4" />
@@ -478,7 +480,7 @@ export default function SchedulerPage() {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="border-b border-[#1e1e2e]">
+                    <tr className="border-b border-border">
                       <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                         Status
                       </th>
@@ -499,11 +501,11 @@ export default function SchedulerPage() {
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#1e1e2e]">
+                  <tbody className="divide-y divide-border">
                     {executions.map((exec) => (
                       <tr
                         key={exec.id}
-                        className="hover:bg-[#12121a]/50 transition-colors"
+                        className="hover:bg-muted/50 transition-colors"
                       >
                         <td className="px-4 py-3">
                           <span
@@ -668,7 +670,7 @@ function CreateTaskModal({
       onClose();
     } catch (error) {
       console.error("Failed to create task:", error);
-      alert((error as Error).message);
+      toast.error(getErrorMessage(error, "Failed to create task"));
     } finally {
       setSaving(false);
     }
@@ -683,7 +685,7 @@ function CreateTaskModal({
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-card border border-[#1e1e2e] rounded-xl p-6 w-full max-w-lg shadow-lg shadow-black/30">
+      <div className="bg-card border border-border rounded-xl p-6 w-full max-w-lg shadow-lg shadow-black/30">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-lg font-semibold text-foreground">
             Create Scheduled Task
@@ -707,7 +709,7 @@ function CreateTaskModal({
               value={form.name}
               onChange={(e) => updateForm({ name: e.target.value })}
               placeholder="Daily data sync"
-              className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
             />
           </div>
 
@@ -719,7 +721,7 @@ function CreateTaskModal({
             <select
               value={form.agentId}
               onChange={(e) => updateForm({ agentId: e.target.value })}
-              className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
             >
               <option value="">Select an agent</option>
               {agents.map((agent) => (
@@ -742,8 +744,8 @@ function CreateTaskModal({
                   onClick={() => updateForm({ scheduleType: type })}
                   className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors capitalize ${
                     form.scheduleType === type
-                      ? "bg-[#00ff00]/15 text-[#00ff00] border border-[#00ff00]/30"
-                      : "bg-muted text-muted-foreground border border-transparent hover:border-[#1e1e2e]"
+                      ? "bg-primary/15 text-primary border border-primary/30"
+                      : "bg-muted text-muted-foreground border border-transparent hover:border-border"
                   }`}
                 >
                   {type}
@@ -765,7 +767,7 @@ function CreateTaskModal({
                   updateForm({ cronExpression: e.target.value })
                 }
                 placeholder="*/5 * * * *"
-                className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground font-mono placeholder:text-muted-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground font-mono placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
               />
               <p className="text-xs text-muted-foreground mt-1">
                 Standard cron syntax: minute hour day month weekday
@@ -787,7 +789,7 @@ function CreateTaskModal({
                     intervalSeconds: parseInt(e.target.value) || 0,
                   })
                 }
-                className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground font-mono focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground font-mono focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
               />
               <p className="text-xs text-muted-foreground mt-1">
                 {form.intervalSeconds > 0
@@ -811,7 +813,7 @@ function CreateTaskModal({
                 onChange={(e) =>
                   updateForm({ scheduledAt: e.target.value })
                 }
-                className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
               />
             </div>
           )}
@@ -827,7 +829,7 @@ function CreateTaskModal({
             <select
               value={form.taskType}
               onChange={(e) => updateForm({ taskType: e.target.value })}
-              className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
             >
               <option value="agent_run">Agent Run — prompt your agent on a schedule</option>
               <option value="webhook">Webhook — POST to a URL on a schedule</option>
@@ -842,7 +844,7 @@ function CreateTaskModal({
             <select
               value={form.timezone}
               onChange={(e) => updateForm({ timezone: e.target.value })}
-              className="w-full px-3 py-2 bg-background border border-[#1e1e2e] rounded-lg text-foreground focus:ring-2 focus:ring-[#00ff00]/30 focus:border-[#00ff00]/50 transition-colors"
+              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
             >
               <option value="UTC">UTC</option>
               <option value="America/New_York">America/New_York (EST)</option>
@@ -861,17 +863,17 @@ function CreateTaskModal({
         </div>
 
         {/* Actions */}
-        <div className="flex gap-3 mt-6 pt-4 border-t border-[#1e1e2e]">
+        <div className="flex gap-3 mt-6 pt-4 border-t border-border">
           <button
             onClick={onClose}
-            className="flex-1 px-4 py-2 border border-[#1e1e2e] rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            className="flex-1 px-4 py-2 border border-border rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           >
             Cancel
           </button>
           <button
             onClick={handleCreate}
             disabled={saving || !isValid}
-            className="flex-1 px-4 py-2 bg-[#00ff00] text-black font-semibold rounded-lg hover:bg-[#00dd00] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="flex-1 px-4 py-2 bg-primary text-primary-foreground font-semibold rounded-lg hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? "Creating..." : "Create Task"}
           </button>

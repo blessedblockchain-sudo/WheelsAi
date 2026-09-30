@@ -9,6 +9,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import {
   marketplaceApi,
   tokenApi,
   type MarketplaceListing,
+  getErrorMessage,
 } from "@/lib/api";
 import {
   ArrowLeft,
@@ -96,8 +98,8 @@ export default function CreateTokenPage() {
           (l) => l.status === "published"
         );
         setListings(published);
-      } catch {
-        toast.error("Failed to load your listings");
+      } catch (err) {
+        toast.error(getErrorMessage(err, "Failed to load your listings"));
       } finally {
         setLoading(false);
       }
@@ -223,12 +225,7 @@ export default function CreateTokenPage() {
         setIsCreating(false);
         return;
       }
-      const msg =
-        err?.data?.message ??
-        err?.data?.error ??
-        err?.message ??
-        "Failed to create token";
-      toast.error(msg);
+      toast.error(getErrorMessage(err, "Failed to create token"));
       setIsCreating(false);
     }
   };
@@ -245,12 +242,9 @@ export default function CreateTokenPage() {
       toast.success("Token linked successfully!");
       router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
     } catch (err: any) {
-      const msg =
-        err?.data?.message ??
-        err?.data?.error ??
-        err?.message ??
-        "Retry failed — please try again or contact support.";
-      toast.error(msg);
+      toast.error(
+        getErrorMessage(err, "Retry failed — please try again or contact support.")
+      );
       setIsRetrying(false);
     }
   };
@@ -529,8 +523,7 @@ export default function CreateTokenPage() {
                 <label className="block text-sm font-medium mb-1">
                   Description (optional)
                 </label>
-                <textarea
-                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring min-h-[80px]"
+                <Textarea
                   value={tokenDescription}
                   onChange={(e) => setTokenDescription(e.target.value)}
                   placeholder="Describe your agent token..."
@@ -693,7 +686,7 @@ export default function CreateTokenPage() {
                     </div>
                   </div>
 
-                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm text-yellow-700">
+                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm text-yellow-500">
                     By creating this token, you agree to the{" "}
                     {selectedEligibility?.requirements?.creatorLockupDays ?? 30}
                     -day creator lockup period. Your tokens will be locked and

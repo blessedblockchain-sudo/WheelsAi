@@ -9,16 +9,16 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { agentsApi, type Agent } from "@/lib/api";
+import { agentsApi, type Agent, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const frameworkColors: Record<string, string> = {
-  mastra: "bg-purple-100 text-purple-700",
-  langchain: "bg-green-100 text-green-700",
-  autogen: "bg-blue-100 text-blue-700",
-  elizaos: "bg-cyan-100 text-cyan-700",
-  crewai: "bg-orange-100 text-orange-700",
-  custom: "bg-gray-100 text-gray-700",
+  mastra: "bg-purple-500/10 text-purple-500",
+  langchain: "bg-green-500/10 text-green-500",
+  autogen: "bg-blue-500/10 text-blue-500",
+  elizaos: "bg-cyan-500/10 text-cyan-500",
+  crewai: "bg-orange-500/10 text-orange-500",
+  custom: "bg-muted text-foreground",
 };
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -40,7 +40,7 @@ export default function AgentsPage() {
         const { agents } = await agentsApi.list();
         setAgents(agents);
       } catch (error) {
-        toast.error("Failed to load agents");
+        toast.error(getErrorMessage(error, "Failed to load agents"));
       } finally {
         setIsLoading(false);
       }
@@ -69,7 +69,7 @@ export default function AgentsPage() {
               <CardContent className="py-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm text-gray-500">{fw.name} Agents</p>
+                    <p className="text-sm text-muted-foreground">{fw.name} Agents</p>
                     <p className="text-2xl font-bold">{fw.count}</p>
                   </div>
                   <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", `bg-${fw.color}-100`)}>
@@ -85,17 +85,17 @@ export default function AgentsPage() {
         {isLoading ? (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-48 animate-pulse rounded-lg bg-gray-200" />
+              <div key={i} className="h-48 animate-pulse rounded-lg bg-muted" />
             ))}
           </div>
         ) : agents.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-16">
               <Bot className="h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium text-gray-900">
+              <h3 className="mt-4 text-xl font-medium text-foreground">
                 No agents yet
               </h3>
-              <p className="mt-2 text-center text-gray-500">
+              <p className="mt-2 text-center text-muted-foreground">
                 Create your first AI agent to automate tasks and workflows
               </p>
               <Link href="/dashboard/agents/new" className="mt-6">
@@ -114,7 +114,7 @@ export default function AgentsPage() {
                   <CardHeader>
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
                           <Bot className="h-5 w-5 text-primary-600" />
                         </div>
                         <div>
@@ -123,7 +123,7 @@ export default function AgentsPage() {
                             <span className={cn("rounded px-2 py-0.5 text-xs font-medium", frameworkColors[agent.framework])}>
                               {agent.framework}
                             </span>
-                            <span className="text-xs text-gray-500">v{agent.version}</span>
+                            <span className="text-xs text-muted-foreground">v{agent.version}</span>
                           </div>
                         </div>
                       </div>
@@ -156,13 +156,13 @@ export default function AgentsPage() {
 
                     <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
                       {agent.latestDeployment?.endpoint ? (
-                        <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600">
+                        <code className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
                           {agent.slug}
                         </code>
                       ) : (
-                        <span className="text-gray-500">Not deployed</span>
+                        <span className="text-muted-foreground">Not deployed</span>
                       )}
-                      <span className="text-gray-500">
+                      <span className="text-muted-foreground">
                         {new Date(agent.updatedAt).toLocaleDateString()}
                       </span>
                     </div>
@@ -207,12 +207,12 @@ export default function AgentsPage() {
                   key={template.name}
                   href={`/dashboard/agents/new?template=${encodeURIComponent(template.name.toLowerCase().replace(" ", "-"))}`}
                 >
-                  <div className="rounded-lg border p-4 transition-colors hover:border-primary-300 hover:bg-primary-50">
+                  <div className="rounded-lg border p-4 transition-colors hover:border-primary/40 hover:bg-primary/10">
                     <div className="flex items-center gap-3">
                       <span className="text-2xl">{template.icon}</span>
                       <div>
                         <p className="font-medium">{template.name}</p>
-                        <p className="text-sm text-gray-500">{template.description}</p>
+                        <p className="text-sm text-muted-foreground">{template.description}</p>
                       </div>
                     </div>
                     <div className="mt-3">

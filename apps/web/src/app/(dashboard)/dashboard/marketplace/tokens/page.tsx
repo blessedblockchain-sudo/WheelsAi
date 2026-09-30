@@ -19,6 +19,7 @@ import {
   Users,
   ArrowUpDown,
 } from "lucide-react";
+import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -81,7 +82,7 @@ export default function TokenMarketplacePage() {
       });
     } catch (error) {
       console.error("Error fetching tokens:", error);
-      toast.error("Failed to load tokens");
+      toast.error(getErrorMessage(error, "Failed to load tokens"));
       setTokens([]);
     } finally {
       setLoading(false);

@@ -30,16 +30,16 @@ export function BondingCurveProgress({
       {/* Progress bar */}
       <div>
         <div className="flex items-center justify-between text-sm mb-2">
-          <span className="font-medium text-gray-900 dark:text-gray-100">
+          <span className="font-medium text-foreground">
             {isGraduated ? "Graduated" : isFailed ? "Failed" : "Bonding Curve Progress"}
           </span>
-          <span className="text-gray-500 dark:text-gray-400">
+          <span className="text-muted-foreground">
             {isGraduated
               ? "Trading on Raydium"
               : `$${formatCompact(marketCapUsd)} / $${formatCompact(graduationThreshold)}`}
           </span>
         </div>
-        <div className="h-3 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+        <div className="h-3 w-full rounded-full bg-muted overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-500 ${
               isGraduated
@@ -52,7 +52,7 @@ export function BondingCurveProgress({
           />
         </div>
         {!isGraduated && !isFailed && (
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+          <p className="text-xs text-muted-foreground mt-1">
             Graduates to Raydium AMM at ${formatCompact(graduationThreshold)} market cap
           </p>
         )}
@@ -61,31 +61,31 @@ export function BondingCurveProgress({
       {/* Stats row */}
       <div className="grid grid-cols-3 gap-4">
         <div className="text-center">
-          <div className="text-lg font-bold text-gray-900 dark:text-gray-100">
+          <div className="text-lg font-bold text-foreground">
             ${priceUsd < 0.01 ? priceUsd.toFixed(6) : priceUsd.toFixed(4)}
           </div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">Price</div>
+          <div className="text-xs text-muted-foreground">Price</div>
         </div>
         <div className="text-center">
-          <div className="text-lg font-bold text-gray-900 dark:text-gray-100">
+          <div className="text-lg font-bold text-foreground">
             {holders}
           </div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">Holders</div>
+          <div className="text-xs text-muted-foreground">Holders</div>
         </div>
         <div className="text-center">
-          <div className="text-lg font-bold text-gray-900 dark:text-gray-100">
+          <div className="text-lg font-bold text-foreground">
             ${formatCompact(volume24h)}
           </div>
-          <div className="text-xs text-gray-500 dark:text-gray-400">24h Volume</div>
+          <div className="text-xs text-muted-foreground">24h Volume</div>
         </div>
       </div>
 
       {/* How it works (collapsible info) */}
       {!isGraduated && !isFailed && (
-        <div className="rounded-lg bg-blue-50 dark:bg-blue-900/20 p-3 border border-blue-200 dark:border-blue-800">
+        <div className="rounded-lg bg-blue-500/10 p-3 border border-blue-500/30">
           <div className="flex items-start gap-2">
             <TrendingUp className="h-4 w-4 text-blue-600 dark:text-blue-400 mt-0.5 shrink-0" />
-            <div className="text-xs text-blue-700 dark:text-blue-300">
+            <div className="text-xs text-blue-500">
               <p className="font-medium">How bonding curves work</p>
               <ol className="mt-1 space-y-0.5 list-decimal list-inside text-blue-600 dark:text-blue-400">
                 <li>Community buys tokens on the bonding curve</li>

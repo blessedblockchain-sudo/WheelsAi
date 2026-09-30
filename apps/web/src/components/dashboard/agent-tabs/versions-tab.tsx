@@ -23,6 +23,7 @@ import {
   type VersionHistoryEntry,
   type AgentVersionDiff,
   type ChangeType,
+  getErrorMessage,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AgentTabProps } from "./types";
@@ -51,7 +52,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
       const history = await versioningApi.getHistory(agentId);
       setVersionHistory(history);
     } catch (error) {
-      toast.error("Failed to load version history");
+      toast.error(getErrorMessage(error, "Failed to load version history"));
     } finally {
       setIsLoadingVersions(false);
     }
@@ -81,7 +82,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
       loadVersionHistory();
       loadAgent();
     } catch (error) {
-      toast.error("Failed to create version");
+      toast.error(getErrorMessage(error, "Failed to create version"));
     } finally {
       setIsCreatingVersion(false);
     }
@@ -94,7 +95,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
       const diff = await versioningApi.compareVersions(agentId, from, to);
       setVersionDiff(diff);
     } catch (error) {
-      toast.error("Failed to compare versions");
+      toast.error(getErrorMessage(error, "Failed to compare versions"));
     } finally {
       setIsLoadingDiff(false);
     }
@@ -112,7 +113,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
       loadVersionHistory();
       loadAgent();
     } catch (error) {
-      toast.error("Failed to rollback");
+      toast.error(getErrorMessage(error, "Failed to rollback"));
     } finally {
       setIsRollingBack(null);
     }
@@ -124,7 +125,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
       toast.success("Version published");
       loadVersionHistory();
     } catch (error) {
-      toast.error("Failed to publish version");
+      toast.error(getErrorMessage(error, "Failed to publish version"));
     }
   }
 
@@ -132,7 +133,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
     <div className="space-y-6">
       {/* Create Version Modal */}
       {showCreateVersion && (
-        <Card className="border-primary-200 bg-primary-50/50">
+        <Card className="border-primary/30 bg-primary/5">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">Create New Version</CardTitle>
@@ -147,7 +148,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-foreground mb-1">
                 Change Type
               </label>
               <Select
@@ -165,7 +166,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
               </Select>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-foreground mb-1">
                 Change Log (optional)
               </label>
               <Textarea
@@ -181,7 +182,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-foreground mb-1">
                 Tags (comma-separated, optional)
               </label>
               <Input
@@ -216,7 +217,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
 
       {/* Version Comparison Modal */}
       {comparingVersions && (
-        <Card className="border-blue-200 bg-blue-50/50">
+        <Card className="border-blue-500/30 bg-blue-500/5">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">
@@ -236,7 +237,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
           </CardHeader>
           <CardContent>
             {isLoadingDiff ? (
-              <div className="h-32 animate-pulse rounded bg-gray-200" />
+              <div className="h-32 animate-pulse rounded bg-muted" />
             ) : versionDiff ? (
               <div className="space-y-4">
                 <div className="flex gap-4 text-sm">
@@ -254,7 +255,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
 
                 {versionDiff.addedFields.length > 0 && (
                   <div>
-                    <p className="font-medium text-green-700 mb-1">
+                    <p className="font-medium text-green-500 mb-1">
                       Added Fields:
                     </p>
                     <div className="flex flex-wrap gap-1">
@@ -269,7 +270,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
 
                 {versionDiff.removedFields.length > 0 && (
                   <div>
-                    <p className="font-medium text-red-700 mb-1">
+                    <p className="font-medium text-red-500 mb-1">
                       Removed Fields:
                     </p>
                     <div className="flex flex-wrap gap-1">
@@ -284,7 +285,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
 
                 {versionDiff.modifiedFields.length > 0 && (
                   <div>
-                    <p className="font-medium text-yellow-700 mb-1">
+                    <p className="font-medium text-yellow-500 mb-1">
                       Modified Fields:
                     </p>
                     <div className="flex flex-wrap gap-1">
@@ -307,7 +308,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
                 )}
               </div>
             ) : (
-              <p className="text-gray-500">No differences found</p>
+              <p className="text-muted-foreground">No differences found</p>
             )}
           </CardContent>
         </Card>
@@ -337,14 +338,14 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
               {[1, 2, 3].map((i) => (
                 <div
                   key={i}
-                  className="h-24 animate-pulse rounded bg-gray-200"
+                  className="h-24 animate-pulse rounded bg-muted"
                 />
               ))}
             </div>
           ) : versionHistory.length > 0 ? (
             <div className="relative">
               {/* Timeline line */}
-              <div className="absolute left-4 top-6 bottom-6 w-0.5 bg-gray-200" />
+              <div className="absolute left-4 top-6 bottom-6 w-0.5 bg-muted" />
 
               <div className="space-y-4">
                 {versionHistory.map((version, index) => {
@@ -355,7 +356,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
                       key={version.id}
                       className={cn(
                         "relative pl-10 rounded-lg border p-4",
-                        version.isLatest && "border-primary-200 bg-primary-50/30"
+                        version.isLatest && "border-primary/30 bg-primary/5"
                       )}
                     >
                       {/* Timeline dot */}
@@ -394,12 +395,12 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
                           </div>
 
                           {version.changeLog && (
-                            <p className="mt-1 text-sm text-gray-600">
+                            <p className="mt-1 text-sm text-muted-foreground">
                               {version.changeLog}
                             </p>
                           )}
 
-                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                             <span>by {version.createdByName}</span>
                             <span>•</span>
                             <span>
@@ -412,7 +413,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
                                   {version.tags.map((tag) => (
                                     <span
                                       key={tag}
-                                      className="inline-flex items-center rounded bg-gray-100 px-1.5 py-0.5"
+                                      className="inline-flex items-center rounded bg-muted px-1.5 py-0.5"
                                     >
                                       <Tag className="mr-1 h-3 w-3" />
                                       {tag}
@@ -437,7 +438,7 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
                                 </span>
                               )}
                               {version.diff.modifiedFields.length > 0 && (
-                                <span className="text-gray-500">
+                                <span className="text-muted-foreground">
                                   {version.diff.modifiedFields.length} fields
                                   changed
                                 </span>
@@ -495,10 +496,10 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
           ) : (
             <div className="text-center py-8">
               <History className="mx-auto h-12 w-12 text-gray-300" />
-              <h3 className="mt-2 text-sm font-medium text-gray-900">
+              <h3 className="mt-2 text-sm font-medium text-foreground">
                 No versions yet
               </h3>
-              <p className="mt-1 text-sm text-gray-500">
+              <p className="mt-1 text-sm text-muted-foreground">
                 Create your first version to start tracking changes.
               </p>
               <Button

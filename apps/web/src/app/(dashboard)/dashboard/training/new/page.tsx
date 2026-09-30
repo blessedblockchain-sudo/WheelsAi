@@ -28,6 +28,7 @@ import {
   type Dataset,
   type TrainableModel,
   type CreateTrainingJobInput,
+  getErrorMessage,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -92,7 +93,7 @@ export default function NewTrainingPage() {
         setModels(modelsRes.models);
         setDatasets(datasetsRes.datasets.filter((d) => d.isValidated));
       } catch (error) {
-        toast.error("Failed to load data");
+        toast.error(getErrorMessage(error, "Failed to load data"));
       } finally {
         setIsLoading(false);
       }
@@ -156,7 +157,7 @@ export default function NewTrainingPage() {
       toast.success("Training job created");
       router.push(`/dashboard/training/${job.id}`);
     } catch (error) {
-      toast.error("Failed to create training job");
+      toast.error(getErrorMessage(error, "Failed to create training job"));
     } finally {
       setIsCreating(false);
     }
@@ -167,7 +168,7 @@ export default function NewTrainingPage() {
       <div className="flex flex-col">
         <Header title="New Training Job" />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-gray-200" />
+          <div className="h-96 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -191,7 +192,7 @@ export default function NewTrainingPage() {
                   className={cn(
                     "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
                     currentStep === step.id
-                      ? "bg-primary-100 text-primary-700"
+                      ? "bg-primary/15 text-primary-700"
                       : index < currentStepIndex
                       ? "text-primary-600"
                       : "text-gray-400"
@@ -204,7 +205,7 @@ export default function NewTrainingPage() {
                   <div
                     className={cn(
                       "mx-2 h-0.5 w-8 md:w-16",
-                      index < currentStepIndex ? "bg-primary-500" : "bg-gray-200"
+                      index < currentStepIndex ? "bg-primary-500" : "bg-muted"
                     )}
                   />
                 )}
@@ -222,7 +223,7 @@ export default function NewTrainingPage() {
                 {currentStep === "model" && (
                   <div>
                     <h3 className="text-lg font-medium">Select Base Model</h3>
-                    <p className="mt-1 text-sm text-gray-500">
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Choose the model you want to fine-tune
                     </p>
 
@@ -241,14 +242,14 @@ export default function NewTrainingPage() {
                           className={cn(
                             "w-full rounded-lg border-2 p-4 text-left transition-all",
                             formData.baseModelId === model.id
-                              ? "border-primary-500 bg-primary-50"
-                              : "border-gray-200 hover:border-gray-300"
+                              ? "border-primary-500 bg-primary/10"
+                              : "border-border hover:border-muted-foreground/40"
                           )}
                         >
                           <div className="flex items-center justify-between">
                             <div>
                               <p className="font-medium">{model.displayName}</p>
-                              <p className="text-sm text-gray-500">{model.hfId}</p>
+                              <p className="text-sm text-muted-foreground">{model.hfId}</p>
                             </div>
                             <div className="text-right">
                               <p className="text-sm font-medium">
@@ -273,14 +274,14 @@ export default function NewTrainingPage() {
                 {currentStep === "dataset" && (
                   <div>
                     <h3 className="text-lg font-medium">Select Dataset</h3>
-                    <p className="mt-1 text-sm text-gray-500">
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Choose a validated dataset for training
                     </p>
 
                     {datasets.length === 0 ? (
                       <div className="mt-8 flex flex-col items-center justify-center py-12">
                         <Database className="h-12 w-12 text-gray-300" />
-                        <p className="mt-4 text-gray-500">No validated datasets available</p>
+                        <p className="mt-4 text-muted-foreground">No validated datasets available</p>
                         <Link href="/dashboard/training/datasets" className="mt-4">
                           <Button>Upload Dataset</Button>
                         </Link>
@@ -294,20 +295,20 @@ export default function NewTrainingPage() {
                             className={cn(
                               "w-full rounded-lg border-2 p-4 text-left transition-all",
                               formData.datasetId === dataset.id
-                                ? "border-primary-500 bg-primary-50"
-                                : "border-gray-200 hover:border-gray-300"
+                                ? "border-primary-500 bg-primary/10"
+                                : "border-border hover:border-muted-foreground/40"
                             )}
                           >
                             <div className="flex items-center justify-between">
                               <div>
                                 <p className="font-medium">{dataset.name}</p>
-                                <p className="text-sm text-gray-500">
+                                <p className="text-sm text-muted-foreground">
                                   {dataset.description || `${dataset.format} format`}
                                 </p>
                               </div>
                               <div className="text-right">
                                 <p className="font-medium">{dataset.rowCount.toLocaleString()} rows</p>
-                                <p className="text-sm text-gray-500">
+                                <p className="text-sm text-muted-foreground">
                                   {(dataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
                                 </p>
                               </div>
@@ -324,13 +325,13 @@ export default function NewTrainingPage() {
                   <div className="space-y-6">
                     <div>
                       <h3 className="text-lg font-medium">Training Configuration</h3>
-                      <p className="mt-1 text-sm text-gray-500">
+                      <p className="mt-1 text-sm text-muted-foreground">
                         Configure hyperparameters and compute resources
                       </p>
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         Job Name *
                       </label>
                       <Input
@@ -342,7 +343,7 @@ export default function NewTrainingPage() {
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         Training Method
                       </label>
                       <div className="mt-2 grid gap-3 md:grid-cols-3">
@@ -353,12 +354,12 @@ export default function NewTrainingPage() {
                             className={cn(
                               "rounded-lg border-2 p-3 text-left transition-all",
                               formData.method === method
-                                ? "border-primary-500 bg-primary-50"
-                                : "border-gray-200 hover:border-gray-300"
+                                ? "border-primary-500 bg-primary/10"
+                                : "border-border hover:border-muted-foreground/40"
                             )}
                           >
                             <p className="font-medium uppercase">{method}</p>
-                            <p className="mt-1 text-xs text-gray-500">
+                            <p className="mt-1 text-xs text-muted-foreground">
                               {methodDescriptions[method]}
                             </p>
                           </button>
@@ -368,7 +369,7 @@ export default function NewTrainingPage() {
 
                     <div className="grid gap-4 md:grid-cols-2">
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">GPU Tier</label>
+                        <label className="block text-sm font-medium text-foreground">GPU Tier</label>
                         <Select
                           value={formData.gpuTier}
                           onChange={(e) => setFormData({ ...formData, gpuTier: e.target.value })}
@@ -389,7 +390,7 @@ export default function NewTrainingPage() {
                         <button
                           type="button"
                           onClick={() => setShowAdvancedGpu((v) => !v)}
-                          className="mt-2 flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
+                          className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
                         >
                           {showAdvancedGpu ? (
                             <ChevronDown className="h-3 w-3" />
@@ -401,7 +402,7 @@ export default function NewTrainingPage() {
 
                         {showAdvancedGpu && (
                           <div className="mt-2">
-                            <label className="block text-xs text-gray-500 mb-1">
+                            <label className="block text-xs text-muted-foreground mb-1">
                               Specific GPU Model
                             </label>
                             <Select
@@ -419,7 +420,7 @@ export default function NewTrainingPage() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Epochs</label>
+                        <label className="block text-sm font-medium text-foreground">Epochs</label>
                         <Input
                           type="number"
                           min={1}
@@ -436,7 +437,7 @@ export default function NewTrainingPage() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">Batch Size</label>
+                        <label className="block text-sm font-medium text-foreground">Batch Size</label>
                         <Select
                           value={formData.config?.batchSize?.toString()}
                           onChange={(e) =>
@@ -454,7 +455,7 @@ export default function NewTrainingPage() {
                       </div>
 
                       <div>
-                        <label className="block text-sm font-medium text-gray-700">
+                        <label className="block text-sm font-medium text-foreground">
                           Learning Rate
                         </label>
                         <Select
@@ -479,7 +480,7 @@ export default function NewTrainingPage() {
                         <h4 className="font-medium">LoRA Parameters</h4>
                         <div className="mt-3 grid gap-4 md:grid-cols-3">
                           <div>
-                            <label className="block text-sm text-gray-600">Rank (r)</label>
+                            <label className="block text-sm text-muted-foreground">Rank (r)</label>
                             <Select
                               value={formData.config?.loraR?.toString()}
                               onChange={(e) =>
@@ -497,7 +498,7 @@ export default function NewTrainingPage() {
                           </div>
 
                           <div>
-                            <label className="block text-sm text-gray-600">Alpha</label>
+                            <label className="block text-sm text-muted-foreground">Alpha</label>
                             <Select
                               value={formData.config?.loraAlpha?.toString()}
                               onChange={(e) =>
@@ -515,7 +516,7 @@ export default function NewTrainingPage() {
                           </div>
 
                           <div>
-                            <label className="block text-sm text-gray-600">Dropout</label>
+                            <label className="block text-sm text-muted-foreground">Dropout</label>
                             <Select
                               value={formData.config?.loraDropout?.toString()}
                               onChange={(e) =>
@@ -541,7 +542,7 @@ export default function NewTrainingPage() {
                 {currentStep === "review" && (
                   <div>
                     <h3 className="text-lg font-medium">Review Training Job</h3>
-                    <p className="mt-1 text-sm text-gray-500">
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Review your configuration before starting
                     </p>
 
@@ -550,11 +551,11 @@ export default function NewTrainingPage() {
                         <h4 className="font-medium">Job Details</h4>
                         <dl className="mt-2 grid gap-2 text-sm">
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">Name</dt>
+                            <dt className="text-muted-foreground">Name</dt>
                             <dd className="font-medium">{formData.name || "—"}</dd>
                           </div>
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">Method</dt>
+                            <dt className="text-muted-foreground">Method</dt>
                             <dd className="font-medium uppercase">{formData.method}</dd>
                           </div>
                         </dl>
@@ -565,13 +566,13 @@ export default function NewTrainingPage() {
                         <p className="mt-1 text-sm">
                           {selectedModel?.displayName || formData.baseModelId}
                         </p>
-                        <p className="text-xs text-gray-500">{selectedModel?.hfId}</p>
+                        <p className="text-xs text-muted-foreground">{selectedModel?.hfId}</p>
                       </div>
 
                       <div className="rounded-lg border p-4">
                         <h4 className="font-medium">Dataset</h4>
                         <p className="mt-1 text-sm">{selectedDataset?.name || "—"}</p>
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-muted-foreground">
                           {selectedDataset?.rowCount.toLocaleString()} rows
                         </p>
                       </div>
@@ -580,19 +581,19 @@ export default function NewTrainingPage() {
                         <h4 className="font-medium">Hyperparameters</h4>
                         <dl className="mt-2 grid grid-cols-2 gap-2 text-sm">
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">Epochs</dt>
+                            <dt className="text-muted-foreground">Epochs</dt>
                             <dd>{formData.config?.epochs}</dd>
                           </div>
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">Batch Size</dt>
+                            <dt className="text-muted-foreground">Batch Size</dt>
                             <dd>{formData.config?.batchSize}</dd>
                           </div>
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">Learning Rate</dt>
+                            <dt className="text-muted-foreground">Learning Rate</dt>
                             <dd>{formData.config?.learningRate}</dd>
                           </div>
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">LoRA Rank</dt>
+                            <dt className="text-muted-foreground">LoRA Rank</dt>
                             <dd>{formData.config?.loraR}</dd>
                           </div>
                         </dl>
@@ -602,17 +603,17 @@ export default function NewTrainingPage() {
                         <h4 className="font-medium">Compute</h4>
                         <dl className="mt-2 grid gap-2 text-sm">
                           <div className="flex justify-between">
-                            <dt className="text-gray-500">GPU Tier</dt>
+                            <dt className="text-muted-foreground">GPU Tier</dt>
                             <dd className="font-medium">{formData.gpuTier}</dd>
                           </div>
                           {estimate && (
                             <>
                               <div className="flex justify-between">
-                                <dt className="text-gray-500">Estimated GPU Hours</dt>
+                                <dt className="text-muted-foreground">Estimated GPU Hours</dt>
                                 <dd>{estimate.gpuHours}</dd>
                               </div>
                               <div className="flex justify-between">
-                                <dt className="text-gray-500">Estimated Cost</dt>
+                                <dt className="text-muted-foreground">Estimated Cost</dt>
                                 <dd className="font-medium text-primary-600">
                                   ${estimate.totalCostUsd}
                                 </dd>
@@ -668,11 +669,11 @@ export default function NewTrainingPage() {
                 <CardContent>
                   <div className="space-y-3">
                     <div className="flex justify-between">
-                      <span className="text-gray-500">GPU Hours</span>
+                      <span className="text-muted-foreground">GPU Hours</span>
                       <span className="font-medium">{estimate.gpuHours}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-500">GPU Tier</span>
+                      <span className="text-muted-foreground">GPU Tier</span>
                       <span className="font-medium">{formData.gpuTier}</span>
                     </div>
                     <div className="border-t pt-3">
@@ -692,7 +693,7 @@ export default function NewTrainingPage() {
               <CardHeader>
                 <CardTitle className="text-base">Training Tips</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3 text-sm text-gray-600">
+              <CardContent className="space-y-3 text-sm text-muted-foreground">
                 <p>
                   <strong>LoRA vs QLoRA:</strong> QLoRA uses 4-bit quantization, requiring less VRAM but slightly slower training.
                 </p>

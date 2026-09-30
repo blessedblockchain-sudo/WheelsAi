@@ -7,7 +7,7 @@ import { toast } from "sonner";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { agentsApi } from "@/lib/api";
+import { agentsApi, getErrorMessage } from "@/lib/api";
 import type { AgentTabProps } from "./types";
 
 export function SettingsTab({ agentId }: AgentTabProps) {
@@ -25,7 +25,7 @@ export function SettingsTab({ agentId }: AgentTabProps) {
       toast.success("Agent deleted");
       router.push("/dashboard/agents");
     } catch (error) {
-      toast.error("Failed to delete agent");
+      toast.error(getErrorMessage(error, "Failed to delete agent"));
     } finally {
       setIsDeleting(false);
     }
@@ -38,11 +38,11 @@ export function SettingsTab({ agentId }: AgentTabProps) {
           <CardTitle className="text-base">Agent Settings</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-gray-500">Settings editing coming soon...</p>
+          <p className="text-muted-foreground">Settings editing coming soon...</p>
         </CardContent>
       </Card>
 
-      <Card className="border-red-200">
+      <Card className="border-red-500/30">
         <CardHeader>
           <CardTitle className="text-base text-red-600">Danger Zone</CardTitle>
         </CardHeader>
@@ -50,7 +50,7 @@ export function SettingsTab({ agentId }: AgentTabProps) {
           <div className="flex items-center justify-between">
             <div>
               <p className="font-medium">Delete Agent</p>
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 Permanently delete this agent and all its deployments
               </p>
             </div>

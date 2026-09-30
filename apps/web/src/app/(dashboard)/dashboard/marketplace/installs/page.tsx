@@ -31,7 +31,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ReviewForm } from "@/components/marketplace/review-form";
-import { marketplaceApi, type MarketplaceListing } from "@/lib/api";
+import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
 
 interface Install {
   id: string;
@@ -80,7 +80,7 @@ export default function InstalledAgentsPage() {
       const { installs } = await marketplaceApi.getMyInstalls();
       setInstalls(installs);
     } catch (error) {
-      toast.error("Failed to load installed agents");
+      toast.error(getErrorMessage(error, "Failed to load installed agents"));
     } finally {
       setIsLoading(false);
     }
@@ -94,7 +94,7 @@ export default function InstalledAgentsPage() {
       toast.success("Agent uninstalled");
       loadInstalls();
     } catch (error: any) {
-      toast.error(error.message || "Failed to uninstall agent");
+      toast.error(getErrorMessage(error, "Failed to uninstall agent"));
     }
   }
 
@@ -115,10 +115,10 @@ export default function InstalledAgentsPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Installed Agents</p>
+                  <p className="text-sm text-muted-foreground">Installed Agents</p>
                   <p className="text-2xl font-bold">{installs.length}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
                   <Download className="h-5 w-5 text-blue-600" />
                 </div>
               </div>
@@ -128,10 +128,10 @@ export default function InstalledAgentsPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Total Requests</p>
+                  <p className="text-sm text-muted-foreground">Total Requests</p>
                   <p className="text-2xl font-bold">{totalRequests.toLocaleString()}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/10">
                   <Play className="h-5 w-5 text-purple-600" />
                 </div>
               </div>
@@ -141,10 +141,10 @@ export default function InstalledAgentsPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Total Spent</p>
+                  <p className="text-sm text-muted-foreground">Total Spent</p>
                   <p className="text-2xl font-bold">${totalSpent.toFixed(2)}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
                   <Star className="h-5 w-5 text-green-600" />
                 </div>
               </div>
@@ -161,14 +161,14 @@ export default function InstalledAgentsPage() {
             {isLoading ? (
               <div className="space-y-4">
                 {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-20 animate-pulse rounded-lg bg-gray-100" />
+                  <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
                 ))}
               </div>
             ) : installs.length === 0 ? (
               <div className="py-12 text-center">
                 <Bot className="mx-auto h-12 w-12 text-gray-300" />
-                <h3 className="mt-4 font-semibold text-gray-900">No installed agents</h3>
-                <p className="mt-2 text-sm text-gray-500">
+                <h3 className="mt-4 font-semibold text-foreground">No installed agents</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
                   Browse the marketplace to find agents
                 </p>
                 <Link href="/marketplace">
@@ -180,19 +180,19 @@ export default function InstalledAgentsPage() {
                 {installs.map((install) => (
                   <div key={install.id} className="flex items-center justify-between py-4">
                     <div className="flex items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary-100 to-primary-200">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
                         <Bot className="h-6 w-6 text-primary-600" />
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                          <h3 className="font-medium text-gray-900">
+                          <h3 className="font-medium text-foreground">
                             {install.listing.title}
                           </h3>
                           <Badge variant="secondary">
                             {formatPrice(install.listing)}
                           </Badge>
                         </div>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           by {install.listing.publisherName} &middot; Installed{" "}
                           {formatDate(install.installedAt)}
                         </p>
@@ -201,10 +201,10 @@ export default function InstalledAgentsPage() {
 
                     <div className="flex items-center gap-4">
                       <div className="hidden text-right md:block">
-                        <p className="text-sm font-medium text-gray-900">
+                        <p className="text-sm font-medium text-foreground">
                           {install.totalRequests.toLocaleString()} requests
                         </p>
-                        <p className="text-xs text-gray-500">
+                        <p className="text-xs text-muted-foreground">
                           ${(install.totalSpentCents / 100).toFixed(2)} spent
                         </p>
                       </div>

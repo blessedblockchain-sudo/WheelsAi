@@ -11,11 +11,11 @@ interface OpenClawStatusProps {
 }
 
 const statusConfig: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: typeof Activity; color: string }> = {
-  PENDING: { label: "Pending", variant: "secondary", icon: Clock, color: "text-gray-500" },
+  PENDING: { label: "Pending", variant: "secondary", icon: Clock, color: "text-muted-foreground" },
   BUILDING: { label: "Building", variant: "outline", icon: Loader2, color: "text-blue-500" },
   DEPLOYING: { label: "Deploying", variant: "outline", icon: Loader2, color: "text-blue-500" },
   RUNNING: { label: "Running", variant: "default", icon: Activity, color: "text-green-500" },
-  STOPPED: { label: "Stopped", variant: "secondary", icon: Square, color: "text-gray-500" },
+  STOPPED: { label: "Stopped", variant: "secondary", icon: Square, color: "text-muted-foreground" },
   FAILED: { label: "Failed", variant: "destructive", icon: AlertCircle, color: "text-red-500" },
 };
 

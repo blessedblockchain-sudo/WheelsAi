@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { marketplaceApi } from "@/lib/api";
+import { marketplaceApi, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface ReviewFormProps {
@@ -42,7 +42,7 @@ export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) 
       toast.success("Review submitted successfully!");
       onSuccess?.();
     } catch (error: any) {
-      toast.error(error.message || "Failed to submit review");
+      toast.error(getErrorMessage(error, "Failed to submit review"));
     } finally {
       setIsSubmitting(false);
     }
@@ -61,7 +61,7 @@ export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) 
               onClick={() => setRating(star)}
               onMouseEnter={() => setHoverRating(star)}
               onMouseLeave={() => setHoverRating(0)}
-              className="rounded p-1 transition-colors hover:bg-gray-100"
+              className="rounded p-1 transition-colors hover:bg-muted"
             >
               <Star
                 className={cn(
@@ -73,7 +73,7 @@ export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) 
               />
             </button>
           ))}
-          <span className="ml-2 text-sm text-gray-500">
+          <span className="ml-2 text-sm text-muted-foreground">
             {rating > 0 ? `${rating} star${rating > 1 ? "s" : ""}` : "Select rating"}
           </span>
         </div>
@@ -104,7 +104,7 @@ export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) 
           maxLength={5000}
           className="mt-1"
         />
-        <p className="mt-1 text-xs text-gray-500">{content.length}/5000</p>
+        <p className="mt-1 text-xs text-muted-foreground">{content.length}/5000</p>
       </div>
 
       {/* Actions */}

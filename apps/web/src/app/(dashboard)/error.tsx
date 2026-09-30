@@ -2,6 +2,7 @@
 
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getErrorMessage } from "@/lib/api";
 
 export default function DashboardError({
   error,
@@ -11,14 +12,14 @@ export default function DashboardError({
   reset: () => void;
 }) {
   return (
-    <div className="flex h-screen items-center justify-center bg-gray-50 dark:bg-gray-950">
+    <div className="flex h-screen items-center justify-center bg-background">
       <div className="text-center">
         <AlertTriangle className="mx-auto h-12 w-12 text-red-500" />
-        <h2 className="mt-4 text-xl font-semibold text-gray-900 dark:text-gray-100">
+        <h2 className="mt-4 text-xl font-semibold text-foreground">
           Something went wrong
         </h2>
-        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
-          {error.message || "An unexpected error occurred."}
+        <p className="mt-2 text-sm text-muted-foreground">
+          {getErrorMessage(error, "An unexpected error occurred.")}
         </p>
         <Button onClick={reset} className="mt-6">
           Try Again

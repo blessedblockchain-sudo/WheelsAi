@@ -16,6 +16,7 @@ import {
   streamPlaygroundChat,
   type AgentDetail,
   type PlaygroundAgentChatResponse,
+  getErrorMessage,
 } from "@/lib/api";
 
 interface Message {
@@ -48,7 +49,7 @@ export default function PlaygroundPage() {
         const configured = (agent.modelConfig as any)?.externalModel;
         if (configured) setSelectedModel(configured);
       })
-      .catch(() => toast.error("Failed to load agent"))
+      .catch((err) => toast.error(getErrorMessage(err, "Failed to load agent")))
       .finally(() => setIsLoadingAgent(false));
   }, [agentId]);
 
@@ -112,10 +113,8 @@ export default function PlaygroundPage() {
         }
       }
       setRequestCount((c) => c + 1);
-    } catch (err: any) {
-      const errorMessage =
-        err?.data?.message || err?.message || "Failed to get response";
-      toast.error(errorMessage);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Failed to get response"));
       // Remove the empty assistant message on error
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -142,7 +141,7 @@ export default function PlaygroundPage() {
       <div className="flex flex-col">
         <Header title="Loading..." />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-gray-200" />
+          <div className="h-96 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -152,7 +151,7 @@ export default function PlaygroundPage() {
     return (
       <div className="flex flex-col">
         <Header title="Agent Not Found" />
-        <div className="p-8 text-center text-gray-500">Agent not found</div>
+        <div className="p-8 text-center text-muted-foreground">Agent not found</div>
       </div>
     );
   }
@@ -162,7 +161,7 @@ export default function PlaygroundPage() {
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
       {/* Top bar */}
-      <div className="flex items-center justify-between border-b bg-white px-4 py-3">
+      <div className="flex items-center justify-between border-b bg-card px-4 py-3">
         <div className="flex items-center gap-3">
           <Bot className="h-5 w-5 text-primary-600" />
           <span className="font-medium">{agent.name}</span>
@@ -178,7 +177,7 @@ export default function PlaygroundPage() {
             />
           </div>
           {isFreeModel && (
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-muted-foreground">
               {requestCount}/200 requests today
             </span>
           )}
@@ -205,10 +204,10 @@ export default function PlaygroundPage() {
               <div className="flex h-full items-center justify-center">
                 <div className="text-center">
                   <Bot className="mx-auto h-12 w-12 text-gray-300" />
-                  <h3 className="mt-4 text-lg font-medium text-gray-700">
+                  <h3 className="mt-4 text-lg font-medium text-foreground">
                     Test your agent
                   </h3>
-                  <p className="mt-1 text-sm text-gray-500">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     Send a message to start chatting with{" "}
                     <strong>{agent.name}</strong>
                   </p>
@@ -229,7 +228,7 @@ export default function PlaygroundPage() {
                 }`}
               >
                 {message.role === "assistant" && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-100">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15">
                     <Bot className="h-4 w-4 text-primary-600" />
                   </div>
                 )}
@@ -237,7 +236,7 @@ export default function PlaygroundPage() {
                   className={`max-w-[75%] rounded-lg px-4 py-2 ${
                     message.role === "user"
                       ? "bg-primary-600 text-white"
-                      : "bg-gray-100 text-gray-900"
+                      : "bg-muted text-foreground"
                   }`}
                 >
                   <div className="whitespace-pre-wrap text-sm">
@@ -251,8 +250,8 @@ export default function PlaygroundPage() {
                   </div>
                 </div>
                 {message.role === "user" && (
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-200">
-                    <User className="h-4 w-4 text-gray-600" />
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
+                    <User className="h-4 w-4 text-muted-foreground" />
                   </div>
                 )}
               </div>
@@ -261,7 +260,7 @@ export default function PlaygroundPage() {
           </div>
 
           {/* Input area */}
-          <div className="border-t bg-white p-4">
+          <div className="border-t bg-card p-4">
             <div className="flex gap-2">
               <textarea
                 ref={inputRef}
@@ -271,7 +270,7 @@ export default function PlaygroundPage() {
                 placeholder={`Message ${agent.name}...`}
                 rows={1}
                 disabled={isStreaming}
-                className="flex-1 resize-none rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 disabled:opacity-50"
+                className="flex-1 resize-none rounded-lg border border-input bg-background px-4 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
               />
               <Button
                 onClick={handleSend}
@@ -289,19 +288,19 @@ export default function PlaygroundPage() {
 
         {/* Sidebar */}
         {showSidebar && (
-          <div className="w-80 shrink-0 overflow-y-auto border-l bg-gray-50 p-4">
-            <h3 className="font-medium text-gray-900">Agent Config</h3>
+          <div className="w-80 shrink-0 overflow-y-auto border-l bg-muted p-4">
+            <h3 className="font-medium text-foreground">Agent Config</h3>
 
             <div className="mt-4 space-y-4">
               <div>
-                <p className="text-xs font-medium uppercase text-gray-500">
+                <p className="text-xs font-medium uppercase text-muted-foreground">
                   Model
                 </p>
                 <p className="text-sm">{selectedModel}</p>
               </div>
 
               <div>
-                <p className="text-xs font-medium uppercase text-gray-500">
+                <p className="text-xs font-medium uppercase text-muted-foreground">
                   Temperature
                 </p>
                 <p className="text-sm">
@@ -310,7 +309,7 @@ export default function PlaygroundPage() {
               </div>
 
               <div>
-                <p className="text-xs font-medium uppercase text-gray-500">
+                <p className="text-xs font-medium uppercase text-muted-foreground">
                   Max Tokens
                 </p>
                 <p className="text-sm">
@@ -320,10 +319,10 @@ export default function PlaygroundPage() {
 
               {agent.systemPrompt && (
                 <div>
-                  <p className="text-xs font-medium uppercase text-gray-500">
+                  <p className="text-xs font-medium uppercase text-muted-foreground">
                     System Prompt
                   </p>
-                  <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-white p-2 text-xs text-gray-700 border">
+                  <pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-card p-2 text-xs text-foreground border">
                     {agent.systemPrompt}
                   </pre>
                 </div>
@@ -331,14 +330,14 @@ export default function PlaygroundPage() {
 
               {(agent.tools as any[])?.length > 0 && (
                 <div>
-                  <p className="text-xs font-medium uppercase text-gray-500">
+                  <p className="text-xs font-medium uppercase text-muted-foreground">
                     Tools ({(agent.tools as any[]).length})
                   </p>
                   <div className="mt-1 space-y-1">
                     {(agent.tools as any[]).map((tool: any, i: number) => (
                       <div
                         key={i}
-                        className="rounded bg-white px-2 py-1 text-xs border"
+                        className="rounded bg-card px-2 py-1 text-xs border"
                       >
                         {tool.name}
                       </div>

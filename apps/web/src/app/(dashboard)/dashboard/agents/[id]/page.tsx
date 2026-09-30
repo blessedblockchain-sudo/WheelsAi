@@ -20,7 +20,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { agentsApi, type AgentDetail } from "@/lib/api";
+import { agentsApi, type AgentDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   OverviewTab,
@@ -33,10 +33,10 @@ import {
 } from "@/components/dashboard/agent-tabs";
 
 const frameworkColors: Record<string, string> = {
-  mastra: "bg-purple-100 text-purple-700",
-  langchain: "bg-green-100 text-green-700",
-  autogen: "bg-blue-100 text-blue-700",
-  custom: "bg-gray-100 text-gray-700",
+  mastra: "bg-purple-500/10 text-purple-500",
+  langchain: "bg-green-500/10 text-green-500",
+  autogen: "bg-blue-500/10 text-blue-500",
+  custom: "bg-muted text-foreground",
 };
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -71,7 +71,7 @@ export default function AgentDetailPage() {
       const { agent } = await agentsApi.get(agentId);
       setAgent(agent);
     } catch (error) {
-      toast.error("Failed to load agent");
+      toast.error(getErrorMessage(error, "Failed to load agent"));
     } finally {
       setIsLoading(false);
     }
@@ -95,7 +95,7 @@ export default function AgentDetailPage() {
       toast.success("Deployment started");
       loadAgent();
     } catch (error) {
-      toast.error("Failed to deploy agent");
+      toast.error(getErrorMessage(error, "Failed to deploy agent"));
     } finally {
       setIsDeploying(false);
     }
@@ -108,7 +108,7 @@ export default function AgentDetailPage() {
       toast.success("Deployment stopped");
       loadAgent();
     } catch (error) {
-      toast.error("Failed to stop deployment");
+      toast.error(getErrorMessage(error, "Failed to stop deployment"));
     } finally {
       setIsStopping(false);
     }
@@ -124,7 +124,7 @@ export default function AgentDetailPage() {
       <div className="flex flex-col">
         <Header title="Loading..." />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-gray-200" />
+          <div className="h-96 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -165,7 +165,7 @@ export default function AgentDetailPage() {
           <CardContent className="py-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15">
                   <Bot className="h-6 w-6 text-primary-600" />
                 </div>
                 <div>
@@ -173,7 +173,7 @@ export default function AgentDetailPage() {
                     <span className={cn("rounded px-2 py-0.5 text-xs font-medium", frameworkColors[agent.framework])}>
                       {agent.framework}
                     </span>
-                    <span className="text-sm text-gray-500">v{agent.version}</span>
+                    <span className="text-sm text-muted-foreground">v{agent.version}</span>
                     {latestDeployment && (
                       <Badge variant={statusColors[latestDeployment.status]}>
                         {latestDeployment.status}
@@ -182,9 +182,9 @@ export default function AgentDetailPage() {
                   </div>
                   {latestDeployment?.endpoint && (
                     <div className="mt-1 flex items-center gap-2">
-                      <code className="text-sm text-gray-600">{latestDeployment.endpoint}</code>
+                      <code className="text-sm text-muted-foreground">{latestDeployment.endpoint}</code>
                       <button onClick={() => copyToClipboard(latestDeployment.endpoint!)}>
-                        <Copy className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                        <Copy className="h-4 w-4 text-gray-400 hover:text-foreground" />
                       </button>
                     </div>
                   )}
@@ -249,7 +249,7 @@ export default function AgentDetailPage() {
                 "border-b-2 px-4 py-2 text-sm font-medium transition-colors",
                 activeTab === tab
                   ? "border-primary-500 text-primary-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
               )}
             >
               {tab.charAt(0).toUpperCase() + tab.slice(1)}

@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonCard } from "@/components/ui/skeleton";
-import { modelsApi, type Model, type GpuTier } from "@/lib/api";
+import { modelsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const categoryIcons: Record<string, React.ReactNode> = {
@@ -36,7 +36,7 @@ export default function ModelsPage() {
         setModels(models);
         setGpuTiers(gpuTiers);
       } catch (error) {
-        toast.error("Failed to load models");
+        toast.error(getErrorMessage(error, "Failed to load models"));
       } finally {
         setIsLoading(false);
       }
@@ -133,12 +133,12 @@ export default function ModelsPage() {
                 <CardHeader>
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
                         {categoryIcons[model.tags[0] ?? ""] || <Cpu className="h-5 w-5 text-primary-600" />}
                       </div>
                       <div>
                         <CardTitle className="text-base">{model.displayName}</CardTitle>
-                        <p className="text-xs text-gray-500">{model.provider}</p>
+                        <p className="text-xs text-muted-foreground">{model.provider}</p>
                       </div>
                     </div>
                     <Badge variant="secondary">{formatParams(model.parameters)}</Badge>
@@ -158,14 +158,14 @@ export default function ModelsPage() {
                   </div>
 
                   <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
-                    <div className="text-gray-500">
-                      <span className="font-medium text-gray-900">{model.contextLength.toLocaleString()}</span> ctx
+                    <div className="text-muted-foreground">
+                      <span className="font-medium text-foreground">{model.contextLength.toLocaleString()}</span> ctx
                     </div>
-                    <div className="text-gray-500">
-                      Min: <span className="font-medium text-gray-900">{model.minGpuTier}</span>
+                    <div className="text-muted-foreground">
+                      Min: <span className="font-medium text-foreground">{model.minGpuTier}</span>
                     </div>
-                    <div className="text-gray-500">
-                      From <span className="font-medium text-gray-900">${getGpuPrice(model.minGpuTier).toFixed(2)}</span>/hr
+                    <div className="text-muted-foreground">
+                      From <span className="font-medium text-foreground">${getGpuPrice(model.minGpuTier).toFixed(2)}</span>/hr
                     </div>
                   </div>
 
@@ -200,8 +200,8 @@ export default function ModelsPage() {
                   <p className="text-2xl font-bold text-primary-600">
                     ${tier.pricePerHour.toFixed(2)}
                   </p>
-                  <p className="text-xs text-gray-500">/hour</p>
-                  <p className="mt-2 text-sm text-gray-600">{tier.vram}GB VRAM</p>
+                  <p className="text-xs text-muted-foreground">/hour</p>
+                  <p className="mt-2 text-sm text-muted-foreground">{tier.vram}GB VRAM</p>
                 </div>
               ))}
             </div>

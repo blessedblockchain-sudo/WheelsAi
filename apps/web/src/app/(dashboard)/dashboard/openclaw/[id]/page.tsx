@@ -26,6 +26,7 @@ import {
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -107,7 +108,7 @@ export default function OpenClawDeploymentDetailPage() {
   } = usePolling<OpenClawDeployment>({
     fetcher,
     interval: 10_000,
-    onError: () => toast.error("Failed to load deployment details"),
+    onError: (err) => toast.error(getErrorMessage(err, "Failed to load deployment details")),
   });
 
   const handleAction = async (action: "start" | "stop" | "restart" | "delete") => {
@@ -139,7 +140,7 @@ export default function OpenClawDeploymentDetailPage() {
       }
     } catch (error) {
       console.error(`Error ${action}ing deployment:`, error);
-      toast.error(`Failed to ${action} deployment`);
+      toast.error(getErrorMessage(error, `Failed to ${action} deployment`));
     } finally {
       setActionLoading(null);
     }
@@ -162,7 +163,7 @@ export default function OpenClawDeploymentDetailPage() {
       await refreshDeployment();
     } catch (error) {
       console.error("Error toggling channel:", error);
-      toast.error("Failed to update channel");
+      toast.error(getErrorMessage(error, "Failed to update channel"));
     }
   };
 

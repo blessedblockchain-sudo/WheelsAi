@@ -22,6 +22,7 @@ import {
   ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -114,8 +115,8 @@ export default function OpenClawDeploymentsPage() {
   const { data, isLoading: loading, refresh: refreshDeployments } = usePolling<DeploymentListData>({
     fetcher,
     interval: 30_000,
-    onError: () => {
-      toast.error("Failed to load deployments");
+    onError: (err) => {
+      toast.error(getErrorMessage(err, "Failed to load deployments"));
     },
   });
 
@@ -147,7 +148,7 @@ export default function OpenClawDeploymentsPage() {
       await refreshDeployments();
     } catch (error) {
       console.error(`Error ${action}ing deployment:`, error);
-      toast.error(`Failed to ${action} deployment`);
+      toast.error(getErrorMessage(error, `Failed to ${action} deployment`));
     } finally {
       setActionLoading(null);
     }
@@ -193,10 +194,10 @@ export default function OpenClawDeploymentsPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Stopped</CardTitle>
-              <Square className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+              <Square className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-gray-600 dark:text-gray-400">
+              <div className="text-2xl font-bold text-muted-foreground">
                 {stats.stopped}
               </div>
             </CardContent>
@@ -354,7 +355,7 @@ export default function OpenClawDeploymentsPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                      className="text-red-600 hover:text-red-500 hover:bg-red-500/10"
                       onClick={(e) => {
                         e.stopPropagation();
                         if (

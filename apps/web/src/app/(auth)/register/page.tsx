@@ -8,8 +8,9 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { authApi, ApiError } from "@/lib/api";
+import { authApi, ApiError, getErrorMessage } from "@/lib/api";
 import { WalletAuthButton } from "@/components/auth/wallet-auth-button";
 
 interface RegisterForm {
@@ -38,18 +39,13 @@ export default function RegisterPage() {
       toast.success("Account created! You have $5 in free credits.");
       router.push("/dashboard");
     } catch (error) {
-      if (error instanceof ApiError) {
-        const message =
-          typeof error.data === "object" &&
-          error.data !== null &&
-          "message" in error.data &&
-          typeof (error.data as { message?: unknown }).message === "string"
-            ? (error.data as { message: string }).message
-            : "Failed to create account";
-        toast.error(message);
-      } else {
-        toast.error("Something went wrong. Please try again.");
-      }
+      // Server-side validation messages ("Email already registered") are
+      // shown verbatim; transport failures get a generic retry prompt.
+      toast.error(
+        error instanceof ApiError
+          ? getErrorMessage(error, "Failed to create account")
+          : "Something went wrong. Please try again."
+      );
     } finally {
       setIsLoading(false);
     }
@@ -66,9 +62,9 @@ export default function RegisterPage() {
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+            <Label htmlFor="email">
               Email
-            </label>
+            </Label>
             <Input
               id="email"
               type="email"
@@ -86,9 +82,9 @@ export default function RegisterPage() {
           </div>
 
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+            <Label htmlFor="password">
               Password
-            </label>
+            </Label>
             <Input
               id="password"
               type="password"
@@ -106,9 +102,9 @@ export default function RegisterPage() {
           </div>
 
           <div>
-            <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
+            <Label htmlFor="confirmPassword">
               Confirm Password
-            </label>
+            </Label>
             <Input
               id="confirmPassword"
               type="password"
@@ -128,7 +124,7 @@ export default function RegisterPage() {
           </Button>
         </form>
 
-        <div className="mt-4 rounded-lg bg-primary-50 p-4">
+        <div className="mt-4 rounded-lg bg-primary/10 p-4">
           <p className="text-sm text-primary-700">
             <span className="font-semibold">$5 free credits</span> included with every new account
           </p>
@@ -137,7 +133,7 @@ export default function RegisterPage() {
         <div className="mt-6">
           <div className="relative">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-300" />
+              <div className="w-full border-t border-border" />
             </div>
             <div className="relative flex justify-center text-sm">
               <span className="bg-card px-2 text-muted-foreground">Or continue with</span>
@@ -147,7 +143,7 @@ export default function RegisterPage() {
           <WalletAuthButton />
         </div>
 
-        <p className="mt-6 text-center text-sm text-gray-500">
+        <p className="mt-6 text-center text-sm text-muted-foreground">
           Already have an account?{" "}
           <Link href="/login" className="font-medium text-primary-600 hover:underline">
             Sign in

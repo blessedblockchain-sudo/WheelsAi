@@ -9,7 +9,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { deploymentsApi, type Deployment } from "@/lib/api";
+import { deploymentsApi, type Deployment, getErrorMessage } from "@/lib/api";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "success",
@@ -39,7 +39,7 @@ export default function DeploymentsPage() {
       const { deployments } = await deploymentsApi.list();
       setDeployments(deployments);
     } catch (error) {
-      toast.error("Failed to load deployments");
+      toast.error(getErrorMessage(error, "Failed to load deployments"));
     } finally {
       setIsLoading(false);
     }
@@ -63,7 +63,7 @@ export default function DeploymentsPage() {
       toast.success("Deployment restarting...");
       loadDeployments();
     } catch (error) {
-      toast.error("Failed to restart deployment");
+      toast.error(getErrorMessage(error, "Failed to restart deployment"));
     } finally {
       setActionLoading(null);
     }
@@ -76,7 +76,7 @@ export default function DeploymentsPage() {
       toast.success("Deployment stopped");
       loadDeployments();
     } catch (error) {
-      toast.error("Failed to stop deployment");
+      toast.error(getErrorMessage(error, "Failed to stop deployment"));
     } finally {
       setActionLoading(null);
     }
@@ -94,17 +94,17 @@ export default function DeploymentsPage() {
         {isLoading ? (
           <div className="space-y-4">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-24 animate-pulse rounded-lg bg-gray-200" />
+              <div key={i} className="h-24 animate-pulse rounded-lg bg-muted" />
             ))}
           </div>
         ) : deployments.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-16">
               <Cpu className="h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium text-gray-900">
+              <h3 className="mt-4 text-xl font-medium text-foreground">
                 No deployments yet
               </h3>
-              <p className="mt-2 text-gray-500">
+              <p className="mt-2 text-muted-foreground">
                 Deploy your first model to get an OpenAI-compatible endpoint
               </p>
               <Link href="/dashboard/deployments/new" className="mt-6">
@@ -122,14 +122,14 @@ export default function DeploymentsPage() {
                 <CardContent className="p-0">
                   <div className="flex items-center justify-between p-6">
                     <div className="flex items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15">
                         <Cpu className="h-6 w-6 text-primary-600" />
                       </div>
                       <div>
                         <div className="flex items-center gap-3">
                           <Link
                             href={`/dashboard/deployments/${deployment.id}`}
-                            className="text-lg font-semibold text-gray-900 hover:text-primary-600"
+                            className="text-lg font-semibold text-foreground hover:text-primary-600"
                           >
                             {deployment.name}
                           </Link>
@@ -140,7 +140,7 @@ export default function DeploymentsPage() {
                             {deployment.status}
                           </Badge>
                         </div>
-                        <p className="mt-1 text-sm text-gray-500">
+                        <p className="mt-1 text-sm text-muted-foreground">
                           {deployment.model} &middot; {deployment.engine} &middot;{" "}
                           {deployment.gpuTier} &middot; {deployment.replicas} replica
                           {deployment.replicas > 1 ? "s" : ""}
@@ -151,8 +151,8 @@ export default function DeploymentsPage() {
                     <div className="flex items-center gap-4">
                       {deployment.status === "running" && deployment.endpoint && (
                         <div className="text-right">
-                          <p className="text-xs text-gray-500">Endpoint</p>
-                          <code className="text-sm text-gray-700">
+                          <p className="text-xs text-muted-foreground">Endpoint</p>
+                          <code className="text-sm text-foreground">
                             {deployment.endpoint}
                           </code>
                         </div>
@@ -192,7 +192,7 @@ export default function DeploymentsPage() {
                   </div>
 
                   {/* Health indicator bar */}
-                  <div className="h-1 bg-gray-100">
+                  <div className="h-1 bg-muted">
                     <div
                       className={`h-full transition-all ${
                         deployment.status === "running"

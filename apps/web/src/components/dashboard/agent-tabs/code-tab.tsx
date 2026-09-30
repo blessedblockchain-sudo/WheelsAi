@@ -31,7 +31,7 @@ export function CodeTab({ agent }: AgentTabProps) {
             View source
           </a>
         ) : (
-          <p className="text-gray-500">No source code available</p>
+          <p className="text-muted-foreground">No source code available</p>
         )}
       </CardContent>
     </Card>

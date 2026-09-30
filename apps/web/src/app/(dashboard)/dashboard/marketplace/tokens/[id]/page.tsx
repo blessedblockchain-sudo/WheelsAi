@@ -13,6 +13,7 @@ import { BondingCurveProgress } from "@/components/dashboard/bonding-curve-progr
 import { usePolling } from "@/lib/use-polling";
 import { cn } from "@/lib/utils";
 import { ArrowLeft, Copy } from "lucide-react";
+import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -149,7 +150,7 @@ export default function TokenDetailPage() {
   const { data, isLoading: loading } = usePolling<TokenPageData>({
     fetcher,
     interval: 15_000,
-    onError: () => toast.error("Failed to load token details"),
+    onError: (err) => toast.error(getErrorMessage(err, "Failed to load token details")),
   });
 
   const token = data?.token ?? null;

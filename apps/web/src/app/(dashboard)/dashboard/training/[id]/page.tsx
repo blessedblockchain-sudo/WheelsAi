@@ -25,7 +25,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { trainingApi, type TrainingJobDetail } from "@/lib/api";
+import { trainingApi, type TrainingJobDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -68,7 +68,7 @@ export default function TrainingJobDetailPage() {
       setJob(job);
       return job;
     } catch (error) {
-      toast.error("Failed to load training job");
+      toast.error(getErrorMessage(error, "Failed to load training job"));
       return null;
     } finally {
       setIsLoading(false);
@@ -126,7 +126,7 @@ export default function TrainingJobDetailPage() {
       toast.success("Training job cancelled");
       loadJob();
     } catch (error) {
-      toast.error("Failed to cancel training job");
+      toast.error(getErrorMessage(error, "Failed to cancel training job"));
     } finally {
       setIsCancelling(false);
     }
@@ -142,7 +142,7 @@ export default function TrainingJobDetailPage() {
       <div className="flex flex-col">
         <Header title="Loading..." />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-gray-200" />
+          <div className="h-96 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -185,7 +185,7 @@ export default function TrainingJobDetailPage() {
           <CardContent className="py-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15">
                   <GraduationCap className="h-6 w-6 text-primary-600" />
                 </div>
                 <div>
@@ -194,13 +194,13 @@ export default function TrainingJobDetailPage() {
                       <StatusIcon className="mr-1 h-3 w-3" />
                       {job.status}
                     </Badge>
-                    <span className="text-sm text-gray-500">
+                    <span className="text-sm text-muted-foreground">
                       {job.method.toUpperCase()} on {job.gpuTier}
                     </span>
                   </div>
                   {isRunning && (
                     <div className="mt-2 flex items-center gap-3">
-                      <div className="h-2 w-48 overflow-hidden rounded-full bg-gray-200">
+                      <div className="h-2 w-48 overflow-hidden rounded-full bg-muted">
                         <div
                           className="h-full bg-primary-500 transition-all duration-500"
                           style={{ width: `${job.progress}%` }}
@@ -208,7 +208,7 @@ export default function TrainingJobDetailPage() {
                       </div>
                       <span className="text-sm font-medium">{job.progress}%</span>
                       {job.currentEpoch && job.totalEpochs && (
-                        <span className="text-sm text-gray-500">
+                        <span className="text-sm text-muted-foreground">
                           Epoch {job.currentEpoch}/{job.totalEpochs}
                         </span>
                       )}
@@ -238,13 +238,13 @@ export default function TrainingJobDetailPage() {
 
         {/* Error banner */}
         {isFailed && job.lastError && (
-          <Card className="mb-6 border-red-200 bg-red-50">
+          <Card className="mb-6 border-red-500/30 bg-red-500/10">
             <CardContent className="py-4">
               <div className="flex items-start gap-3">
                 <AlertTriangle className="h-5 w-5 text-red-500" />
                 <div>
-                  <p className="font-medium text-red-800">Training Failed</p>
-                  <p className="mt-1 text-sm text-red-700">{job.lastError}</p>
+                  <p className="font-medium text-red-500">Training Failed</p>
+                  <p className="mt-1 text-sm text-red-500">{job.lastError}</p>
                 </div>
               </div>
             </CardContent>
@@ -253,14 +253,14 @@ export default function TrainingJobDetailPage() {
 
         {/* Success banner */}
         {isComplete && job.outputPath && (
-          <Card className="mb-6 border-green-200 bg-green-50">
+          <Card className="mb-6 border-green-500/30 bg-green-500/10">
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-start gap-3">
                   <CheckCircle className="h-5 w-5 text-green-500" />
                   <div>
-                    <p className="font-medium text-green-800">Training Complete</p>
-                    <p className="mt-1 text-sm text-green-700">
+                    <p className="font-medium text-green-500">Training Complete</p>
+                    <p className="mt-1 text-sm text-green-500">
                       Adapter weights saved to: {job.outputPath}
                     </p>
                   </div>
@@ -287,7 +287,7 @@ export default function TrainingJobDetailPage() {
                 "border-b-2 px-4 py-2 text-sm font-medium transition-colors",
                 activeTab === tab
                   ? "border-primary-500 text-primary-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
               )}
             >
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -304,12 +304,12 @@ export default function TrainingJobDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
                     <Cpu className="h-5 w-5 text-blue-600" />
                   </div>
                   <div>
                     <p className="font-medium">{job.baseModelId}</p>
-                    <p className="text-sm text-gray-500">{job.baseModelHfId}</p>
+                    <p className="text-sm text-muted-foreground">{job.baseModelHfId}</p>
                   </div>
                 </div>
               </CardContent>
@@ -321,12 +321,12 @@ export default function TrainingJobDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
                     <Database className="h-5 w-5 text-green-600" />
                   </div>
                   <div>
                     <p className="font-medium">{job.dataset.name}</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-muted-foreground">
                       {job.dataset.rowCount.toLocaleString()} rows
                     </p>
                   </div>
@@ -341,29 +341,29 @@ export default function TrainingJobDetailPage() {
               <CardContent>
                 <dl className="grid grid-cols-2 gap-3 text-sm">
                   <div>
-                    <dt className="text-gray-500">Method</dt>
+                    <dt className="text-muted-foreground">Method</dt>
                     <dd className="font-medium uppercase">{job.method}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Epochs</dt>
+                    <dt className="text-muted-foreground">Epochs</dt>
                     <dd className="font-medium">{job.config.epochs}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Batch Size</dt>
+                    <dt className="text-muted-foreground">Batch Size</dt>
                     <dd className="font-medium">{job.config.batchSize}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Learning Rate</dt>
+                    <dt className="text-muted-foreground">Learning Rate</dt>
                     <dd className="font-medium">{job.config.learningRate}</dd>
                   </div>
                   {job.config.loraR && (
                     <>
                       <div>
-                        <dt className="text-gray-500">LoRA Rank</dt>
+                        <dt className="text-muted-foreground">LoRA Rank</dt>
                         <dd className="font-medium">{job.config.loraR}</dd>
                       </div>
                       <div>
-                        <dt className="text-gray-500">LoRA Alpha</dt>
+                        <dt className="text-muted-foreground">LoRA Alpha</dt>
                         <dd className="font-medium">{job.config.loraAlpha}</dd>
                       </div>
                     </>
@@ -379,15 +379,15 @@ export default function TrainingJobDetailPage() {
               <CardContent>
                 <dl className="grid grid-cols-2 gap-3 text-sm">
                   <div>
-                    <dt className="text-gray-500">GPU Tier</dt>
+                    <dt className="text-muted-foreground">GPU Tier</dt>
                     <dd className="font-medium">{job.gpuTier}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">GPU Count</dt>
+                    <dt className="text-muted-foreground">GPU Count</dt>
                     <dd className="font-medium">{job.gpuCount}</dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Estimated Cost</dt>
+                    <dt className="text-muted-foreground">Estimated Cost</dt>
                     <dd className="font-medium">
                       {job.estimatedCostCents
                         ? `$${(job.estimatedCostCents / 100).toFixed(2)}`
@@ -395,7 +395,7 @@ export default function TrainingJobDetailPage() {
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Actual Cost</dt>
+                    <dt className="text-muted-foreground">Actual Cost</dt>
                     <dd className="font-medium">
                       {job.actualCostCents
                         ? `$${(job.actualCostCents / 100).toFixed(2)}`
@@ -415,22 +415,22 @@ export default function TrainingJobDetailPage() {
                   <div className="flex gap-8">
                     {job.trainingLoss && (
                       <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-100">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/10">
                           <TrendingDown className="h-5 w-5 text-orange-600" />
                         </div>
                         <div>
-                          <p className="text-sm text-gray-500">Training Loss</p>
+                          <p className="text-sm text-muted-foreground">Training Loss</p>
                           <p className="text-xl font-bold">{job.trainingLoss.toFixed(4)}</p>
                         </div>
                       </div>
                     )}
                     {job.evalLoss && (
                       <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-100">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/10">
                           <TrendingDown className="h-5 w-5 text-purple-600" />
                         </div>
                         <div>
-                          <p className="text-sm text-gray-500">Eval Loss</p>
+                          <p className="text-sm text-muted-foreground">Eval Loss</p>
                           <p className="text-xl font-bold">{job.evalLoss.toFixed(4)}</p>
                         </div>
                       </div>
@@ -447,13 +447,13 @@ export default function TrainingJobDetailPage() {
               <CardContent>
                 <dl className="grid grid-cols-3 gap-4 text-sm">
                   <div>
-                    <dt className="text-gray-500">Created</dt>
+                    <dt className="text-muted-foreground">Created</dt>
                     <dd className="font-medium">
                       {new Date(job.createdAt).toLocaleString()}
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Started</dt>
+                    <dt className="text-muted-foreground">Started</dt>
                     <dd className="font-medium">
                       {job.startedAt
                         ? new Date(job.startedAt).toLocaleString()
@@ -461,7 +461,7 @@ export default function TrainingJobDetailPage() {
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-gray-500">Completed</dt>
+                    <dt className="text-muted-foreground">Completed</dt>
                     <dd className="font-medium">
                       {job.completedAt
                         ? new Date(job.completedAt).toLocaleString()
@@ -503,14 +503,14 @@ export default function TrainingJobDetailPage() {
             <CardContent>
               {job.metrics ? (
                 <div className="space-y-4">
-                  <pre className="overflow-auto rounded-lg bg-gray-100 p-4 text-sm">
+                  <pre className="overflow-auto rounded-lg bg-muted p-4 text-sm">
                     {JSON.stringify(job.metrics, null, 2)}
                   </pre>
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center py-12">
                   <TrendingDown className="h-12 w-12 text-gray-300" />
-                  <p className="mt-4 text-gray-500">
+                  <p className="mt-4 text-muted-foreground">
                     Metrics will appear here once training starts
                   </p>
                 </div>

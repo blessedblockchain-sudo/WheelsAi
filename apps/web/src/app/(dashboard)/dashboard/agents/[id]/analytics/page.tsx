@@ -31,6 +31,7 @@ import {
   analyticsApi,
   type AgentDetail,
   type AnalyticsDashboard,
+  getErrorMessage,
 } from "@/lib/api";
 
 function MetricCard({
@@ -53,8 +54,8 @@ function MetricCard({
       <CardContent className="py-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
-            <p className={`text-2xl font-bold ${valueColor ?? "text-gray-900 dark:text-gray-100"}`}>
+            <p className="text-sm text-muted-foreground">{label}</p>
+            <p className={`text-2xl font-bold ${valueColor ?? "text-foreground"}`}>
               {value}
             </p>
           </div>
@@ -73,10 +74,10 @@ function SkeletonCard() {
       <CardContent className="py-4">
         <div className="flex items-center justify-between">
           <div className="space-y-2">
-            <div className="h-3 w-24 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-            <div className="h-7 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+            <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+            <div className="h-7 w-16 animate-pulse rounded bg-muted" />
           </div>
-          <div className="h-10 w-10 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+          <div className="h-10 w-10 animate-pulse rounded-lg bg-muted" />
         </div>
       </CardContent>
     </Card>
@@ -98,8 +99,8 @@ export default function AgentAnalyticsPage() {
       try {
         const { agent } = await agentsApi.get(agentId);
         setAgent(agent);
-      } catch {
-        toast.error("Failed to load agent");
+      } catch (err) {
+        toast.error(getErrorMessage(err, "Failed to load agent"));
       } finally {
         setIsLoading(false);
       }
@@ -121,7 +122,7 @@ export default function AgentAnalyticsPage() {
       <div className="flex flex-col">
         <Header title="Loading..." />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+          <div className="h-96 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -190,7 +191,7 @@ export default function AgentAnalyticsPage() {
 
         {/* Overview Cards */}
         <section>
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             Overview
           </h2>
           {isLoadingAnalytics ? (
@@ -203,7 +204,7 @@ export default function AgentAnalyticsPage() {
             <Card>
               <CardContent className="py-10 text-center">
                 <BarChart3 className="mx-auto h-10 w-10 text-gray-300" />
-                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">
+                <p className="mt-3 text-sm text-muted-foreground">
                   No analytics data yet. Deploy an agent to start tracking performance.
                 </p>
               </CardContent>
@@ -214,21 +215,21 @@ export default function AgentAnalyticsPage() {
                 label="Total Requests"
                 value={(overview?.totalRequests ?? 0).toLocaleString()}
                 icon={BarChart3}
-                iconBg="bg-blue-100 dark:bg-blue-900/30"
+                iconBg="bg-blue-500/10"
                 iconColor="text-blue-600 dark:text-blue-400"
               />
               <MetricCard
                 label="Tokens Used"
                 value={((overview?.totalTokensIn ?? 0) + (overview?.totalTokensOut ?? 0)).toLocaleString()}
                 icon={Users}
-                iconBg="bg-purple-100 dark:bg-purple-900/30"
+                iconBg="bg-purple-500/10"
                 iconColor="text-purple-600 dark:text-purple-400"
               />
               <MetricCard
                 label="Total Cost"
                 value={`$${totalRevenueDollars}`}
                 icon={DollarSign}
-                iconBg="bg-green-100 dark:bg-green-900/30"
+                iconBg="bg-green-500/10"
                 iconColor="text-green-600 dark:text-green-400"
                 valueColor="text-green-600 dark:text-green-400"
               />
@@ -236,7 +237,7 @@ export default function AgentAnalyticsPage() {
                 label="Error Rate"
                 value={errorRatePct}
                 icon={Activity}
-                iconBg="bg-red-100 dark:bg-red-900/30"
+                iconBg="bg-red-500/10"
                 iconColor="text-red-600 dark:text-red-400"
               />
             </div>
@@ -256,9 +257,9 @@ export default function AgentAnalyticsPage() {
             </CardHeader>
             <CardContent>
               {isLoadingAnalytics ? (
-                <div className="h-40 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+                <div className="h-40 animate-pulse rounded bg-muted" />
               ) : timeseries.length === 0 ? (
-                <div className="flex h-40 items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
                   No request data for this period
                 </div>
               ) : (
@@ -268,7 +269,7 @@ export default function AgentAnalyticsPage() {
                       const heightPct = Math.round((point.requests / maxRequests) * 100);
                       return (
                         <div key={index} className="flex flex-1 flex-col items-center gap-1">
-                          <span className="text-xs text-gray-500 dark:text-gray-400">
+                          <span className="text-xs text-muted-foreground">
                             {point.requests}
                           </span>
                           <div
@@ -284,7 +285,7 @@ export default function AgentAnalyticsPage() {
                     {barLabels.map((label, i) => (
                       <div
                         key={i}
-                        className="flex-1 text-center text-xs text-gray-500 dark:text-gray-400"
+                        className="flex-1 text-center text-xs text-muted-foreground"
                       >
                         {label}
                       </div>
@@ -310,7 +311,7 @@ export default function AgentAnalyticsPage() {
                   {Array.from({ length: 4 }).map((_, i) => (
                     <div
                       key={i}
-                      className="h-20 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700"
+                      className="h-20 animate-pulse rounded-lg bg-muted"
                     />
                   ))}
                 </div>
@@ -336,13 +337,13 @@ export default function AgentAnalyticsPage() {
                   ].map(({ label, value, icon: Icon }) => (
                     <div
                       key={label}
-                      className="rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800"
+                      className="rounded-lg border border-border bg-muted p-4"
                     >
-                      <div className="flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                      <div className="flex items-center gap-2 text-muted-foreground">
                         <Icon className="h-4 w-4" />
                         <span className="text-xs font-medium uppercase tracking-wide">{label}</span>
                       </div>
-                      <p className="mt-1 text-xl font-bold text-gray-900 dark:text-gray-100">
+                      <p className="mt-1 text-xl font-bold text-foreground">
                         {value}
                       </p>
                     </div>
@@ -362,7 +363,7 @@ export default function AgentAnalyticsPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <DollarSign className="h-5 w-5 text-gray-500" />
+              <DollarSign className="h-5 w-5 text-muted-foreground" />
               Cost Breakdown
             </CardTitle>
             <CardDescription>Compute cost and projection</CardDescription>
@@ -373,7 +374,7 @@ export default function AgentAnalyticsPage() {
                 {Array.from({ length: 3 }).map((_, i) => (
                   <div
                     key={i}
-                    className="h-10 animate-pulse rounded bg-gray-200 dark:bg-gray-700"
+                    className="h-10 animate-pulse rounded bg-muted"
                   />
                 ))}
               </div>
@@ -381,31 +382,31 @@ export default function AgentAnalyticsPage() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-gray-200 text-left dark:border-gray-700">
-                      <th className="pb-3 font-medium text-gray-500 dark:text-gray-400">Item</th>
-                      <th className="pb-3 text-right font-medium text-gray-500 dark:text-gray-400">
+                    <tr className="border-b border-border text-left">
+                      <th className="pb-3 font-medium text-muted-foreground">Item</th>
+                      <th className="pb-3 text-right font-medium text-muted-foreground">
                         Amount
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                  <tbody className="divide-y divide-border">
                     <tr>
-                      <td className="py-3 text-gray-700 dark:text-gray-300">Total Cost (7 days)</td>
+                      <td className="py-3 text-foreground">Total Cost (7 days)</td>
                       <td className="py-3 text-right font-medium text-red-600 dark:text-red-400">
                         ${totalRevenueDollars}
                       </td>
                     </tr>
                     {dailyCostDollars !== null && (
                       <tr>
-                        <td className="py-3 text-gray-700 dark:text-gray-300">Daily Average</td>
-                        <td className="py-3 text-right font-medium text-gray-700 dark:text-gray-300">
+                        <td className="py-3 text-foreground">Daily Average</td>
+                        <td className="py-3 text-right font-medium text-foreground">
                           ${dailyCostDollars}
                         </td>
                       </tr>
                     )}
                     {projection && (
                       <tr>
-                        <td className="py-3 font-semibold text-gray-900 dark:text-gray-100">
+                        <td className="py-3 font-semibold text-foreground">
                           Projected (30 days)
                         </td>
                         <td className="py-3 text-right text-lg font-bold text-blue-600 dark:text-blue-400">
@@ -421,10 +422,10 @@ export default function AgentAnalyticsPage() {
         </Card>
 
         {/* Export Data */}
-        <div className="flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex items-center justify-between rounded-lg border border-border bg-muted p-4">
           <div>
-            <p className="font-medium text-gray-900 dark:text-gray-100">Export Data</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
+            <p className="font-medium text-foreground">Export Data</p>
+            <p className="text-sm text-muted-foreground">
               Download analytics as CSV or JSON
             </p>
           </div>

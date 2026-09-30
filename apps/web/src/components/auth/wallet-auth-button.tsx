@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import bs58 from "bs58";
 
 import { Button } from "@/components/ui/button";
-import { authApi, isTwoFactorChallenge } from "@/lib/api";
+import { authApi, isTwoFactorChallenge, getErrorMessage } from "@/lib/api";
 
 export function WalletAuthButton() {
   const router = useRouter();
@@ -83,9 +83,7 @@ export function WalletAuthButton() {
       } catch (err) {
         if (!isMountedRef.current) return;
 
-        const message =
-          err instanceof Error ? err.message : "Wallet authentication failed.";
-        toast.error(message);
+        toast.error(getErrorMessage(err, "Wallet authentication failed."));
 
         // Reset so the user can try again
         hasAttemptedRef.current = false;

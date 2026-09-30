@@ -97,10 +97,10 @@ function AgentCard({
   return (
     <Link
       href={`/marketplace/${listing.slug}`}
-      className="group block rounded-lg border bg-white p-5 transition-all hover:border-primary-200 hover:shadow-md"
+      className="group block rounded-lg border bg-card p-5 transition-all hover:border-primary/30 hover:shadow-md"
     >
       <div className="flex items-start gap-4">
-        <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary-100 to-primary-200">
+        <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
           {listing.iconUrl ? (
             <img
               src={listing.iconUrl}
@@ -113,20 +113,20 @@ function AgentCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h3 className="truncate font-semibold text-gray-900 group-hover:text-primary-600">
+            <h3 className="truncate font-semibold text-foreground group-hover:text-primary-600">
               {listing.title}
             </h3>
             {listing.isFeatured && (
-              <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs font-medium text-yellow-800">
+              <span className="rounded bg-yellow-500/10 px-1.5 py-0.5 text-xs font-medium text-yellow-500">
                 Featured
               </span>
             )}
           </div>
-          <p className="text-sm text-gray-500">by {listing.publisherName}</p>
+          <p className="text-sm text-muted-foreground">by {listing.publisherName}</p>
         </div>
       </div>
 
-      <p className="mt-3 line-clamp-2 text-sm text-gray-600">
+      <p className="mt-3 line-clamp-2 text-sm text-muted-foreground">
         {listing.shortDescription}
       </p>
 
@@ -136,7 +136,7 @@ function AgentCard({
           <span className="font-medium">{listing.avgRating.toFixed(1)}</span>
           <span className="text-gray-400">({listing.reviewCount})</span>
         </div>
-        <div className="flex items-center gap-1 text-gray-500">
+        <div className="flex items-center gap-1 text-muted-foreground">
           <Download className="h-4 w-4" />
           <span>{listing.totalInstalls.toLocaleString()} installs</span>
         </div>
@@ -144,12 +144,12 @@ function AgentCard({
 
       <div className="mt-4 flex items-center justify-between">
         <span className="flex items-center gap-2">
-          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
+          <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
             {listing.agent?.framework || "custom"}
           </span>
           {listing.pricingModel === "tokenized" && (
             <span
-              className="flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700"
+              className="flex items-center gap-1 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-500"
               title="Tokenized agent — treasury and compute payments are publicly verifiable on-chain"
             >
               <ShieldCheck className="h-3 w-3" />
@@ -164,7 +164,7 @@ function AgentCard({
           </span>
         ) : (
           <span
-            className={`font-semibold ${listing.pricingModel === "free" ? "text-green-600" : "text-gray-900"}`}
+            className={`font-semibold ${listing.pricingModel === "free" ? "text-green-600" : "text-foreground"}`}
           >
             {priceText}
           </span>
@@ -184,16 +184,16 @@ function CategorySidebar({
   onSelectCategory: (category: string) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-white p-4">
-      <h3 className="font-semibold text-gray-900">Categories</h3>
+    <div className="rounded-lg border bg-card p-4">
+      <h3 className="font-semibold text-foreground">Categories</h3>
       <ul className="mt-3 space-y-1">
         <li>
           <button
             onClick={() => onSelectCategory("all")}
             className={`w-full rounded-md px-3 py-2 text-left text-sm ${
               selectedCategory === "all"
-                ? "bg-primary-50 font-medium text-primary-700"
-                : "text-gray-600 hover:bg-gray-50"
+                ? "bg-primary/10 font-medium text-primary-700"
+                : "text-muted-foreground hover:bg-muted"
             }`}
           >
             All Categories
@@ -205,8 +205,8 @@ function CategorySidebar({
               onClick={() => onSelectCategory(cat.id)}
               className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm ${
                 selectedCategory === cat.id
-                  ? "bg-primary-50 font-medium text-primary-700"
-                  : "text-gray-600 hover:bg-gray-50"
+                  ? "bg-primary/10 font-medium text-primary-700"
+                  : "text-muted-foreground hover:bg-muted"
               }`}
             >
               <span>{cat.label}</span>
@@ -307,9 +307,9 @@ function MarketplaceContent() {
   const showUnfilteredSections = !query && category === "all" && pricingModel === "all";
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b bg-white">
+      <header className="border-b bg-card">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <Link href="/" className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600">
@@ -326,7 +326,7 @@ function MarketplaceContent() {
             </Link>
             <Link
               href="/docs"
-              className="text-sm font-medium text-gray-600 hover:text-gray-900"
+              className="text-sm font-medium text-muted-foreground hover:text-foreground"
             >
               Docs
             </Link>
@@ -352,12 +352,12 @@ function MarketplaceContent() {
                 placeholder="Search agents..."
                 value={query}
                 onChange={(e) => updateParams({ q: e.target.value })}
-                className="w-full rounded-lg border-0 py-3 pl-10 pr-4 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-primary-500"
+                className="w-full rounded-lg border-0 py-3 pl-10 pr-4 text-foreground shadow-sm ring-1 ring-inset ring-border placeholder:text-gray-400 focus:ring-2 focus:ring-primary-500"
               />
               {query && (
                 <button
                   onClick={() => updateParams({ q: null })}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-foreground"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -385,8 +385,8 @@ function MarketplaceContent() {
               onSelectCategory={(cat) => updateParams({ category: cat })}
             />
 
-            <div className="mt-6 rounded-lg border bg-white p-4">
-              <h3 className="font-semibold text-gray-900">Pricing</h3>
+            <div className="mt-6 rounded-lg border bg-card p-4">
+              <h3 className="font-semibold text-foreground">Pricing</h3>
               <ul className="mt-3 space-y-1">
                 {PRICING_OPTIONS.map((opt) => (
                   <li key={opt.value}>
@@ -394,8 +394,8 @@ function MarketplaceContent() {
                       onClick={() => updateParams({ pricing: opt.value })}
                       className={`w-full rounded-md px-3 py-2 text-left text-sm ${
                         pricingModel === opt.value
-                          ? "bg-primary-50 font-medium text-primary-700"
-                          : "text-gray-600 hover:bg-gray-50"
+                          ? "bg-primary/10 font-medium text-primary-700"
+                          : "text-muted-foreground hover:bg-muted"
                       }`}
                     >
                       {opt.label}
@@ -409,7 +409,7 @@ function MarketplaceContent() {
           {/* Mobile Filters */}
           {showFilters && (
             <div className="fixed inset-0 z-50 bg-black/50 md:hidden">
-              <div className="absolute right-0 top-0 h-full w-80 bg-white p-6">
+              <div className="absolute right-0 top-0 h-full w-80 bg-card p-6">
                 <div className="flex items-center justify-between">
                   <h2 className="font-semibold">Filters</h2>
                   <button onClick={() => setShowFilters(false)}>
@@ -435,7 +435,7 @@ function MarketplaceContent() {
             {/* Featured Section */}
             {showUnfilteredSections && featuredListings.length > 0 && (
               <section className="mb-8">
-                <h2 className="mb-4 text-lg font-semibold text-gray-900">
+                <h2 className="mb-4 text-lg font-semibold text-foreground">
                   Featured Agents
                 </h2>
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -456,7 +456,7 @@ function MarketplaceContent() {
                 <div className="mb-4 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <TrendingUp className="h-5 w-5 text-cyan-600" />
-                    <h2 className="text-lg font-semibold text-gray-900">
+                    <h2 className="text-lg font-semibold text-foreground">
                       Trending Tokens
                     </h2>
                   </div>
@@ -480,7 +480,7 @@ function MarketplaceContent() {
 
             {/* Results Header */}
             <div className="mb-4 flex items-center justify-between">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-muted-foreground">
                 {isLoading ? (
                   "Loading..."
                 ) : (
@@ -491,14 +491,14 @@ function MarketplaceContent() {
                 )}
               </p>
               <div className="flex items-center gap-2">
-                <label htmlFor="sort" className="text-sm text-gray-600">
+                <label htmlFor="sort" className="text-sm text-muted-foreground">
                   Sort by:
                 </label>
                 <select
                   id="sort"
                   value={sortBy}
                   onChange={(e) => updateParams({ sort: e.target.value })}
-                  className="rounded-md border-gray-300 py-1.5 pl-3 pr-8 text-sm focus:border-primary-500 focus:ring-primary-500"
+                  className="rounded-md border-border py-1.5 pl-3 pr-8 text-sm focus:border-primary-500 focus:ring-primary-500"
                 >
                   {SORT_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
@@ -515,13 +515,13 @@ function MarketplaceContent() {
                 {[...Array(6)].map((_, i) => (
                   <div
                     key={i}
-                    className="h-48 animate-pulse rounded-lg border bg-gray-100"
+                    className="h-48 animate-pulse rounded-lg border bg-muted"
                   />
                 ))}
               </div>
             ) : listings.length === 0 ? (
-              <div className="rounded-lg border bg-white py-12 text-center">
-                <p className="text-gray-500">No agents found</p>
+              <div className="rounded-lg border bg-card py-12 text-center">
+                <p className="text-muted-foreground">No agents found</p>
                 {query && (
                   <button
                     onClick={() => updateParams({ q: null })}
@@ -549,17 +549,17 @@ function MarketplaceContent() {
                 <button
                   onClick={() => updateParams({ page: String(page - 1) })}
                   disabled={page <= 1}
-                  className="rounded-md border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-md border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Previous
                 </button>
-                <span className="px-4 text-sm text-gray-600">
+                <span className="px-4 text-sm text-muted-foreground">
                   Page {page} of {Math.ceil(totalCount / 12)}
                 </span>
                 <button
                   onClick={() => updateParams({ page: String(page + 1) })}
                   disabled={page >= Math.ceil(totalCount / 12)}
-                  className="rounded-md border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="rounded-md border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Next
                 </button>
@@ -570,7 +570,7 @@ function MarketplaceContent() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t bg-white py-8">
+      <footer className="border-t bg-card py-8">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -579,7 +579,7 @@ function MarketplaceContent() {
               </div>
               <span className="font-semibold">WheelsAI</span>
             </div>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-muted-foreground">
               Built on Nosana. Powered by decentralized compute.
             </p>
           </div>

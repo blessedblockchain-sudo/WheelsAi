@@ -65,19 +65,19 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <p className="text-sm text-gray-500">Model</p>
+            <p className="text-sm text-muted-foreground">Model</p>
             <p className="font-medium">{(agent.modelConfig as any)?.externalModel || "Not configured"}</p>
           </div>
           <div>
-            <p className="text-sm text-gray-500">Temperature</p>
+            <p className="text-sm text-muted-foreground">Temperature</p>
             <p className="font-medium">{(agent.modelConfig as any)?.temperature || 0.7}</p>
           </div>
           <div>
-            <p className="text-sm text-gray-500">Max Tokens</p>
+            <p className="text-sm text-muted-foreground">Max Tokens</p>
             <p className="font-medium">{(agent.modelConfig as any)?.maxTokens || 4096}</p>
           </div>
           <div>
-            <p className="text-sm text-gray-500">Source</p>
+            <p className="text-sm text-muted-foreground">Source</p>
             <p className="font-medium capitalize">{agent.sourceType}</p>
           </div>
         </CardContent>
@@ -98,7 +98,7 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
               ))}
             </div>
           ) : (
-            <p className="text-gray-500">No tools configured</p>
+            <p className="text-muted-foreground">No tools configured</p>
           )}
         </CardContent>
       </Card>
@@ -109,7 +109,7 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
             <CardTitle className="text-base">System Prompt</CardTitle>
           </CardHeader>
           <CardContent>
-            <pre className="whitespace-pre-wrap rounded bg-gray-50 p-4 text-sm">
+            <pre className="whitespace-pre-wrap rounded bg-muted p-4 text-sm">
               {agent.systemPrompt}
             </pre>
           </CardContent>
@@ -137,7 +137,7 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
           <CardContent className="space-y-4">
             {/* Simplified tier selector */}
             <div>
-              <label className="block text-sm font-medium text-gray-700">Performance Tier</label>
+              <label className="block text-sm font-medium text-foreground">Performance Tier</label>
               <Select
                 value={GPU_TO_SIMPLIFIED_TIER[deployConfig.gpuTier] ? simplifiedTier : "standard"}
                 onChange={(e) => handleSimplifiedTierChange(e.target.value)}
@@ -155,7 +155,7 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
               <button
                 type="button"
                 onClick={() => setShowAdvanced(!showAdvanced)}
-                className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors"
+                className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
               >
                 {showAdvanced ? (
                   <ChevronDown className="h-4 w-4" />
@@ -166,10 +166,10 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
               </button>
 
               {showAdvanced && (
-                <div className="mt-3 grid gap-4 md:grid-cols-3 rounded-lg border border-gray-200 p-4">
+                <div className="mt-3 grid gap-4 md:grid-cols-3 rounded-lg border border-border p-4">
                   {/* Raw GPU tier selector */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">GPU Type</label>
+                    <label className="block text-sm font-medium text-foreground">GPU Type</label>
                     <Select
                       value={deployConfig.gpuTier}
                       onChange={(e) => handleAdvancedGpuChange(e.target.value)}
@@ -184,7 +184,7 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
 
                   {/* Replicas */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">Replicas</label>
+                    <label className="block text-sm font-medium text-foreground">Replicas</label>
                     <Select
                       value={deployConfig.replicas.toString()}
                       onChange={(e) => setDeployConfig({ ...deployConfig, replicas: parseInt(e.target.value) })}
@@ -198,7 +198,7 @@ export function OverviewTab({ agent, deployConfig, setDeployConfig }: OverviewTa
 
                   {/* Wallet config */}
                   <div>
-                    <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                    <label className="flex items-center gap-2 text-sm font-medium text-foreground">
                       <input
                         type="checkbox"
                         checked={deployConfig.enableWallet}

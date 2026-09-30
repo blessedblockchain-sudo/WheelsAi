@@ -69,10 +69,10 @@ function MetricCard({
       <CardContent className="py-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
+            <p className="text-sm text-muted-foreground">{label}</p>
             <p
               className={`text-2xl font-bold ${
-                valueColor ?? "text-gray-900 dark:text-gray-100"
+                valueColor ?? "text-foreground"
               }`}
             >
               {value}
@@ -95,10 +95,10 @@ function SkeletonCard() {
       <CardContent className="py-4">
         <div className="flex items-center justify-between">
           <div className="space-y-2">
-            <div className="h-3 w-24 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-            <div className="h-7 w-16 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+            <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+            <div className="h-7 w-16 animate-pulse rounded bg-muted" />
           </div>
-          <div className="h-10 w-10 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+          <div className="h-10 w-10 animate-pulse rounded-lg bg-muted" />
         </div>
       </CardContent>
     </Card>
@@ -222,10 +222,10 @@ export default function MarketplaceAnalyticsPage() {
           <Card>
             <CardContent className="py-16 text-center">
               <BarChart3 className="mx-auto h-12 w-12 text-gray-300" />
-              <h3 className="mt-4 text-lg font-medium text-gray-900 dark:text-gray-100">
+              <h3 className="mt-4 text-lg font-medium text-foreground">
                 No analytics data yet
               </h3>
-              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              <p className="mt-2 text-sm text-muted-foreground">
                 Deploy an agent to start tracking performance.
               </p>
             </CardContent>
@@ -235,7 +235,7 @@ export default function MarketplaceAnalyticsPage() {
         {/* Overview Cards */}
         {(isLoading || hasAnyData) && (
           <section>
-            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Overview
             </h2>
             {isLoading ? (
@@ -250,7 +250,7 @@ export default function MarketplaceAnalyticsPage() {
                   label="Total Revenue"
                   value={totalRevenueDollars}
                   icon={DollarSign}
-                  iconBg="bg-green-100 dark:bg-green-900/30"
+                  iconBg="bg-green-500/10"
                   iconColor="text-green-600 dark:text-green-400"
                   valueColor="text-green-600 dark:text-green-400"
                 />
@@ -258,21 +258,21 @@ export default function MarketplaceAnalyticsPage() {
                   label="Published Agents"
                   value={publishedListings.length.toString()}
                   icon={Store}
-                  iconBg="bg-purple-100 dark:bg-purple-900/30"
+                  iconBg="bg-purple-500/10"
                   iconColor="text-purple-600 dark:text-purple-400"
                 />
                 <MetricCard
                   label="Total Installs"
                   value={totalInstalls.toLocaleString()}
                   icon={Download}
-                  iconBg="bg-blue-100 dark:bg-blue-900/30"
+                  iconBg="bg-blue-500/10"
                   iconColor="text-blue-600 dark:text-blue-400"
                 />
                 <MetricCard
                   label="Avg Rating"
                   value={avgRating !== null ? `${avgRating.toFixed(1)} / 5` : "—"}
                   icon={Star}
-                  iconBg="bg-yellow-100 dark:bg-yellow-900/30"
+                  iconBg="bg-yellow-500/10"
                   iconColor="text-yellow-600 dark:text-yellow-400"
                   valueColor="text-yellow-600 dark:text-yellow-400"
                 />
@@ -300,13 +300,13 @@ export default function MarketplaceAnalyticsPage() {
                   <div className="space-y-4">
                     {Array.from({ length: 3 }).map((_, i) => (
                       <div key={i} className="space-y-1">
-                        <div className="h-4 w-3/4 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-                        <div className="h-3 w-full animate-pulse rounded-full bg-gray-200 dark:bg-gray-700" />
+                        <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
+                        <div className="h-3 w-full animate-pulse rounded-full bg-muted" />
                       </div>
                     ))}
                   </div>
                 ) : revenueByAgent.length === 0 ? (
-                  <p className="py-4 text-center text-sm text-gray-400 dark:text-gray-500">
+                  <p className="py-4 text-center text-sm text-muted-foreground">
                     No revenue data yet
                   </p>
                 ) : (
@@ -320,14 +320,14 @@ export default function MarketplaceAnalyticsPage() {
                       return (
                         <div key={item.listingId}>
                           <div className="mb-1 flex items-center justify-between text-sm">
-                            <span className="font-medium text-gray-700 dark:text-gray-300">
+                            <span className="font-medium text-foreground">
                               {agentName}
                             </span>
                             <span className="font-semibold text-green-600 dark:text-green-400">
                               {revenueDisplay}
                             </span>
                           </div>
-                          <div className="h-3 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+                          <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
                             <div
                               className="h-full rounded-full bg-primary-500 transition-all"
                               style={{ width: `${widthPct}%` }}
@@ -358,13 +358,13 @@ export default function MarketplaceAnalyticsPage() {
                   <div className="space-y-4">
                     {Array.from({ length: 3 }).map((_, i) => (
                       <div key={i} className="space-y-1">
-                        <div className="h-4 w-1/2 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-                        <div className="h-3 w-full animate-pulse rounded-full bg-gray-200 dark:bg-gray-700" />
+                        <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
+                        <div className="h-3 w-full animate-pulse rounded-full bg-muted" />
                       </div>
                     ))}
                   </div>
                 ) : categoryBreakdown.length === 0 ? (
-                  <p className="py-4 text-center text-sm text-gray-400 dark:text-gray-500">
+                  <p className="py-4 text-center text-sm text-muted-foreground">
                     No category data yet
                   </p>
                 ) : (
@@ -378,15 +378,15 @@ export default function MarketplaceAnalyticsPage() {
                                 className={`h-3 w-3 rounded-full ${color}`}
                                 aria-hidden="true"
                               />
-                              <span className="font-medium text-gray-700 dark:text-gray-300">
+                              <span className="font-medium text-foreground">
                                 {name}
                               </span>
                             </div>
-                            <span className="font-semibold text-gray-900 dark:text-gray-100">
+                            <span className="font-semibold text-foreground">
                               {pct}%
                             </span>
                           </div>
-                          <div className="h-3 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+                          <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
                             <div
                               className={`h-full rounded-full ${color} transition-all`}
                               style={{ width: `${pct}%` }}
@@ -396,7 +396,7 @@ export default function MarketplaceAnalyticsPage() {
                         </div>
                       ))}
                     </div>
-                    <p className="mt-4 text-xs text-gray-500 dark:text-gray-400">
+                    <p className="mt-4 text-xs text-muted-foreground">
                       Based on total installs across all published agents
                     </p>
                   </>
@@ -420,9 +420,9 @@ export default function MarketplaceAnalyticsPage() {
             </CardHeader>
             <CardContent>
               {isLoading ? (
-                <div className="h-40 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+                <div className="h-40 animate-pulse rounded bg-muted" />
               ) : timeseries.length === 0 ? (
-                <div className="flex h-40 items-center justify-center text-sm text-gray-400 dark:text-gray-500">
+                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
                   No activity data for this period
                 </div>
               ) : (
@@ -454,7 +454,7 @@ export default function MarketplaceAnalyticsPage() {
                       return (
                         <div key={index} className="flex-1 text-center">
                           {showLabel && (
-                            <span className="text-xs text-gray-500 dark:text-gray-400">
+                            <span className="text-xs text-muted-foreground">
                               {dayNum}
                             </span>
                           )}
@@ -462,7 +462,7 @@ export default function MarketplaceAnalyticsPage() {
                       );
                     })}
                   </div>
-                  <p className="mt-1 text-center text-xs text-gray-400 dark:text-gray-500">
+                  <p className="mt-1 text-center text-xs text-muted-foreground">
                     Day of period
                   </p>
                 </>

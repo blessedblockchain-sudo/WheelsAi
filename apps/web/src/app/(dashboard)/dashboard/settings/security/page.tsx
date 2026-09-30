@@ -90,8 +90,8 @@ function OtpInput({
           onChange={(e) => handleChange(i, e.target.value)}
           onKeyDown={(e) => handleKeyDown(i, e)}
           onPaste={i === 0 ? handlePaste : undefined}
-          className="h-12 w-12 rounded-lg border border-matrix-border bg-matrix-dark text-center text-xl font-mono text-matrix-green
-                     focus:border-matrix-green focus:outline-none focus:ring-1 focus:ring-matrix-green/50
+          className="h-12 w-12 rounded-lg border border-border bg-background text-center text-xl font-mono text-primary
+                     focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50
                      disabled:opacity-40 transition-colors"
         />
       ))}
@@ -304,10 +304,10 @@ export default function SecuritySettingsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-matrix-dark p-6 md:p-8">
+      <div className="min-h-screen bg-background p-6 md:p-8">
         <div className="mx-auto max-w-3xl">
           <div className="flex items-center justify-center h-64">
-            <Loader2 className="h-8 w-8 animate-spin text-matrix-green" />
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
         </div>
       </div>
@@ -315,25 +315,25 @@ export default function SecuritySettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-matrix-dark p-6 md:p-8">
+    <div className="min-h-screen bg-background p-6 md:p-8">
       <div className="mx-auto max-w-3xl space-y-8">
         {/* Breadcrumb */}
-        <nav className="flex items-center gap-2 text-sm text-gray-500">
-          <span className="hover:text-matrix-green transition-colors cursor-pointer">
+        <nav className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="hover:text-primary transition-colors cursor-pointer">
             Settings
           </span>
           <ChevronRight className="h-3.5 w-3.5" />
-          <span className="text-matrix-green">Security</span>
+          <span className="text-primary">Security</span>
         </nav>
 
         {/* Header */}
         <div className="flex items-center gap-4">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-matrix-green/10 border border-matrix-green/20">
-            <Shield className="h-6 w-6 text-matrix-green" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10 border border-primary/20">
+            <Shield className="h-6 w-6 text-primary" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-gray-100">Security Settings</h1>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-muted-foreground">
               Manage two-factor authentication and account recovery
             </p>
           </div>
@@ -351,7 +351,7 @@ export default function SecuritySettingsPage() {
         {/* Setup flow overlay */}
         {/* ----------------------------------------------------------------- */}
         {setupStep !== "idle" && setupData && (
-          <div className="rounded-xl border border-matrix-border bg-matrix-surface p-6 space-y-6">
+          <div className="rounded-xl border border-border bg-card p-6 space-y-6">
             {/* Step indicator */}
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2">
@@ -365,10 +365,10 @@ export default function SecuritySettingsPage() {
                       <div
                         className={`flex h-8 w-8 items-center justify-center rounded-full text-sm font-semibold transition-colors ${
                           isComplete
-                            ? "bg-matrix-green text-black"
+                            ? "bg-primary text-primary-foreground"
                             : isActive
-                              ? "border-2 border-matrix-green text-matrix-green"
-                              : "border border-matrix-border text-gray-600"
+                              ? "border-2 border-primary text-primary"
+                              : "border border-border text-muted-foreground"
                         }`}
                       >
                         {isComplete ? <Check className="h-4 w-4" /> : step}
@@ -376,7 +376,7 @@ export default function SecuritySettingsPage() {
                       {step < 3 && (
                         <div
                           className={`h-px w-8 ${
-                            isComplete ? "bg-matrix-green" : "bg-matrix-border"
+                            isComplete ? "bg-primary" : "bg-border"
                           }`}
                         />
                       )}
@@ -406,7 +406,7 @@ export default function SecuritySettingsPage() {
 
                 {/* QR Code */}
                 <div className="flex flex-col items-center gap-4">
-                  <div className="rounded-xl border border-matrix-border bg-white p-4">
+                  <div className="rounded-xl border border-border bg-white p-4">
                     <img
                       src={setupData.qrCodeUrl}
                       alt="Two-factor authentication QR code"
@@ -416,7 +416,7 @@ export default function SecuritySettingsPage() {
                 </div>
 
                 {/* Manual entry */}
-                <div className="rounded-lg border border-matrix-border bg-matrix-dark p-4 space-y-3">
+                <div className="rounded-lg border border-border bg-background p-4 space-y-3">
                   <div className="flex items-center gap-2">
                     <KeyRound className="h-4 w-4 text-gray-400" />
                     <span className="text-sm font-medium text-gray-300">
@@ -424,23 +424,23 @@ export default function SecuritySettingsPage() {
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <code className="flex-1 rounded-md bg-matrix-surface px-3 py-2 font-mono text-sm text-matrix-green break-all">
+                    <code className="flex-1 rounded-md bg-card px-3 py-2 font-mono text-sm text-primary break-all">
                       {showSecret ? setupData.secret : setupData.secret.replace(/./g, "\u2022")}
                     </code>
                     <button
                       onClick={() => setShowSecret(!showSecret)}
-                      className="rounded-md p-2 text-gray-400 hover:bg-matrix-border hover:text-gray-200 transition-colors"
+                      className="rounded-md p-2 text-gray-400 hover:bg-border hover:text-gray-200 transition-colors"
                       title={showSecret ? "Hide secret" : "Show secret"}
                     >
                       {showSecret ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                     <button
                       onClick={copySecret}
-                      className="rounded-md p-2 text-gray-400 hover:bg-matrix-border hover:text-gray-200 transition-colors"
+                      className="rounded-md p-2 text-gray-400 hover:bg-border hover:text-gray-200 transition-colors"
                       title="Copy secret"
                     >
                       {copiedSecret ? (
-                        <Check className="h-4 w-4 text-matrix-green" />
+                        <Check className="h-4 w-4 text-primary" />
                       ) : (
                         <Copy className="h-4 w-4" />
                       )}
@@ -459,7 +459,7 @@ export default function SecuritySettingsPage() {
                   </button>
                   <button
                     onClick={() => { setSetupStep("verify"); setOtpCode(""); }}
-                    className="rounded-lg bg-matrix-green px-6 py-2 text-sm font-semibold text-black hover:bg-matrix-green-dim transition-colors"
+                    className="rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
                   >
                     Continue
                   </button>
@@ -494,8 +494,8 @@ export default function SecuritySettingsPage() {
                   <button
                     onClick={verifySetup}
                     disabled={otpCode.length !== 6 || verifying}
-                    className="flex items-center gap-2 rounded-lg bg-matrix-green px-6 py-2 text-sm font-semibold text-black
-                               hover:bg-matrix-green-dim disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="flex items-center gap-2 rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground
+                               hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
                     {verifying && <Loader2 className="h-4 w-4 animate-spin" />}
                     Verify
@@ -528,7 +528,7 @@ export default function SecuritySettingsPage() {
                   {backupCodes.map((code, i) => (
                     <div
                       key={i}
-                      className="rounded-md border border-matrix-border bg-matrix-dark px-3 py-2 text-center font-mono text-sm text-gray-300"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-center font-mono text-sm text-gray-300"
                     >
                       {code}
                     </div>
@@ -538,11 +538,11 @@ export default function SecuritySettingsPage() {
                 <div className="flex items-center justify-between">
                   <button
                     onClick={copyAllBackupCodes}
-                    className="flex items-center gap-2 rounded-lg border border-matrix-border px-4 py-2 text-sm text-gray-300
-                               hover:border-matrix-green/40 hover:text-matrix-green transition-colors"
+                    className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-gray-300
+                               hover:border-primary/40 hover:text-primary transition-colors"
                   >
                     {copiedCodes ? (
-                      <Check className="h-4 w-4 text-matrix-green" />
+                      <Check className="h-4 w-4 text-primary" />
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}
@@ -550,7 +550,7 @@ export default function SecuritySettingsPage() {
                   </button>
                   <button
                     onClick={finishSetup}
-                    className="rounded-lg bg-matrix-green px-6 py-2 text-sm font-semibold text-black hover:bg-matrix-green-dim transition-colors"
+                    className="rounded-lg bg-primary px-6 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
                   >
                     Done
                   </button>
@@ -566,14 +566,14 @@ export default function SecuritySettingsPage() {
         {setupStep === "idle" && status && (
           <>
             {/* Status card */}
-            <div className="rounded-xl border border-matrix-border bg-matrix-surface p-6 space-y-6">
+            <div className="rounded-xl border border-border bg-card p-6 space-y-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <div
                     className={`flex h-10 w-10 items-center justify-center rounded-lg ${
                       status.isEnabled
-                        ? "bg-matrix-green/10 text-matrix-green"
-                        : "bg-gray-800 text-gray-500"
+                        ? "bg-primary/10 text-primary"
+                        : "bg-gray-800 text-muted-foreground"
                     }`}
                   >
                     {status.isEnabled ? (
@@ -596,8 +596,8 @@ export default function SecuritySettingsPage() {
                 <span
                   className={`rounded-full px-3 py-1 text-xs font-medium ${
                     status.isEnabled
-                      ? "bg-matrix-green/10 text-matrix-green border border-matrix-green/20"
-                      : "bg-gray-800 text-gray-400 border border-matrix-border"
+                      ? "bg-primary/10 text-primary border border-primary/20"
+                      : "bg-gray-800 text-gray-400 border border-border"
                   }`}
                 >
                   {status.isEnabled ? "Enabled" : "Disabled"}
@@ -607,7 +607,7 @@ export default function SecuritySettingsPage() {
               {/* If NOT enabled */}
               {!status.isEnabled && (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-matrix-border bg-matrix-dark p-4 space-y-3">
+                  <div className="rounded-lg border border-border bg-background p-4 space-y-3">
                     <p className="text-sm text-gray-300">
                       Two-factor authentication adds a second layer of security to your
                       account by requiring a time-based one-time password (TOTP) in addition to
@@ -615,15 +615,15 @@ export default function SecuritySettingsPage() {
                     </p>
                     <ul className="space-y-2 text-sm text-gray-400">
                       <li className="flex items-center gap-2">
-                        <Lock className="h-3.5 w-3.5 text-matrix-green" />
+                        <Lock className="h-3.5 w-3.5 text-primary" />
                         Protect against unauthorized access even if your password is compromised
                       </li>
                       <li className="flex items-center gap-2">
-                        <KeyRound className="h-3.5 w-3.5 text-matrix-green" />
+                        <KeyRound className="h-3.5 w-3.5 text-primary" />
                         Works with standard authenticator apps (Google Authenticator, Authy, etc.)
                       </li>
                       <li className="flex items-center gap-2">
-                        <QrCode className="h-3.5 w-3.5 text-matrix-green" />
+                        <QrCode className="h-3.5 w-3.5 text-primary" />
                         Quick setup with QR code scanning
                       </li>
                     </ul>
@@ -632,8 +632,8 @@ export default function SecuritySettingsPage() {
                   <button
                     onClick={startSetup}
                     disabled={setupLoading}
-                    className="flex items-center gap-2 rounded-lg bg-matrix-green px-6 py-2.5 text-sm font-semibold text-black
-                               hover:bg-matrix-green-dim disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    className="flex items-center gap-2 rounded-lg bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground
+                               hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
                     {setupLoading ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -650,14 +650,14 @@ export default function SecuritySettingsPage() {
                 <div className="space-y-4">
                   {/* Status details */}
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <div className="rounded-lg border border-matrix-border bg-matrix-dark p-4">
-                      <p className="text-xs text-gray-500 uppercase tracking-wider">Method</p>
+                    <div className="rounded-lg border border-border bg-background p-4">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Method</p>
                       <p className="mt-1 text-sm font-medium text-gray-200">
                         {status.lastMethod || "TOTP"}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-matrix-border bg-matrix-dark p-4">
-                      <p className="text-xs text-gray-500 uppercase tracking-wider">Last Used</p>
+                    <div className="rounded-lg border border-border bg-background p-4">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Last Used</p>
                       <p className="mt-1 text-sm font-medium text-gray-200">
                         {status.lastUsedAt
                           ? new Date(status.lastUsedAt).toLocaleDateString(undefined, {
@@ -668,8 +668,8 @@ export default function SecuritySettingsPage() {
                           : "Never"}
                       </p>
                     </div>
-                    <div className="rounded-lg border border-matrix-border bg-matrix-dark p-4">
-                      <p className="text-xs text-gray-500 uppercase tracking-wider">Backup Codes</p>
+                    <div className="rounded-lg border border-border bg-background p-4">
+                      <p className="text-xs text-muted-foreground uppercase tracking-wider">Backup Codes</p>
                       <p className="mt-1 text-sm font-medium text-gray-200">
                         {status.backupCodesRemaining ?? 0} remaining
                       </p>
@@ -680,8 +680,8 @@ export default function SecuritySettingsPage() {
                   <div className="flex flex-wrap gap-3">
                     <button
                       onClick={() => { setModalMode("regenerate"); setModalOtp(""); setModalError(null); }}
-                      className="flex items-center gap-2 rounded-lg border border-matrix-border px-4 py-2 text-sm text-gray-300
-                                 hover:border-matrix-green/40 hover:text-matrix-green transition-colors"
+                      className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-gray-300
+                                 hover:border-primary/40 hover:text-primary transition-colors"
                     >
                       <RefreshCw className="h-4 w-4" />
                       Regenerate Backup Codes
@@ -701,9 +701,9 @@ export default function SecuritySettingsPage() {
 
             {/* Backup codes display (after regeneration) */}
             {status.isEnabled && backupCodes.length > 0 && (
-              <div className="rounded-xl border border-matrix-border bg-matrix-surface p-6 space-y-4">
+              <div className="rounded-xl border border-border bg-card p-6 space-y-4">
                 <div className="flex items-center gap-3">
-                  <KeyRound className="h-5 w-5 text-matrix-green" />
+                  <KeyRound className="h-5 w-5 text-primary" />
                   <h3 className="text-lg font-semibold text-gray-100">Backup Codes</h3>
                 </div>
 
@@ -718,7 +718,7 @@ export default function SecuritySettingsPage() {
                   {backupCodes.map((code, i) => (
                     <div
                       key={i}
-                      className="rounded-md border border-matrix-border bg-matrix-dark px-3 py-2 text-center font-mono text-sm text-gray-300"
+                      className="rounded-md border border-border bg-background px-3 py-2 text-center font-mono text-sm text-gray-300"
                     >
                       {code}
                     </div>
@@ -728,11 +728,11 @@ export default function SecuritySettingsPage() {
                 <div className="flex items-center justify-between">
                   <button
                     onClick={copyAllBackupCodes}
-                    className="flex items-center gap-2 rounded-lg border border-matrix-border px-4 py-2 text-sm text-gray-300
-                               hover:border-matrix-green/40 hover:text-matrix-green transition-colors"
+                    className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-gray-300
+                               hover:border-primary/40 hover:text-primary transition-colors"
                   >
                     {copiedCodes ? (
-                      <Check className="h-4 w-4 text-matrix-green" />
+                      <Check className="h-4 w-4 text-primary" />
                     ) : (
                       <Copy className="h-4 w-4" />
                     )}
@@ -749,9 +749,9 @@ export default function SecuritySettingsPage() {
             )}
 
             {/* Recovery Email */}
-            <div className="rounded-xl border border-matrix-border bg-matrix-surface p-6 space-y-4">
+            <div className="rounded-xl border border-border bg-card p-6 space-y-4">
               <div className="flex items-center gap-3">
-                <Mail className="h-5 w-5 text-matrix-green" />
+                <Mail className="h-5 w-5 text-primary" />
                 <div>
                   <h3 className="text-lg font-semibold text-gray-100">Recovery Email</h3>
                   <p className="text-sm text-gray-400">
@@ -766,15 +766,15 @@ export default function SecuritySettingsPage() {
                   value={recoveryEmail}
                   onChange={(e) => { setRecoveryEmail(e.target.value); setEmailSaved(false); }}
                   placeholder="recovery@example.com"
-                  className="flex-1 rounded-lg border border-matrix-border bg-matrix-dark px-4 py-2.5 text-sm text-gray-200
-                             placeholder:text-gray-600 focus:border-matrix-green focus:outline-none focus:ring-1 focus:ring-matrix-green/50
+                  className="flex-1 rounded-lg border border-border bg-background px-4 py-2.5 text-sm text-gray-200
+                             placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary/50
                              transition-colors"
                 />
                 <button
                   onClick={handleSaveRecoveryEmail}
                   disabled={savingEmail || !recoveryEmail}
-                  className="flex items-center justify-center gap-2 rounded-lg bg-matrix-green/10 border border-matrix-green/20 px-5 py-2.5
-                             text-sm font-medium text-matrix-green hover:bg-matrix-green/20
+                  className="flex items-center justify-center gap-2 rounded-lg bg-primary/10 border border-primary/20 px-5 py-2.5
+                             text-sm font-medium text-primary hover:bg-primary/20
                              disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
                   {savingEmail ? (
@@ -794,15 +794,15 @@ export default function SecuritySettingsPage() {
         {/* ----------------------------------------------------------------- */}
         {modalMode && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="w-full max-w-md rounded-xl border border-matrix-border bg-matrix-surface p-6 shadow-2xl space-y-5">
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl space-y-5">
               <div className="flex items-center gap-3">
                 {modalMode === "disable" ? (
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500/10">
                     <ShieldOff className="h-5 w-5 text-red-400" />
                   </div>
                 ) : (
-                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-matrix-green/10">
-                    <RefreshCw className="h-5 w-5 text-matrix-green" />
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                    <RefreshCw className="h-5 w-5 text-primary" />
                   </div>
                 )}
                 <div>
@@ -859,7 +859,7 @@ export default function SecuritySettingsPage() {
                              disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${
                                modalMode === "disable"
                                  ? "bg-red-600 text-white hover:bg-red-700"
-                                 : "bg-matrix-green text-black hover:bg-matrix-green-dim"
+                                 : "bg-primary text-primary-foreground hover:bg-primary/90"
                              }`}
                 >
                   {modalLoading && <Loader2 className="h-4 w-4 animate-spin" />}

@@ -23,15 +23,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { trainingApi, type Dataset, type DatasetDetail } from "@/lib/api";
+import { trainingApi, type Dataset, type DatasetDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const formatColors: Record<string, string> = {
-  jsonl: "bg-blue-100 text-blue-700",
-  csv: "bg-green-100 text-green-700",
-  parquet: "bg-purple-100 text-purple-700",
-  alpaca: "bg-orange-100 text-orange-700",
-  sharegpt: "bg-pink-100 text-pink-700",
+  jsonl: "bg-blue-500/10 text-blue-500",
+  csv: "bg-green-500/10 text-green-500",
+  parquet: "bg-purple-500/10 text-purple-500",
+  alpaca: "bg-orange-500/10 text-orange-500",
+  sharegpt: "bg-pink-500/10 text-pink-500",
 };
 
 export default function DatasetsPage() {
@@ -58,7 +58,7 @@ export default function DatasetsPage() {
       const { datasets } = await trainingApi.listDatasets();
       setDatasets(datasets);
     } catch (error) {
-      toast.error("Failed to load datasets");
+      toast.error(getErrorMessage(error, "Failed to load datasets"));
     } finally {
       setIsLoading(false);
     }
@@ -134,7 +134,7 @@ export default function DatasetsPage() {
       setUploadFile(null);
       loadDatasets();
     } catch (error) {
-      toast.error("Failed to upload dataset");
+      toast.error(getErrorMessage(error, "Failed to upload dataset"));
     } finally {
       setIsUploading(false);
       setIsValidating(false);
@@ -155,7 +155,7 @@ export default function DatasetsPage() {
         setSelectedDataset(null);
       }
     } catch (error: any) {
-      toast.error(error.message || "Failed to delete dataset");
+      toast.error(getErrorMessage(error, "Failed to delete dataset"));
     }
   }
 
@@ -164,7 +164,7 @@ export default function DatasetsPage() {
       const { dataset } = await trainingApi.getDataset(datasetId);
       setSelectedDataset(dataset);
     } catch (error) {
-      toast.error("Failed to load dataset details");
+      toast.error(getErrorMessage(error, "Failed to load dataset details"));
     }
   }
 
@@ -182,7 +182,7 @@ export default function DatasetsPage() {
         handleViewDetails(datasetId);
       }
     } catch (error) {
-      toast.error("Validation failed");
+      toast.error(getErrorMessage(error, "Validation failed"));
     } finally {
       setIsValidating(false);
     }
@@ -214,14 +214,14 @@ export default function DatasetsPage() {
                 {isLoading ? (
                   <div className="space-y-4">
                     {[1, 2, 3].map((i) => (
-                      <div key={i} className="h-20 animate-pulse rounded-lg bg-gray-200" />
+                      <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
                     ))}
                   </div>
                 ) : datasets.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-16">
                     <Database className="h-16 w-16 text-gray-300" />
                     <h3 className="mt-4 text-xl font-medium">No datasets yet</h3>
-                    <p className="mt-2 text-gray-500">
+                    <p className="mt-2 text-muted-foreground">
                       Upload your first dataset to start training
                     </p>
                     <Button onClick={() => setShowUploadForm(true)} className="mt-6">
@@ -237,22 +237,22 @@ export default function DatasetsPage() {
                         className={cn(
                           "flex items-center justify-between rounded-lg border p-4 transition-colors",
                           selectedDataset?.id === dataset.id
-                            ? "border-primary-500 bg-primary-50"
-                            : "hover:bg-gray-50"
+                            ? "border-primary-500 bg-primary/10"
+                            : "hover:bg-muted"
                         )}
                       >
                         <div className="flex items-center gap-4">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
                             <FileText className="h-5 w-5 text-blue-600" />
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
                               <p className="font-medium">{dataset.name}</p>
-                              <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", formatColors[dataset.format] || "bg-gray-100 text-gray-700")}>
+                              <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", formatColors[dataset.format] || "bg-muted text-foreground")}>
                                 {dataset.format}
                               </span>
                             </div>
-                            <p className="text-sm text-gray-500">
+                            <p className="text-sm text-muted-foreground">
                               {dataset.rowCount.toLocaleString()} rows &bull;{" "}
                               {(dataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
                             </p>
@@ -308,7 +308,7 @@ export default function DatasetsPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Dataset Name *
                     </label>
                     <Input
@@ -320,7 +320,7 @@ export default function DatasetsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Description
                     </label>
                     <Input
@@ -332,7 +332,7 @@ export default function DatasetsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Format
                     </label>
                     <Select
@@ -349,7 +349,7 @@ export default function DatasetsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       File
                     </label>
                     <input
@@ -357,10 +357,10 @@ export default function DatasetsPage() {
                       type="file"
                       accept=".jsonl,.json,.csv,.parquet"
                       onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                      className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:rounded-lg file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-700 hover:file:bg-primary-100"
+                      className="mt-1 block w-full text-sm text-muted-foreground file:mr-4 file:rounded-lg file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-700 hover:file:bg-primary-100"
                     />
                     {uploadFile && (
-                      <p className="mt-1 text-xs text-gray-500">
+                      <p className="mt-1 text-xs text-muted-foreground">
                         {uploadFile.name} ({(uploadFile.size / 1024 / 1024).toFixed(2)} MB)
                       </p>
                     )}
@@ -369,12 +369,12 @@ export default function DatasetsPage() {
                   {isUploading && (
                     <div>
                       <div className="flex justify-between text-sm">
-                        <span className="text-gray-500">
+                        <span className="text-muted-foreground">
                           {isValidating ? "Validating..." : "Uploading..."}
                         </span>
                         <span className="font-medium">{uploadProgress}%</span>
                       </div>
-                      <div className="mt-1 h-2 overflow-hidden rounded-full bg-gray-200">
+                      <div className="mt-1 h-2 overflow-hidden rounded-full bg-muted">
                         <div
                           className="h-full bg-primary-500 transition-all"
                           style={{ width: `${uploadProgress}%` }}
@@ -420,21 +420,21 @@ export default function DatasetsPage() {
                 <CardContent className="space-y-4">
                   <dl className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <dt className="text-gray-500">Format</dt>
+                      <dt className="text-muted-foreground">Format</dt>
                       <dd className="font-medium">{selectedDataset.format}</dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-gray-500">Rows</dt>
+                      <dt className="text-muted-foreground">Rows</dt>
                       <dd className="font-medium">{selectedDataset.rowCount.toLocaleString()}</dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-gray-500">Size</dt>
+                      <dt className="text-muted-foreground">Size</dt>
                       <dd className="font-medium">
                         {(selectedDataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-gray-500">Status</dt>
+                      <dt className="text-muted-foreground">Status</dt>
                       <dd>
                         <Badge variant={selectedDataset.isValidated ? "success" : "secondary"}>
                           {selectedDataset.isValidated ? "Valid" : "Pending Validation"}
@@ -444,12 +444,12 @@ export default function DatasetsPage() {
                   </dl>
 
                   {selectedDataset.validationErrors && selectedDataset.validationErrors.length > 0 && (
-                    <div className="rounded-lg border border-red-200 bg-red-50 p-3">
-                      <div className="flex items-center gap-2 text-sm font-medium text-red-800">
+                    <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
+                      <div className="flex items-center gap-2 text-sm font-medium text-red-500">
                         <AlertTriangle className="h-4 w-4" />
                         {selectedDataset.validationErrors.length} Validation Errors
                       </div>
-                      <ul className="mt-2 space-y-1 text-xs text-red-700">
+                      <ul className="mt-2 space-y-1 text-xs text-red-500">
                         {selectedDataset.validationErrors.slice(0, 5).map((err: any, i: number) => (
                           <li key={i}>
                             {err.row ? `Row ${err.row}: ` : ""}{err.message}
@@ -464,8 +464,8 @@ export default function DatasetsPage() {
 
                   {selectedDataset.sampleRows && selectedDataset.sampleRows.length > 0 && (
                     <div>
-                      <p className="text-sm font-medium text-gray-700">Sample Data</p>
-                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-gray-100 p-3 text-xs">
+                      <p className="text-sm font-medium text-foreground">Sample Data</p>
+                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-muted p-3 text-xs">
                         {JSON.stringify(selectedDataset.sampleRows[0], null, 2)}
                       </pre>
                     </div>
@@ -499,25 +499,25 @@ export default function DatasetsPage() {
               <CardContent className="space-y-4 text-sm">
                 <div>
                   <p className="font-medium">Alpaca Format</p>
-                  <p className="text-gray-500">
+                  <p className="text-muted-foreground">
                     JSONL with instruction, input (optional), and output fields
                   </p>
                 </div>
                 <div>
                   <p className="font-medium">ShareGPT Format</p>
-                  <p className="text-gray-500">
+                  <p className="text-muted-foreground">
                     JSONL with conversations array containing human/gpt turns
                   </p>
                 </div>
                 <div>
                   <p className="font-medium">Text Format</p>
-                  <p className="text-gray-500">
+                  <p className="text-muted-foreground">
                     JSONL with a single text field containing the full example
                   </p>
                 </div>
                 <div>
                   <p className="font-medium">CSV Format</p>
-                  <p className="text-gray-500">
+                  <p className="text-muted-foreground">
                     CSV with prompt and completion columns
                   </p>
                 </div>

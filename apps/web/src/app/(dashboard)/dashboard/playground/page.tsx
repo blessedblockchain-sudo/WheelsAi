@@ -20,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { deploymentsApi, playgroundApi, type Deployment } from "@/lib/api";
+import { deploymentsApi, playgroundApi, type Deployment, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface Message {
@@ -58,7 +58,7 @@ export default function PlaygroundPage() {
           setSelectedDeployment(firstDeployment.id);
         }
       } catch (error) {
-        toast.error("Failed to load deployments");
+        toast.error(getErrorMessage(error, "Failed to load deployments"));
       } finally {
         setIsLoadingDeployments(false);
       }
@@ -113,7 +113,7 @@ export default function PlaygroundPage() {
 
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
-      toast.error("Failed to generate response");
+      toast.error(getErrorMessage(error, "Failed to generate response"));
       // Remove the user message on error
       setMessages((prev) => prev.filter((m) => m.id !== userMessage.id));
     } finally {
@@ -150,16 +150,16 @@ export default function PlaygroundPage() {
         {/* Main chat area */}
         <div className="flex flex-1 flex-col">
           {/* Deployment selector */}
-          <div className="border-b bg-white px-6 py-4">
+          <div className="border-b bg-card px-6 py-4">
             <div className="flex items-center gap-4">
               <div className="flex-1">
-                <label className="block text-sm font-medium text-gray-700">
+                <label className="block text-sm font-medium text-foreground">
                   Deployment
                 </label>
                 {isLoadingDeployments ? (
                   <Skeleton className="mt-1 h-10 w-full" />
                 ) : deployments.length === 0 ? (
-                  <p className="mt-1 text-sm text-gray-500">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     No running deployments.{" "}
                     <Link href="/dashboard/deployments/new" className="text-primary-600 hover:underline">
                       Deploy a model
@@ -211,7 +211,7 @@ export default function PlaygroundPage() {
             {showSettings && (
               <div className="mt-4 grid gap-4 border-t pt-4 md:grid-cols-3">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Temperature: {temperature}
                   </label>
                   <input
@@ -226,7 +226,7 @@ export default function PlaygroundPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Max Tokens
                   </label>
                   <Select
@@ -243,7 +243,7 @@ export default function PlaygroundPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     System Prompt
                   </label>
                   <Input
@@ -258,14 +258,14 @@ export default function PlaygroundPage() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto bg-gray-50 p-6">
+          <div className="flex-1 overflow-y-auto bg-muted p-6">
             {messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-center">
                 <Bot className="h-16 w-16 text-gray-300" />
-                <h3 className="mt-4 text-lg font-medium text-gray-900">
+                <h3 className="mt-4 text-lg font-medium text-foreground">
                   Start a conversation
                 </h3>
-                <p className="mt-2 max-w-md text-gray-500">
+                <p className="mt-2 max-w-md text-muted-foreground">
                   {selectedDeploymentData
                     ? `Send a message to ${selectedDeploymentData.name} to get started`
                     : "Select a deployment and send a message to begin"}
@@ -285,14 +285,14 @@ export default function PlaygroundPage() {
                       className={cn(
                         "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
                         message.role === "user"
-                          ? "bg-primary-100"
-                          : "bg-gray-200"
+                          ? "bg-primary/15"
+                          : "bg-muted"
                       )}
                     >
                       {message.role === "user" ? (
                         <User className="h-4 w-4 text-primary-600" />
                       ) : (
-                        <Bot className="h-4 w-4 text-gray-600" />
+                        <Bot className="h-4 w-4 text-muted-foreground" />
                       )}
                     </div>
 
@@ -301,7 +301,7 @@ export default function PlaygroundPage() {
                         "group relative max-w-[80%] rounded-lg px-4 py-3",
                         message.role === "user"
                           ? "bg-primary-600 text-white"
-                          : "bg-white shadow-sm"
+                          : "bg-card shadow-sm"
                       )}
                     >
                       <p className="whitespace-pre-wrap">{message.content}</p>
@@ -324,10 +324,10 @@ export default function PlaygroundPage() {
 
                 {isLoading && (
                   <div className="flex gap-4">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-200">
-                      <Bot className="h-4 w-4 text-gray-600" />
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted">
+                      <Bot className="h-4 w-4 text-muted-foreground" />
                     </div>
-                    <div className="rounded-lg bg-white px-4 py-3 shadow-sm">
+                    <div className="rounded-lg bg-card px-4 py-3 shadow-sm">
                       <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
                     </div>
                   </div>
@@ -339,7 +339,7 @@ export default function PlaygroundPage() {
           </div>
 
           {/* Input area */}
-          <div className="border-t bg-white p-4">
+          <div className="border-t bg-card p-4">
             <div className="mx-auto flex max-w-3xl gap-4">
               <Input
                 value={input}

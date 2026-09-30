@@ -26,12 +26,12 @@ import { toast } from "sonner";
 import {
   marketplaceApi,
   tokenApi,
-  ApiError,
   type MarketplaceListing,
   type MarketplaceReview,
   type AgentToken,
   type AgentTokenHolder,
   type TokenSnapshot,
+  getErrorMessage,
 } from "@/lib/api";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
@@ -90,7 +90,7 @@ function ReviewCard({ review }: { review: MarketplaceReview }) {
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <span className="font-medium text-gray-900">
+            <span className="font-medium text-foreground">
               {review.reviewerName}
             </span>
             {review.isVerified && (
@@ -102,17 +102,17 @@ function ReviewCard({ review }: { review: MarketplaceReview }) {
           </div>
           <div className="mt-1 flex items-center gap-2">
             <StarRating rating={review.rating} />
-            <span className="text-sm text-gray-500">
+            <span className="text-sm text-muted-foreground">
               {formatDate(review.createdAt)}
             </span>
           </div>
         </div>
       </div>
       {review.title && (
-        <h4 className="mt-2 font-medium text-gray-900">{review.title}</h4>
+        <h4 className="mt-2 font-medium text-foreground">{review.title}</h4>
       )}
       {review.content && (
-        <p className="mt-1 text-sm text-gray-600">{review.content}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{review.content}</p>
       )}
     </div>
   );
@@ -227,15 +227,7 @@ export default function ListingDetailPage() {
       setInstallState({ installed: true, clonedAgentId: res.clonedAgent.id });
       toast.success(`${listing.title} installed — it's now in your agents`);
     } catch (error) {
-      const message =
-        error instanceof ApiError &&
-        typeof error.data === "object" &&
-        error.data !== null &&
-        "message" in error.data &&
-        typeof (error.data as { message?: unknown }).message === "string"
-          ? (error.data as { message: string }).message
-          : "Failed to install agent";
-      toast.error(message);
+      toast.error(getErrorMessage(error, "Failed to install agent"));
     } finally {
       setInstalling(false);
     }
@@ -245,14 +237,14 @@ export default function ListingDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <header className="border-b bg-white">
+      <div className="min-h-screen bg-background">
+        <header className="border-b bg-card">
           <div className="mx-auto flex h-16 max-w-7xl items-center px-4 sm:px-6 lg:px-8">
-            <div className="h-8 w-32 animate-pulse rounded bg-gray-200" />
+            <div className="h-8 w-32 animate-pulse rounded bg-muted" />
           </div>
         </header>
         <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className="h-64 animate-pulse rounded-lg bg-gray-200" />
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -260,8 +252,8 @@ export default function ListingDetailPage() {
 
   if (!listing) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <header className="border-b bg-white">
+      <div className="min-h-screen bg-background">
+        <header className="border-b bg-card">
           <div className="mx-auto flex h-16 max-w-7xl items-center px-4 sm:px-6 lg:px-8">
             <Link href="/" className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600">
@@ -272,8 +264,8 @@ export default function ListingDetailPage() {
           </div>
         </header>
         <div className="mx-auto max-w-7xl px-4 py-16 text-center sm:px-6 lg:px-8">
-          <h1 className="text-2xl font-bold text-gray-900">Agent Not Found</h1>
-          <p className="mt-2 text-gray-600">
+          <h1 className="text-2xl font-bold text-foreground">Agent Not Found</h1>
+          <p className="mt-2 text-muted-foreground">
             The agent you&apos;re looking for doesn&apos;t exist or has been removed.
           </p>
           <Link
@@ -289,9 +281,9 @@ export default function ListingDetailPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b bg-white">
+      <header className="border-b bg-card">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
           <Link href="/" className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600">
@@ -304,17 +296,17 @@ export default function ListingDetailPage() {
       </header>
 
       {/* Breadcrumb */}
-      <div className="border-b bg-white">
+      <div className="border-b bg-card">
         <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
           <nav className="flex items-center gap-2 text-sm">
             <Link
               href="/marketplace"
-              className="text-gray-500 hover:text-gray-700"
+              className="text-muted-foreground hover:text-foreground"
             >
               Marketplace
             </Link>
             <ChevronRight className="h-4 w-4 text-gray-400" />
-            <span className="text-gray-900">{listing.title}</span>
+            <span className="text-foreground">{listing.title}</span>
           </nav>
         </div>
       </div>
@@ -325,9 +317,9 @@ export default function ListingDetailPage() {
           {/* Left Column - Details */}
           <div className="lg:col-span-2">
             {/* Header */}
-            <div className="rounded-lg border bg-white p-6">
+            <div className="rounded-lg border bg-card p-6">
               <div className="flex items-start gap-4">
-                <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary-100 to-primary-200">
+                <div className="flex h-16 w-16 flex-shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/25">
                   {listing.iconUrl ? (
                     <img
                       src={listing.iconUrl}
@@ -340,18 +332,18 @@ export default function ListingDetailPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <h1 className="text-2xl font-bold text-gray-900">
+                    <h1 className="text-2xl font-bold text-foreground">
                       {listing.title}
                     </h1>
                     {listing.isFeatured && (
-                      <span className="rounded bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800">
+                      <span className="rounded bg-yellow-500/10 px-2 py-0.5 text-xs font-medium text-yellow-500">
                         Featured
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-gray-600">
+                  <p className="mt-1 text-muted-foreground">
                     by{" "}
-                    <span className="font-medium text-gray-900">
+                    <span className="font-medium text-foreground">
                       {listing.publisherName}
                     </span>
                   </p>
@@ -365,20 +357,20 @@ export default function ListingDetailPage() {
                         ({listing.reviewCount} reviews)
                       </span>
                     </div>
-                    <div className="flex items-center gap-1 text-gray-500">
+                    <div className="flex items-center gap-1 text-muted-foreground">
                       <Download className="h-4 w-4" />
                       <span>
                         {listing.totalInstalls.toLocaleString()} installs
                       </span>
                     </div>
-                    <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
+                    <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
                       {listing.agent?.framework || "custom"}
                     </span>
                   </div>
                 </div>
               </div>
 
-              <p className="mt-4 text-gray-700">{listing.shortDescription}</p>
+              <p className="mt-4 text-foreground">{listing.shortDescription}</p>
             </div>
 
             {/* Tabs */}
@@ -390,7 +382,7 @@ export default function ListingDetailPage() {
                     className={`border-b-2 pb-3 text-sm font-medium ${
                       activeTab === "overview"
                         ? "border-primary-600 text-primary-600"
-                        : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                        : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                     }`}
                   >
                     Overview
@@ -400,11 +392,11 @@ export default function ListingDetailPage() {
                     className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
                       activeTab === "reviews"
                         ? "border-primary-600 text-primary-600"
-                        : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                        : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                     }`}
                   >
                     Reviews
-                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs">
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs">
                       {listing.reviewCount}
                     </span>
                   </button>
@@ -414,7 +406,7 @@ export default function ListingDetailPage() {
                       className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
                         activeTab === "token"
                           ? "border-cyan-600 text-cyan-600"
-                          : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700"
+                          : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                       }`}
                     >
                       <Coins className="h-4 w-4" />
@@ -430,11 +422,11 @@ export default function ListingDetailPage() {
                   <div className="space-y-6">
                     {/* Description */}
                     {listing.longDescription && (
-                      <div className="rounded-lg border bg-white p-6">
-                        <h2 className="font-semibold text-gray-900">
+                      <div className="rounded-lg border bg-card p-6">
+                        <h2 className="font-semibold text-foreground">
                           Description
                         </h2>
-                        <div className="prose prose-sm mt-4 max-w-none text-gray-600">
+                        <div className="prose prose-sm mt-4 max-w-none text-muted-foreground">
                           {listing.longDescription}
                         </div>
                       </div>
@@ -442,8 +434,8 @@ export default function ListingDetailPage() {
 
                     {/* Screenshots */}
                     {listing.screenshots && listing.screenshots.length > 0 && (
-                      <div className="rounded-lg border bg-white p-6">
-                        <h2 className="font-semibold text-gray-900">
+                      <div className="rounded-lg border bg-card p-6">
+                        <h2 className="font-semibold text-foreground">
                           Screenshots
                         </h2>
                         <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -461,13 +453,13 @@ export default function ListingDetailPage() {
 
                     {/* Tags */}
                     {listing.agent?.tags && listing.agent.tags.length > 0 && (
-                      <div className="rounded-lg border bg-white p-6">
-                        <h2 className="font-semibold text-gray-900">Tags</h2>
+                      <div className="rounded-lg border bg-card p-6">
+                        <h2 className="font-semibold text-foreground">Tags</h2>
                         <div className="mt-3 flex flex-wrap gap-2">
                           {listing.agent.tags.map((tag) => (
                             <span
                               key={tag}
-                              className="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-600"
+                              className="rounded-full bg-muted px-3 py-1 text-sm text-muted-foreground"
                             >
                               {tag}
                             </span>
@@ -479,9 +471,9 @@ export default function ListingDetailPage() {
                 )}
 
                 {activeTab === "reviews" && (
-                  <div className="rounded-lg border bg-white p-6">
+                  <div className="rounded-lg border bg-card p-6">
                     <div className="flex items-center justify-between">
-                      <h2 className="font-semibold text-gray-900">
+                      <h2 className="font-semibold text-foreground">
                         User Reviews
                       </h2>
                       <Link
@@ -493,13 +485,13 @@ export default function ListingDetailPage() {
                     </div>
 
                     {/* Rating Summary */}
-                    <div className="mt-4 flex items-center gap-4 rounded-lg bg-gray-50 p-4">
+                    <div className="mt-4 flex items-center gap-4 rounded-lg bg-muted p-4">
                       <div className="text-center">
-                        <div className="text-4xl font-bold text-gray-900">
+                        <div className="text-4xl font-bold text-foreground">
                           {listing.avgRating.toFixed(1)}
                         </div>
                         <StarRating rating={Math.round(listing.avgRating)} />
-                        <div className="mt-1 text-sm text-gray-500">
+                        <div className="mt-1 text-sm text-muted-foreground">
                           {listing.reviewCount} reviews
                         </div>
                       </div>
@@ -508,7 +500,7 @@ export default function ListingDetailPage() {
                     {/* Review List */}
                     <div className="mt-6">
                       {reviews.length === 0 ? (
-                        <div className="py-8 text-center text-gray-500">
+                        <div className="py-8 text-center text-muted-foreground">
                           <MessageSquare className="mx-auto h-8 w-8 text-gray-300" />
                           <p className="mt-2">No reviews yet</p>
                           <p className="text-sm">
@@ -529,7 +521,7 @@ export default function ListingDetailPage() {
                 {activeTab === "token" && hasToken && tokenData && (
                   <div className="space-y-6">
                     {/* Token Header */}
-                    <div className="rounded-lg border bg-white p-6">
+                    <div className="rounded-lg border bg-card p-6">
                       <div className="flex items-start justify-between">
                         <div className="flex items-center gap-4">
                           {tokenData.imageUri ? (
@@ -539,26 +531,26 @@ export default function ListingDetailPage() {
                               className="h-12 w-12 rounded-full object-cover"
                             />
                           ) : (
-                            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-cyan-100 to-cyan-200 font-bold text-cyan-700">
+                            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-cyan-500/10 to-cyan-500/20 font-bold text-cyan-500">
                               {tokenData.symbol.slice(0, 2)}
                             </div>
                           )}
                           <div>
                             <div className="flex items-center gap-2">
-                              <h2 className="text-xl font-bold text-gray-900">
+                              <h2 className="text-xl font-bold text-foreground">
                                 {tokenData.name}
                               </h2>
-                              <span className="font-mono text-sm text-gray-500">
+                              <span className="font-mono text-sm text-muted-foreground">
                                 ${tokenData.symbol}
                               </span>
                             </div>
                             <span
                               className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
                                 tokenData.status === "GRADUATED"
-                                  ? "bg-green-100 text-green-700"
+                                  ? "bg-green-500/10 text-green-500"
                                   : tokenData.status === "FAILED"
-                                  ? "bg-red-100 text-red-700"
-                                  : "bg-gray-100 text-gray-700"
+                                  ? "bg-red-500/10 text-red-500"
+                                  : "bg-muted text-foreground"
                               }`}
                             >
                               {tokenData.status === "BONDING"
@@ -570,7 +562,7 @@ export default function ListingDetailPage() {
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className="text-2xl font-bold text-gray-900">
+                          <div className="text-2xl font-bold text-foreground">
                             {formatUsd(tokenData.priceUsd)}
                           </div>
                           {chartData.length >= 2 && (
@@ -603,8 +595,8 @@ export default function ListingDetailPage() {
 
                     {/* Price Chart */}
                     {chartData.length >= 2 && (
-                      <div className="rounded-lg border bg-white p-6">
-                        <h3 className="mb-4 font-semibold text-gray-900">
+                      <div className="rounded-lg border bg-card p-6">
+                        <h3 className="mb-4 font-semibold text-foreground">
                           Price Chart
                         </h3>
                         <div className="h-[200px]">
@@ -623,45 +615,45 @@ export default function ListingDetailPage() {
 
                     {/* Token Stats */}
                     <div className="grid gap-4 sm:grid-cols-4">
-                      <div className="rounded-lg border bg-white p-4 text-center">
+                      <div className="rounded-lg border bg-card p-4 text-center">
                         <BarChart3 className="mx-auto h-5 w-5 text-gray-400" />
-                        <div className="mt-2 text-lg font-bold text-gray-900">
+                        <div className="mt-2 text-lg font-bold text-foreground">
                           {formatUsd(tokenData.marketCapUsd)}
                         </div>
-                        <div className="text-xs text-gray-500">Market Cap</div>
+                        <div className="text-xs text-muted-foreground">Market Cap</div>
                       </div>
-                      <div className="rounded-lg border bg-white p-4 text-center">
+                      <div className="rounded-lg border bg-card p-4 text-center">
                         <TrendingUp className="mx-auto h-5 w-5 text-gray-400" />
-                        <div className="mt-2 text-lg font-bold text-gray-900">
+                        <div className="mt-2 text-lg font-bold text-foreground">
                           {formatUsd(tokenData.volume24h)}
                         </div>
-                        <div className="text-xs text-gray-500">24h Volume</div>
+                        <div className="text-xs text-muted-foreground">24h Volume</div>
                       </div>
-                      <div className="rounded-lg border bg-white p-4 text-center">
+                      <div className="rounded-lg border bg-card p-4 text-center">
                         <Users className="mx-auto h-5 w-5 text-gray-400" />
-                        <div className="mt-2 text-lg font-bold text-gray-900">
+                        <div className="mt-2 text-lg font-bold text-foreground">
                           {tokenData.holders.toLocaleString()}
                         </div>
-                        <div className="text-xs text-gray-500">Holders</div>
+                        <div className="text-xs text-muted-foreground">Holders</div>
                       </div>
-                      <div className="rounded-lg border bg-white p-4 text-center">
+                      <div className="rounded-lg border bg-card p-4 text-center">
                         <Coins className="mx-auto h-5 w-5 text-gray-400" />
-                        <div className="mt-2 text-lg font-bold text-gray-900">
+                        <div className="mt-2 text-lg font-bold text-foreground">
                           {tokenData.totalSupply.toLocaleString()}
                         </div>
-                        <div className="text-xs text-gray-500">Total Supply</div>
+                        <div className="text-xs text-muted-foreground">Total Supply</div>
                       </div>
                     </div>
 
                     {/* Token Info */}
-                    <div className="rounded-lg border bg-white p-6">
-                      <h3 className="font-semibold text-gray-900">
+                    <div className="rounded-lg border bg-card p-6">
+                      <h3 className="font-semibold text-foreground">
                         Token Details
                       </h3>
                       <dl className="mt-4 space-y-3 text-sm">
                         <div className="flex items-center justify-between">
-                          <dt className="text-gray-500">Mint Address</dt>
-                          <dd className="font-mono text-xs text-gray-900">
+                          <dt className="text-muted-foreground">Mint Address</dt>
+                          <dd className="font-mono text-xs text-foreground">
                             <a
                               href={`https://solscan.io/token/${tokenData.mintAddress}`}
                               target="_blank"
@@ -675,23 +667,23 @@ export default function ListingDetailPage() {
                           </dd>
                         </div>
                         <div className="flex items-center justify-between">
-                          <dt className="text-gray-500">Creator</dt>
-                          <dd className="font-mono text-xs text-gray-900">
+                          <dt className="text-muted-foreground">Creator</dt>
+                          <dd className="font-mono text-xs text-foreground">
                             {tokenData.creatorAddress.slice(0, 8)}...
                             {tokenData.creatorAddress.slice(-6)}
                           </dd>
                         </div>
                         {tokenData.creatorLockupEnd && (
                           <div className="flex items-center justify-between">
-                            <dt className="text-gray-500">Creator Lockup Until</dt>
-                            <dd className="text-gray-900">
+                            <dt className="text-muted-foreground">Creator Lockup Until</dt>
+                            <dd className="text-foreground">
                               {formatDate(tokenData.creatorLockupEnd)}
                             </dd>
                           </div>
                         )}
                         <div className="flex items-center justify-between">
-                          <dt className="text-gray-500">Created</dt>
-                          <dd className="text-gray-900">
+                          <dt className="text-muted-foreground">Created</dt>
+                          <dd className="text-foreground">
                             {formatDate(tokenData.createdAt)}
                           </dd>
                         </div>
@@ -699,12 +691,12 @@ export default function ListingDetailPage() {
                     </div>
 
                     {/* CTA */}
-                    <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-6 text-center">
+                    <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-6 text-center">
                       <Coins className="mx-auto h-8 w-8 text-cyan-600" />
-                      <h3 className="mt-2 font-semibold text-gray-900">
+                      <h3 className="mt-2 font-semibold text-foreground">
                         Trade ${tokenData.symbol}
                       </h3>
-                      <p className="mt-1 text-sm text-gray-600">
+                      <p className="mt-1 text-sm text-muted-foreground">
                         Sign in and connect your wallet to buy or sell this token
                       </p>
                       <Link
@@ -718,7 +710,7 @@ export default function ListingDetailPage() {
                           href={tokenData.pumpfunUrl}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="mt-3 flex items-center justify-center gap-1 text-sm text-cyan-600 hover:text-cyan-700"
+                          className="mt-3 flex items-center justify-center gap-1 text-sm text-cyan-600 hover:text-cyan-500"
                         >
                           View on pump.fun
                           <ExternalLink className="h-3 w-3" />
@@ -734,7 +726,7 @@ export default function ListingDetailPage() {
           {/* Right Column - Sidebar */}
           <div className="space-y-6">
             {/* Pricing Card */}
-            <div className="rounded-lg border bg-white p-6">
+            <div className="rounded-lg border bg-card p-6">
               <div className="text-center">
                 {hasToken && tokenData ? (
                   <>
@@ -742,19 +734,19 @@ export default function ListingDetailPage() {
                       <Coins className="h-6 w-6" />
                       {formatUsd(tokenData.priceUsd)}
                     </div>
-                    <p className="mt-1 text-sm text-gray-500">
+                    <p className="mt-1 text-sm text-muted-foreground">
                       ${tokenData.symbol} token price
                     </p>
                   </>
                 ) : (
                   <>
                     <div
-                      className={`text-3xl font-bold ${listing.pricingModel === "free" ? "text-green-600" : "text-gray-900"}`}
+                      className={`text-3xl font-bold ${listing.pricingModel === "free" ? "text-green-600" : "text-foreground"}`}
                     >
                       {formatPrice(listing)}
                     </div>
                     {listing.pricingModel !== "free" && (
-                      <p className="mt-1 text-sm text-gray-500">
+                      <p className="mt-1 text-sm text-muted-foreground">
                         {listing.pricingModel === "per_request"
                           ? "Pay only for what you use"
                           : listing.pricingModel === "tokenized"
@@ -801,7 +793,7 @@ export default function ListingDetailPage() {
               {hasToken && (
                 <button
                   onClick={() => setActiveTab("token")}
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-200 bg-cyan-50 px-4 py-2.5 text-sm font-medium text-cyan-700 hover:bg-cyan-100"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-500 hover:bg-cyan-500/10"
                 >
                   <Coins className="h-4 w-4" />
                   View Token
@@ -811,14 +803,14 @@ export default function ListingDetailPage() {
               {listing.agent?.slug && listing.agent?.isPublic && (
                 <Link
                   href={`/a/${listing.agent.slug}`}
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-sm font-medium text-green-700 hover:bg-green-100"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-2.5 text-sm font-medium text-green-500 hover:bg-green-500/10"
                 >
                   <ShieldCheck className="h-4 w-4" />
                   On-chain transparency
                 </Link>
               )}
 
-              <p className="mt-3 text-center text-xs text-gray-500">
+              <p className="mt-3 text-center text-xs text-muted-foreground">
                 {authed
                   ? installState?.installed
                     ? "Installed as a private copy in your workspace."
@@ -828,42 +820,42 @@ export default function ListingDetailPage() {
             </div>
 
             {/* Stats Card */}
-            <div className="rounded-lg border bg-white p-6">
-              <h3 className="font-semibold text-gray-900">Statistics</h3>
+            <div className="rounded-lg border bg-card p-6">
+              <h3 className="font-semibold text-foreground">Statistics</h3>
               <dl className="mt-4 space-y-3">
                 <div className="flex items-center justify-between">
-                  <dt className="flex items-center gap-2 text-sm text-gray-500">
+                  <dt className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Download className="h-4 w-4" />
                     Total Installs
                   </dt>
-                  <dd className="font-medium text-gray-900">
+                  <dd className="font-medium text-foreground">
                     {listing.totalInstalls.toLocaleString()}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between">
-                  <dt className="flex items-center gap-2 text-sm text-gray-500">
+                  <dt className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
                     Active Users
                   </dt>
-                  <dd className="font-medium text-gray-900">
+                  <dd className="font-medium text-foreground">
                     {listing.activeInstalls.toLocaleString()}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between">
-                  <dt className="flex items-center gap-2 text-sm text-gray-500">
+                  <dt className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Star className="h-4 w-4" />
                     Rating
                   </dt>
-                  <dd className="font-medium text-gray-900">
+                  <dd className="font-medium text-foreground">
                     {listing.avgRating.toFixed(1)} / 5
                   </dd>
                 </div>
                 <div className="flex items-center justify-between">
-                  <dt className="flex items-center gap-2 text-sm text-gray-500">
+                  <dt className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Clock className="h-4 w-4" />
                     Published
                   </dt>
-                  <dd className="font-medium text-gray-900">
+                  <dd className="font-medium text-foreground">
                     {listing.publishedAt
                       ? formatDate(listing.publishedAt)
                       : "Draft"}
@@ -873,24 +865,24 @@ export default function ListingDetailPage() {
             </div>
 
             {/* Info Card */}
-            <div className="rounded-lg border bg-white p-6">
-              <h3 className="font-semibold text-gray-900">Information</h3>
+            <div className="rounded-lg border bg-card p-6">
+              <h3 className="font-semibold text-foreground">Information</h3>
               <dl className="mt-4 space-y-3 text-sm">
                 <div className="flex items-center justify-between">
-                  <dt className="text-gray-500">Category</dt>
-                  <dd className="font-medium capitalize text-gray-900">
+                  <dt className="text-muted-foreground">Category</dt>
+                  <dd className="font-medium capitalize text-foreground">
                     {listing.category.replace("-", " ")}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between">
-                  <dt className="text-gray-500">Framework</dt>
-                  <dd className="font-medium capitalize text-gray-900">
+                  <dt className="text-muted-foreground">Framework</dt>
+                  <dd className="font-medium capitalize text-foreground">
                     {listing.agent?.framework || "Custom"}
                   </dd>
                 </div>
                 <div className="flex items-center justify-between">
-                  <dt className="text-gray-500">Last Updated</dt>
-                  <dd className="font-medium text-gray-900">
+                  <dt className="text-muted-foreground">Last Updated</dt>
+                  <dd className="font-medium text-foreground">
                     {formatDate(listing.updatedAt)}
                   </dd>
                 </div>
@@ -898,16 +890,16 @@ export default function ListingDetailPage() {
             </div>
 
             {/* Publisher Card */}
-            <div className="rounded-lg border bg-white p-6">
-              <h3 className="font-semibold text-gray-900">Publisher</h3>
+            <div className="rounded-lg border bg-card p-6">
+              <h3 className="font-semibold text-foreground">Publisher</h3>
               <div className="mt-4 flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15">
                   <span className="text-sm font-semibold text-primary-600">
                     {listing.publisherName.charAt(0).toUpperCase()}
                   </span>
                 </div>
                 <div>
-                  <div className="font-medium text-gray-900">
+                  <div className="font-medium text-foreground">
                     {listing.publisherName}
                   </div>
                   <Link
@@ -924,7 +916,7 @@ export default function ListingDetailPage() {
       </div>
 
       {/* Footer */}
-      <footer className="mt-12 border-t bg-white py-8">
+      <footer className="mt-12 border-t bg-card py-8">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -933,7 +925,7 @@ export default function ListingDetailPage() {
               </div>
               <span className="font-semibold">WheelsAI</span>
             </div>
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-muted-foreground">
               Built on Nosana. Powered by decentralized compute.
             </p>
           </div>

@@ -9,6 +9,7 @@ import {
   Integration,
   AvailableIntegration,
   WebhookEventType,
+  getErrorMessage,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -262,10 +263,10 @@ export default function IntegrationsPage() {
     try {
       const result = await integrationsApi.testIntegration(id, "send_message");
       if (result.success) {
-        alert("Test message sent successfully!");
+        toast.success("Test message sent successfully!");
       }
-    } catch (error: any) {
-      alert(`Test failed: ${error.message}`);
+    } catch (error) {
+      toast.error(`Test failed: ${getErrorMessage(error)}`);
     }
   }
 
@@ -350,16 +351,16 @@ export default function IntegrationsPage() {
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{webhook.name}</span>
                       {webhook.isEnabled ? (
-                        <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded">
+                        <span className="px-2 py-0.5 bg-green-500/10 text-green-500 text-xs rounded">
                           Active
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">
+                        <span className="px-2 py-0.5 bg-muted text-muted-foreground text-xs rounded">
                           Disabled
                         </span>
                       )}
                       {webhook.consecutiveFailures > 0 && (
-                        <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded">
+                        <span className="px-2 py-0.5 bg-red-500/10 text-red-500 text-xs rounded">
                           {webhook.consecutiveFailures} failures
                         </span>
                       )}

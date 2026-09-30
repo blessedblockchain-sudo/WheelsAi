@@ -28,6 +28,7 @@ import {
   type DomainStats,
   type Agent,
   type Deployment,
+  getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -79,7 +80,7 @@ export default function DomainsPage() {
       loadData();
     } catch (error) {
       console.error("Failed to create domain:", error);
-      toast.error((error as Error).message);
+      toast.error(getErrorMessage(error));
     }
   }
 
@@ -103,7 +104,7 @@ export default function DomainsPage() {
       loadData();
     } catch (error) {
       console.error("Failed to toggle domain:", error);
-      toast.error((error as Error).message);
+      toast.error(getErrorMessage(error));
     }
   }
 
@@ -144,8 +145,8 @@ export default function DomainsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Custom Domains</h1>
-          <p className="text-gray-600 mt-1">
+          <h1 className="text-2xl font-bold text-foreground">Custom Domains</h1>
+          <p className="text-muted-foreground mt-1">
             Add custom domains to your agents and deployments
           </p>
         </div>
@@ -180,16 +181,16 @@ export default function DomainsPage() {
       )}
 
       {/* Domains List */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
+        <div className="px-6 py-4 border-b border-border">
           <h2 className="text-lg font-semibold">Domains</h2>
         </div>
 
         {domains.length === 0 ? (
           <div className="p-12 text-center">
             <Globe className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No domains configured</h3>
-            <p className="text-gray-500 mb-4">
+            <h3 className="text-lg font-medium text-foreground mb-2">No domains configured</h3>
+            <p className="text-muted-foreground mb-4">
               Add a custom domain to access your agents via your own domain
             </p>
             <button
@@ -201,7 +202,7 @@ export default function DomainsPage() {
             </button>
           </div>
         ) : (
-          <div className="divide-y divide-gray-200">
+          <div className="divide-y divide-border">
             {domains.map((domain) => (
               <DomainRow
                 key={domain.id}
@@ -221,25 +222,25 @@ export default function DomainsPage() {
       {/* Add Domain Modal */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <h2 className="text-xl font-bold text-gray-900 mb-4">Add Custom Domain</h2>
+          <div className="bg-card rounded-xl p-6 w-full max-w-md">
+            <h2 className="text-xl font-bold text-foreground mb-4">Add Custom Domain</h2>
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-foreground mb-1">
                   Domain
                 </label>
                 <input
                   type="text"
                   value={newDomain.domain}
                   onChange={(e) => setNewDomain({ ...newDomain, domain: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500"
                   placeholder="api.example.com"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-foreground mb-1">
                   Target Type
                 </label>
                 <select
@@ -251,7 +252,7 @@ export default function DomainsPage() {
                       targetId: "",
                     })
                   }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500"
                 >
                   <option value="agent">Agent</option>
                   <option value="deployment">Deployment</option>
@@ -259,13 +260,13 @@ export default function DomainsPage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-foreground mb-1">
                   {newDomain.targetType === "agent" ? "Agent" : "Deployment"}
                 </label>
                 <select
                   value={newDomain.targetId}
                   onChange={(e) => setNewDomain({ ...newDomain, targetId: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500"
                 >
                   <option value="">Select {newDomain.targetType}</option>
                   {newDomain.targetType === "agent"
@@ -286,7 +287,7 @@ export default function DomainsPage() {
             <div className="flex justify-end gap-3 mt-6">
               <button
                 onClick={() => setShowAddModal(false)}
-                className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+                className="px-4 py-2 text-muted-foreground hover:bg-muted rounded-lg"
               >
                 Cancel
               </button>
@@ -317,22 +318,22 @@ function StatCard({
   color?: "gray" | "green" | "blue" | "yellow" | "red";
 }) {
   const colorClasses = {
-    gray: "bg-gray-100 text-gray-600",
-    green: "bg-green-100 text-green-600",
-    blue: "bg-blue-100 text-blue-600",
-    yellow: "bg-yellow-100 text-yellow-600",
-    red: "bg-red-100 text-red-600",
+    gray: "bg-muted text-muted-foreground",
+    green: "bg-green-500/10 text-green-600",
+    blue: "bg-blue-500/10 text-blue-600",
+    yellow: "bg-yellow-500/10 text-yellow-600",
+    red: "bg-red-500/10 text-red-600",
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4">
+    <div className="bg-card rounded-xl border border-border p-4">
       <div className="flex items-center gap-3">
         <div className={`p-2 rounded-lg ${colorClasses[color]}`}>
           <Icon className="h-4 w-4" />
         </div>
         <div>
-          <p className="text-sm text-gray-500">{label}</p>
-          <p className="text-lg font-semibold text-gray-900">{value}</p>
+          <p className="text-sm text-muted-foreground">{label}</p>
+          <p className="text-lg font-semibold text-foreground">{value}</p>
         </div>
       </div>
     </div>
@@ -357,10 +358,10 @@ function DomainRow({
   onView: () => void;
 }) {
   const verificationStatusConfig = {
-    pending: { icon: Clock, color: "text-yellow-600", bg: "bg-yellow-100" },
-    verified: { icon: CheckCircle, color: "text-green-600", bg: "bg-green-100" },
-    failed: { icon: XCircle, color: "text-red-600", bg: "bg-red-100" },
-    expired: { icon: AlertTriangle, color: "text-orange-600", bg: "bg-orange-100" },
+    pending: { icon: Clock, color: "text-yellow-600", bg: "bg-yellow-500/10" },
+    verified: { icon: CheckCircle, color: "text-green-600", bg: "bg-green-500/10" },
+    failed: { icon: XCircle, color: "text-red-600", bg: "bg-red-500/10" },
+    expired: { icon: AlertTriangle, color: "text-orange-600", bg: "bg-orange-500/10" },
   };
 
   const sslStatusConfig = {
@@ -377,20 +378,20 @@ function DomainRow({
   const SslIcon = sConfig.icon;
 
   return (
-    <div className="px-6 py-4 hover:bg-gray-50 transition-colors">
+    <div className="px-6 py-4 hover:bg-muted transition-colors">
       <div className="flex items-center justify-between">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3">
             <button
               onClick={onView}
-              className="font-medium text-gray-900 hover:text-primary-600 flex items-center gap-2"
+              className="font-medium text-foreground hover:text-primary-600 flex items-center gap-2"
             >
               {domain.domain}
               <ExternalLink className="h-3 w-3" />
             </button>
 
             {domain.isPrimary && (
-              <span className="text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded">
+              <span className="text-xs bg-primary/15 text-primary-700 px-2 py-0.5 rounded">
                 Primary
               </span>
             )}
@@ -406,7 +407,7 @@ function DomainRow({
             </span>
           </div>
 
-          <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
+          <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
             <span className="flex items-center gap-1">
               {domain.targetType === "agent" ? (
                 <Bot className="h-3.5 w-3.5" />
@@ -429,7 +430,7 @@ function DomainRow({
           {domain.verificationStatus === "pending" && (
             <button
               onClick={onVerify}
-              className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200"
+              className="px-3 py-1.5 text-sm bg-blue-500/10 text-blue-500 rounded-lg hover:bg-blue-500/20"
             >
               Verify
             </button>
@@ -437,7 +438,7 @@ function DomainRow({
 
           <button
             onClick={() => onCopy(domain.domain)}
-            className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+            className="p-2 text-gray-400 hover:text-foreground hover:bg-muted rounded-lg"
             title="Copy domain"
           >
             <Copy className="h-4 w-4" />
@@ -448,8 +449,8 @@ function DomainRow({
               onClick={onToggle}
               className={`p-2 rounded-lg ${
                 domain.isActive
-                  ? "text-green-600 hover:bg-green-100"
-                  : "text-gray-400 hover:bg-gray-100"
+                  ? "text-green-600 hover:bg-green-500/10"
+                  : "text-gray-400 hover:bg-muted"
               }`}
               title={domain.isActive ? "Deactivate" : "Activate"}
             >
@@ -463,7 +464,7 @@ function DomainRow({
 
           <button
             onClick={onDelete}
-            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+            className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-500/10 rounded-lg"
             title="Delete domain"
           >
             <Trash2 className="h-4 w-4" />

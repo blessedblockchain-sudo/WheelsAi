@@ -20,6 +20,7 @@ import {
   Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -127,7 +128,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
       setFormData({});
       onRefresh();
     } catch (error: any) {
-      toast.error(error.message || "Failed to add channel");
+      toast.error(getErrorMessage(error, "Failed to add channel"));
     } finally {
       setSubmitting(false);
     }
@@ -145,8 +146,8 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
       if (!response.ok) throw new Error("Failed to update channel");
       toast.success(`Channel ${enabled ? "enabled" : "disabled"}`);
       onRefresh();
-    } catch {
-      toast.error("Failed to update channel");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Failed to update channel"));
     }
   };
 
@@ -162,8 +163,8 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
       if (!response.ok) throw new Error("Failed to remove channel");
       toast.success("Channel removed");
       onRefresh();
-    } catch {
-      toast.error("Failed to remove channel");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Failed to remove channel"));
     }
   };
 
@@ -232,7 +233,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50"
+                      className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-500/10"
                       onClick={() => handleDelete(channel.id)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />

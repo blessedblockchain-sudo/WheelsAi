@@ -23,7 +23,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { agentsApi, type CreateAgentInput } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { agentsApi, type CreateAgentInput, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -40,12 +41,12 @@ const steps: { id: Step; label: string; icon: React.ElementType }[] = [
 ];
 
 const frameworkColors: Record<string, { bg: string; text: string }> = {
-  purple: { bg: "bg-purple-100", text: "text-purple-600" },
-  green: { bg: "bg-green-100", text: "text-green-600" },
-  blue: { bg: "bg-blue-100", text: "text-blue-600" },
-  gray: { bg: "bg-gray-100", text: "text-gray-600" },
-  cyan: { bg: "bg-cyan-100", text: "text-cyan-600" },
-  orange: { bg: "bg-orange-100", text: "text-orange-600" },
+  purple: { bg: "bg-purple-500/10", text: "text-purple-600" },
+  green: { bg: "bg-green-500/10", text: "text-green-600" },
+  blue: { bg: "bg-blue-500/10", text: "text-blue-600" },
+  gray: { bg: "bg-muted", text: "text-muted-foreground" },
+  cyan: { bg: "bg-cyan-500/10", text: "text-cyan-600" },
+  orange: { bg: "bg-orange-500/10", text: "text-orange-600" },
 };
 
 const frameworks = [
@@ -209,7 +210,7 @@ function NewAgentContent() {
       toast.success(`Detected framework: ${data.config.framework}`);
       goToStep("config");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to import from GitHub");
+      toast.error(getErrorMessage(err, "Failed to import from GitHub"));
     } finally {
       setIsImporting(false);
     }
@@ -245,7 +246,7 @@ function NewAgentContent() {
       toast.success("Agent created successfully");
       router.push(`/dashboard/agents/${agent.id}`);
     } catch (error) {
-      toast.error("Failed to create agent");
+      toast.error(getErrorMessage(error, "Failed to create agent"));
     } finally {
       setIsCreating(false);
     }
@@ -274,7 +275,7 @@ function NewAgentContent() {
                     className={cn(
                       "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
                       currentStep === step.id
-                        ? "bg-primary-100 text-primary-700"
+                        ? "bg-primary/15 text-primary-700"
                         : index < visibleStepIndex
                         ? "text-primary-600"
                         : "text-gray-400"
@@ -287,7 +288,7 @@ function NewAgentContent() {
                     <div
                       className={cn(
                         "mx-2 h-0.5 w-8 md:w-16",
-                        index < visibleStepIndex ? "bg-primary-500" : "bg-gray-200"
+                        index < visibleStepIndex ? "bg-primary-500" : "bg-muted"
                       )}
                     />
                   )}
@@ -305,20 +306,20 @@ function NewAgentContent() {
             {currentStep === "start" && (
               <div>
                 <h3 className="text-lg font-medium">How would you like to start?</h3>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Import an existing project or build from scratch
                 </p>
 
                 <div className="mt-8 grid gap-4 md:grid-cols-3">
                   {/* Import from GitHub */}
-                  <div className="flex flex-col rounded-lg border-2 border-gray-200 p-5 hover:border-primary-300 transition-all">
+                  <div className="flex flex-col rounded-lg border-2 border-border p-5 hover:border-primary/40 transition-all">
                     <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
-                        <Github className="h-5 w-5 text-gray-700" />
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                        <Github className="h-5 w-5 text-foreground" />
                       </div>
                       <div>
                         <p className="font-semibold">Import from GitHub</p>
-                        <p className="text-sm text-gray-500">Auto-detect framework</p>
+                        <p className="text-sm text-muted-foreground">Auto-detect framework</p>
                       </div>
                     </div>
 
@@ -344,18 +345,18 @@ function NewAgentContent() {
                   {/* Choose a Framework */}
                   <button
                     onClick={() => goToStep("framework")}
-                    className="flex flex-col items-start rounded-lg border-2 border-gray-200 p-5 text-left hover:border-primary-300 transition-all"
+                    className="flex flex-col items-start rounded-lg border-2 border-border p-5 text-left hover:border-primary/40 transition-all"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
                         <Bot className="h-5 w-5 text-primary-600" />
                       </div>
                       <div>
                         <p className="font-semibold">Choose a Framework</p>
-                        <p className="text-sm text-gray-500">Mastra, LangChain, CrewAI & more</p>
+                        <p className="text-sm text-muted-foreground">Mastra, LangChain, CrewAI & more</p>
                       </div>
                     </div>
-                    <p className="mt-4 text-sm text-gray-500">
+                    <p className="mt-4 text-sm text-muted-foreground">
                       Pick the framework that best fits your needs and configure your agent from scratch.
                     </p>
                   </button>
@@ -363,18 +364,18 @@ function NewAgentContent() {
                   {/* Start from Template */}
                   <button
                     onClick={() => router.push("/dashboard/templates")}
-                    className="flex flex-col items-start rounded-lg border-2 border-gray-200 p-5 text-left hover:border-primary-300 transition-all"
+                    className="flex flex-col items-start rounded-lg border-2 border-border p-5 text-left hover:border-primary/40 transition-all"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
                         <LayoutTemplate className="h-5 w-5 text-green-600" />
                       </div>
                       <div>
                         <p className="font-semibold">Start from Template</p>
-                        <p className="text-sm text-gray-500">Ready-to-use agent blueprints</p>
+                        <p className="text-sm text-muted-foreground">Ready-to-use agent blueprints</p>
                       </div>
                     </div>
-                    <p className="mt-4 text-sm text-gray-500">
+                    <p className="mt-4 text-sm text-muted-foreground">
                       Browse the template gallery to find a pre-built agent that matches your use case.
                     </p>
                   </button>
@@ -386,7 +387,7 @@ function NewAgentContent() {
             {currentStep === "framework" && (
               <div>
                 <h3 className="text-lg font-medium">Choose a Framework</h3>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Select the agent framework that best fits your needs
                 </p>
 
@@ -398,8 +399,8 @@ function NewAgentContent() {
                       className={cn(
                         "rounded-lg border-2 p-4 text-left transition-all",
                         formData.framework === fw.id
-                          ? "border-primary-500 bg-primary-50"
-                          : "border-gray-200 hover:border-gray-300"
+                          ? "border-primary-500 bg-primary/10"
+                          : "border-border hover:border-muted-foreground/40"
                       )}
                     >
                       <div className="flex items-center gap-3">
@@ -408,7 +409,7 @@ function NewAgentContent() {
                         </div>
                         <div>
                           <p className="font-medium">{fw.name}</p>
-                          <p className="text-sm text-gray-500">{fw.description}</p>
+                          <p className="text-sm text-muted-foreground">{fw.description}</p>
                         </div>
                       </div>
                       <div className="mt-3 flex flex-wrap gap-2">
@@ -430,7 +431,7 @@ function NewAgentContent() {
                 <h3 className="text-lg font-medium">Agent Configuration</h3>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Agent Name *
                   </label>
                   <Input
@@ -442,7 +443,7 @@ function NewAgentContent() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Description
                   </label>
                   <Input
@@ -454,21 +455,21 @@ function NewAgentContent() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     System Prompt
                   </label>
-                  <textarea
+                  <Textarea
                     value={formData.systemPrompt}
                     onChange={(e) => setFormData({ ...formData, systemPrompt: e.target.value })}
                     placeholder="You are a helpful AI assistant..."
                     rows={4}
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-4 py-2 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    className="mt-1"
                   />
                 </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Model
                     </label>
                     <Select
@@ -505,7 +506,7 @@ function NewAgentContent() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Temperature: {formData.modelConfig?.temperature}
                     </label>
                     <input
@@ -526,7 +527,7 @@ function NewAgentContent() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Tags (comma separated)
                   </label>
                   <Input
@@ -548,7 +549,7 @@ function NewAgentContent() {
             {currentStep === "tools" && (
               <div>
                 <h3 className="text-lg font-medium">Configure Tools</h3>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Select the tools your agent can use
                 </p>
 
@@ -559,8 +560,8 @@ function NewAgentContent() {
                       className={cn(
                         "flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors",
                         selectedTools.includes(tool.name)
-                          ? "border-primary-500 bg-primary-50"
-                          : "border-gray-200 hover:border-gray-300"
+                          ? "border-primary-500 bg-primary/10"
+                          : "border-border hover:border-muted-foreground/40"
                       )}
                     >
                       <input
@@ -577,7 +578,7 @@ function NewAgentContent() {
                       />
                       <div>
                         <p className="font-medium">{tool.label}</p>
-                        <p className="text-sm text-gray-500">{tool.description}</p>
+                        <p className="text-sm text-muted-foreground">{tool.description}</p>
                       </div>
                     </label>
                   ))}
@@ -585,7 +586,7 @@ function NewAgentContent() {
 
                 <div className="mt-6">
                   <h4 className="font-medium">Environment Variables</h4>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Add API keys and configuration for your tools
                   </p>
 
@@ -643,7 +644,7 @@ function NewAgentContent() {
             {currentStep === "code" && (
               <div>
                 <h3 className="text-lg font-medium">Agent Code</h3>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Provide your agent implementation
                 </p>
 
@@ -655,8 +656,8 @@ function NewAgentContent() {
                         className={cn(
                           "flex cursor-pointer items-center gap-2 rounded-lg border px-4 py-2",
                           formData.sourceType === type
-                            ? "border-primary-500 bg-primary-50"
-                            : "border-gray-200"
+                            ? "border-primary-500 bg-primary/10"
+                            : "border-border"
                         )}
                       >
                         <input
@@ -671,22 +672,22 @@ function NewAgentContent() {
 
                   {formData.sourceType === "inline" && (
                     <div className="mt-4">
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         Agent Code ({formData.framework === "custom" ? "Dockerfile or script" : `${formData.framework} config`})
                       </label>
-                      <textarea
+                      <Textarea
                         value={formData.sourceCode}
                         onChange={(e) => setFormData({ ...formData, sourceCode: e.target.value })}
                         placeholder={getCodePlaceholder(formData.framework as string)}
                         rows={15}
-                        className="mt-1 w-full rounded-lg border border-gray-300 bg-gray-50 px-4 py-2 font-mono text-sm focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+                        className="mt-1 font-mono"
                       />
                     </div>
                   )}
 
                   {formData.sourceType === "github" && (
                     <div className="mt-4">
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         GitHub Repository URL
                       </label>
                       <Input
@@ -695,7 +696,7 @@ function NewAgentContent() {
                         placeholder="https://github.com/username/repo"
                         className="mt-1"
                       />
-                      <p className="mt-1 text-sm text-gray-500">
+                      <p className="mt-1 text-sm text-muted-foreground">
                         Repository must contain a valid agent configuration
                       </p>
                     </div>
@@ -703,7 +704,7 @@ function NewAgentContent() {
 
                   {formData.sourceType === "ipfs" && (
                     <div className="mt-4">
-                      <label className="block text-sm font-medium text-gray-700">
+                      <label className="block text-sm font-medium text-foreground">
                         IPFS Hash
                       </label>
                       <Input
@@ -722,7 +723,7 @@ function NewAgentContent() {
             {currentStep === "review" && (
               <div>
                 <h3 className="text-lg font-medium">Review Agent</h3>
-                <p className="mt-1 text-sm text-gray-500">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Review your agent configuration before creating
                 </p>
 
@@ -731,15 +732,15 @@ function NewAgentContent() {
                     <h4 className="font-medium">Basic Info</h4>
                     <dl className="mt-2 grid gap-2 text-sm">
                       <div className="flex justify-between">
-                        <dt className="text-gray-500">Name</dt>
+                        <dt className="text-muted-foreground">Name</dt>
                         <dd>{formData.name || "—"}</dd>
                       </div>
                       <div className="flex justify-between">
-                        <dt className="text-gray-500">Framework</dt>
+                        <dt className="text-muted-foreground">Framework</dt>
                         <dd className="capitalize">{formData.framework}</dd>
                       </div>
                       <div className="flex justify-between">
-                        <dt className="text-gray-500">Model</dt>
+                        <dt className="text-muted-foreground">Model</dt>
                         <dd>{formData.modelConfig?.externalModel}</dd>
                       </div>
                     </dl>
@@ -755,18 +756,18 @@ function NewAgentContent() {
                           </Badge>
                         ))
                       ) : (
-                        <span className="text-sm text-gray-500">No tools selected</span>
+                        <span className="text-sm text-muted-foreground">No tools selected</span>
                       )}
                     </div>
                   </div>
 
                   <div className="rounded-lg border p-4">
                     <h4 className="font-medium">Source</h4>
-                    <p className="mt-1 text-sm text-gray-500">
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Type: {formData.sourceType}
                     </p>
                     {formData.sourceUrl && (
-                      <p className="mt-1 text-sm text-gray-500 break-all">
+                      <p className="mt-1 text-sm text-muted-foreground break-all">
                         URL: {formData.sourceUrl}
                       </p>
                     )}

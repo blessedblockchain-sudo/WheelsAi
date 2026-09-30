@@ -799,7 +799,7 @@ export default function AgentBuilderPage() {
                         updateNodeConfig("systemPrompt", e.target.value)
                       }
                       rows={4}
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm resize-none"
+                      className="w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none"
                       placeholder="You are a helpful assistant..."
                     />
                   </div>
@@ -869,7 +869,7 @@ export default function AgentBuilderPage() {
                       updateNodeConfig("template", e.target.value)
                     }
                     rows={4}
-                    className="w-full px-3 py-2 bg-background border rounded-lg text-sm resize-none font-mono"
+                    className="w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none font-mono"
                     placeholder="{{input}}"
                   />
                 </div>
@@ -952,7 +952,7 @@ export default function AgentBuilderPage() {
                       value={selectedNode.node.data.config.code || ""}
                       onChange={(e) => updateNodeConfig("code", e.target.value)}
                       rows={6}
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm resize-none font-mono"
+                      className="w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none font-mono"
                       placeholder="// Your code here"
                     />
                   </div>
@@ -1033,8 +1033,8 @@ export default function AgentBuilderPage() {
               <span
                 className={
                   runResult.status === "completed"
-                    ? "text-xs px-2 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
-                    : "text-xs px-2 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                    ? "text-xs px-2 py-0.5 rounded bg-green-500/10 text-green-500"
+                    : "text-xs px-2 py-0.5 rounded bg-red-500/10 text-red-500"
                 }
               >
                 {runResult.status} · {runResult.durationMs}ms
@@ -1074,7 +1074,7 @@ export default function AgentBuilderPage() {
             )}
 
             {runResult?.error && (
-              <div className="text-sm rounded-lg border border-red-300 bg-red-50 dark:bg-red-900/20 p-3">
+              <div className="text-sm rounded-lg border border-red-500/30 bg-red-500/10 p-3">
                 {runResult.error}
               </div>
             )}
@@ -1090,10 +1090,10 @@ export default function AgentBuilderPage() {
                   <span
                     className={
                       entry.status === "success"
-                        ? "px-1.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                        ? "px-1.5 rounded bg-green-500/10 text-green-500"
                         : entry.status === "refused"
-                          ? "px-1.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
-                          : "px-1.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                          ? "px-1.5 rounded bg-amber-500/10 text-amber-500"
+                          : "px-1.5 rounded bg-red-500/10 text-red-500"
                     }
                   >
                     {entry.status}
@@ -1114,7 +1114,7 @@ export default function AgentBuilderPage() {
             ))}
 
             {runResult?.status === "completed" && (
-              <div className="rounded-lg border border-green-300 bg-green-50 dark:bg-green-900/20 p-3 text-sm">
+              <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-sm">
                 <div className="font-medium mb-1">Output</div>
                 <pre className="whitespace-pre-wrap break-words">
                   {runResult.output}

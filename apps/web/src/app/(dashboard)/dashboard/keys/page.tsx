@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable, type Column } from "@/components/ui/data-table";
-import { apiKeysApi, type ApiKey } from "@/lib/api";
+import { apiKeysApi, type ApiKey, getErrorMessage } from "@/lib/api";
 
 export default function ApiKeysPage() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -26,7 +26,7 @@ export default function ApiKeysPage() {
       const data = await apiKeysApi.list();
       setApiKeys(data?.apiKeys ?? []);
     } catch (error) {
-      toast.error("Failed to load API keys");
+      toast.error(getErrorMessage(error, "Failed to load API keys"));
       setApiKeys([]);
     } finally {
       setIsLoading(false);
@@ -51,7 +51,7 @@ export default function ApiKeysPage() {
       setNewKeyName("");
       toast.success("API key created successfully");
     } catch (error) {
-      toast.error("Failed to create API key");
+      toast.error(getErrorMessage(error, "Failed to create API key"));
     } finally {
       setIsCreating(false);
     }
@@ -63,7 +63,7 @@ export default function ApiKeysPage() {
       setApiKeys(apiKeys.filter((k) => k.id !== id));
       toast.success("API key revoked");
     } catch (error) {
-      toast.error("Failed to revoke API key");
+      toast.error(getErrorMessage(error, "Failed to revoke API key"));
     }
   }
 
@@ -94,8 +94,8 @@ export default function ApiKeysPage() {
       sortable: true,
       render: (apiKey) => (
         <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-800">
-            <Key className="h-4 w-4 text-gray-600 dark:text-gray-400" />
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted">
+            <Key className="h-4 w-4 text-muted-foreground" />
           </div>
           <span className="font-medium">{apiKey.name}</span>
         </div>
@@ -106,7 +106,7 @@ export default function ApiKeysPage() {
       header: "Key",
       render: (apiKey) => (
         <div className="flex items-center gap-2">
-          <code className="text-sm text-gray-500 dark:text-gray-400">
+          <code className="text-sm text-muted-foreground">
             {visibleKeys.has(apiKey.id)
               ? apiKey.keyPrefix + "••••••••"
               : maskKey(apiKey.keyPrefix)}
@@ -116,7 +116,7 @@ export default function ApiKeysPage() {
               e.stopPropagation();
               toggleKeyVisibility(apiKey.id);
             }}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+            className="text-gray-400 hover:text-foreground"
           >
             {visibleKeys.has(apiKey.id) ? (
               <EyeOff className="h-4 w-4" />
@@ -140,7 +140,7 @@ export default function ApiKeysPage() {
             ))}
           </div>
         ) : (
-          <span className="text-sm text-gray-400 dark:text-gray-500">All</span>
+          <span className="text-sm text-muted-foreground">All</span>
         ),
     },
     {
@@ -157,7 +157,7 @@ export default function ApiKeysPage() {
       header: "Last Used",
       sortable: true,
       render: (apiKey) => (
-        <span className="text-sm text-gray-500 dark:text-gray-400">
+        <span className="text-sm text-muted-foreground">
           {apiKey.lastUsedAt
             ? new Date(apiKey.lastUsedAt).toLocaleDateString()
             : "Never"}
@@ -169,7 +169,7 @@ export default function ApiKeysPage() {
       header: "Created",
       sortable: true,
       render: (apiKey) => (
-        <span className="text-sm text-gray-500 dark:text-gray-400">
+        <span className="text-sm text-muted-foreground">
           {new Date(apiKey.createdAt).toLocaleDateString()}
         </span>
       ),
@@ -183,7 +183,7 @@ export default function ApiKeysPage() {
           <Button
             variant="ghost"
             size="icon"
-            className="text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 hover:text-red-600"
+            className="text-red-500 hover:bg-red-500/10 hover:text-red-600"
             onClick={(e) => {
               e.stopPropagation();
               handleRevokeKey(apiKey.id);
@@ -214,14 +214,14 @@ export default function ApiKeysPage() {
           <CardContent>
             {newlyCreatedKey ? (
               <div className="space-y-4">
-                <div className="rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950/30 p-4">
+                <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
                   <div className="flex items-start gap-3">
                     <AlertTriangle className="h-5 w-5 text-yellow-600 dark:text-yellow-500" />
                     <div>
-                      <p className="font-medium text-yellow-800 dark:text-yellow-200">
+                      <p className="font-medium text-yellow-500">
                         Save your API key now
                       </p>
-                      <p className="mt-1 text-sm text-yellow-700 dark:text-yellow-300">
+                      <p className="mt-1 text-sm text-yellow-500">
                         This is the only time you&apos;ll see this key. Store it securely.
                       </p>
                     </div>
@@ -229,7 +229,7 @@ export default function ApiKeysPage() {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <code className="flex-1 rounded-lg bg-gray-100 dark:bg-gray-800 px-4 py-3 text-sm font-mono text-gray-900 dark:text-gray-100">
+                  <code className="flex-1 rounded-lg bg-muted px-4 py-3 text-sm font-mono text-foreground">
                     {newlyCreatedKey}
                   </code>
                   <Button
@@ -254,7 +254,7 @@ export default function ApiKeysPage() {
             ) : showCreateForm ? (
               <div className="flex items-end gap-4">
                 <div className="flex-1">
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                  <label className="block text-sm font-medium text-foreground">
                     Key Name
                   </label>
                   <Input
@@ -295,7 +295,7 @@ export default function ApiKeysPage() {
             {isLoading ? (
               <div className="space-y-3">
                 {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-16 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800" />
+                  <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
                 ))}
               </div>
             ) : (

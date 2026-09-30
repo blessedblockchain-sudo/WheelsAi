@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier } from "@/lib/api";
+import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Step = "model" | "config" | "review";
@@ -98,7 +98,7 @@ export default function NewDeploymentPage() {
         setModels(models);
         setGpuTiers(gpuTiers);
       } catch (error) {
-        toast.error("Failed to load models");
+        toast.error(getErrorMessage(error, "Failed to load models"));
       } finally {
         setIsLoading(false);
       }
@@ -178,7 +178,7 @@ export default function NewDeploymentPage() {
       toast.success("Deployment created! Provisioning GPU...");
       router.push(`/dashboard/deployments/${deployment.id}`);
     } catch (error) {
-      toast.error("Failed to create deployment");
+      toast.error(getErrorMessage(error, "Failed to create deployment"));
     } finally {
       setIsDeploying(false);
     }
@@ -220,8 +220,8 @@ export default function NewDeploymentPage() {
                     step === s.id
                       ? "bg-primary-600 text-white"
                       : ["model"].indexOf(step) < ["model", "config", "review"].indexOf(s.id)
-                      ? "bg-gray-200 text-gray-500"
-                      : "bg-green-100 text-green-600"
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-green-500/10 text-green-600"
                   )}
                 >
                   {["model"].indexOf(step) > ["model", "config", "review"].indexOf(s.id) ? (
@@ -233,7 +233,7 @@ export default function NewDeploymentPage() {
                 <span
                   className={cn(
                     "text-sm font-medium",
-                    step === s.id ? "text-gray-900" : "text-gray-500"
+                    step === s.id ? "text-foreground" : "text-muted-foreground"
                   )}
                 >
                   {s.label}
@@ -251,7 +251,7 @@ export default function NewDeploymentPage() {
             {isLoading ? (
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 {[1, 2, 3, 4, 5, 6].map((i) => (
-                  <div key={i} className="h-48 animate-pulse rounded-lg bg-gray-200" />
+                  <div key={i} className="h-48 animate-pulse rounded-lg bg-muted" />
                 ))}
               </div>
             ) : (
@@ -260,8 +260,8 @@ export default function NewDeploymentPage() {
                   <Card
                     key={model.id}
                     className={cn(
-                      "cursor-pointer transition-all hover:border-primary-300 hover:shadow-md",
-                      selectedModel?.id === model.id && "border-primary-500 ring-2 ring-primary-200"
+                      "cursor-pointer transition-all hover:border-primary/40 hover:shadow-md",
+                      selectedModel?.id === model.id && "border-primary-500 ring-2 ring-primary/30"
                     )}
                     onClick={() => selectModel(model)}
                   >
@@ -282,7 +282,7 @@ export default function NewDeploymentPage() {
                           </Badge>
                         ))}
                       </div>
-                      <div className="mt-3 flex items-center justify-between text-sm text-gray-500">
+                      <div className="mt-3 flex items-center justify-between text-sm text-muted-foreground">
                         <span>Min: {model.minGpuTier}</span>
                         <div className="flex items-center gap-2">
                           {model.supportedEngines.includes("ollama") && (
@@ -320,7 +320,7 @@ export default function NewDeploymentPage() {
               </CardHeader>
               <CardContent className="space-y-6">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Deployment Name
                   </label>
                   <Input
@@ -329,14 +329,14 @@ export default function NewDeploymentPage() {
                     placeholder="my-llama-deployment"
                     className="mt-1"
                   />
-                  <p className="mt-1 text-sm text-gray-500">
+                  <p className="mt-1 text-sm text-muted-foreground">
                     This will be used in your endpoint URL
                   </p>
                 </div>
 
                 {/* Engine Selection */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-foreground mb-2">
                     Inference Engine
                   </label>
                   <div className="grid gap-3 sm:grid-cols-2">
@@ -349,8 +349,8 @@ export default function NewDeploymentPage() {
                           className={cn(
                             "cursor-pointer rounded-lg border-2 p-4 transition-all",
                             selectedEngine === engine.id
-                              ? "border-primary-500 bg-primary-50"
-                              : "border-gray-200 hover:border-gray-300"
+                              ? "border-primary-500 bg-primary/10"
+                              : "border-border hover:border-muted-foreground/40"
                           )}
                           onClick={() => setSelectedEngine(engine.id)}
                         >
@@ -358,8 +358,8 @@ export default function NewDeploymentPage() {
                             <div className={cn(
                               "flex h-10 w-10 items-center justify-center rounded-lg",
                               selectedEngine === engine.id
-                                ? "bg-primary-100 text-primary-600"
-                                : "bg-gray-100 text-gray-600"
+                                ? "bg-primary/15 text-primary-600"
+                                : "bg-muted text-muted-foreground"
                             )}>
                               <Icon className="h-5 w-5" />
                             </div>
@@ -372,12 +372,12 @@ export default function NewDeploymentPage() {
                                   </Badge>
                                 )}
                               </div>
-                              <p className="text-sm text-gray-500">{engine.description}</p>
+                              <p className="text-sm text-muted-foreground">{engine.description}</p>
                             </div>
                           </div>
                           <ul className="mt-3 space-y-1">
                             {engine.features.map((feature) => (
-                              <li key={feature} className="flex items-center gap-2 text-sm text-gray-600">
+                              <li key={feature} className="flex items-center gap-2 text-sm text-muted-foreground">
                                 <Check className="h-3 w-3 text-green-500" />
                                 {feature}
                               </li>
@@ -388,7 +388,7 @@ export default function NewDeploymentPage() {
                     })}
                   </div>
                   {getAvailableEngines(selectedModel).length === 1 && (
-                    <p className="mt-2 text-sm text-gray-500">
+                    <p className="mt-2 text-sm text-muted-foreground">
                       This model only supports {selectedModel.defaultEngine} engine.
                     </p>
                   )}
@@ -396,7 +396,7 @@ export default function NewDeploymentPage() {
 
                 {/* Simplified GPU tier selector */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700">
+                  <label className="block text-sm font-medium text-foreground">
                     Performance Tier
                   </label>
                   <div className="mt-2 grid gap-3 sm:grid-cols-2">
@@ -406,8 +406,8 @@ export default function NewDeploymentPage() {
                         className={cn(
                           "cursor-pointer rounded-lg border-2 p-4 transition-all",
                           selectedSimplifiedTier === tier.id
-                            ? "border-primary-500 bg-primary-50"
-                            : "border-gray-200 hover:border-gray-300"
+                            ? "border-primary-500 bg-primary/10"
+                            : "border-border hover:border-muted-foreground/40"
                         )}
                         onClick={() => handleSimplifiedTierChange(tier.id)}
                       >
@@ -420,7 +420,7 @@ export default function NewDeploymentPage() {
                               </Badge>
                             )}
                           </div>
-                          <span className="text-sm text-gray-500">
+                          <span className="text-sm text-muted-foreground">
                             {(() => {
                               const gpu = gpuTiers.find((g) =>
                                 g.id.includes(tier.gpuIdFragment)
@@ -439,7 +439,7 @@ export default function NewDeploymentPage() {
                   <button
                     type="button"
                     onClick={() => setShowAdvancedGpu(!showAdvancedGpu)}
-                    className="flex items-center gap-1 text-sm font-medium text-gray-500 hover:text-gray-700 transition-colors"
+                    className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
                   >
                     {showAdvancedGpu ? (
                       <ChevronDown className="h-4 w-4" />
@@ -450,8 +450,8 @@ export default function NewDeploymentPage() {
                   </button>
 
                   {showAdvancedGpu && (
-                    <div className="mt-3 rounded-lg border border-gray-200 p-4">
-                      <p className="mb-3 text-xs text-gray-500">
+                    <div className="mt-3 rounded-lg border border-border p-4">
+                      <p className="mb-3 text-xs text-muted-foreground">
                         Selecting a specific GPU overrides the simplified tier above.
                       </p>
                       <div className="grid gap-3 sm:grid-cols-2">
@@ -461,8 +461,8 @@ export default function NewDeploymentPage() {
                             className={cn(
                               "cursor-pointer rounded-lg border-2 p-4 transition-all",
                               selectedGpu?.id === gpu.id
-                                ? "border-primary-500 bg-primary-50"
-                                : "border-gray-200 hover:border-gray-300"
+                                ? "border-primary-500 bg-primary/10"
+                                : "border-border hover:border-muted-foreground/40"
                             )}
                             onClick={() => {
                               setSelectedGpu(gpu);
@@ -475,11 +475,11 @@ export default function NewDeploymentPage() {
                           >
                             <div className="flex items-center justify-between">
                               <span className="font-medium">{gpu.name}</span>
-                              <span className="text-sm text-gray-500">
+                              <span className="text-sm text-muted-foreground">
                                 {formatPrice(gpu.pricePerHour)}
                               </span>
                             </div>
-                            <div className="mt-1 text-sm text-gray-500">
+                            <div className="mt-1 text-sm text-muted-foreground">
                               {gpu.vram}GB VRAM
                             </div>
                           </div>
@@ -491,7 +491,7 @@ export default function NewDeploymentPage() {
 
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Replicas
                     </label>
                     <Select
@@ -508,7 +508,7 @@ export default function NewDeploymentPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700">
+                    <label className="block text-sm font-medium text-foreground">
                       Max Tokens
                     </label>
                     <Select
@@ -525,16 +525,16 @@ export default function NewDeploymentPage() {
                   </div>
                 </div>
 
-                <div className="rounded-lg bg-gray-50 p-4">
+                <div className="rounded-lg bg-muted p-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700">
+                    <span className="text-sm font-medium text-foreground">
                       Estimated Monthly Cost
                     </span>
-                    <span className="text-lg font-bold text-gray-900">
+                    <span className="text-lg font-bold text-foreground">
                       ${estimatedCost.toFixed(2)}/mo
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Based on 24/7 usage.
                     {selectedEngine === "ollama" && " Ollama offers ~5% lower overhead."}
                   </p>
@@ -569,17 +569,17 @@ export default function NewDeploymentPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                <div className="rounded-lg border border-gray-200 divide-y">
+                <div className="rounded-lg border border-border divide-y">
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">Model</span>
+                    <span className="text-muted-foreground">Model</span>
                     <span className="font-medium">{selectedModel.displayName}</span>
                   </div>
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">Deployment Name</span>
+                    <span className="text-muted-foreground">Deployment Name</span>
                     <span className="font-medium">{name}</span>
                   </div>
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">Inference Engine</span>
+                    <span className="text-muted-foreground">Inference Engine</span>
                     <div className="flex items-center gap-2">
                       <span className="font-medium">
                         {selectedEngine === "vllm" ? "vLLM" : "Ollama"}
@@ -590,29 +590,29 @@ export default function NewDeploymentPage() {
                     </div>
                   </div>
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">GPU</span>
+                    <span className="text-muted-foreground">GPU</span>
                     <span className="font-medium">
                       {selectedGpu.name}
-                      <span className="ml-2 text-sm font-normal text-gray-500">
+                      <span className="ml-2 text-sm font-normal text-muted-foreground">
                         via Nosana
                       </span>
                     </span>
                   </div>
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">Replicas</span>
+                    <span className="text-muted-foreground">Replicas</span>
                     <span className="font-medium">{replicas}</span>
                   </div>
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">Max Tokens</span>
+                    <span className="text-muted-foreground">Max Tokens</span>
                     <span className="font-medium">{maxTokens.toLocaleString()}</span>
                   </div>
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-gray-600">Estimated Cost</span>
+                    <span className="text-muted-foreground">Estimated Cost</span>
                     <span className="font-medium">${estimatedCost.toFixed(2)}/mo</span>
                   </div>
                 </div>
 
-                <div className="rounded-lg bg-primary-50 p-4">
+                <div className="rounded-lg bg-primary/10 p-4">
                   <div className="flex items-start gap-3">
                     <Zap className="h-5 w-5 text-primary-600" />
                     <div>
@@ -621,7 +621,7 @@ export default function NewDeploymentPage() {
                         Runs as a Nosana GPU job. Once a host passes its
                         health check, your OpenAI-compatible endpoint goes
                         live at:{" "}
-                        <code className="rounded bg-primary-100 px-1">
+                        <code className="rounded bg-primary/15 px-1">
                           {API_BASE_URL}/v1/{name}
                         </code>
                       </p>

@@ -68,7 +68,7 @@ export function ReputationBadge({
     name: badge,
     description: "",
     icon: Badge,
-    color: "text-gray-500 bg-gray-500/10",
+    color: "text-muted-foreground bg-gray-500/10",
   };
   const Icon = config.icon;
 

@@ -8,11 +8,13 @@ import {
   TestRun,
   TestCase,
   Agent,
+  getErrorMessage,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
 
 // Icons
 function CheckCircleIcon({ className }: { className?: string }) {
@@ -212,8 +214,8 @@ export default function TestingPage() {
         totalTests: selectedSuite.totalTests + 1,
       });
       loadData();
-    } catch (error: any) {
-      alert(`Failed to add test case: ${error.message}`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to add test case"));
     } finally {
       setSavingCase(false);
     }
@@ -229,33 +231,33 @@ export default function TestingPage() {
         totalTests: Math.max(0, selectedSuite.totalTests - 1),
       });
       loadData();
-    } catch (error: any) {
-      alert(`Failed to delete test case: ${error.message}`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to delete test case"));
     }
   }
 
   async function runSuite(suiteId: string) {
     try {
       const res = await testingApi.runSuite(suiteId);
-      alert(`Test run started! ID: ${res.data.id}`);
+      toast.success(`Test run started! ID: ${res.data.id}`);
       loadData();
-    } catch (error: any) {
-      alert(`Failed to run tests: ${error.message}`);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to run tests"));
     }
   }
 
   function getStatusColor(status: string | null) {
     switch (status) {
       case "passed":
-        return "text-green-600 bg-green-100";
+        return "text-green-600 bg-green-500/10";
       case "failed":
-        return "text-red-600 bg-red-100";
+        return "text-red-600 bg-red-500/10";
       case "partial":
-        return "text-yellow-600 bg-yellow-100";
+        return "text-yellow-600 bg-yellow-500/10";
       case "running":
-        return "text-blue-600 bg-blue-100";
+        return "text-blue-600 bg-blue-500/10";
       default:
-        return "text-gray-600 bg-gray-100";
+        return "text-muted-foreground bg-muted";
     }
   }
 
@@ -268,7 +270,7 @@ export default function TestingPage() {
       case "running":
         return "text-blue-600";
       case "cancelled":
-        return "text-gray-600";
+        return "text-muted-foreground";
       default:
         return "text-yellow-600";
     }
@@ -437,10 +439,10 @@ export default function TestingPage() {
                     <div
                       className={`w-12 h-12 rounded-full flex items-center justify-center ${
                         run.passRate >= 80
-                          ? "bg-green-100 text-green-700"
+                          ? "bg-green-500/10 text-green-500"
                           : run.passRate >= 50
-                          ? "bg-yellow-100 text-yellow-700"
-                          : "bg-red-100 text-red-700"
+                          ? "bg-yellow-500/10 text-yellow-500"
+                          : "bg-red-500/10 text-red-500"
                       }`}
                     >
                       <span className="text-sm font-bold">

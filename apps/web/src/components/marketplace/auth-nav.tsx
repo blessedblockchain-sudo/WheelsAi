@@ -30,7 +30,7 @@ export function MarketplaceAuthNav() {
     <div className="flex items-center gap-4">
       <Link
         href="/login"
-        className="text-sm font-medium text-gray-600 hover:text-gray-900"
+        className="text-sm font-medium text-muted-foreground hover:text-foreground"
       >
         Sign in
       </Link>

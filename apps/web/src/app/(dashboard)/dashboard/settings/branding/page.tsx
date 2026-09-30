@@ -8,7 +8,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { settingsApi } from "@/lib/api";
+import { settingsApi, getErrorMessage } from "@/lib/api";
 import { useBranding } from "@/components/providers/branding-provider";
 
 interface BrandingForm {
@@ -58,7 +58,7 @@ export default function BrandingSettingsPage() {
       await refresh();
       toast.success("Branding updated");
     } catch (err: any) {
-      toast.error(err.message || "Failed to update branding");
+      toast.error(getErrorMessage(err, "Failed to update branding"));
     } finally {
       setIsSaving(false);
     }
@@ -81,7 +81,7 @@ export default function BrandingSettingsPage() {
           </CardHeader>
           <CardContent className="space-y-6">
             <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              <label className="text-sm font-medium text-foreground">
                 App Name
               </label>
               <Input
@@ -93,7 +93,7 @@ export default function BrandingSettingsPage() {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              <label className="text-sm font-medium text-foreground">
                 Logo URL
               </label>
               <Input
@@ -105,7 +105,7 @@ export default function BrandingSettingsPage() {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              <label className="text-sm font-medium text-foreground">
                 Favicon URL
               </label>
               <Input
@@ -118,7 +118,7 @@ export default function BrandingSettingsPage() {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                <label className="text-sm font-medium text-foreground">
                   Primary Color
                 </label>
                 <div className="mt-1 flex gap-2">
@@ -137,7 +137,7 @@ export default function BrandingSettingsPage() {
               </div>
 
               <div>
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                <label className="text-sm font-medium text-foreground">
                   Accent Color
                 </label>
                 <div className="mt-1 flex gap-2">
@@ -157,7 +157,7 @@ export default function BrandingSettingsPage() {
             </div>
 
             <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              <label className="text-sm font-medium text-foreground">
                 Support Email
               </label>
               <Input

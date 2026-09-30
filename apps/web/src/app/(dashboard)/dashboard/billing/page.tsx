@@ -32,6 +32,7 @@ import {
   type X402MetricsHistoryPoint,
   type X402MetricsResponse,
   type CreditPackage,
+  getErrorMessage,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -79,7 +80,7 @@ export default function BillingPage() {
       setX402Metrics(x402MetricsData);
       setX402History(x402HistoryData?.history ?? []);
     } catch (error) {
-      toast.error("Failed to load billing data");
+      toast.error(getErrorMessage(error, "Failed to load billing data"));
     } finally {
       setIsLoading(false);
     }
@@ -121,7 +122,7 @@ export default function BillingPage() {
           "Card payments are coming soon — every new account starts with $5 in free credits."
         );
       } else {
-        toast.error("Failed to create checkout session");
+        toast.error(getErrorMessage(error, "Failed to create checkout session"));
       }
       setIsPurchasing(null);
     }
@@ -199,8 +200,7 @@ export default function BillingPage() {
         );
       }
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Wallet payment failed";
+      const message = getErrorMessage(error, "Wallet payment failed");
       // Wallet-adapter user rejections read like "User rejected the request".
       if (/reject/i.test(message)) {
         toast.info("Transaction canceled in wallet");
@@ -236,7 +236,7 @@ export default function BillingPage() {
         <div className="p-8">
           <div className="grid gap-6 md:grid-cols-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-32 animate-pulse rounded-lg bg-gray-200" />
+              <div key={i} className="h-32 animate-pulse rounded-lg bg-muted" />
             ))}
           </div>
         </div>
@@ -257,12 +257,12 @@ export default function BillingPage() {
           <Card>
             <CardContent className="py-6">
               <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-500/10">
                   <DollarSign className="h-6 w-6 text-green-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">Available Credits</p>
-                  <p className="text-3xl font-bold text-gray-900">
+                  <p className="text-sm text-muted-foreground">Available Credits</p>
+                  <p className="text-3xl font-bold text-foreground">
                     {formatCurrency(balance?.available || 0)}
                   </p>
                 </div>
@@ -273,12 +273,12 @@ export default function BillingPage() {
           <Card>
             <CardContent className="py-6">
               <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-100">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-500/10">
                   <TrendingUp className="h-6 w-6 text-blue-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">This Month's Usage</p>
-                  <p className="text-3xl font-bold text-gray-900">
+                  <p className="text-sm text-muted-foreground">This Month's Usage</p>
+                  <p className="text-3xl font-bold text-foreground">
                     {formatCurrency(usage?.currentMonth || 0)}
                   </p>
                 </div>
@@ -289,12 +289,12 @@ export default function BillingPage() {
           <Card>
             <CardContent className="py-6">
               <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-100">
+                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-500/10">
                   <Zap className="h-6 w-6 text-purple-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-gray-500">GPU Hours Used</p>
-                  <p className="text-3xl font-bold text-gray-900">
+                  <p className="text-sm text-muted-foreground">GPU Hours Used</p>
+                  <p className="text-3xl font-bold text-foreground">
                     {(usage?.gpuHours || 0).toFixed(1)}h
                   </p>
                 </div>
@@ -319,8 +319,8 @@ export default function BillingPage() {
                   className={cn(
                     "relative rounded-lg border-2 p-6 text-center transition-all",
                     pkg.popular
-                      ? "border-primary-500 bg-primary-50"
-                      : "border-gray-200 hover:border-gray-300"
+                      ? "border-primary-500 bg-primary/10"
+                      : "border-border hover:border-muted-foreground/40"
                   )}
                 >
                   {pkg.popular && (
@@ -328,7 +328,7 @@ export default function BillingPage() {
                       Most Popular
                     </Badge>
                   )}
-                  <p className="text-3xl font-bold text-gray-900">
+                  <p className="text-3xl font-bold text-foreground">
                     ${pkg.amount}
                   </p>
                   {pkg.bonus > 0 && (
@@ -336,7 +336,7 @@ export default function BillingPage() {
                       +${pkg.bonus} bonus
                     </p>
                   )}
-                  <p className="mt-2 text-sm text-gray-500">
+                  <p className="mt-2 text-sm text-muted-foreground">
                     {formatCurrency(pkg.amount + pkg.bonus)} total
                   </p>
                   <Button
@@ -362,7 +362,7 @@ export default function BillingPage() {
               ))}
             </div>
 
-            <p className="mt-4 text-center text-sm text-gray-500">
+            <p className="mt-4 text-center text-sm text-muted-foreground">
               {rails?.wallet && rails.walletAssets.length > 0 ? (
                 <>
                   Wallet payments ({rails.walletAssets.join("/")}
@@ -391,7 +391,7 @@ export default function BillingPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">Compute (GPU Hours)</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-muted-foreground">
                       {usage.gpuHours.toFixed(2)} hours @ avg ${usage.avgCostPerHour.toFixed(2)}/hr
                     </p>
                   </div>
@@ -403,7 +403,7 @@ export default function BillingPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">Inference Requests</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-muted-foreground">
                       {usage.requests.toLocaleString()} requests
                     </p>
                   </div>
@@ -415,7 +415,7 @@ export default function BillingPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">Token Usage</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-muted-foreground">
                       {usage.inputTokens.toLocaleString()} input / {usage.outputTokens.toLocaleString()} output
                     </p>
                   </div>
@@ -449,10 +449,10 @@ export default function BillingPage() {
             <CardContent>
               <div className="mb-6 grid gap-4 md:grid-cols-4">
                 <div className="rounded-lg border p-4">
-                  <p className="text-sm text-gray-500">Worker Status</p>
+                  <p className="text-sm text-muted-foreground">Worker Status</p>
                   <div className="mt-2 flex items-center gap-2">
                     <Activity className="h-4 w-4 text-blue-600" />
-                    <p className="font-semibold text-gray-900">
+                    <p className="font-semibold text-foreground">
                       {x402Metrics.worker.enabled
                         ? x402Metrics.worker.running
                           ? "Running"
@@ -460,7 +460,7 @@ export default function BillingPage() {
                         : "Disabled"}
                     </p>
                   </div>
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Last tick:{" "}
                     {x402Metrics.worker.lastTickAt
                       ? new Date(x402Metrics.worker.lastTickAt).toLocaleTimeString()
@@ -469,31 +469,31 @@ export default function BillingPage() {
                 </div>
 
                 <div className="rounded-lg border p-4">
-                  <p className="text-sm text-gray-500">Pending Payments</p>
-                  <p className="mt-2 text-2xl font-semibold text-gray-900">
+                  <p className="text-sm text-muted-foreground">Pending Payments</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">
                     {x402Metrics.payments.pending.toLocaleString()}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Threshold: {x402Metrics.thresholds.maxPending}
                   </p>
                 </div>
 
                 <div className="rounded-lg border p-4">
-                  <p className="text-sm text-gray-500">Failure Rate</p>
-                  <p className="mt-2 text-2xl font-semibold text-gray-900">
+                  <p className="text-sm text-muted-foreground">Failure Rate</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">
                     {x402Metrics.payments.failureRatePercent.toFixed(1)}%
                   </p>
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Threshold: {x402Metrics.thresholds.maxFailureRatePercent.toFixed(1)}%
                   </p>
                 </div>
 
                 <div className="rounded-lg border p-4">
-                  <p className="text-sm text-gray-500">Open Alerts</p>
-                  <p className="mt-2 text-2xl font-semibold text-gray-900">
+                  <p className="text-sm text-muted-foreground">Open Alerts</p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">
                     {x402Metrics.alerts.length}
                   </p>
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Retries pending: {x402Metrics.payments.retriable}
                   </p>
                 </div>
@@ -501,9 +501,9 @@ export default function BillingPage() {
 
               <div className="grid gap-6 lg:grid-cols-2">
                 <div className="rounded-lg border p-4">
-                  <p className="mb-3 text-sm font-medium text-gray-900">Active Alerts</p>
+                  <p className="mb-3 text-sm font-medium text-foreground">Active Alerts</p>
                   {x402Metrics.alerts.length === 0 ? (
-                    <div className="flex items-center gap-2 text-sm text-green-700">
+                    <div className="flex items-center gap-2 text-sm text-green-500">
                       <CheckCircle2 className="h-4 w-4" />
                       No active threshold breaches
                     </div>
@@ -515,8 +515,8 @@ export default function BillingPage() {
                           className={cn(
                             "rounded-md border p-3 text-sm",
                             alert.severity === "critical"
-                              ? "border-red-300 bg-red-50"
-                              : "border-amber-300 bg-amber-50"
+                              ? "border-red-500/30 bg-red-500/10"
+                              : "border-amber-500/30 bg-amber-500/10"
                           )}
                         >
                           <div className="flex items-center justify-between gap-2">
@@ -528,7 +528,7 @@ export default function BillingPage() {
                               {alert.severity}
                             </Badge>
                           </div>
-                          <p className="mt-1 text-xs text-gray-600">
+                          <p className="mt-1 text-xs text-muted-foreground">
                             Value {alert.value} vs threshold {alert.threshold}
                           </p>
                         </div>
@@ -538,15 +538,15 @@ export default function BillingPage() {
                 </div>
 
                 <div className="rounded-lg border p-4">
-                  <p className="mb-3 text-sm font-medium text-gray-900">24h Trend</p>
+                  <p className="mb-3 text-sm font-medium text-foreground">24h Trend</p>
                   {x402Trend.length === 0 ? (
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-muted-foreground">
                       No metrics history yet. Enable the settlement worker to collect snapshots.
                     </p>
                   ) : (
                     <div className="space-y-4">
                       <div>
-                        <p className="mb-2 text-xs text-gray-500">Pending Payments</p>
+                        <p className="mb-2 text-xs text-muted-foreground">Pending Payments</p>
                         <div className="flex h-20 items-end gap-1">
                           {x402Trend.map((point) => (
                             <div
@@ -564,7 +564,7 @@ export default function BillingPage() {
                         </div>
                       </div>
                       <div>
-                        <p className="mb-2 text-xs text-gray-500">Failure Rate (%)</p>
+                        <p className="mb-2 text-xs text-muted-foreground">Failure Rate (%)</p>
                         <div className="flex h-16 items-end gap-1">
                           {x402Trend.map((point) => (
                             <div
@@ -607,7 +607,7 @@ export default function BillingPage() {
             {transactions.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12">
                 <CreditCard className="h-12 w-12 text-gray-300" />
-                <p className="mt-4 text-gray-500">No transactions yet</p>
+                <p className="mt-4 text-muted-foreground">No transactions yet</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -621,8 +621,8 @@ export default function BillingPage() {
                         className={cn(
                           "flex h-10 w-10 items-center justify-center rounded-lg",
                           tx.type === "purchase" || tx.type === "bonus"
-                            ? "bg-green-100"
-                            : "bg-red-100"
+                            ? "bg-green-500/10"
+                            : "bg-red-500/10"
                         )}
                       >
                         {tx.type === "purchase" || tx.type === "bonus" ? (
@@ -633,7 +633,7 @@ export default function BillingPage() {
                       </div>
                       <div>
                         <p className="font-medium capitalize">{tx.type}</p>
-                        <p className="text-sm text-gray-500">{tx.description}</p>
+                        <p className="text-sm text-muted-foreground">{tx.description}</p>
                       </div>
                     </div>
 
@@ -649,7 +649,7 @@ export default function BillingPage() {
                         {tx.type === "purchase" || tx.type === "bonus" ? "+" : "-"}
                         {formatCurrency(Math.abs(tx.amount))}
                       </p>
-                      <p className="text-sm text-gray-500">
+                      <p className="text-sm text-muted-foreground">
                         {new Date(tx.createdAt).toLocaleDateString()}
                       </p>
                     </div>

@@ -157,13 +157,13 @@ export function Sidebar() {
     (href !== "/dashboard" && pathname.startsWith(href + "/"));
 
   return (
-    <div className="flex h-full w-64 flex-col border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+    <div className="flex h-full w-64 flex-col border-r border-border bg-card">
       {/* Logo */}
-      <div className="flex h-16 items-center gap-2 border-b border-gray-200 dark:border-gray-700 px-6">
+      <div className="flex h-16 items-center gap-2 border-b border-border px-6">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-600">
           <Cpu className="h-5 w-5 text-white" />
         </div>
-        <span className="text-xl font-bold text-gray-900 dark:text-gray-100">WheelsAI</span>
+        <span className="text-xl font-bold text-foreground">WheelsAI</span>
       </div>
 
       {/* Navigation */}
@@ -174,8 +174,8 @@ export function Sidebar() {
           className={cn(
             "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
             isItemActive(overviewItem.href)
-              ? "bg-primary-50 text-primary-700 dark:bg-blue-900/30 dark:text-blue-400"
-              : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+              ? "bg-primary/10 text-primary"
+              : "text-foreground hover:bg-muted"
           )}
         >
           <overviewItem.icon className="h-5 w-5" />
@@ -192,12 +192,12 @@ export function Sidebar() {
                 onClick={() => toggleGroup(group.label)}
                 className="flex w-full items-center justify-between px-3 py-1"
               >
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   {group.label}
                 </span>
                 <ChevronDown
                   className={cn(
-                    "h-3 w-3 text-gray-400 dark:text-gray-500 transition-transform",
+                    "h-3 w-3 text-muted-foreground transition-transform",
                     isCollapsed && "-rotate-90"
                   )}
                 />
@@ -211,8 +211,8 @@ export function Sidebar() {
                       className={cn(
                         "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                         isItemActive(item.href)
-                          ? "bg-primary-50 text-primary-700 dark:bg-blue-900/30 dark:text-blue-400"
-                          : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                          ? "bg-primary/10 text-primary"
+                          : "text-foreground hover:bg-muted"
                       )}
                     >
                       <item.icon className="h-5 w-5" />
@@ -227,11 +227,11 @@ export function Sidebar() {
       </nav>
 
       {/* Wallet + User section */}
-      <div className="border-t border-gray-200 dark:border-gray-700 p-4 space-y-1">
+      <div className="border-t border-border p-4 space-y-1">
         <WalletButton />
         <button
           onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
         >
           {resolvedTheme === "dark" ? (
             <Sun className="h-5 w-5" />
@@ -242,7 +242,7 @@ export function Sidebar() {
         </button>
         <button
           onClick={handleSignOut}
-          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
         >
           <LogOut className="h-5 w-5" />
           Sign out

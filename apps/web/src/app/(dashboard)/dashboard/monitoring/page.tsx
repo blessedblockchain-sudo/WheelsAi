@@ -29,20 +29,22 @@ import {
   type UptimeMonitor,
   type AlertStats,
   type UptimeSummary,
+  getErrorMessage,
 } from "@/lib/api";
+import { toast } from "sonner";
 
 type Tab = "overview" | "alerts" | "rules" | "channels" | "uptime";
 
 const severityColors = {
-  info: "bg-blue-100 text-blue-700",
-  warning: "bg-yellow-100 text-yellow-700",
-  critical: "bg-red-100 text-red-700",
+  info: "bg-blue-500/10 text-blue-500",
+  warning: "bg-yellow-500/10 text-yellow-500",
+  critical: "bg-red-500/10 text-red-500",
 };
 
 const statusColors = {
-  active: "bg-red-100 text-red-700",
-  acknowledged: "bg-yellow-100 text-yellow-700",
-  resolved: "bg-green-100 text-green-700",
+  active: "bg-red-500/10 text-red-500",
+  acknowledged: "bg-yellow-500/10 text-yellow-500",
+  resolved: "bg-green-500/10 text-green-500",
 };
 
 const channelIcons = {
@@ -139,9 +141,9 @@ export default function MonitoringPage() {
   async function handleTestChannel(channelId: string) {
     try {
       await monitoringApi.testChannel(channelId);
-      alert("Test notification sent!");
-    } catch (error: any) {
-      alert(`Failed to send test: ${error.message}`);
+      toast.success("Test notification sent!");
+    } catch (error) {
+      toast.error(`Failed to send test: ${getErrorMessage(error)}`);
     }
   }
 
@@ -206,7 +208,7 @@ export default function MonitoringPage() {
           <div className="grid grid-cols-4 gap-4">
             <div className="bg-card border rounded-lg p-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-red-100 rounded-lg">
+                <div className="p-2 bg-red-500/10 rounded-lg">
                   <AlertTriangle className="h-5 w-5 text-red-600" />
                 </div>
                 <div>
@@ -220,7 +222,7 @@ export default function MonitoringPage() {
 
             <div className="bg-card border rounded-lg p-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-green-100 rounded-lg">
+                <div className="p-2 bg-green-500/10 rounded-lg">
                   <CheckCircle className="h-5 w-5 text-green-600" />
                 </div>
                 <div>
@@ -234,7 +236,7 @@ export default function MonitoringPage() {
 
             <div className="bg-card border rounded-lg p-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-100 rounded-lg">
+                <div className="p-2 bg-blue-500/10 rounded-lg">
                   <Activity className="h-5 w-5 text-blue-600" />
                 </div>
                 <div>
@@ -248,7 +250,7 @@ export default function MonitoringPage() {
 
             <div className="bg-card border rounded-lg p-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-purple-100 rounded-lg">
+                <div className="p-2 bg-purple-500/10 rounded-lg">
                   <Bell className="h-5 w-5 text-purple-600" />
                 </div>
                 <div>
@@ -464,7 +466,7 @@ export default function MonitoringPage() {
                     <button
                       onClick={() => handleToggleRule(rule.id, !rule.isEnabled)}
                       className={`p-2 rounded-lg transition-colors ${
-                        rule.isEnabled ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-400"
+                        rule.isEnabled ? "bg-green-500/10 text-green-600" : "bg-muted text-gray-400"
                       }`}
                     >
                       {rule.isEnabled ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
@@ -534,7 +536,7 @@ export default function MonitoringPage() {
                     <div className="flex items-center gap-4">
                       <div
                         className={`p-2 rounded-lg ${
-                          channel.isEnabled ? "bg-primary/10" : "bg-gray-100"
+                          channel.isEnabled ? "bg-primary/10" : "bg-muted"
                         }`}
                       >
                         <Icon

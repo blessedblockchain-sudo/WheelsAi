@@ -26,7 +26,9 @@ import {
   orchestrationApi,
   type Orchestration,
   type OrchestrationExecution,
+  getErrorMessage,
 } from "@/lib/api";
+import { toast } from "sonner";
 
 // ---------------------------------------------------------------------------
 // Execution mode badge config
@@ -195,10 +197,10 @@ export default function OrchestrationsPage() {
       }
     } catch (error) {
       console.error("Failed to execute orchestration:", error);
-      alert(
+      toast.error(
         error instanceof SyntaxError
           ? "Invalid JSON input."
-          : (error as Error).message
+          : getErrorMessage(error, "Failed to execute orchestration")
       );
     } finally {
       setExecuting(false);
@@ -231,12 +233,12 @@ export default function OrchestrationsPage() {
   if (loading) {
     return (
       <div className="p-6 space-y-6">
-        <div className="h-8 w-64 bg-matrix-surface animate-pulse rounded" />
+        <div className="h-8 w-64 bg-card animate-pulse rounded" />
         <div className="grid grid-cols-3 gap-4">
           {[...Array(3)].map((_, i) => (
             <div
               key={i}
-              className="h-24 bg-matrix-surface border border-matrix-border rounded-lg animate-pulse"
+              className="h-24 bg-card border border-border rounded-lg animate-pulse"
             />
           ))}
         </div>
@@ -244,7 +246,7 @@ export default function OrchestrationsPage() {
           {[...Array(3)].map((_, i) => (
             <div
               key={i}
-              className="h-32 bg-matrix-surface border border-matrix-border rounded-lg animate-pulse"
+              className="h-32 bg-card border border-border rounded-lg animate-pulse"
             />
           ))}
         </div>
@@ -256,11 +258,11 @@ export default function OrchestrationsPage() {
   // Render
   // ---------------------------------------------------------------------------
   return (
-    <div className="p-6 space-y-6 min-h-screen bg-matrix-dark">
+    <div className="p-6 space-y-6 min-h-screen bg-background">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-matrix-green flex items-center gap-3">
+          <h1 className="text-2xl font-bold text-primary flex items-center gap-3">
             <Network className="h-7 w-7" />
             Multi-Agent Orchestration
           </h1>
@@ -271,11 +273,11 @@ export default function OrchestrationsPage() {
         </div>
         <button
           onClick={() =>
-            alert(
+            toast.info(
               "Create orchestration form would open here. Use the API to create orchestrations."
             )
           }
-          className="flex items-center gap-2 px-4 py-2 bg-matrix-green/20 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/30 transition-colors font-medium"
+          className="flex items-center gap-2 px-4 py-2 bg-primary/20 text-primary border border-primary/30 rounded-lg hover:bg-primary/30 transition-colors font-medium"
         >
           <Plus className="h-4 w-4" />
           New Orchestration
@@ -307,21 +309,21 @@ export default function OrchestrationsPage() {
 
       {/* Orchestration Cards */}
       {orchestrations.length === 0 ? (
-        <div className="bg-matrix-surface border border-matrix-border rounded-lg p-12 text-center">
-          <Network className="h-16 w-16 text-gray-600 mx-auto mb-4" />
+        <div className="bg-card border border-border rounded-lg p-12 text-center">
+          <Network className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-300 mb-2">
             No orchestrations yet
           </h3>
-          <p className="text-gray-500 mb-6">
+          <p className="text-muted-foreground mb-6">
             Create your first multi-agent orchestration to coordinate workflows
           </p>
           <button
             onClick={() =>
-              alert(
+              toast.info(
                 "Create orchestration form would open here. Use the API to create orchestrations."
               )
             }
-            className="inline-flex items-center gap-2 px-4 py-2 bg-matrix-green/20 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/30 transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary/20 text-primary border border-primary/30 rounded-lg hover:bg-primary/30 transition-colors"
           >
             <Plus className="h-4 w-4" />
             New Orchestration
@@ -351,14 +353,14 @@ export default function OrchestrationsPage() {
       {/* Execute Modal */}
       {executeModalId && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-matrix-surface border border-matrix-border rounded-lg p-6 w-full max-w-md">
+          <div className="bg-card border border-border rounded-lg p-6 w-full max-w-md">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-matrix-green">
+              <h2 className="text-lg font-semibold text-primary">
                 Execute Orchestration
               </h2>
               <button
                 onClick={() => setExecuteModalId(null)}
-                className="p-1 text-gray-400 hover:text-gray-200 hover:bg-matrix-border rounded"
+                className="p-1 text-gray-400 hover:text-gray-200 hover:bg-border rounded"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -374,21 +376,21 @@ export default function OrchestrationsPage() {
                   onChange={(e) => setExecuteInput(e.target.value)}
                   placeholder='{"key": "value"}'
                   rows={6}
-                  className="w-full px-3 py-2 bg-matrix-dark border border-matrix-border rounded-lg text-gray-200 font-mono text-sm placeholder-gray-600 focus:outline-none focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+                  className="w-full px-3 py-2 bg-background border border-input rounded-lg text-foreground font-mono text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
                 />
               </div>
 
               <div className="flex gap-3">
                 <button
                   onClick={() => setExecuteModalId(null)}
-                  className="flex-1 px-4 py-2 border border-matrix-border text-gray-400 rounded-lg hover:bg-matrix-border/50 transition-colors"
+                  className="flex-1 px-4 py-2 border border-border text-gray-400 rounded-lg hover:bg-border/50 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleExecute}
                   disabled={executing}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-matrix-green/20 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/30 disabled:opacity-50 transition-colors"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-primary/20 text-primary border border-primary/30 rounded-lg hover:bg-primary/30 disabled:opacity-50 transition-colors"
                 >
                   {executing ? (
                     <>
@@ -426,15 +428,15 @@ function StatCard({
   accent?: "green" | "cyan" | "purple";
 }) {
   const accentStyles = {
-    green: "text-matrix-green bg-matrix-green/10 border-matrix-green/20",
-    cyan: "text-matrix-cyan bg-matrix-cyan/10 border-matrix-cyan/20",
-    purple: "text-matrix-purple bg-matrix-purple/10 border-matrix-purple/20",
+    green: "text-primary bg-primary/10 border-primary/20",
+    cyan: "text-cyan-400 bg-cyan-500/10 border-cyan-500/20",
+    purple: "text-purple-400 bg-purple-500/10 border-purple-500/20",
   };
 
   const iconAccent = accent ? accentStyles[accent] : "text-gray-400 bg-gray-500/10 border-gray-500/20";
 
   return (
-    <div className="bg-matrix-surface border border-matrix-border rounded-lg p-4">
+    <div className="bg-card border border-border rounded-lg p-4">
       <div className="flex items-center gap-3">
         <div className={`p-2.5 rounded-lg border ${iconAccent}`}>
           <Icon className="h-5 w-5" />
@@ -483,7 +485,7 @@ function OrchestrationCard({
       : null;
 
   return (
-    <div className="bg-matrix-surface border border-matrix-border rounded-lg overflow-hidden hover:border-matrix-green/30 transition-colors">
+    <div className="bg-card border border-border rounded-lg overflow-hidden hover:border-primary/30 transition-colors">
       {/* Card Header */}
       <div className="p-5">
         <div className="flex items-start justify-between">
@@ -492,7 +494,7 @@ function OrchestrationCard({
             <div className="flex items-center gap-3 mb-1">
               <button
                 onClick={onToggleExpand}
-                className="text-lg font-semibold text-gray-100 hover:text-matrix-green transition-colors truncate"
+                className="text-lg font-semibold text-gray-100 hover:text-primary transition-colors truncate"
               >
                 {orchestration.name}
               </button>
@@ -507,7 +509,7 @@ function OrchestrationCard({
 
               {/* Enabled/Disabled */}
               {!orchestration.isEnabled && (
-                <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-500/20 text-gray-500 border border-gray-500/30">
+                <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-500/20 text-muted-foreground border border-gray-500/30">
                   disabled
                 </span>
               )}
@@ -543,7 +545,7 @@ function OrchestrationCard({
               </span>
 
               {successRate !== null && (
-                <span className="text-gray-500">({successRate}%)</span>
+                <span className="text-muted-foreground">({successRate}%)</span>
               )}
 
               <span className="flex items-center gap-1.5 text-gray-400">
@@ -551,7 +553,7 @@ function OrchestrationCard({
                 {formatDuration(orchestration.avgDurationMs)}
               </span>
 
-              <span className="flex items-center gap-1.5 text-gray-500">
+              <span className="flex items-center gap-1.5 text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />
                 {formatRelativeTime(orchestration.lastRunAt)}
               </span>
@@ -563,7 +565,7 @@ function OrchestrationCard({
             <button
               onClick={onExecute}
               disabled={!orchestration.isEnabled}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-matrix-green/20 text-matrix-green border border-matrix-green/30 rounded-lg hover:bg-matrix-green/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary/20 text-primary border border-primary/30 rounded-lg hover:bg-primary/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               title="Execute"
             >
               <Play className="h-3.5 w-3.5" />
@@ -575,7 +577,7 @@ function OrchestrationCard({
               className={`p-2 rounded-lg transition-colors ${
                 orchestration.isEnabled
                   ? "text-green-400 hover:bg-green-500/10"
-                  : "text-gray-500 hover:bg-gray-500/10"
+                  : "text-muted-foreground hover:bg-gray-500/10"
               }`}
               title={orchestration.isEnabled ? "Disable" : "Enable"}
             >
@@ -588,7 +590,7 @@ function OrchestrationCard({
 
             <button
               onClick={onDelete}
-              className="p-2 text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
+              className="p-2 text-muted-foreground hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
               title="Delete"
             >
               <Trash2 className="h-4 w-4" />
@@ -596,7 +598,7 @@ function OrchestrationCard({
 
             <button
               onClick={onToggleExpand}
-              className="p-2 text-gray-500 hover:text-gray-300 hover:bg-matrix-border rounded-lg transition-colors"
+              className="p-2 text-muted-foreground hover:text-gray-300 hover:bg-border rounded-lg transition-colors"
               title={isExpanded ? "Collapse" : "Show executions"}
             >
               {isExpanded ? (
@@ -611,20 +613,20 @@ function OrchestrationCard({
 
       {/* Expanded: Recent Executions */}
       {isExpanded && (
-        <div className="border-t border-matrix-border bg-matrix-dark/50 px-5 py-4">
+        <div className="border-t border-border bg-background/50 px-5 py-4">
           <h4 className="text-sm font-medium text-gray-300 mb-3">
             Recent Executions
           </h4>
 
           {loadingExecutions ? (
             <div className="flex items-center justify-center py-6">
-              <Loader2 className="h-5 w-5 animate-spin text-matrix-green" />
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
               <span className="ml-2 text-sm text-gray-400">
                 Loading executions...
               </span>
             </div>
           ) : executions.length === 0 ? (
-            <div className="text-center py-6 text-gray-500 text-sm">
+            <div className="text-center py-6 text-muted-foreground text-sm">
               No executions yet. Click Execute to run this orchestration.
             </div>
           ) : (
@@ -657,7 +659,7 @@ function ExecutionRow({ execution }: { execution: OrchestrationExecution }) {
             : Clock;
 
   return (
-    <div className="flex items-center gap-4 p-3 bg-matrix-surface/50 border border-matrix-border/50 rounded-lg">
+    <div className="flex items-center gap-4 p-3 bg-card/50 border border-border/50 rounded-lg">
       {/* Status Icon */}
       <div className={`p-1.5 rounded ${sc.bgColor}`}>
         <StatusIcon
@@ -675,7 +677,7 @@ function ExecutionRow({ execution }: { execution: OrchestrationExecution }) {
             {execution.status}
           </span>
         </div>
-        <div className="w-full h-1.5 bg-matrix-dark rounded-full overflow-hidden">
+        <div className="w-full h-1.5 bg-background rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-500 ${sc.barColor} ${
               sc.pulse ? "animate-pulse" : ""
@@ -686,7 +688,7 @@ function ExecutionRow({ execution }: { execution: OrchestrationExecution }) {
       </div>
 
       {/* Meta */}
-      <div className="flex items-center gap-4 text-xs text-gray-500 shrink-0">
+      <div className="flex items-center gap-4 text-xs text-muted-foreground shrink-0">
         <span>{execution.progress}%</span>
         <span>{formatDuration(execution.durationMs)}</span>
         <span>{formatRelativeTime(execution.startedAt || execution.createdAt)}</span>

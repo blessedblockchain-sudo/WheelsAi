@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import {
   ArrowRight,
@@ -19,6 +20,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -214,7 +216,7 @@ export function OpenClawWizard() {
       router.push(`/dashboard/openclaw/${data.deployment.id}`);
     } catch (error: any) {
       console.error("Error creating deployment:", error);
-      toast.error(error.message || "Failed to create deployment");
+      toast.error(getErrorMessage(error, "Failed to create deployment"));
     } finally {
       setDeploying(false);
     }
@@ -285,7 +287,7 @@ export function OpenClawWizard() {
                     ? "border-primary bg-primary text-primary-foreground"
                     : steps.findIndex((s) => s.id === currentStep) > index
                     ? "border-primary bg-primary text-primary-foreground"
-                    : "border-gray-300 bg-white text-gray-500"
+                    : "border-border bg-card text-muted-foreground"
                 )}
               >
                 {steps.findIndex((s) => s.id === currentStep) > index ? (
@@ -365,11 +367,11 @@ export function OpenClawWizard() {
 
             <div>
               <label className="block text-sm font-medium mb-2">System Prompt *</label>
-              <textarea
+              <Textarea
                 value={agentConfig.systemPrompt}
                 onChange={(e) => handleAgentConfigChange("systemPrompt", e.target.value)}
                 rows={6}
-                className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary font-mono text-sm"
+                className="font-mono"
                 placeholder="You are a helpful AI assistant that..."
               />
             </div>
@@ -465,7 +467,7 @@ export function OpenClawWizard() {
                       "border-2 rounded-lg p-4 cursor-pointer transition-all",
                       channel.enabled
                         ? "border-primary bg-primary/5"
-                        : "border-gray-200 hover:border-gray-300"
+                        : "border-border hover:border-muted-foreground/40"
                     )}
                     onClick={() => handleToggleChannel(platform.id)}
                   >
@@ -479,7 +481,7 @@ export function OpenClawWizard() {
                           "w-5 h-5 rounded border-2 flex items-center justify-center",
                           channel.enabled
                             ? "border-primary bg-primary"
-                            : "border-gray-300"
+                            : "border-border"
                         )}
                       >
                         {channel.enabled && <Check className="h-3 w-3 text-white" />}

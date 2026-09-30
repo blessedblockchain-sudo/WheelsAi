@@ -34,13 +34,13 @@ export function DeploymentsTab({ agent }: AgentTabProps) {
                   </Badge>
                   <div>
                     <p className="font-medium">{deployment.id.slice(0, 8)}...</p>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-muted-foreground">
                       {new Date(deployment.createdAt).toLocaleString()}
                     </p>
                   </div>
                 </div>
                 {deployment.endpoint && (
-                  <code className="rounded bg-gray-100 px-2 py-1 text-sm">
+                  <code className="rounded bg-muted px-2 py-1 text-sm">
                     {deployment.endpoint}
                   </code>
                 )}
@@ -48,7 +48,7 @@ export function DeploymentsTab({ agent }: AgentTabProps) {
             ))}
           </div>
         ) : (
-          <p className="text-center text-gray-500">No deployments yet</p>
+          <p className="text-center text-muted-foreground">No deployments yet</p>
         )}
       </CardContent>
     </Card>

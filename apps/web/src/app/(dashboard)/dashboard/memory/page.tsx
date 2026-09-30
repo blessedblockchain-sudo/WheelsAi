@@ -93,8 +93,8 @@ export default function MemoryPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Conversation Memory</h1>
-        <p className="text-gray-600 mt-1">
+        <h1 className="text-2xl font-bold text-foreground">Conversation Memory</h1>
+        <p className="text-muted-foreground mt-1">
           Manage conversation history and memory contexts for your agents
         </p>
       </div>
@@ -149,14 +149,14 @@ export default function MemoryPage() {
             placeholder="Search conversations..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            className="w-full pl-10 pr-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
           />
         </div>
 
         <select
           value={selectedAgent}
           onChange={(e) => setSelectedAgent(e.target.value)}
-          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+          className="px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
         >
           <option value="">All Agents</option>
           {agents.map((agent) => (
@@ -170,8 +170,8 @@ export default function MemoryPage() {
           onClick={() => setShowActiveOnly(!showActiveOnly)}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${
             showActiveOnly
-              ? "bg-primary-50 border-primary-300 text-primary-700"
-              : "border-gray-300 text-gray-700 hover:bg-gray-50"
+              ? "bg-primary/10 border-primary/40 text-primary-700"
+              : "border-border text-foreground hover:bg-muted"
           }`}
         >
           <Filter className="h-4 w-4" />
@@ -180,27 +180,27 @@ export default function MemoryPage() {
       </div>
 
       {/* Conversations List */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
+        <div className="px-6 py-4 border-b border-border">
           <h2 className="text-lg font-semibold">Conversations</h2>
         </div>
 
         {filteredConversations.length === 0 ? (
           <div className="p-12 text-center">
             <Brain className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">
+            <h3 className="text-lg font-medium text-foreground mb-2">
               No conversations found
             </h3>
-            <p className="text-gray-500">
+            <p className="text-muted-foreground">
               Conversations will appear here once your agents start chatting
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-gray-200">
+          <div className="divide-y divide-border">
             {filteredConversations.map((conversation) => (
               <div
                 key={conversation.id}
-                className="px-6 py-4 hover:bg-gray-50 transition-colors"
+                className="px-6 py-4 hover:bg-muted transition-colors"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex-1 min-w-0">
@@ -210,18 +210,18 @@ export default function MemoryPage() {
                           conversation.isActive ? "bg-green-500" : "bg-gray-300"
                         }`}
                       />
-                      <h3 className="font-medium text-gray-900 truncate">
+                      <h3 className="font-medium text-foreground truncate">
                         {conversation.title || `Conversation ${conversation.id.slice(0, 8)}`}
                       </h3>
                       {conversation.agent && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-50 text-primary-700 rounded text-xs">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary/10 text-primary-700 rounded text-xs">
                           <Bot className="h-3 w-3" />
                           {conversation.agent.name}
                         </span>
                       )}
                     </div>
 
-                    <div className="flex items-center gap-4 mt-1 text-sm text-gray-500">
+                    <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <MessageSquare className="h-3.5 w-3.5" />
                         {conversation.messageCount} messages
@@ -241,7 +241,7 @@ export default function MemoryPage() {
                     </div>
 
                     {conversation.summary && (
-                      <p className="mt-2 text-sm text-gray-600 line-clamp-2">
+                      <p className="mt-2 text-sm text-muted-foreground line-clamp-2">
                         {conversation.summary}
                       </p>
                     )}
@@ -252,14 +252,14 @@ export default function MemoryPage() {
                       onClick={() =>
                         router.push(`/dashboard/memory/${conversation.id}`)
                       }
-                      className="p-2 text-gray-500 hover:text-primary-600 hover:bg-primary-50 rounded-lg transition-colors"
+                      className="p-2 text-muted-foreground hover:text-primary-600 hover:bg-primary/10 rounded-lg transition-colors"
                       title="View conversation"
                     >
                       <Eye className="h-4 w-4" />
                     </button>
                     <button
                       onClick={() => deleteConversation(conversation.id)}
-                      className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      className="p-2 text-muted-foreground hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors"
                       title="Delete conversation"
                     >
                       <Trash2 className="h-4 w-4" />
@@ -288,23 +288,23 @@ function StatCard({
   color?: "gray" | "green" | "blue" | "yellow" | "purple" | "pink";
 }) {
   const colorClasses = {
-    gray: "bg-gray-100 text-gray-600",
-    green: "bg-green-100 text-green-600",
-    blue: "bg-blue-100 text-blue-600",
-    yellow: "bg-yellow-100 text-yellow-600",
-    purple: "bg-purple-100 text-purple-600",
-    pink: "bg-pink-100 text-pink-600",
+    gray: "bg-muted text-muted-foreground",
+    green: "bg-green-500/10 text-green-600",
+    blue: "bg-blue-500/10 text-blue-600",
+    yellow: "bg-yellow-500/10 text-yellow-600",
+    purple: "bg-purple-500/10 text-purple-600",
+    pink: "bg-pink-500/10 text-pink-600",
   };
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4">
+    <div className="bg-card rounded-xl border border-border p-4">
       <div className="flex items-center gap-3">
         <div className={`p-2 rounded-lg ${colorClasses[color]}`}>
           <Icon className="h-4 w-4" />
         </div>
         <div>
-          <p className="text-sm text-gray-500">{label}</p>
-          <p className="text-lg font-semibold text-gray-900">{value}</p>
+          <p className="text-sm text-muted-foreground">{label}</p>
+          <p className="text-lg font-semibold text-foreground">{value}</p>
         </div>
       </div>
     </div>

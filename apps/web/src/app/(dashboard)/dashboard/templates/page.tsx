@@ -20,7 +20,7 @@ import {
   Palette,
   HelpCircle,
 } from "lucide-react";
-import { templateApi, type AgentTemplate } from "@/lib/api";
+import { templateApi, type AgentTemplate, getErrorMessage } from "@/lib/api";
 import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ const CATEGORY_ICONS: Record<string, React.ElementType> = {
 };
 
 const FRAMEWORK_COLORS: Record<string, string> = {
-  mastra: "bg-matrix-green/10 text-matrix-green border-matrix-green/30",
+  mastra: "bg-primary/10 text-primary border-primary/30",
   langchain: "bg-yellow-500/10 text-yellow-400 border-yellow-500/30",
   autogen: "bg-sky-500/10 text-sky-400 border-sky-500/30",
   custom: "bg-gray-500/10 text-gray-400 border-gray-500/30",
@@ -150,8 +150,8 @@ function TemplateIcon({ template }: { template: AgentTemplate }) {
     );
   }
   return (
-    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-matrix-green/10 border border-matrix-green/20">
-      <Icon className="h-5 w-5 text-matrix-green" />
+    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
+      <Icon className="h-5 w-5 text-primary" />
     </div>
   );
 }
@@ -170,7 +170,7 @@ function SelectDropdown({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="appearance-none rounded-lg border border-matrix-border bg-matrix-surface px-3 py-2 pr-8 text-sm text-gray-200 outline-none transition-colors focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+        className="appearance-none rounded-lg border border-border bg-card px-3 py-2 pr-8 text-sm text-gray-200 outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
       >
         {options.map((opt) => (
           <option key={opt.value} value={opt.value}>
@@ -178,7 +178,7 @@ function SelectDropdown({
           </option>
         ))}
       </select>
-      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
     </div>
   );
 }
@@ -198,12 +198,12 @@ function TemplateCard({
 }) {
   return (
     <div
-      className={`group relative flex flex-col rounded-xl border border-matrix-border bg-matrix-surface p-5 transition-all duration-300 hover:border-matrix-green/30 hover:shadow-[0_0_30px_rgba(0,255,0,0.08)] ${
+      className={`group relative flex flex-col rounded-xl border border-border bg-card p-5 transition-all duration-300 hover:border-primary/30 hover:shadow-[0_0_30px_rgba(0,255,0,0.08)] ${
         featured ? "md:col-span-2 md:flex-row md:gap-6" : ""
       }`}
     >
       {template.isFeatured && (
-        <div className="absolute -top-px right-4 rounded-b-md bg-matrix-green px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-black">
+        <div className="absolute -top-px right-4 rounded-b-md bg-primary px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-primary-foreground">
           Featured
         </div>
       )}
@@ -212,20 +212,20 @@ function TemplateCard({
         <TemplateIcon template={template} />
         {!featured && (
           <div className="flex-1 min-w-0">
-            <h3 className="truncate font-semibold text-gray-100 group-hover:text-matrix-green transition-colors">
+            <h3 className="truncate font-semibold text-gray-100 group-hover:text-primary transition-colors">
               {template.title}
             </h3>
-            <p className="mt-0.5 text-xs text-gray-500">by {template.authorName}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">by {template.authorName}</p>
           </div>
         )}
       </div>
 
       {featured && (
         <div className="mt-3 flex-1 md:mt-0">
-          <h3 className="font-semibold text-lg text-gray-100 group-hover:text-matrix-green transition-colors">
+          <h3 className="font-semibold text-lg text-gray-100 group-hover:text-primary transition-colors">
             {template.title}
           </h3>
-          <p className="mt-0.5 text-xs text-gray-500">by {template.authorName}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">by {template.authorName}</p>
         </div>
       )}
 
@@ -240,7 +240,7 @@ function TemplateCard({
       </div>
 
       <div className="mt-auto flex items-center justify-between pt-4">
-        <div className="flex items-center gap-3 text-xs text-gray-500">
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span className="flex items-center gap-1">
             <Rocket className="h-3.5 w-3.5" />
             {template.usageCount.toLocaleString()}
@@ -255,7 +255,7 @@ function TemplateCard({
 
         <button
           onClick={() => onUse(template)}
-          className="rounded-lg border border-matrix-green/40 bg-matrix-green/10 px-3.5 py-1.5 text-xs font-semibold text-matrix-green transition-all hover:bg-matrix-green hover:text-black hover:shadow-[0_0_16px_rgba(0,255,0,0.35)]"
+          className="rounded-lg border border-primary/40 bg-primary/10 px-3.5 py-1.5 text-xs font-semibold text-primary transition-all hover:bg-primary hover:text-black hover:shadow-[0_0_16px_rgba(0,255,0,0.35)]"
         >
           Use Template
         </button>
@@ -302,8 +302,8 @@ function UseTemplateModal({
       // Land the user on their new agent instead of silently closing the
       // modal over the gallery (INT-B2).
       router.push(`/dashboard/agents/${created.id}`);
-    } catch (err: any) {
-      setError(err.message || "Failed to create agent from template");
+    } catch (err) {
+      setError(getErrorMessage(err, "Failed to create agent from template"));
       setSubmitting(false);
     }
   }
@@ -312,17 +312,17 @@ function UseTemplateModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
-      <div className="relative z-10 w-full max-w-lg rounded-xl border border-matrix-border bg-matrix-dark p-6 shadow-2xl">
+      <div className="relative z-10 w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-2xl">
         <div className="flex items-start justify-between">
           <div>
             <h2 className="text-lg font-bold text-gray-100">Create Agent from Template</h2>
-            <p className="mt-1 text-sm text-gray-500">
-              Using <span className="text-matrix-green">{template.title}</span>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Using <span className="text-primary">{template.title}</span>
             </p>
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-1 text-gray-500 transition-colors hover:bg-matrix-surface hover:text-gray-300"
+            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-gray-300"
           >
             <X className="h-5 w-5" />
           </button>
@@ -337,7 +337,7 @@ function UseTemplateModal({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-matrix-border bg-matrix-surface px-3 py-2 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-600 focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+              className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-gray-200 outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
               placeholder="My Agent"
               required
             />
@@ -351,11 +351,11 @@ function UseTemplateModal({
               type="text"
               value={agentSlug}
               onChange={(e) => setAgentSlug(e.target.value)}
-              className="w-full rounded-lg border border-matrix-border bg-matrix-surface px-3 py-2 text-sm font-mono text-gray-200 outline-none transition-colors placeholder:text-gray-600 focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+              className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm font-mono text-gray-200 outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
               placeholder="my-agent"
               required
             />
-            <p className="mt-1 text-xs text-gray-600">URL-safe identifier for your agent</p>
+            <p className="mt-1 text-xs text-muted-foreground">URL-safe identifier for your agent</p>
           </div>
 
           <div>
@@ -366,7 +366,7 @@ function UseTemplateModal({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
-              className="w-full resize-none rounded-lg border border-matrix-border bg-matrix-surface px-3 py-2 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-600 focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+              className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
               placeholder="Describe what your agent does..."
             />
           </div>
@@ -381,14 +381,14 @@ function UseTemplateModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg px-4 py-2 text-sm font-medium text-gray-400 transition-colors hover:bg-matrix-surface hover:text-gray-200"
+              className="rounded-lg px-4 py-2 text-sm font-medium text-gray-400 transition-colors hover:bg-muted hover:text-gray-200"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting || !name.trim() || !agentSlug.trim()}
-              className="inline-flex items-center gap-2 rounded-lg bg-matrix-green px-4 py-2 text-sm font-semibold text-black transition-all hover:shadow-[0_0_20px_rgba(0,255,0,0.4)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all hover:shadow-[0_0_20px_rgba(0,255,0,0.4)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
               Create Agent
@@ -444,16 +444,16 @@ export default function TemplatesPage() {
   const regular = templates.filter((t) => !t.isFeatured);
 
   return (
-    <div className="min-h-screen bg-matrix-dark">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <div className="border-b border-matrix-border bg-matrix-surface/50 px-6 py-8 md:px-8">
+      <div className="border-b border-border bg-card/50 px-6 py-8 md:px-8">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-matrix-green/10 border border-matrix-green/20">
-            <LayoutTemplate className="h-5 w-5 text-matrix-green" />
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 border border-primary/20">
+            <LayoutTemplate className="h-5 w-5 text-primary" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-gray-100">Agent Templates</h1>
-            <p className="mt-0.5 text-sm text-gray-500">
+            <p className="mt-0.5 text-sm text-muted-foreground">
               Get started quickly with pre-built agent templates
             </p>
           </div>
@@ -464,21 +464,21 @@ export default function TemplatesPage() {
         {/* Filter Bar */}
         <form
           onSubmit={handleSearchSubmit}
-          className="flex flex-wrap items-center gap-3 rounded-xl border border-matrix-border bg-matrix-surface/60 p-3"
+          className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card/60 p-3"
         >
           <div className="relative flex-1 min-w-[200px]">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search templates..."
-              className="w-full rounded-lg border border-matrix-border bg-matrix-dark py-2 pl-9 pr-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-gray-600 focus:border-matrix-green/50 focus:ring-1 focus:ring-matrix-green/30"
+              className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm text-gray-200 outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
             />
           </div>
 
           <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-gray-500" />
+            <Filter className="h-4 w-4 text-muted-foreground" />
           </div>
 
           <SelectDropdown value={category} onChange={setCategory} options={CATEGORIES} />
@@ -487,7 +487,7 @@ export default function TemplatesPage() {
 
           <button
             type="submit"
-            className="rounded-lg bg-matrix-green/10 border border-matrix-green/30 px-4 py-2 text-sm font-medium text-matrix-green transition-colors hover:bg-matrix-green/20"
+            className="rounded-lg bg-primary/10 border border-primary/30 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
           >
             Search
           </button>
@@ -499,7 +499,7 @@ export default function TemplatesPage() {
             {Array.from({ length: 6 }).map((_, i) => (
               <div
                 key={i}
-                className="rounded-xl border border-matrix-border bg-matrix-surface p-5 space-y-4"
+                className="rounded-xl border border-border bg-card p-5 space-y-4"
               >
                 <div className="flex items-start gap-4">
                   <Skeleton className="h-10 w-10 rounded-lg" />
@@ -527,11 +527,11 @@ export default function TemplatesPage() {
         {/* Empty State */}
         {!loading && templates.length === 0 && (
           <div className="mt-16 flex flex-col items-center justify-center gap-3 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-matrix-surface border border-matrix-border">
-              <LayoutTemplate className="h-8 w-8 text-gray-600" />
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-card border border-border">
+              <LayoutTemplate className="h-8 w-8 text-muted-foreground" />
             </div>
             <h3 className="text-lg font-semibold text-gray-300">No templates found</h3>
-            <p className="max-w-sm text-sm text-gray-500">
+            <p className="max-w-sm text-sm text-muted-foreground">
               Try adjusting your search or filters to find what you are looking for.
             </p>
           </div>
@@ -543,7 +543,7 @@ export default function TemplatesPage() {
             {featured.length > 0 && (
               <section className="mt-8">
                 <div className="mb-4 flex items-center gap-2">
-                  <Sparkles className="h-5 w-5 text-matrix-green" />
+                  <Sparkles className="h-5 w-5 text-primary" />
                   <h2 className="text-lg font-semibold text-gray-200">Featured Templates</h2>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
@@ -563,9 +563,9 @@ export default function TemplatesPage() {
             <section className="mt-8">
               {featured.length > 0 && (
                 <div className="mb-4 flex items-center gap-2">
-                  <LayoutTemplate className="h-5 w-5 text-gray-500" />
+                  <LayoutTemplate className="h-5 w-5 text-muted-foreground" />
                   <h2 className="text-lg font-semibold text-gray-200">All Templates</h2>
-                  <span className="ml-1 rounded-full bg-matrix-surface px-2 py-0.5 text-xs text-gray-500">
+                  <span className="ml-1 rounded-full bg-card px-2 py-0.5 text-xs text-muted-foreground">
                     {regular.length}
                   </span>
                 </div>

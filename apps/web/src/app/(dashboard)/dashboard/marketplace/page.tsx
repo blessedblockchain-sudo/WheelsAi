@@ -27,7 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { marketplaceApi, type MarketplaceListing } from "@/lib/api";
+import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -71,7 +71,7 @@ export default function MarketplaceDashboardPage() {
       const { listings } = await marketplaceApi.getMyListings();
       setListings(listings);
     } catch (error) {
-      toast.error("Failed to load listings");
+      toast.error(getErrorMessage(error, "Failed to load listings"));
     } finally {
       setIsLoading(false);
     }
@@ -83,7 +83,7 @@ export default function MarketplaceDashboardPage() {
       toast.success("Listing published successfully");
       loadListings();
     } catch (error: any) {
-      toast.error(error.message || "Failed to publish listing");
+      toast.error(getErrorMessage(error, "Failed to publish listing"));
     }
   }
 
@@ -93,7 +93,7 @@ export default function MarketplaceDashboardPage() {
       toast.success("Listing archived");
       loadListings();
     } catch (error: any) {
-      toast.error(error.message || "Failed to archive listing");
+      toast.error(getErrorMessage(error, "Failed to archive listing"));
     }
   }
 
@@ -118,7 +118,7 @@ export default function MarketplaceDashboardPage() {
         <div className="mb-6 flex gap-4">
           <Link
             href="/dashboard/marketplace/installs"
-            className="flex items-center gap-2 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >
             <Package className="h-4 w-4" />
             My Installed Agents
@@ -126,7 +126,7 @@ export default function MarketplaceDashboardPage() {
           <Link
             href="/marketplace"
             target="_blank"
-            className="flex items-center gap-2 rounded-lg border bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >
             <ExternalLink className="h-4 w-4" />
             Browse Marketplace
@@ -139,10 +139,10 @@ export default function MarketplaceDashboardPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Published</p>
+                  <p className="text-sm text-muted-foreground">Published</p>
                   <p className="text-2xl font-bold">{publishedCount}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
                   <Store className="h-5 w-5 text-green-600" />
                 </div>
               </div>
@@ -152,11 +152,11 @@ export default function MarketplaceDashboardPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Drafts</p>
+                  <p className="text-sm text-muted-foreground">Drafts</p>
                   <p className="text-2xl font-bold">{draftCount}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100">
-                  <Edit className="h-5 w-5 text-gray-600" />
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
+                  <Edit className="h-5 w-5 text-muted-foreground" />
                 </div>
               </div>
             </CardContent>
@@ -165,10 +165,10 @@ export default function MarketplaceDashboardPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Total Installs</p>
+                  <p className="text-sm text-muted-foreground">Total Installs</p>
                   <p className="text-2xl font-bold">{totalInstalls.toLocaleString()}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
                   <Download className="h-5 w-5 text-blue-600" />
                 </div>
               </div>
@@ -178,10 +178,10 @@ export default function MarketplaceDashboardPage() {
             <CardContent className="py-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Avg Rating</p>
+                  <p className="text-sm text-muted-foreground">Avg Rating</p>
                   <p className="text-2xl font-bold">{avgRating.toFixed(1)}</p>
                 </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-yellow-100">
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-yellow-500/10">
                   <Star className="h-5 w-5 text-yellow-600" />
                 </div>
               </div>
@@ -206,14 +206,14 @@ export default function MarketplaceDashboardPage() {
             {isLoading ? (
               <div className="space-y-4">
                 {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-20 animate-pulse rounded-lg bg-gray-100" />
+                  <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
                 ))}
               </div>
             ) : listings.length === 0 ? (
               <div className="py-12 text-center">
                 <Store className="mx-auto h-12 w-12 text-gray-300" />
-                <h3 className="mt-4 font-semibold text-gray-900">No listings yet</h3>
-                <p className="mt-2 text-sm text-gray-500">
+                <h3 className="mt-4 font-semibold text-foreground">No listings yet</h3>
+                <p className="mt-2 text-sm text-muted-foreground">
                   Publish your first agent to the marketplace
                 </p>
                 <Link href="/dashboard/marketplace/publish">
@@ -231,19 +231,19 @@ export default function MarketplaceDashboardPage() {
                     className="flex items-center justify-between py-4"
                   >
                     <div className="flex items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary-100 to-primary-200">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
                         <Store className="h-6 w-6 text-primary-600" />
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                          <h3 className="font-medium text-gray-900">
+                          <h3 className="font-medium text-foreground">
                             {listing.title}
                           </h3>
                           <Badge variant={statusColors[listing.status]}>
                             {statusLabels[listing.status]}
                           </Badge>
                         </div>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-muted-foreground">
                           {listing.category.replace("-", " ")} &middot;{" "}
                           {formatPrice(listing)}
                         </p>
@@ -252,7 +252,7 @@ export default function MarketplaceDashboardPage() {
 
                     <div className="flex items-center gap-6">
                       <div className="hidden text-right md:block">
-                        <div className="flex items-center gap-4 text-sm text-gray-500">
+                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
                           <span className="flex items-center gap-1">
                             <Download className="h-4 w-4" />
                             {listing.totalInstalls}
@@ -327,7 +327,7 @@ export default function MarketplaceDashboardPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="py-8 text-center text-gray-500">
+              <div className="py-8 text-center text-muted-foreground">
                 <p>Revenue tracking coming soon</p>
                 <p className="mt-1 text-sm">
                   You'll earn 90% of all revenue from your published agents

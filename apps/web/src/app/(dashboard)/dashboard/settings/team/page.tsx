@@ -94,7 +94,7 @@ export default function TeamSettingsPage() {
       case "admin":
         return <Shield className="h-4 w-4 text-blue-500" />;
       default:
-        return <Users className="h-4 w-4 text-gray-500" />;
+        return <Users className="h-4 w-4 text-muted-foreground" />;
     }
   };
 
@@ -305,7 +305,7 @@ export default function TeamSettingsPage() {
             </div>
           </div>
           <div className="flex gap-3">
-            <Users className="h-5 w-5 text-gray-500 mt-0.5" />
+            <Users className="h-5 w-5 text-muted-foreground mt-0.5" />
             <div>
               <div className="font-medium">Member</div>
               <div className="text-sm text-muted-foreground">

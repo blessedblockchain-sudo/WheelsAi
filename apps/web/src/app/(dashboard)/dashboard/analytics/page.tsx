@@ -17,6 +17,7 @@ import {
   analyticsApi,
   type AnalyticsDashboard,
   type SpendingAlert,
+  getErrorMessage,
 } from "@/lib/api";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
@@ -43,7 +44,7 @@ export default function AnalyticsDashboardPage() {
       setAlerts(alertsRes.data);
     } catch (error) {
       console.error("Failed to load analytics:", error);
-      toast.error("Failed to load analytics data");
+      toast.error(getErrorMessage(error, "Failed to load analytics data"));
     } finally {
       setLoading(false);
     }
@@ -77,7 +78,7 @@ export default function AnalyticsDashboardPage() {
             <SkeletonCard key={i} />
           ))}
         </div>
-        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-6 space-y-4">
+        <div className="rounded-lg border border-border bg-card p-6 space-y-4">
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-48 w-full" />
         </div>
@@ -380,7 +381,7 @@ export default function AnalyticsDashboardPage() {
                           d.status === "running"
                             ? "bg-green-500/20 text-green-500"
                             : d.status === "stopped"
-                            ? "bg-gray-500/20 text-gray-500"
+                            ? "bg-gray-500/20 text-muted-foreground"
                             : "bg-yellow-500/20 text-yellow-500"
                         }`}
                       >

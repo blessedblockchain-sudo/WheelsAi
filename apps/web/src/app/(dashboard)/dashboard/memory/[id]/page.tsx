@@ -145,7 +145,7 @@ export default function ConversationDetailPage({
     return (
       <div className="text-center py-12">
         <AlertCircle className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-        <h2 className="text-lg font-medium text-gray-900">Conversation not found</h2>
+        <h2 className="text-lg font-medium text-foreground">Conversation not found</h2>
         <button
           onClick={() => router.push("/dashboard/memory")}
           className="mt-4 text-primary-600 hover:underline"
@@ -163,7 +163,7 @@ export default function ConversationDetailPage({
         <div className="flex items-center gap-4">
           <button
             onClick={() => router.push("/dashboard/memory")}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            className="p-2 hover:bg-muted rounded-lg transition-colors"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
@@ -174,12 +174,12 @@ export default function ConversationDetailPage({
                   type="text"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="text-2xl font-bold text-gray-900 border-b-2 border-primary-500 focus:outline-none bg-transparent"
+                  className="text-2xl font-bold text-foreground border-b-2 border-primary-500 focus:outline-none bg-transparent"
                   autoFocus
                 />
                 <button
                   onClick={updateTitle}
-                  className="p-1 text-green-600 hover:bg-green-50 rounded"
+                  className="p-1 text-green-600 hover:bg-green-500/10 rounded"
                 >
                   <Save className="h-4 w-4" />
                 </button>
@@ -188,25 +188,25 @@ export default function ConversationDetailPage({
                     setTitle(conversation.title || "");
                     setEditingTitle(false);
                   }}
-                  className="p-1 text-gray-400 hover:bg-gray-100 rounded"
+                  className="p-1 text-gray-400 hover:bg-muted rounded"
                 >
                   <X className="h-4 w-4" />
                 </button>
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-bold text-gray-900">
+                <h1 className="text-2xl font-bold text-foreground">
                   {conversation.title || `Conversation ${conversation.id.slice(0, 8)}`}
                 </h1>
                 <button
                   onClick={() => setEditingTitle(true)}
-                  className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+                  className="p-1 text-gray-400 hover:text-foreground hover:bg-muted rounded"
                 >
                   <Edit2 className="h-4 w-4" />
                 </button>
               </div>
             )}
-            <div className="flex items-center gap-3 mt-1 text-sm text-gray-500">
+            <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
               {conversation.agent && (
                 <span className="flex items-center gap-1">
                   <Bot className="h-4 w-4" />
@@ -230,8 +230,8 @@ export default function ConversationDetailPage({
             onClick={toggleActive}
             className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
               conversation.isActive
-                ? "bg-green-100 text-green-700"
-                : "bg-gray-100 text-gray-600"
+                ? "bg-green-500/10 text-green-500"
+                : "bg-muted text-muted-foreground"
             }`}
           >
             {conversation.isActive ? "Active" : "Inactive"}
@@ -240,16 +240,16 @@ export default function ConversationDetailPage({
       </div>
 
       {/* Summary */}
-      <div className="bg-white rounded-xl border border-gray-200 p-4">
+      <div className="bg-card rounded-xl border border-border p-4">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="font-medium text-gray-900 flex items-center gap-2">
+          <h3 className="font-medium text-foreground flex items-center gap-2">
             <FileText className="h-4 w-4" />
             Summary
           </h3>
           {!editingSummary && (
             <button
               onClick={() => setEditingSummary(true)}
-              className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+              className="p-1 text-gray-400 hover:text-foreground hover:bg-muted rounded"
             >
               <Edit2 className="h-4 w-4" />
             </button>
@@ -261,7 +261,7 @@ export default function ConversationDetailPage({
               value={summary}
               onChange={(e) => setSummary(e.target.value)}
               rows={3}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              className="w-full px-3 py-2 bg-background text-foreground placeholder:text-muted-foreground border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-ring focus:border-primary"
               placeholder="Add a summary of this conversation..."
             />
             <div className="flex justify-end gap-2">
@@ -270,7 +270,7 @@ export default function ConversationDetailPage({
                   setSummary(conversation.summary || "");
                   setEditingSummary(false);
                 }}
-                className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"
+                className="px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted rounded-lg"
               >
                 Cancel
               </button>
@@ -283,21 +283,21 @@ export default function ConversationDetailPage({
             </div>
           </div>
         ) : (
-          <p className="text-gray-600 text-sm">
+          <p className="text-muted-foreground text-sm">
             {conversation.summary || "No summary yet. Click edit to add one."}
           </p>
         )}
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-gray-200">
+      <div className="border-b border-border">
         <nav className="flex space-x-8">
           <button
             onClick={() => setActiveTab("messages")}
             className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
               activeTab === "messages"
                 ? "border-primary-500 text-primary-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
+                : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
             <MessageSquare className="inline h-4 w-4 mr-2" />
@@ -308,7 +308,7 @@ export default function ConversationDetailPage({
             className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
               activeTab === "memory"
                 ? "border-primary-500 text-primary-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
+                : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
           >
             <Brain className="inline h-4 w-4 mr-2" />
@@ -319,15 +319,15 @@ export default function ConversationDetailPage({
 
       {/* Messages Tab */}
       {activeTab === "messages" && (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="bg-card rounded-xl border border-border overflow-hidden">
           {conversation.messages.length === 0 ? (
             <div className="p-12 text-center">
               <MessageSquare className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No messages</h3>
-              <p className="text-gray-500">This conversation has no messages yet</p>
+              <h3 className="text-lg font-medium text-foreground mb-2">No messages</h3>
+              <p className="text-muted-foreground">This conversation has no messages yet</p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100">
+            <div className="divide-y divide-border">
               {conversation.messages.map((message) => (
                 <MessageItem key={message.id} message={message} />
               ))}
@@ -351,23 +351,23 @@ export default function ConversationDetailPage({
 
           {/* Add Memory Form */}
           {showAddMemory && (
-            <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
-              <h3 className="font-medium text-gray-900">Add Memory Context</h3>
+            <div className="bg-card rounded-xl border border-border p-4 space-y-4">
+              <h3 className="font-medium text-foreground">Add Memory Context</h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-foreground mb-1">
                     Key
                   </label>
                   <input
                     type="text"
                     value={newMemory.key}
                     onChange={(e) => setNewMemory({ ...newMemory, key: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                    className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500"
                     placeholder="e.g., user_name"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <label className="block text-sm font-medium text-foreground mb-1">
                     Type
                   </label>
                   <select
@@ -375,7 +375,7 @@ export default function ConversationDetailPage({
                     onChange={(e) =>
                       setNewMemory({ ...newMemory, contextType: e.target.value as ContextType })
                     }
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                    className="w-full px-3 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary-500"
                   >
                     <option value="fact">Fact</option>
                     <option value="preference">Preference</option>
@@ -386,19 +386,19 @@ export default function ConversationDetailPage({
                 </div>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-foreground mb-1">
                   Value
                 </label>
                 <textarea
                   value={newMemory.value}
                   onChange={(e) => setNewMemory({ ...newMemory, value: e.target.value })}
                   rows={2}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500"
+                  className="w-full px-3 py-2 bg-background text-foreground placeholder:text-muted-foreground border border-input rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
                   placeholder="The memory content..."
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
+                <label className="block text-sm font-medium text-foreground mb-1">
                   Importance: {newMemory.importance}
                 </label>
                 <input
@@ -416,7 +416,7 @@ export default function ConversationDetailPage({
               <div className="flex justify-end gap-2">
                 <button
                   onClick={() => setShowAddMemory(false)}
-                  className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg"
+                  className="px-4 py-2 text-muted-foreground hover:bg-muted rounded-lg"
                 >
                   Cancel
                 </button>
@@ -432,19 +432,19 @@ export default function ConversationDetailPage({
           )}
 
           {/* Memory List */}
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
             {conversation.memoryContexts.length === 0 ? (
               <div className="p-12 text-center">
                 <Brain className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                <h3 className="text-lg font-medium text-foreground mb-2">
                   No memory contexts
                 </h3>
-                <p className="text-gray-500">
+                <p className="text-muted-foreground">
                   Add memory contexts to help your agent remember important information
                 </p>
               </div>
             ) : (
-              <div className="divide-y divide-gray-200">
+              <div className="divide-y divide-border">
                 {conversation.memoryContexts.map((context) => (
                   <MemoryContextItem
                     key={context.id}
@@ -468,26 +468,26 @@ function MessageItem({ message }: { message: Message }) {
   const roleConfig = {
     user: {
       icon: User,
-      bg: "bg-blue-50",
-      iconBg: "bg-blue-100",
+      bg: "bg-blue-500/10",
+      iconBg: "bg-blue-500/10",
       iconColor: "text-blue-600",
     },
     assistant: {
       icon: Bot,
-      bg: "bg-gray-50",
-      iconBg: "bg-primary-100",
+      bg: "bg-muted",
+      iconBg: "bg-primary/15",
       iconColor: "text-primary-600",
     },
     system: {
       icon: Settings2,
-      bg: "bg-yellow-50",
-      iconBg: "bg-yellow-100",
+      bg: "bg-yellow-500/10",
+      iconBg: "bg-yellow-500/10",
       iconColor: "text-yellow-600",
     },
     function: {
       icon: Sparkles,
-      bg: "bg-purple-50",
-      iconBg: "bg-purple-100",
+      bg: "bg-purple-500/10",
+      iconBg: "bg-purple-500/10",
       iconColor: "text-purple-600",
     },
   };
@@ -503,20 +503,20 @@ function MessageItem({ message }: { message: Message }) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium text-gray-900 capitalize">{message.role}</span>
+            <span className="font-medium text-foreground capitalize">{message.role}</span>
             {message.functionName && (
-              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">
+              <span className="text-xs bg-purple-500/10 text-purple-500 px-2 py-0.5 rounded">
                 {message.functionName}
               </span>
             )}
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-muted-foreground">
               {new Date(message.createdAt).toLocaleString()}
             </span>
             {message.tokens && (
               <span className="text-xs text-gray-400">{message.tokens} tokens</span>
             )}
           </div>
-          <div className="text-sm text-gray-700 whitespace-pre-wrap">
+          <div className="text-sm text-foreground whitespace-pre-wrap">
             {isLong && !expanded ? (
               <>
                 {message.content.slice(0, 500)}...
@@ -555,19 +555,19 @@ function MemoryContextItem({
   onDelete: () => void;
 }) {
   const typeColors: Record<string, string> = {
-    fact: "bg-blue-100 text-blue-700",
-    preference: "bg-green-100 text-green-700",
-    summary: "bg-yellow-100 text-yellow-700",
-    entity: "bg-purple-100 text-purple-700",
-    custom: "bg-gray-100 text-gray-700",
+    fact: "bg-blue-500/10 text-blue-500",
+    preference: "bg-green-500/10 text-green-500",
+    summary: "bg-yellow-500/10 text-yellow-500",
+    entity: "bg-purple-500/10 text-purple-500",
+    custom: "bg-muted text-foreground",
   };
 
   return (
-    <div className="px-6 py-4 hover:bg-gray-50 transition-colors">
+    <div className="px-6 py-4 hover:bg-muted transition-colors">
       <div className="flex items-start justify-between">
         <div className="flex-1">
           <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium text-gray-900">{context.key}</span>
+            <span className="font-medium text-foreground">{context.key}</span>
             <span
               className={`text-xs px-2 py-0.5 rounded ${typeColors[context.contextType] || typeColors.custom}`}
             >
@@ -577,7 +577,7 @@ function MemoryContextItem({
               Importance: {(context.importance * 100).toFixed(0)}%
             </span>
           </div>
-          <p className="text-sm text-gray-600">{context.value}</p>
+          <p className="text-sm text-muted-foreground">{context.value}</p>
           <div className="flex items-center gap-4 mt-2 text-xs text-gray-400">
             <span>Accessed {context.accessCount} times</span>
             <span>Last: {new Date(context.lastAccessedAt).toLocaleDateString()}</span>
@@ -590,7 +590,7 @@ function MemoryContextItem({
         </div>
         <button
           onClick={onDelete}
-          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+          className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-500/10 rounded-lg transition-colors"
         >
           <Trash2 className="h-4 w-4" />
         </button>

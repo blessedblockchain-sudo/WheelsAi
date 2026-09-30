@@ -25,6 +25,7 @@ import {
   domainsApi,
   type CustomDomainWithDns,
   type DomainEvent,
+  getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -87,7 +88,7 @@ export default function DomainDetailPage({
       loadDomain();
     } catch (error) {
       console.error("Failed to toggle domain:", error);
-      toast.error((error as Error).message);
+      toast.error(getErrorMessage(error));
     }
   }
 
@@ -131,7 +132,7 @@ export default function DomainDetailPage({
     return (
       <div className="text-center py-12">
         <AlertCircle className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-        <h2 className="text-lg font-medium text-gray-900">Domain not found</h2>
+        <h2 className="text-lg font-medium text-foreground">Domain not found</h2>
         <button
           onClick={() => router.push("/dashboard/domains")}
           className="mt-4 text-primary-600 hover:underline"
@@ -143,18 +144,18 @@ export default function DomainDetailPage({
   }
 
   const verificationStatusConfig = {
-    pending: { icon: Clock, color: "text-yellow-600", bg: "bg-yellow-100", label: "Pending Verification" },
-    verified: { icon: CheckCircle, color: "text-green-600", bg: "bg-green-100", label: "Verified" },
-    failed: { icon: XCircle, color: "text-red-600", bg: "bg-red-100", label: "Verification Failed" },
-    expired: { icon: AlertTriangle, color: "text-orange-600", bg: "bg-orange-100", label: "Verification Expired" },
+    pending: { icon: Clock, color: "text-yellow-600", bg: "bg-yellow-500/10", label: "Pending Verification" },
+    verified: { icon: CheckCircle, color: "text-green-600", bg: "bg-green-500/10", label: "Verified" },
+    failed: { icon: XCircle, color: "text-red-600", bg: "bg-red-500/10", label: "Verification Failed" },
+    expired: { icon: AlertTriangle, color: "text-orange-600", bg: "bg-orange-500/10", label: "Verification Expired" },
   };
 
   const sslStatusConfig = {
-    pending: { icon: Shield, color: "text-gray-400", bg: "bg-gray-100", label: "SSL Pending" },
-    provisioning: { icon: RefreshCw, color: "text-blue-600", bg: "bg-blue-100", label: "SSL Provisioning" },
-    active: { icon: ShieldCheck, color: "text-green-600", bg: "bg-green-100", label: "SSL Active" },
-    failed: { icon: Shield, color: "text-red-600", bg: "bg-red-100", label: "SSL Failed" },
-    expired: { icon: AlertTriangle, color: "text-orange-600", bg: "bg-orange-100", label: "SSL Expired" },
+    pending: { icon: Shield, color: "text-gray-400", bg: "bg-muted", label: "SSL Pending" },
+    provisioning: { icon: RefreshCw, color: "text-blue-600", bg: "bg-blue-500/10", label: "SSL Provisioning" },
+    active: { icon: ShieldCheck, color: "text-green-600", bg: "bg-green-500/10", label: "SSL Active" },
+    failed: { icon: Shield, color: "text-red-600", bg: "bg-red-500/10", label: "SSL Failed" },
+    expired: { icon: AlertTriangle, color: "text-orange-600", bg: "bg-orange-500/10", label: "SSL Expired" },
   };
 
   const vConfig = verificationStatusConfig[domain.verificationStatus];
@@ -167,20 +168,20 @@ export default function DomainDetailPage({
         <div className="flex items-center gap-4">
           <button
             onClick={() => router.push("/dashboard/domains")}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+            className="p-2 hover:bg-muted rounded-lg transition-colors"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-900">{domain.domain}</h1>
+              <h1 className="text-2xl font-bold text-foreground">{domain.domain}</h1>
               {domain.isPrimary && (
-                <span className="text-xs bg-primary-100 text-primary-700 px-2 py-0.5 rounded">
+                <span className="text-xs bg-primary/15 text-primary-700 px-2 py-0.5 rounded">
                   Primary
                 </span>
               )}
             </div>
-            <p className="text-gray-500 mt-1">
+            <p className="text-muted-foreground mt-1">
               {domain.targetType === "agent" ? "Agent" : "Deployment"} ID: {domain.targetId.slice(0, 8)}...
             </p>
           </div>
@@ -192,8 +193,8 @@ export default function DomainDetailPage({
               onClick={toggleDomain}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
                 domain.isActive
-                  ? "bg-green-100 text-green-700"
-                  : "bg-gray-100 text-gray-600"
+                  ? "bg-green-500/10 text-green-500"
+                  : "bg-muted text-muted-foreground"
               }`}
             >
               {domain.isActive ? (
@@ -212,7 +213,7 @@ export default function DomainDetailPage({
 
           <button
             onClick={deleteDomain}
-            className="flex items-center gap-2 px-4 py-2 text-red-600 bg-red-50 rounded-lg hover:bg-red-100"
+            className="flex items-center gap-2 px-4 py-2 text-red-600 bg-red-500/10 rounded-lg hover:bg-red-500/10"
           >
             <Trash2 className="h-4 w-4" />
             Delete
@@ -222,9 +223,9 @@ export default function DomainDetailPage({
 
       {/* Status Cards */}
       <div className="grid grid-cols-2 gap-4">
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-card rounded-xl border border-border p-4">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-900">Verification Status</h3>
+            <h3 className="font-semibold text-foreground">Verification Status</h3>
             <span className={`flex items-center gap-1 px-2 py-1 rounded text-sm ${vConfig.bg} ${vConfig.color}`}>
               <vConfig.icon className="h-4 w-4" />
               {vConfig.label}
@@ -233,7 +234,7 @@ export default function DomainDetailPage({
 
           {domain.verificationStatus === "pending" && (
             <div className="space-y-3">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-muted-foreground">
                 Add the following DNS records to verify ownership of this domain:
               </p>
               <button
@@ -247,7 +248,7 @@ export default function DomainDetailPage({
           )}
 
           {domain.verificationStatus === "verified" && domain.verifiedAt && (
-            <p className="text-sm text-gray-600">
+            <p className="text-sm text-muted-foreground">
               Verified on {new Date(domain.verifiedAt).toLocaleDateString()}
             </p>
           )}
@@ -267,9 +268,9 @@ export default function DomainDetailPage({
           )}
         </div>
 
-        <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <div className="bg-card rounded-xl border border-border p-4">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="font-semibold text-gray-900">SSL Certificate</h3>
+            <h3 className="font-semibold text-foreground">SSL Certificate</h3>
             <span className={`flex items-center gap-1 px-2 py-1 rounded text-sm ${sConfig.bg} ${sConfig.color}`}>
               <sConfig.icon className="h-4 w-4" />
               {sConfig.label}
@@ -277,14 +278,14 @@ export default function DomainDetailPage({
           </div>
 
           {domain.sslStatus === "active" && domain.sslExpiresAt && (
-            <div className="text-sm text-gray-600">
+            <div className="text-sm text-muted-foreground">
               <p>Provider: {domain.sslProvider || "Let's Encrypt"}</p>
               <p>Expires: {new Date(domain.sslExpiresAt).toLocaleDateString()}</p>
             </div>
           )}
 
           {domain.sslStatus === "provisioning" && (
-            <p className="text-sm text-gray-600">
+            <p className="text-sm text-muted-foreground">
               SSL certificate is being provisioned. This may take a few minutes.
             </p>
           )}
@@ -297,17 +298,17 @@ export default function DomainDetailPage({
 
       {/* DNS Records */}
       {domain.verificationStatus !== "verified" && domain.dnsRecords && (
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <h3 className="font-semibold text-gray-900 mb-4">DNS Configuration</h3>
-          <p className="text-sm text-gray-600 mb-4">
+        <div className="bg-card rounded-xl border border-border p-6">
+          <h3 className="font-semibold text-foreground mb-4">DNS Configuration</h3>
+          <p className="text-sm text-muted-foreground mb-4">
             Add these DNS records to your domain to verify ownership and enable SSL:
           </p>
 
           <div className="space-y-4">
             {/* TXT Record */}
-            <div className="bg-gray-50 rounded-lg p-4">
+            <div className="bg-muted rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">TXT Record (Verification)</span>
+                <span className="text-sm font-medium text-foreground">TXT Record (Verification)</span>
                 <button
                   onClick={() => copyToClipboard(domain.dnsRecords.txtRecord.value, "txt")}
                   className="text-xs text-primary-600 hover:underline flex items-center gap-1"
@@ -318,24 +319,24 @@ export default function DomainDetailPage({
               </div>
               <div className="space-y-1 text-sm">
                 <div className="flex">
-                  <span className="w-16 text-gray-500">Name:</span>
-                  <code className="text-gray-900">{domain.dnsRecords.txtRecord.name}</code>
+                  <span className="w-16 text-muted-foreground">Name:</span>
+                  <code className="text-foreground">{domain.dnsRecords.txtRecord.name}</code>
                 </div>
                 <div className="flex">
-                  <span className="w-16 text-gray-500">Type:</span>
-                  <code className="text-gray-900">{domain.dnsRecords.txtRecord.type}</code>
+                  <span className="w-16 text-muted-foreground">Type:</span>
+                  <code className="text-foreground">{domain.dnsRecords.txtRecord.type}</code>
                 </div>
                 <div className="flex">
-                  <span className="w-16 text-gray-500">Value:</span>
-                  <code className="text-gray-900 break-all">{domain.dnsRecords.txtRecord.value}</code>
+                  <span className="w-16 text-muted-foreground">Value:</span>
+                  <code className="text-foreground break-all">{domain.dnsRecords.txtRecord.value}</code>
                 </div>
               </div>
             </div>
 
             {/* CNAME Record */}
-            <div className="bg-gray-50 rounded-lg p-4">
+            <div className="bg-muted rounded-lg p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-700">CNAME Record (Routing)</span>
+                <span className="text-sm font-medium text-foreground">CNAME Record (Routing)</span>
                 <button
                   onClick={() => copyToClipboard(domain.dnsRecords.cnameRecord.value, "cname")}
                   className="text-xs text-primary-600 hover:underline flex items-center gap-1"
@@ -346,16 +347,16 @@ export default function DomainDetailPage({
               </div>
               <div className="space-y-1 text-sm">
                 <div className="flex">
-                  <span className="w-16 text-gray-500">Name:</span>
-                  <code className="text-gray-900">{domain.dnsRecords.cnameRecord.name}</code>
+                  <span className="w-16 text-muted-foreground">Name:</span>
+                  <code className="text-foreground">{domain.dnsRecords.cnameRecord.name}</code>
                 </div>
                 <div className="flex">
-                  <span className="w-16 text-gray-500">Type:</span>
-                  <code className="text-gray-900">{domain.dnsRecords.cnameRecord.type}</code>
+                  <span className="w-16 text-muted-foreground">Type:</span>
+                  <code className="text-foreground">{domain.dnsRecords.cnameRecord.type}</code>
                 </div>
                 <div className="flex">
-                  <span className="w-16 text-gray-500">Value:</span>
-                  <code className="text-gray-900">{domain.dnsRecords.cnameRecord.value}</code>
+                  <span className="w-16 text-muted-foreground">Value:</span>
+                  <code className="text-foreground">{domain.dnsRecords.cnameRecord.value}</code>
                 </div>
               </div>
             </div>
@@ -364,46 +365,46 @@ export default function DomainDetailPage({
       )}
 
       {/* Configuration */}
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h3 className="font-semibold text-gray-900 mb-4">Configuration</h3>
+      <div className="bg-card rounded-xl border border-border p-6">
+        <h3 className="font-semibold text-foreground mb-4">Configuration</h3>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
-            <span className="text-gray-500">Force HTTPS:</span>
-            <span className="ml-2 text-gray-900">{domain.forceHttps ? "Yes" : "No"}</span>
+            <span className="text-muted-foreground">Force HTTPS:</span>
+            <span className="ml-2 text-foreground">{domain.forceHttps ? "Yes" : "No"}</span>
           </div>
           <div>
-            <span className="text-gray-500">Routing Mode:</span>
-            <span className="ml-2 text-gray-900 capitalize">{domain.routingMode}</span>
+            <span className="text-muted-foreground">Routing Mode:</span>
+            <span className="ml-2 text-foreground capitalize">{domain.routingMode}</span>
           </div>
           <div>
-            <span className="text-gray-500">Target Type:</span>
-            <span className="ml-2 text-gray-900 capitalize">{domain.targetType}</span>
+            <span className="text-muted-foreground">Target Type:</span>
+            <span className="ml-2 text-foreground capitalize">{domain.targetType}</span>
           </div>
           <div>
-            <span className="text-gray-500">Total Requests:</span>
-            <span className="ml-2 text-gray-900">{domain.totalRequests.toLocaleString()}</span>
+            <span className="text-muted-foreground">Total Requests:</span>
+            <span className="ml-2 text-foreground">{domain.totalRequests.toLocaleString()}</span>
           </div>
         </div>
       </div>
 
       {/* Event History */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="font-semibold text-gray-900">Event History</h3>
+      <div className="bg-card rounded-xl border border-border overflow-hidden">
+        <div className="px-6 py-4 border-b border-border">
+          <h3 className="font-semibold text-foreground">Event History</h3>
         </div>
 
         {events.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">No events recorded</div>
+          <div className="p-8 text-center text-muted-foreground">No events recorded</div>
         ) : (
-          <div className="divide-y divide-gray-100">
+          <div className="divide-y divide-border">
             {events.map((event) => (
               <div key={event.id} className="px-6 py-3 flex items-center justify-between">
                 <div>
-                  <span className="font-medium text-gray-900 capitalize">
+                  <span className="font-medium text-foreground capitalize">
                     {event.eventType.replace(/_/g, " ")}
                   </span>
                   {event.message && (
-                    <p className="text-sm text-gray-500">{event.message}</p>
+                    <p className="text-sm text-muted-foreground">{event.message}</p>
                   )}
                 </div>
                 <span className="text-sm text-gray-400">

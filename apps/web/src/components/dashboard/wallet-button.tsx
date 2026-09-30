@@ -83,7 +83,7 @@ export function WalletButton() {
     return (
       <button
         onClick={() => setVisible(true)}
-        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
       >
         <Wallet className="h-5 w-5" />
         Connect Wallet
@@ -95,14 +95,14 @@ export function WalletButton() {
     <div className="space-y-1">
       <button
         onClick={copyAddress}
-        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 transition-colors"
+        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors"
         title="Copy address"
       >
         <Wallet className="h-5 w-5 text-green-600" />
         <span className="flex-1 text-left">
           <span className="block font-mono text-xs">{shortenedAddress}</span>
           {balance !== null && (
-            <span className="block text-xs text-gray-500">
+            <span className="block text-xs text-muted-foreground">
               {balance.toFixed(4)} SOL
             </span>
           )}
@@ -115,7 +115,7 @@ export function WalletButton() {
       </button>
       <button
         onClick={() => disconnect()}
-        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-xs text-gray-500 hover:bg-gray-100 transition-colors"
+        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-xs text-muted-foreground hover:bg-muted transition-colors"
       >
         <LogOut className="h-3.5 w-3.5" />
         Disconnect Wallet

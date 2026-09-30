@@ -8,8 +8,9 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { authApi, ApiError, isTwoFactorChallenge } from "@/lib/api";
+import { authApi, ApiError, getErrorMessage, isTwoFactorChallenge } from "@/lib/api";
 import { WalletAuthButton } from "@/components/auth/wallet-auth-button";
 
 interface LoginForm {
@@ -61,18 +62,11 @@ export default function LoginPage() {
       toast.success("Welcome back!");
       router.push(safeNextPath());
     } catch (error) {
-      if (error instanceof ApiError) {
-        const message =
-          typeof error.data === "object" &&
-          error.data !== null &&
-          "message" in error.data &&
-          typeof (error.data as { message?: unknown }).message === "string"
-            ? (error.data as { message: string }).message
-            : "Invalid email or password";
-        toast.error(message);
-      } else {
-        toast.error("Something went wrong. Please try again.");
-      }
+      toast.error(
+        error instanceof ApiError
+          ? getErrorMessage(error, "Invalid email or password")
+          : "Something went wrong. Please try again."
+      );
     } finally {
       setIsLoading(false);
     }
@@ -92,7 +86,9 @@ export default function LoginPage() {
       // password step rather than looping on a dead token.
       const status =
         error instanceof ApiError ? error.status : null;
-      toast.error("Invalid or expired code. Please try again.");
+      toast.error(
+        getErrorMessage(error, "Invalid or expired code. Please try again.")
+      );
       if (status === 401) setOtp("");
     } finally {
       setIsLoading(false);
@@ -134,7 +130,7 @@ export default function LoginPage() {
                 setChallengeToken(null);
                 setOtp("");
               }}
-              className="w-full text-sm text-gray-500 hover:text-gray-700"
+              className="w-full text-sm text-muted-foreground hover:text-foreground"
             >
               Back to sign in
             </button>
@@ -155,9 +151,9 @@ export default function LoginPage() {
       <CardContent>
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+            <Label htmlFor="email">
               Email
-            </label>
+            </Label>
             <Input
               id="email"
               type="email"
@@ -175,9 +171,9 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+            <Label htmlFor="password">
               Password
-            </label>
+            </Label>
             <Input
               id="password"
               type="password"
@@ -198,7 +194,7 @@ export default function LoginPage() {
         <div className="mt-6">
           <div className="relative">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-300" />
+              <div className="w-full border-t border-border" />
             </div>
             <div className="relative flex justify-center text-sm">
               <span className="bg-card px-2 text-muted-foreground">Or continue with</span>
@@ -208,7 +204,7 @@ export default function LoginPage() {
           <WalletAuthButton />
         </div>
 
-        <p className="mt-6 text-center text-sm text-gray-500">
+        <p className="mt-6 text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
           <Link href="/register" className="font-medium text-primary-600 hover:underline">
             Sign up

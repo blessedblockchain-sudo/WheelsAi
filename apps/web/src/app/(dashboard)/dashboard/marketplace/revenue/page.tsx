@@ -31,7 +31,7 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { marketplaceApi } from "@/lib/api";
+import { marketplaceApi, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface RevenueData {
@@ -123,7 +123,7 @@ export default function RevenueDashboardPage() {
       setRevenue(revenueData);
       setPayoutHistory(payoutsData.payouts);
     } catch (error) {
-      toast.error("Failed to load revenue data");
+      toast.error(getErrorMessage(error, "Failed to load revenue data"));
     } finally {
       setIsLoading(false);
     }
@@ -145,7 +145,7 @@ export default function RevenueDashboardPage() {
       setShowPayoutDialog(false);
       loadData();
     } catch (error: any) {
-      toast.error(error.message || "Failed to request payout");
+      toast.error(getErrorMessage(error, "Failed to request payout"));
     } finally {
       setIsRequestingPayout(false);
     }
@@ -168,7 +168,7 @@ export default function RevenueDashboardPage() {
           </div>
         ) : !revenue ? (
           <div className="py-12 text-center">
-            <p className="text-gray-500">Failed to load revenue data</p>
+            <p className="text-muted-foreground">Failed to load revenue data</p>
           </div>
         ) : (
           <>
@@ -178,12 +178,12 @@ export default function RevenueDashboardPage() {
                 <CardContent className="py-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-gray-500">Total Earned</p>
+                      <p className="text-sm text-muted-foreground">Total Earned</p>
                       <p className="text-2xl font-bold text-green-600">
                         {formatCurrency(revenue.totalRevenueCents)}
                       </p>
                     </div>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-100">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
                       <TrendingUp className="h-5 w-5 text-green-600" />
                     </div>
                   </div>
@@ -193,12 +193,12 @@ export default function RevenueDashboardPage() {
                 <CardContent className="py-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-gray-500">Available to Withdraw</p>
+                      <p className="text-sm text-muted-foreground">Available to Withdraw</p>
                       <p className="text-2xl font-bold">
                         {formatCurrency(revenue.pendingPayoutCents)}
                       </p>
                     </div>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
                       <Wallet className="h-5 w-5 text-blue-600" />
                     </div>
                   </div>
@@ -208,10 +208,10 @@ export default function RevenueDashboardPage() {
                 <CardContent className="py-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-gray-500">Published Agents</p>
+                      <p className="text-sm text-muted-foreground">Published Agents</p>
                       <p className="text-2xl font-bold">{revenue.totalListings}</p>
                     </div>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-100">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/10">
                       <Store className="h-5 w-5 text-purple-600" />
                     </div>
                   </div>
@@ -221,10 +221,10 @@ export default function RevenueDashboardPage() {
                 <CardContent className="py-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-gray-500">Total Installs</p>
+                      <p className="text-sm text-muted-foreground">Total Installs</p>
                       <p className="text-2xl font-bold">{revenue.totalInstalls}</p>
                     </div>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-100">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/10">
                       <Download className="h-5 w-5 text-orange-600" />
                     </div>
                   </div>
@@ -237,8 +237,8 @@ export default function RevenueDashboardPage() {
               <CardContent className="py-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="font-semibold text-gray-900">Request Payout</h3>
-                    <p className="mt-1 text-sm text-gray-500">
+                    <h3 className="font-semibold text-foreground">Request Payout</h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
                       {canRequestPayout
                         ? `You have ${formatCurrency(revenue.pendingPayoutCents)} available for withdrawal`
                         : "Minimum payout amount is $10.00"}
@@ -264,7 +264,7 @@ export default function RevenueDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   {revenue.revenueByListing.length === 0 ? (
-                    <div className="py-8 text-center text-gray-500">
+                    <div className="py-8 text-center text-muted-foreground">
                       <Store className="mx-auto h-8 w-8 text-gray-300" />
                       <p className="mt-2">No revenue yet</p>
                     </div>
@@ -276,10 +276,10 @@ export default function RevenueDashboardPage() {
                           className="flex items-center justify-between rounded-lg border p-3"
                         >
                           <div>
-                            <p className="font-medium text-gray-900">
+                            <p className="font-medium text-foreground">
                               {item.listing?.title || "Unknown Agent"}
                             </p>
-                            <p className="text-sm text-gray-500">
+                            <p className="text-sm text-muted-foreground">
                               {item.totalRequests.toLocaleString()} requests
                             </p>
                           </div>
@@ -301,7 +301,7 @@ export default function RevenueDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   {payoutHistory.length === 0 ? (
-                    <div className="py-8 text-center text-gray-500">
+                    <div className="py-8 text-center text-muted-foreground">
                       <CreditCard className="mx-auto h-8 w-8 text-gray-300" />
                       <p className="mt-2">No payouts yet</p>
                     </div>
@@ -321,10 +321,10 @@ export default function RevenueDashboardPage() {
                               <Clock className="h-5 w-5 text-yellow-500" />
                             )}
                             <div>
-                              <p className="font-medium text-gray-900">
+                              <p className="font-medium text-foreground">
                                 {formatCurrency(payout.amountCents)}
                               </p>
-                              <p className="text-xs text-gray-500">
+                              <p className="text-xs text-muted-foreground">
                                 {payoutMethodLabels[payout.payoutMethod]} &middot;{" "}
                                 {formatDate(payout.requestedAt)}
                               </p>
@@ -349,7 +349,7 @@ export default function RevenueDashboardPage() {
               </CardHeader>
               <CardContent>
                 {revenue.recentTransactions.length === 0 ? (
-                  <div className="py-8 text-center text-gray-500">
+                  <div className="py-8 text-center text-muted-foreground">
                     <TrendingUp className="mx-auto h-8 w-8 text-gray-300" />
                     <p className="mt-2">No transactions yet</p>
                     <p className="text-sm">
@@ -360,7 +360,7 @@ export default function RevenueDashboardPage() {
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b text-left text-gray-500">
+                        <tr className="border-b text-left text-muted-foreground">
                           <th className="pb-2 font-medium">Type</th>
                           <th className="pb-2 font-medium">Requests</th>
                           <th className="pb-2 font-medium">Gross</th>
@@ -375,13 +375,13 @@ export default function RevenueDashboardPage() {
                             <td className="py-3 capitalize">{tx.type.replace("_", " ")}</td>
                             <td className="py-3">{tx.requestCount}</td>
                             <td className="py-3">{formatCurrency(tx.grossAmountCents)}</td>
-                            <td className="py-3 text-gray-500">
+                            <td className="py-3 text-muted-foreground">
                               -{formatCurrency(tx.platformFeeCents)}
                             </td>
                             <td className="py-3 font-medium text-green-600">
                               {formatCurrency(tx.creatorAmountCents)}
                             </td>
-                            <td className="py-3 text-gray-500">
+                            <td className="py-3 text-muted-foreground">
                               {formatDate(tx.createdAt)}
                             </td>
                           </tr>
@@ -415,7 +415,7 @@ export default function RevenueDashboardPage() {
               <div
                 className={cn(
                   "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                  payoutMethod === "credits" && "border-primary-500 bg-primary-50"
+                  payoutMethod === "credits" && "border-primary-500 bg-primary/10"
                 )}
                 onClick={() => setPayoutMethod("credits")}
               >
@@ -424,7 +424,7 @@ export default function RevenueDashboardPage() {
                   <label htmlFor="credits" className="cursor-pointer font-medium">
                     Platform Credits
                   </label>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Add to your WheelsAI balance instantly
                   </p>
                 </div>
@@ -433,7 +433,7 @@ export default function RevenueDashboardPage() {
               <div
                 className={cn(
                   "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                  payoutMethod === "crypto_usdc" && "border-primary-500 bg-primary-50"
+                  payoutMethod === "crypto_usdc" && "border-primary-500 bg-primary/10"
                 )}
                 onClick={() => setPayoutMethod("crypto_usdc")}
               >
@@ -442,7 +442,7 @@ export default function RevenueDashboardPage() {
                   <label htmlFor="crypto_usdc" className="cursor-pointer font-medium">
                     USDC (Solana)
                   </label>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Receive USDC to your Solana wallet (1-3 business days)
                   </p>
                 </div>
@@ -451,7 +451,7 @@ export default function RevenueDashboardPage() {
               <div
                 className={cn(
                   "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                  payoutMethod === "crypto_sol" && "border-primary-500 bg-primary-50"
+                  payoutMethod === "crypto_sol" && "border-primary-500 bg-primary/10"
                 )}
                 onClick={() => setPayoutMethod("crypto_sol")}
               >
@@ -460,7 +460,7 @@ export default function RevenueDashboardPage() {
                   <label htmlFor="crypto_sol" className="cursor-pointer font-medium">
                     SOL
                   </label>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-muted-foreground">
                     Receive SOL to your Solana wallet (1-3 business days)
                   </p>
                 </div>

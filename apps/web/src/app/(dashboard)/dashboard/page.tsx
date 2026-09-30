@@ -16,12 +16,12 @@ import {
 } from "@/lib/api";
 
 const frameworkColors: Record<string, string> = {
-  mastra: "bg-purple-100 text-purple-700",
-  langchain: "bg-green-100 text-green-700",
-  autogen: "bg-blue-100 text-blue-700",
-  elizaos: "bg-cyan-100 text-cyan-700",
-  crewai: "bg-orange-100 text-orange-700",
-  custom: "bg-gray-100 text-gray-700",
+  mastra: "bg-purple-500/10 text-purple-500",
+  langchain: "bg-green-500/10 text-green-500",
+  autogen: "bg-blue-500/10 text-blue-500",
+  elizaos: "bg-cyan-500/10 text-cyan-500",
+  crewai: "bg-orange-500/10 text-orange-500",
+  custom: "bg-muted text-foreground",
 };
 
 function formatCurrency(amount: number): string {
@@ -90,17 +90,17 @@ export default function DashboardPage() {
       <div className="p-8">
         {/* BUILD on-ramp (INT-B1): the 2-minute path — import from GitHub,
             chat via real inference. Leads the page because BUILD leads. */}
-        <Card className="mb-8 border-primary-200 bg-gradient-to-r from-primary-50 to-purple-50 dark:border-primary-800 dark:from-primary-900/20 dark:to-purple-900/20">
+        <Card className="mb-8 border-primary/30 bg-gradient-to-r from-primary/10 to-purple-500/10">
           <CardContent className="flex flex-col items-start justify-between gap-4 py-6 sm:flex-row sm:items-center">
             <div className="flex items-center gap-4">
               <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-600">
                 <Github className="h-6 w-6 text-white" />
               </div>
               <div>
-                <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+                <h3 className="font-semibold text-foreground">
                   Import an agent from GitHub
                 </h3>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <p className="text-sm text-muted-foreground">
                   Mastra, ElizaOS, LangChain, AutoGen, CrewAI, or custom —
                   chat with it in minutes.
                 </p>
@@ -124,14 +124,14 @@ export default function DashboardPage() {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Active Deployments
               </CardTitle>
-              <Box className="h-4 w-4 text-gray-400 dark:text-gray-500" />
+              <Box className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{runningDeployments.length}</div>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="text-xs text-muted-foreground">
                 {deployments.length} total deployments
               </p>
             </CardContent>
@@ -139,23 +139,23 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Requests (24h)
               </CardTitle>
-              <Zap className="h-4 w-4 text-gray-400 dark:text-gray-500" />
+              <Zap className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{formatNumber(totalRequests)}</div>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Across all deployments</p>
+              <p className="text-xs text-muted-foreground">Across all deployments</p>
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Credit Balance
               </CardTitle>
-              <DollarSign className="h-4 w-4 text-gray-400 dark:text-gray-500" />
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{formatCurrency(creditBalance)}</div>
@@ -170,10 +170,10 @@ export default function DashboardPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-gray-500 dark:text-gray-400">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
                 Total Agents
               </CardTitle>
-              <Bot className="h-4 w-4 text-gray-400 dark:text-gray-500" />
+              <Bot className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               {/* Real agent count — this stat used to show the MODEL
@@ -192,7 +192,7 @@ export default function DashboardPage() {
         {/* Recent Agents — first list on the page (BUILD leads) */}
         <div className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <h2 className="text-lg font-semibold text-foreground">
               Recent Agents
             </h2>
             <Link
@@ -208,7 +208,7 @@ export default function DashboardPage() {
               {[1, 2].map((i) => (
                 <div
                   key={i}
-                  className="h-16 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800"
+                  className="h-16 animate-pulse rounded-lg bg-muted"
                 />
               ))}
             </div>
@@ -216,10 +216,10 @@ export default function DashboardPage() {
             <Card className="mt-4">
               <CardContent className="flex flex-col items-center justify-center py-10">
                 <Bot className="h-10 w-10 text-gray-300 dark:text-gray-600" />
-                <h3 className="mt-3 font-medium text-gray-900 dark:text-gray-100">
+                <h3 className="mt-3 font-medium text-foreground">
                   No agents yet
                 </h3>
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                <p className="mt-1 text-sm text-muted-foreground">
                   Import one from GitHub or start from a template.
                 </p>
               </CardContent>
@@ -231,11 +231,11 @@ export default function DashboardPage() {
                   <Card className="transition-shadow hover:shadow-md">
                     <CardContent className="flex items-center justify-between py-3">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15">
                           <Bot className="h-5 w-5 text-primary-600 dark:text-primary-400" />
                         </div>
                         <div className="flex items-center gap-2">
-                          <span className="font-medium text-gray-900 dark:text-gray-100">
+                          <span className="font-medium text-foreground">
                             {agent.name}
                           </span>
                           <span
@@ -259,7 +259,7 @@ export default function DashboardPage() {
         {/* Recent Deployments */}
         <div className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <h2 className="text-lg font-semibold text-foreground">
               Recent Deployments
             </h2>
             <Link
@@ -275,7 +275,7 @@ export default function DashboardPage() {
               {[1, 2, 3].map((i) => (
                 <div
                   key={i}
-                  className="h-20 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-800"
+                  className="h-20 animate-pulse rounded-lg bg-muted"
                 />
               ))}
             </div>
@@ -283,10 +283,10 @@ export default function DashboardPage() {
             <Card className="mt-4">
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <Box className="h-12 w-12 text-gray-300 dark:text-gray-600" />
-                <h3 className="mt-4 text-lg font-medium text-gray-900 dark:text-gray-100">
+                <h3 className="mt-4 text-lg font-medium text-foreground">
                   No deployments yet
                 </h3>
-                <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                <p className="mt-2 text-sm text-muted-foreground">
                   Deploy your first model to get started
                 </p>
                 <Link href="/dashboard/deployments/new" className="mt-4">
@@ -307,26 +307,26 @@ export default function DashboardPage() {
                   <Card className="transition-shadow hover:shadow-md">
                     <CardContent className="flex items-center justify-between py-4">
                       <div className="flex items-center gap-4">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
                           <Cpu className="h-5 w-5 text-primary-600 dark:text-primary-400" />
                         </div>
                         <div>
                           <div className="flex items-center gap-2">
-                            <span className="font-medium text-gray-900 dark:text-gray-100">
+                            <span className="font-medium text-foreground">
                               {deployment.name}
                             </span>
                             <Badge variant={statusColors[deployment.status]}>
                               {deployment.status}
                             </Badge>
                           </div>
-                          <p className="text-sm text-gray-500 dark:text-gray-400">
+                          <p className="text-sm text-muted-foreground">
                             {deployment.model} on {deployment.gpuTier}
                           </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-4">
                         {deployment.endpoint && (
-                          <code className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+                          <code className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
                             {deployment.endpoint}
                           </code>
                         )}
@@ -342,17 +342,17 @@ export default function DashboardPage() {
 
         {/* Quick Actions */}
         <div className="mt-8">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Quick Actions</h2>
+          <h2 className="text-lg font-semibold text-foreground">Quick Actions</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             <Link href="/dashboard/agents/new">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-100 dark:bg-primary-900/30">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15">
                     <Bot className="h-6 w-6 text-primary-600 dark:text-primary-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Create Agent</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                    <h3 className="font-medium text-foreground">Create Agent</h3>
+                    <p className="text-sm text-muted-foreground">
                       Import from GitHub or start fresh
                     </p>
                   </div>
@@ -363,12 +363,12 @@ export default function DashboardPage() {
             <Link href="/dashboard/deployments/new">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/30">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-500/10">
                     <Cpu className="h-6 w-6 text-blue-600 dark:text-blue-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Deploy Model</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                    <h3 className="font-medium text-foreground">Deploy Model</h3>
+                    <p className="text-sm text-muted-foreground">
                       GPU inference on Nosana
                     </p>
                   </div>
@@ -379,12 +379,12 @@ export default function DashboardPage() {
             <Link href="/dashboard/keys">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/30">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-500/10">
                     <Zap className="h-6 w-6 text-green-600 dark:text-green-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Create API Key</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                    <h3 className="font-medium text-foreground">Create API Key</h3>
+                    <p className="text-sm text-muted-foreground">
                       Get credentials for your apps
                     </p>
                   </div>
@@ -395,12 +395,12 @@ export default function DashboardPage() {
             <Link href="/dashboard/playground">
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-100 dark:bg-purple-900/30">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-500/10">
                     <Box className="h-6 w-6 text-purple-600 dark:text-purple-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-gray-900 dark:text-gray-100">Open Playground</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                    <h3 className="font-medium text-foreground">Open Playground</h3>
+                    <p className="text-sm text-muted-foreground">
                       Test your models interactively
                     </p>
                   </div>

@@ -22,7 +22,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { API_BASE_URL, deploymentsApi, type DeploymentDetail } from "@/lib/api";
+import { API_BASE_URL, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "success",
@@ -52,7 +52,7 @@ export default function DeploymentDetailPage() {
       setDeployment(deployment);
       setMetrics(metricsData);
     } catch (error) {
-      toast.error("Failed to load deployment");
+      toast.error(getErrorMessage(error, "Failed to load deployment"));
       router.push("/dashboard/deployments");
     } finally {
       setIsLoading(false);
@@ -72,7 +72,7 @@ export default function DeploymentDetailPage() {
       toast.success("Deployment restarting...");
       loadDeployment();
     } catch (error) {
-      toast.error("Failed to restart deployment");
+      toast.error(getErrorMessage(error, "Failed to restart deployment"));
     } finally {
       setActionLoading(false);
     }
@@ -85,7 +85,7 @@ export default function DeploymentDetailPage() {
       toast.success("Deployment stopped");
       router.push("/dashboard/deployments");
     } catch (error) {
-      toast.error("Failed to stop deployment");
+      toast.error(getErrorMessage(error, "Failed to stop deployment"));
     } finally {
       setActionLoading(false);
     }
@@ -101,7 +101,7 @@ export default function DeploymentDetailPage() {
       <div className="flex flex-col">
         <Header title="Loading..." />
         <div className="p-8">
-          <div className="h-64 animate-pulse rounded-lg bg-gray-200" />
+          <div className="h-64 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -171,7 +171,7 @@ export default function DeploymentDetailPage() {
           <CardContent className="py-6">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-primary-100">
+                <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-primary/15">
                   <Cpu className="h-7 w-7 text-primary-600" />
                 </div>
                 <div>
@@ -181,7 +181,7 @@ export default function DeploymentDetailPage() {
                       {deployment.status}
                     </Badge>
                   </div>
-                  <p className="text-gray-500">
+                  <p className="text-muted-foreground">
                     {deployment.replicas} replica{deployment.replicas > 1 ? "s" : ""} &middot;{" "}
                     {deployment.engine} engine
                   </p>
@@ -190,7 +190,7 @@ export default function DeploymentDetailPage() {
 
               {deployment.status === "running" && (
                 <div className="text-right">
-                  <p className="text-sm text-gray-500">Healthy Nodes</p>
+                  <p className="text-sm text-muted-foreground">Healthy Nodes</p>
                   <p className="text-2xl font-bold text-green-600">
                     {deployment.nodes.filter((n) => n.healthStatus === "healthy").length}/
                     {deployment.nodes.length}
@@ -205,8 +205,8 @@ export default function DeploymentDetailPage() {
             check; a running job whose nodes are still "unknown" cannot
             serve this URL yet, and showing it would be a lie. */}
         {deployment.status === "running" && healthyNodeCount === 0 && (
-          <Card className="mb-6 border-amber-300 bg-amber-50">
-            <CardContent className="py-4 text-sm text-amber-800">
+          <Card className="mb-6 border-amber-500/30 bg-amber-500/10">
+            <CardContent className="py-4 text-sm text-amber-500">
               Deployment is running; awaiting the first successful node
               health check before the API endpoint goes live. This
               usually resolves within a minute.
@@ -220,7 +220,7 @@ export default function DeploymentDetailPage() {
             </CardHeader>
             <CardContent>
               <div className="flex items-center gap-2">
-                <code className="flex-1 rounded-lg bg-gray-100 px-4 py-3 text-sm">
+                <code className="flex-1 rounded-lg bg-muted px-4 py-3 text-sm">
                   {endpoint}/chat/completions
                 </code>
                 <Button
@@ -232,7 +232,7 @@ export default function DeploymentDetailPage() {
                 </Button>
               </div>
               <div className="mt-4">
-                <p className="text-sm font-medium text-gray-700">Usage Example</p>
+                <p className="text-sm font-medium text-foreground">Usage Example</p>
                 <pre className="mt-2 overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">
 {`curl ${endpoint}/chat/completions \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
@@ -254,7 +254,7 @@ export default function DeploymentDetailPage() {
               <div className="flex items-center gap-3">
                 <Zap className="h-5 w-5 text-gray-400" />
                 <div>
-                  <p className="text-sm text-gray-500">Requests (24h)</p>
+                  <p className="text-sm text-muted-foreground">Requests (24h)</p>
                   <p className="text-2xl font-bold">
                     {metrics?.metrics?.requests?.toLocaleString() || 0}
                   </p>
@@ -268,7 +268,7 @@ export default function DeploymentDetailPage() {
               <div className="flex items-center gap-3">
                 <Activity className="h-5 w-5 text-gray-400" />
                 <div>
-                  <p className="text-sm text-gray-500">Avg Latency</p>
+                  <p className="text-sm text-muted-foreground">Avg Latency</p>
                   <p className="text-2xl font-bold">
                     {metrics?.metrics?.avgLatencyMs || 0}ms
                   </p>
@@ -282,7 +282,7 @@ export default function DeploymentDetailPage() {
               <div className="flex items-center gap-3">
                 <Cpu className="h-5 w-5 text-gray-400" />
                 <div>
-                  <p className="text-sm text-gray-500">Tokens (24h)</p>
+                  <p className="text-sm text-muted-foreground">Tokens (24h)</p>
                   <p className="text-2xl font-bold">
                     {((metrics?.metrics?.inputTokens || 0) + (metrics?.metrics?.outputTokens || 0)).toLocaleString()}
                   </p>
@@ -296,7 +296,7 @@ export default function DeploymentDetailPage() {
               <div className="flex items-center gap-3">
                 <Clock className="h-5 w-5 text-gray-400" />
                 <div>
-                  <p className="text-sm text-gray-500">Error Rate</p>
+                  <p className="text-sm text-muted-foreground">Error Rate</p>
                   <p className="text-2xl font-bold">
                     {(metrics?.metrics?.errorRate || 0).toFixed(1)}%
                   </p>
@@ -314,27 +314,27 @@ export default function DeploymentDetailPage() {
           <CardContent>
             <div className="grid gap-4 md:grid-cols-2">
               <div>
-                <p className="text-sm text-gray-500">Model</p>
+                <p className="text-sm text-muted-foreground">Model</p>
                 <p className="font-medium">{deployment.model}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">GPU Tier</p>
+                <p className="text-sm text-muted-foreground">GPU Tier</p>
                 <p className="font-medium">{deployment.gpuTier}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">Engine</p>
+                <p className="text-sm text-muted-foreground">Engine</p>
                 <p className="font-medium">{deployment.engine}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">Max Tokens</p>
+                <p className="text-sm text-muted-foreground">Max Tokens</p>
                 <p className="font-medium">{deployment.config.maxTokens.toLocaleString()}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">GPU Memory Utilization</p>
+                <p className="text-sm text-muted-foreground">GPU Memory Utilization</p>
                 <p className="font-medium">{(deployment.config.gpuMemoryUtilization * 100).toFixed(0)}%</p>
               </div>
               <div>
-                <p className="text-sm text-gray-500">Created</p>
+                <p className="text-sm text-muted-foreground">Created</p>
                 <p className="font-medium">
                   {new Date(deployment.createdAt).toLocaleDateString()}
                 </p>
@@ -368,12 +368,12 @@ export default function DeploymentDetailPage() {
                       />
                       <div>
                         <p className="font-medium">Nosana host {i + 1}</p>
-                        <p className="text-sm text-gray-500">{node.healthStatus}</p>
+                        <p className="text-sm text-muted-foreground">{node.healthStatus}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-3">
                       {node.latencyMs && (
-                        <span className="text-sm text-gray-500">{node.latencyMs}ms latency</span>
+                        <span className="text-sm text-muted-foreground">{node.latencyMs}ms latency</span>
                       )}
                       {node.nosanaNodeId && !node.nosanaNodeId.startsWith("node_") && (
                         <a

@@ -131,6 +131,39 @@ test("PATCH merges env and stores it sealed", async () => {
   }
 });
 
+test("PATCH bumps the version only when the prompt, tools or source actually change", async () => {
+  const row = {
+    id: AGENT_ID,
+    name: "a",
+    version: "1.2.3",
+    systemPrompt: "Be brief.",
+    tools: [],
+    modelConfig: { temperature: 0.7, maxTokens: 4096, gpuTier: "4090" },
+    env: null,
+  };
+  const writes: any[] = [];
+  const { app, restore } = await agentsAppWith({
+    findFirst: async () => row,
+    update: async ({ data }: any) => {
+      writes.push(data);
+      return { ...row, ...data };
+    },
+  });
+  try {
+    const patch = (payload: unknown) => app.inject({ method: "PATCH", url: `/${AGENT_ID}`, payload: payload as object });
+    // A settings save that resends the same prompt is not a new version.
+    assert.equal((await patch({ systemPrompt: "Be brief.", name: "renamed" })).statusCode, 200);
+    assert.equal(writes[0].version, "1.2.3");
+    assert.equal((await patch({ systemPrompt: "Be thorough." })).statusCode, 200);
+    assert.equal(writes[1].version, "1.2.4");
+    // modelConfig edits merge, keeping keys the form does not know about.
+    await patch({ modelConfig: { temperature: 0.2, maxTokens: 1024 } });
+    assert.deepEqual(writes[2].modelConfig, { temperature: 0.2, maxTokens: 1024, gpuTier: "4090" });
+  } finally {
+    restore();
+  }
+});
+
 test("marketplace install never copies the publisher's env into the buyer's org", async () => {
   const { prisma } = await import("@wheelsai/db");
   const p = prisma as any;

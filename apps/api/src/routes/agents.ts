@@ -326,9 +326,13 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.badRequest("Knowledge base not found");
     }
 
-    // Increment version on significant changes
+    // Increment version when behaviour actually changes (a settings save
+    // that resends an unchanged prompt is not a new version).
+    const differs = (key: "sourceCode" | "sourceUrl" | "systemPrompt" | "tools") =>
+      updates[key] !== undefined &&
+      JSON.stringify(updates[key]) !== JSON.stringify((agent as Record<string, unknown>)[key] ?? null);
     let newVersion = agent.version;
-    if (updates.sourceCode || updates.sourceUrl || updates.systemPrompt || updates.tools) {
+    if (differs("sourceCode") || differs("sourceUrl") || differs("systemPrompt") || differs("tools")) {
       const [major = 1, minor = 0, patch = 0] = agent.version.split(".").map(Number);
       newVersion = `${major}.${minor}.${patch + 1}`;
     }

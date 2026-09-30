@@ -23,6 +23,7 @@
  * Pure over an injected transaction surface.
  */
 import { splitRevenue } from "./marketplaceMetering.js";
+import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
 import {
   PAST_DUE_GRACE_DAYS,
   SUBSCRIPTION_PERIOD_DAYS,
@@ -158,11 +159,18 @@ async function chargePeriod(
       settledAt: args.now,
     },
   });
+  // Accepted contributors are paid their shares; the publisher keeps the rest.
+  const { publisherCents } = await splitCreatorRevenue(tx as unknown as Partial<ContributorSplitTx>, {
+    revenueId: revenue.id,
+    listingId: args.listing.id,
+    publisherId: args.listing.publisherId,
+    creatorCents: split.creatorCents,
+  });
   await tx.publisherProfile.update({
     where: { orgId: args.listing.publisherId },
     data: {
-      totalRevenueCents: { increment: split.creatorCents },
-      pendingPayoutCents: { increment: split.creatorCents },
+      totalRevenueCents: { increment: publisherCents },
+      pendingPayoutCents: { increment: publisherCents },
     },
   });
   const after = await tx.creditBalance.findUnique({ where: { orgId: args.buyerId } });

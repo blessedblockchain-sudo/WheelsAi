@@ -41,6 +41,7 @@
  */
 import { subscriptionGrantsAccess } from "./subscriptionAccess.js";
 import { orgHoldsToken, tokenRequiredMessage, type TokenAccessDb } from "./tokenAccess.js";
+import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
 
 /** Platform's cut in basis points. Mirrors PLATFORM_FEE_SHARE = 0.1. */
 export const PLATFORM_FEE_BPS = 1000n;
@@ -509,11 +510,19 @@ export async function settleMarketplaceRequest(
     return { settled: false, reason: "not_pending" };
   }
 
+  // Accepted contributors are paid their shares; the publisher keeps the rest.
+  const { publisherCents } = await splitCreatorRevenue(tx as unknown as Partial<ContributorSplitTx>, {
+    revenueId: args.charge.revenueId,
+    listingId: args.charge.install.listingId,
+    publisherId: args.charge.install.publisherId,
+    creatorCents: args.charge.creatorCents,
+  });
+
   await tx.publisherProfile.update({
     where: { orgId: args.charge.install.publisherId },
     data: {
-      totalRevenueCents: { increment: args.charge.creatorCents },
-      pendingPayoutCents: { increment: args.charge.creatorCents },
+      totalRevenueCents: { increment: publisherCents },
+      pendingPayoutCents: { increment: publisherCents },
     },
   });
 

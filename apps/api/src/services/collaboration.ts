@@ -14,11 +14,65 @@ const USER_SELECT = {
 } as const;
 
 export async function listContributors(agentId: string) {
-  return prisma.agentContributor.findMany({
+  const contributors = await prisma.agentContributor.findMany({
     where: { agentId },
     include: { user: { select: USER_SELECT } },
     orderBy: [{ role: "asc" }, { createdAt: "asc" }],
   });
+  const earned = await earnedByContributor(contributors.map((c) => c.id));
+  return contributors.map((c) => ({ ...c, earnedCents: earned.get(c.id) ?? 0 }));
+}
+
+async function earnedByContributor(contributorIds: string[]): Promise<Map<string, number>> {
+  if (contributorIds.length === 0) return new Map();
+  const sums = await prisma.contributorEarning.groupBy({
+    by: ["contributorId"],
+    where: { contributorId: { in: contributorIds } },
+    _sum: { amountCents: true },
+  });
+  return new Map(sums.map((row) => [row.contributorId, Number(row._sum.amountCents ?? 0n)]));
+}
+
+/** Resolve an invitee by account email (case-insensitive). */
+export async function findUserIdByEmail(email: string): Promise<string | null> {
+  const user = await prisma.user.findFirst({
+    where: { email: { equals: email.trim(), mode: "insensitive" } },
+    select: { id: true },
+  });
+  return user?.id ?? null;
+}
+
+/**
+ * The signed-in user's contributions across every agent: pending
+ * invitations to accept or decline, and accepted shares with what they
+ * have earned so far.
+ */
+export async function listMyContributions(userId: string) {
+  const rows = await prisma.agentContributor.findMany({
+    where: { userId },
+    include: { agent: { select: { id: true, name: true, slug: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+  const earned = await earnedByContributor(rows.map((r) => r.id));
+  return rows.map((r) => ({
+    id: r.id,
+    agentId: r.agentId,
+    agentName: r.agent.name,
+    role: r.role,
+    revenueShareBps: r.revenueShareBps,
+    acceptedAt: r.acceptedAt,
+    createdAt: r.createdAt,
+    earnedCents: earned.get(r.id) ?? 0,
+  }));
+}
+
+/** An invitee turns down a pending invitation. */
+export async function declineInvitation(contributorId: string, userId: string) {
+  const deleted = await prisma.agentContributor.deleteMany({
+    where: { id: contributorId, userId, acceptedAt: null },
+  });
+  if (deleted.count === 0) throw new Error("No pending invitation to decline");
+  return { success: true };
 }
 
 export async function addContributor(

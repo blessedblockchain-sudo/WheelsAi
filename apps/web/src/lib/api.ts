@@ -4231,6 +4231,66 @@ export const treasuryApi = {
   },
 };
 
+// ============================================
+// Collaboration API (agent contributors and revenue shares)
+// ============================================
+
+export interface AgentContributorRow {
+  id: string;
+  role: string;
+  revenueShare: number;
+  revenueShareBps: number;
+  acceptedAt: string | null;
+  createdAt: string;
+  earnedCents: number;
+  user: {
+    id: string;
+    email: string | null;
+    displayName: string | null;
+    walletAddress: string | null;
+  };
+}
+
+export interface MyContribution {
+  id: string;
+  agentId: string;
+  agentName: string;
+  role: string;
+  revenueShareBps: number;
+  acceptedAt: string | null;
+  createdAt: string;
+  earnedCents: number;
+}
+
+export const collaborationApi = {
+  listContributors: (agentId: string) =>
+    api<{ contributors: AgentContributorRow[] }>(`/api/agents/${agentId}/contributors`),
+
+  /** Invite by account email; revenueShare is a fraction (0.25 = 25%). */
+  invite: (agentId: string, data: { email: string; role: string; revenueShare: number }) =>
+    api<{ contributor: AgentContributorRow }>(`/api/agents/${agentId}/contributors`, {
+      method: "POST",
+      body: data,
+    }),
+
+  remove: (agentId: string, contributorId: string) =>
+    api<{ message: string }>(`/api/agents/${agentId}/contributors/${contributorId}`, {
+      method: "DELETE",
+    }),
+
+  myContributions: () => api<{ contributions: MyContribution[] }>("/api/agents/contributions"),
+
+  accept: (agentId: string, contributorId: string) =>
+    api<{ message: string }>(`/api/agents/${agentId}/contributors/${contributorId}/accept`, {
+      method: "POST",
+    }),
+
+  decline: (agentId: string, contributorId: string) =>
+    api<{ success: boolean }>(`/api/agents/${agentId}/contributors/${contributorId}/decline`, {
+      method: "POST",
+    }),
+};
+
 export { ApiError };
 
 // ============================================

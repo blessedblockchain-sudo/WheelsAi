@@ -987,6 +987,27 @@ model MarketplaceRevenue {
   @@map("marketplace_revenue")
 }
 
+/// A contributor's share of one settled MarketplaceRevenue row, paid into
+/// the organization the contributor owns (its publisher profile accrues
+/// the amount; the regular payout flow pays it out).
+model ContributorEarning {
+  id             String   @id @default(uuid()) @db.Uuid
+  revenueId      String   @map("revenue_id") @db.Uuid
+  agentId        String   @map("agent_id") @db.Uuid
+  contributorId  String   @map("contributor_id") @db.Uuid // AgentContributor.id
+  userId         String   @map("user_id") @db.Uuid
+  recipientOrgId String   @map("recipient_org_id") @db.Uuid
+  publisherId    String   @map("publisher_id") @db.Uuid
+  shareBps       Int      @map("share_bps")
+  amountCents    BigInt   @map("amount_cents")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([revenueId, userId])
+  @@index([recipientOrgId, createdAt])
+  @@index([agentId])
+  @@map("contributor_earnings")
+}
+
 // ============================================
 // Enterprise Features (Phase 3)
 // ============================================

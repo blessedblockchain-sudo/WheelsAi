@@ -102,7 +102,7 @@ test("validateEnv: mock checkout is allowed outside production", async () => {
   assert.equal(data.ALLOW_MOCK_CHECKOUT, true);
 });
 
-test("POST /checkout returns 501 checkout_not_implemented when the mock path is disabled", async () => {
+test("POST /checkout returns 501 card_payments_not_configured when neither Stripe nor the mock path is enabled", async () => {
   // ALLOW_MOCK_CHECKOUT defaults to false; setupEnv does not set it, so the
   // module-level env the route reads has the gate closed.
   const Fastify = (await import("fastify")).default;
@@ -129,6 +129,6 @@ test("POST /checkout returns 501 checkout_not_implemented when the mock path is 
   });
 
   assert.equal(res.statusCode, 501);
-  assert.equal(res.json().error, "checkout_not_implemented");
+  assert.equal(res.json().error, "card_payments_not_configured");
   await app.close();
 });

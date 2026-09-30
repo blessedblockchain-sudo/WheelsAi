@@ -3,6 +3,9 @@ import { Redis } from "ioredis";
 import { disconnectTokenGateCache } from "./middleware/tokenGate.js";
 import { syncModelCatalog, type ModelCatalogDb } from "./services/syncModelCatalog.js";
 import { emailAuthRoutes } from "./routes/emailAuth.js";
+import { stripeWebhookRoutes } from "./routes/stripeWebhook.js";
+import { contactRoutes } from "./routes/contact.js";
+import { disconnectPlanUsage } from "./services/orgPlan.js";
 import { prisma } from "./lib/prisma.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
@@ -173,6 +176,7 @@ async function main() {
   app.addHook("onClose", async () => {
     rateLimitRedis.disconnect();
     disconnectTokenGateCache();
+    disconnectPlanUsage();
   });
   await app.register(rateLimit, {
     max: 100,
@@ -284,6 +288,8 @@ async function main() {
   await app.register(healthRoutes, { prefix: "/health" });
   await app.register(authRoutes, { prefix: "/api/auth" });
   await app.register(emailAuthRoutes, { prefix: "/api/auth" });
+  await app.register(stripeWebhookRoutes, { prefix: "/api/billing/stripe" });
+  await app.register(contactRoutes, { prefix: "/api" });
   await app.register(modelRoutes, { prefix: "/api/models" });
   await app.register(deploymentRoutes, { prefix: "/api/deployments" });
   await app.register(agentRoutes, { prefix: "/api/agents" });

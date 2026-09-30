@@ -1,5 +1,15 @@
 import { FastifyPluginAsync } from "fastify";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { z } from "zod";
+import { requireAuth, requireJwtAuth, requireRole } from "../middleware/auth.js";
+import { getStripe, isProSubscriptionEnabled, isStripeCheckoutEnabled } from "../services/stripe/stripeClient.js";
+import {
+  CheckoutError,
+  createBillingPortal,
+  createCreditCheckout,
+  createProCheckout,
+} from "../services/stripe/stripeCheckout.js";
+import { countOwnAgents, getApiCallsThisMonth, getOrgPlan } from "../services/orgPlan.js";
+import { PLANS } from "../services/plans.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 import { grantCredits } from "../services/creditGrant.js";
@@ -13,6 +23,10 @@ import {
 
 interface CheckoutBody {
   amount: number;
+}
+
+function webOrigin(): string {
+  return (env.PUBLIC_WEB_URL ?? env.CORS_ORIGIN).replace(/\/+$/, "");
 }
 
 export const billingRoutes: FastifyPluginAsync = async (fastify) => {
@@ -138,8 +152,8 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     minPurchase: MIN_PURCHASE_DOLLARS,
     maxPurchase: MAX_PURCHASE_DOLLARS,
     rails: {
-      // Flips when Stripe Checkout (B2/T3) lands with real keys.
-      stripeCheckout: false,
+      stripeCheckout: isStripeCheckoutEnabled(),
+      proSubscription: isProSubscriptionEnabled(),
       mockCheckout: env.ALLOW_MOCK_CHECKOUT,
       wallet: env.WALLET_TOPUPS_ENABLED,
       walletAssets: env.WALLET_TOPUPS_ENABLED
@@ -162,14 +176,35 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
   // behind ALLOW_MOCK_CHECKOUT, which env.ts refuses to boot with in
   // production. When Stripe lands, credits must only be granted from a
   // signature-verified webhook with an idempotency key.
-  fastify.post<{ Body: CheckoutBody }>("/checkout", { preHandler: requireRole("owner", "admin") }, async (request, reply) => {
+  fastify.post<{ Body: CheckoutBody }>("/checkout", { preHandler: [requireJwtAuth, requireRole("owner", "admin")] }, async (request, reply) => {
     const { amount } = request.body;
     const orgId = request.auth!.orgId;
 
+    // Real card checkout. Credits are granted by the signature-verified
+    // webhook, never here.
+    const stripe = getStripe();
+    if (stripe && isStripeCheckoutEnabled()) {
+      try {
+        const result = await createCreditCheckout(stripe, {
+          orgId,
+          amountDollars: Number(amount),
+          email: request.auth!.email,
+          successUrl: `${webOrigin()}/dashboard/billing?checkout=success`,
+          cancelUrl: `${webOrigin()}/dashboard/billing?checkout=cancelled`,
+        });
+        return { checkoutUrl: result.url };
+      } catch (err) {
+        if (err instanceof CheckoutError) {
+          return reply.status(err.status).send({ error: err.code, message: err.message });
+        }
+        throw err;
+      }
+    }
+
     if (!env.ALLOW_MOCK_CHECKOUT) {
       return reply.status(501).send({
-        error: "checkout_not_implemented",
-        message: "Credit purchases are not yet available.",
+        error: "card_payments_not_configured",
+        message: "Card payments are not configured on this server yet. Wallet top-ups work where enabled.",
       });
     }
 
@@ -203,4 +238,84 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       message: "Credits added successfully (development mode)",
     };
   });
+
+  // Current plan, its limits, and this month's usage against them.
+  fastify.get("/plan", async (request) => {
+    const orgId = request.auth!.orgId;
+    const [{ plan, limits }, sub, agents, apiCalls] = await Promise.all([
+      getOrgPlan(orgId),
+      prisma.orgSubscription.findUnique({ where: { orgId } }),
+      countOwnAgents(orgId),
+      getApiCallsThisMonth(orgId),
+    ]);
+    return {
+      plan,
+      limits,
+      status: sub?.status ?? "none",
+      trialEndsAt: sub?.trialEndsAt ?? null,
+      trialAvailable: !sub?.trialUsedAt,
+      currentPeriodEnd: sub?.currentPeriodEnd ?? null,
+      cancelAtPeriodEnd: sub?.cancelAtPeriodEnd ?? false,
+      hasBillingAccount: !!sub?.stripeCustomerId,
+      usage: { agents, apiCallsThisMonth: apiCalls },
+      plans: PLANS,
+      proSubscriptionAvailable: isProSubscriptionEnabled(),
+    };
+  });
+
+  // Start Pro (with the 14-day trial the first time).
+  fastify.post(
+    "/subscription/checkout",
+    { preHandler: [requireJwtAuth, requireRole("owner", "admin")] },
+    async (request, reply) => {
+      z.object({ plan: z.literal("pro") }).parse(request.body ?? {});
+      const stripe = getStripe();
+      if (!stripe || !isProSubscriptionEnabled()) {
+        return reply.status(501).send({
+          error: "pro_not_configured",
+          message: "The Pro plan is not available for purchase on this server yet.",
+        });
+      }
+      try {
+        const result = await createProCheckout(stripe, {
+          orgId: request.auth!.orgId,
+          email: request.auth!.email,
+          successUrl: `${webOrigin()}/dashboard/billing?subscription=success`,
+          cancelUrl: `${webOrigin()}/dashboard/billing?subscription=cancelled`,
+        });
+        return { checkoutUrl: result.url, trialDays: result.trialDays };
+      } catch (err) {
+        if (err instanceof CheckoutError) {
+          return reply.status(err.status).send({ error: err.code, message: err.message });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // Manage payment method, invoices, cancellation.
+  fastify.post(
+    "/portal",
+    { preHandler: [requireJwtAuth, requireRole("owner", "admin")] },
+    async (request, reply) => {
+      const stripe = getStripe();
+      if (!stripe) {
+        return reply.status(501).send({
+          error: "card_payments_not_configured",
+          message: "Billing management is not configured on this server yet.",
+        });
+      }
+      try {
+        return await createBillingPortal(stripe, {
+          orgId: request.auth!.orgId,
+          returnUrl: `${webOrigin()}/dashboard/billing`,
+        });
+      } catch (err) {
+        if (err instanceof CheckoutError) {
+          return reply.status(err.status).send({ error: err.code, message: err.message });
+        }
+        throw err;
+      }
+    },
+  );
 };

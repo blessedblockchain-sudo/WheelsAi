@@ -109,6 +109,10 @@ const envSchema = z.object({
   // Stripe
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  // Recurring Stripe Price for the Pro plan ($49/month).
+  STRIPE_PRO_PRICE_ID: z.string().optional(),
+  // Where "Contact sales" requests are emailed (they are also stored).
+  SALES_EMAIL: z.string().email().optional(),
 
   // IPFS
   PINATA_API_KEY: z.string().optional(),
@@ -394,6 +398,13 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     }
   }
 
+  // Taking card payments without the webhook secret would charge buyers and
+  // never grant their credits.
+  if (deployed && data.STRIPE_SECRET_KEY && !data.STRIPE_WEBHOOK_SECRET) {
+    throw new EnvValidationError(
+      "STRIPE_SECRET_KEY requires STRIPE_WEBHOOK_SECRET outside development: credits are only granted from signature-verified webhooks"
+    );
+  }
   if (deployed && data.EMAIL_PROVIDER === "log") {
     throw new EnvValidationError(
       "EMAIL_PROVIDER=log only writes emails to the API log; it is refused outside development"

@@ -17,10 +17,12 @@ import {
   getErrorMessage,
   type AgentContributorRow,
 } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Contributor = AgentContributorRow;
 
 export default function ContributorsPage() {
+  const confirmAction = useConfirm();
   const params = useParams();
   const agentId = params.id as string;
 
@@ -81,7 +83,7 @@ export default function ContributorsPage() {
   };
 
   const handleRemove = async (contributorId: string) => {
-    if (!confirm("Remove this contributor?")) return;
+    if (!(await confirmAction({ title: "Remove this contributor?", destructive: true }))) return;
     try {
       await collaborationApi.remove(agentId, contributorId);
       toast.success("Contributor removed");

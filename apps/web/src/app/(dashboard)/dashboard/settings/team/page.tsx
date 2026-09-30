@@ -13,8 +13,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { enterpriseApi, getErrorMessage, type TeamMember, type TeamInvite } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export default function TeamSettingsPage() {
+  const confirmAction = useConfirm();
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [invites, setInvites] = useState<TeamInvite[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,7 +92,7 @@ export default function TeamSettingsPage() {
   }
 
   async function handleRemoveMember(memberId: string) {
-    if (!confirm("Are you sure you want to remove this team member?")) return;
+    if (!(await confirmAction({ title: "Remove this team member?", destructive: true }))) return;
 
     try {
       await enterpriseApi.removeMember(memberId);

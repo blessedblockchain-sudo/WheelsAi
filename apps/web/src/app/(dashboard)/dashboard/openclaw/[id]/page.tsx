@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -81,6 +82,7 @@ function formatRelativeTime(date: Date): string {
 }
 
 export default function OpenClawDeploymentDetailPage() {
+  const confirmAction = useConfirm();
   const params = useParams();
   const router = useRouter();
   const deploymentId = params.id as string;
@@ -276,14 +278,14 @@ export default function OpenClawDeploymentDetailPage() {
 
               <Button
                 variant="destructive"
-                onClick={() => {
-                  if (
-                    confirm(
-                      `Are you sure you want to delete "${deployment.agentName}"? This action cannot be undone.`
-                    )
-                  ) {
-                    handleAction("delete");
-                  }
+                onClick={async () => {
+                  const ok = await confirmAction({
+                    title: `Delete "${deployment.agentName}"?`,
+                    description: "The deployment is stopped and removed. This cannot be undone.",
+                    confirmLabel: "Delete",
+                    destructive: true,
+                  });
+                  if (ok) handleAction("delete");
                 }}
                 disabled={actionLoading === "delete"}
                 className="ml-auto"

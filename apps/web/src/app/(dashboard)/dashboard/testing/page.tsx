@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 // Icons
 function CheckCircleIcon({ className }: { className?: string }) {
@@ -83,6 +84,7 @@ function ClockIcon({ className }: { className?: string }) {
 }
 
 export default function TestingPage() {
+  const confirmAction = useConfirm();
   const [suites, setSuites] = useState<TestSuite[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [stats, setStats] = useState<{
@@ -167,7 +169,7 @@ export default function TestingPage() {
   }
 
   async function deleteSuite(id: string) {
-    if (!confirm("Are you sure you want to delete this test suite?")) return;
+    if (!(await confirmAction({ title: "Delete this test suite?", destructive: true }))) return;
     try {
       await testingApi.deleteSuite(id);
       setSuites(suites.filter((s) => s.id !== id));

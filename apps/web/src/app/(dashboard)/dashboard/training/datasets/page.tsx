@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { trainingApi, type Dataset, type DatasetDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const formatColors: Record<string, string> = {
   jsonl: "bg-blue-500/10 text-blue-500",
@@ -35,6 +36,7 @@ const formatColors: Record<string, string> = {
 };
 
 export default function DatasetsPage() {
+  const confirmAction = useConfirm();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showUploadForm, setShowUploadForm] = useState(false);
@@ -143,7 +145,7 @@ export default function DatasetsPage() {
   }
 
   async function handleDelete(datasetId: string) {
-    if (!confirm("Are you sure you want to delete this dataset?")) {
+    if (!(await confirmAction({ title: "Delete this dataset?", destructive: true }))) {
       return;
     }
 

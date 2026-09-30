@@ -27,8 +27,10 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { AgentTabProps } from "./types";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
+  const confirmAction = useConfirm();
   const [versionHistory, setVersionHistory] = useState<VersionHistoryEntry[]>([]);
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
   const [showCreateVersion, setShowCreateVersion] = useState(false);
@@ -102,7 +104,13 @@ export function VersionsTab({ agent, agentId, loadAgent }: AgentTabProps) {
   }
 
   async function handleRollback(version: string) {
-    if (!confirm(`Are you sure you want to rollback to version ${version}? This will create a new version.`)) {
+    if (
+      !(await confirmAction({
+        title: `Roll back to version ${version}?`,
+        description: "This restores that version's configuration as a new version; history is kept.",
+        confirmLabel: "Roll back",
+      }))
+    ) {
       return;
     }
 

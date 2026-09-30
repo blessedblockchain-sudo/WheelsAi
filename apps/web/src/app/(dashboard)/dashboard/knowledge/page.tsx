@@ -25,6 +25,7 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 // ---------------------------------------------------------------------------
 // Status badge color map
@@ -47,6 +48,7 @@ function statusClasses(status: string): string {
 // ---------------------------------------------------------------------------
 
 export default function KnowledgePage() {
+  const confirmAction = useConfirm();
   // Data state
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [stats, setStats] = useState<{
@@ -177,7 +179,7 @@ export default function KnowledgePage() {
   // ---------------------------------------------------------------------------
 
   async function handleDeleteKb(kbId: string) {
-    if (!confirm("Are you sure you want to delete this knowledge base and all its documents?")) {
+    if (!(await confirmAction({ title: "Delete this knowledge base and all its documents?", destructive: true }))) {
       return;
     }
     try {
@@ -231,7 +233,7 @@ export default function KnowledgePage() {
   // ---------------------------------------------------------------------------
 
   async function handleDeleteDoc(kbId: string, docId: string) {
-    if (!confirm("Are you sure you want to delete this document?")) return;
+    if (!(await confirmAction({ title: "Delete this document?", destructive: true }))) return;
     try {
       await knowledgeApi.deleteDocument(kbId, docId);
       setExpandedDocs((prev) => prev.filter((d) => d.id !== docId));

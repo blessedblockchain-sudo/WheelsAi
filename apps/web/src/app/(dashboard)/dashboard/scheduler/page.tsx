@@ -28,6 +28,7 @@ import {
 } from "@/lib/api";
 import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Tab = "tasks" | "executions";
 
@@ -94,6 +95,7 @@ function getTaskSuccessRate(task: ScheduledTask): string {
 }
 
 export default function SchedulerPage() {
+  const confirmAction = useConfirm();
   const [activeTab, setActiveTab] = useState<Tab>("tasks");
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<SchedulerStats | null>(null);
@@ -162,7 +164,7 @@ export default function SchedulerPage() {
   }
 
   async function handleDelete(taskId: string) {
-    if (!confirm("Are you sure you want to delete this scheduled task?")) return;
+    if (!(await confirmAction({ title: "Delete this scheduled task?", destructive: true }))) return;
     try {
       await schedulerApi.delete(taskId);
       setTasks((prev) => prev.filter((t) => t.id !== taskId));

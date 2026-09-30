@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -97,6 +98,7 @@ const platformConfig: Record<string, { label: string; icon: typeof MessageSquare
 };
 
 export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClawChannelsProps) {
+  const confirmAction = useConfirm();
   const [showAddForm, setShowAddForm] = useState(false);
   const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
   const [formData, setFormData] = useState<Record<string, string>>({});
@@ -152,7 +154,7 @@ export function OpenClawChannels({ deploymentId, channels, onRefresh }: OpenClaw
   };
 
   const handleDelete = async (channelId: string) => {
-    if (!confirm("Remove this channel?")) return;
+    if (!(await confirmAction({ title: "Remove this channel?", destructive: true }))) return;
 
     try {
       const response = await fetch(`${API_URL}/api/openclaw/channels/${channelId}`, {

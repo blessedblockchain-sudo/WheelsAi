@@ -40,6 +40,7 @@ import {
   ApiError,
   getErrorMessage,
 } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 interface Install {
   id: string;
@@ -101,6 +102,7 @@ function formatPrice(listing: MarketplaceListing): string {
 }
 
 export default function InstalledAgentsPage() {
+  const confirmAction = useConfirm();
   const [installs, setInstalls] = useState<Install[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [reviewingListingId, setReviewingListingId] = useState<string | null>(null);
@@ -146,11 +148,16 @@ export default function InstalledAgentsPage() {
 
   async function handleUninstall(install: Install) {
     const listingId = install.listingId;
-    const message =
-      install.listing.pricingModel === "monthly" && install.subscription?.hasAccess
-        ? "Uninstalling ends your subscription now, and the current period is not refunded. To keep access until it ends, cancel renewal instead. Uninstall anyway?"
-        : "Are you sure you want to uninstall this agent?";
-    if (!confirm(message)) return;
+    const paidUp = install.listing.pricingModel === "monthly" && install.subscription?.hasAccess;
+    const ok = await confirmAction({
+      title: `Uninstall ${install.listing.title}?`,
+      description: paidUp
+        ? "This ends your subscription now, and the current period is not refunded. To keep access until the period ends, cancel renewal instead."
+        : "Its copy in your workspace stops working. You can reinstall it later.",
+      confirmLabel: "Uninstall",
+      destructive: true,
+    });
+    if (!ok) return;
 
     try {
       await marketplaceApi.uninstallAgent(listingId);

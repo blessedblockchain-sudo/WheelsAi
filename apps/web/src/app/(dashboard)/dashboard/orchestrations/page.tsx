@@ -29,6 +29,7 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 // ---------------------------------------------------------------------------
 // Execution mode badge config
@@ -117,6 +118,7 @@ function formatRelativeTime(dateStr?: string): string {
 // Page component
 // ---------------------------------------------------------------------------
 export default function OrchestrationsPage() {
+  const confirmAction = useConfirm();
   const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
   const [stats, setStats] = useState<{
     totalOrchestrations: number;
@@ -217,7 +219,7 @@ export default function OrchestrationsPage() {
   }
 
   async function handleDelete(orchId: string) {
-    if (!confirm("Are you sure you want to delete this orchestration?")) return;
+    if (!(await confirmAction({ title: "Delete this orchestration?", destructive: true }))) return;
     try {
       await orchestrationApi.delete(orchId);
       if (expandedId === orchId) setExpandedId(null);

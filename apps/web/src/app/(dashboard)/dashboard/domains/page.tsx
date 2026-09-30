@@ -31,8 +31,10 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export default function DomainsPage() {
+  const confirmAction = useConfirm();
   const router = useRouter();
   const [stats, setStats] = useState<DomainStats | null>(null);
   const [domains, setDomains] = useState<CustomDomain[]>([]);
@@ -109,7 +111,7 @@ export default function DomainsPage() {
   }
 
   async function deleteDomain(domainId: string) {
-    if (!confirm("Are you sure you want to delete this domain?")) return;
+    if (!(await confirmAction({ title: "Delete this domain?", destructive: true }))) return;
     try {
       await domainsApi.deleteDomain(domainId);
       loadData();

@@ -32,6 +32,7 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Tab = "overview" | "alerts" | "rules" | "channels" | "uptime";
 
@@ -56,6 +57,7 @@ const channelIcons = {
 };
 
 export default function MonitoringPage() {
+  const confirmAction = useConfirm();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [loading, setLoading] = useState(true);
 
@@ -129,7 +131,7 @@ export default function MonitoringPage() {
   }
 
   async function handleDeleteRule(ruleId: string) {
-    if (!confirm("Are you sure you want to delete this alert rule?")) return;
+    if (!(await confirmAction({ title: "Delete this alert rule?", destructive: true }))) return;
     try {
       await monitoringApi.deleteRule(ruleId);
       loadData();
@@ -148,7 +150,7 @@ export default function MonitoringPage() {
   }
 
   async function handleDeleteChannel(channelId: string) {
-    if (!confirm("Are you sure you want to delete this channel?")) return;
+    if (!(await confirmAction({ title: "Delete this channel?", destructive: true }))) return;
     try {
       await monitoringApi.deleteChannel(channelId);
       loadData();

@@ -25,8 +25,10 @@ import {
   type ConversationStats,
   type Agent,
 } from "@/lib/api";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 export default function MemoryPage() {
+  const confirmAction = useConfirm();
   const router = useRouter();
   const [stats, setStats] = useState<ConversationStats | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -64,7 +66,7 @@ export default function MemoryPage() {
   }
 
   async function deleteConversation(id: string) {
-    if (!confirm("Are you sure you want to delete this conversation?")) return;
+    if (!(await confirmAction({ title: "Delete this conversation?", destructive: true }))) return;
     try {
       await memoryApi.deleteConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));

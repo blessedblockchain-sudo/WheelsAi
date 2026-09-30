@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { trainingApi, type TrainingJobDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "warning",
@@ -49,6 +50,7 @@ const statusIcons: Record<string, React.ElementType> = {
 type Tab = "overview" | "logs" | "metrics";
 
 export default function TrainingJobDetailPage() {
+  const confirmAction = useConfirm();
   const params = useParams();
   const router = useRouter();
   const jobId = params.id as string;
@@ -116,7 +118,7 @@ export default function TrainingJobDetailPage() {
   }, [logs, activeTab]);
 
   async function handleCancel() {
-    if (!confirm("Are you sure you want to cancel this training job?")) {
+    if (!(await confirmAction({ title: "Cancel this training job?", destructive: true }))) {
       return;
     }
 

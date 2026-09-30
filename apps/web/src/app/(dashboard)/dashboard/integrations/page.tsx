@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 
 // Icons
 function WebhookIcon({ className }: { className?: string }) {
@@ -133,6 +134,7 @@ const integrationIcons: Record<string, React.ReactNode> = {
 };
 
 export default function IntegrationsPage() {
+  const confirmAction = useConfirm();
   const [activeTab, setActiveTab] = useState<"webhooks" | "integrations">("webhooks");
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
@@ -199,7 +201,7 @@ export default function IntegrationsPage() {
   }
 
   async function deleteWebhook(id: string) {
-    if (!confirm("Are you sure you want to delete this webhook?")) return;
+    if (!(await confirmAction({ title: "Delete this webhook?", destructive: true }))) return;
     try {
       await webhooksApi.deleteWebhook(id);
       setWebhooks(webhooks.filter((w) => w.id !== id));
@@ -250,7 +252,7 @@ export default function IntegrationsPage() {
   }
 
   async function deleteIntegration(id: string) {
-    if (!confirm("Are you sure you want to delete this integration?")) return;
+    if (!(await confirmAction({ title: "Delete this integration?", destructive: true }))) return;
     try {
       await integrationsApi.deleteIntegration(id);
       setIntegrations(integrations.filter((i) => i.id !== id));

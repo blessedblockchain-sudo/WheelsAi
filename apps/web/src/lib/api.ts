@@ -544,6 +544,8 @@ export interface CreditPackage {
 /** Which payment rails are actually live on this deployment (B2/T5). */
 export interface BillingRails {
   stripeCheckout: boolean;
+  /** Pro plan purchasable (Stripe + a Pro price configured). */
+  proSubscription?: boolean;
   mockCheckout: boolean;
   wallet: boolean;
   walletAssets: string[];
@@ -572,9 +574,52 @@ export interface TopupSettleResponse {
   reason?: string;
 }
 
+export type PlanId = "starter" | "pro" | "enterprise";
+
+export interface PlanLimits {
+  id: PlanId;
+  name: string;
+  priceMonthlyUsd: number | null;
+  maxAgents: number | null;
+  monthlyApiCalls: number | null;
+  customDomains: boolean;
+  advancedAnalytics: boolean;
+  priorityPlacement: boolean;
+  modelRateMultiplier: number;
+  sso: boolean;
+  whiteLabel: boolean;
+}
+
+export interface PlanInfo {
+  plan: PlanId;
+  limits: PlanLimits;
+  status: string;
+  trialEndsAt: string | null;
+  trialAvailable: boolean;
+  currentPeriodEnd: string | null;
+  cancelAtPeriodEnd: boolean;
+  hasBillingAccount: boolean;
+  usage: { agents: number; apiCallsThisMonth: number };
+  plans: Record<PlanId, PlanLimits>;
+  proSubscriptionAvailable: boolean;
+}
+
 export const billingApi = {
   getBalance: () =>
     api<{ balance: CreditBalance }>("/api/billing/balance"),
+
+  /** Current plan, limits and this month's usage. */
+  getPlan: () => api<PlanInfo>("/api/billing/plan"),
+
+  /** Start Pro (14-day trial the first time); returns Stripe Checkout. */
+  startProCheckout: () =>
+    api<{ checkoutUrl: string; trialDays: number }>("/api/billing/subscription/checkout", {
+      method: "POST",
+      body: { plan: "pro" },
+    }),
+
+  /** Stripe billing portal: payment method, invoices, cancellation. */
+  openBillingPortal: () => api<{ url: string }>("/api/billing/portal", { method: "POST" }),
 
   /** The credit ladder the grant math actually uses (B2/T1). */
   getPackages: () =>
@@ -4148,3 +4193,17 @@ export const treasuryApi = {
 };
 
 export { ApiError };
+
+// ============================================
+// Contact sales
+// ============================================
+
+export const contactApi = {
+  submit: (body: {
+    name: string;
+    email: string;
+    company?: string;
+    topic?: "enterprise" | "support" | "other";
+    message: string;
+  }) => api<{ received: boolean; id: string; emailed: boolean }>("/api/contact", { method: "POST", body }),
+};

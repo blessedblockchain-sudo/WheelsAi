@@ -32,7 +32,8 @@ const tiers = [
       "Priority marketplace placement",
     ],
     cta: "Start Pro Trial",
-    href: "/register?plan=pro",
+    // Sign up, then land on billing, which starts Pro checkout (14-day trial).
+    href: "/register?next=%2Fdashboard%2Fbilling%3Fupgrade%3Dpro",
     popular: true,
   },
   {

@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { PlanCard } from "@/components/dashboard/plan-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -102,6 +103,26 @@ export default function BillingPage() {
       .catch(() => {});
   }, []);
 
+  // Pricing page "Start Pro Trial" lands on ?upgrade=pro after sign-up;
+  // Stripe returns to ?checkout=… / ?subscription=….
+  const [autoUpgrade, setAutoUpgrade] = useState(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("upgrade") === "pro") setAutoUpgrade(true);
+    const checkout = params.get("checkout");
+    const subscription = params.get("subscription");
+    if (checkout === "success") {
+      toast.success("Payment received. Your credits appear as soon as Stripe confirms it.");
+    } else if (checkout === "cancelled") {
+      toast.info("Checkout cancelled. You were not charged.");
+    }
+    if (subscription === "success") {
+      toast.success("Welcome to Pro. Your plan updates as soon as Stripe confirms the subscription.");
+    } else if (subscription === "cancelled") {
+      toast.info("Pro checkout cancelled. You were not charged.");
+    }
+  }, []);
+
   async function handlePurchase(packageIndex: number) {
     const pkg = creditPackages[packageIndex];
     if (!pkg) {
@@ -114,16 +135,7 @@ export default function BillingPage() {
       const { checkoutUrl } = await billingApi.createCheckout(pkg.amount);
       window.location.href = checkoutUrl;
     } catch (error) {
-      const status = error instanceof Error && "status" in error
-        ? (error as { status: number }).status
-        : null;
-      if (status === 501) {
-        toast.info(
-          "Card payments are coming soon — every new account starts with $5 in free credits."
-        );
-      } else {
-        toast.error(getErrorMessage(error, "Failed to create checkout session"));
-      }
+      toast.error(getErrorMessage(error, "Failed to create checkout session"));
       setIsPurchasing(null);
     }
   }
@@ -252,6 +264,8 @@ export default function BillingPage() {
       />
 
       <div className="p-8">
+        <PlanCard autoUpgrade={autoUpgrade} />
+
         {/* Balance overview */}
         <div className="mb-8 grid gap-6 md:grid-cols-3">
           <Card>
@@ -366,12 +380,20 @@ export default function BillingPage() {
               {rails?.wallet && rails.walletAssets.length > 0 ? (
                 <>
                   Wallet payments ({rails.walletAssets.join("/")}
-                  {rails.network === "devnet" ? ", devnet" : ""}) are live —
-                  your wallet signs the exact transfer our server prepares.
-                  Card payments are coming soon. Credits never expire.
+                  {rails.network === "devnet" ? ", devnet" : ""}) are live:
+                  your wallet signs the exact transfer our server prepares.{" "}
+                  {rails.stripeCheckout
+                    ? "Card payments go through Stripe."
+                    : "Card payments are not enabled on this server yet."}{" "}
+                  Credits never expire.
                 </>
               ) : (
-                <>Card payments are coming soon. Credits never expire.</>
+                <>
+                  {rails?.stripeCheckout
+                    ? "Card payments go through Stripe."
+                    : "Card payments are not enabled on this server yet."}{" "}
+                  Credits never expire.
+                </>
               )}
             </p>
           </CardContent>

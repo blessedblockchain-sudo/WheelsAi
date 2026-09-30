@@ -1177,6 +1177,19 @@ export const trainingApi = {
 // Marketplace API
 // ============================================
 
+/** A buyer's monthly subscription to a marketplace listing. */
+export interface MarketplaceSubscription {
+  id: string;
+  listingId: string;
+  status: "active" | "past_due" | "cancelled" | "expired";
+  currentPeriodStart: string;
+  currentPeriodEnd: string;
+  cancelAtPeriodEnd: boolean;
+  cancelledAt: string | null;
+  hasAccess: boolean;
+  graceEndsAt: string | null;
+}
+
 export interface MarketplaceListing {
   id: string;
   agentId: string;
@@ -1387,12 +1400,15 @@ export const marketplaceApi = {
       body: data,
     }),
 
-  // Install Routes
+  // Install Routes. A monthly listing charges the first 30-day period
+  // here; the API answers 402 (insufficient_credits) when the buyer
+  // cannot pay.
   installAgent: (listingId: string) =>
     api<{
       message: string;
       install: { id: string; status: string };
       clonedAgent: { id: string; name: string; slug: string };
+      subscription: { id: string; currentPeriodEnd: string } | null;
     }>(`/api/marketplace/listings/${listingId}/install`, {
       method: "POST",
     }),
@@ -1424,8 +1440,31 @@ export const marketplaceApi = {
         totalSpentCents: number;
         installedAt: string;
         listing: MarketplaceListing;
+        subscription: MarketplaceSubscription | null;
       }>;
     }>("/api/marketplace/my-installs"),
+
+  // Monthly subscriptions
+  getSubscriptions: () =>
+    api<{
+      subscriptions: Array<
+        MarketplaceSubscription & {
+          listing: { id: string; title: string; slug: string; iconUrl: string | null; monthlyPriceCents: number };
+        }
+      >;
+    }>("/api/marketplace/subscriptions"),
+
+  cancelSubscription: (listingId: string) =>
+    api<{ subscription: MarketplaceSubscription }>(
+      `/api/marketplace/subscriptions/${listingId}/cancel`,
+      { method: "POST" }
+    ),
+
+  resumeSubscription: (listingId: string) =>
+    api<{ subscription: MarketplaceSubscription }>(
+      `/api/marketplace/subscriptions/${listingId}/resume`,
+      { method: "POST" }
+    ),
 
   // Revenue Routes
   getRevenue: () =>

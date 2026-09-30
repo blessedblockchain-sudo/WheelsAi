@@ -11,6 +11,8 @@ import {
   MessageSquare,
   MoreVertical,
   Play,
+  RefreshCw,
+  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -31,7 +33,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ReviewForm } from "@/components/marketplace/review-form";
-import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
+import {
+  marketplaceApi,
+  type MarketplaceListing,
+  type MarketplaceSubscription,
+  ApiError,
+  getErrorMessage,
+} from "@/lib/api";
 
 interface Install {
   id: string;
@@ -42,7 +50,33 @@ interface Install {
   totalSpentCents: number;
   installedAt: string;
   listing: MarketplaceListing;
+  subscription: MarketplaceSubscription | null;
 }
+
+/** One line describing where a monthly subscription stands. */
+function subscriptionLine(install: Install): { text: string; tone: "ok" | "warn" | "bad" } | null {
+  const sub = install.subscription;
+  if (install.listing.pricingModel !== "monthly") return null;
+  if (install.status === "suspended" || !sub || !sub.hasAccess) {
+    return { text: "Subscription lapsed. Resubscribe to use this agent again.", tone: "bad" };
+  }
+  if (sub.status === "past_due") {
+    return {
+      text: `Renewal failed: add credits before ${formatDate(sub.graceEndsAt ?? sub.currentPeriodEnd)} to keep access.`,
+      tone: "warn",
+    };
+  }
+  if (sub.cancelAtPeriodEnd) {
+    return { text: `Cancelled. Access ends ${formatDate(sub.currentPeriodEnd)}.`, tone: "warn" };
+  }
+  return { text: `Renews ${formatDate(sub.currentPeriodEnd)}`, tone: "ok" };
+}
+
+const TONE_CLASS = {
+  ok: "text-muted-foreground",
+  warn: "text-amber-500",
+  bad: "text-red-500",
+} as const;
 
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString("en-US", {
@@ -86,8 +120,37 @@ export default function InstalledAgentsPage() {
     }
   }
 
-  async function handleUninstall(listingId: string) {
-    if (!confirm("Are you sure you want to uninstall this agent?")) return;
+  async function handleRenewal(install: Install, action: "cancel" | "resume" | "resubscribe") {
+    try {
+      if (action === "cancel") {
+        await marketplaceApi.cancelSubscription(install.listingId);
+        toast.success("Renewal cancelled. You keep access until the end of this period.");
+      } else if (action === "resume") {
+        await marketplaceApi.resumeSubscription(install.listingId);
+        toast.success("Renewal turned back on.");
+      } else {
+        await marketplaceApi.installAgent(install.listingId);
+        toast.success(`Resubscribed to ${install.listing.title}.`);
+      }
+      loadInstalls();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 402) {
+        toast.error(getErrorMessage(error, "Not enough credits"), {
+          action: { label: "Add credits", onClick: () => (window.location.href = "/dashboard/billing") },
+        });
+        return;
+      }
+      toast.error(getErrorMessage(error, "Could not update the subscription"));
+    }
+  }
+
+  async function handleUninstall(install: Install) {
+    const listingId = install.listingId;
+    const message =
+      install.listing.pricingModel === "monthly" && install.subscription?.hasAccess
+        ? "Uninstalling ends your subscription now, and the current period is not refunded. To keep access until it ends, cancel renewal instead. Uninstall anyway?"
+        : "Are you sure you want to uninstall this agent?";
+    if (!confirm(message)) return;
 
     try {
       await marketplaceApi.uninstallAgent(listingId);
@@ -196,6 +259,12 @@ export default function InstalledAgentsPage() {
                           by {install.listing.publisherName} &middot; Installed{" "}
                           {formatDate(install.installedAt)}
                         </p>
+                        {(() => {
+                          const line = subscriptionLine(install);
+                          return line ? (
+                            <p className={`text-xs ${TONE_CLASS[line.tone]}`}>{line.text}</p>
+                          ) : null;
+                        })()}
                       </div>
                     </div>
 
@@ -231,6 +300,23 @@ export default function InstalledAgentsPage() {
                               View Listing
                             </Link>
                           </DropdownMenuItem>
+                          {install.listing.pricingModel === "monthly" &&
+                            (install.status === "suspended" || !install.subscription?.hasAccess ? (
+                              <DropdownMenuItem onClick={() => handleRenewal(install, "resubscribe")}>
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                                Resubscribe
+                              </DropdownMenuItem>
+                            ) : install.subscription.cancelAtPeriodEnd ? (
+                              <DropdownMenuItem onClick={() => handleRenewal(install, "resume")}>
+                                <RefreshCw className="mr-2 h-4 w-4" />
+                                Resume renewal
+                              </DropdownMenuItem>
+                            ) : (
+                              <DropdownMenuItem onClick={() => handleRenewal(install, "cancel")}>
+                                <XCircle className="mr-2 h-4 w-4" />
+                                Cancel renewal
+                              </DropdownMenuItem>
+                            ))}
                           <DropdownMenuItem
                             onClick={() => setReviewingListingId(install.listingId)}
                           >
@@ -238,7 +324,7 @@ export default function InstalledAgentsPage() {
                             Write Review
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onClick={() => handleUninstall(install.listingId)}
+                            onClick={() => handleUninstall(install)}
                             className="text-red-600"
                           >
                             <Trash2 className="mr-2 h-4 w-4" />

@@ -31,6 +31,7 @@ import {
   type AgentToken,
   type AgentTokenHolder,
   type TokenSnapshot,
+  ApiError,
   getErrorMessage,
 } from "@/lib/api";
 import { TokenChart } from "@/components/dashboard/token-chart";
@@ -225,15 +226,28 @@ export default function ListingDetailPage() {
     try {
       const res = await marketplaceApi.installAgent(listing.id);
       setInstallState({ installed: true, clonedAgentId: res.clonedAgent.id });
-      toast.success(`${listing.title} installed — it's now in your agents`);
+      if (res.subscription) {
+        const renews = new Date(res.subscription.currentPeriodEnd).toLocaleDateString();
+        toast.success(`Subscribed to ${listing.title}. Renews on ${renews}.`);
+      } else {
+        toast.success(`${listing.title} installed. It's now in your agents.`);
+      }
     } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to install agent"));
+      if (error instanceof ApiError && error.status === 402) {
+        toast.error(getErrorMessage(error, "Not enough credits"), {
+          action: { label: "Add credits", onClick: () => router.push("/dashboard/billing") },
+        });
+      } else {
+        toast.error(getErrorMessage(error, "Failed to install agent"));
+      }
     } finally {
       setInstalling(false);
     }
   }
 
   const hasToken = listing?.pricingModel === "tokenized" && tokenData !== null;
+  const isMonthly = listing?.pricingModel === "monthly" && !!listing?.monthlyPriceCents;
+  const monthlyPrice = isMonthly ? `$${(listing!.monthlyPriceCents! / 100).toFixed(2)}` : "";
 
   if (isLoading) {
     return (
@@ -778,7 +792,13 @@ export default function ListingDetailPage() {
                   className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Download className="h-4 w-4" />
-                  {installing ? "Installing…" : "Install Agent"}
+                  {installing
+                    ? isMonthly
+                      ? "Subscribing…"
+                      : "Installing…"
+                    : isMonthly
+                    ? `Subscribe · ${monthlyPrice}/month`
+                    : "Install Agent"}
                 </button>
               ) : (
                 <Link
@@ -814,6 +834,8 @@ export default function ListingDetailPage() {
                 {authed
                   ? installState?.installed
                     ? "Installed as a private copy in your workspace."
+                    : isMonthly
+                    ? `Charges ${monthlyPrice} from your credits now and every 30 days. Cancel anytime from Installed Agents.`
                     : "Installs a private copy of this agent into your workspace."
                   : "Sign in to install this agent to your account."}
               </p>

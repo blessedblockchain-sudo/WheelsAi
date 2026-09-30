@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { marketplaceApi, getErrorMessage } from "@/lib/api";
+import { ContributionsCard } from "@/components/marketplace/contributions-card";
 import { cn } from "@/lib/utils";
 
 interface RevenueData {
@@ -231,6 +232,8 @@ export default function RevenueDashboardPage() {
                 </CardContent>
               </Card>
             </div>
+
+            <ContributionsCard />
 
             {/* Payout CTA */}
             <Card className="mb-8">

@@ -28,6 +28,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
+
+type RevenueSummary = Pick<
+  Awaited<ReturnType<typeof marketplaceApi.getRevenue>>,
+  "totalRevenueCents" | "pendingPayoutCents" | "totalInstalls" | "revenueByListing"
+>;
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -61,6 +66,7 @@ function formatPrice(listing: MarketplaceListing): string {
 export default function MarketplaceDashboardPage() {
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [revenue, setRevenue] = useState<RevenueSummary | null>(null);
 
   useEffect(() => {
     loadListings();
@@ -68,6 +74,12 @@ export default function MarketplaceDashboardPage() {
 
   async function loadListings() {
     try {
+      marketplaceApi
+        .getRevenue()
+        .then(setRevenue)
+        .catch(() =>
+          setRevenue({ totalRevenueCents: 0, pendingPayoutCents: 0, totalInstalls: 0, revenueByListing: [] })
+        );
       const { listings } = await marketplaceApi.getMyListings();
       setListings(listings);
     } catch (error) {
@@ -317,22 +329,65 @@ export default function MarketplaceDashboardPage() {
           </CardContent>
         </Card>
 
-        {/* Revenue Section (Placeholder) */}
+        {/* Revenue overview: settled earnings from the ledger */}
         {publishedCount > 0 && (
           <Card className="mt-8">
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle className="flex items-center gap-2">
                 <TrendingUp className="h-5 w-5" />
                 Revenue Overview
               </CardTitle>
+              <Link
+                href="/dashboard/marketplace/revenue"
+                className="text-sm font-medium text-primary hover:underline"
+              >
+                Revenue &amp; payouts
+              </Link>
             </CardHeader>
             <CardContent>
-              <div className="py-8 text-center text-muted-foreground">
-                <p>Revenue tracking coming soon</p>
-                <p className="mt-1 text-sm">
-                  You'll earn 90% of all revenue from your published agents
-                </p>
-              </div>
+              {revenue === null ? (
+                <div className="h-16 animate-pulse rounded-lg bg-muted" />
+              ) : (
+                <>
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Total earned</p>
+                      <p className="font-mono text-2xl font-semibold tabular-nums">
+                        ${(revenue.totalRevenueCents / 100).toFixed(2)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Available to pay out</p>
+                      <p className="font-mono text-2xl font-semibold tabular-nums">
+                        ${(revenue.pendingPayoutCents / 100).toFixed(2)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Installs</p>
+                      <p className="font-mono text-2xl font-semibold tabular-nums">
+                        {revenue.totalInstalls.toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                  {revenue.revenueByListing.length > 0 && (
+                    <div className="mt-6 divide-y border-t">
+                      {revenue.revenueByListing.slice(0, 5).map((row) => (
+                        <div key={row.listingId} className="flex items-center justify-between py-2 text-sm">
+                          <span className="truncate text-foreground">
+                            {row.listing?.title ?? "Archived listing"}
+                          </span>
+                          <span className="font-mono tabular-nums text-muted-foreground">
+                            ${(row.totalRevenueCents / 100).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <p className="mt-4 text-xs text-muted-foreground">
+                    You keep 90% of what buyers pay, less any shares you give contributors.
+                  </p>
+                </>
+              )}
             </CardContent>
           </Card>
         )}

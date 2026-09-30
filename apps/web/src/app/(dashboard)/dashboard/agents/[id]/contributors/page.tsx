@@ -11,36 +11,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { agentsApi, getErrorMessage } from "@/lib/api";
+import {
+  agentsApi,
+  collaborationApi,
+  getErrorMessage,
+  type AgentContributorRow,
+} from "@/lib/api";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
-
-interface Contributor {
-  id: string;
-  role: string;
-  revenueShare: number;
-  acceptedAt: string | null;
-  createdAt: string;
-  user: {
-    id: string;
-    email: string | null;
-    displayName: string | null;
-    walletAddress: string | null;
-  };
-}
-
-async function fetchJson<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    ...opts,
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error((data as any).message || res.statusText);
-  }
-  return res.json();
-}
+type Contributor = AgentContributorRow;
 
 export default function ContributorsPage() {
   const params = useParams();
@@ -57,12 +35,10 @@ export default function ContributorsPage() {
 
   const loadContributors = useCallback(async () => {
     try {
-      const data = await fetchJson<{ contributors: Contributor[] }>(
-        `/api/agents/${agentId}/contributors`
-      );
+      const data = await collaborationApi.listContributors(agentId);
       setContributors(data.contributors);
-    } catch {
-      // May fail if no contributors yet
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Failed to load contributors"));
     }
   }, [agentId]);
 
@@ -75,11 +51,28 @@ export default function ContributorsPage() {
   const remainingShare = Math.max(0, 1 - totalShare);
 
   const handleInvite = async () => {
+    const email = inviteEmail.trim();
+    const sharePercent = Number(inviteShare);
+    if (!email) {
+      toast.error("Enter the email of their WheelsAI account");
+      return;
+    }
+    if (!Number.isFinite(sharePercent) || sharePercent < 0 || sharePercent > remainingShare * 100) {
+      toast.error(`Revenue share must be between 0% and ${(remainingShare * 100).toFixed(0)}%`);
+      return;
+    }
     setIsInviting(true);
     try {
-      // Note: in a real implementation, you'd look up the user by email
-      // For now, this is a placeholder — the API expects userId
-      toast.error("User lookup by email not yet implemented. Use user ID directly.");
+      await collaborationApi.invite(agentId, {
+        email,
+        role: inviteRole,
+        revenueShare: sharePercent / 100,
+      });
+      toast.success(`Invitation sent to ${email}. Their share starts once they accept.`);
+      setInviteEmail("");
+      setInviteShare("0");
+      setShowInvite(false);
+      loadContributors();
     } catch (err: any) {
       toast.error(getErrorMessage(err, "Failed to invite contributor"));
     } finally {
@@ -90,9 +83,7 @@ export default function ContributorsPage() {
   const handleRemove = async (contributorId: string) => {
     if (!confirm("Remove this contributor?")) return;
     try {
-      await fetchJson(`/api/agents/${agentId}/contributors/${contributorId}`, {
-        method: "DELETE",
-      });
+      await collaborationApi.remove(agentId, contributorId);
       toast.success("Contributor removed");
       loadContributors();
     } catch (err: any) {
@@ -240,7 +231,15 @@ export default function ContributorsPage() {
                           )}
                         </div>
                         <p className="text-xs text-muted-foreground">
-                          {(c.revenueShare * 100).toFixed(0)}% revenue share
+                          {(c.revenueShareBps / 100).toFixed(c.revenueShareBps % 100 ? 2 : 0)}% revenue share
+                          {c.acceptedAt ? (
+                            <>
+                              {" "}&middot; earned{" "}
+                              <span className="font-mono tabular-nums">${(c.earnedCents / 100).toFixed(2)}</span>
+                            </>
+                          ) : (
+                            " · starts when they accept"
+                          )}
                         </p>
                       </div>
                     </div>

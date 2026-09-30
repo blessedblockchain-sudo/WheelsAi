@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { Redis } from "ioredis";
+import { disconnectTokenGateCache } from "./middleware/tokenGate.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -167,6 +168,7 @@ async function main() {
   );
   app.addHook("onClose", async () => {
     rateLimitRedis.disconnect();
+    disconnectTokenGateCache();
   });
   await app.register(rateLimit, {
     max: 100,

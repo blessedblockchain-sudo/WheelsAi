@@ -9,6 +9,15 @@ import { Prisma, prisma } from "@wheelsai/db";
 import { PRICING_TIERS, calculateTokenCost } from "@wheelsai/shared";
 import { getPricePerSecond } from "../services/computeMetering.js";
 import {
+  DEFAULT_COMPLETION_TOKENS,
+  MAX_COMPLETION_TOKENS,
+  PROMPT_ESTIMATE_MARGIN,
+  holdInferenceCredits,
+  releaseInferenceHold,
+  settleInferenceHold,
+  type InferenceHoldPrisma,
+} from "../services/inferenceCreditHold.js";
+import {
   create402Response,
   createPaymentRequestId,
   estimatePrice,
@@ -57,7 +66,8 @@ const chatCompletionSchema = z.object({
       content: z.string(),
     })
   ),
-  max_tokens: z.number().optional(),
+  // Bounded so every request has a worst-case cost the hold can cover.
+  max_tokens: z.number().int().min(1).max(MAX_COMPLETION_TOKENS).optional(),
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),
   stream: z.boolean().optional(),
@@ -86,6 +96,9 @@ export function createInferenceRoutes(
         .object({ deploymentSlug: z.string() })
         .parse(request.params);
       const body = chatCompletionSchema.parse(request.body);
+      // Every request carries an explicit completion cap, forwarded to the
+      // node, so credits holds and x402 quotes price the same bounded work.
+      body.max_tokens = body.max_tokens ?? DEFAULT_COMPLETION_TOKENS;
       const { orgId } = request.auth!;
 
       // 1. Find deployment
@@ -134,9 +147,53 @@ export function createInferenceRoutes(
 
       reply.header("X-Request-Id", billingResolution.requestId);
 
+      // Credits mode: hold the worst-case cost BEFORE any GPU work.
+      const pricingTier = deployment.model.pricingTier as keyof typeof PRICING_TIERS;
+      const holdDescription = `Inference: ${deployment.name}`;
+      let heldCents = 0n;
+      if (billingResolution.mode === "credits") {
+        const holdCents = BigInt(
+          calculateTokenCost(
+            Math.ceil(estimatePromptTokens(body.messages) * PROMPT_ESTIMATE_MARGIN),
+            body.max_tokens,
+            pricingTier,
+          ),
+        );
+        const held = await prisma.$transaction((tx) =>
+          holdInferenceCredits(tx as unknown as InferenceHoldPrisma, {
+            orgId,
+            holdCents,
+            requestId: billingResolution.requestId,
+            description: holdDescription,
+          }),
+        );
+        if (!held.ok) {
+          return reply.status(402).send({
+            error: "Payment Required",
+            message: "Insufficient credits for this request. Please add more credits to continue.",
+            requiredCents: Number(held.requiredCents),
+          });
+        }
+        heldCents = held.heldCents;
+      }
+      const releaseHold = async (reason: string) => {
+        if (heldCents <= 0n) return;
+        await prisma
+          .$transaction((tx) =>
+            releaseInferenceHold(tx as unknown as InferenceHoldPrisma, {
+              orgId,
+              heldCents,
+              requestId: billingResolution.requestId,
+              reason,
+            }),
+          )
+          .catch((err) => logger.error({ err, orgId, heldCents }, "Failed to release inference hold"));
+      };
+
       // 3. Select healthy node
       const node = selectNode(deployment.nodes as unknown as NodeInfo[]);
       if (!node) {
+        await releaseHold("no healthy node");
         if (billingResolution.x402PaymentId) {
           await markX402PaymentFailed(
             billingResolution.x402PaymentId,
@@ -166,6 +223,7 @@ export function createInferenceRoutes(
           data: { healthStatus: "unhealthy" },
         });
 
+        await releaseHold("inference node unreachable");
         if (billingResolution.x402PaymentId) {
           await markX402PaymentFailed(
             billingResolution.x402PaymentId,
@@ -190,39 +248,26 @@ export function createInferenceRoutes(
       const costCents = calculateTokenCost(
         usage.prompt_tokens,
         usage.completion_tokens,
-        deployment.model.pricingTier as keyof typeof PRICING_TIERS
+        pricingTier
       );
 
       // 6. Apply billing side effects
       if (billingResolution.mode === "credits") {
-        if (!creditBalance) {
-          return reply.status(402).send({
-            error: "Payment Required",
-            message: "Insufficient credits. Please add more credits to continue.",
-            balance: 0,
-          });
+        const settled = await prisma.$transaction((tx) =>
+          settleInferenceHold(tx as unknown as InferenceHoldPrisma, {
+            orgId,
+            heldCents,
+            actualCents: BigInt(costCents),
+            requestId: billingResolution.requestId,
+            description: holdDescription,
+          }),
+        );
+        if (settled.shortfallCents > 0n) {
+          logger.warn(
+            { orgId, requestId: billingResolution.requestId, shortfallCents: Number(settled.shortfallCents) },
+            "Inference usage exceeded the hold and the balance; charged the hold only",
+          );
         }
-
-        await prisma.$transaction([
-          prisma.creditBalance.update({
-            where: { orgId },
-            data: {
-              balanceCents: {
-                decrement: costCents,
-              },
-            },
-          }),
-          prisma.creditTransaction.create({
-            data: {
-              orgId,
-              amountCents: -costCents,
-              type: "usage",
-              description: `Inference: ${deployment.name}`,
-              referenceId: deployment.id,
-              balanceAfter: creditBalance.balanceCents - BigInt(costCents),
-            },
-          }),
-        ]);
       } else if (billingResolution.x402PaymentId) {
         // A5: "settled" means CONFIRMED ON-CHAIN, and only the settlement
         // worker may say so. The route has merely verified the payment's

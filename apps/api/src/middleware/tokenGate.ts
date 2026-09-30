@@ -30,6 +30,12 @@ function getRedis(): Redis | null {
   }
 }
 
+/** Close the cache connection (server shutdown, tests). */
+export function disconnectTokenGateCache(): void {
+  redis?.disconnect();
+  redis = null;
+}
+
 type ListingCache = {
   id: string;
   pricingModel: string;

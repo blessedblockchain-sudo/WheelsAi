@@ -20,6 +20,7 @@ import {
   releaseDeploymentReservation,
   reserveDeploymentCredits,
 } from "../services/deploymentCreditGate.js";
+import { AGENT_FRAMEWORKS } from "../config/frameworks.js";
 
 const logger = createLogger("agent-routes");
 
@@ -44,7 +45,7 @@ const toolSchema = z.object({
 const createAgentSchema = z.object({
   name: z.string().min(3).max(100),
   description: z.string().max(500).optional(),
-  framework: z.enum(["mastra", "langchain", "autogen", "elizaos", "crewai", "custom"]),
+  framework: z.enum(AGENT_FRAMEWORKS),
   systemPrompt: z.string().max(10000).optional(),
   tools: z.array(toolSchema).default([]),
   modelConfig: z.object({

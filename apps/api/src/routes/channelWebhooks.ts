@@ -56,7 +56,9 @@ export interface ChannelWebhookDeps {
   }) => Promise<void>;
 }
 
-const SUPPORTED: ReadonlySet<string> = new Set(["discord", "telegram", "slack"]);
+/** Chat platforms with a working, verified inbound webhook. */
+export const LIVE_CHANNEL_PLATFORMS = ["discord", "telegram", "slack"] as const;
+const SUPPORTED: ReadonlySet<string> = new Set(LIVE_CHANNEL_PLATFORMS);
 
 export function createChannelWebhookRoutes(
   deps: ChannelWebhookDeps,

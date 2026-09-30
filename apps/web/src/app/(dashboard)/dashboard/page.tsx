@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Box, Bot, Cpu, Zap, DollarSign, ArrowRight, Github } from "lucide-react";
 import { Header } from "@/components/dashboard/header";
+import { GetStarted } from "@/components/dashboard/get-started";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -88,37 +89,13 @@ export default function DashboardPage() {
       />
 
       <div className="p-8">
-        {/* BUILD on-ramp (INT-B1): the 2-minute path — import from GitHub,
-            chat via real inference. Leads the page because BUILD leads. */}
-        <Card className="mb-8 border-primary/30 bg-gradient-to-r from-primary/10 to-purple-500/10">
-          <CardContent className="flex flex-col items-start justify-between gap-4 py-6 sm:flex-row sm:items-center">
-            <div className="flex items-center gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary-600">
-                <Github className="h-6 w-6 text-white" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-foreground">
-                  Import an agent from GitHub
-                </h3>
-                <p className="text-sm text-muted-foreground">
-                  Mastra, ElizaOS, LangChain, AutoGen, CrewAI, or custom —
-                  chat with it in minutes.
-                </p>
-              </div>
-            </div>
-            <div className="flex shrink-0 gap-3">
-              <Link href="/dashboard/agents/new">
-                <Button>
-                  Import from GitHub
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
-              </Link>
-              <Link href="/dashboard/templates">
-                <Button variant="outline">Browse templates</Button>
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
+        {/* Entry points for the three product types, then the first-run
+            checklist. BUILD leads the page because BUILD leads. */}
+        <GetStarted
+          agentCount={agentTotal}
+          deploymentCount={deployments.length}
+          creditCents={Math.round(creditBalance * 100)}
+        />
 
         {/* Stats */}
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">

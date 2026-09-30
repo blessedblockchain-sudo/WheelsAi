@@ -34,6 +34,9 @@ import {
   Plus,
   Upload,
   DollarSign,
+  Trophy,
+  Users,
+  ShieldCheck,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -52,6 +55,8 @@ interface NavItem {
 interface NavGroup {
   label: string;
   items: NavItem[];
+  /** Sub-heading groups inside a leg (e.g. Build → Workflows). */
+  sections?: Array<{ label: string; items: NavItem[] }>;
 }
 
 const overviewItem: NavItem = {
@@ -61,49 +66,59 @@ const overviewItem: NavItem = {
 };
 
 /**
- * The nav IS the positioning (B1 / INT-X1): three groups matching the
- * three verbs — Build, Deploy, Monetize — in that order, because BUILD
- * leads. Everything stays VISIBLE (the match-up directive supersedes
- * the old plan to flag-gate the breadth behind a default-off
- * "Advanced" group: surfaces tell the truth about their state instead
- * of hiding). Groups are still collapsible — that's a user preference,
- * not a default.
- *
- * Three nav lies fixed here:
- *   - "Browse Agents" opened the publisher's OWN listings manager →
- *     renamed "My Listings", with a real "Browse Marketplace" pointing
- *     at the public marketplace.
- *   - "Playground" pointed at the deployment chat, which is a GPU/model
- *     surface, not the agent one → "GPU Playground" under Deploy (it
- *     proxies to a real healthy node since W0-3); the per-agent
- *     playground lives on each agent under Build.
- *   - The entire Deploy leg was buried in a collapsed group.
+ * The nav IS the positioning: the three verbs, Build, Deploy, Monetize,
+ * in that order because BUILD leads, and inside Build the three product
+ * types the platform builds: agents, workflows, and small language
+ * models (including fine-tuning). Everything stays visible; groups are
+ * collapsible as a user preference, not a default.
  */
 const navGroups: NavGroup[] = [
   {
     label: "Build",
-    items: [
-      { name: "My Agents", href: "/dashboard/agents", icon: Bot },
-      { name: "Create Agent", href: "/dashboard/agents/new", icon: Plus },
-      { name: "Templates", href: "/dashboard/templates", icon: FileCode },
-      { name: "Knowledge", href: "/dashboard/knowledge", icon: Database },
-      { name: "Memory", href: "/dashboard/memory", icon: Brain },
-      { name: "Training", href: "/dashboard/training", icon: GraduationCap },
-      { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
-      { name: "Orchestration", href: "/dashboard/orchestrations", icon: GitBranch },
-      { name: "Scheduler", href: "/dashboard/scheduler", icon: Clock },
+    items: [],
+    sections: [
+      {
+        label: "Agents",
+        items: [
+          { name: "My Agents", href: "/dashboard/agents", icon: Bot },
+          { name: "Create Agent", href: "/dashboard/agents/new", icon: Plus },
+          { name: "Templates", href: "/dashboard/templates", icon: FileCode },
+        ],
+      },
+      {
+        label: "Workflows",
+        items: [
+          { name: "Workflows", href: "/dashboard/orchestrations", icon: GitBranch },
+          { name: "Scheduler", href: "/dashboard/scheduler", icon: Clock },
+        ],
+      },
+      {
+        label: "Models",
+        items: [
+          { name: "Model Catalog", href: "/dashboard/models", icon: Cpu },
+          { name: "Fine-tuning", href: "/dashboard/training", icon: GraduationCap },
+          { name: "Datasets", href: "/dashboard/training/datasets", icon: Database },
+        ],
+      },
+      {
+        label: "Grounding & quality",
+        items: [
+          { name: "Knowledge", href: "/dashboard/knowledge", icon: Database },
+          { name: "Memory", href: "/dashboard/memory", icon: Brain },
+          { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
+        ],
+      },
     ],
   },
   {
     label: "Deploy",
     items: [
       { name: "Deployments", href: "/dashboard/deployments", icon: Box },
-      { name: "Models", href: "/dashboard/models", icon: Cpu },
       { name: "GPU Playground", href: "/dashboard/playground", icon: MessageSquare },
       { name: "OpenClaw", href: "/dashboard/openclaw", icon: Sparkles },
       { name: "Monitoring", href: "/dashboard/monitoring", icon: Bell },
       { name: "Domains", href: "/dashboard/domains", icon: Globe },
-      { name: "Integrations", href: "/dashboard/integrations", icon: Plug },
+      { name: "Channels & Integrations", href: "/dashboard/integrations", icon: Plug },
     ],
   },
   {
@@ -111,23 +126,26 @@ const navGroups: NavGroup[] = [
     items: [
       { name: "Browse Marketplace", href: "/marketplace", icon: Store },
       { name: "My Listings", href: "/dashboard/marketplace", icon: Upload },
-      { name: "Installed Agents", href: "/dashboard/marketplace/installs", icon: Bot },
       { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
-      { name: "Revenue", href: "/dashboard/marketplace/revenue", icon: DollarSign },
+      { name: "Installed Agents", href: "/dashboard/marketplace/installs", icon: Bot },
+      { name: "Revenue & Payouts", href: "/dashboard/marketplace/revenue", icon: DollarSign },
       { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },
+      { name: "Leaderboard", href: "/marketplace/leaderboard", icon: Trophy },
       ...(featureFlags.tokenUi
         ? [{ name: "Tokens", href: "/dashboard/marketplace/tokens", icon: Coins } as NavItem]
         : []),
-      { name: "Billing", href: "/dashboard/billing", icon: CreditCard },
     ],
   },
   {
     label: "Account",
     items: [
+      { name: "Billing & Plan", href: "/dashboard/billing", icon: CreditCard },
       { name: "API Keys", href: "/dashboard/keys", icon: Key },
       { name: "Usage Analytics", href: "/dashboard/analytics", icon: BarChart3 },
-      { name: "Settings", href: "/dashboard/settings", icon: Settings },
+      { name: "Team", href: "/dashboard/settings/team", icon: Users },
+      { name: "Security", href: "/dashboard/settings/security", icon: ShieldCheck },
       { name: "Branding", href: "/dashboard/settings/branding", icon: Sparkles },
+      { name: "Settings", href: "/dashboard/settings", icon: Settings },
     ],
   },
 ];
@@ -153,9 +171,32 @@ export function Sidebar() {
     setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }));
   };
 
-  const isItemActive = (href: string) =>
-    pathname === href ||
-    (href !== "/dashboard" && pathname.startsWith(href + "/"));
+  // The most specific matching item is active, so /dashboard/training/datasets
+  // highlights Datasets and not Fine-tuning as well.
+  const allHrefs = navGroups.flatMap((g) => [
+    ...g.items.map((i) => i.href),
+    ...(g.sections ?? []).flatMap((s) => s.items.map((i) => i.href)),
+  ]);
+  const isItemActive = (href: string) => {
+    const matches = (h: string) => pathname === h || (h !== "/dashboard" && pathname.startsWith(h + "/"));
+    if (!matches(href)) return false;
+    return !allHrefs.some((other) => other !== href && other.startsWith(href + "/") && matches(other));
+  };
+
+  const renderItem = (item: NavItem) => (
+    <Link
+      key={item.href}
+      href={item.href}
+      aria-current={isItemActive(item.href) ? "page" : undefined}
+      className={cn(
+        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        isItemActive(item.href) ? "bg-primary/10 text-primary" : "text-foreground hover:bg-muted"
+      )}
+    >
+      <item.icon className="h-5 w-5" />
+      {item.name}
+    </Link>
+  );
 
   return (
     <div className="flex h-full w-64 flex-col border-r border-border bg-card">
@@ -207,20 +248,14 @@ export function Sidebar() {
               </button>
               {!isCollapsed && (
                 <div className="mt-1 space-y-0.5">
-                  {group.items.map((item) => (
-                    <Link
-                      key={item.name}
-                      href={item.href}
-                      className={cn(
-                        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                        isItemActive(item.href)
-                          ? "bg-primary/10 text-primary"
-                          : "text-foreground hover:bg-muted"
-                      )}
-                    >
-                      <item.icon className="h-5 w-5" />
-                      {item.name}
-                    </Link>
+                  {group.items.map(renderItem)}
+                  {group.sections?.map((section) => (
+                    <div key={section.label} className="pt-2">
+                      <p className="px-3 pb-1 text-[11px] font-medium text-muted-foreground">
+                        {section.label}
+                      </p>
+                      {section.items.map(renderItem)}
+                    </div>
                   ))}
                 </div>
               )}

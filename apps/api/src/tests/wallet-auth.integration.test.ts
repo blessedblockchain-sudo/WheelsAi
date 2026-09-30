@@ -165,10 +165,10 @@ test("wallet/verify returns 401 when nonce does not match stored value", async (
     import("../config/env.js"),
   ]);
 
-  // Stub getNonce to return a different nonce than what we send
+  // Stub claimNonce to reject the nonce we send
   const authService = await import("../services/auth.js");
-  const originalGetNonce = authService.getNonce;
-  (authService as any).getNonce = async () => "stored_nonce_does_not_match";
+  const originalClaimNonce = authService.claimNonce;
+  (authService as any).claimNonce = async () => false;
 
   const app = Fastify();
   await app.register((await import("@fastify/jwt")).default, {
@@ -202,7 +202,7 @@ test("wallet/verify returns 401 when nonce does not match stored value", async (
   assert.ok(body.message.toLowerCase().includes("nonce"), "Error message should mention nonce");
 
   await app.close();
-  (authService as any).getNonce = originalGetNonce;
+  (authService as any).claimNonce = originalClaimNonce;
 });
 
 // ============================================
@@ -218,9 +218,9 @@ test("wallet/verify returns 401 when nonce has expired (Redis returns null)", as
   ]);
 
   const authService = await import("../services/auth.js");
-  const originalGetNonce = authService.getNonce;
+  const originalClaimNonce = authService.claimNonce;
   // Simulate expired nonce — Redis returns null
-  (authService as any).getNonce = async () => null;
+  (authService as any).claimNonce = async () => false;
 
   const app = Fastify();
   await app.register((await import("@fastify/jwt")).default, {
@@ -253,7 +253,7 @@ test("wallet/verify returns 401 when nonce has expired (Redis returns null)", as
   assert.equal(body.error, "Unauthorized");
 
   await app.close();
-  (authService as any).getNonce = originalGetNonce;
+  (authService as any).claimNonce = originalClaimNonce;
 });
 
 // ============================================
@@ -269,12 +269,12 @@ test("wallet/verify returns 401 when signature is invalid", async () => {
   ]);
 
   const authService = await import("../services/auth.js");
-  const originalGetNonce = authService.getNonce;
+  const originalClaimNonce = authService.claimNonce;
   const originalVerify = authService.verifySolanaSignature;
 
   const testNonce = "matching_nonce_value";
-  // getNonce returns the same nonce we send, so the nonce check passes
-  (authService as any).getNonce = async () => testNonce;
+  // claimNonce accepts the nonce we send, so the nonce check passes
+  (authService as any).claimNonce = async () => true;
   // But the signature check fails
   (authService as any).verifySolanaSignature = () => false;
 
@@ -313,7 +313,7 @@ test("wallet/verify returns 401 when signature is invalid", async () => {
   );
 
   await app.close();
-  (authService as any).getNonce = originalGetNonce;
+  (authService as any).claimNonce = originalClaimNonce;
   (authService as any).verifySolanaSignature = originalVerify;
 });
 

@@ -8,8 +8,7 @@ import {
   findUserById,
   findOrCreateUserByWallet,
   generateNonce,
-  getNonce,
-  consumeNonce,
+  claimNonce,
   verifySolanaSignature,
   generateApiKey,
   listApiKeys,
@@ -347,16 +346,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       request.body
     );
 
-    // Verify the nonce matches
-    const storedNonce = await getNonce(walletAddress);
-    if (!storedNonce || storedNonce !== nonce) {
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Invalid or expired nonce",
-      });
-    }
-
-    // Verify the signature
+    // Verify the signature over the exact message the client returned...
     const isValid = verifySolanaSignature(nonce, signature, walletAddress);
     if (!isValid) {
       return reply.status(401).send({
@@ -365,8 +355,14 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    // Consume the nonce (one-time use)
-    await consumeNonce(walletAddress);
+    // ...then atomically claim it: only a message this server issued, for
+    // this wallet, for sign-in, and never used before.
+    if (!(await claimNonce(walletAddress, nonce, "sign-in"))) {
+      return reply.status(401).send({
+        error: "Unauthorized",
+        message: "Invalid or expired nonce",
+      });
+    }
 
     // Find or create user
     const user = await findOrCreateUserByWallet(walletAddress);

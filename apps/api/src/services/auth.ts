@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
 import nacl from "tweetnacl";
 import bs58 from "bs58";
@@ -73,32 +74,73 @@ async function redis(): Promise<Redis> {
   return redisClient;
 }
 
-export async function generateNonce(walletAddress: string): Promise<string> {
-  const nonce = `WheelsAI authentication request.\n\nWallet: ${walletAddress}\nNonce: ${nanoid(32)}\nTimestamp: ${Date.now()}`;
+export type NoncePurpose = "sign-in" | "link-wallet";
+
+const NONCE_STATEMENT: Record<NoncePurpose, string> = {
+  "sign-in": "Sign in to WheelsAI.",
+  "link-wallet": "Link this wallet to your WheelsAI account.",
+};
+
+function siteOrigin(): URL {
+  return new URL(env.PUBLIC_WEB_URL ?? env.CORS_ORIGIN);
+}
+
+function nonceKey(message: string): string {
+  return `${NONCE_PREFIX}${createHash("sha256").update(message).digest("hex")}`;
+}
+
+/**
+ * Issue a one-time message for a wallet to sign, in the Sign-In With
+ * Solana layout: it names the site, the purpose, the chain and an expiry,
+ * so a phishing page cannot pass it off as its own.
+ *
+ * Nonces are stored under a hash of the message, not the wallet address:
+ * keyed by address, anyone could request a nonce for a victim's wallet and
+ * overwrite the one they were about to sign (a login denial of service).
+ */
+export async function generateNonce(
+  walletAddress: string,
+  purpose: NoncePurpose = "sign-in",
+): Promise<string> {
+  const origin = siteOrigin();
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt.getTime() + NONCE_TTL_SECONDS * 1000);
+  const message = [
+    `${origin.host} wants you to sign in with your Solana account:`,
+    walletAddress,
+    "",
+    `${NONCE_STATEMENT[purpose]} This request does not send a transaction or cost any fees.`,
+    "",
+    `URI: ${origin.origin}`,
+    "Version: 1",
+    `Chain ID: ${env.SOLANA_NETWORK}`,
+    `Nonce: ${nanoid(32)}`,
+    `Issued At: ${issuedAt.toISOString()}`,
+    `Expiration Time: ${expiresAt.toISOString()}`,
+  ].join("\n");
   try {
-    await (await redis()).set(`${NONCE_PREFIX}${walletAddress}`, nonce, "EX", NONCE_TTL_SECONDS);
+    await (await redis()).set(nonceKey(message), `${purpose}:${walletAddress}`, "EX", NONCE_TTL_SECONDS);
   } catch (err) {
     logger.error({ err, walletAddress }, "Failed to store nonce in Redis");
     throw new Error("Nonce storage unavailable, please try again");
   }
-  return nonce;
+  return message;
 }
 
-export async function getNonce(walletAddress: string): Promise<string | null> {
+/**
+ * Atomically claim a nonce (GETDEL): true only if this server issued this
+ * exact message, for this wallet and purpose, and nobody claimed it yet.
+ */
+export async function claimNonce(
+  walletAddress: string,
+  message: string,
+  purpose: NoncePurpose = "sign-in",
+): Promise<boolean> {
   try {
-    return await (await redis()).get(`${NONCE_PREFIX}${walletAddress}`);
+    const stored = await (await redis()).getdel(nonceKey(message));
+    return stored === `${purpose}:${walletAddress}`;
   } catch (err) {
-    logger.error({ err, walletAddress }, "Failed to retrieve nonce from Redis");
-    return null;
-  }
-}
-
-export async function consumeNonce(walletAddress: string): Promise<boolean> {
-  try {
-    const deleted = await (await redis()).del(`${NONCE_PREFIX}${walletAddress}`);
-    return deleted > 0;
-  } catch (err) {
-    logger.error({ err, walletAddress }, "Failed to delete nonce from Redis");
+    logger.error({ err, walletAddress }, "Failed to claim nonce from Redis");
     return false;
   }
 }

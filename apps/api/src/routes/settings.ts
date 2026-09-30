@@ -5,7 +5,7 @@ import { PublicKey } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { hashPassword, verifyPassword, generateNonce, getNonce, consumeNonce } from "../services/auth.js";
+import { hashPassword, verifyPassword, generateNonce, claimNonce } from "../services/auth.js";
 import { sendVerificationEmail } from "./emailAuth.js";
 
 const updateProfileSchema = z.object({
@@ -245,7 +245,7 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // Request nonce for wallet linking
   fastify.post("/link-wallet/nonce", async (request, _reply) => {
     const body = z.object({ walletAddress: z.string().min(32).max(44) }).parse(request.body);
-    const nonce = await generateNonce(body.walletAddress);
+    const nonce = await generateNonce(body.walletAddress, "link-wallet");
     return { nonce, walletAddress: body.walletAddress };
   });
 
@@ -254,17 +254,14 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     const { userId } = request.user!;
     const { walletAddress, signature, nonce } = linkWalletSchema.parse(request.body);
 
-    // Verify the nonce matches (prevents replay attacks)
-    const storedNonce = await getNonce(walletAddress);
-    if (!storedNonce || storedNonce !== nonce) {
+    // One-time claim of a link-wallet nonce this server issued for this
+    // wallet (prevents replay, including of sign-in messages).
+    if (!(await claimNonce(walletAddress, nonce, "link-wallet"))) {
       return reply.status(401).send({
         error: "Unauthorized",
         message: "Invalid or expired nonce. Request a new one via POST /link-wallet/nonce",
       });
     }
-
-    // Consume the nonce (one-time use)
-    await consumeNonce(walletAddress);
 
     // Verify the wallet address is a valid Solana public key
     let pubkey: PublicKey;

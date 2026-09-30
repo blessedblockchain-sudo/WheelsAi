@@ -88,10 +88,11 @@ test("nothing is billable when there is no install", async () => {
   );
 });
 
-test("free, monthly, unpublished and zero-priced listings are not billed", async () => {
+// Monthly listings are covered by marketplaceSubscriptions.unit.test.ts:
+// they run only while a subscription grants access.
+test("free, unpublished and zero-priced listings are not billed", async () => {
   for (const over of [
     { pricingModel: "free" },
-    { pricingModel: "monthly" },
     { pricingModel: "tokenized" },
     { status: "archived" },
     { status: "draft" },

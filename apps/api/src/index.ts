@@ -103,6 +103,8 @@ import {
   stopAlertEvaluatorQueue,
   startAnalyticsSnapshotQueue,
   stopAnalyticsSnapshotQueue,
+  startSubscriptionRenewalQueue,
+  stopSubscriptionRenewalQueue,
   startPayoutExecutorQueue,
   stopPayoutExecutorQueue,
   startEmbeddingBackfillQueue,
@@ -418,6 +420,7 @@ async function main() {
   await startUptimeProberQueue();
   await startAlertEvaluatorQueue();
   await startAnalyticsSnapshotQueue();
+  await startSubscriptionRenewalQueue();
   await startPayoutExecutorQueue();
   await startEmbeddingBackfillQueue();
 
@@ -440,6 +443,7 @@ async function main() {
       await stopUptimeProberQueue();
       await stopAlertEvaluatorQueue();
       await stopAnalyticsSnapshotQueue();
+      await stopSubscriptionRenewalQueue();
       await stopPayoutExecutorQueue();
       await stopEmbeddingBackfillQueue();
       await metrics.close();

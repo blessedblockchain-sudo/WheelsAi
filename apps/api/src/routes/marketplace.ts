@@ -28,8 +28,12 @@ import {
   requestPayout,
   PayoutReservationConflictError,
   getPayoutHistory,
+  getMySubscriptions,
+  setSubscriptionCancelAtPeriodEnd,
+  SubscriptionNotFoundError,
   PRICING_MODELS,
 } from "../services/marketplace.js";
+import { InsufficientCreditsError } from "../services/marketplaceSubscriptions.js";
 
 const logger = createLogger("marketplace-routes");
 
@@ -368,8 +372,16 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
           message: "Agent installed successfully",
           install: result.install,
           clonedAgent: result.clonedAgent,
+          subscription: result.subscription,
         });
       } catch (error: any) {
+        if (error instanceof InsufficientCreditsError) {
+          return reply.status(402).send({
+            error: error.code,
+            message: error.message,
+            requiredCents: Number(error.requiredCents),
+          });
+        }
         logger.error({ error, orgId, listingId: id }, "Failed to install agent");
         return reply.badRequest(error.message);
       }
@@ -423,6 +435,46 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
       return { installs };
     }
   );
+
+  // ==========================================
+  // Monthly Subscription Routes
+  // ==========================================
+
+  /**
+   * GET /subscriptions - The org's monthly subscriptions
+   */
+  app.get(
+    "/subscriptions",
+    { preHandler: [requireAuth] },
+    async (request) => {
+      const { orgId } = request.auth!;
+      return { subscriptions: await getMySubscriptions(orgId) };
+    }
+  );
+
+  /**
+   * POST /subscriptions/:listingId/cancel - Stop renewing at period end
+   * POST /subscriptions/:listingId/resume - Keep renewing
+   */
+  for (const action of ["cancel", "resume"] as const) {
+    app.post(
+      `/subscriptions/:listingId/${action}`,
+      { preHandler: [requireAuth] },
+      async (request, reply) => {
+        const { orgId } = request.auth!;
+        const { listingId } = z.object({ listingId: z.string().uuid() }).parse(request.params);
+        try {
+          const subscription = await setSubscriptionCancelAtPeriodEnd(orgId, listingId, action === "cancel");
+          return { subscription };
+        } catch (error) {
+          if (error instanceof SubscriptionNotFoundError) {
+            return reply.status(404).send({ error: error.code, message: error.message });
+          }
+          throw error;
+        }
+      }
+    );
+  }
 
   // ==========================================
   // Revenue & Payout Routes

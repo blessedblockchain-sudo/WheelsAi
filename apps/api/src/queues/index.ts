@@ -57,3 +57,7 @@ export {
   startEmbeddingBackfillQueue,
   stopEmbeddingBackfillQueue,
 } from "./embedding-backfill.queue.js";
+export {
+  startSubscriptionRenewalQueue,
+  stopSubscriptionRenewalQueue,
+} from "./subscription-renewal.queue.js";

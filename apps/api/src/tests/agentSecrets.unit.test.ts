@@ -139,8 +139,10 @@ test("marketplace install never copies the publisher's env into the buyer's org"
     agentInstall: p.agentInstall,
     agent: p.agent,
     publisherProfile: p.publisherProfile,
+    $transaction: p.$transaction,
   };
   let createdAgentData: any;
+  p.$transaction = async (fn: (tx: any) => unknown) => fn(p);
   p.agentListing = {
     findUnique: async () => ({
       id: "l1",

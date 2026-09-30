@@ -39,6 +39,7 @@
  * The prisma surfaces are structural stubs (the deploymentCreditGate
  * precedent) so every path here is unit-testable without a database.
  */
+import { subscriptionGrantsAccess } from "./subscriptionAccess.js";
 
 /** Platform's cut in basis points. Mirrors PLATFORM_FEE_SHARE = 0.1. */
 export const PLATFORM_FEE_BPS = 1000n;
@@ -134,6 +135,12 @@ export interface MeteringLookupPrisma {
       };
     } | null>;
   };
+  agentSubscription?: {
+    findUnique(args: {
+      where: { listingId_subscriberId: { listingId: string; subscriberId: string } };
+      select: { status: true; currentPeriodEnd: true; cancelAtPeriodEnd: true };
+    }): Promise<{ status: string; currentPeriodEnd: Date; cancelAtPeriodEnd: boolean } | null>;
+  };
 }
 
 export type InstallBilling =
@@ -187,6 +194,18 @@ export async function resolveInstallBilling(
     return { kind: "revoked", listingTitle: install.listing.title };
   }
   if (install.listing.status !== "published") return { kind: "free" };
+  // Monthly: runs only while its subscription is paid up (or in grace).
+  if (install.listing.pricingModel === "monthly") {
+    const sub = db.agentSubscription
+      ? await db.agentSubscription.findUnique({
+          where: { listingId_subscriberId: { listingId: install.listingId, subscriberId: install.buyerId } },
+          select: { status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true },
+        })
+      : null;
+    return subscriptionGrantsAccess(sub)
+      ? { kind: "free" }
+      : { kind: "revoked", listingTitle: install.listing.title };
+  }
   if (install.listing.pricingModel !== "per_request") return { kind: "free" };
 
   const price = install.listing.pricePerRequestCents ?? 0n;

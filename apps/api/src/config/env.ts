@@ -303,6 +303,11 @@ const envSchema = z.object({
   // Set to 0 to disable.
   ANALYTICS_SNAPSHOT_INTERVAL_MS: z.coerce.number().int().min(0).default(3_600_000),
 
+  // Monthly marketplace subscription renewals: charges due periods,
+  // marks unpaid ones past_due and expires them after the grace window.
+  // Set to 0 to disable.
+  SUBSCRIPTION_RENEWAL_INTERVAL_MS: z.coerce.number().int().min(0).default(3_600_000),
+
   // Payout-executor BullMQ worker (W2 money keystone): settles requested
   // CreatorPayout rows — credits grants and/or on-chain crypto transfers
   // from the platform payout wallet. Set to 0 to disable (the default:

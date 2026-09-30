@@ -1,5 +1,7 @@
 import { prisma } from "@wheelsai/db";
 import { getOrgPlan } from "./orgPlan.js";
+import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
+import { PAST_DUE_GRACE_DAYS, subscriptionGrantsAccess } from "./subscriptionAccess.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
 
@@ -731,6 +733,10 @@ export async function installAgent(listingId: string, buyerId: string) {
     throw new Error("This agent is not available for installation");
   }
 
+  if (listing.publisherId === buyerId) {
+    throw new Error("You published this agent; it is already in your workspace");
+  }
+
   // Check if already installed
   const existingInstall = await prisma.agentInstall.findUnique({
     where: {
@@ -742,58 +748,83 @@ export async function installAgent(listingId: string, buyerId: string) {
     throw new Error("You have already installed this agent");
   }
 
-  // Clone the agent to buyer's account
-  const clonedAgent = await prisma.agent.create({
-    data: {
-      orgId: buyerId,
-      name: `${listing.agent.name} (Marketplace)`,
-      slug: `${listing.agent.slug}-${Date.now()}`,
-      description: listing.agent.description,
-      framework: listing.agent.framework,
-      systemPrompt: listing.agent.systemPrompt,
-      tools: listing.agent.tools as any,
-      modelConfig: listing.agent.modelConfig as any,
-      sourceType: listing.agent.sourceType,
-      sourceUrl: listing.agent.sourceUrl,
-      sourceCode: listing.agent.sourceCode,
-      // Never copy the publisher's secrets (provider keys, bot tokens)
-      // into the buyer's org. The clone starts with no variables; buyers
-      // set their own keys.
-      version: listing.agent.version,
-      isPublic: false,
-      tags: listing.agent.tags,
-    },
-  });
+  // Everything below commits together: the clone, the install row, the
+  // counters and (for monthly listings) the first period's charge. Before,
+  // these were separate writes, and a crash in between left a clone that
+  // ran for free.
+  const result = await prisma.$transaction(async (tx) => {
+    // Reinstalling reuses the buyer's existing copy. Creating a new clone
+    // each time left the previous one in the buyer's org with no install
+    // row pointing at it: a free, unmetered copy of a paid agent.
+    const previousClone = existingInstall?.clonedAgentId
+      ? await tx.agent.findFirst({ where: { id: existingInstall.clonedAgentId, orgId: buyerId } })
+      : null;
 
-  // Create or reactivate install record
-  let install;
-  if (existingInstall) {
-    install = await prisma.agentInstall.update({
-      where: { id: existingInstall.id },
-      data: {
-        status: "active",
-        clonedAgentId: clonedAgent.id,
-        uninstalledAt: null,
-      },
-    });
-  } else {
-    install = await prisma.agentInstall.create({
-      data: {
-        listingId,
+    const clonedAgent =
+      previousClone ??
+      (await tx.agent.create({
+        data: {
+          orgId: buyerId,
+          name: `${listing.agent.name} (Marketplace)`,
+          slug: `${listing.agent.slug}-${Date.now()}`,
+          description: listing.agent.description,
+          framework: listing.agent.framework,
+          systemPrompt: listing.agent.systemPrompt,
+          tools: listing.agent.tools as any,
+          modelConfig: listing.agent.modelConfig as any,
+          sourceType: listing.agent.sourceType,
+          sourceUrl: listing.agent.sourceUrl,
+          sourceCode: listing.agent.sourceCode,
+          // Never copy the publisher's secrets (provider keys, bot tokens)
+          // into the buyer's org. The clone starts with no variables; buyers
+          // set their own keys.
+          version: listing.agent.version,
+          isPublic: false,
+          tags: listing.agent.tags,
+        },
+      }));
+
+    const install = existingInstall
+      ? await tx.agentInstall.update({
+          where: { id: existingInstall.id },
+          data: { status: "active", clonedAgentId: clonedAgent.id, uninstalledAt: null },
+        })
+      : await tx.agentInstall.create({
+          data: { listingId, buyerId, clonedAgentId: clonedAgent.id, status: "active" },
+        });
+
+    // Monthly listings charge the first 30-day period now.
+    let subscription: { id: string; currentPeriodEnd: Date } | null = null;
+    if (listing.pricingModel === "monthly") {
+      const started = await startMonthlySubscription(tx as unknown as SubscriptionTx, {
+        listing: {
+          id: listing.id,
+          title: listing.title,
+          publisherId: listing.publisherId,
+          monthlyPriceCents: listing.monthlyPriceCents ?? 0n,
+        },
         buyerId,
-        clonedAgentId: clonedAgent.id,
-        status: "active",
-      },
-    });
-  }
+        installId: install.id,
+      });
+      subscription = {
+        id: started.subscription.id,
+        currentPeriodEnd: started.subscription.currentPeriodEnd,
+      };
+    }
 
-  // Update listing stats
-  await prisma.agentListing.update({
-    where: { id: listingId },
-    data: {
-      totalInstalls: { increment: 1 },
-      activeInstalls: { increment: 1 },
-    },
+    // A lapsed (suspended) install still counts as active on the listing,
+    // so resubscribing must not count it twice.
+    if (existingInstall?.status !== "suspended") {
+      await tx.agentListing.update({
+        where: { id: listingId },
+        data: {
+          totalInstalls: { increment: 1 },
+          activeInstalls: { increment: 1 },
+        },
+      });
+    }
+
+    return { install, clonedAgent, subscription };
   });
 
   // Update publisher stats
@@ -807,14 +838,18 @@ export async function installAgent(listingId: string, buyerId: string) {
     )
   );
 
-  logger.info({ listingId, buyerId, agentId: clonedAgent.id }, "Agent installed from marketplace");
+  logger.info(
+    { listingId, buyerId, agentId: result.clonedAgent.id, subscription: result.subscription?.id },
+    "Agent installed from marketplace"
+  );
 
   return {
-    install,
+    install: result.install,
+    subscription: result.subscription,
     clonedAgent: {
-      id: clonedAgent.id,
-      name: clonedAgent.name,
-      slug: clonedAgent.slug,
+      id: result.clonedAgent.id,
+      name: result.clonedAgent.name,
+      slug: result.clonedAgent.slug,
     },
   };
 }
@@ -830,18 +865,26 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
     throw new Error("Installation not found");
   }
 
-  if (install.status !== "active") {
+  // A lapsed monthly install (suspended) can be removed too.
+  if (install.status !== "active" && install.status !== "suspended") {
     throw new Error("This agent is not currently installed");
   }
 
-  // Update install record
-  await prisma.agentInstall.update({
-    where: { id: install.id },
-    data: {
-      status: "uninstalled",
-      uninstalledAt: new Date(),
-    },
-  });
+  // Update install record; uninstalling ends a monthly subscription now
+  // (the current period is not refunded).
+  await prisma.$transaction([
+    prisma.agentInstall.update({
+      where: { id: install.id },
+      data: {
+        status: "uninstalled",
+        uninstalledAt: new Date(),
+      },
+    }),
+    prisma.agentSubscription.updateMany({
+      where: { listingId, subscriberId: buyerId, status: { in: ["active", "past_due"] } },
+      data: { status: "cancelled", cancelledAt: new Date(), cancelAtPeriodEnd: false },
+    }),
+  ]);
 
   // Update listing stats
   const listing = await prisma.agentListing.update({
@@ -861,7 +904,9 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
 
 export async function getMyInstalls(buyerId: string) {
   const installs = await prisma.agentInstall.findMany({
-    where: { buyerId, status: "active" },
+    // Suspended = a monthly subscription lapsed; the buyer still needs to
+    // see it to resubscribe or remove it.
+    where: { buyerId, status: { in: ["active", "suspended"] } },
     include: {
       listing: {
         include: {
@@ -878,16 +923,107 @@ export async function getMyInstalls(buyerId: string) {
     orderBy: { installedAt: "desc" },
   });
 
-  return installs.map((install) => ({
-    id: install.id,
-    listingId: install.listingId,
-    clonedAgentId: install.clonedAgentId,
-    status: install.status,
-    totalRequests: Number(install.totalRequests),
-    totalSpentCents: Number(install.totalSpentCents),
-    installedAt: install.installedAt,
-    listing: formatListingForPublic(install.listing),
+  const subscriptions = await prisma.agentSubscription.findMany({
+    where: { subscriberId: buyerId, listingId: { in: installs.map((i) => i.listingId) } },
+  });
+  const subByListing = new Map(subscriptions.map((sub) => [sub.listingId, sub]));
+
+  return installs.map((install) => {
+    const sub = subByListing.get(install.listingId);
+    return {
+      id: install.id,
+      listingId: install.listingId,
+      clonedAgentId: install.clonedAgentId,
+      status: install.status,
+      totalRequests: Number(install.totalRequests),
+      totalSpentCents: Number(install.totalSpentCents),
+      installedAt: install.installedAt,
+      listing: formatListingForPublic(install.listing),
+      subscription: sub ? formatSubscription(sub) : null,
+    };
+  });
+}
+
+// ============================================
+// Monthly subscriptions (buyer side)
+// ============================================
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function formatSubscription(sub: {
+  id: string;
+  listingId: string;
+  status: string;
+  currentPeriodStart: Date;
+  currentPeriodEnd: Date;
+  cancelAtPeriodEnd: boolean;
+  cancelledAt: Date | null;
+}) {
+  return {
+    id: sub.id,
+    listingId: sub.listingId,
+    status: sub.status,
+    currentPeriodStart: sub.currentPeriodStart,
+    currentPeriodEnd: sub.currentPeriodEnd,
+    cancelAtPeriodEnd: sub.cancelAtPeriodEnd,
+    cancelledAt: sub.cancelledAt,
+    hasAccess: subscriptionGrantsAccess(sub),
+    graceEndsAt:
+      sub.status === "past_due"
+        ? new Date(sub.currentPeriodEnd.getTime() + PAST_DUE_GRACE_DAYS * DAY_MS)
+        : null,
+  };
+}
+
+export async function getMySubscriptions(orgId: string) {
+  const subs = await prisma.agentSubscription.findMany({
+    where: { subscriberId: orgId },
+    include: {
+      listing: { select: { id: true, title: true, slug: true, iconUrl: true, monthlyPriceCents: true } },
+    },
+    orderBy: { currentPeriodEnd: "asc" },
+  });
+  return subs.map((sub) => ({
+    ...formatSubscription(sub),
+    listing: {
+      id: sub.listing.id,
+      title: sub.listing.title,
+      slug: sub.listing.slug,
+      iconUrl: sub.listing.iconUrl,
+      monthlyPriceCents: sub.listing.monthlyPriceCents ? Number(sub.listing.monthlyPriceCents) : 0,
+    },
   }));
+}
+
+export class SubscriptionNotFoundError extends Error {
+  readonly code = "subscription_not_found";
+  constructor() {
+    super("No active subscription for this listing");
+    this.name = "SubscriptionNotFoundError";
+  }
+}
+
+/**
+ * Cancel at period end (cancel = true) or undo that (cancel = false).
+ * Access continues until the paid period ends; the renewal worker then
+ * closes the subscription instead of charging it.
+ */
+export async function setSubscriptionCancelAtPeriodEnd(
+  orgId: string,
+  listingId: string,
+  cancel: boolean
+) {
+  const updated = await prisma.agentSubscription.updateMany({
+    where: { listingId, subscriberId: orgId, status: { in: ["active", "past_due"] } },
+    data: { cancelAtPeriodEnd: cancel },
+  });
+  if (updated.count !== 1) throw new SubscriptionNotFoundError();
+
+  const sub = await prisma.agentSubscription.findUnique({
+    where: { listingId_subscriberId: { listingId, subscriberId: orgId } },
+  });
+  logger.info({ orgId, listingId, cancelAtPeriodEnd: cancel }, "Subscription renewal setting changed");
+  return formatSubscription(sub!);
 }
 
 export async function checkInstallStatus(listingId: string, buyerId: string) {

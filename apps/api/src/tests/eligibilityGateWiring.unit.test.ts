@@ -43,6 +43,7 @@ function snapshot(p: any) {
     agentInstall: { ...p.agentInstall },
     agent: { ...p.agent },
     publisherProfile: { ...p.publisherProfile },
+    $transaction: p.$transaction,
   };
 }
 
@@ -52,6 +53,7 @@ function restore(p: any, orig: ReturnType<typeof snapshot>) {
   Object.assign(p.agentInstall, orig.agentInstall);
   Object.assign(p.agent, orig.agent);
   Object.assign(p.publisherProfile, orig.publisherProfile);
+  p.$transaction = orig.$transaction;
 }
 
 // ============================================
@@ -145,6 +147,9 @@ test("installAgent fires a reputation recalc at the listing's publisher", async 
       },
     });
     p.agentInstall.findUnique = async () => null;
+    // installAgent writes the clone, install and counters in one
+    // transaction; run it against the same stubs.
+    p.$transaction = async (fn: (tx: any) => unknown) => fn(p);
     p.agent.create = async (args: any) => ({
       id: "agent_clone",
       name: args.data.name,

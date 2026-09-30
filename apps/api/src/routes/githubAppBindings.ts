@@ -7,6 +7,7 @@
  */
 
 import { Redis } from "ioredis";
+import { openAgentEnv } from "../services/agentSecrets.js";
 
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
@@ -127,7 +128,7 @@ export function buildGitHubAppDeps(): GitHubAppRouteDeps {
         });
 
         return agents.map((a): MatchedAgent => {
-          const agentEnv = (a.env as Record<string, unknown> | null) ?? {};
+          const agentEnv: Record<string, unknown> = openAgentEnv(a.env);
           return {
             id: a.id,
             orgId: a.orgId,

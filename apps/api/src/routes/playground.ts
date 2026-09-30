@@ -6,6 +6,7 @@
  */
 
 import { FastifyPluginAsync } from "fastify";
+import { openAgentEnv } from "../services/agentSecrets.js";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
@@ -89,7 +90,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
       // Resolve model connection config
       let resolved;
       try {
-        const agentEnv = (agent.env as Record<string, string>) ?? {};
+        const agentEnv = openAgentEnv(agent.env);
         resolved = resolveModelForPlayground(modelId, agentEnv);
       } catch (err) {
         return reply.badRequest(

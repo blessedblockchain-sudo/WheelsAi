@@ -14,6 +14,7 @@
  */
 
 import { getAvailableFreeModels } from "../config/free-models.js";
+import { openAgentEnv } from "./agentSecrets.js";
 import { prisma } from "../lib/prisma.js";
 import type { GraphInterpreterDeps } from "./graphInterpreter.js";
 import { searchKnowledgeBase } from "./knowledge.js";
@@ -103,6 +104,6 @@ export async function loadGraphAgentContext(
     agentName: agent.name,
     systemPrompt: agent.systemPrompt,
     modelConfig: (agent.modelConfig as Record<string, unknown>) ?? {},
-    env: (agent.env as Record<string, string>) ?? {},
+    env: openAgentEnv(agent.env),
   };
 }

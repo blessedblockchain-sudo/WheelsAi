@@ -9,6 +9,7 @@
  */
 
 import { prisma } from "../lib/prisma.js";
+import { openAgentEnv } from "./agentSecrets.js";
 import { withMarketplaceMetering } from "./marketplaceMeteringProduction.js";
 import {
   resolveModelForPlayground,
@@ -39,7 +40,7 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
     runAgentChat: async ({ agent, prompt }) => {
       const modelConfig =
         (agent.modelConfig as Record<string, unknown> | null) ?? {};
-      const agentEnv = (agent.env as Record<string, string> | null) ?? {};
+      const agentEnv = openAgentEnv(agent.env);
       const modelId =
         typeof modelConfig.externalModel === "string"
           ? modelConfig.externalModel

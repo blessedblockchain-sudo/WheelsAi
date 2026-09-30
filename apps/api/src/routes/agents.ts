@@ -7,6 +7,7 @@ import { prisma } from "@wheelsai/db";
 import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
+import { mergeAgentEnv, redactAgentEnv, sealAgentEnv } from "../services/agentSecrets.js";
 import { getNosanaClient } from "../services/nosana.js";
 import {
   parseGitHubUrl,
@@ -62,7 +63,11 @@ const createAgentSchema = z.object({
   knowledgeBaseId: z.string().uuid().nullable().optional(),
 });
 
-const updateAgentSchema = createAgentSchema.partial();
+const updateAgentSchema = createAgentSchema.partial().extend({
+  // Secrets are write-only: clients never see values, so a PATCH merges.
+  // A string sets or replaces a variable; null deletes it.
+  env: z.record(z.string().max(8192).nullable()).optional(),
+});
 
 /**
  * A knowledge base may only be bound by the org that owns it. Without
@@ -208,7 +213,8 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return {
       agent: {
         ...agent,
-        // Don't expose secrets
+        // Values never leave the API: only the names of set variables.
+        env: redactAgentEnv(agent.env),
         secrets: undefined,
       },
     };
@@ -262,7 +268,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         sourceType: body.sourceType,
         sourceUrl: body.sourceUrl,
         sourceCode: body.sourceCode,
-        env: body.env,
+        env: sealAgentEnv(body.env),
         tags: body.tags,
         isPublic: body.isPublic,
         knowledgeBaseId: body.knowledgeBaseId ?? null,
@@ -323,10 +329,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       newVersion = `${major}.${minor}.${patch + 1}`;
     }
 
+    const { env: envPatch, ...fieldUpdates } = updates;
     const updatedAgent = await prisma.agent.update({
       where: { id: agentId },
       data: {
-        ...updates,
+        ...fieldUpdates,
+        env: envPatch ? mergeAgentEnv(agent.env, envPatch) : undefined,
         version: newVersion,
         modelConfig: updates.modelConfig
           ? { ...(agent.modelConfig as any), ...updates.modelConfig }
@@ -342,7 +350,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       updatedAgent.id,
     ).catch((err) => logger.error({ err }, "webhook agent.updated failed"));
 
-    return { agent: updatedAgent };
+    return { agent: { ...updatedAgent, env: redactAgentEnv(updatedAgent.env), secrets: undefined } };
   });
 
   /**
@@ -642,8 +650,11 @@ async function submitAgentToNosana(
     });
 
     // Generate job definition
+    // The agent's own secrets are deliberately NOT placed in the job
+    // definition: Nosana pins job definitions to public IPFS. They reach
+    // the runtime through confidential job delivery (claims ledger D1).
     const jobDefinition = generateAgentJobDefinition({
-      agent,
+      agent: { ...agent, env: {} } as any,
       modelDeploymentId: config.modelDeploymentId,
       externalModelUrl: config.externalModelUrl,
     });

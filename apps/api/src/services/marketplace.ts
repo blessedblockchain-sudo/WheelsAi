@@ -745,7 +745,9 @@ export async function installAgent(listingId: string, buyerId: string) {
       sourceType: listing.agent.sourceType,
       sourceUrl: listing.agent.sourceUrl,
       sourceCode: listing.agent.sourceCode,
-      env: listing.agent.env as any,
+      // Never copy the publisher's secrets (provider keys, bot tokens)
+      // into the buyer's org. The clone starts with no variables; buyers
+      // set their own keys.
       version: listing.agent.version,
       isPublic: false,
       tags: listing.agent.tags,

@@ -1,4 +1,5 @@
 import { prisma } from "@wheelsai/db";
+import { openAgentEnv, sealAgentEnv } from "./agentSecrets.js";
 
 // ============================================
 // Agent Templates CRUD
@@ -83,7 +84,7 @@ export async function useTemplate(templateId: string, orgId: string, input: {
       sourceType: template.sourceType,
       sourceCode: template.sourceCode,
       sourceUrl: template.sourceUrl,
-      env: template.env as any,
+      env: sealAgentEnv(openAgentEnv(template.env)),
       tags: template.tags,
     },
   });

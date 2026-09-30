@@ -1,14 +1,12 @@
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
-import * as crypto from "crypto";
+import { openJson, sealJson } from "../lib/secretBox.js";
 import { getNosanaClient, type NosanaJobDefinition } from "./nosana.js";
 
 const logger = createLogger("openclaw-service");
 
-// Encryption helpers using AES-256-GCM
-const ALGORITHM = "aes-256-gcm";
-const IV_LENGTH = 16;
+
 const OPENCLAW_PORT = 8000;
 
 const OPENCLAW_GPU_TIER_MAP: Record<string, string> = {
@@ -143,35 +141,14 @@ function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
   };
 }
 
-function getEncryptionKey(): Buffer {
-  // Use ENCRYPTION_KEY when available; fall back to JWT_SECRET for backward compatibility
-  // with deployments that pre-date the dedicated key. In production, set ENCRYPTION_KEY
-  // to an independent 32+ character secret so rotating JWT_SECRET doesn't break decryption.
-  const source = env.ENCRYPTION_KEY ?? env.JWT_SECRET;
-  return crypto.createHash("sha256").update(source).digest();
-}
-
+// Channel configs use the shared sealing helper; the on-disk format is
+// unchanged, so existing rows decrypt as before.
 export function encryptConfig(data: Record<string, unknown>): string {
-  const key = getEncryptionKey();
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  let encrypted = cipher.update(JSON.stringify(data), "utf8", "hex");
-  encrypted += cipher.final("hex");
-  const tag = cipher.getAuthTag();
-  return iv.toString("hex") + ":" + tag.toString("hex") + ":" + encrypted;
+  return sealJson(data);
 }
 
 export function decryptConfig(encryptedStr: string): Record<string, unknown> {
-  const key = getEncryptionKey();
-  const [ivHex, tagHex, encrypted] = encryptedStr.split(":");
-  if (!ivHex || !tagHex || !encrypted) throw new Error("Invalid encrypted config format");
-  const iv = Buffer.from(ivHex, "hex");
-  const tag = Buffer.from(tagHex, "hex");
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(tag);
-  let decrypted = decipher.update(encrypted, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-  return JSON.parse(decrypted);
+  return openJson<Record<string, unknown>>(encryptedStr);
 }
 
 interface CreateDeploymentParams {

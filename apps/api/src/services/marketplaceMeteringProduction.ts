@@ -29,7 +29,9 @@ import {
   refundMarketplaceRequest,
   resolveInstallBilling,
   settleMarketplaceRequest,
+  type GateToken,
   type MarketplaceCharge,
+  type RevocationReason,
 } from "./marketplaceMetering.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -54,8 +56,14 @@ export type BeginMeteringResult =
       balanceCents: bigint;
       listingTitle: string;
     }
-  /** The buyer uninstalled this listing — the clone may not run. */
-  | { ok: false; reason: "licence_revoked"; listingTitle: string };
+  /** The buyer's licence ended (uninstalled, lapsed, token not held). */
+  | {
+      ok: false;
+      reason: "licence_revoked";
+      listingTitle: string;
+      revocation: RevocationReason;
+      token?: GateToken;
+    };
 
 function makeHandle(charge: MarketplaceCharge): MeteringHandle {
   return {
@@ -114,6 +122,8 @@ export async function beginMarketplaceMetering(args: {
       ok: false,
       reason: "licence_revoked",
       listingTitle: billing.listingTitle,
+      revocation: billing.reason,
+      token: billing.token,
     };
   }
 
@@ -162,7 +172,7 @@ export async function withMarketplaceMetering<T>(
 
   if (!metering.ok) {
     throw metering.reason === "licence_revoked"
-      ? new MarketplaceLicenceRevokedError(metering.listingTitle)
+      ? new MarketplaceLicenceRevokedError(metering.listingTitle, metering.revocation, metering.token)
       : new MarketplacePaymentRequiredError({
           requiredCents: metering.requiredCents,
           balanceCents: metering.balanceCents,

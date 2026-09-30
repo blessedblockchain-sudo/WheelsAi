@@ -64,7 +64,7 @@ export async function runAgentGraph(
   const metering = await beginMarketplaceMetering({ agentId, orgId });
   if (metering && !metering.ok) {
     throw metering.reason === "licence_revoked"
-      ? new MarketplaceLicenceRevokedError(metering.listingTitle)
+      ? new MarketplaceLicenceRevokedError(metering.listingTitle, metering.revocation, metering.token)
       : new MarketplacePaymentRequiredError({
           requiredCents: metering.requiredCents,
           balanceCents: metering.balanceCents,

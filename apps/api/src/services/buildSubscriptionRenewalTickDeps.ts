@@ -5,7 +5,7 @@
  * Wires:
  *   loadDue        -> AgentSubscription rows whose period has ended and that
  *                     are still active or past_due, oldest first, with the
- *                     listing's current monthly price
+ *                     listing's current monthly price and pricing model
  *   inTransaction  -> prisma.$transaction; renewSubscription and
  *                     markPastDueOrExpire each run in their own
  */
@@ -23,7 +23,9 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
         orderBy: { currentPeriodEnd: "asc" },
         take: limit,
         include: {
-          listing: { select: { id: true, title: true, publisherId: true, monthlyPriceCents: true } },
+          listing: {
+            select: { id: true, title: true, publisherId: true, monthlyPriceCents: true, pricingModel: true },
+          },
         },
       });
       return rows.map((r) => ({
@@ -41,6 +43,7 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           title: r.listing.title,
           publisherId: r.listing.publisherId,
           monthlyPriceCents: r.listing.monthlyPriceCents ?? 0n,
+          pricingModel: r.listing.pricingModel,
         },
       }));
     },

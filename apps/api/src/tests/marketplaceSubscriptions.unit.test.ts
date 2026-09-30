@@ -408,7 +408,7 @@ test("a monthly install runs while its subscription grants access, and is revoke
   ]) {
     assert.deepEqual(
       await resolveInstallBilling(monthlyLookup(sub) as never, args),
-      { kind: "revoked", listingTitle: "Research Analyst" },
+      { kind: "revoked", listingTitle: "Research Analyst", reason: "subscription_lapsed" },
       JSON.stringify(sub),
     );
   }
@@ -416,5 +416,18 @@ test("a monthly install runs while its subscription grants access, and is revoke
   assert.deepEqual(await resolveInstallBilling(monthlyLookup(null, false) as never, args), {
     kind: "revoked",
     listingTitle: "Research Analyst",
+    reason: "subscription_lapsed",
   });
+});
+
+test("a renewal after the listing left monthly pricing closes without charging and keeps the install", async () => {
+  const { state, inTransaction, sub } = await subscribed();
+  const outcome = await inTransaction((tx) =>
+    renewSubscription(tx, { sub: sub(), listing: { ...LISTING, pricingModel: "per_request" }, now: at(30) }),
+  );
+  assert.deepEqual(outcome, { kind: "cancelled" });
+  assert.equal(sub().status, "cancelled");
+  assert.equal(state.installs[0]!.status, "active");
+  assert.equal(state.revenue.length, 1);
+  assert.equal(state.balances.get("org_buyer"), 8_500n);
 });

@@ -55,6 +55,8 @@ export interface ListingForBilling {
   title: string;
   publisherId: string;
   monthlyPriceCents: bigint;
+  /** The listing's current model; renewal stops if it is no longer monthly. */
+  pricingModel?: string;
 }
 
 export interface SubscriptionTx {
@@ -228,6 +230,17 @@ export async function renewSubscription(
   const now = args.now ?? new Date();
   const { sub } = args;
   if (sub.currentPeriodEnd > now) return { kind: "not_due" };
+
+  // The publisher moved the listing off monthly pricing: the paid period
+  // ran its course, nothing more is charged, and access now follows the
+  // listing's new model, so the install stays as it is.
+  if (args.listing.pricingModel !== undefined && args.listing.pricingModel !== "monthly") {
+    const closed = await tx.agentSubscription.updateMany({
+      where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
+      data: { status: "cancelled", cancelledAt: now },
+    });
+    return closed.count === 1 ? { kind: "cancelled" } : { kind: "lost_race" };
+  }
 
   if (sub.cancelAtPeriodEnd || sub.status === "cancelled") {
     const closed = await tx.agentSubscription.updateMany({

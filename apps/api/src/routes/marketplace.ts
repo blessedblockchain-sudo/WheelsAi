@@ -34,6 +34,7 @@ import {
   PRICING_MODELS,
 } from "../services/marketplace.js";
 import { InsufficientCreditsError } from "../services/marketplaceSubscriptions.js";
+import { TokenRequiredError } from "../services/tokenAccess.js";
 
 const logger = createLogger("marketplace-routes");
 
@@ -67,7 +68,7 @@ const createListingSchema = z.object({
   iconUrl: z.string().url().optional(),
   screenshots: z.array(z.string().url()).max(10).optional(),
   readme: z.string().max(50000).optional(),
-  pricingModel: z.enum(["free", "per_request", "monthly"]),
+  pricingModel: z.enum(["free", "per_request", "monthly", "tokenized"]),
   pricePerRequestCents: z.number().int().min(1).max(100000).optional(),
   monthlyPriceCents: z.number().int().min(100).max(10000000).optional(),
 });
@@ -380,6 +381,15 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
             error: error.code,
             message: error.message,
             requiredCents: Number(error.requiredCents),
+          });
+        }
+        if (error instanceof TokenRequiredError) {
+          return reply.status(403).send({
+            error: error.code,
+            message: error.message,
+            tokenSymbol: error.token.symbol,
+            mintAddress: error.token.mintAddress,
+            requiredBalance: error.minTokens,
           });
         }
         logger.error({ error, orgId, listingId: id }, "Failed to install agent");

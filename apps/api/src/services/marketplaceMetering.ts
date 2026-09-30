@@ -40,6 +40,7 @@
  * precedent) so every path here is unit-testable without a database.
  */
 import { subscriptionGrantsAccess } from "./subscriptionAccess.js";
+import { orgHoldsToken, tokenRequiredMessage, type TokenAccessDb } from "./tokenAccess.js";
 
 /** Platform's cut in basis points. Mirrors PLATFORM_FEE_SHARE = 0.1. */
 export const PLATFORM_FEE_BPS = 1000n;
@@ -53,15 +54,39 @@ export const PLATFORM_FEE_BPS = 1000n;
  * buyer's org. Metering keys on an ACTIVE install, so the cheapest way to
  * use a paid agent forever would have been to stop paying for it.
  */
+export type RevocationReason = "uninstalled" | "subscription_lapsed" | "token_required";
+
+export interface GateToken {
+  symbol: string;
+  mintAddress: string;
+}
+
+/** What the buyer is told when a marketplace clone refuses to run. */
+export function licenceRevokedMessage(
+  listingTitle: string,
+  reason: RevocationReason = "uninstalled",
+  token?: GateToken,
+): string {
+  if (reason === "subscription_lapsed") {
+    return `"${listingTitle}" is a monthly subscription that is not paid up. Resubscribe from Installed Agents to use it again.`;
+  }
+  if (reason === "token_required" && token) {
+    return tokenRequiredMessage(listingTitle, token);
+  }
+  return `This agent came from the marketplace listing "${listingTitle}" and stopped working when you uninstalled it. Reinstall it to use it again.`;
+}
+
 export class MarketplaceLicenceRevokedError extends Error {
   readonly listingTitle: string;
+  readonly reason: RevocationReason;
+  readonly token?: GateToken;
 
-  constructor(listingTitle: string) {
-    super(
-      `This agent came from the marketplace listing "${listingTitle}" and stopped working when you uninstalled it. Reinstall it to use it again.`,
-    );
+  constructor(listingTitle: string, reason: RevocationReason = "uninstalled", token?: GateToken) {
+    super(licenceRevokedMessage(listingTitle, reason, token));
     this.name = "MarketplaceLicenceRevokedError";
     this.listingTitle = listingTitle;
+    this.reason = reason;
+    this.token = token;
   }
 }
 
@@ -118,6 +143,7 @@ export interface MeteringLookupPrisma {
             publisherId: true;
             pricingModel: true;
             pricePerRequestCents: true;
+            agentToken: { select: { id: true; symbol: true; mintAddress: true } };
           };
         };
       };
@@ -132,9 +158,13 @@ export interface MeteringLookupPrisma {
         publisherId: string;
         pricingModel: string;
         pricePerRequestCents: bigint | null;
+        agentToken?: { id: string; symbol: string; mintAddress: string } | null;
       };
     } | null>;
   };
+  /** Token-gated listings; absent = fail closed once a token exists. */
+  orgMember?: TokenAccessDb["orgMember"];
+  agentTokenHolder?: TokenAccessDb["agentTokenHolder"];
   agentSubscription?: {
     findUnique(args: {
       where: { listingId_subscriberId: { listingId: string; subscriberId: string } };
@@ -147,7 +177,7 @@ export type InstallBilling =
   /** Not a marketplace clone, or licensed and free to run. */
   | { kind: "free" }
   /** Licence ended — the clone must refuse to run. */
-  | { kind: "revoked"; listingTitle: string }
+  | { kind: "revoked"; listingTitle: string; reason: RevocationReason; token?: GateToken }
   | { kind: "billable"; install: MeteredInstall };
 
 /**
@@ -158,10 +188,12 @@ export type InstallBilling =
  * pointing at it, so publishers are never billed for running their own
  * work.
  *
- * `free` covers: not an install at all, a free/monthly/tokenized listing,
- * a zero price, and a listing that is no longer published (a publisher
- * who archives a listing stops charging for it — existing buyers keep
- * what they installed).
+ * `free` covers: not an install at all, a free listing, a paid-up
+ * monthly subscription, a token-gated listing the buyer org holds the
+ * token for (or whose token has not launched yet), a zero price, and a
+ * listing that is no longer published (a publisher who archives a
+ * listing stops charging for it — existing buyers keep what they
+ * installed).
  */
 export async function resolveInstallBilling(
   db: MeteringLookupPrisma,
@@ -184,6 +216,7 @@ export async function resolveInstallBilling(
           publisherId: true,
           pricingModel: true,
           pricePerRequestCents: true,
+          agentToken: { select: { id: true, symbol: true, mintAddress: true } },
         },
       },
     },
@@ -191,7 +224,12 @@ export async function resolveInstallBilling(
 
   if (!install) return { kind: "free" };
   if (install.status !== "active") {
-    return { kind: "revoked", listingTitle: install.listing.title };
+    return {
+      kind: "revoked",
+      listingTitle: install.listing.title,
+      // A suspended install is a lapsed monthly subscription.
+      reason: install.status === "suspended" ? "subscription_lapsed" : "uninstalled",
+    };
   }
   if (install.listing.status !== "published") return { kind: "free" };
   // Monthly: runs only while its subscription is paid up (or in grace).
@@ -204,7 +242,28 @@ export async function resolveInstallBilling(
       : null;
     return subscriptionGrantsAccess(sub)
       ? { kind: "free" }
-      : { kind: "revoked", listingTitle: install.listing.title };
+      : { kind: "revoked", listingTitle: install.listing.title, reason: "subscription_lapsed" };
+  }
+  // Tokenized: free until the token launches, then only for orgs whose
+  // members hold it.
+  if (install.listing.pricingModel === "tokenized") {
+    const token = install.listing.agentToken;
+    if (!token) return { kind: "free" };
+    const holds =
+      db.orgMember && db.agentTokenHolder
+        ? await orgHoldsToken(
+            { orgMember: db.orgMember, agentTokenHolder: db.agentTokenHolder },
+            { orgId: install.buyerId, tokenId: token.id },
+          )
+        : false;
+    return holds
+      ? { kind: "free" }
+      : {
+          kind: "revoked",
+          listingTitle: install.listing.title,
+          reason: "token_required",
+          token: { symbol: token.symbol, mintAddress: token.mintAddress },
+        };
   }
   if (install.listing.pricingModel !== "per_request") return { kind: "free" };
 

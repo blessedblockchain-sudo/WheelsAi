@@ -116,7 +116,7 @@ test("uninstalling revokes the clone — it does not make it free", async () => 
     const { db } = makeLookup(listingRow({}, installStatus));
     assert.deepEqual(
       await resolveInstallBilling(db as never, { agentId: "a", orgId: "o" }),
-      { kind: "revoked", listingTitle: "Support Triage" },
+      { kind: "revoked", listingTitle: "Support Triage", reason: "uninstalled" },
       `expected revocation for install status ${installStatus}`,
     );
   }
@@ -126,7 +126,7 @@ test("revocation outranks pricing — even a free listing's clone stops", async 
   const { db } = makeLookup(listingRow({ pricingModel: "free" }, "uninstalled"));
   assert.deepEqual(
     await resolveInstallBilling(db as never, { agentId: "a", orgId: "o" }),
-    { kind: "revoked", listingTitle: "Support Triage" },
+    { kind: "revoked", listingTitle: "Support Triage", reason: "uninstalled" },
   );
 });
 

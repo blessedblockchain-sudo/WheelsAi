@@ -15,6 +15,7 @@ import { resolveModelForPlayground, runChat, type ChatMessage } from "../service
 import { isFreeModel, getAvailableFreeModels, getAllFreeModels } from "../config/free-models.js";
 import { retrieveContextForAgent } from "../services/agentRetrieval.js";
 import { beginMarketplaceMetering } from "../services/marketplaceMeteringProduction.js";
+import { licenceRevokedMessage } from "../services/marketplaceMetering.js";
 import { buildAgentRetrievalDeps } from "../services/buildAgentRetrievalDeps.js";
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
@@ -126,7 +127,9 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
       if (metering && !metering.ok && metering.reason === "licence_revoked") {
         return reply.status(403).send({
           error: "LicenceRevoked",
-          message: `This agent came from the marketplace listing "${metering.listingTitle}" and stopped working when you uninstalled it. Reinstall it to use it again.`,
+          reason: metering.revocation,
+          message: licenceRevokedMessage(metering.listingTitle, metering.revocation, metering.token),
+          ...(metering.token && { tokenSymbol: metering.token.symbol, mintAddress: metering.token.mintAddress }),
         });
       }
       if (metering && !metering.ok) {

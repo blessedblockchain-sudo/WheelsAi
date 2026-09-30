@@ -2,6 +2,7 @@ import { prisma } from "@wheelsai/db";
 import { getOrgPlan } from "./orgPlan.js";
 import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
 import { PAST_DUE_GRACE_DAYS, subscriptionGrantsAccess } from "./subscriptionAccess.js";
+import { orgHoldsToken, TokenRequiredError } from "./tokenAccess.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
 
@@ -30,7 +31,7 @@ export interface ListingCreateParams {
   iconUrl?: string;
   screenshots?: string[];
   readme?: string;
-  pricingModel: "free" | "per_request" | "monthly";
+  pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents?: number;
   monthlyPriceCents?: number;
 }
@@ -52,7 +53,32 @@ export const PRICING_MODELS = [
   { id: "free", label: "Free" },
   { id: "per_request", label: "Pay per Request" },
   { id: "monthly", label: "Monthly Subscription" },
+  { id: "tokenized", label: "Token Gated" },
 ] as const;
+
+/**
+ * The prices a pricing model keeps. Per-request and monthly need their
+ * price; free and token-gated carry none (a stale price would otherwise
+ * be shown or charged after a switch).
+ */
+export function normalizeListingPricing(
+  pricingModel: ListingCreateParams["pricingModel"],
+  prices: { pricePerRequestCents?: number | null; monthlyPriceCents?: number | null }
+): { pricePerRequestCents: bigint | null; monthlyPriceCents: bigint | null } {
+  if (pricingModel === "per_request") {
+    if (!prices.pricePerRequestCents) {
+      throw new Error("Price per request is required for per_request pricing model");
+    }
+    return { pricePerRequestCents: BigInt(prices.pricePerRequestCents), monthlyPriceCents: null };
+  }
+  if (pricingModel === "monthly") {
+    if (!prices.monthlyPriceCents) {
+      throw new Error("Monthly price is required for monthly pricing model");
+    }
+    return { pricePerRequestCents: null, monthlyPriceCents: BigInt(prices.monthlyPriceCents) };
+  }
+  return { pricePerRequestCents: null, monthlyPriceCents: null };
+}
 
 // Revenue split: 90% creator, 10% platform
 export const CREATOR_REVENUE_SHARE = 0.9;
@@ -463,12 +489,7 @@ export async function createListing(
       screenshots: params.screenshots ?? [],
       readme: params.readme,
       pricingModel: params.pricingModel,
-      pricePerRequestCents: params.pricePerRequestCents
-        ? BigInt(params.pricePerRequestCents)
-        : null,
-      monthlyPriceCents: params.monthlyPriceCents
-        ? BigInt(params.monthlyPriceCents)
-        : null,
+      ...normalizeListingPricing(params.pricingModel, params),
       publisherId: orgId,
       publisherName: orgName,
       status: "draft",
@@ -503,6 +524,35 @@ export async function updateListing(
     throw new Error("Listing not found or you don't have permission to edit");
   }
 
+  // Pricing is validated as a whole: the model that results from this
+  // edit must have the price it needs, and drops the ones it doesn't.
+  const pricingTouched =
+    params.pricingModel !== undefined ||
+    params.pricePerRequestCents !== undefined ||
+    params.monthlyPriceCents !== undefined;
+  const pricing = pricingTouched
+    ? {
+        pricingModel: params.pricingModel ?? listing.pricingModel,
+        ...normalizeListingPricing(
+          (params.pricingModel ?? listing.pricingModel) as ListingCreateParams["pricingModel"],
+          {
+            pricePerRequestCents:
+              params.pricePerRequestCents !== undefined
+                ? params.pricePerRequestCents
+                : listing.pricePerRequestCents !== null
+                ? Number(listing.pricePerRequestCents)
+                : null,
+            monthlyPriceCents:
+              params.monthlyPriceCents !== undefined
+                ? params.monthlyPriceCents
+                : listing.monthlyPriceCents !== null
+                ? Number(listing.monthlyPriceCents)
+                : null,
+          }
+        ),
+      }
+    : {};
+
   const updated = await prisma.agentListing.update({
     where: { id: listingId },
     data: {
@@ -517,17 +567,7 @@ export async function updateListing(
       ...(params.iconUrl !== undefined && { iconUrl: params.iconUrl }),
       ...(params.screenshots && { screenshots: params.screenshots }),
       ...(params.readme !== undefined && { readme: params.readme }),
-      ...(params.pricingModel && { pricingModel: params.pricingModel }),
-      ...(params.pricePerRequestCents !== undefined && {
-        pricePerRequestCents: params.pricePerRequestCents
-          ? BigInt(params.pricePerRequestCents)
-          : null,
-      }),
-      ...(params.monthlyPriceCents !== undefined && {
-        monthlyPriceCents: params.monthlyPriceCents
-          ? BigInt(params.monthlyPriceCents)
-          : null,
-      }),
+      ...pricing,
     },
     include: {
       agent: {
@@ -746,6 +786,18 @@ export async function installAgent(listingId: string, buyerId: string) {
 
   if (existingInstall && existingInstall.status === "active") {
     throw new Error("You have already installed this agent");
+  }
+
+  // Token-gated: once the token exists, installing needs it too, so a
+  // buyer learns what access requires before anything is created.
+  if (listing.pricingModel === "tokenized") {
+    const token = await prisma.agentToken.findUnique({
+      where: { agentListingId: listing.id },
+      select: { id: true, symbol: true, mintAddress: true },
+    });
+    if (token && !(await orgHoldsToken(prisma, { orgId: buyerId, tokenId: token.id }))) {
+      throw new TokenRequiredError(listing.title, token);
+    }
   }
 
   // Everything below commits together: the clone, the install row, the

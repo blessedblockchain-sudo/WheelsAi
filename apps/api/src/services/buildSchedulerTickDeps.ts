@@ -15,11 +15,7 @@ import {
   executeScheduledTask,
   type ExecuteScheduledTaskDeps,
 } from "./executeScheduledTask.js";
-import type {
-  DueTaskRow,
-  ExecutionOutcome,
-  SchedulerTickDeps,
-} from "./runSchedulerTick.js";
+import type { SchedulerTickDeps } from "./runSchedulerTick.js";
 
 const DEFAULT_BATCH_LIMIT = 20;
 

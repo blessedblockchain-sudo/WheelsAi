@@ -21,7 +21,7 @@ import tsParser from "@typescript-eslint/parser";
  */
 const config = [
   {
-    ignores: [".next/**", "node_modules/**", "out/**", "next-env.d.ts"],
+    ignores: [".next/**", ".netlify/**", "node_modules/**", "out/**", "next-env.d.ts"],
   },
   {
     files: ["**/*.{js,jsx,mjs,ts,tsx}"],

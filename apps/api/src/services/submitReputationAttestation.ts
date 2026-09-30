@@ -22,7 +22,6 @@
 
 import {
   Keypair,
-  PublicKey,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,

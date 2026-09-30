@@ -18,7 +18,6 @@
 import { prisma } from "../lib/prisma.js";
 import { recordUptimeEvent } from "./monitoring.js";
 import type {
-  DueMonitorRow,
   ProbeOutcome,
   UptimeProberTickDeps,
 } from "./runUptimeProberTick.js";

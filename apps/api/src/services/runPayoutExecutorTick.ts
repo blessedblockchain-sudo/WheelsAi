@@ -95,7 +95,7 @@ export async function runPayoutExecutorTick(
           reason: `unsupported payout method: ${row.payoutMethod}`,
         };
       }
-    } catch (err) {
+    } catch {
       // An unexpected throw during settlement leaves the row in
       // `processing`; a later tick retries. Count it, don't restore
       // (a crypto send may have landed).

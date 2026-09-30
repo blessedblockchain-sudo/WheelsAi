@@ -560,6 +560,10 @@ function getEncryptionKey(): Buffer {
   return crypto.createHash("sha256").update(secret).digest();
 }
 
+// Write-side counterpart of decryptToken (defines the iv|authTag|ciphertext
+// layout it reads). Its only caller, the OAuth completion path, was removed
+// in ced6bcf; kept so the reinstated connect flow stores the same format.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function encryptToken(token: string): Buffer {
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(

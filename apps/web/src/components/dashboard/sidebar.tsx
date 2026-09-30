@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { OrgSwitcher } from "@/components/dashboard/org-switcher";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -165,6 +166,8 @@ export function Sidebar() {
         </div>
         <span className="text-xl font-bold text-foreground">WheelsAI</span>
       </div>
+
+      <OrgSwitcher />
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto px-3 py-4">

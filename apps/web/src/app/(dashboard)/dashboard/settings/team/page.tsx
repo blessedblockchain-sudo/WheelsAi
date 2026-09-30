@@ -11,7 +11,8 @@ import {
   Clock,
   X,
 } from "lucide-react";
-import { enterpriseApi, type TeamMember, type TeamInvite } from "@/lib/api";
+import { toast } from "sonner";
+import { enterpriseApi, getErrorMessage, type TeamMember, type TeamInvite } from "@/lib/api";
 
 export default function TeamSettingsPage() {
   const [members, setMembers] = useState<TeamMember[]>([]);
@@ -35,7 +36,7 @@ export default function TeamSettingsPage() {
       setMembers(membersRes.data);
       setInvites(invitesRes.data);
     } catch (error) {
-      console.error("Failed to load team:", error);
+      toast.error(getErrorMessage(error, "Failed to load team"));
     } finally {
       setLoading(false);
     }
@@ -47,12 +48,22 @@ export default function TeamSettingsPage() {
 
     setInviting(true);
     try {
-      await enterpriseApi.createTeamInvite(inviteEmail, inviteRole);
+      const res = await enterpriseApi.createTeamInvite(inviteEmail, inviteRole);
       setInviteEmail("");
       setShowInviteForm(false);
+      if (res.emailSent) {
+        toast.success(res.message);
+      } else {
+        // Email is not configured: the inviter shares the link directly.
+        await navigator.clipboard?.writeText(res.inviteUrl).catch(() => undefined);
+        toast.success("Invite created. The invite link is copied to your clipboard.", {
+          description: res.inviteUrl,
+          duration: 15000,
+        });
+      }
       loadTeam();
     } catch (error) {
-      console.error("Failed to send invite:", error);
+      toast.error(getErrorMessage(error, "Failed to send invite"));
     } finally {
       setInviting(false);
     }
@@ -61,18 +72,20 @@ export default function TeamSettingsPage() {
   async function handleRevokeInvite(inviteId: string) {
     try {
       await enterpriseApi.revokeInvite(inviteId);
+      toast.success("Invite revoked");
       loadTeam();
     } catch (error) {
-      console.error("Failed to revoke invite:", error);
+      toast.error(getErrorMessage(error, "Failed to revoke invite"));
     }
   }
 
   async function handleUpdateRole(memberId: string, role: string) {
     try {
       await enterpriseApi.updateMemberRole(memberId, role);
+      toast.success("Role updated");
       loadTeam();
     } catch (error) {
-      console.error("Failed to update role:", error);
+      toast.error(getErrorMessage(error, "Failed to update role"));
     }
   }
 
@@ -83,7 +96,7 @@ export default function TeamSettingsPage() {
       await enterpriseApi.removeMember(memberId);
       loadTeam();
     } catch (error) {
-      console.error("Failed to remove member:", error);
+      toast.error(getErrorMessage(error, "Failed to remove member"));
     }
   }
 

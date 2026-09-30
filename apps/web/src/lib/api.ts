@@ -186,6 +186,19 @@ export const authApi = {
   logout: () =>
     api<{ message: string }>("/api/auth/logout", { method: "POST" }),
 
+  /** Organizations the signed-in user belongs to. */
+  listOrgs: () =>
+    api<{ organizations: { id: string; name: string; role: string; current: boolean }[] }>(
+      "/api/auth/orgs"
+    ),
+
+  /** Move the session into another organization the user belongs to. */
+  switchOrg: (orgId: string) =>
+    api<{ organization: Organization; role: string }>("/api/auth/switch-org", {
+      method: "POST",
+      body: { orgId },
+    }),
+
   /** (Re)send the verification link to the signed-in user's email. */
   requestEmailVerification: () =>
     api<{ sent: boolean; alreadyVerified?: boolean }>("/api/auth/email/verify/request", {
@@ -1752,7 +1765,7 @@ export const enterpriseApi = {
     api<{ success: boolean; data: TeamInvite[] }>("/api/enterprise/team/invites"),
 
   createTeamInvite: (email: string, role?: string) =>
-    api<{ success: boolean; data: TeamInvite; message: string }>(
+    api<{ success: boolean; data: TeamInvite; message: string; inviteUrl: string; emailSent: boolean }>(
       "/api/enterprise/team/invites",
       { method: "POST", body: { email, role } }
     ),

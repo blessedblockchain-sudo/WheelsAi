@@ -133,7 +133,7 @@ function DropdownMenuContent({ children, className, align = "end" }: DropdownMen
       ref={ref}
       role="menu"
       className={cn(
-        "absolute z-50 mt-1 min-w-[8rem] overflow-hidden rounded-md border bg-white p-1 shadow-md dark:bg-gray-900 dark:border-gray-700",
+        "absolute z-50 mt-1 min-w-[8rem] overflow-hidden rounded-md border bg-card p-1 shadow-md",
         align === "end" && "right-0",
         align === "start" && "left-0",
         align === "center" && "left-1/2 -translate-x-1/2",
@@ -160,7 +160,7 @@ function DropdownMenuItem({
   const { setOpen } = React.useContext(DropdownMenuContext);
 
   const itemClassName = cn(
-    "relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-gray-100 focus:bg-gray-100 dark:hover:bg-gray-800 dark:focus:bg-gray-800 dark:text-gray-200",
+    "relative flex w-full cursor-pointer select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-muted focus:bg-muted",
     className
   );
 

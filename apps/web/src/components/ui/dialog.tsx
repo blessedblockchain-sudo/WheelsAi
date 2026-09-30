@@ -50,7 +50,24 @@ function DialogClose({ children, className }: { children?: React.ReactNode; clas
   );
 }
 
-function DialogContent({ children, className }: { children: React.ReactNode; className?: string }) {
+interface DialogContentProps {
+  children: React.ReactNode;
+  className?: string;
+  /** "alertdialog" for confirmations that interrupt the user. */
+  role?: "dialog" | "alertdialog";
+  "aria-labelledby"?: string;
+  "aria-describedby"?: string;
+  /** Hide the corner close button (e.g. while an action is in flight). */
+  hideClose?: boolean;
+}
+
+function DialogContent({
+  children,
+  className,
+  role = "dialog",
+  hideClose = false,
+  ...aria
+}: DialogContentProps) {
   const { open, setOpen } = React.useContext(DialogContext);
   const contentRef = React.useRef<HTMLDivElement>(null);
 
@@ -107,24 +124,28 @@ function DialogContent({ children, className }: { children: React.ReactNode; cla
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="fixed inset-0 bg-black/50" onClick={() => setOpen(false)} />
+      <div className="fixed inset-0 bg-black/60" onClick={() => setOpen(false)} />
       <div
         ref={contentRef}
-        role="dialog"
+        role={role}
         aria-modal="true"
+        aria-labelledby={aria["aria-labelledby"]}
+        aria-describedby={aria["aria-describedby"]}
         tabIndex={-1}
         className={cn(
-          "relative z-50 w-full max-w-lg rounded-lg bg-white p-6 shadow-lg dark:bg-gray-900 dark:text-gray-100",
+          "relative z-50 w-full max-w-lg rounded-lg border border-border bg-card p-6 text-card-foreground shadow-lg",
           className
         )}
       >
-        <button
-          className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100"
-          onClick={() => setOpen(false)}
-          aria-label="Close"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {!hideClose && (
+          <button
+            className="absolute right-4 top-4 rounded-sm text-muted-foreground transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => setOpen(false)}
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
         {children}
       </div>
     </div>
@@ -135,12 +156,12 @@ function DialogHeader({ children, className }: { children: React.ReactNode; clas
   return <div className={cn("flex flex-col space-y-1.5 text-center sm:text-left", className)}>{children}</div>;
 }
 
-function DialogTitle({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <h2 className={cn("text-lg font-semibold leading-none tracking-tight", className)}>{children}</h2>;
+function DialogTitle({ children, className, id }: { children: React.ReactNode; className?: string; id?: string }) {
+  return <h2 id={id} className={cn("text-lg font-semibold leading-none tracking-tight", className)}>{children}</h2>;
 }
 
-function DialogDescription({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <p className={cn("text-sm text-gray-500 dark:text-gray-400", className)}>{children}</p>;
+function DialogDescription({ children, className, id }: { children: React.ReactNode; className?: string; id?: string }) {
+  return <p id={id} className={cn("text-sm text-muted-foreground", className)}>{children}</p>;
 }
 
 function DialogFooter({ children, className }: { children: React.ReactNode; className?: string }) {

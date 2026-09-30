@@ -27,6 +27,42 @@ class ApiError extends Error {
 }
 
 /**
+ * Turn anything thrown by the API client (or a wallet / fetch call) into a
+ * message fit for a toast.
+ *
+ *   - ApiError: the server's `message`, else its `error` string (Fastify
+ *     shape `{ statusCode, error, message }`, and our `{ error: { message } }`).
+ *   - any other Error: its `message`, unless it is the generic
+ *     "API Error: 500 ..." text, which tells the user nothing.
+ *   - anything else (or an empty message): `fallback`.
+ *
+ * Non-JSON error bodies (an nginx 502 page) are deliberately not surfaced.
+ */
+export function getErrorMessage(
+  err: unknown,
+  fallback = "Something went wrong"
+): string {
+  if (err instanceof ApiError) {
+    const data = err.data;
+    if (typeof data === "object" && data !== null) {
+      const { message, error } = data as { message?: unknown; error?: unknown };
+      if (typeof message === "string" && message.trim()) return message;
+      if (typeof error === "string" && error.trim()) return error;
+      if (typeof error === "object" && error !== null) {
+        const nested = (error as { message?: unknown }).message;
+        if (typeof nested === "string" && nested.trim()) return nested;
+      }
+    }
+    return fallback;
+  }
+  if (err instanceof Error) {
+    if (err.message && !/^API Error: \d+/.test(err.message)) return err.message;
+    return fallback;
+  }
+  return fallback;
+}
+
+/**
  * Read a response body without assuming it is JSON.
  *
  * `res.json()` throws on anything that is not well-formed JSON, including two
@@ -3944,7 +3980,9 @@ export async function* streamPlaygroundChat(
   );
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
+    // readBody tolerates empty / non-JSON error bodies (proxy 502 pages),
+    // so the real status survives as an ApiError.
+    const data = await readBody(res);
     throw new ApiError(res.status, res.statusText, data);
   }
 

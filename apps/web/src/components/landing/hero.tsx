@@ -3,43 +3,9 @@
 import Link from "next/link";
 import { ArrowRight, Layers } from "lucide-react";
 
-const matrixChars = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789ABCDEF";
-
-function MatrixColumn({ index, total }: { index: number; total: number }) {
-  const chars = Array.from({ length: 20 }, () =>
-    matrixChars[Math.floor(Math.random() * matrixChars.length)]
-  ).join("\n");
-  const delay = Math.random() * 10;
-  const duration = 8 + Math.random() * 8;
-  const left = (index / total) * 100;
-
-  return (
-    <div
-      className={`absolute top-0 font-mono text-sm text-[#00ff00]/40 whitespace-pre leading-5 pointer-events-none ${
-        index % 3 === 0 ? "" : "hidden sm:block"
-      }`}
-      style={{
-        left: `${left}%`,
-        animation: `matrix-fall ${duration}s linear ${delay}s infinite`,
-      }}
-    >
-      {chars}
-    </div>
-  );
-}
-
 export function Hero() {
-  const columnCount = 35;
-
   return (
     <section className="relative min-h-screen flex items-center justify-center overflow-hidden bg-navy-950">
-      {/* Matrix rain background */}
-      <div className="absolute inset-0 overflow-hidden opacity-90">
-        {Array.from({ length: columnCount }, (_, i) => (
-          <MatrixColumn key={i} index={i} total={columnCount} />
-        ))}
-      </div>
-
       {/* Grid overlay */}
       <div className="absolute inset-0 grid-bg-navy" />
 

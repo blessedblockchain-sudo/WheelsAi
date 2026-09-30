@@ -3,11 +3,10 @@
 @tailwind utilities;
 
 @layer base {
-  /* Light theme — derived from the homepage navy/blue identity.
-     Brand = blue primary (#3b82f6) with cyan/purple accents; neutrals are
-     blue-tinted (cool) so light + dark share one palette. */
+  /* Light theme — same token names as dark so every surface can flip.
+     Cool slate neutrals + the single blue accent. */
   :root {
-    --background: 0 0% 100%;
+    --background: 210 40% 98%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
@@ -15,76 +14,52 @@
     --popover-foreground: 222 47% 11%;
     --primary: 217 91% 60%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 214 32% 95%;
+    --secondary: 210 40% 96%;
     --secondary-foreground: 222 47% 11%;
-    --muted: 214 32% 96%;
+    --muted: 210 40% 96%;
     --muted-foreground: 215 16% 47%;
-    --accent: 214 32% 94%;
+    --accent: 210 40% 96%;
     --accent-foreground: 222 47% 11%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 88%;
-    --input: 214 32% 88%;
+    --success: 142 72% 29%;
+    --success-foreground: 0 0% 100%;
+    --danger: 0 72% 51%;
+    --danger-foreground: 0 0% 100%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
     --ring: 217 91% 60%;
     --radius: 0.5rem;
-
-    /* Brand accents (shared by both modes) */
-    --matrix-green: 120 100% 50%;
-    --matrix-cyan: 187 100% 50%;
-    --matrix-purple: 270 70% 60%;
-    --glow-green: 0 255 0;
-    --glow-cyan: 0 212 255;
-    --glow-purple: 168 85 247;
   }
 
-  /* Dark theme — the homepage navy palette (navy-950 bg, navy-900 cards,
-     navy-700 borders, blue primary). This is the app default (see <html>). */
+  /* Dark theme — "refined navy". The app default (see <html className>).
+     One blue accent for actions/selection; green/red reserved for numbers.
+     --border/--input are the opaque equivalent of white @ ~8% over the
+     background (HSL triplets carry no alpha). */
   .dark {
-    --background: 222 71% 5%;
-    --foreground: 213 31% 91%;
-    --card: 216 55% 9%;
-    --card-foreground: 213 31% 91%;
-    --popover: 216 55% 9%;
-    --popover-foreground: 213 31% 91%;
+    --background: 222 48% 5%;
+    --foreground: 220 43% 93%;
+    --card: 220 45% 9%;
+    --card-foreground: 220 43% 93%;
+    --popover: 220 45% 9%;
+    --popover-foreground: 220 43% 93%;
     --primary: 217 91% 60%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 213 31% 91%;
-    --muted: 217 33% 15%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 217 33% 18%;
-    --accent-foreground: 213 31% 91%;
+    --secondary: 219 43% 12%;
+    --secondary-foreground: 220 43% 93%;
+    --muted: 219 43% 12%;
+    --muted-foreground: 219 14% 60%;
+    --accent: 219 43% 12%;
+    --accent-foreground: 220 43% 93%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-    --border: 217 30% 18%;
-    --input: 217 30% 20%;
+    --success: 142 71% 45%;
+    --success-foreground: 145 80% 10%;
+    --danger: 0 84% 60%;
+    --danger-foreground: 0 0% 100%;
+    --border: 220 28% 15%;
+    --input: 220 28% 15%;
     --ring: 217 91% 60%;
-  }
-
-  /* Dashboard dark theme variables */
-  [data-theme="dark"] {
-    --dashboard-bg: 220 14% 10%;
-    --dashboard-surface: 220 14% 14%;
-    --dashboard-surface-hover: 220 14% 18%;
-    --dashboard-border: 220 14% 20%;
-    --dashboard-text: 0 0% 93%;
-    --dashboard-text-muted: 220 10% 55%;
-    --dashboard-sidebar-bg: 220 16% 12%;
-    --dashboard-active-bg: 217 91% 20%;
-    --dashboard-active-text: 213 94% 68%;
-  }
-
-  /* Dashboard light theme variables */
-  [data-theme="light"] {
-    --dashboard-bg: 210 20% 97%;
-    --dashboard-surface: 0 0% 100%;
-    --dashboard-surface-hover: 210 20% 96%;
-    --dashboard-border: 220 13% 91%;
-    --dashboard-text: 224 71% 4%;
-    --dashboard-text-muted: 220 9% 46%;
-    --dashboard-sidebar-bg: 0 0% 100%;
-    --dashboard-active-bg: 120 60% 95%;
-    --dashboard-active-text: 120 60% 30%;
   }
 }
 
@@ -97,49 +72,77 @@
     scroll-behavior: smooth;
   }
 
+  /* Native controls (scrollbars, date pickers, checkboxes) follow the theme */
+  .dark {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-background text-foreground antialiased;
   }
 
-  /* Custom scrollbar — navy in dark, cool-light in light */
+  h1,
+  h2,
+  h3 {
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  /* Raw form controls: @tailwindcss/forms runs in `class` strategy, so an
+     unstyled <input>/<select>/<textarea> would fall back to the UA default
+     (white in light UA mode). Give them the theme surface instead. Any
+     bg-* utility on the element still wins (utilities > base). */
+  input:where(:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not([type="submit"]):not([type="button"])),
+  select,
+  textarea {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"] {
+    accent-color: hsl(var(--primary));
+  }
+
+  /* Custom scrollbar */
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
 
   ::-webkit-scrollbar-track {
-    background: hsl(214, 32%, 95%);
-  }
-
-  .dark ::-webkit-scrollbar-track {
-    background: #0a1628;
+    background: hsl(var(--background));
   }
 
   ::-webkit-scrollbar-thumb {
-    background: hsl(214, 25%, 80%);
+    background: hsl(var(--border));
     border-radius: 4px;
   }
 
-  .dark ::-webkit-scrollbar-thumb {
-    background: #1a2744;
-  }
-
   ::-webkit-scrollbar-thumb:hover {
-    background: hsl(214, 25%, 70%);
+    background: hsl(var(--muted-foreground) / 0.5);
   }
 
-  .dark ::-webkit-scrollbar-thumb:hover {
-    background: #243352;
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50;
+    @apply inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50;
   }
 
   .btn-primary {
-    @apply btn bg-[#00ff00] text-black hover:bg-[#00dd00] h-10 px-4 py-2 font-semibold;
+    @apply btn bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2 font-semibold;
   }
 
   .btn-secondary {
@@ -150,24 +153,14 @@
     @apply btn hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2;
   }
 
-  /* Glow button for landing page */
+  /* Legacy landing button names — re-pointed to the primary token
+     (the old #00ff00 fill + glow shadow is gone). */
   .btn-glow {
-    @apply btn h-12 px-8 py-3 font-bold text-black bg-[#00ff00] rounded-lg transition-all duration-300;
-    box-shadow: 0 0 20px rgba(0, 255, 0, 0.4), 0 0 40px rgba(0, 255, 0, 0.2);
-  }
-
-  .btn-glow:hover {
-    box-shadow: 0 0 30px rgba(0, 255, 0, 0.6), 0 0 60px rgba(0, 255, 0, 0.4);
-    transform: translateY(-2px);
+    @apply btn h-12 px-8 py-3 font-semibold bg-primary text-primary-foreground hover:bg-primary/90 rounded-lg;
   }
 
   .btn-glow-outline {
-    @apply btn h-12 px-8 py-3 font-bold text-[#00ff00] bg-transparent border-2 border-[#00ff00] rounded-lg transition-all duration-300;
-  }
-
-  .btn-glow-outline:hover {
-    background: rgba(0, 255, 0, 0.1);
-    box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
+    @apply btn h-12 px-8 py-3 font-semibold text-primary bg-transparent border border-primary hover:bg-primary/10 rounded-lg;
   }
 
   .input {
@@ -178,41 +171,25 @@
     @apply rounded-lg border bg-card text-card-foreground shadow-sm;
   }
 
-  /* Glow card for landing page */
+  /* Legacy card name — flat card, blue border on hover (no glow) */
   .glow-card {
-    @apply relative rounded-xl bg-[#12121a] border border-[#1e1e2e] p-6 transition-all duration-300;
+    @apply relative rounded-xl border bg-card p-6 transition-colors duration-150 hover:border-primary/40;
   }
 
-  .glow-card:hover {
-    border-color: rgba(0, 255, 0, 0.3);
-    box-shadow: 0 0 30px rgba(0, 255, 0, 0.15), inset 0 0 20px rgba(0, 255, 0, 0.05);
-  }
-
-  /* Text glow effects */
-  .text-glow {
-    text-shadow: 0 0 10px rgba(0, 255, 0, 0.5), 0 0 20px rgba(0, 255, 0, 0.3);
-  }
-
-  .text-glow-cyan {
-    text-shadow: 0 0 10px rgba(0, 212, 255, 0.5), 0 0 20px rgba(0, 212, 255, 0.3);
-  }
-
-  .text-glow-purple {
-    text-shadow: 0 0 10px rgba(168, 85, 247, 0.5), 0 0 20px rgba(168, 85, 247, 0.3);
-  }
-
-  /* Grid background */
+  /* Grid background (legacy name) — blue hairlines */
   .grid-bg {
     background-image:
-      linear-gradient(rgba(0, 255, 0, 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(0, 255, 0, 0.03) 1px, transparent 1px);
+      linear-gradient(rgba(59, 130, 246, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(59, 130, 246, 0.04) 1px, transparent 1px);
     background-size: 50px 50px;
   }
 
-  /* Gradient text */
+  /* Gradient text (legacy name) — same as the navy gradient */
   .gradient-text {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-[#00ff00] via-[#00d4ff] to-[#a855f7];
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-[#3b82f6] via-[#00d4ff] to-[#a855f7];
   }
+
+  /* ---- Landing (marketing) navy classes ---------------------------- */
 
   /* Navy gradient text - blue to cyan to purple */
   .gradient-text-navy {
@@ -258,79 +235,15 @@
     @apply relative rounded-xl bg-navy-800 border-2 border-navy-400 p-8 transition-all duration-300;
     box-shadow: 0 0 30px rgba(59, 130, 246, 0.3), 0 0 60px rgba(59, 130, 246, 0.15);
   }
-
-  /* Dashboard theme utilities */
-  .dashboard-bg { background-color: hsl(var(--dashboard-bg)); }
-  .dashboard-surface { background-color: hsl(var(--dashboard-surface)); }
-  .dashboard-border { border-color: hsl(var(--dashboard-border)); }
-  .dashboard-text { color: hsl(var(--dashboard-text)); }
-  .dashboard-text-muted { color: hsl(var(--dashboard-text-muted)); }
 }
 
-/* Custom Animations */
-@keyframes matrix-fall {
-  0% {
-    transform: translateY(-100%);
-    opacity: 1;
-  }
-  100% {
-    transform: translateY(100vh);
-    opacity: 0.3;
-  }
-}
-
-@keyframes wheel-spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes wheel-spin-reverse {
-  0% {
-    transform: rotate(360deg);
-  }
-  100% {
-    transform: rotate(0deg);
-  }
-}
-
-@keyframes glow-pulse {
-  0%, 100% {
-    box-shadow: 0 0 20px rgba(0, 255, 0, 0.3);
-  }
-  50% {
-    box-shadow: 0 0 40px rgba(0, 255, 0, 0.6);
-  }
-}
-
+/* Custom Animations (landing) */
 @keyframes float {
   0%, 100% {
     transform: translateY(0);
   }
   50% {
     transform: translateY(-10px);
-  }
-}
-
-@keyframes glitch {
-  0%, 90%, 100% {
-    transform: translate(0);
-    opacity: 1;
-  }
-  92% {
-    transform: translate(-2px, 1px);
-    opacity: 0.8;
-  }
-  94% {
-    transform: translate(2px, -1px);
-    opacity: 0.9;
-  }
-  96% {
-    transform: translate(-1px, 2px);
-    opacity: 0.8;
   }
 }
 
@@ -378,38 +291,9 @@
   }
 }
 
-@keyframes orbit {
-  0% {
-    transform: rotate(0deg) translateX(var(--orbit-radius, 100px)) rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg) translateX(var(--orbit-radius, 100px)) rotate(-360deg);
-  }
-}
-
 /* Animation utility classes */
-.animate-matrix-fall {
-  animation: matrix-fall 10s linear infinite;
-}
-
-.animate-wheel-spin {
-  animation: wheel-spin 20s linear infinite;
-}
-
-.animate-wheel-spin-reverse {
-  animation: wheel-spin-reverse 15s linear infinite;
-}
-
-.animate-glow-pulse {
-  animation: glow-pulse 2s ease-in-out infinite;
-}
-
 .animate-float {
   animation: float 3s ease-in-out infinite;
-}
-
-.animate-glitch {
-  animation: glitch 5s ease-in-out infinite;
 }
 
 .animate-fade-in-up {
@@ -418,10 +302,6 @@
 
 .animate-pulse-ring {
   animation: pulse-ring 2s ease-out infinite;
-}
-
-.animate-orbit {
-  animation: orbit var(--orbit-duration, 10s) linear infinite;
 }
 
 @keyframes draw-line {

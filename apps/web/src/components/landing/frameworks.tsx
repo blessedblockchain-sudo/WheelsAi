@@ -19,7 +19,7 @@ const frameworks = [
   {
     name: "ElizaOS",
     description: "Autonomous AI agents",
-    color: "text-[#00ff00]",
+    color: "text-navy-200",
   },
   {
     name: "CrewAI",

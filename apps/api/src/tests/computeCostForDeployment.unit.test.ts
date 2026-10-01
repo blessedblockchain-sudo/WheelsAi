@@ -163,18 +163,17 @@ test("makeComputeCostProvider: missing job is skipped (counts 0)", async () => {
   assert.equal(result.costUsd, 0);
 });
 
-test("makeComputeCostProvider: SDK-reported cost is prorated over the window", async () => {
+test("makeComputeCostProvider: a job's NOS-denominated SDK price is never billed as USD", async () => {
   setupEnv();
   const { makeComputeCostProvider } = await import(
     "../services/computeCostForDeployment.js"
   );
+  const { getPricePerSecond } = await import("../services/computeMetering.js");
 
-  // SDK reports cost=1.5 USD for a 60s job. With a window covering the
-  // whole lifetime, the prorated cost is the full 1.5 — and
-  // computeSeconds is the wall-clock seconds inside the window (60),
-  // NOT back-derived from cost/rate: the windowed metering keeps
-  // seconds and dollars independently window-clamped (D2).
-  // (startTime must be > epoch — 0 is the metering's "not started yet"
+  // The job account's price (base units / 1e6) is NOS per second, the rate
+  // the platform pays hosts. Treasuries are billed the tier's retail USD
+  // price for the seconds inside the window, like every other compute bill.
+  // (startTime must be > epoch: 0 is the metering's "not started yet"
   // sentinel.)
   const t0 = new Date(1_700_000_000_000);
   const getComputeCost = makeComputeCostProvider({
@@ -185,7 +184,7 @@ test("makeComputeCostProvider: SDK-reported cost is prorated over the window", a
         status: "completed",
         startTime: t0,
         endTime: new Date(t0.getTime() + 60_000),
-        cost: 1.5,
+        cost: 0.000202,
       },
     }),
   });
@@ -199,11 +198,11 @@ test("makeComputeCostProvider: SDK-reported cost is prorated over the window", a
     OPEN_WINDOW,
   );
 
-  assert.ok(
-    Math.abs(result.costUsd - 1.5) < 1e-9,
-    `expected ~1.5 got ${result.costUsd}`,
-  );
   assert.equal(result.computeSeconds, 60);
+  assert.ok(
+    Math.abs(result.costUsd - 60 * getPricePerSecond("4070")) < 1e-9,
+    `expected ${60 * getPricePerSecond("4070")} got ${result.costUsd}`,
+  );
 });
 
 test("makeComputeCostProvider: bills only the delta window, not cumulative lifetime", async () => {

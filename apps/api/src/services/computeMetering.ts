@@ -9,7 +9,7 @@ export interface JobComputeCost {
   computeSeconds: number;
   costUsd: number;
   pricePerSecondUsd: number;
-  source: "on-chain" | "sdk-reported" | "unavailable";
+  source: "on-chain" | "unavailable";
 }
 
 // Thin dependency surface so tests can inject a deterministic job fetcher
@@ -47,8 +47,11 @@ export function getPricePerSecond(tier: string): number {
  * previously used in routes/billing.ts.
  *
  * If the job has not ended yet we return the cost accrued so far (now - start).
- * If the SDK reports a `cost` directly (via sdkJob.price), we prefer that
- * because it accounts for Nosana's settlement math, not just wall-clock time.
+ *
+ * Cost is always elapsed seconds x the tier's retail USD price per second.
+ * The SDK's job `price` is never used: it is the on-chain rate in NOS base
+ * units (what the platform pays hosts), not a USD amount, so treating it as
+ * USD billed agent treasuries close to nothing.
  */
 export async function calculateJobComputeCost(
   jobId: string,
@@ -68,20 +71,6 @@ export async function calculateJobComputeCost(
         costUsd: 0,
         pricePerSecondUsd,
         source: "unavailable",
-      };
-    }
-
-    if (job.cost !== undefined) {
-      // SDK-reported cost is denominated in USD by the NOS/USD oracle the
-      // Nosana SDK uses; treat it as authoritative.
-      const inferredSeconds = pricePerSecondUsd > 0 ? job.cost / pricePerSecondUsd : 0;
-      return {
-        jobId,
-        tier,
-        computeSeconds: Math.round(inferredSeconds),
-        costUsd: job.cost,
-        pricePerSecondUsd,
-        source: "sdk-reported",
       };
     }
 
@@ -135,10 +124,8 @@ export interface MeteringWindow {
  *   - job started inside the window              → clamped to jobStart
  *   - job still running                          → clamped to window.end
  *
- * SDK-reported cost is cumulative for the whole job, so it is prorated
- * over the window (effective per-second rate = cost / lifetime seconds)
- * instead of being taken verbatim — taking it verbatim would re-bill the
- * full lifetime every tick, the exact bug this function exists to fix.
+ * Billed at the tier's retail USD price per second, like the cumulative
+ * version: the SDK's NOS-denominated job price is never converted.
  */
 export async function calculateJobComputeCostForWindow(
   jobId: string,
@@ -182,23 +169,6 @@ export async function calculateJobComputeCostForWindow(
     const fromMs = Math.max(jobStartMs, window.start?.getTime() ?? jobStartMs);
     const toMs = Math.min(jobEndMs, windowEndMs);
     const computeSeconds = Math.max(0, Math.round((toMs - fromMs) / 1000));
-
-    if (job.cost !== undefined) {
-      const lifetimeSeconds = Math.max(
-        0,
-        Math.round((jobEndMs - jobStartMs) / 1000),
-      );
-      const effectiveRate =
-        lifetimeSeconds > 0 ? job.cost / lifetimeSeconds : 0;
-      return {
-        jobId,
-        tier,
-        computeSeconds,
-        costUsd: computeSeconds * effectiveRate,
-        pricePerSecondUsd,
-        source: "sdk-reported",
-      };
-    }
 
     return {
       jobId,

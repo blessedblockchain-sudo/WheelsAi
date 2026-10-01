@@ -98,7 +98,7 @@ test("calculateJobComputeCost treats running jobs as 'now - start'", async () =>
   assert.equal(result.pricePerSecondUsd, 0.0001);
 });
 
-test("calculateJobComputeCost prefers sdk-reported cost when present", async () => {
+test("calculateJobComputeCost ignores the SDK's NOS-denominated job price", async () => {
   setupEnv();
   const { calculateJobComputeCost } = await import("../services/computeMetering.js");
   const start = new Date("2026-01-01T00:00:00Z");
@@ -110,15 +110,15 @@ test("calculateJobComputeCost prefers sdk-reported cost when present", async () 
       status: "completed",
       startTime: start,
       endTime: end,
-      cost: 0.42, // SDK is authoritative (includes Nosana settlement math)
+      // price / 1e6 from the job account: NOS base units, not USD. It used
+      // to be billed as if it were the job's total USD cost.
+      cost: 0.000202,
     },
   });
   const result = await calculateJobComputeCost("job_with_sdk_cost", "4090", deps);
-  assert.equal(result.source, "sdk-reported");
-  assert.equal(result.costUsd, 0.42);
-  // computeSeconds is back-derived from cost / pricePerSecond so the
-  // treasury worker can still meter GPU-seconds even when SDK gives cost.
-  assert.equal(result.computeSeconds, Math.round(0.42 / 0.00025));
+  assert.equal(result.source, "on-chain");
+  assert.equal(result.computeSeconds, 600);
+  assert.equal(result.costUsd, 600 * result.pricePerSecondUsd);
 });
 
 test("calculateJobComputeCost returns zero cost when job is not found", async () => {
@@ -348,10 +348,7 @@ test("calculateJobComputeCostForWindow clamps a running job's accrual at the win
   assert.equal(result.computeSeconds, 600);
 });
 
-test("calculateJobComputeCostForWindow prorates SDK-reported cost over the window", async () => {
-  // SDK cost is cumulative for the whole job; taking it verbatim every
-  // tick is the exact compounding-over-billing bug D2 fixes. The window
-  // pays cost * (windowSeconds / lifetimeSeconds).
+test("calculateJobComputeCostForWindow bills the window at the tier's USD rate, never the SDK price", async () => {
   setupEnv();
   const { calculateJobComputeCostForWindow } = await import(
     "../services/computeMetering.js"
@@ -363,7 +360,7 @@ test("calculateJobComputeCostForWindow prorates SDK-reported cost over the windo
       status: "completed",
       startTime: new Date("2026-01-01T10:00:00Z"),
       endTime: new Date("2026-01-01T12:00:00Z"), // 2h lifetime
-      cost: 1.8, // whole-job cost
+      cost: 0.000202, // NOS per second from the job account, not USD
     },
   });
   const result = await calculateJobComputeCostForWindow(
@@ -375,12 +372,11 @@ test("calculateJobComputeCostForWindow prorates SDK-reported cost over the windo
     },
     deps,
   );
-  assert.equal(result.source, "sdk-reported");
+  assert.equal(result.source, "on-chain");
   assert.equal(result.computeSeconds, 3600);
-  // Half the lifetime → half the SDK cost.
   assert.ok(
-    Math.abs(result.costUsd - 0.9) < 1e-9,
-    `expected ~0.9 got ${result.costUsd}`,
+    Math.abs(result.costUsd - 3600 * result.pricePerSecondUsd) < 1e-9,
+    `expected ${3600 * result.pricePerSecondUsd} got ${result.costUsd}`,
   );
 });
 

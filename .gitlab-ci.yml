@@ -72,9 +72,16 @@ typecheck:
     - npm run db:generate
     - npm run typecheck
 
+# Redesign regressions: native browser dialogs and light-only colour
+# classes in apps/web. Plain node, so no install is needed.
+ui-gates:
+  stage: verify
+  script:
+    - node scripts/check-web-ui-gates.mjs
+
 build:
   stage: build
-  needs: [lint, typecheck]
+  needs: [lint, typecheck, ui-gates]
   <<: *node_setup
   script:
     - npm run db:generate

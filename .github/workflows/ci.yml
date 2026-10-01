@@ -54,10 +54,25 @@ jobs:
       - name: Run type check
         run: npm run typecheck
 
+  ui-gates:
+    name: Web UI gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Native browser dialogs and light-only colour classes in apps/web.
+      - name: Check web UI gates
+        run: node scripts/check-web-ui-gates.mjs
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint, typecheck]
+    needs: [lint, typecheck, ui-gates]
     steps:
       - uses: actions/checkout@v4
 

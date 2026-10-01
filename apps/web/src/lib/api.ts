@@ -4178,7 +4178,8 @@ export async function* streamPlaygroundChat(
 // (drives apps/api/src/routes/runway.ts + payments.ts)
 // ============================================
 
-export type RunwayAlertLevel = "ok" | "warning" | "critical" | "shutdown";
+// Mirrors deriveRunwayAlertLevel in apps/api/src/services/treasury.ts.
+export type RunwayAlertLevel = "healthy" | "warning" | "critical" | "expired";
 
 export interface AgentRunwayResponse {
   agent: { id: string; name: string; slug: string };

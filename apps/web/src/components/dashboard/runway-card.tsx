@@ -17,10 +17,10 @@ const ALERT_BADGE: Record<RunwayAlertLevel, {
   variant: "success" | "warning" | "destructive" | "secondary";
   label: string;
 }> = {
-  ok: { variant: "success", label: "Healthy" },
+  healthy: { variant: "success", label: "Healthy" },
   warning: { variant: "warning", label: "< 14 days" },
   critical: { variant: "destructive", label: "< 3 days" },
-  shutdown: { variant: "destructive", label: "Out of runway" },
+  expired: { variant: "destructive", label: "Out of runway" },
 };
 
 const LAMPORTS_PER_SOL = BigInt(1_000_000_000);

@@ -183,7 +183,7 @@ async function main() {
     disconnectPlanUsage();
   });
   await app.register(rateLimit, {
-    max: 100,
+    max: Number(process.env.RATE_LIMIT_MAX_PER_MINUTE ?? 100),
     timeWindow: "1 minute",
     redis: rateLimitRedis,
     nameSpace: "wheelsai-rl:",

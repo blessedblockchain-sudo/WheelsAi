@@ -9,28 +9,28 @@ const steps = [
     step: "01",
     title: "Build",
     description:
-      "Import from GitHub, build visually, or code with Mastra, ElizaOS, LangChain, AutoGen, CrewAI, or your own framework. Add tools, knowledge, and custom logic.",
+      "Build agents visually or in code (Mastra, ElizaOS, LangChain, AutoGen, CrewAI or your own), chain them into workflows, or fine-tune a small language model on your data.",
   },
   {
     icon: Rocket,
     step: "02",
     title: "Deploy",
     description:
-      "One-click deploy to Discord, Telegram, Slack, and an OpenAI-compatible API — on decentralized per-second GPU. We handle the infrastructure.",
+      "One-click deploy on decentralized per-second GPU behind an OpenAI-compatible API, with Discord, Telegram and Slack for agents. We handle the infrastructure.",
   },
   {
     icon: Store,
     step: "03",
     title: "Monetize",
     description:
-      "List on the marketplace for free. Choose your pricing: free, per-request, monthly, or tokenized. Every earning is verifiable on-chain.",
+      "List agents, workflows and models on the marketplace for free. Price each one free, per request, monthly or tokenized. Every earning is verifiable on-chain.",
   },
   {
     icon: TrendingUp,
     step: "04",
     title: "Scale",
     description:
-      "Track performance, grow your community with bonding curve tokens, and scale your agent's reach across channels and markets.",
+      "Track usage and revenue across every product, grow your community with bonding-curve tokens, and scale across channels and GPU markets.",
   },
 ];
 
@@ -68,7 +68,7 @@ export function HowItWorks() {
             <span className="gradient-text-navy">Revenue</span> in Minutes
           </h2>
           <p className="mt-4 text-lg text-navy-200/60 max-w-2xl mx-auto">
-            Stop juggling fragmented tools. Four steps to a live, earning AI agent.
+            Stop juggling fragmented tools. Four steps to a live, earning AI product.
           </p>
         </div>
 

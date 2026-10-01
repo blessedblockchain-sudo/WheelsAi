@@ -84,7 +84,7 @@ export default function DashboardPage() {
     <div className="flex flex-col">
       <Header
         title="Dashboard"
-        description="Build, deploy, and monetize your AI agents"
+        description="Build, deploy and monetize your agents, workflows and models"
         action={{ label: "Create Agent", href: "/dashboard/agents/new" }}
       />
 

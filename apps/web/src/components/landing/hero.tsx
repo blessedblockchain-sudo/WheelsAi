@@ -17,12 +17,14 @@ export function Hero() {
         {/* Badge */}
         <div className="inline-flex items-center gap-2 rounded-full border border-navy-600 bg-navy-900/80 px-4 py-1.5 text-sm text-navy-200/80 mb-8 backdrop-blur-sm">
           <Layers className="h-4 w-4 text-navy-400" />
-          Solve AI Agent Fragmentation
+          Agents · Workflows · Small Language Models
         </div>
 
         {/* Headline */}
         <h1 className="text-4xl sm:text-5xl lg:text-7xl font-bold tracking-tight text-white leading-tight">
-          Build AI Agents.
+          Build Agents,
+          <br />
+          Workflows &amp; Models.
           <br className="hidden sm:block" />
           Deploy Everywhere.{" "}
           <span className="gradient-text-navy">Monetize Instantly.</span>
@@ -30,9 +32,10 @@ export function Hero() {
 
         {/* Subtitle */}
         <p className="mx-auto mt-6 max-w-2xl text-lg sm:text-xl leading-relaxed text-navy-200/60">
-          Frameworks fragmented. Hosting scattered. Monetization impossible.
-          WheelsAI eliminates all of it — pick your framework, import from GitHub,
-          deploy on decentralized GPU, and set your price.
+          One platform for every AI product. Build agents in any framework, chain
+          them into workflows, serve small language models and fine-tune them on
+          your own data. Deploy on decentralized per-second GPU, then set your price
+          for each one.
         </p>
 
         {/* CTAs */}
@@ -61,8 +64,8 @@ export function Hero() {
             <div className="text-sm text-navy-200/60 mt-1">Models</div>
           </div>
           <div className="text-center">
-            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">3</div>
-            <div className="text-sm text-navy-200/60 mt-1">Chat Channels</div>
+            <div className="text-3xl sm:text-4xl font-bold text-white text-glow-blue">4</div>
+            <div className="text-sm text-navy-200/60 mt-1">Pricing Models</div>
           </div>
         </div>
       </div>

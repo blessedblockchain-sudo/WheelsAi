@@ -26,7 +26,7 @@ const pillars = [
         icon: Workflow,
         title: "Build Your Way",
         description:
-          "Visual drag-and-drop builder or bring your own code. No framework lock-in — ever.",
+          "Visual drag-and-drop builder or bring your own code for agents, and multi-step workflows that chain them. No framework lock-in — ever.",
       },
       {
         icon: Database,
@@ -36,9 +36,9 @@ const pillars = [
       },
       {
         icon: GitBranch,
-        title: "Free Models Included",
+        title: "Free Models & Fine-Tuning",
         description:
-          "Test and prototype with free LLMs — no API key required. Upgrade to premium models when you're ready.",
+          "Prototype with free LLMs, no API key required. Fine-tune a small language model on your own data when you need one that is yours.",
       },
     ],
   },
@@ -74,9 +74,9 @@ const pillars = [
     features: [
       {
         icon: ShoppingBag,
-        title: "Agent Marketplace",
+        title: "Marketplace for Every Product",
         description:
-          "List your agent for free. Choose your model: free tier, per-request, or subscription. Community-driven discovery.",
+          "List agents, workflows and models for free. Choose free, per-request or subscription pricing. Community-driven discovery.",
       },
       {
         icon: Coins,

@@ -11,12 +11,12 @@ export function FinalCTA() {
       <div className="relative mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 text-center">
         <h2 className="text-3xl sm:text-5xl font-bold text-white leading-tight">
           Ready to Build Your First{" "}
-          <span className="gradient-text-navy">AI Agent</span>?
+          <span className="gradient-text-navy">AI Product</span>?
         </h2>
         <p className="mt-6 text-lg text-navy-200/60 max-w-2xl mx-auto">
-          Turn your AI agent idea into a business. Pick a framework or import
-          from GitHub, deploy on decentralized GPU, and set your pricing.
-          Start with $5 in free credits — no card required.
+          Turn agents, workflows and fine-tuned small models into a business.
+          Build in any framework, deploy on decentralized GPU, and set your
+          pricing. Start with $5 in free credits — no card required.
         </p>
         <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-4">
           <Link

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Search, Filter, Cpu, Zap, MessageSquare, Code, Brain } from "lucide-react";
+import { Search, Filter, Cpu, Zap, MessageSquare, Code, Brain, Bot } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SkeletonCard } from "@/components/ui/skeleton";
-import { modelsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
+import { modelsApi, type ModelListing, type GpuTier, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const categoryIcons: Record<string, React.ReactNode> = {
@@ -23,7 +23,7 @@ const categoryIcons: Record<string, React.ReactNode> = {
 };
 
 export default function ModelsPage() {
-  const [models, setModels] = useState<Model[]>([]);
+  const [models, setModels] = useState<ModelListing[]>([]);
   const [gpuTiers, setGpuTiers] = useState<GpuTier[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -44,17 +44,19 @@ export default function ModelsPage() {
     loadModels();
   }, []);
 
-  const categories = Array.from(new Set(models.flatMap((m) => m.tags)));
+  const categories = Array.from(new Set(models.flatMap((m) => m.tags ?? [])));
 
   const filteredModels = models.filter((model) => {
     const matchesSearch =
       model.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       model.description.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = !selectedCategory || model.tags.includes(selectedCategory);
+    const matchesCategory = !selectedCategory || (model.tags ?? []).includes(selectedCategory);
     return matchesSearch && matchesCategory;
   });
 
-  function formatParams(params: number): string {
+  function formatParams(params: number | undefined): string {
+    // Hosted free models report no parameter count.
+    if (typeof params !== "number") return "Hosted";
     if (params >= 1e9) return `${(params / 1e9).toFixed(0)}B`;
     if (params >= 1e6) return `${(params / 1e6).toFixed(0)}M`;
     return params.toString();
@@ -134,7 +136,7 @@ export default function ModelsPage() {
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
-                        {categoryIcons[model.tags[0] ?? ""] || <Cpu className="h-5 w-5 text-primary-600" />}
+                        {categoryIcons[model.tags?.[0] ?? ""] || <Cpu className="h-5 w-5 text-primary-600" />}
                       </div>
                       <div>
                         <CardTitle className="text-base">{model.displayName}</CardTitle>
@@ -150,31 +152,53 @@ export default function ModelsPage() {
 
                 <CardContent className="mt-auto">
                   <div className="flex flex-wrap gap-1.5">
-                    {model.tags.slice(0, 4).map((tag) => (
+                    {(model.tags ?? []).slice(0, 4).map((tag) => (
                       <Badge key={tag} variant="outline" className="text-xs">
                         {tag}
                       </Badge>
                     ))}
                   </div>
 
-                  <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
-                    <div className="text-muted-foreground">
-                      <span className="font-medium text-foreground">{model.contextLength.toLocaleString()}</span> ctx
-                    </div>
-                    <div className="text-muted-foreground">
-                      Min: <span className="font-medium text-foreground">{model.minGpuTier}</span>
-                    </div>
-                    <div className="text-muted-foreground">
-                      From <span className="font-medium text-foreground">${getGpuPrice(model.minGpuTier).toFixed(2)}</span>/hr
-                    </div>
-                  </div>
+                  {model.tier === "gpu" ? (
+                    <>
+                      <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
+                        <div className="text-muted-foreground">
+                          <span className="font-medium text-foreground">{model.contextLength.toLocaleString()}</span> ctx
+                        </div>
+                        <div className="text-muted-foreground">
+                          Min: <span className="font-medium text-foreground">{model.minGpuTier}</span>
+                        </div>
+                        <div className="text-muted-foreground">
+                          From <span className="font-medium text-foreground">${getGpuPrice(model.minGpuTier).toFixed(2)}</span>/hr
+                        </div>
+                      </div>
 
-                  <Link href={`/dashboard/deployments/new?model=${model.id}`} className="mt-4 block">
-                    <Button className="w-full">
-                      <Cpu className="mr-2 h-4 w-4" />
-                      Deploy Model
-                    </Button>
-                  </Link>
+                      <Link href={`/dashboard/deployments/new?model=${model.id}`} className="mt-4 block">
+                        <Button className="w-full">
+                          <Cpu className="mr-2 h-4 w-4" />
+                          Deploy Model
+                        </Button>
+                      </Link>
+                    </>
+                  ) : (
+                    <>
+                      <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
+                        <div className="text-muted-foreground">
+                          <span className="font-medium text-foreground">{model.contextLength.toLocaleString()}</span> ctx
+                        </div>
+                        <div className="text-muted-foreground">
+                          <span className="font-medium text-foreground">Free</span>, no API key
+                        </div>
+                      </div>
+
+                      <Link href="/dashboard/agents/new" className="mt-4 block">
+                        <Button variant="outline" className="w-full">
+                          <Bot className="mr-2 h-4 w-4" />
+                          Use in an Agent
+                        </Button>
+                      </Link>
+                    </>
+                  )}
                 </CardContent>
               </Card>
             ))}

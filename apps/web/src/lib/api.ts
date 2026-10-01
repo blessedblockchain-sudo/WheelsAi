@@ -271,6 +271,15 @@ export interface Model {
   };
 }
 
+/**
+ * An entry in GET /api/models: a deployable GPU catalog model, or a hosted
+ * free chat model (tier "free"), which has none of the GPU catalog fields.
+ */
+export type ModelListing =
+  | (Model & { tier: "gpu" })
+  | (Pick<Model, "id" | "displayName" | "description" | "provider" | "contextLength"> &
+      Partial<Model> & { tier: "free" });
+
 export interface GpuTier {
   id: string;
   name: string;
@@ -281,12 +290,17 @@ export interface GpuTier {
 }
 
 export const modelsApi = {
+  // The whole catalog: GPU models plus the hosted free chat models.
   list: (params?: { tag?: string; search?: string }) => {
     const query = new URLSearchParams(params as Record<string, string>);
-    return api<{ models: Model[]; gpuTiers: GpuTier[] }>(
+    return api<{ models: ModelListing[]; gpuTiers: GpuTier[] }>(
       `/api/models?${query}`
     );
   },
+
+  // Only the models that can be deployed on a GPU.
+  listDeployable: () =>
+    api<{ models: Model[]; gpuTiers: GpuTier[] }>(`/api/models?tier=gpu`),
 
   get: (modelId: string) =>
     api<{ model: Model; compatibleGpuTiers: GpuTier[] }>(

@@ -94,7 +94,7 @@ export default function NewDeploymentPage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const { models, gpuTiers } = await modelsApi.list();
+        const { models, gpuTiers } = await modelsApi.listDeployable();
         setModels(models);
         setGpuTiers(gpuTiers);
       } catch (error) {

@@ -93,7 +93,8 @@ build:
       - apps/web/.next/
       - packages/*/dist/
 
-# The blocking test gate: 1250 cases, ~35s, no infra required.
+# The blocking test gate: the API unit suite and the web app's unit tests,
+# about a minute, no infra required.
 # Deliberately NOT `npm run test` (turbo -> api `test`), which also pulls in
 # the integration tier — that tier hangs forever, see `test:integration`.
 unit:
@@ -103,6 +104,7 @@ unit:
   script:
     - npm run db:generate
     - npm run test:unit -w @wheelsai/api
+    - npm run test:unit -w @wheelsai/web
 
 # The SDK and CLI suites: blocking, no infra (an injected fetch, and for the
 # CLI's command tests an HTTP server on 127.0.0.1 inside the job).

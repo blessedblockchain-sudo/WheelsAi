@@ -158,6 +158,11 @@ jobs:
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-key-for-ci-only-32chars
 
+      # The web app's unit tests (editor and form models, URL builders) need no
+      # server; `npm run test` does not reach them.
+      - name: Run web unit tests
+        run: npm run test:unit -w @wheelsai/web
+
   # Mirrors the `sdk-cli` job in .gitlab-ci.yml: the SDK and CLI suites as their
   # own blocking job, so they gate a merge without waiting on the database tier.
   sdk-cli:

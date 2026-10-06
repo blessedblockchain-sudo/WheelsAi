@@ -72,12 +72,31 @@ test("without a public API URL nothing is registered and the reason is returned"
   assert.equal(calls.length, 0);
 });
 
-test("unregistering is best effort and never throws", async () => {
-  const ok = recordingFetch({ ok: true, body: { ok: true } });
-  assert.equal(await unregisterTelegramWebhook({ botToken: BOT, fetchFn: ok.fetchFn }), true);
-  assert.equal(ok.calls[0]!.url, `https://api.telegram.org/bot${BOT}/deleteWebhook`);
+test("unregistering only deletes a webhook that still points at this deployment, and never throws", async () => {
+  const ours = "https://api.example.com/api/channels/webhooks/dep_1/telegram";
+  const calls: string[] = [];
+  const fetchWithUrl =
+    (url: string): FetchFn =>
+    async (u) => {
+      calls.push(u.split("/").pop()!);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => (u.endsWith("getWebhookInfo") ? { ok: true, result: { url } } : { ok: true, result: true }),
+      };
+    };
+
+  assert.equal(await unregisterTelegramWebhook({ botToken: BOT, onlyIfUrl: ours, fetchFn: fetchWithUrl(ours) }), true);
+  assert.deepEqual(calls, ["getWebhookInfo", "deleteWebhook"]);
+
+  // The owner has since pointed the bot at another deployment: leave it.
+  calls.length = 0;
+  const elsewhere = "https://api.example.com/api/channels/webhooks/dep_2/telegram";
+  assert.equal(await unregisterTelegramWebhook({ botToken: BOT, onlyIfUrl: ours, fetchFn: fetchWithUrl(elsewhere) }), false);
+  assert.deepEqual(calls, ["getWebhookInfo"]);
+
   const failing: FetchFn = async () => {
     throw new Error("network down");
   };
-  assert.equal(await unregisterTelegramWebhook({ botToken: BOT, fetchFn: failing }), false);
+  assert.equal(await unregisterTelegramWebhook({ botToken: BOT, onlyIfUrl: ours, fetchFn: failing }), false);
 });

@@ -1,7 +1,12 @@
 import { prisma } from "@wheelsai/db";
 import { getOrgPlan } from "./orgPlan.js";
 import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
-import { PAST_DUE_GRACE_DAYS, subscriptionGrantsAccess } from "./subscriptionAccess.js";
+import {
+  installAccess,
+  PAST_DUE_GRACE_DAYS,
+  subscriptionGrantsAccess,
+  subscriptionIsOpen,
+} from "./subscriptionAccess.js";
 import { orgHoldsToken, TokenRequiredError } from "./tokenAccess.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
@@ -705,35 +710,45 @@ function formatListingForPublic(listing: any) {
   };
 }
 
-async function ensurePublisherProfile(orgId: string, orgName: string) {
-  const existing = await prisma.publisherProfile.findUnique({
-    where: { orgId },
-  });
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "P2002";
+}
 
-  if (existing) {
-    return existing;
+/**
+ * The org's publisher profile (its payout balance), created if missing.
+ * Safe to call concurrently: never call it inside a $transaction.
+ */
+export async function ensurePublisherProfile(orgId: string, orgName: string) {
+  const baseSlug =
+    orgName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "publisher";
+
+  // Check-then-insert races with itself: two requests for the same org
+  // (the loser re-reads the winner's row), or two orgs whose names give
+  // the same slug (the loser moves to the next suffix). The last attempt
+  // uses the org id, which cannot collide.
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const existing = await prisma.publisherProfile.findUnique({ where: { orgId } });
+    if (existing) return existing;
+
+    let slug = attempt < 5 ? baseSlug : `org-${orgId}`;
+    let counter = 1;
+    while (await prisma.publisherProfile.findUnique({ where: { slug } })) {
+      slug = `${baseSlug}-${counter}`;
+      counter++;
+    }
+
+    try {
+      return await prisma.publisherProfile.create({
+        data: { orgId, displayName: orgName, slug },
+      });
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+    }
   }
-
-  // Generate slug
-  const baseSlug = orgName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  let slug = baseSlug;
-  let counter = 1;
-  while (await prisma.publisherProfile.findUnique({ where: { slug } })) {
-    slug = `${baseSlug}-${counter}`;
-    counter++;
-  }
-
-  return prisma.publisherProfile.create({
-    data: {
-      orgId,
-      displayName: orgName,
-      slug,
-    },
-  });
+  throw new Error("Could not create the publisher profile. Please try again.");
 }
 
 async function updatePublisherStats(orgId: string) {
@@ -756,7 +771,32 @@ async function updatePublisherStats(orgId: string) {
 // Install / Deploy Flow
 // ============================================
 
-export async function installAgent(listingId: string, buyerId: string) {
+/**
+ * The publisher changed the listing's pricing after the buyer subscribed.
+ * Continuing means accepting the pricing carried here, explicitly.
+ */
+export class PricingChangedError extends Error {
+  readonly code = "pricing_changed";
+  constructor(
+    readonly listingTitle: string,
+    readonly pricing: {
+      pricingModel: string;
+      pricePerRequestCents: number | null;
+      monthlyPriceCents: number | null;
+    },
+  ) {
+    super(
+      `The publisher changed the pricing of "${listingTitle}" after you subscribed. Review and accept the new pricing to keep using it.`,
+    );
+    this.name = "PricingChangedError";
+  }
+}
+
+export async function installAgent(
+  listingId: string,
+  buyerId: string,
+  opts: { acceptNewPricing?: boolean } = {},
+) {
   // Get the listing
   const listing = await prisma.agentListing.findUnique({
     where: { id: listingId },
@@ -783,9 +823,34 @@ export async function installAgent(listingId: string, buyerId: string) {
       listingId_buyerId: { listingId, buyerId },
     },
   });
+  const existingSub = existingInstall
+    ? await prisma.agentSubscription.findUnique({
+        where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
+        select: { id: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
+      })
+    : null;
 
-  if (existingInstall && existingInstall.status === "active") {
-    throw new Error("You have already installed this agent");
+  if (existingInstall) {
+    const access = installAccess({
+      installStatus: existingInstall.status,
+      listingStatus: listing.status,
+      pricingModel: listing.pricingModel,
+      sub: existingSub,
+    });
+    // An install that runs is final. What is left: a monthly listing with
+    // no paid-up subscription (this call subscribes), a pricing change the
+    // buyer has to accept, and a reinstall.
+    if (access === "subscribed" || access === "listing_pricing") {
+      throw new Error("You have already installed this agent");
+    }
+    if (access === "pricing_changed" && !opts.acceptNewPricing) {
+      throw new PricingChangedError(listing.title, {
+        pricingModel: listing.pricingModel,
+        pricePerRequestCents:
+          listing.pricePerRequestCents !== null ? Number(listing.pricePerRequestCents) : null,
+        monthlyPriceCents: listing.monthlyPriceCents !== null ? Number(listing.monthlyPriceCents) : null,
+      });
+    }
   }
 
   // Token-gated: once the token exists, installing needs it too, so a
@@ -805,6 +870,30 @@ export async function installAgent(listingId: string, buyerId: string) {
   // these were separate writes, and a crash in between left a clone that
   // ran for free.
   const result = await prisma.$transaction(async (tx) => {
+    // Claim the existing install row first, by compare-and-swap on what we
+    // read. For an uninstalled or suspended row this is exclusive: of two
+    // concurrent installs one wins and the other stops here. For a row
+    // that is already active it changes nothing a second request could
+    // miss, so it is not a claim: there the exclusive step is the
+    // subscription's (or the pricing acceptance's) below, and nothing is
+    // charged before it. Matching clonedAgentId as well stops a request
+    // that read the row before another install repointed it: acting on
+    // the stale id would create a second copy and orphan the first, which
+    // would then run unmetered.
+    if (existingInstall) {
+      const claimed = await tx.agentInstall.updateMany({
+        where: {
+          id: existingInstall.id,
+          status: existingInstall.status,
+          clonedAgentId: existingInstall.clonedAgentId,
+        },
+        data: { status: "active", uninstalledAt: null },
+      });
+      if (claimed.count !== 1) {
+        throw new Error("This agent is already being installed. Refresh to see it.");
+      }
+    }
+
     // Reinstalling reuses the buyer's existing copy. Creating a new clone
     // each time left the previous one in the buyer's org with no install
     // row pointing at it: a free, unmetered copy of a paid agent.
@@ -836,10 +925,12 @@ export async function installAgent(listingId: string, buyerId: string) {
         },
       }));
 
+    // A brand-new install is protected by the unique (listingId, buyerId):
+    // the loser of a race fails here and its whole transaction rolls back.
     const install = existingInstall
       ? await tx.agentInstall.update({
           where: { id: existingInstall.id },
-          data: { status: "active", clonedAgentId: clonedAgent.id, uninstalledAt: null },
+          data: { clonedAgentId: clonedAgent.id },
         })
       : await tx.agentInstall.create({
           data: { listingId, buyerId, clonedAgentId: clonedAgent.id, status: "active" },
@@ -862,11 +953,35 @@ export async function installAgent(listingId: string, buyerId: string) {
         id: started.subscription.id,
         currentPeriodEnd: started.subscription.currentPeriodEnd,
       };
+    } else if (existingSub && (existingSub.endReason || subscriptionIsOpen(existingSub))) {
+      // The buyer accepts the listing's current pricing in place of the
+      // subscription: one the publisher's side ended, or one that ran out
+      // and the renewal worker has not closed yet. Compare-and-swap on
+      // what was read, so this is the exclusive step when the install row
+      // was already active, and the worker's own close (which matches an
+      // open status) then misses instead of suspending the install again.
+      const accepted = await tx.agentSubscription.updateMany({
+        where: {
+          id: existingSub.id,
+          status: existingSub.status,
+          currentPeriodEnd: existingSub.currentPeriodEnd,
+          endReason: existingSub.endReason,
+        },
+        data: {
+          status: "cancelled",
+          endReason: null,
+          cancelAtPeriodEnd: false,
+          ...(subscriptionIsOpen(existingSub) ? { cancelledAt: new Date() } : {}),
+        },
+      });
+      if (accepted.count !== 1) {
+        throw new Error("This agent is already being installed. Refresh to see it.");
+      }
     }
 
-    // A lapsed (suspended) install still counts as active on the listing,
-    // so resubscribing must not count it twice.
-    if (existingInstall?.status !== "suspended") {
+    // A lapsed (suspended) or already-active install still counts as
+    // active on the listing, so (re)subscribing must not count it twice.
+    if (existingInstall?.status !== "suspended" && existingInstall?.status !== "active") {
       await tx.agentListing.update({
         where: { id: listingId },
         data: {
@@ -877,6 +992,14 @@ export async function installAgent(listingId: string, buyerId: string) {
     }
 
     return { install, clonedAgent, subscription };
+  }).catch((err) => {
+    // A concurrent first install (or first subscribe) won the unique
+    // constraint and this transaction rolled back whole. Translated out
+    // here, never inside the transaction.
+    if (isUniqueViolation(err)) {
+      throw new Error("This agent is already being installed. Refresh to see it.");
+    }
+    throw err;
   });
 
   // Update publisher stats
@@ -922,28 +1045,24 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
     throw new Error("This agent is not currently installed");
   }
 
-  // Update install record; uninstalling ends a monthly subscription now
-  // (the current period is not refunded).
-  await prisma.$transaction([
-    prisma.agentInstall.update({
-      where: { id: install.id },
-      data: {
-        status: "uninstalled",
-        uninstalledAt: new Date(),
-      },
-    }),
-    prisma.agentSubscription.updateMany({
+  // One transaction, claimed by compare-and-swap: of two concurrent
+  // uninstalls only one ends the subscription and moves the counter.
+  // Uninstalling ends a monthly subscription now (the current period is
+  // not refunded).
+  const listing = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.agentInstall.updateMany({
+      where: { id: install.id, status: { in: ["active", "suspended"] } },
+      data: { status: "uninstalled", uninstalledAt: new Date() },
+    });
+    if (claimed.count !== 1) throw new Error("This agent is not currently installed");
+    await tx.agentSubscription.updateMany({
       where: { listingId, subscriberId: buyerId, status: { in: ["active", "past_due"] } },
       data: { status: "cancelled", cancelledAt: new Date(), cancelAtPeriodEnd: false },
-    }),
-  ]);
-
-  // Update listing stats
-  const listing = await prisma.agentListing.update({
-    where: { id: listingId },
-    data: {
-      activeInstalls: { decrement: 1 },
-    },
+    });
+    return tx.agentListing.update({
+      where: { id: listingId },
+      data: { activeInstalls: { decrement: 1 } },
+    });
   });
 
   // Update publisher stats
@@ -990,6 +1109,14 @@ export async function getMyInstalls(buyerId: string) {
       totalRequests: Number(install.totalRequests),
       totalSpentCents: Number(install.totalSpentCents),
       installedAt: install.installedAt,
+      // The same rule install billing applies (token gates aside), so the
+      // page offers only what will actually work.
+      access: installAccess({
+        installStatus: install.status,
+        listingStatus: install.listing.status,
+        pricingModel: install.listing.pricingModel,
+        sub: sub ?? null,
+      }),
       listing: formatListingForPublic(install.listing),
       subscription: sub ? formatSubscription(sub) : null,
     };
@@ -1010,11 +1137,17 @@ function formatSubscription(sub: {
   currentPeriodEnd: Date;
   cancelAtPeriodEnd: boolean;
   cancelledAt: Date | null;
+  priceCents: bigint | null;
+  endReason: string | null;
 }) {
   return {
     id: sub.id,
     listingId: sub.listingId,
     status: sub.status,
+    // What the buyer agreed to and what a renewal charges. The listing's
+    // current price can differ; null only when no price was ever agreed.
+    priceCents: sub.priceCents !== null ? Number(sub.priceCents) : null,
+    endReason: sub.endReason,
     currentPeriodStart: sub.currentPeriodStart,
     currentPeriodEnd: sub.currentPeriodEnd,
     cancelAtPeriodEnd: sub.cancelAtPeriodEnd,

@@ -1202,7 +1202,30 @@ export interface MarketplaceSubscription {
   cancelledAt: string | null;
   hasAccess: boolean;
   graceEndsAt: string | null;
+  /**
+   * The monthly price this subscription was agreed at, which is what a
+   * renewal charges. The listing's current price can differ. Null only
+   * when no price was ever agreed (it is confirmed before any renewal).
+   */
+  priceCents: number | null;
+  /** Set when the publisher's side ended it; the buyer must accept the new pricing. */
+  endReason: "pricing_changed" | "listing_archived" | null;
 }
+
+/**
+ * Where an install stands, by the same rule the API bills with:
+ * subscribed (inside a paid period), listing_pricing (the listing's
+ * current pricing applies), unlisted (no longer sold; keeps running at no
+ * charge), subscription_lapsed, pricing_changed (paused until the buyer
+ * accepts the listing's new pricing).
+ */
+export type MarketplaceInstallAccess =
+  | "subscribed"
+  | "listing_pricing"
+  | "unlisted"
+  | "subscription_lapsed"
+  | "pricing_changed"
+  | "uninstalled";
 
 export interface MarketplaceListing {
   id: string;
@@ -1417,7 +1440,12 @@ export const marketplaceApi = {
   // Install Routes. A monthly listing charges the first 30-day period
   // here; the API answers 402 (insufficient_credits) when the buyer
   // cannot pay.
-  installAgent: (listingId: string) =>
+  /**
+   * Install, resubscribe, or (with acceptNewPricing) continue an install
+   * the publisher repriced. Without the flag a repriced install answers
+   * 409 `pricing_changed` carrying the listing's current pricing.
+   */
+  installAgent: (listingId: string, opts?: { acceptNewPricing?: boolean }) =>
     api<{
       message: string;
       install: { id: string; status: string };
@@ -1425,6 +1453,7 @@ export const marketplaceApi = {
       subscription: { id: string; currentPeriodEnd: string } | null;
     }>(`/api/marketplace/listings/${listingId}/install`, {
       method: "POST",
+      ...(opts?.acceptNewPricing ? { body: { acceptNewPricing: true } } : {}),
     }),
 
   uninstallAgent: (listingId: string) =>
@@ -1453,6 +1482,7 @@ export const marketplaceApi = {
         totalRequests: number;
         totalSpentCents: number;
         installedAt: string;
+        access: MarketplaceInstallAccess;
         listing: MarketplaceListing;
         subscription: MarketplaceSubscription | null;
       }>;
@@ -4283,15 +4313,18 @@ export interface AgentContributorRow {
   role: string;
   revenueShare: number;
   revenueShareBps: number;
+  status: "pending" | "accepted";
+  /** The address the invitation was sent to; null when invited by user id. */
+  invitedEmail: string | null;
   acceptedAt: string | null;
   createdAt: string;
   earnedCents: number;
+  /** Null until the invitation is accepted: a pending row never names an account. */
   user: {
     id: string;
     email: string | null;
     displayName: string | null;
-    walletAddress: string | null;
-  };
+  } | null;
 }
 
 export interface MyContribution {
@@ -4309,9 +4342,14 @@ export const collaborationApi = {
   listContributors: (agentId: string) =>
     api<{ contributors: AgentContributorRow[] }>(`/api/agents/${agentId}/contributors`),
 
-  /** Invite by account email; revenueShare is a fraction (0.25 = 25%). */
+  /**
+   * Invite by account email; revenueShare is a fraction (0.25 = 25%).
+   * Owners and admins only. The answer, and the pending row the list then
+   * shows, are the same whether or not the email has an account, so
+   * inviting cannot be used to look accounts up.
+   */
   invite: (agentId: string, data: { email: string; role: string; revenueShare: number }) =>
-    api<{ contributor: AgentContributorRow }>(`/api/agents/${agentId}/contributors`, {
+    api<{ message: string }>(`/api/agents/${agentId}/contributors`, {
       method: "POST",
       body: data,
     }),

@@ -21,6 +21,11 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 
 type Contributor = AgentContributorRow;
 
+// A pending invitation is known only by the address it was sent to.
+function contributorName(c: Contributor): string {
+  return c.user?.displayName || c.user?.email || c.invitedEmail || "Invited contributor";
+}
+
 export default function ContributorsPage() {
   const confirmAction = useConfirm();
   const params = useParams();
@@ -65,12 +70,12 @@ export default function ContributorsPage() {
     }
     setIsInviting(true);
     try {
-      await collaborationApi.invite(agentId, {
+      const res = await collaborationApi.invite(agentId, {
         email,
         role: inviteRole,
         revenueShare: sharePercent / 100,
       });
-      toast.success(`Invitation sent to ${email}. Their share starts once they accept.`);
+      toast.success(res.message, { description: "Their share starts once they accept." });
       setInviteEmail("");
       setInviteShare("0");
       setShowInvite(false);
@@ -218,17 +223,17 @@ export default function ContributorsPage() {
                   >
                     <div className="flex items-center gap-3">
                       <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/15 text-sm font-medium text-primary-600 dark:text-primary-400">
-                        {(c.user.displayName || c.user.email || "?")[0]?.toUpperCase()}
+                        {contributorName(c)[0]?.toUpperCase()}
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-foreground">
-                            {c.user.displayName || c.user.email || c.user.walletAddress?.slice(0, 8) + "..."}
+                            {contributorName(c)}
                           </span>
                           <Badge variant={c.role === "owner" ? "default" : "secondary"} className="text-xs">
                             {c.role}
                           </Badge>
-                          {!c.acceptedAt && (
+                          {c.status === "pending" && (
                             <Badge variant="warning" className="text-xs">Pending</Badge>
                           )}
                         </div>

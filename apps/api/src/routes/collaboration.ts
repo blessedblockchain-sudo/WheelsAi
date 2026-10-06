@@ -1,7 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireJwtAuth, requireRole } from "../middleware/auth.js";
 import { prisma } from "@wheelsai/db";
 import {
   listContributors,
@@ -10,10 +10,14 @@ import {
   removeContributor,
   acceptInvitation,
   declineInvitation,
-  findUserIdByEmail,
   listMyContributions,
+  normalizeInviteEmail,
+  ContributorInviteError,
 } from "../services/collaboration.js";
 
+// Contributor shares pay out real money, so adding, changing or removing
+// one takes an owner or admin in a signed-in session (never an API key),
+// the same bar as requesting a payout.
 export const collaborationRoutes: FastifyPluginAsync = async (app) => {
   // The signed-in user's own contributions: invitations and earnings
   app.get(
@@ -45,7 +49,7 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
   // Add a contributor
   app.post(
     "/:agentId/contributors",
-    { preHandler: [requireAuth], schema: { tags: ["Collaboration"], description: "Invite a contributor to an agent" } },
+    { preHandler: [requireAuth, requireJwtAuth, requireRole("owner", "admin")], schema: { tags: ["Collaboration"], description: "Invite a contributor to an agent" } },
     async (request, reply) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const body = z
@@ -68,25 +72,36 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
       const agent = await prisma.agent.findFirst({ where: { id: agentId, orgId } });
       if (!agent) return reply.notFound("Agent not found");
 
-      const inviteeId = body.userId ?? (await findUserIdByEmail(body.email!));
-      if (!inviteeId) {
-        return reply.notFound("No WheelsAI account uses that email. Ask them to sign up, then invite them again.");
-      }
-      if (inviteeId === currentUserId) {
+      // The same answer whether or not the email has an account. The
+      // address is never resolved to an account here: the invitation is
+      // stored under it and bound when its owner accepts, so neither this
+      // response, nor a repeated invite, nor the share check, nor the
+      // contributor list can be used to look accounts up.
+      const invited = {
+        message: "If that address belongs to a WheelsAI account, they can accept the invitation from Revenue & Payouts.",
+      };
+      // The one address this compares against is the caller's own.
+      if (body.userId === undefined) {
+        const self = await prisma.user.findUnique({ where: { id: currentUserId }, select: { email: true } });
+        if (self?.email && normalizeInviteEmail(self.email) === normalizeInviteEmail(body.email!)) {
+          return reply.badRequest("You can't add yourself as a contributor");
+        }
+      } else if (body.userId === currentUserId) {
         return reply.badRequest("You can't add yourself as a contributor");
       }
 
       try {
-        const contributor = await addContributor(
+        await addContributor(
           agentId,
-          inviteeId,
+          body.userId !== undefined ? { userId: body.userId } : { email: body.email! },
           body.role,
           body.revenueShare,
-          currentUserId
+          currentUserId,
         );
-        return { contributor };
+        return reply.status(202).send(invited);
       } catch (err) {
-        return reply.badRequest(err instanceof Error ? err.message : "Failed to add contributor");
+        if (err instanceof ContributorInviteError) return reply.badRequest(err.message);
+        throw err;
       }
     }
   );
@@ -94,7 +109,7 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
   // Update a contributor
   app.patch(
     "/:agentId/contributors/:contributorId",
-    { preHandler: [requireAuth], schema: { tags: ["Collaboration"], description: "Update contributor role or revenue share" } },
+    { preHandler: [requireAuth, requireJwtAuth, requireRole("owner", "admin")], schema: { tags: ["Collaboration"], description: "Update contributor role or revenue share" } },
     async (request, reply) => {
       const { agentId, contributorId } = z
         .object({ agentId: z.string().uuid(), contributorId: z.string().uuid() })
@@ -122,7 +137,7 @@ export const collaborationRoutes: FastifyPluginAsync = async (app) => {
   // Remove a contributor
   app.delete(
     "/:agentId/contributors/:contributorId",
-    { preHandler: [requireAuth], schema: { tags: ["Collaboration"], description: "Remove a contributor from an agent" } },
+    { preHandler: [requireAuth, requireJwtAuth, requireRole("owner", "admin")], schema: { tags: ["Collaboration"], description: "Remove a contributor from an agent" } },
     async (request, reply) => {
       const { agentId, contributorId } = z
         .object({ agentId: z.string().uuid(), contributorId: z.string().uuid() })

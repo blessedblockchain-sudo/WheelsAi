@@ -128,6 +128,15 @@ export default function MarketplaceApiPage() {
             <code>requiredBalance</code>: a tokenized listing whose token has launched, and no linked wallet in your
             organization holds enough of it.
           </li>
+          <li>
+            <code>409</code> <code>pricing_changed</code> with the listing&apos;s new <code>pricing</code>: the publisher changed it after your
+            subscription was agreed. Your subscription ran to the end of its paid period at the agreed price and the
+            install is paused. Send <code>{`{ "acceptNewPricing": true }`}</code> to continue on the new terms.
+          </li>
+          <li>
+            <code>409</code> <code>subscription_claim_lost</code>: another request for the same install was processed
+            first. Nothing was charged by this one; retry.
+          </li>
         </ul>
         <p>
           <code>GET /api/marketplace/listings/&#123;id&#125;/install-status</code> tells you whether you have it installed, and{" "}

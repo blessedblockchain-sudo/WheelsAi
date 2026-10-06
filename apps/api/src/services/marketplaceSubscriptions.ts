@@ -8,7 +8,10 @@
  *   start   installing a monthly listing charges the first 30-day period
  *           from the buyer's credits (conditional debit, ledger row),
  *           records settled revenue split 90/10 and accrues the creator's
- *           share, and opens the period.
+ *           share, and opens the period. The charge is taken only after
+ *           the subscription row is claimed: created, or moved off the
+ *           exact state that was read, so a concurrent subscribe or the
+ *           renewal worker cannot both charge.
  *   renew   a due period is claimed with a compare-and-swap on
  *           currentPeriodEnd (so concurrent ticks cannot double-charge),
  *           then charged. If the buyer cannot pay, the whole renewal rolls
@@ -16,6 +19,11 @@
  *           until a 3-day grace ends, then access is suspended.
  *   cancel  cancelAtPeriodEnd: access continues until the paid period
  *           ends, then the subscription is cancelled and access removed.
+ *   pricing change
+ *           a listing that leaves monthly pricing never moves a subscriber
+ *           onto the new pricing: the paid period runs out, the
+ *           subscription ends with endReason 'pricing_changed', and the
+ *           install is suspended until the buyer accepts the new pricing.
  *
  * Access for a monthly install = subscription active or past_due within
  * grace (see subscriptionGrantsAccess), enforced by resolveInstallBilling.
@@ -41,6 +49,17 @@ export class InsufficientCreditsError extends Error {
   }
 }
 
+/** Subscribing was refused because someone else already holds the period. No charge was made. */
+export class SubscriptionClaimLostError extends Error {
+  readonly code = "subscription_claim_lost";
+  constructor(message = "This subscription was just updated by another request. Refresh to see it.") {
+    super(message);
+    this.name = "SubscriptionClaimLostError";
+  }
+}
+
+export type SubscriptionEndReason = "pricing_changed" | "listing_archived";
+
 export interface SubscriptionRow {
   id: string;
   listingId: string;
@@ -49,6 +68,9 @@ export interface SubscriptionRow {
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
   cancelAtPeriodEnd: boolean;
+  /** The agreed monthly price; null only on rows from before it was stored. */
+  priceCents?: bigint | null;
+  endReason?: string | null;
 }
 
 export interface ListingForBilling {
@@ -58,6 +80,8 @@ export interface ListingForBilling {
   monthlyPriceCents: bigint;
   /** The listing's current model; renewal stops if it is no longer monthly. */
   pricingModel?: string;
+  /** Renewal stops if the listing is no longer published. */
+  status?: string;
 }
 
 export interface SubscriptionTx {
@@ -107,11 +131,10 @@ export interface SubscriptionTx {
     }): Promise<unknown>;
   };
   agentSubscription: {
-    upsert(args: {
+    findUnique(args: {
       where: { listingId_subscriberId: { listingId: string; subscriberId: string } };
-      create: Record<string, unknown>;
-      update: Record<string, unknown>;
-    }): Promise<SubscriptionRow>;
+    }): Promise<SubscriptionRow | null>;
+    create(args: { data: Record<string, unknown> }): Promise<SubscriptionRow>;
     updateMany(args: {
       where: Record<string, unknown>;
       data: Record<string, unknown>;
@@ -133,10 +156,11 @@ async function chargePeriod(
     buyerId: string;
     type: "subscription" | "subscription_renewal";
     installId?: string | null;
+    priceCents: bigint;
     now: Date;
   },
 ): Promise<{ revenueId: string; grossCents: bigint }> {
-  const price = args.listing.monthlyPriceCents;
+  const price = args.priceCents;
   const debited = await tx.creditBalance.updateMany({
     where: { orgId: args.buyerId, balanceCents: { gte: price } },
     data: { balanceCents: { decrement: price } },
@@ -187,7 +211,11 @@ async function chargePeriod(
   return { revenueId: revenue.id, grossCents: split.grossCents };
 }
 
-/** Run inside the install transaction. Throws InsufficientCreditsError. */
+/**
+ * Run inside the install transaction. Throws InsufficientCreditsError, or
+ * SubscriptionClaimLostError when the subscription is already paid up or
+ * another writer took it first.
+ */
 export async function startMonthlySubscription(
   tx: SubscriptionTx,
   args: { listing: ListingForBilling; buyerId: string; installId?: string | null; now?: Date },
@@ -203,18 +231,44 @@ export async function startMonthlySubscription(
     currentPeriodEnd: end,
     cancelAtPeriodEnd: false,
     cancelledAt: null,
+    // The price the buyer agrees to now; renewals charge this.
+    priceCents: args.listing.monthlyPriceCents,
+    endReason: null,
+    lastRenewalAttemptAt: null,
   };
-  const subscription = await tx.agentSubscription.upsert({
-    where: { listingId_subscriberId: { listingId: args.listing.id, subscriberId: args.buyerId } },
-    create: { listingId: args.listing.id, subscriberId: args.buyerId, ...period },
-    update: period,
-  });
+
+  // Charging needs an exclusive claim on the subscription row. An upsert
+  // is not one: of two concurrent subscribes (or a subscribe racing the
+  // renewal worker) both would succeed and both would charge.
+  const key = { listingId: args.listing.id, subscriberId: args.buyerId };
+  const current = await tx.agentSubscription.findUnique({ where: { listingId_subscriberId: key } });
+  if (subscriptionGrantsAccess(current, now)) {
+    throw new SubscriptionClaimLostError("You already have a paid-up subscription to this agent.");
+  }
+  let subscription: SubscriptionRow;
+  if (!current) {
+    // The unique (listingId, subscriberId) makes a concurrent creator fail
+    // here, which rolls its whole transaction back.
+    subscription = await tx.agentSubscription.create({ data: { ...key, ...period } });
+  } else {
+    // Compare-and-swap on the state that was read. A row that grants no
+    // access always leaves that state when it is claimed (the status or
+    // the period end changes), so a second claim on the same read misses.
+    const claimed = await tx.agentSubscription.updateMany({
+      where: { id: current.id, status: current.status, currentPeriodEnd: current.currentPeriodEnd },
+      data: period,
+    });
+    if (claimed.count !== 1) throw new SubscriptionClaimLostError();
+    subscription = { ...current, ...period };
+  }
+
   const { revenueId } = await chargePeriod(tx, {
     subscriptionId: subscription.id,
     listing: args.listing,
     buyerId: args.buyerId,
     type: "subscription",
     installId: args.installId,
+    priceCents: args.listing.monthlyPriceCents,
     now,
   });
   return { subscription, revenueId };
@@ -239,20 +293,46 @@ export async function renewSubscription(
   const { sub } = args;
   if (sub.currentPeriodEnd > now) return { kind: "not_due" };
 
-  // The publisher moved the listing off monthly pricing: the paid period
-  // ran its course, nothing more is charged, and access now follows the
-  // listing's new model, so the install stays as it is.
-  if (args.listing.pricingModel !== undefined && args.listing.pricingModel !== "monthly") {
+  // The publisher archived the listing: the paid period ran its course and
+  // nothing more is charged. An archived listing charges nobody, so the
+  // install keeps running; the reason is recorded so that publishing the
+  // listing again cannot start charging this buyer without their consent.
+  if (args.listing.status !== undefined && args.listing.status !== "published") {
     const closed = await tx.agentSubscription.updateMany({
       where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
-      data: { status: "cancelled", cancelledAt: now },
+      data: { status: "cancelled", cancelledAt: now, endReason: "listing_archived" },
     });
     return closed.count === 1 ? { kind: "cancelled" } : { kind: "lost_race" };
   }
 
-  if (sub.cancelAtPeriodEnd || sub.status === "cancelled") {
+  // The listing left monthly pricing, or this row has no agreed price to
+  // renew at (it predates priceCents and was never charged). The buyer
+  // agreed to neither the new model nor the listing's current price, so
+  // the subscription ends and the install is suspended until they accept.
+  const offMonthly = args.listing.pricingModel !== undefined && args.listing.pricingModel !== "monthly";
+  if (offMonthly || sub.priceCents == null) {
     const closed = await tx.agentSubscription.updateMany({
       where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
+      data: { status: "cancelled", cancelledAt: now, endReason: "pricing_changed" },
+    });
+    if (closed.count !== 1) return { kind: "lost_race" };
+    await tx.agentInstall.updateMany({
+      where: { listingId: sub.listingId, buyerId: sub.subscriberId, status: "active" },
+      data: { status: "suspended" },
+    });
+    return { kind: "cancelled" };
+  }
+
+  // The buyer cancelled: close at period end. The CAS includes the flag,
+  // so a resume that lands mid-tick is not closed.
+  if (sub.cancelAtPeriodEnd) {
+    const closed = await tx.agentSubscription.updateMany({
+      where: {
+        id: sub.id,
+        currentPeriodEnd: sub.currentPeriodEnd,
+        status: { in: ["active", "past_due"] },
+        cancelAtPeriodEnd: true,
+      },
       data: { status: "cancelled", cancelledAt: now },
     });
     if (closed.count !== 1) return { kind: "lost_race" };
@@ -265,17 +345,31 @@ export async function renewSubscription(
 
   // Claim the period by advancing it; a concurrent tick's CAS then misses.
   const newEnd = new Date(sub.currentPeriodEnd.getTime() + SUBSCRIPTION_PERIOD_DAYS * DAY_MS);
+  // The CAS also requires the subscription not to be set to cancel, so a
+  // cancel that lands mid-tick is not charged.
   const claimed = await tx.agentSubscription.updateMany({
-    where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
-    data: { currentPeriodStart: sub.currentPeriodEnd, currentPeriodEnd: newEnd, status: "active" },
+    where: {
+      id: sub.id,
+      currentPeriodEnd: sub.currentPeriodEnd,
+      status: { in: ["active", "past_due"] },
+      cancelAtPeriodEnd: false,
+    },
+    data: {
+      currentPeriodStart: sub.currentPeriodEnd,
+      currentPeriodEnd: newEnd,
+      status: "active",
+      lastRenewalAttemptAt: null,
+    },
   });
   if (claimed.count !== 1) return { kind: "lost_race" };
 
+  // Renew at the price the buyer agreed to, never the listing's current one.
   const { revenueId } = await chargePeriod(tx, {
     subscriptionId: sub.id,
     listing: args.listing,
     buyerId: sub.subscriberId,
     type: "subscription_renewal",
+    priceCents: sub.priceCents,
     now,
   });
   // A lapsed install comes back once the renewal is paid.

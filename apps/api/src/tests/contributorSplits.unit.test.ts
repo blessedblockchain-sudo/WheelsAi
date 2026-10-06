@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  accruePendingContributorEarnings,
   computeContributorSplit,
   splitCreatorRevenue,
   type ContributorSplitTx,
+  type PendingAccrualTx,
 } from "../services/contributorSplits.js";
 import { settleMarketplaceRequest, type MarketplaceCharge } from "../services/marketplaceMetering.js";
 
@@ -31,7 +33,6 @@ function makeTx(opts: { contributors: Contributor[]; ownedOrgs: Record<string, s
   const profiles = new Map<string, { total: bigint; pending: bigint }>(
     (opts.profiles ?? ["org_pub"]).map((orgId) => [orgId, { total: 0n, pending: 0n }]),
   );
-  const created: string[] = [];
   const earnings: Array<Record<string, unknown>> = [];
   const tx: ContributorSplitTx = {
     agentListing: { findUnique: async () => ({ agentId: "agent_1" }) },
@@ -47,11 +48,6 @@ function makeTx(opts: { contributors: Contributor[]; ownedOrgs: Record<string, s
     },
     publisherProfile: {
       findUnique: async ({ where }) => (profiles.has(where.orgId) ? { orgId: where.orgId } : null),
-      create: async ({ data }) => {
-        created.push(data.orgId);
-        profiles.set(data.orgId, { total: 0n, pending: 0n });
-        return data;
-      },
       update: async ({ where, data }) => {
         const p = profiles.get(where.orgId);
         if (!p) throw new Error(`no profile for ${where.orgId}`);
@@ -67,19 +63,20 @@ function makeTx(opts: { contributors: Contributor[]; ownedOrgs: Record<string, s
       },
     },
   };
-  return { tx, profiles, created, earnings };
+  return { tx, profiles, earnings };
 }
 
-const ARGS = { revenueId: "rev_1", listingId: "lst_1", publisherId: "org_pub", creatorCents: 900n };
+const NOW = new Date("2026-10-06T12:00:00Z");
+const ARGS = { revenueId: "rev_1", listingId: "lst_1", publisherId: "org_pub", creatorCents: 900n, now: NOW };
 
 test("accepted contributors are paid into the org they own, with an earning row each", async () => {
-  const { tx, profiles, created, earnings } = makeTx({
+  const { tx, profiles, earnings } = makeTx({
     contributors: [
       { id: "c1", userId: "u_alice", revenueShareBps: 2_000, accepted: true },
       { id: "c2", userId: "u_bob", revenueShareBps: 1_000, accepted: true },
     ],
     ownedOrgs: { u_alice: "org_alice", u_bob: "org_bob" },
-    profiles: ["org_pub", "org_bob"],
+    profiles: ["org_pub", "org_alice", "org_bob"],
   });
 
   const result = await splitCreatorRevenue(tx, ARGS);
@@ -89,7 +86,6 @@ test("accepted contributors are paid into the org they own, with an earning row 
     result.paid.map((p) => [p.recipientOrgId, p.amountCents]),
     [["org_alice", 180n], ["org_bob", 90n]],
   );
-  assert.deepEqual(created, ["org_alice"]); // a first-time earner gets a profile to be paid from
   assert.equal(profiles.get("org_alice")!.pending, 180n);
   assert.equal(profiles.get("org_bob")!.pending, 90n);
   assert.deepEqual(earnings[0], {
@@ -101,10 +97,33 @@ test("accepted contributors are paid into the org they own, with an earning row 
     publisherId: "org_pub",
     shareBps: 2_000,
     amountCents: 180n,
+    accruedAt: NOW,
   });
+  assert.deepEqual(result.pending, []);
 });
 
-test("pending invitations, shares owned by the publisher, and users with no org pay nothing", async () => {
+test("a contributor without a payout profile is still owed their share: recorded, not kept by the publisher", async () => {
+  const { tx, earnings, profiles } = makeTx({
+    contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 2_000, accepted: true }],
+    ownedOrgs: { u_alice: "org_alice" },
+    profiles: ["org_pub"],
+  });
+  // The money transaction never inserts a profile (a unique violation
+  // would abort it); it records the share as owed instead.
+  assert.equal((tx.publisherProfile as unknown as { create?: unknown }).create, undefined);
+  const result = await splitCreatorRevenue(tx, ARGS);
+  assert.equal(result.publisherCents, 720n);
+  assert.deepEqual(result.paid, []);
+  assert.deepEqual(result.pending, [{ userId: "u_alice", recipientOrgId: "org_alice", amountCents: 180n }]);
+  assert.equal(earnings.length, 1);
+  assert.deepEqual(
+    { amount: earnings[0]!.amountCents, org: earnings[0]!.recipientOrgId, accruedAt: earnings[0]!.accruedAt },
+    { amount: 180n, org: "org_alice", accruedAt: null },
+  );
+  assert.equal(profiles.has("org_alice"), false);
+});
+
+test("pending invitations and shares owned by the publisher pay nothing; a contributor with no org yet is owed", async () => {
   const { tx, earnings } = makeTx({
     contributors: [
       { id: "c1", userId: "u_pending", revenueShareBps: 5_000, accepted: false },
@@ -114,18 +133,111 @@ test("pending invitations, shares owned by the publisher, and users with no org 
     ownedOrgs: { u_pending: "org_p", u_owner: "org_pub" },
   });
   const result = await splitCreatorRevenue(tx, ARGS);
+  assert.equal(result.publisherCents, 810n);
+  assert.deepEqual(result.pending, [{ userId: "u_orgless", recipientOrgId: null, amountCents: 90n }]);
+  assert.equal(earnings.length, 1);
+  assert.equal(earnings[0]!.accruedAt, null);
+});
+
+// An invitation sent to an email has no account until it is accepted;
+// accepted rows always do. A row without one is never paid to anybody.
+test("a contributor row bound to no account is skipped", async () => {
+  const { tx, earnings } = makeTx({
+    contributors: [{ id: "c1", userId: null as unknown as string, revenueShareBps: 5_000, accepted: true }],
+    ownedOrgs: {},
+  });
+  const result = await splitCreatorRevenue(tx, ARGS);
   assert.equal(result.publisherCents, 900n);
   assert.equal(earnings.length, 0);
 });
 
+// ============================================
+// Accruing owed shares
+// ============================================
+
+function makeAccrual(rows: Array<{ id: string; amountCents: bigint; accruedAt?: Date | null }>, profiles: string[]) {
+  const earnings = new Map(rows.map((r) => [r.id, { accruedAt: null as Date | null, recipientOrgId: null as string | null, ...r }]));
+  const balances = new Map(profiles.map((orgId) => [orgId, 0n]));
+  const tx: PendingAccrualTx = {
+    contributorEarning: {
+      updateMany: async ({ where, data }) => {
+        const row = earnings.get(where.id);
+        if (!row || row.accruedAt !== null) return { count: 0 };
+        Object.assign(row, data);
+        return { count: 1 };
+      },
+    },
+    publisherProfile: {
+      update: async ({ where, data }) => {
+        if (!balances.has(where.orgId)) throw new Error("Record to update not found");
+        balances.set(where.orgId, balances.get(where.orgId)! + data.pendingPayoutCents.increment);
+        return {};
+      },
+    },
+  };
+  const deps = {
+    listPending: async () =>
+      [...earnings.values()].filter((e) => e.accruedAt === null).map(({ id, amountCents }) => ({ id, amountCents })),
+    // Snapshot/restore stands in for the transaction's rollback.
+    inTransaction: async <T>(fn: (t: PendingAccrualTx) => Promise<T>): Promise<T> => {
+      const before = structuredClone([...earnings.entries()]);
+      try {
+        return await fn(tx);
+      } catch (err) {
+        earnings.clear();
+        for (const [k, v] of before) earnings.set(k, v);
+        throw err;
+      }
+    },
+  };
+  return { earnings, balances, deps };
+}
+
+test("owed shares are credited once the payout profile exists, each exactly once", async () => {
+  const { earnings, balances, deps } = makeAccrual(
+    [
+      { id: "e1", amountCents: 180n },
+      { id: "e2", amountCents: 90n },
+      { id: "e3", amountCents: 500n, accruedAt: new Date("2026-10-01T00:00:00Z") },
+    ],
+    ["org_alice"],
+  );
+  const args = { userId: "u_alice", recipientOrgId: "org_alice", now: NOW };
+
+  // Two callers at once (two tabs opening Revenue & Payouts).
+  const [a, b] = await Promise.all([
+    accruePendingContributorEarnings(deps, args),
+    accruePendingContributorEarnings(deps, args),
+  ]);
+  assert.equal(a.accrued + b.accrued, 2);
+  assert.equal(a.amountCents + b.amountCents, 270n);
+  assert.equal(balances.get("org_alice"), 270n);
+  assert.equal(earnings.get("e1")!.accruedAt, NOW);
+  assert.equal(earnings.get("e1")!.recipientOrgId, "org_alice");
+
+  // Nothing is left, and a repeat credits nothing.
+  assert.deepEqual(await accruePendingContributorEarnings(deps, args), { accrued: 0, amountCents: 0n });
+  assert.equal(balances.get("org_alice"), 270n);
+});
+
+test("a share that cannot be credited stays owed", async () => {
+  const { earnings, deps } = makeAccrual([{ id: "e1", amountCents: 180n }], []);
+  await assert.rejects(
+    accruePendingContributorEarnings(deps, { userId: "u_alice", recipientOrgId: "org_alice", now: NOW }),
+    /not found/,
+  );
+  assert.equal(earnings.get("e1")!.accruedAt, null);
+});
+
 test("a surface without contributor tables leaves everything with the publisher", async () => {
-  assert.deepEqual(await splitCreatorRevenue({}, ARGS), { publisherCents: 900n, paid: [] });
+  assert.deepEqual(await splitCreatorRevenue({}, ARGS), { publisherCents: 900n, paid: [], pending: [] });
 });
 
 test("settling a per-request charge credits the publisher only with what contributors leave", async () => {
   const { tx, profiles } = makeTx({
     contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 5_000, accepted: true }],
     ownedOrgs: { u_alice: "org_alice" },
+    profiles: ["org_pub", "org_alice"],
   });
   const settleTx = {
     ...tx,

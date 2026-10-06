@@ -38,6 +38,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ReviewForm } from "@/components/marketplace/review-form";
 import {
   marketplaceApi,
+  type MarketplaceInstallAccess,
   type MarketplaceListing,
   type MarketplaceSubscription,
   ApiError,
@@ -53,27 +54,74 @@ interface Install {
   totalRequests: number;
   totalSpentCents: number;
   installedAt: string;
+  access: MarketplaceInstallAccess;
   listing: MarketplaceListing;
   subscription: MarketplaceSubscription | null;
 }
 
-/** One line describing where a monthly subscription stands. */
+function formatMonthly(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}/mo`;
+}
+
+/** Whether the listing can still be subscribed to or its pricing accepted. */
+function stillSold(install: Install): boolean {
+  return install.listing.status === "published";
+}
+
+/** Inside a period the buyer already paid for, whatever the listing charges now. */
+function paidUp(install: Install): boolean {
+  return install.access === "subscribed" && !!install.subscription?.hasAccess;
+}
+
+/**
+ * One line describing where the install stands. Driven by the access the
+ * API reports and the subscription's own agreed price, never by the
+ * listing's current pricing model: a publisher can change that while a
+ * paid period is still running.
+ */
 function subscriptionLine(install: Install): { text: string; tone: "ok" | "warn" | "bad" } | null {
   const sub = install.subscription;
-  if (install.listing.pricingModel !== "monthly") return null;
-  if (install.status === "suspended" || !sub || !sub.hasAccess) {
-    return { text: "Subscription lapsed. Resubscribe to use this agent again.", tone: "bad" };
+  if (install.access === "pricing_changed") {
+    return stillSold(install)
+      ? {
+          text: "The publisher changed this agent's pricing. It is paused until you accept the new pricing.",
+          tone: "bad",
+        }
+      : { text: "Paused. This agent is no longer sold on the marketplace.", tone: "bad" };
+  }
+  if (install.access === "subscription_lapsed") {
+    return stillSold(install)
+      ? { text: "Subscription lapsed. Resubscribe to use this agent again.", tone: "bad" }
+      : { text: "Subscription ended. This agent is no longer sold on the marketplace.", tone: "bad" };
+  }
+  if (install.access === "unlisted") {
+    return { text: "No longer sold on the marketplace. Your copy keeps running at no charge.", tone: "ok" };
+  }
+  if (!sub || !paidUp(install)) return null;
+
+  const agreed = sub.priceCents !== null ? ` at ${formatMonthly(sub.priceCents)}` : "";
+  if (install.listing.pricingModel !== "monthly") {
+    return {
+      text: `The publisher changed this agent's pricing. Your subscription${agreed} runs until ${formatDate(sub.currentPeriodEnd)}; after that it pauses until you accept the new pricing.`,
+      tone: "warn",
+    };
   }
   if (sub.status === "past_due") {
     return {
-      text: `Renewal failed: add credits before ${formatDate(sub.graceEndsAt ?? sub.currentPeriodEnd)} to keep access.`,
+      text: `Renewal${agreed} failed: add credits before ${formatDate(sub.graceEndsAt ?? sub.currentPeriodEnd)} to keep access.`,
       tone: "warn",
     };
   }
   if (sub.cancelAtPeriodEnd) {
     return { text: `Cancelled. Access ends ${formatDate(sub.currentPeriodEnd)}.`, tone: "warn" };
   }
-  return { text: `Renews ${formatDate(sub.currentPeriodEnd)}`, tone: "ok" };
+  if (sub.priceCents === null) {
+    return {
+      text: `Paid until ${formatDate(sub.currentPeriodEnd)}. You will be asked to confirm the price before it renews.`,
+      tone: "warn",
+    };
+  }
+  return { text: `Renews ${formatDate(sub.currentPeriodEnd)}${agreed}`, tone: "ok" };
 }
 
 const TONE_CLASS = {
@@ -102,6 +150,13 @@ function formatPrice(listing: MarketplaceListing): string {
     return `$${price.toFixed(2)}/mo`;
   }
   return "Free";
+}
+
+/** A subscriber sees the price they agreed to, which is what a renewal charges. */
+function priceBadge(install: Install): string {
+  const agreed = install.subscription?.priceCents;
+  if (paidUp(install) && agreed != null) return formatMonthly(agreed);
+  return formatPrice(install.listing);
 }
 
 /** Placeholder shaped like one of the three stat cards. */
@@ -177,7 +232,27 @@ export default function InstalledAgentsPage() {
     loadInstalls();
   }
 
-  async function handleRenewal(install: Install, action: "cancel" | "resume" | "resubscribe") {
+  // One subscription request per install at a time: a second click while
+  // the first is in flight must not send a second subscribe.
+  const [busyListingId, setBusyListingId] = useState<string | null>(null);
+
+  async function handleRenewal(
+    install: Install,
+    action: "cancel" | "resume" | "resubscribe" | "accept_pricing",
+  ) {
+    if (busyListingId) return;
+    if (action === "accept_pricing") {
+      const ok = await confirmAction({
+        title: `Accept the new pricing for ${install.listing.title}?`,
+        description:
+          install.listing.pricingModel === "monthly"
+            ? `The publisher now charges ${formatPrice(install.listing)}. Accepting starts a new subscription and charges the first month from your credits now.`
+            : `The publisher changed this agent's pricing to: ${formatPrice(install.listing)}. Accepting turns your copy back on under that pricing.`,
+        confirmLabel: "Accept new pricing",
+      });
+      if (!ok) return;
+    }
+    setBusyListingId(install.listingId);
     try {
       if (action === "cancel") {
         await marketplaceApi.cancelSubscription(install.listingId);
@@ -185,6 +260,9 @@ export default function InstalledAgentsPage() {
       } else if (action === "resume") {
         await marketplaceApi.resumeSubscription(install.listingId);
         toast.success("Renewal turned back on.");
+      } else if (action === "accept_pricing") {
+        await marketplaceApi.installAgent(install.listingId, { acceptNewPricing: true });
+        toast.success(`New pricing accepted for ${install.listing.title}.`);
       } else {
         await marketplaceApi.installAgent(install.listingId);
         toast.success(`Resubscribed to ${install.listing.title}.`);
@@ -198,16 +276,23 @@ export default function InstalledAgentsPage() {
         return;
       }
       toast.error(getErrorMessage(error, "Could not update the subscription"));
+      // A 409 means the state moved under us (already paid up, or repriced).
+      if (error instanceof ApiError && error.status === 409) loadInstalls();
+    } finally {
+      setBusyListingId(null);
     }
   }
 
   async function handleUninstall(install: Install) {
     const listingId = install.listingId;
-    const paidUp = install.listing.pricingModel === "monthly" && install.subscription?.hasAccess;
+    // A paid-up period that uninstalling would give up without a refund.
+    const forfeits = paidUp(install) ? install.subscription : null;
     const ok = await confirmAction({
       title: `Uninstall ${install.listing.title}?`,
-      description: paidUp
-        ? "This ends your subscription now, and the current period is not refunded. To keep access until the period ends, cancel renewal instead."
+      description: forfeits
+        ? install.listing.pricingModel === "monthly"
+          ? `This ends your subscription now, and the current period (paid until ${formatDate(forfeits.currentPeriodEnd)}) is not refunded. To keep access until the period ends, cancel renewal instead.`
+          : `You have paid for access until ${formatDate(forfeits.currentPeriodEnd)}. Uninstalling gives that up without a refund, and the publisher has since changed the pricing: reinstalling would be under the new pricing (${formatPrice(install.listing)}).`
         : "Its copy in your workspace stops working. You can reinstall it later.",
       confirmLabel: "Uninstall",
       destructive: true,
@@ -323,7 +408,7 @@ export default function InstalledAgentsPage() {
                                 {install.listing.title}
                               </h3>
                               <Badge variant="secondary">
-                                {formatPrice(install.listing)}
+                                {priceBadge(install)}
                               </Badge>
                             </div>
                             <p className="text-sm text-muted-foreground">
@@ -371,19 +456,39 @@ export default function InstalledAgentsPage() {
                                   View Listing
                                 </Link>
                               </DropdownMenuItem>
-                              {install.listing.pricingModel === "monthly" &&
-                                (install.status === "suspended" || !install.subscription?.hasAccess ? (
-                                  <DropdownMenuItem onClick={() => handleRenewal(install, "resubscribe")}>
-                                    <RefreshCw className="mr-2 h-4 w-4" />
-                                    Resubscribe
-                                  </DropdownMenuItem>
-                                ) : install.subscription.cancelAtPeriodEnd ? (
-                                  <DropdownMenuItem onClick={() => handleRenewal(install, "resume")}>
+                              {install.access === "pricing_changed" && stillSold(install) && (
+                                <DropdownMenuItem
+                                  disabled={busyListingId !== null}
+                                  onClick={() => handleRenewal(install, "accept_pricing")}
+                                >
+                                  <RefreshCw className="mr-2 h-4 w-4" />
+                                  Accept new pricing
+                                </DropdownMenuItem>
+                              )}
+                              {install.access === "subscription_lapsed" && stillSold(install) && (
+                                <DropdownMenuItem
+                                  disabled={busyListingId !== null}
+                                  onClick={() => handleRenewal(install, "resubscribe")}
+                                >
+                                  <RefreshCw className="mr-2 h-4 w-4" />
+                                  Resubscribe
+                                </DropdownMenuItem>
+                              )}
+                              {paidUp(install) &&
+                                install.listing.pricingModel === "monthly" &&
+                                (install.subscription?.cancelAtPeriodEnd ? (
+                                  <DropdownMenuItem
+                                    disabled={busyListingId !== null}
+                                    onClick={() => handleRenewal(install, "resume")}
+                                  >
                                     <RefreshCw className="mr-2 h-4 w-4" />
                                     Resume renewal
                                   </DropdownMenuItem>
                                 ) : (
-                                  <DropdownMenuItem onClick={() => handleRenewal(install, "cancel")}>
+                                  <DropdownMenuItem
+                                    disabled={busyListingId !== null}
+                                    onClick={() => handleRenewal(install, "cancel")}
+                                  >
                                     <XCircle className="mr-2 h-4 w-4" />
                                     Cancel renewal
                                   </DropdownMenuItem>

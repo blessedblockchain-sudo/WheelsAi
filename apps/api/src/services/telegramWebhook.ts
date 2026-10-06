@@ -36,9 +36,9 @@ export function telegramWebhookUrl(publicApiUrl: string, deploymentId: string): 
 async function callBotApi(
   fetchFn: FetchFn,
   botToken: string,
-  method: "setWebhook" | "deleteWebhook",
+  method: "setWebhook" | "deleteWebhook" | "getWebhookInfo",
   payload: Record<string, unknown>,
-): Promise<{ ok: boolean; description?: string }> {
+): Promise<{ ok: boolean; description?: string; result?: unknown }> {
   if (!/^\d+:[A-Za-z0-9_-]+$/.test(botToken)) {
     return { ok: false, description: "the bot token is not in the 123456:ABC... format BotFather issues" };
   }
@@ -47,8 +47,12 @@ async function callBotApi(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string };
-  return { ok: res.ok && body.ok === true, description: body.description ?? `HTTP ${res.status}` };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string; result?: unknown };
+  return {
+    ok: res.ok && body.ok === true,
+    description: body.description ?? `HTTP ${res.status}`,
+    result: body.result,
+  };
 }
 
 /**
@@ -75,10 +79,24 @@ export async function registerTelegramWebhook(args: {
   return { registered: true, url };
 }
 
-/** Best effort: stop Telegram delivering to a removed or disabled channel. */
-export async function unregisterTelegramWebhook(args: { botToken: string; fetchFn?: FetchFn }): Promise<boolean> {
+/**
+ * Best effort: stop Telegram delivering to a removed or disabled channel.
+ *
+ * Only deletes the bot's webhook while it still points at `onlyIfUrl`
+ * (this deployment's webhook URL). A bot the owner has since pointed
+ * somewhere else, including another deployment, is left alone.
+ */
+export async function unregisterTelegramWebhook(args: {
+  botToken: string;
+  onlyIfUrl: string;
+  fetchFn?: FetchFn;
+}): Promise<boolean> {
+  const fetchFn = args.fetchFn ?? (fetch as unknown as FetchFn);
   try {
-    const result = await callBotApi(args.fetchFn ?? (fetch as unknown as FetchFn), args.botToken, "deleteWebhook", {});
+    const info = await callBotApi(fetchFn, args.botToken, "getWebhookInfo", {});
+    const currentUrl = (info.result as { url?: unknown } | undefined)?.url;
+    if (!info.ok || currentUrl !== args.onlyIfUrl) return false;
+    const result = await callBotApi(fetchFn, args.botToken, "deleteWebhook", {});
     return result.ok;
   } catch {
     return false;

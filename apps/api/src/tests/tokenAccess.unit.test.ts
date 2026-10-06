@@ -115,10 +115,12 @@ test("a lookup surface without holder tables fails closed once a token exists", 
   assert.equal(billing.kind, "revoked");
 });
 
-test("a suspended install is reported as a lapsed subscription, not an uninstall", async () => {
+test("a suspended install is not reported as an uninstall: on a listing that left monthly it waits for the new pricing to be accepted", async () => {
+  // Only a subscription suspends an install, and this listing is now
+  // token-gated: "resubscribe" would be the wrong thing to tell the buyer.
   assert.deepEqual(
     await resolveInstallBilling(tokenizedLookup({ token: null, installStatus: "suspended" }) as never, ARGS),
-    { kind: "revoked", listingTitle: "Research Analyst", reason: "subscription_lapsed" },
+    { kind: "revoked", listingTitle: "Research Analyst", reason: "pricing_changed" },
   );
 });
 

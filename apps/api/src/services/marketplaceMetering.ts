@@ -39,7 +39,7 @@
  * The prisma surfaces are structural stubs (the deploymentCreditGate
  * precedent) so every path here is unit-testable without a database.
  */
-import { subscriptionGrantsAccess } from "./subscriptionAccess.js";
+import { installAccess } from "./subscriptionAccess.js";
 import { orgHoldsToken, tokenRequiredMessage, type TokenAccessDb } from "./tokenAccess.js";
 import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
 
@@ -55,7 +55,7 @@ export const PLATFORM_FEE_BPS = 1000n;
  * buyer's org. Metering keys on an ACTIVE install, so the cheapest way to
  * use a paid agent forever would have been to stop paying for it.
  */
-export type RevocationReason = "uninstalled" | "subscription_lapsed" | "token_required";
+export type RevocationReason = "uninstalled" | "subscription_lapsed" | "pricing_changed" | "token_required";
 
 export interface GateToken {
   symbol: string;
@@ -70,6 +70,9 @@ export function licenceRevokedMessage(
 ): string {
   if (reason === "subscription_lapsed") {
     return `"${listingTitle}" is a monthly subscription that is not paid up. Resubscribe from Installed Agents to use it again.`;
+  }
+  if (reason === "pricing_changed") {
+    return `The publisher of "${listingTitle}" changed its pricing after your subscription was paid, so it is paused. Review and accept the new pricing from Installed Agents to use it again.`;
   }
   if (reason === "token_required" && token) {
     return tokenRequiredMessage(listingTitle, token);
@@ -169,8 +172,13 @@ export interface MeteringLookupPrisma {
   agentSubscription?: {
     findUnique(args: {
       where: { listingId_subscriberId: { listingId: string; subscriberId: string } };
-      select: { status: true; currentPeriodEnd: true; cancelAtPeriodEnd: true };
-    }): Promise<{ status: string; currentPeriodEnd: Date; cancelAtPeriodEnd: boolean } | null>;
+      select: { status: true; currentPeriodEnd: true; cancelAtPeriodEnd: true; endReason: true };
+    }): Promise<{
+      status: string;
+      currentPeriodEnd: Date;
+      cancelAtPeriodEnd: boolean;
+      endReason?: string | null;
+    } | null>;
   };
 }
 
@@ -195,6 +203,13 @@ export type InstallBilling =
  * listing that is no longer published (a publisher who archives a
  * listing stops charging for it — existing buyers keep what they
  * installed).
+ *
+ * A subscriber is never moved onto pricing they did not accept: once a
+ * subscription is over on a listing that no longer sells it (ended by the
+ * publisher's side, or simply run out, whether or not the renewal worker
+ * has closed the row), the clone is revoked with `pricing_changed` until
+ * the buyer accepts the listing's current pricing. See installAccess,
+ * which the Installed Agents list reads too.
  */
 export async function resolveInstallBilling(
   db: MeteringLookupPrisma,
@@ -224,26 +239,28 @@ export async function resolveInstallBilling(
   });
 
   if (!install) return { kind: "free" };
-  if (install.status !== "active") {
-    return {
-      kind: "revoked",
-      listingTitle: install.listing.title,
-      // A suspended install is a lapsed monthly subscription.
-      reason: install.status === "suspended" ? "subscription_lapsed" : "uninstalled",
-    };
+  if (install.status !== "active" && install.status !== "suspended") {
+    return { kind: "revoked", listingTitle: install.listing.title, reason: "uninstalled" };
   }
-  if (install.listing.status !== "published") return { kind: "free" };
-  // Monthly: runs only while its subscription is paid up (or in grace).
-  if (install.listing.pricingModel === "monthly") {
-    const sub = db.agentSubscription
+  // A paid-up monthly period is honoured whatever the listing's model is
+  // now: a publisher who switches to per-request or token-gated mid-period
+  // cannot cut off, or charge again, a buyer who already paid.
+  const sub =
+    db.agentSubscription && (install.status === "suspended" || install.listing.status === "published")
       ? await db.agentSubscription.findUnique({
           where: { listingId_subscriberId: { listingId: install.listingId, subscriberId: install.buyerId } },
-          select: { status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true },
+          select: { status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
         })
       : null;
-    return subscriptionGrantsAccess(sub)
-      ? { kind: "free" }
-      : { kind: "revoked", listingTitle: install.listing.title, reason: "subscription_lapsed" };
+  const access = installAccess({
+    installStatus: install.status,
+    listingStatus: install.listing.status,
+    pricingModel: install.listing.pricingModel,
+    sub,
+  });
+  if (access === "unlisted" || access === "subscribed") return { kind: "free" };
+  if (access !== "listing_pricing") {
+    return { kind: "revoked", listingTitle: install.listing.title, reason: access };
   }
   // Tokenized: free until the token launches, then only for orgs whose
   // members hold it.

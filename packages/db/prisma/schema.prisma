@@ -596,7 +596,12 @@ model Agent {
 model AgentContributor {
   id           String    @id @default(uuid()) @db.Uuid
   agentId      String    @map("agent_id") @db.Uuid
-  userId       String    @map("user_id") @db.Uuid
+  // Null while an invitation sent to an email is pending: the row is bound
+  // to an account only when that account accepts, so the contributor list
+  // cannot be used to learn whether an email has an account.
+  userId       String?   @map("user_id") @db.Uuid
+  // The address an invitation was sent to, trimmed and lowercased.
+  invitedEmail String?   @map("invited_email")
   role         String    @default("contributor") // 'owner', 'contributor', 'reviewer'
   revenueShare Float     @default(0) @map("revenue_share") // 0.0 to 1.0 (display mirror)
   // Basis points (0–10000) — integer source of truth for revenue-split
@@ -609,9 +614,10 @@ model AgentContributor {
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
   agent        Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([agentId, userId])
+  @@unique([agentId, invitedEmail])
   @@index([agentId])
   @@index([userId])
   @@map("agent_contributors")
@@ -947,6 +953,18 @@ model AgentSubscription {
   currentPeriodEnd    DateTime  @map("current_period_end")
   cancelAtPeriodEnd   Boolean   @default(false) @map("cancel_at_period_end")
   cancelledAt         DateTime? @map("cancelled_at")
+  // The monthly price the buyer agreed to; renewals charge this, not the
+  // listing's current price. Null only on rows from before it existed.
+  priceCents          BigInt?   @map("price_cents")
+  // Why the publisher's side ended it: 'pricing_changed' (the listing left
+  // monthly pricing, or the row has no agreed price) or 'listing_archived'.
+  // Set = the buyer has not accepted the listing's current pricing; cleared
+  // when they do. Null for buyer cancellations and unpaid expiry.
+  endReason           String?   @map("end_reason")
+  // When the renewal worker last tried this row and did not renew it. Due
+  // rows are loaded least-recently-tried first, so rows that keep failing
+  // rotate to the back instead of filling every batch.
+  lastRenewalAttemptAt DateTime? @map("last_renewal_attempt_at")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
@@ -956,6 +974,7 @@ model AgentSubscription {
   @@unique([listingId, subscriberId])
   @@index([subscriberId])
   @@index([currentPeriodEnd, status])
+  @@index([status, lastRenewalAttemptAt])
   @@map("agent_subscriptions")
 }
 
@@ -1055,20 +1074,25 @@ model MarketplaceRevenue {
 
 /// A contributor's share of one settled MarketplaceRevenue row, paid into
 /// the organization the contributor owns (its publisher profile accrues
-/// the amount; the regular payout flow pays it out).
+/// the amount; the regular payout flow pays it out). A share whose payout
+/// profile did not exist at settlement is still recorded, with accruedAt
+/// null, and accrued exactly once when the profile exists.
 model ContributorEarning {
   id             String   @id @default(uuid()) @db.Uuid
   revenueId      String   @map("revenue_id") @db.Uuid
   agentId        String   @map("agent_id") @db.Uuid
   contributorId  String   @map("contributor_id") @db.Uuid // AgentContributor.id
   userId         String   @map("user_id") @db.Uuid
-  recipientOrgId String   @map("recipient_org_id") @db.Uuid
+  recipientOrgId String?  @map("recipient_org_id") @db.Uuid
   publisherId    String   @map("publisher_id") @db.Uuid
   shareBps       Int      @map("share_bps")
   amountCents    BigInt   @map("amount_cents")
+  // When the amount was added to the recipient's payout balance.
+  accruedAt      DateTime? @map("accrued_at")
   createdAt      DateTime @default(now()) @map("created_at")
 
   @@unique([revenueId, userId])
+  @@index([userId, accruedAt])
   @@index([recipientOrgId, createdAt])
   @@index([agentId])
   @@map("contributor_earnings")

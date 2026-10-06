@@ -21,6 +21,7 @@ import {
   archiveListing,
   getMyListings,
   installAgent,
+  PricingChangedError,
   uninstallAgent,
   getMyInstalls,
   checkInstallStatus,
@@ -33,7 +34,7 @@ import {
   SubscriptionNotFoundError,
   PRICING_MODELS,
 } from "../services/marketplace.js";
-import { InsufficientCreditsError } from "../services/marketplaceSubscriptions.js";
+import { InsufficientCreditsError, SubscriptionClaimLostError } from "../services/marketplaceSubscriptions.js";
 import { TokenRequiredError } from "../services/tokenAccess.js";
 
 const logger = createLogger("marketplace-routes");
@@ -366,9 +367,14 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       const { orgId } = request.auth!;
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      // Sent only by a buyer who was shown the listing's new pricing after
+      // the publisher changed it; without it that case answers 409.
+      const { acceptNewPricing } = z
+        .object({ acceptNewPricing: z.boolean().optional() })
+        .parse(request.body ?? {});
 
       try {
-        const result = await installAgent(id, orgId);
+        const result = await installAgent(id, orgId, { acceptNewPricing });
         return reply.status(201).send({
           message: "Agent installed successfully",
           install: result.install,
@@ -391,6 +397,18 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
             mintAddress: error.token.mintAddress,
             requiredBalance: error.minTokens,
           });
+        }
+        if (error instanceof PricingChangedError) {
+          return reply.status(409).send({
+            error: error.code,
+            message: error.message,
+            pricing: error.pricing,
+          });
+        }
+        // Another request (or the renewal worker) holds the subscription.
+        // Nothing was charged.
+        if (error instanceof SubscriptionClaimLostError) {
+          return reply.status(409).send({ error: error.code, message: error.message });
         }
         logger.error({ error, orgId, listingId: id }, "Failed to install agent");
         return reply.badRequest(error.message);

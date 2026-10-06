@@ -6,13 +6,14 @@ import {
   markPastDueOrExpire,
   renewSubscription,
   startMonthlySubscription,
+  SubscriptionClaimLostError,
   type ListingForBilling,
   type SubscriptionRow,
   type SubscriptionTx,
 } from "../services/marketplaceSubscriptions.js";
 import { resolveInstallBilling } from "../services/marketplaceMetering.js";
 import { runSubscriptionRenewalTick } from "../services/runSubscriptionRenewalTick.js";
-import { subscriptionGrantsAccess } from "../services/subscriptionAccess.js";
+import { installAccess, subscriptionGrantsAccess } from "../services/subscriptionAccess.js";
 
 // Monthly marketplace subscriptions (claims ledger M1). What these pin:
 // the first period is paid at install, a period is never charged twice,
@@ -36,7 +37,7 @@ const LISTING: ListingForBilling = {
 
 interface State {
   balances: Map<string, bigint>;
-  subs: Map<string, SubscriptionRow & { cancelledAt?: Date | null }>;
+  subs: Map<string, SubscriptionRow & { cancelledAt?: Date | null; lastRenewalAttemptAt?: Date | null }>;
   revenue: Array<Record<string, unknown>>;
   ledger: Array<Record<string, unknown>>;
   accrued: Map<string, bigint>;
@@ -98,16 +99,20 @@ function makeDb(opts: { balance?: bigint } = {}) {
       },
     },
     agentSubscription: {
-      async upsert({ where, create, update }) {
+      async findUnique({ where }) {
         const key = where.listingId_subscriberId;
         const existing = [...state.subs.values()].find(
           (s) => s.listingId === key.listingId && s.subscriberId === key.subscriberId,
         );
-        if (existing) {
-          Object.assign(existing, update);
-          return { ...existing };
-        }
-        const row = { id: `sub_${++seq}`, ...create } as unknown as SubscriptionRow;
+        return existing ? { ...existing } : null;
+      },
+      async create({ data }) {
+        // The unique (listingId, subscriberId), as the database enforces it.
+        const taken = [...state.subs.values()].some(
+          (s) => s.listingId === data.listingId && s.subscriberId === data.subscriberId,
+        );
+        if (taken) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        const row = { id: `sub_${++seq}`, ...data } as unknown as SubscriptionRow;
         state.subs.set(row.id, row);
         return { ...row };
       },
@@ -305,11 +310,24 @@ test("an unpaid renewal goes past_due during grace, then expires and suspends th
 function tickDeps(db: Awaited<ReturnType<typeof subscribed>>, now: Date) {
   return {
     now: () => now,
-    loadDue: async ({ now: n }: { now: Date }) =>
+    // Never-tried first, then least recently tried, then oldest period:
+    // the order buildSubscriptionRenewalTickDeps asks the database for.
+    loadDue: async ({ now: n, limit, excludeIds }: { now: Date; limit: number; excludeIds: string[] }) =>
       [...db.state.subs.values()]
         .filter((s) => s.currentPeriodEnd <= n && (s.status === "active" || s.status === "past_due"))
+        .filter((s) => !excludeIds.includes(s.id))
+        .sort(
+          (a, b) =>
+            (a.lastRenewalAttemptAt?.getTime() ?? -1) - (b.lastRenewalAttemptAt?.getTime() ?? -1) ||
+            a.currentPeriodEnd.getTime() - b.currentPeriodEnd.getTime(),
+        )
+        .slice(0, limit)
         .map((s) => ({ sub: { ...s }, listing: LISTING })),
     inTransaction: db.inTransaction,
+    recordAttempt: async (id: string, at: Date) => {
+      const row = db.state.subs.get(id);
+      if (row) row.lastRenewalAttemptAt = at;
+    },
   };
 }
 
@@ -347,7 +365,8 @@ test("one failing subscription does not stop the batch", async () => {
   const deps = tickDeps(db, at(30));
   const result = await runSubscriptionRenewalTick({
     ...deps,
-    loadDue: async (args: { now: Date; limit: number }) => {
+    loadDue: async (args: { now: Date; limit: number; excludeIds: string[] }) => {
+      if (args.excludeIds.length > 0) return [];
       const [row] = await deps.loadDue(args);
       return [{ sub: { ...row!.sub, id: "sub_broken" }, listing: LISTING }, row!];
     },
@@ -420,14 +439,466 @@ test("a monthly install runs while its subscription grants access, and is revoke
   });
 });
 
-test("a renewal after the listing left monthly pricing closes without charging and keeps the install", async () => {
+test("a renewal after the listing left monthly pricing ends the subscription, names the pricing change and suspends the install", async () => {
   const { state, inTransaction, sub } = await subscribed();
   const outcome = await inTransaction((tx) =>
     renewSubscription(tx, { sub: sub(), listing: { ...LISTING, pricingModel: "per_request" }, now: at(30) }),
   );
   assert.deepEqual(outcome, { kind: "cancelled" });
   assert.equal(sub().status, "cancelled");
-  assert.equal(state.installs[0]!.status, "active");
+  assert.equal(sub().endReason, "pricing_changed");
+  // Left active, the install would now be billed per request at a price
+  // the buyer never accepted.
+  assert.equal(state.installs[0]!.status, "suspended");
   assert.equal(state.revenue.length, 1);
   assert.equal(state.balances.get("org_buyer"), 8_500n);
+});
+
+// ============================================
+// Review fixes: agreed price, archived listings, mid-tick cancel, backlog
+// ============================================
+
+test("renewals charge the price the buyer agreed to, not the listing's new price", async () => {
+  const { state, inTransaction, sub } = await subscribed();
+  assert.equal(sub().priceCents, 1500n);
+  const raised = { ...LISTING, monthlyPriceCents: 10_000_000n };
+  const outcome = await inTransaction((tx) => renewSubscription(tx, { sub: sub(), listing: raised, now: at(30) }));
+  assert.equal(outcome.kind, "renewed");
+  assert.equal(state.balances.get("org_buyer"), 7_000n);
+  assert.equal(state.revenue[1]!.grossAmountCents, 1500n);
+});
+
+test("an archived listing stops renewing without a charge and keeps the install", async () => {
+  const { state, inTransaction, sub } = await subscribed();
+  assert.equal(sub().endReason, null);
+  const outcome = await inTransaction((tx) =>
+    renewSubscription(tx, { sub: sub(), listing: { ...LISTING, status: "archived" }, now: at(30) }),
+  );
+  assert.deepEqual(outcome, { kind: "cancelled" });
+  assert.equal(state.revenue.length, 1);
+  assert.equal(state.installs[0]!.status, "active");
+  // Recorded, so publishing the listing again cannot start charging.
+  assert.equal(sub().endReason, "listing_archived");
+});
+
+test("a cancel that lands after the tick loaded the row is not charged", async () => {
+  const { state, inTransaction, sub, first } = await subscribed();
+  const loaded = sub(); // the tick read it before the buyer cancelled
+  first().cancelAtPeriodEnd = true;
+  const outcome = await inTransaction((tx) => renewSubscription(tx, { sub: loaded, listing: LISTING, now: at(30) }));
+  assert.deepEqual(outcome, { kind: "lost_race" });
+  assert.equal(state.balances.get("org_buyer"), 8_500n);
+  assert.equal(state.revenue.length, 1);
+});
+
+test("rows that keep failing cannot starve the rest of the backlog", async () => {
+  const db = await subscribed();
+  const brokenId = db.first().id;
+  // A second, healthy due subscription for another listing, after the
+  // broken one in load order.
+  db.state.subs.set("sub_ok", { ...db.first(), id: "sub_ok", listingId: "lst_2" });
+  const base = tickDeps(db, at(30));
+  const result = await runSubscriptionRenewalTick(
+    {
+      ...base,
+      // Every write to the broken subscription fails.
+      inTransaction: (fn) =>
+        db.inTransaction((tx) =>
+          fn({
+            ...tx,
+            agentSubscription: {
+              ...tx.agentSubscription,
+              updateMany: async (args) => {
+                if ((args.where as { id?: string }).id === brokenId) throw new Error("row is poisoned");
+                return tx.agentSubscription.updateMany(args);
+              },
+            },
+          }),
+        ),
+    },
+    { batchSize: 1 },
+  );
+  assert.equal(result.errors, 1);
+  assert.equal(result.renewed, 1);
+  assert.equal(db.state.subs.get("sub_ok")!.currentPeriodEnd.getTime(), at(60).getTime());
+});
+
+test("a paid-up subscription keeps access after the listing leaves monthly pricing", async () => {
+  const future = new Date(Date.now() + 10 * DAY);
+  const lookup = {
+    ...monthlyLookup({ status: "active", currentPeriodEnd: future, cancelAtPeriodEnd: false }),
+    agentInstall: {
+      findFirst: async () => ({
+        id: "ins_1",
+        listingId: "lst_1",
+        buyerId: "org_buyer",
+        status: "active",
+        listing: { title: "Research Analyst", status: "published", publisherId: "org_pub", pricingModel: "per_request", pricePerRequestCents: 50n },
+      }),
+    },
+  };
+  assert.deepEqual(await resolveInstallBilling(lookup as never, { agentId: "a", orgId: "org_buyer" }), { kind: "free" });
+});
+
+// ============================================
+// Fix pass: exclusive subscribe claim
+// ============================================
+
+/** A subscription that exists but grants no access (ended, or unpaid past grace). */
+async function lapsed(status: "cancelled" | "expired" | "past_due" | "active", balance = 10_000n) {
+  const db = await subscribed({ balance });
+  Object.assign(db.first(), { status, currentPeriodEnd: at(30) });
+  return db;
+}
+
+test("subscribing while already paid up is refused without a charge", async () => {
+  const { state, inTransaction } = await subscribed();
+  await assert.rejects(
+    inTransaction((tx) => startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: at(5) })),
+    SubscriptionClaimLostError,
+  );
+  assert.equal(state.balances.get("org_buyer"), 8_500n);
+  assert.equal(state.revenue.length, 1);
+  assert.equal(state.ledger.length, 1);
+});
+
+test("two concurrent first subscribes charge once: the second create hits the unique constraint", async () => {
+  const { state, tx } = makeDb();
+  // Not through inTransaction: its snapshot rollback would also undo the
+  // winner. Each call stops at its first failed write, before any debit.
+  const results = await Promise.allSettled([
+    startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: T0 }),
+    startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: T0 }),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
+  const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+  // Left to abort the transaction: never caught inside it.
+  assert.equal((rejected.reason as { code?: string }).code, "P2002");
+  assert.equal(state.balances.get("org_buyer"), 8_500n);
+  assert.equal(state.revenue.length, 1);
+  assert.equal(state.ledger.length, 1);
+  assert.equal(state.subs.size, 1);
+});
+
+for (const status of ["cancelled", "expired", "past_due", "active"] as const) {
+  test(`two concurrent resubscribes on a ${status} subscription charge once`, async () => {
+    const { state, tx } = await lapsed(status);
+    const now = at(40); // past the period end and the grace window
+    const results = await Promise.allSettled([
+      startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now }),
+      startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now }),
+    ]);
+    assert.deepEqual(results.map((r) => r.status).sort(), ["fulfilled", "rejected"]);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    assert.ok(rejected.reason instanceof SubscriptionClaimLostError);
+    // One first period at T0, one resubscription: never a third debit.
+    assert.equal(state.balances.get("org_buyer"), 7_000n);
+    assert.equal(state.revenue.length, 2);
+    assert.equal(state.ledger.length, 2);
+    assert.equal([...state.subs.values()][0]!.currentPeriodEnd.getTime(), at(70).getTime());
+  });
+}
+
+test("a resubscribe that read the row before the renewal worker renewed it does not charge again", async () => {
+  const { state, tx, sub } = await lapsed("past_due");
+  const now = at(40);
+  // The worker renews between this request's read and its claim.
+  const racing: SubscriptionTx = {
+    ...tx,
+    agentSubscription: {
+      ...tx.agentSubscription,
+      findUnique: async (args) => {
+        const read = await tx.agentSubscription.findUnique(args);
+        const renewed = await renewSubscription(tx, { sub: sub(), listing: LISTING, now });
+        assert.equal(renewed.kind, "renewed");
+        return read;
+      },
+    },
+  };
+  await assert.rejects(
+    startMonthlySubscription(racing, { listing: LISTING, buyerId: "org_buyer", now }),
+    SubscriptionClaimLostError,
+  );
+  // The first period and the renewal; the resubscribe added nothing and
+  // did not overwrite the renewed period.
+  assert.equal(state.balances.get("org_buyer"), 7_000n);
+  assert.deepEqual(state.revenue.map((r) => r.type), ["subscription", "subscription_renewal"]);
+  assert.equal(sub().currentPeriodEnd.getTime(), at(60).getTime());
+});
+
+test("the renewal worker loses to a resubscribe that claimed the row first", async () => {
+  const { state, tx, sub } = await lapsed("past_due");
+  const loaded = sub(); // the tick read it, then the buyer resubscribed
+  await startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: at(40) });
+  assert.deepEqual(await renewSubscription(tx, { sub: loaded, listing: LISTING, now: at(40) }), { kind: "lost_race" });
+  assert.equal(state.balances.get("org_buyer"), 7_000n);
+  assert.equal(state.revenue.length, 2);
+});
+
+test("resubscribing after a pricing change clears the reason and stores the newly agreed price", async () => {
+  const { tx, sub, first } = await lapsed("cancelled");
+  first().endReason = "pricing_changed";
+  await startMonthlySubscription(tx, {
+    listing: { ...LISTING, monthlyPriceCents: 2_000n },
+    buyerId: "org_buyer",
+    now: at(40),
+  });
+  assert.equal(sub().endReason, null);
+  assert.equal(sub().priceCents, 2_000n);
+  assert.equal(sub().status, "active");
+});
+
+// ============================================
+// Fix pass: no price, no renewal
+// ============================================
+
+test("a subscription with no agreed price is not renewed at the listing's current price", async () => {
+  const { state, inTransaction, sub, first } = await subscribed();
+  first().priceCents = null; // a row from before the price was stored
+  const raised = { ...LISTING, pricingModel: "monthly", status: "published", monthlyPriceCents: 9_000n };
+  const outcome = await inTransaction((tx) => renewSubscription(tx, { sub: sub(), listing: raised, now: at(30) }));
+  assert.deepEqual(outcome, { kind: "cancelled" });
+  assert.equal(sub().endReason, "pricing_changed");
+  assert.equal(state.installs[0]!.status, "suspended");
+  assert.equal(state.balances.get("org_buyer"), 8_500n);
+  assert.equal(state.revenue.length, 1);
+});
+
+// ============================================
+// Fix pass: starvation across ticks
+// ============================================
+
+test("rows that fail every tick rotate behind rows that have not been tried", async () => {
+  const db = await subscribed();
+  const template = db.first();
+  db.state.subs.clear();
+  // More always-failing rows than one tick can load (2 batches of 2), all
+  // due before the healthy one.
+  const poisoned = new Set<string>();
+  for (let i = 0; i < 6; i++) {
+    const id = `sub_bad_${i}`;
+    poisoned.add(id);
+    db.state.subs.set(id, { ...template, id, listingId: `lst_bad_${i}`, currentPeriodEnd: at(20 + i) });
+  }
+  db.state.subs.set("sub_ok", { ...template, id: "sub_ok", listingId: "lst_ok", currentPeriodEnd: at(30) });
+
+  const deps = (now: Date) => {
+    const base = tickDeps(db, now);
+    return {
+      ...base,
+      inTransaction: <T>(fn: (tx: SubscriptionTx) => Promise<T>) =>
+        db.inTransaction((tx) =>
+          fn({
+            ...tx,
+            agentSubscription: {
+              ...tx.agentSubscription,
+              updateMany: async (args) => {
+                if (poisoned.has((args.where as { id?: string }).id ?? "")) throw new Error("row is poisoned");
+                return tx.agentSubscription.updateMany(args);
+              },
+            },
+          }),
+        ),
+    };
+  };
+  const opts = { batchSize: 2, maxBatches: 2 };
+
+  // Tick 1 spends its whole budget on the four oldest failing rows.
+  assert.deepEqual(await runSubscriptionRenewalTick(deps(at(31)), opts), {
+    scanned: 4, renewed: 0, cancelled: 0, pastDue: 0, expired: 0, errors: 4,
+  });
+  assert.equal(db.state.subs.get("sub_ok")!.currentPeriodEnd.getTime(), at(30).getTime());
+
+  // Tick 2 starts with the rows not yet tried, which include the healthy
+  // one. Before, it reloaded the same four and never reached it.
+  const second = await runSubscriptionRenewalTick(deps(at(31.1)), opts);
+  assert.equal(second.renewed, 1);
+  assert.equal(db.state.subs.get("sub_ok")!.currentPeriodEnd.getTime(), at(60).getTime());
+
+  // And no failing row is dropped: every one was tried within two ticks.
+  for (const id of poisoned) assert.ok(db.state.subs.get(id)!.lastRenewalAttemptAt, id);
+});
+
+test("a past_due row inside grace is stamped, and a renewed row is not left at the back", async () => {
+  const db = await subscribed({ balance: 1_500n });
+  await runSubscriptionRenewalTick(tickDeps(db, at(30.1)));
+  assert.equal(db.first().lastRenewalAttemptAt?.getTime(), at(30.1).getTime());
+  db.state.balances.set("org_buyer", 5_000n);
+  await runSubscriptionRenewalTick(tickDeps(db, at(31)));
+  assert.equal(db.first().status, "active");
+  assert.equal(db.first().lastRenewalAttemptAt, null);
+});
+
+// ============================================
+// Fix pass: one access rule for billing and the installs list
+// ============================================
+
+test("install access: what runs, what is paused, and why", () => {
+  const paid = { status: "active", currentPeriodEnd: at(30), cancelAtPeriodEnd: false, endReason: null };
+  const ended = (endReason: string | null) => ({ ...paid, status: "cancelled", endReason });
+  const now = at(10);
+  const access = (installStatus: string, listingStatus: string, pricingModel: string, sub: Parameters<typeof installAccess>[0]["sub"]) =>
+    installAccess({ installStatus, listingStatus, pricingModel, sub }, now);
+
+  assert.equal(access("uninstalled", "published", "monthly", paid), "uninstalled");
+  assert.equal(access("active", "published", "monthly", paid), "subscribed");
+  // A paid period outlives a switch away from monthly pricing.
+  assert.equal(access("active", "published", "per_request", paid), "subscribed");
+  assert.equal(access("active", "published", "monthly", null), "subscription_lapsed");
+  assert.equal(access("active", "published", "monthly", ended(null)), "subscription_lapsed");
+  assert.equal(access("suspended", "published", "monthly", ended(null)), "subscription_lapsed");
+  assert.equal(access("suspended", "published", "per_request", ended("pricing_changed")), "pricing_changed");
+  // An archived listing charges nobody and its installs keep running...
+  assert.equal(access("active", "archived", "monthly", ended("listing_archived")), "unlisted");
+  assert.equal(access("active", "archived", "monthly", null), "unlisted");
+  // ...but publishing it again does not put the buyer on its pricing.
+  assert.equal(access("active", "published", "per_request", ended("listing_archived")), "pricing_changed");
+  assert.equal(access("active", "published", "monthly", ended("listing_archived")), "pricing_changed");
+  assert.equal(access("active", "published", "per_request", null), "listing_pricing");
+  assert.equal(access("active", "published", "free", ended(null)), "listing_pricing");
+
+  // A period that ran out before the renewal worker closed the row: the
+  // answer does not depend on the worker having run.
+  const ranOut = { ...paid, currentPeriodEnd: at(9) };
+  const after = (days: number, sub: Parameters<typeof installAccess>[0]["sub"], pricingModel = "per_request") =>
+    installAccess({ installStatus: "active", listingStatus: "published", pricingModel, sub }, at(days));
+  // Cancelled renewal: no grace, so paused from the moment the period ends.
+  assert.equal(after(9.001, { ...ranOut, cancelAtPeriodEnd: true }), "pricing_changed");
+  // Otherwise the grace window is honoured, then paused, never billed.
+  assert.equal(after(11, ranOut), "subscribed");
+  assert.equal(after(12.001, ranOut), "pricing_changed");
+  assert.equal(after(40, { ...ranOut, status: "past_due" }), "pricing_changed");
+  assert.equal(after(40, ranOut, "free"), "pricing_changed");
+  assert.equal(after(40, ranOut, "tokenized"), "pricing_changed");
+  assert.equal(after(40, ranOut, "monthly"), "subscription_lapsed");
+  // A suspended install on a listing that left monthly is new terms,
+  // however the subscription ended.
+  assert.equal(access("suspended", "published", "per_request", { ...ended(null), status: "expired" }), "pricing_changed");
+  assert.equal(access("suspended", "published", "per_request", ended(null)), "pricing_changed");
+  assert.equal(access("suspended", "published", "monthly", { ...ended(null), status: "expired" }), "subscription_lapsed");
+});
+
+function billingLookup(
+  install: { status: string; listingStatus?: string; pricingModel: string; pricePerRequestCents?: bigint | null },
+  sub: { status: string; currentPeriodEnd: Date; cancelAtPeriodEnd: boolean; endReason?: string | null } | null,
+) {
+  return {
+    agentInstall: {
+      findFirst: async () => ({
+        id: "ins_1",
+        listingId: "lst_1",
+        buyerId: "org_buyer",
+        status: install.status,
+        listing: {
+          title: "Research Analyst",
+          status: install.listingStatus ?? "published",
+          publisherId: "org_pub",
+          pricingModel: install.pricingModel,
+          pricePerRequestCents: install.pricePerRequestCents ?? null,
+        },
+      }),
+    },
+    agentSubscription: { findUnique: async () => sub },
+  };
+}
+
+test("a subscriber is never billed per request after the listing switched: the clone is revoked until they accept", async () => {
+  const past = new Date(Date.now() - 10 * DAY);
+  const args = { agentId: "agent_clone", orgId: "org_buyer" };
+  const ended = { status: "cancelled", currentPeriodEnd: past, cancelAtPeriodEnd: false };
+  const perRequest = { pricingModel: "per_request", pricePerRequestCents: 100_000n };
+
+  // What the renewal leaves behind: a suspended install and the reason.
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup({ status: "suspended", ...perRequest }, { ...ended, endReason: "pricing_changed" }) as never,
+      args,
+    ),
+    { kind: "revoked", listingTitle: "Research Analyst", reason: "pricing_changed" },
+  );
+  // Even if the install row were still active, nothing is billable.
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup({ status: "active", ...perRequest }, { ...ended, endReason: "pricing_changed" }) as never,
+      args,
+    ),
+    { kind: "revoked", listingTitle: "Research Analyst", reason: "pricing_changed" },
+  );
+  // An archived listing that comes back as per-request.
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup({ status: "active", ...perRequest }, { ...ended, endReason: "listing_archived" }) as never,
+      args,
+    ),
+    { kind: "revoked", listingTitle: "Research Analyst", reason: "pricing_changed" },
+  );
+  // Once accepted (the reason is cleared) the listing's pricing applies.
+  const accepted = await resolveInstallBilling(
+    billingLookup({ status: "active", ...perRequest }, { ...ended, endReason: null }) as never,
+    args,
+  );
+  assert.equal(accepted.kind, "billable");
+});
+
+test("before the renewal worker has closed the row, a run-out subscriber is still not billed at the new per-request price", async () => {
+  const args = { agentId: "agent_clone", orgId: "org_buyer" };
+  const perRequest = { status: "active", pricingModel: "per_request", pricePerRequestCents: 100_000n };
+  const revoked = { kind: "revoked", listingTitle: "Research Analyst", reason: "pricing_changed" };
+  const open = { status: "active", cancelAtPeriodEnd: false, endReason: null };
+
+  // The buyer cancelled renewal; the period ended a minute ago and the
+  // hourly tick has not run.
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup(perRequest, { ...open, cancelAtPeriodEnd: true, currentPeriodEnd: new Date(Date.now() - 60_000) }) as never,
+      args,
+    ),
+    revoked,
+  );
+  // The worker is not running at all and the grace window has passed.
+  for (const status of ["active", "past_due"]) {
+    assert.deepEqual(
+      await resolveInstallBilling(
+        billingLookup(perRequest, { ...open, status, currentPeriodEnd: new Date(Date.now() - 10 * DAY) }) as never,
+        args,
+      ),
+      revoked,
+    );
+  }
+  // A suspended install whose subscription expired for non-payment.
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup(
+        { ...perRequest, status: "suspended" },
+        { ...open, status: "expired", currentPeriodEnd: new Date(Date.now() - 10 * DAY) },
+      ) as never,
+      args,
+    ),
+    revoked,
+  );
+});
+
+test("an archived monthly listing whose subscription closed keeps running free, and a plain lapse is still a lapse", async () => {
+  const past = new Date(Date.now() - 10 * DAY);
+  const args = { agentId: "agent_clone", orgId: "org_buyer" };
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup(
+        { status: "active", listingStatus: "archived", pricingModel: "monthly" },
+        { status: "cancelled", currentPeriodEnd: past, cancelAtPeriodEnd: false, endReason: "listing_archived" },
+      ) as never,
+      args,
+    ),
+    { kind: "free" },
+  );
+  assert.deepEqual(
+    await resolveInstallBilling(
+      billingLookup(
+        { status: "suspended", pricingModel: "monthly" },
+        { status: "expired", currentPeriodEnd: past, cancelAtPeriodEnd: false, endReason: null },
+      ) as never,
+      args,
+    ),
+    { kind: "revoked", listingTitle: "Research Analyst", reason: "subscription_lapsed" },
+  );
 });

@@ -42,12 +42,19 @@ async function withStubbedPrisma<T>(
     prisma: Record<string, any>;
   };
   const originalFindFirst = prisma.agentInstall?.findFirst;
+  const originalSubscriptionFind = prisma.agentSubscription?.findUnique;
   const originalTransaction = prisma.$transaction;
   const calls = { transactions: 0 };
 
   prisma.agentInstall = {
     ...(prisma.agentInstall ?? {}),
     findFirst: async () => stub.install ?? null,
+  };
+  // Billing checks for a paid-up monthly subscription first; these installs
+  // have none.
+  prisma.agentSubscription = {
+    ...(prisma.agentSubscription ?? {}),
+    findUnique: async () => null,
   };
   prisma.$transaction = async (fn: (tx: unknown) => unknown) => {
     calls.transactions += 1;
@@ -58,6 +65,7 @@ async function withStubbedPrisma<T>(
     return await body(calls);
   } finally {
     if (originalFindFirst) prisma.agentInstall.findFirst = originalFindFirst;
+    if (originalSubscriptionFind) prisma.agentSubscription.findUnique = originalSubscriptionFind;
     prisma.$transaction = originalTransaction;
   }
 }

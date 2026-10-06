@@ -4,8 +4,11 @@
  *
  * Wires:
  *   loadDue        -> AgentSubscription rows whose period has ended and that
- *                     are still active or past_due, oldest first, with the
- *                     listing's current monthly price and pricing model
+ *                     are still active or past_due, never-tried first, then
+ *                     least recently tried, with the listing's current
+ *                     monthly price and pricing model
+ *   recordAttempt  -> stamps lastRenewalAttemptAt in its own statement, so
+ *                     it survives the renewal transaction's rollback
  *   inTransaction  -> prisma.$transaction; renewSubscription and
  *                     markPastDueOrExpire each run in their own
  */
@@ -17,14 +20,29 @@ import type { SubscriptionRenewalDeps } from "./runSubscriptionRenewalTick.js";
 
 export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): SubscriptionRenewalDeps {
   return {
-    loadDue: async ({ now, limit }) => {
+    loadDue: async ({ now, limit, excludeIds }) => {
       const rows = await prisma.agentSubscription.findMany({
-        where: { currentPeriodEnd: { lte: now }, status: { in: ["active", "past_due"] } },
-        orderBy: { currentPeriodEnd: "asc" },
+        where: {
+          currentPeriodEnd: { lte: now },
+          status: { in: ["active", "past_due"] },
+          ...(excludeIds.length > 0 && { id: { notIn: excludeIds } }),
+        },
+        orderBy: [
+          { lastRenewalAttemptAt: { sort: "asc", nulls: "first" } },
+          { currentPeriodEnd: "asc" },
+          { id: "asc" },
+        ],
         take: limit,
         include: {
           listing: {
-            select: { id: true, title: true, publisherId: true, monthlyPriceCents: true, pricingModel: true },
+            select: {
+              id: true,
+              title: true,
+              publisherId: true,
+              monthlyPriceCents: true,
+              pricingModel: true,
+              status: true,
+            },
           },
         },
       });
@@ -37,6 +55,8 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           currentPeriodStart: r.currentPeriodStart,
           currentPeriodEnd: r.currentPeriodEnd,
           cancelAtPeriodEnd: r.cancelAtPeriodEnd,
+          priceCents: r.priceCents,
+          endReason: r.endReason,
         },
         listing: {
           id: r.listing.id,
@@ -44,9 +64,18 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           publisherId: r.listing.publisherId,
           monthlyPriceCents: r.listing.monthlyPriceCents ?? 0n,
           pricingModel: r.listing.pricingModel,
+          status: r.listing.status,
         },
       }));
     },
     inTransaction: (fn) => prisma.$transaction((tx) => fn(tx as unknown as SubscriptionTx)),
+    recordAttempt: async (subscriptionId, at) => {
+      // Only while still due, so a row renewed by another worker in the
+      // meantime is not pushed back for its next period.
+      await prisma.agentSubscription.updateMany({
+        where: { id: subscriptionId, currentPeriodEnd: { lte: at }, status: { in: ["active", "past_due"] } },
+        data: { lastRenewalAttemptAt: at },
+      });
+    },
   };
 }

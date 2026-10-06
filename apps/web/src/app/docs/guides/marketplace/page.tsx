@@ -130,6 +130,11 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         the end of the paid period) or resume, and uninstalling ends it immediately. A monthly install only runs while its
         subscription grants access.
       </p>
+      <p>
+        A subscription renews at the price the buyer agreed to, even if the listing&apos;s price changes later. If the
+        publisher moves the listing off monthly pricing, existing subscribers keep access until the end of the period they
+        paid for. The install then pauses, and it resumes only when the buyer accepts the new pricing.
+      </p>
 
       <h3 id="tokenized">Tokenized</h3>
       <p>

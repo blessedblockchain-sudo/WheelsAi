@@ -5,6 +5,7 @@ import { openJson, sealJson } from "../lib/secretBox.js";
 import { getNosanaClient, type NosanaJobDefinition } from "./nosana.js";
 import {
   registerTelegramWebhook,
+  telegramWebhookUrl,
   unregisterTelegramWebhook,
   type TelegramWebhookResult,
 } from "./telegramWebhook.js";
@@ -85,6 +86,86 @@ function decryptConfigSafely(
     logger.warn({ error, ...context }, "Failed to decrypt OpenClaw config");
     return {};
   }
+}
+
+// ============================================
+// Telegram webhook release
+// ============================================
+
+/** A bot that may still be pointed at one of our deployments. */
+export interface TelegramWebhookTarget {
+  deploymentId: string;
+  botToken: string;
+}
+
+/**
+ * The Telegram bots registered for these channel rows. Read BEFORE the
+ * rows are deleted (directly or by a cascade from the deployment or the
+ * agent): afterwards the tokens needed to release them are gone.
+ */
+export function telegramWebhookTargets(
+  channels: Array<{ id: string; deploymentId: string; platform: string; configEncrypted: string }>
+): TelegramWebhookTarget[] {
+  const targets: TelegramWebhookTarget[] = [];
+  for (const channel of channels) {
+    if (channel.platform !== "telegram") continue;
+    const config = decryptConfigSafely(channel.configEncrypted, {
+      deploymentId: channel.deploymentId,
+      channelId: channel.id,
+    });
+    const botToken = String(config.botToken ?? "");
+    if (botToken) targets.push({ deploymentId: channel.deploymentId, botToken });
+  }
+  return targets;
+}
+
+/** Telegram bots on every OpenClaw deployment of an agent; call before deleting the agent. */
+export async function collectAgentTelegramWebhooks(agentId: string): Promise<TelegramWebhookTarget[]> {
+  const channels = await prisma.openClawChannel.findMany({
+    where: { platform: "telegram", deployment: { agentId } },
+    select: { id: true, deploymentId: true, platform: true, configEncrypted: true },
+  });
+  return telegramWebhookTargets(channels);
+}
+
+/**
+ * Stop Telegram delivering to deployments whose channel rows are gone.
+ * Best effort and never throws: the delete it follows has already
+ * happened, so a failure here is logged (without the token), not
+ * reported as a failed delete. A bot its owner has since pointed
+ * somewhere else is left alone (onlyIfUrl).
+ */
+export async function releaseTelegramWebhooks(
+  targets: TelegramWebhookTarget[],
+  deps: { publicApiUrl?: string; unregister?: typeof unregisterTelegramWebhook } = {}
+): Promise<void> {
+  const publicApiUrl = deps.publicApiUrl ?? env.PUBLIC_API_URL;
+  if (!publicApiUrl) return;
+  const unregister = deps.unregister ?? unregisterTelegramWebhook;
+  for (const target of targets) {
+    try {
+      await unregister({
+        botToken: target.botToken,
+        onlyIfUrl: telegramWebhookUrl(publicApiUrl, target.deploymentId),
+      });
+    } catch (error) {
+      logger.warn({ error, deploymentId: target.deploymentId }, "Failed to release Telegram webhook");
+    }
+  }
+}
+
+/**
+ * After a failed channel insert: should the bot this request registered
+ * be pointed away again? Not when the row that exists holds the same bot.
+ * The webhook URL and secret depend only on the deployment and the token,
+ * so a concurrent add of the same bot made the identical registration,
+ * and deleting it would silence the channel that was just saved.
+ */
+export function shouldRollBackTelegramRegistration(
+  botToken: string,
+  storedConfig: Record<string, unknown> | null
+): boolean {
+  return storedConfig === null || String(storedConfig.botToken ?? "") !== botToken;
 }
 
 function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
@@ -358,11 +439,19 @@ export async function deleteDeployment(id: string, orgId: string) {
   logger.info("Deleting deployment", { id, orgId });
 
   // Verify ownership
-  await getDeployment(id, orgId);
+  const deployment = await getDeployment(id, orgId);
+
+  // The channel rows go with the deployment; read their bots first.
+  const telegram = telegramWebhookTargets(deployment.channels);
 
   await prisma.openClawDeployment.delete({
     where: { id },
   });
+
+  // Otherwise Telegram keeps posting every update to a deployment that no
+  // longer exists, and the bot cannot be used elsewhere until its owner
+  // clears the webhook by hand.
+  await releaseTelegramWebhooks(telegram);
 
   logger.info("Deployment deleted", { id });
 
@@ -421,25 +510,59 @@ export async function addChannel(
     throw new Error(`Unsupported platform: ${params.platform}`);
   }
 
+  // One channel per platform per deployment. Checked before Telegram is
+  // touched: registering a second bot here would re-point it to this
+  // deployment and then fail the insert, leaving it delivering nowhere.
+  const existing = await prisma.openClawChannel.findUnique({
+    where: { deploymentId_platform: { deploymentId, platform: params.platform } },
+    select: { id: true },
+  });
+  if (existing) {
+    throw new Error(`This deployment already has a ${params.platform} channel. Edit that channel instead.`);
+  }
+
   // Register with Telegram first: a token Telegram refuses is reported
   // now instead of being saved as a channel that never receives anything.
   let webhook: TelegramWebhookResult | undefined;
+  const botToken = String(params.config.botToken ?? "");
   if (params.platform === "telegram") {
     webhook = await registerTelegramWebhook({
-      botToken: String(params.config.botToken ?? ""),
+      botToken,
       deploymentId,
       publicApiUrl: env.PUBLIC_API_URL,
     });
   }
 
-  const channel = await prisma.openClawChannel.create({
-    data: {
-      deploymentId,
-      platform: params.platform,
-      configEncrypted: encryptConfig(params.config),
-      enabled: true,
-    },
-  });
+  let channel;
+  try {
+    channel = await prisma.openClawChannel.create({
+      data: {
+        deploymentId,
+        platform: params.platform,
+        configEncrypted: encryptConfig(params.config),
+        enabled: true,
+      },
+    });
+  } catch (err) {
+    // The row was not saved (e.g. a concurrent add won): point the bot
+    // back away from this deployment rather than leave it unverifiable,
+    // unless the add that won saved this same bot.
+    if (webhook?.registered) {
+      const winner = await prisma.openClawChannel
+        .findUnique({
+          where: { deploymentId_platform: { deploymentId, platform: params.platform } },
+          select: { id: true, configEncrypted: true },
+        })
+        .catch(() => null);
+      const stored = winner
+        ? decryptConfigSafely(winner.configEncrypted, { deploymentId, channelId: winner.id })
+        : null;
+      if (shouldRollBackTelegramRegistration(botToken, stored)) {
+        await unregisterTelegramWebhook({ botToken, onlyIfUrl: webhook.url });
+      }
+    }
+    throw err;
+  }
 
   logger.info("Channel added", { channelId: channel.id, platform: params.platform });
 
@@ -491,25 +614,43 @@ export async function updateChannel(
   }
 
   let webhook: TelegramWebhookResult | undefined;
+  let rollbackNewBot: (() => Promise<unknown>) | null = null;
+  let afterSave: (() => Promise<unknown>) | null = null;
   if (channel.platform === "telegram") {
     const current = decryptConfig(channel.configEncrypted);
+    const oldToken = String(current.botToken ?? "");
     const botToken = String((params.config ?? current).botToken ?? "");
     const enabled = params.enabled ?? channel.enabled;
+    const ourUrl = env.PUBLIC_API_URL ? telegramWebhookUrl(env.PUBLIC_API_URL, channel.deploymentId) : null;
     if (enabled) {
       webhook = await registerTelegramWebhook({
         botToken,
         deploymentId: channel.deploymentId,
         publicApiUrl: env.PUBLIC_API_URL,
       });
-    } else {
-      await unregisterTelegramWebhook({ botToken });
+      if (webhook.registered && botToken !== oldToken) {
+        const registeredUrl = webhook.url;
+        // If the save fails, the new bot must not keep pointing here.
+        rollbackNewBot = () => unregisterTelegramWebhook({ botToken, onlyIfUrl: registeredUrl });
+        // Once saved, the replaced bot stops delivering to this deployment.
+        if (oldToken) afterSave = () => unregisterTelegramWebhook({ botToken: oldToken, onlyIfUrl: registeredUrl });
+      }
+    } else if (ourUrl) {
+      afterSave = () => unregisterTelegramWebhook({ botToken: oldToken, onlyIfUrl: ourUrl });
     }
   }
 
-  const updated = await prisma.openClawChannel.update({
-    where: { id: channelId },
-    data: updateData,
-  });
+  let updated;
+  try {
+    updated = await prisma.openClawChannel.update({
+      where: { id: channelId },
+      data: updateData,
+    });
+  } catch (err) {
+    if (rollbackNewBot) await rollbackNewBot();
+    throw err;
+  }
+  if (afterSave) await afterSave();
 
   logger.info("Channel updated", { channelId });
 
@@ -535,14 +676,15 @@ export async function removeChannel(channelId: string, orgId: string) {
     throw new Error("Channel not found or access denied");
   }
 
-  if (channel.platform === "telegram") {
-    const config = decryptConfig(channel.configEncrypted);
-    await unregisterTelegramWebhook({ botToken: String(config.botToken ?? "") });
-  }
-
   await prisma.openClawChannel.delete({
     where: { id: channelId },
   });
+
+  // After the row is gone, stop Telegram delivering here, but only while
+  // the bot still points at this deployment. The channel is already
+  // removed: a config that no longer decrypts, or Telegram failing, must
+  // not turn that into a reported error.
+  await releaseTelegramWebhooks(telegramWebhookTargets([channel]));
 
   logger.info("Channel removed", { channelId });
 

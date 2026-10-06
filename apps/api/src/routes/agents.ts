@@ -16,6 +16,7 @@ import {
 } from "../services/nosana.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
+import { collectAgentTelegramWebhooks, releaseTelegramWebhooks } from "../services/openclaw.js";
 import {
   parseGitHubUrl,
   detectFramework,
@@ -424,7 +425,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
+    // The agent's channels go with it (cascade), so read their Telegram bots
+    // first and release the webhooks once the rows are gone.
+    const telegram = await collectAgentTelegramWebhooks(agentId);
     await prisma.agent.delete({ where: { id: agentId } });
+    await releaseTelegramWebhooks(telegram);
 
     logger.info({ agentId, orgId }, "Agent deleted");
 

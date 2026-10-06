@@ -217,7 +217,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { group: <Link href="/docs/api/deployments">Models and deployments</Link>, prefix: <><code>/api/models</code>, <code>/api/deployments</code></> },
           { group: <Link href="/docs/api/marketplace">Marketplace</Link>, prefix: <code>/api/marketplace</code> },
           { group: <Link href="/docs/api/billing">Billing and plans</Link>, prefix: <code>/api/billing</code> },
-          { group: <Link href="/docs/api/workflows">Workflows and scheduler</Link>, prefix: <><code>/api/orchestrations</code>, <code>/api/scheduler</code></> },
+          { group: <Link href="/docs/api/workflows">Workflows and scheduler</Link>, prefix: <><code>/api/orchestrations</code>, <code>/api/scheduler</code>, <code>/v1/workflows</code></> },
           { group: <Link href="/docs/api/webhooks">Webhooks</Link>, prefix: <code>/api/webhooks</code> },
           { group: <Link href="/docs/guides/templates#api">Templates</Link>, prefix: <code>/api/templates</code> },
           { group: <Link href="/status">Platform status</Link>, prefix: <code>/api/status</code> },

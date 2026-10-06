@@ -2610,6 +2610,8 @@ export interface AgentVersion {
   env: Record<string, any>;
   graphNodes: any[] | null;
   graphEdges: any[] | null;
+  /** How the agent answered at this version; null when it was not recorded. */
+  entrypoint?: "chat" | "graph" | null;
   changeLog: string | null;
   changeType: string;
   tags: string[];
@@ -4132,6 +4134,14 @@ export interface Orchestration {
   id: string;
   orgId: string;
   name: string;
+  /** The workflow's address under /v1. Set on create; a rename does not change it. */
+  slug: string;
+  /** `<api>/v1/workflows/<slug>/chat/completions`; null when the API has no public address set. */
+  apiEndpoint: string | null;
+  /** `<api>/v1/workflows/<slug>`: an OpenAI client's base URL for this workflow. */
+  openaiBaseUrl: string | null;
+  /** `workflow/<slug>`: the `model` that selects this workflow on the unified /v1 base. */
+  openaiModel: string;
   description?: string | null;
   executionMode: WorkflowExecutionMode;
   maxConcurrency: number;

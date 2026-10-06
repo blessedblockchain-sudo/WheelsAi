@@ -77,6 +77,15 @@ export {
   type ChatCompletionExtension,
   type ModelEntry,
 } from "./inference.js";
+export {
+  workflowsResource,
+  type Workflow,
+  type WorkflowChatCompletionResponse,
+  type WorkflowCompletionExtension,
+  type WorkflowExecutionMode,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+} from "./workflows.js";
 export { versioningResource, type AgentVersion, type ChangeType, type VersionDiff } from "./versioning.js";
 export { openclawResource, type OpenClawChannel, type OpenClawDeployment } from "./openclaw.js";
 export {

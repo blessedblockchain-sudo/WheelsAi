@@ -1594,6 +1594,9 @@ model AgentVersion {
   // Graph snapshot (if visual builder was used)
   graphNodes    Json?    @map("graph_nodes")
   graphEdges    Json?    @map("graph_edges")
+  // How the agent answered at this version: 'chat' or 'graph'. Null on
+  // versions taken before it was recorded.
+  entrypoint    String?
 
   // Version metadata
   changeLog     String?  @map("change_log") @db.Text // Description of changes
@@ -2299,6 +2302,9 @@ model Orchestration {
   id            String   @id @default(uuid()) @db.Uuid
   orgId         String   @map("org_id") @db.Uuid
   name          String
+  // The workflow's address under /v1 (model "workflow/<slug>"). Set on
+  // create from the name; a rename does not change it.
+  slug          String
   description   String?
 
   executionMode String   @map("execution_mode") // 'sequential', 'parallel', 'conditional', 'pipeline'
@@ -2328,6 +2334,7 @@ model Orchestration {
   schedules     ScheduledTask[]
 
   @@unique([orgId, name])
+  @@unique([orgId, slug])
   @@index([orgId])
   @@map("orchestrations")
 }
@@ -2433,6 +2440,9 @@ model OrchestrationStepResult {
   input         Json?
   output        Json?
   error         String?
+  // Tokens the pass's model call reported: { inputTokens, outputTokens }.
+  // Null = none reported (or no model call), which is not zero.
+  usage         Json?
 
   startedAt     DateTime? @map("started_at")
   completedAt   DateTime? @map("completed_at")

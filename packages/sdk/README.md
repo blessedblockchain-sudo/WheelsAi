@@ -38,9 +38,19 @@ const reply = await wheels.agents.chatCompletion(
 );
 console.log(reply.choices[0]?.message.content, reply.wheelsai?.model);
 
-// The same on the unified base, where `model` picks an agent or a model deployment:
+// The same on the unified base, where `model` picks an agent, a workflow or a model deployment:
 const { data: models } = await wheels.inference.listModels(); // free: not a metered call
 await wheels.inference.chat({ model: "agent/my-support-bot", messages: [{ role: "user", content: "Hi" }] });
+
+// A workflow answers as a chat completion too: one call is one run, and its output is the answer.
+const { orchestrations } = await wheels.workflows.list();
+const workflow = orchestrations[0]; // .slug, .apiEndpoint, .openaiBaseUrl, .openaiModel ("workflow/<slug>")
+const result = await wheels.workflows.chatCompletion(
+  workflow.slug,
+  { messages: [{ role: "user", content: "Changes merged this week: ..." }] },
+  { timeoutMs: workflow.timeout + 60_000 }, // a client that gives up first cancels the run
+);
+console.log(result.choices[0]?.message.content, result.wheelsai?.workflow.executionId);
 ```
 
 These methods return whole responses. For streaming, point the official OpenAI client at
@@ -81,7 +91,8 @@ refused before anything is sent, with an error that does not repeat it.
 ## Resources
 
 `auth`, `agents`, `deployments` (model deployments), `models`, `billing`, `marketplace`,
-`inference` (OpenAI-compatible `/v1`), `versioning`, `openclaw` (chat channels), `platform`
+`inference` (OpenAI-compatible `/v1`), `workflows` (definitions are read-only here: `list`, `get`,
+`run`, `getRun`, `cancelRun`, `chatCompletion`), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`) and `skills`. Billing amounts are dollars, as the API
 returns them. `agents.stop` and `billing.addCredits` no longer exist: the API has no such
 endpoints (use `agents.stopDeployment` and `billing.checkout`).

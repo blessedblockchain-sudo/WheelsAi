@@ -57,13 +57,46 @@ export function agentOpenAiModel(slug: string): string {
   return `agent/${slug}`;
 }
 
+/** An OpenAI client's base URL for ONE workflow: `<api>/v1/workflows/<slug>`. */
+export function workflowOpenAiBaseUrl(
+  slug: string,
+  publicApiUrl: string | null | undefined,
+): string | null {
+  const base = openAiBaseUrl(publicApiUrl);
+  return base === null ? null : `${base}/workflows/${segment(slug)}`;
+}
+
 /** A workflow's chat-completions URL: `<api>/v1/workflows/<slug>/chat/completions`. */
 export function workflowEndpoint(
   slug: string,
   publicApiUrl: string | null | undefined,
 ): string | null {
-  const base = openAiBaseUrl(publicApiUrl);
-  return base === null ? null : `${base}/workflows/${segment(slug)}/chat/completions`;
+  const base = workflowOpenAiBaseUrl(slug, publicApiUrl);
+  return base === null ? null : `${base}/chat/completions`;
+}
+
+/** The `model` id that selects this workflow on the unified `<api>/v1` base. */
+export function workflowOpenAiModel(slug: string): string {
+  return `workflow/${slug}`;
+}
+
+export interface WorkflowApiEndpoints {
+  /** null when PUBLIC_API_URL is not configured. */
+  apiEndpoint: string | null;
+  openaiBaseUrl: string | null;
+  openaiModel: string;
+}
+
+/** The API fields every workflow read carries. */
+export function workflowApiEndpoints(
+  slug: string,
+  publicApiUrl: string | null | undefined,
+): WorkflowApiEndpoints {
+  return {
+    apiEndpoint: workflowEndpoint(slug, publicApiUrl),
+    openaiBaseUrl: workflowOpenAiBaseUrl(slug, publicApiUrl),
+    openaiModel: workflowOpenAiModel(slug),
+  };
 }
 
 export interface AgentApiEndpoints {

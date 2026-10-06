@@ -29,7 +29,7 @@ export default function InferenceApiPage() {
     <DocPage
       href="/docs/api/inference"
       title="Chat completions (/v1)"
-      lead="Agents and running model deployments are reachable through OpenAI-compatible chat completions endpoints on the WheelsAI API, under one base URL. Requests are authenticated and metered against your plan. A request to a dedicated deployment is covered by that deployment's per-second GPU billing: it is not charged again per token."
+      lead="Agents, workflows and running model deployments are reachable through OpenAI-compatible chat completions endpoints on the WheelsAI API, under one base URL. Requests are authenticated and metered against your plan. A request to a dedicated deployment is covered by that deployment's per-second GPU billing: it is not charged again per token."
       toc={toc}
     >
       <Endpoint
@@ -37,7 +37,7 @@ export default function InferenceApiPage() {
         method="POST"
         path="/v1/chat/completions"
         auth="API key or session"
-        title="One base URL for agents and deployments"
+        title="One base URL for agents, workflows and deployments"
         as="h2"
       >
         <p>
@@ -47,6 +47,10 @@ export default function InferenceApiPage() {
           <li>
             <code>agent/&lt;slug&gt;</code>: one of your agents. Streaming, function calling and the agent&apos;s own tools
             and knowledge base apply; see <Link href="/docs/api/agents#agent-api">the agent API</Link>.
+          </li>
+          <li>
+            <code>workflow/&lt;slug&gt;</code>: one of your workflows. One request is one run, and the run&apos;s output is
+            the answer; see <Link href="/docs/api/workflows#openai">the workflow endpoint</Link>.
           </li>
           <li>
             any other value is the slug of a running model deployment, handled and billed exactly as{" "}
@@ -62,7 +66,7 @@ const client = new OpenAI({
   apiKey: process.env.WHEELSAI_API_KEY,
 });
 
-const models = await client.models.list();          // agents and running deployments
+const models = await client.models.list();          // agents, workflows and running deployments
 const fromAgent = await client.chat.completions.create({
   model: "agent/support-bot",
   messages: [{ role: "user", content: "Hello" }],
@@ -77,10 +81,9 @@ const fromModel = await client.chat.completions.create({
           Every error under <code>/v1</code> is in OpenAI&apos;s shape,{" "}
           <code>&#123; &quot;error&quot;: &#123; message, type, param, code &#125; &#125;</code>, so SDKs report it properly.
           A <code>model</code> that names nothing you can call answers <code>404</code> <code>model_not_found</code>; a
-          missing <code>model</code> answers <code>400</code>. <code>workflow/&lt;slug&gt;</code> is reserved and answers{" "}
-          <code>501</code> <code>workflow_api_not_available</code>: workflows are run through their own API. Paths this API
-          does not have, such as <code>/v1/responses</code> and <code>/v1/embeddings</code>, answer an OpenAI-shaped{" "}
-          <code>404</code>.
+          missing <code>model</code> answers <code>400</code>. A <code>workflow/&lt;slug&gt;</code> that is not one of your
+          workflows answers <code>404</code> <code>workflow_not_found</code>. Paths this API does not have, such as{" "}
+          <code>/v1/responses</code> and <code>/v1/embeddings</code>, answer an OpenAI-shaped <code>404</code>.
         </p>
       </Endpoint>
 

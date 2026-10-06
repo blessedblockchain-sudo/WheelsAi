@@ -157,7 +157,7 @@ async function buildApp(
         orgId === ORG && slug === AGENT.slug
           ? { slug, createdAt: new Date("2026-10-01T00:00:00Z") }
           : null,
-      listModels: async () => ({ deployments: [], agents: [] }),
+      listModels: async () => ({ deployments: [], agents: [], workflows: [] }),
       now: () => 1_760_000_000_000,
       heartbeatMs: 0,
     }),

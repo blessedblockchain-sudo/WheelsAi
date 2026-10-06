@@ -14,6 +14,10 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { SkeletonTable } from "@/components/ui/skeleton";
 import { API_BASE_URL, apiKeysApi, type ApiKey, getErrorMessage } from "@/lib/api";
+import { unifiedApiSnippets } from "@/lib/public-urls";
+
+// Built once from the API origin this app talks to.
+const usage = unifiedApiSnippets(API_BASE_URL);
 
 export default function ApiKeysPage() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -334,33 +338,17 @@ export default function ApiKeysPage() {
           <CardHeader>
             <CardTitle className="text-base">Usage Example</CardTitle>
             <CardDescription>
-              One OpenAI-compatible base URL serves your agents and your model deployments.{" "}
-              <code>model</code> picks which: <code>agent/&lt;slug&gt;</code> for an agent, or the slug of a
-              running deployment.
+              One OpenAI-compatible base URL serves your agents, your workflows and your model deployments.{" "}
+              <code>model</code> picks which: <code>agent/&lt;slug&gt;</code> for an agent,{" "}
+              <code>workflow/&lt;slug&gt;</code> for a workflow, or the slug of a running deployment.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <pre className="overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">
-{`curl ${API_BASE_URL}/v1/chat/completions \\
-  -H "Authorization: Bearer YOUR_API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "model": "agent/your-agent",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'`}
+              {usage.curl}
             </pre>
             <pre className="overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">
-{`from openai import OpenAI
-
-client = OpenAI(base_url="${API_BASE_URL}/v1", api_key="YOUR_API_KEY")
-
-print([m.id for m in client.models.list()])   # your agents and running deployments
-
-reply = client.chat.completions.create(
-    model="agent/your-agent",                 # or a deployment slug
-    messages=[{"role": "user", "content": "Hello!"}],
-)
-print(reply.choices[0].message.content)`}
+              {usage.python}
             </pre>
             <p className="text-sm text-muted-foreground">
               A chat completion counts as one API call on your plan. Listing models and other reads are free.

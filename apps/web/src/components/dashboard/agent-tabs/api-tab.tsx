@@ -16,7 +16,7 @@ function copy(text: string) {
   toast.success("Copied to clipboard");
 }
 
-function CopyRow({ label, value }: { label: string; value: string }) {
+export function CopyRow({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <p className="text-sm font-medium text-foreground">{label}</p>
@@ -32,7 +32,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Snippet({ code }: { code: string }) {
+export function Snippet({ code }: { code: string }) {
   return (
     <div className="relative">
       <pre className="overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">{code}</pre>

@@ -15,6 +15,11 @@ export interface AgentVersion {
   /** The API key that created the version; null when a user did. */
   createdByApiKeyId: string | null;
   createdByName: string | null;
+  /**
+   * How the agent answered at this version; a rollback restores it. null on versions taken
+   * before it was recorded (a rollback to one leaves the agent's entrypoint as it is).
+   */
+  entrypoint: "chat" | "graph" | null;
   isLatest: boolean;
   isPublished: boolean;
   createdAt: string;

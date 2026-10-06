@@ -100,6 +100,129 @@ const response = await client.chat.completions.create({
 }
 
 /**
+ * A deployment's chat-completions URL for display: the one the API returned
+ * (absolute when the API knows its public address, host-relative otherwise),
+ * or, for a row that carries none, the path on the API host this app talks to.
+ */
+export function deploymentEndpointUrl(apiBase: string, endpoint: string | null | undefined, slug: string): string {
+  return resolveAgainst(apiBase, endpoint || `/v1/${encodeURIComponent(slug)}/chat/completions`);
+}
+
+/** The unified OpenAI base of the API this app talks to: `<api>/v1`. */
+export function unifiedOpenAiBase(apiBase: string): string {
+  return `${trimBase(apiBase)}/v1`;
+}
+
+/**
+ * The API-keys page's usage example: the unified base, where `model` picks
+ * an agent, a workflow or a model deployment.
+ */
+export function unifiedApiSnippets(apiBase: string): { curl: string; python: string } {
+  const baseUrl = unifiedOpenAiBase(apiBase);
+  return {
+    curl: `curl ${baseUrl}/chat/completions \\
+  -H "Authorization: Bearer YOUR_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "agent/your-agent",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`,
+    python: `from openai import OpenAI
+
+client = OpenAI(base_url="${baseUrl}", api_key="YOUR_API_KEY")
+
+print([m.id for m in client.models.list()])   # your agents, workflows and running deployments
+
+reply = client.chat.completions.create(
+    model="agent/your-agent",                 # or workflow/<slug>, or a deployment slug
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(reply.choices[0].message.content)`,
+  };
+}
+
+export interface WorkflowSnippetInput {
+  /** `Orchestration.apiEndpoint` as the API returned it; null when PUBLIC_API_URL is unset. */
+  apiEndpoint: string | null;
+  /** `Orchestration.openaiBaseUrl`: `<api>/v1/workflows/<slug>`. */
+  openaiBaseUrl: string | null;
+  /** `Orchestration.openaiModel`: `workflow/<slug>`. */
+  openaiModel: string;
+  /** The workflow's time limit, ms: a client must be willing to wait this long. */
+  timeoutMs: number;
+}
+
+export interface WorkflowSnippets {
+  curl: string;
+  node: string;
+  python: string;
+  /** Seconds a client should allow: the time limit plus the queue allowance. */
+  clientTimeoutSeconds: number;
+}
+
+/**
+ * Copy-paste examples for a workflow's OpenAI-compatible endpoint, built
+ * from what the API returned. Null when the API returned no endpoint: the
+ * page then says the address is not configured instead of guessing one.
+ *
+ * A client's own timeout is set past the workflow's time limit, because a
+ * client that gives up first disconnects, and a disconnect cancels the run.
+ */
+export function workflowSnippets(input: WorkflowSnippetInput): WorkflowSnippets | null {
+  if (!input.apiEndpoint || !input.openaiBaseUrl) return null;
+  const clientTimeoutSeconds = Math.ceil(input.timeoutMs / 1000) + 60;
+
+  const curl = `curl ${input.apiEndpoint} \\
+  --max-time ${clientTimeoutSeconds} \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "messages": [{"role": "user", "content": "Your input for this run"}]
+  }'`;
+
+  const node = `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "${input.openaiBaseUrl}",
+  apiKey: process.env.WHEELSAI_API_KEY,
+  timeout: ${clientTimeoutSeconds} * 1000, // past the workflow's time limit
+  maxRetries: 0,                 // a repeat is a new run
+});
+
+// One request is one run. With stream: true the connection stays open while
+// the run works, and the answer arrives as chunks when it finishes.
+const stream = await client.chat.completions.create({
+  model: "${input.openaiModel}",
+  messages: [{ role: "user", content: "Your input for this run" }],
+  stream: true,
+  stream_options: { include_usage: true },
+});
+
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}`;
+
+  const python = `import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="${input.openaiBaseUrl}",
+    api_key=os.environ["WHEELSAI_API_KEY"],
+    timeout=${clientTimeoutSeconds},  # past the workflow's time limit
+    max_retries=0,   # a repeat is a new run
+)
+
+reply = client.chat.completions.create(
+    model="${input.openaiModel}",
+    messages=[{"role": "user", "content": "Your input for this run"}],
+)
+print(reply.choices[0].message.content)
+print(reply.usage)  # summed over the steps; None when a step reported none`;
+
+  return { curl, node, python, clientTimeoutSeconds };
+}
+
+/**
  * The shape of a deployment's endpoint before it exists. The slug is derived
  * by the server on create (and made unique per organization), so a preview
  * can only show where it goes, not guess it from the typed name.

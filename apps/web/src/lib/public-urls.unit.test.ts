@@ -11,7 +11,11 @@ import { fileURLToPath } from "node:url";
 import {
   UNCONFIGURED_API_HOST,
   deploymentEndpointPattern,
+  deploymentEndpointUrl,
   deploymentSnippets,
+  unifiedApiSnippets,
+  unifiedOpenAiBase,
+  workflowSnippets,
   landingAgentEndpoint,
   landingMarketplaceUrl,
   siteMetadataBase,
@@ -131,4 +135,95 @@ test("no hardcoded wheelsai domain is printed by the web", () => {
   for (const text of [preview, layout]) {
     assert.ok(!/wheelsai\.(io|com)/.test(text));
   }
+});
+
+// ---------------------------------------------------------------------------
+// Workflows, the unified base, and the last pages that built a URL by hand
+// ---------------------------------------------------------------------------
+
+const wf = {
+  apiEndpoint: "https://api.example.com/v1/workflows/weekly-release-pipeline/chat/completions",
+  openaiBaseUrl: "https://api.example.com/v1/workflows/weekly-release-pipeline",
+  openaiModel: "workflow/weekly-release-pipeline",
+  timeoutMs: 600_000,
+};
+
+test("workflow snippets use the endpoint, base URL and model id the API returned", () => {
+  const s = workflowSnippets(wf);
+  assert.ok(s);
+  assert.ok(s.curl.startsWith(`curl ${wf.apiEndpoint} \\\n`));
+  assert.ok(s.node.includes(`baseURL: "${wf.openaiBaseUrl}"`));
+  assert.ok(s.node.includes(`model: "${wf.openaiModel}"`));
+  assert.ok(s.python.includes(`base_url="${wf.openaiBaseUrl}"`));
+  assert.ok(s.python.includes(`model="${wf.openaiModel}"`));
+  // An OpenAI client appends /chat/completions itself.
+  assert.ok(!s.node.includes("chat/completions"));
+  assert.ok(!s.python.includes("chat/completions"));
+});
+
+test("workflow snippets wait past the workflow's time limit and do not retry", () => {
+  const s = workflowSnippets(wf);
+  assert.ok(s);
+  // A client that times out first disconnects, and a disconnect cancels the run.
+  assert.equal(s.clientTimeoutSeconds, 660);
+  assert.ok(s.curl.includes("--max-time 660"));
+  assert.ok(s.node.includes("timeout: 660 * 1000"));
+  assert.ok(s.python.includes("timeout=660"));
+  // A repeat is a whole new run.
+  assert.ok(s.node.includes("maxRetries: 0"));
+  assert.ok(s.python.includes("max_retries=0"));
+});
+
+test("a workflow with no endpoint from the API gets no examples, never a guessed host", () => {
+  assert.equal(workflowSnippets({ ...wf, apiEndpoint: null, openaiBaseUrl: null }), null);
+  assert.equal(workflowSnippets({ ...wf, openaiBaseUrl: null }), null);
+});
+
+test("the unified base and its examples come from the API origin, trailing slash or not", () => {
+  assert.equal(unifiedOpenAiBase("http://localhost:4000/"), "http://localhost:4000/v1");
+  const s = unifiedApiSnippets("https://api.example.com/");
+  assert.ok(s.curl.startsWith("curl https://api.example.com/v1/chat/completions "));
+  assert.ok(s.python.includes('base_url="https://api.example.com/v1"'));
+  assert.ok(s.python.includes("workflow/<slug>"));
+});
+
+test("a deployment's endpoint is the API's, resolved against the API origin when relative", () => {
+  assert.equal(
+    deploymentEndpointUrl("http://localhost:4000", "https://api.example.com/v1/llama/chat/completions", "llama"),
+    "https://api.example.com/v1/llama/chat/completions",
+  );
+  assert.equal(
+    deploymentEndpointUrl("http://localhost:4000/", "/v1/llama/chat/completions", "llama"),
+    "http://localhost:4000/v1/llama/chat/completions",
+  );
+  assert.equal(
+    deploymentEndpointUrl("http://localhost:4000", null, "my model"),
+    "http://localhost:4000/v1/my%20model/chat/completions",
+  );
+});
+
+test("the keys page, the deployment page and the workflow page build no URL by hand", () => {
+  const keys = source("app/(dashboard)/dashboard/keys/page.tsx");
+  assert.ok(keys.includes("unifiedApiSnippets(API_BASE_URL)"));
+  assert.ok(!keys.includes("${API_BASE_URL}"));
+
+  const deployment = source("app/(dashboard)/dashboard/deployments/[id]/page.tsx");
+  assert.ok(deployment.includes("deploymentEndpointUrl(API_BASE_URL, deployment.endpoint, deployment.slug)"));
+  assert.ok(!deployment.includes("/chat/completions`"));
+
+  const workflowTab = source("components/dashboard/workflows/workflow-api-tab.tsx");
+  assert.ok(workflowTab.includes("workflowSnippets({"));
+  assert.ok(!workflowTab.includes("API_BASE_URL"));
+  assert.ok(!/https?:\/\//.test(workflowTab));
+});
+
+test("the agent playground and the agent API tab print only what the API returned", () => {
+  // The agent playground has no endpoint snippets of its own; the API tab
+  // takes the endpoint, base URL and model id from the agent the API returned.
+  const playground = source("app/(dashboard)/dashboard/agents/[id]/playground/page.tsx");
+  assert.ok(!playground.includes("API_BASE_URL"));
+  assert.ok(!playground.includes("chat/completions"));
+  const apiTab = source("components/dashboard/agent-tabs/api-tab.tsx");
+  assert.ok(apiTab.includes("const { apiEndpoint, openaiBaseUrl, openaiModel } = agent;"));
+  assert.ok(!apiTab.includes("API_BASE_URL"));
 });

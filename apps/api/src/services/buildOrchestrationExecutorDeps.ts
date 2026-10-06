@@ -85,6 +85,17 @@ function storedOutput(record: StepRecord): Record<string, unknown> | undefined {
   };
 }
 
+/**
+ * What a step row stores as `usage`: the reported tokens, a marker for a
+ * model call that reported none, or nothing when no model call answered.
+ * The /v1 workflow answer sums these (services/workflowChat.ts).
+ */
+function storedUsage(record: StepRecord): Record<string, unknown> | undefined {
+  if (record.usage === null) return undefined;
+  if (record.usage === "unreported") return { unreported: true };
+  return { inputTokens: record.usage.inputTokens, outputTokens: record.usage.outputTokens };
+}
+
 export function buildOrchestrationExecutorDeps(
   executionId: string,
   overrides: OrchestrationExecutorOverrides = {},
@@ -150,6 +161,7 @@ export function buildOrchestrationExecutorDeps(
           status: record.status,
           input: record.input === null ? undefined : record.input,
           output: storedOutput(record),
+          usage: storedUsage(record),
           error: record.error,
           startedAt: record.startedAt,
           completedAt: record.completedAt,

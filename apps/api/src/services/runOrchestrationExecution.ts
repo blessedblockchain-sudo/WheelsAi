@@ -94,6 +94,25 @@ export interface OrchestrationDef {
 
 export type StepStatus = "success" | "failed" | "skipped";
 
+/** Tokens one model call reported. */
+export interface StepUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * What a call's `usage` says, when it says anything usable. A graph run, or
+ * a provider that sent no count, returns none: that is "unreported", which
+ * is not zero tokens.
+ */
+export function readStepUsage(raw: unknown): StepUsage | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const { inputTokens, outputTokens } = raw as Record<string, unknown>;
+  const count = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return count(inputTokens) && count(outputTokens) ? { inputTokens, outputTokens } : null;
+}
+
 export interface StepRecord {
   stepId: string;
   stepName: string;
@@ -108,6 +127,12 @@ export interface StepRecord {
   /** The published value, cut to MAX_STORED_OUTPUT_CHARS when larger. */
   output: unknown;
   truncated: boolean;
+  /**
+   * Tokens of the model call that answered this pass; "unreported" when it
+   * answered without a count; null when the pass made no model call that
+   * answered (retrieval, skipped, failed).
+   */
+  usage: StepUsage | "unreported" | null;
   error: string | null;
   startedAt: Date;
   completedAt: Date;
@@ -246,9 +271,12 @@ function toItems(source: unknown): unknown[] | null {
 
 type StepOutcome = "success" | "failed" | "skipped";
 
+type PassUsage = StepRecord["usage"];
+
 interface PassSuccess {
   ok: true;
   value: unknown;
+  usage: PassUsage;
   attempts: number;
   input: Record<string, unknown>;
 }
@@ -335,6 +363,7 @@ export async function runOrchestrationExecution(
     step: OrchestrationStepDef,
     fields: Pick<StepRecord, "status" | "input" | "error" | "startedAt" | "attempt"> & {
       output?: unknown;
+      usage?: PassUsage;
       iteration?: number | null;
     },
   ): Promise<void> => {
@@ -357,6 +386,7 @@ export async function runOrchestrationExecution(
       input: fields.input,
       output: capped.output,
       truncated: capped.truncated,
+      usage: fields.usage ?? null,
       error: fields.error,
       startedAt: fields.startedAt,
       completedAt,
@@ -411,7 +441,7 @@ export async function runOrchestrationExecution(
     resolvedInput: Record<string, unknown>,
     signal: AbortSignal,
     agentOverride?: string,
-  ): Promise<unknown> => {
+  ): Promise<{ value: unknown; usage: PassUsage }> => {
     const stepType = agentOverride ? "agent" : (step.stepType ?? "agent");
     const format = step.outputFormat ?? "text";
 
@@ -435,12 +465,16 @@ export async function runOrchestrationExecution(
         signal,
       });
       return {
-        query: prompt,
-        mode: found.mode,
-        fallbackReason: found.fallbackReason ?? null,
-        passages: found.passages,
-        // Ready to drop into a prompt: {{steps.<name>.output.text}}.
-        text: found.passages.map((p) => p.content).join("\n\n"),
+        value: {
+          query: prompt,
+          mode: found.mode,
+          fallbackReason: found.fallbackReason ?? null,
+          passages: found.passages,
+          // Ready to drop into a prompt: {{steps.<name>.output.text}}.
+          text: found.passages.map((p) => p.content).join("\n\n"),
+        },
+        // No model call: nothing to report, and nothing missing.
+        usage: null,
       };
     }
 
@@ -458,7 +492,10 @@ export async function runOrchestrationExecution(
         prompt,
         signal,
       });
-      return parseStepOutput(result.content, format);
+      return {
+        value: parseStepOutput(result.content, format),
+        usage: readStepUsage(result.usage) ?? "unreported",
+      };
     }
 
     const agentId = agentOverride ?? step.agentId;
@@ -469,7 +506,10 @@ export async function runOrchestrationExecution(
       prompt,
       signal,
     });
-    return parseStepOutput(result.content, format);
+    return {
+      value: parseStepOutput(result.content, format),
+      usage: readStepUsage(result.usage) ?? "unreported",
+    };
   };
 
   const invokeWithRetries = async (
@@ -477,16 +517,16 @@ export async function runOrchestrationExecution(
     prompt: string,
     resolvedInput: Record<string, unknown>,
     options: { agentOverride?: string; retries: number },
-  ): Promise<{ value: unknown; attempts: number }> => {
+  ): Promise<{ value: unknown; usage: PassUsage; attempts: number }> => {
     const maxAttempts = Math.max(1, options.retries + 1);
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        const value = await callOnce(step, (signal) =>
+        const answered = await callOnce(step, (signal) =>
           invoke(step, prompt, resolvedInput, signal, options.agentOverride),
         );
-        return { value, attempts: attempt };
+        return { ...answered, attempts: attempt };
       } catch (err) {
         if (err instanceof RunAbortedError) throw err;
         lastError = err instanceof Error ? err : new Error(String(err));
@@ -551,7 +591,7 @@ export async function runOrchestrationExecution(
     let failure: Error;
     try {
       const result = await invokeWithRetries(step, prompt, resolvedInput, { retries });
-      return { ok: true, value: result.value, attempts: result.attempts, input };
+      return { ok: true, value: result.value, usage: result.usage, attempts: result.attempts, input };
     } catch (err) {
       if (err instanceof RunAbortedError) throw err;
       failure = err instanceof Error ? err : new Error(String(err));
@@ -565,7 +605,7 @@ export async function runOrchestrationExecution(
           agentOverride: step.fallbackAgentId,
           retries: 0,
         });
-        return { ok: true, value: result.value, attempts: retries + 2, input };
+        return { ok: true, value: result.value, usage: result.usage, attempts: retries + 2, input };
       } catch (err) {
         if (err instanceof RunAbortedError) throw err;
         failure = new Error(
@@ -612,6 +652,7 @@ export async function runOrchestrationExecution(
       status: pass.ok ? "success" : "failed",
       input: pass.input,
       output: pass.ok ? pass.value : undefined,
+      usage: pass.ok ? pass.usage : null,
       error: pass.ok ? null : pass.error,
       startedAt,
       attempt: pass.attempts,

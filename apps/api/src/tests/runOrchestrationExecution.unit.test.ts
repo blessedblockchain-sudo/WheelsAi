@@ -945,3 +945,90 @@ test("a template that cannot render fails the run before anything is invoked", a
   );
   assert.equal(rec.invocations.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Per-step usage
+// ---------------------------------------------------------------------------
+
+test("each pass records the tokens its model call reported", async () => {
+  const { deps, rec } = makeDeps(undefined, {
+    invokeAgent: async ({ agentId }) => ({
+      content: `${agentId} answer`,
+      usage: agentId === "agent-first" ? { inputTokens: 10, outputTokens: 4 } : { inputTokens: 7, outputTokens: 2 },
+    }),
+  });
+  const result = await runOrchestrationExecution(
+    orchestration([step("first"), step("second")]),
+    { prompt: "go" },
+    deps,
+  );
+  assert.equal(result.status, "completed");
+  assert.deepEqual(rec.records.map((r) => [r.stepName, r.usage]), [
+    ["first", { inputTokens: 10, outputTokens: 4 }],
+    ["second", { inputTokens: 7, outputTokens: 2 }],
+  ]);
+});
+
+test("a model call that answers without a count is recorded as unreported, never as zero", async () => {
+  const { deps, rec } = makeDeps(undefined, {
+    invokeAgent: async () => ({ content: "answer" }),
+    invokeModel: async () => ({ content: "model answer", usage: { inputTokens: "many" } }),
+  });
+  await runOrchestrationExecution(
+    orchestration([
+      step("agent"),
+      step("model", { stepType: "model", agentId: null, deploymentId: "dep-1" }),
+    ]),
+    { prompt: "go" },
+    deps,
+  );
+  assert.deepEqual(rec.records.map((r) => r.usage), ["unreported", "unreported"]);
+});
+
+test("a retrieval step, a skipped step and a failed step record no usage", async () => {
+  const { deps, rec } = makeDeps(undefined, {
+    invokeAgent: async ({ agentId }) => {
+      if (agentId === "agent-broken") throw new Error("provider down");
+      return { content: "ok", usage: { inputTokens: 1, outputTokens: 1 } };
+    },
+    searchKnowledge: async () => ({ passages: [{ content: "passage" }], mode: "keyword" }),
+  });
+  const result = await runOrchestrationExecution(
+    orchestration([
+      step("find", { stepType: "retrieval", agentId: null, knowledgeBaseId: "kb-1" }),
+      step("broken", { onError: "continue" }),
+      step("after", { dependsOn: ["broken"] }),
+    ]),
+    { prompt: "go" },
+    deps,
+  );
+  assert.equal(result.status, "completed");
+  assert.deepEqual(rec.records.map((r) => [r.stepName, r.status, r.usage]), [
+    ["find", "success", null],
+    ["broken", "failed", null],
+    ["after", "skipped", null],
+  ]);
+});
+
+test("a step answered by its fallback agent records the fallback's usage", async () => {
+  const { deps, rec } = makeDeps(undefined, {
+    invokeAgent: async ({ agentId }) => {
+      if (agentId === "agent-main") throw new Error("provider down");
+      return { content: "understudy", usage: { inputTokens: 3, outputTokens: 9 } };
+    },
+  });
+  await runOrchestrationExecution(
+    orchestration([step("main", { onError: "fallback", fallbackAgentId: "agent-understudy" })]),
+    { prompt: "go" },
+    deps,
+  );
+  assert.deepEqual(rec.records.map((r) => [r.status, r.usage]), [["success", { inputTokens: 3, outputTokens: 9 }]]);
+});
+
+test("readStepUsage accepts only two non-negative token counts", async () => {
+  const { readStepUsage } = await import("../services/runOrchestrationExecution.js");
+  assert.deepEqual(readStepUsage({ inputTokens: 0, outputTokens: 5, extra: 1 }), { inputTokens: 0, outputTokens: 5 });
+  for (const bad of [null, undefined, "12", {}, { inputTokens: 1 }, { inputTokens: -1, outputTokens: 1 }, { inputTokens: NaN, outputTokens: 1 }]) {
+    assert.equal(readStepUsage(bad), null);
+  }
+});

@@ -245,7 +245,7 @@ async function main() {
         { name: "OpenClaw", description: "Managed OpenClaw deployments" },
         { name: "Knowledge", description: "RAG knowledge bases" },
         { name: "Monitoring", description: "Alerts and uptime monitoring" },
-        { name: "OpenAI-compatible", description: "The /v1 API for agents and model deployments" },
+        { name: "OpenAI-compatible", description: "The /v1 API for agents, workflows and model deployments" },
       ],
       components: {
         securitySchemes: {

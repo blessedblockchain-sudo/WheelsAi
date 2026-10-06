@@ -36,9 +36,9 @@ export type ChatToolChoice =
 
 export interface ChatCompletionRequest {
   /**
-   * On the unified base (`inference.chat`): `agent/<slug>` or a deployment slug, required.
-   * On a path-scoped call (`inference.chatCompletion`, `agents.chatCompletion`): optional,
-   * the path decides.
+   * On the unified base (`inference.chat`): `agent/<slug>`, `workflow/<slug>` or a deployment
+   * slug, required. On a path-scoped call (`inference.chatCompletion`, `agents.chatCompletion`,
+   * `workflows.chatCompletion`): optional, the path decides.
    */
   model?: string;
   messages: ChatMessage[];
@@ -104,27 +104,32 @@ export interface ChatCompletionResponse {
     completion_tokens: number;
     total_tokens: number;
   };
+  /**
+   * An agent's extension. A workflow's completion (`model: "workflow/<slug>"`) carries
+   * `{ workflow: ... }` here instead: see `WorkflowCompletionExtension`.
+   */
   wheelsai?: ChatCompletionExtension;
 }
 
-/** One entry of `GET /v1/models`: a running deployment or an agent. */
+/** One entry of `GET /v1/models`: a running deployment, an agent or an enabled workflow. */
 export interface ModelEntry {
-  /** A deployment slug, or `agent/<slug>`. Pass it as `model` to `inference.chat`. */
+  /** A deployment slug, `agent/<slug>` or `workflow/<slug>`. Pass it as `model` to `inference.chat`. */
   id: string;
   object: string;
   created: number;
   owned_by: string;
   /** Deployments only: the underlying Hugging Face model id. */
   root?: string;
-  wheelsai?: { kind: "deployment" | "agent" };
+  wheelsai?: { kind: "deployment" | "agent" | "workflow" };
 }
 
 export function inferenceResource(client: WheelsAIClient) {
   return {
     /**
      * A chat completion on the unified OpenAI base, `POST /v1/chat/completions`. `model` picks what
-     * answers: `agent/<slug>` for an agent, or the slug of a running model deployment
-     * (`listModels` returns both). Not streamed: for server-sent events point the OpenAI SDK
+     * answers: `agent/<slug>` for an agent, `workflow/<slug>` for a workflow (one call is one
+     * run; see `workflows.chatCompletion`), or the slug of a running model deployment
+     * (`listModels` returns all three). Not streamed: for server-sent events point the OpenAI SDK
      * at `<api>/v1`. An agent with tools can outlast the default timeout: pass `{ timeoutMs }`.
      */
     chat: (request: ChatCompletionRequest & { model: string }, options?: RequestOptions) =>
@@ -145,8 +150,9 @@ export function inferenceResource(client: WheelsAIClient) {
       client.post<ChatCompletionResponse>(`/v1/${seg(deploymentSlug)}/chat/completions`, request, options),
 
     /**
-     * Everything you can pass as `model`: your running deployments (`id` is the slug) and your
-     * agents (`id` is `agent/<slug>`), in OpenAI's model-list shape. Free: not a metered call.
+     * Everything you can pass as `model`: your running deployments (`id` is the slug), your
+     * agents (`agent/<slug>`) and your enabled workflows (`workflow/<slug>`), in OpenAI's
+     * model-list shape. Free: not a metered call.
      */
     listModels: () => client.get<{ object: "list"; data: ModelEntry[] }>("/v1/models"),
   };

@@ -911,11 +911,497 @@ an empty change set (`"emptyPatch":true` for all 16).
 
 ---
 
+## I. A workflow through `/v1`, with the official openai client
+
+**Date:** 2026-10-06, a second run, after sections A to H. **Working tree** on top of `8bafb43`.
+**Migration under test:** `20261008100000_workflow_api_slug_usage_version_entrypoint`.
+
+The claim: an *"OpenAI-compatible API"* for agents **and workflows** as well as models. Until
+this change `POST /v1/chat/completions` with `model: "workflow/<slug>"` answered a named `501`.
+This section runs a workflow through it for real: the same seeded demo organization, the same
+free Groq model, the official `openai` client as the caller. Same rules as above: the commands
+that were run and their output, long model text cut with `…`, `jq` filters shown.
+
+### I0. The environment
+
+| | |
+|---|---|
+| API | `apps/api`, `npx tsx src/index.ts`, port **4230**, `PUBLIC_API_URL=http://localhost:4230` |
+| Database | a **disposable copy** of the local dev database, `wheelsai_wfv1`, with the new migration applied to the copy only |
+| Redis | `localhost:6380`, database index **6**, empty at the start |
+| Workers | the workflow worker and its reaper on (`WORKFLOW_RUN_CONCURRENCY=4`); the scheduler and every other worker off, so no seeded schedule fired |
+| Client | `openai` 7.28.0 for Node, driven by `apps/api/scripts/run-workflow-v1-proof.ts`, with `maxRetries: 0` and an 11-minute timeout |
+
+```bash
+psql postgresql://wheelsai:…@localhost:5434/postgres -c "CREATE DATABASE wheelsai_wfv1 TEMPLATE wheelsai"
+```
+
+The dev database already had the three earlier migrations of this work. Before applying the
+new one, three workflows whose names collide with the seeded "Weekly release pipeline" were
+inserted into the copy (disabled, no steps), so the backfill had something to separate:
+
+```sql
+INSERT INTO orchestrations (id, org_id, name, execution_mode, is_enabled, created_at, updated_at)
+SELECT gen_random_uuid(), o.org_id, v.name, 'sequential', false, now() + v.n * interval '1 second', now()
+FROM orchestrations o,
+     (VALUES (1, 'weekly-release-pipeline'), (2, 'Weekly  Release  Pipeline!'), (3, '週次リリース')) AS v(n, name)
+WHERE o.name = 'Weekly release pipeline';
+```
+
+```bash
+psql postgresql://wheelsai:…@localhost:5434/wheelsai_wfv1 -v ON_ERROR_STOP=1 -1 \
+  -f packages/db/prisma/migrations/20261008100000_workflow_api_slug_usage_version_entrypoint/migration.sql
+psql …/wheelsai_wfv1 -c "select org.name as org, o.name, o.slug from orchestrations o
+  join organizations org on org.id=o.org_id order by org.name, o.created_at"
+```
+
+```
+ALTER TABLE
+UPDATE 8
+ALTER TABLE
+CREATE INDEX
+ALTER TABLE
+ALTER TABLE
+        org        |            name            |               slug
+-------------------+----------------------------+----------------------------------
+ demo-1786267035   | Demo Workflow 1786267573   | demo-workflow-1786267573
+ Northwind AI Labs | Weekly release pipeline    | weekly-release-pipeline
+ Northwind AI Labs | weekly-release-pipeline    | weekly-release-pipeline-84c0ceac
+ Northwind AI Labs | Weekly  Release  Pipeline! | weekly-release-pipeline-404b9440
+ Northwind AI Labs | 週次リリース               | workflow-c3b392b2b1a4
+ probe-1333932367  | Research then Summarize    | research-then-summarize
+ probe-1333932367  | Free Two Step              | free-two-step
+ test              | Data Pipeline              | data-pipeline
+```
+
+Every workflow has a slug; the oldest of three names that derive the same slug keeps it and the
+other two carry part of their own id; a name with no ASCII letters gets one from its id. The
+unique index on `(org_id, slug)` was then created without complaint.
+
+The API was started as in step 1 of this document, with these differences:
+
+```bash
+DATABASE_URL="postgresql://wheelsai:…@localhost:5434/wheelsai_wfv1?schema=public" \
+REDIS_URL="redis://localhost:6380/6" API_PORT=4230 PUBLIC_API_URL=http://localhost:4230 \
+SCHEDULER_INTERVAL_MS=0 WORKFLOW_RUN_CONCURRENCY=4 WORKFLOW_REAP_INTERVAL_MS=60000 \
+…(every other worker interval 0, as in step 1)… npx tsx src/index.ts
+```
+
+```
+[08:54:33] INFO: Server listening at http://0.0.0.0:4230
+[08:54:33] INFO: Scheduler queue disabled (SCHEDULER_INTERVAL_MS <= 0)
+[08:54:33] INFO: Workflow run worker started
+[08:54:33] INFO: Workflow run reaper started
+```
+
+`curl -s -i http://localhost:4230/health` answered `HTTP/1.1 200 OK`. The log of the whole run
+contains no line at level ERROR.
+
+### I1. Sign in, make a key, read where the workflows are served
+
+```bash
+A=http://localhost:4230
+curl -s -X POST $A/api/auth/login -H 'Content-Type: application/json' \
+  -d "{\"email\":\"demo@northwind.ai\",\"password\":\"$DEMO_PASSWORD\"}" > login.json
+TOKEN=$(jq -r .token login.json)
+curl -s -X POST $A/api/auth/keys -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"name":"workflow-v1-proof-run"}' > key.json
+jq '{id, key: (.key[0:16] + "…"), name: .apiKey.name, scopes: .apiKey.scopes}' key.json
+```
+
+```json
+{ "id": "ad5d61d2-fc5c-4e56-ac91-bbce4989a106", "key": "wheels_live_TE5Z…", "name": "workflow-v1-proof-run", "scopes": [] }
+```
+
+From here on `H="Authorization: Bearer $KEY"` is that API key and `J='Content-Type: application/json'`.
+
+```bash
+curl -s $A/api/orchestrations -H "$H" | jq -c '.orchestrations[] | {name, slug, isEnabled, apiEndpoint, openaiBaseUrl, openaiModel, steps: ._count.steps}'
+```
+
+```
+{"name":"週次リリース","slug":"workflow-c3b392b2b1a4","isEnabled":false,"apiEndpoint":"http://localhost:4230/v1/workflows/workflow-c3b392b2b1a4/chat/completions","openaiBaseUrl":"http://localhost:4230/v1/workflows/workflow-c3b392b2b1a4","openaiModel":"workflow/workflow-c3b392b2b1a4","steps":0}
+{"name":"Weekly  Release  Pipeline!","slug":"weekly-release-pipeline-404b9440","isEnabled":false,"apiEndpoint":"http://localhost:4230/v1/workflows/weekly-release-pipeline-404b9440/chat/completions","openaiBaseUrl":"http://localhost:4230/v1/workflows/weekly-release-pipeline-404b9440","openaiModel":"workflow/weekly-release-pipeline-404b9440","steps":0}
+{"name":"weekly-release-pipeline","slug":"weekly-release-pipeline-84c0ceac","isEnabled":false,"apiEndpoint":"http://localhost:4230/v1/workflows/weekly-release-pipeline-84c0ceac/chat/completions","openaiBaseUrl":"http://localhost:4230/v1/workflows/weekly-release-pipeline-84c0ceac","openaiModel":"workflow/weekly-release-pipeline-84c0ceac","steps":0}
+{"name":"Weekly release pipeline","slug":"weekly-release-pipeline","isEnabled":true,"apiEndpoint":"http://localhost:4230/v1/workflows/weekly-release-pipeline/chat/completions","openaiBaseUrl":"http://localhost:4230/v1/workflows/weekly-release-pipeline","openaiModel":"workflow/weekly-release-pipeline","steps":3}
+```
+
+### I2. Create the workflows this run uses: the slug is set on create
+
+`release-brief` chains two agents and publishes the second one's reply as the run's `answer`.
+`RESEARCH` is the agent "Research Analyst", `NOTES` "Release Notes Writer", `DEP` the seeded
+deployment "Support LLM".
+
+```bash
+cat > wf-brief.json <<JSON
+{
+  "name": "Release brief",
+  "description": "Turn a list of merged changes into two sentences of release notes.",
+  "executionMode": "sequential",
+  "steps": [
+    { "name": "collect", "agentId": "$RESEARCH",
+      "promptTemplate": "Rewrite the changes below as terse bullet points, one per change, nothing else.\n\n{{input.prompt}}" },
+    { "name": "draft", "agentId": "$NOTES", "dependsOn": ["collect"],
+      "promptTemplate": "Write exactly two sentences of release notes from these bullets. No heading.\n\n{{steps.collect.output}}",
+      "outputMapping": { "answer": "\$.steps.draft.output" } }
+  ]
+}
+JSON
+# wf-model.json: the same, named "Release brief (own model)", with "draft" as
+#   { "stepType": "model", "deploymentId": "$DEP", … }
+for f in wf-brief wf-model; do
+  curl -s -X POST $A/api/orchestrations -H "$H" -H "$J" -d @$f.json | jq -c '{id, name, slug, apiEndpoint, openaiBaseUrl, openaiModel}'
+done
+```
+
+```
+{"id":"a539b5ff-11a0-46a0-9063-3545f406d757","name":"Release brief","slug":"release-brief","apiEndpoint":"http://localhost:4230/v1/workflows/release-brief/chat/completions","openaiBaseUrl":"http://localhost:4230/v1/workflows/release-brief","openaiModel":"workflow/release-brief"}
+{"id":"86860bec-a879-4f6d-a922-bdf60d54995d","name":"Release brief (own model)","slug":"release-brief-own-model","apiEndpoint":"http://localhost:4230/v1/workflows/release-brief-own-model/chat/completions","openaiBaseUrl":"http://localhost:4230/v1/workflows/release-brief-own-model","openaiModel":"workflow/release-brief-own-model"}
+```
+
+A different name that derives the same slug gets the next free one, and the same name again is
+still refused as a name:
+
+```bash
+jq '.name = "Release Brief!"' wf-brief.json | curl -s -X POST $A/api/orchestrations -H "$H" -H "$J" -d @- | jq -c '{name, slug, openaiModel}'
+curl -s -o /dev/null -w "%{http_code} " -X POST $A/api/orchestrations -H "$H" -H "$J" -d @wf-brief.json
+curl -s -X POST $A/api/orchestrations -H "$H" -H "$J" -d @wf-brief.json | jq -c .
+```
+
+```
+{"name":"Release Brief!","slug":"release-brief-2","openaiModel":"workflow/release-brief-2"}
+409 {"error":"name_taken","message":"A workflow with this name already exists"}
+```
+
+("Release Brief!" was then deleted, `204`, so it does not appear below.)
+
+### I3. The run, through the openai client
+
+```bash
+cd apps/api
+WHEELSAI_API_URL=http://localhost:4230 WHEELSAI_API_KEY=$KEY WORKFLOW_SLUG=release-brief \
+UNMAPPED_SLUG=weekly-release-pipeline DISABLED_SLUG=weekly-release-pipeline-84c0ceac \
+FAILING_SLUG=release-brief-own-model npx tsx scripts/run-workflow-v1-proof.ts
+```
+
+```
+openai client 7.28.0  base http://localhost:4230/v1  model workflow/release-brief
+
+=== 1. models.list()  (unified base) ===
+model: {"id":"support-llm","wheelsai":{"kind":"deployment"}}
+model: {"id":"agent/support-concierge","wheelsai":{"kind":"agent"}}
+model: {"id":"agent/research-analyst","wheelsai":{"kind":"agent"}}
+model: {"id":"agent/release-notes-writer","wheelsai":{"kind":"agent"}}
+model: {"id":"agent/community-moderator","wheelsai":{"kind":"agent"}}
+model: {"id":"agent/sales-qualifier","wheelsai":{"kind":"agent"}}
+model: {"id":"agent/ops-runbook-bot","wheelsai":{"kind":"agent"}}
+model: {"id":"agent/seo-auditor-marketplace","wheelsai":{"kind":"agent"}}
+model: {"id":"workflow/weekly-release-pipeline","wheelsai":{"kind":"workflow"}}
+model: {"id":"workflow/release-brief","wheelsai":{"kind":"workflow"}}
+model: {"id":"workflow/release-brief-own-model","wheelsai":{"kind":"workflow"}}
+
+=== 1b. models.list()  (per-workflow base) ===
+models: ["workflow/release-brief"]
+
+=== 2. chat.completions.create()  (plain, unified base) ===
+waited ms: 7604
+id: "chatcmpl-41724a38-c027-4ea2-8330-99cdc99d26f1"
+object: "chat.completion"
+model: "workflow/release-brief"
+finish_reason: "stop"
+message.role: "assistant"
+message.content: "Added streaming support for model deployments and function calling for agents. Enabled workflow responses via the /v1 endpoint."
+usage: {"prompt_tokens":277,"completion_tokens":290,"total_tokens":567}
+wheelsai.workflow: {"slug":"release-brief","executionId":"0b9dbbb7-2700-405c-a84c-45fc95e0d91b","status":"completed","durationMs":7134,"steps":[{"name":"collect","type":"agent","status":"success","durationMs":6305},{"name":"draft","type":"agent","status":"success","durationMs":785}]}
+RUN_ID_PLAIN=0b9dbbb7-2700-405c-a84c-45fc95e0d91b
+
+=== 3. chat.completions.create({ stream: true })  (per-workflow base) ===
+first chunk after ms: 77
+first chunk wheelsai: {"workflow":{"slug":"release-brief","executionId":"9af4d458-1cb5-4f96-ae1b-ffdd31120467","status":"running"}}
+stream finished after ms: 2103
+chunks: 4
+finish_reason: "stop"
+content: "Added streaming support for model deployments and function calling for agents. Updated workflows to answer via /v1."
+usage (include_usage): {"prompt_tokens":277,"completion_tokens":473,"total_tokens":750}
+last wheelsai.workflow: {"executionId":"9af4d458-1cb5-4f96-ae1b-ffdd31120467","status":"completed","steps":["collect:success","draft:success"]}
+
+=== 4. a workflow with no output mapping: the last successful step is the answer ===
+model: "workflow/weekly-release-pipeline"
+message.content: "I don’t have information on this week’s changes beyond my June 2024 knowledge cutoff—please check the official release notes or the #announcements channel for the latest updates."
+usage: {"prompt_tokens":325,"completion_tokens":1201,"total_tokens":1526}
+steps: ["Collect changes:success","Draft release notes:success","Post community summary:success"]
+
+=== 5. refusals (no run is started) ===
+tools: {"status":400,"code":"unsupported_parameter","type":"invalid_request_error","param":"tools","message":"400 A workflow cannot call functions on the caller's side. Remove tools and tool_choice, or call an agent.","x-should-retry":null}
+unknown workflow: {"status":404,"code":"workflow_not_found","type":"invalid_request_error","param":null,"message":"404 No workflow with that slug exists in this organization.","x-should-retry":"false"}
+no user message: {"status":400,"code":"validation_failed","type":"invalid_request_error","param":"messages","message":"400 A workflow run needs a user message: the last one is the run's input.","x-should-retry":null}
+disabled workflow: {"status":400,"code":"workflow_disabled","type":"invalid_request_error","param":null,"message":"400 This workflow is disabled. Enable it in the dashboard to run it.","x-should-retry":"false"}
+
+=== 6. a run that fails ===
+failed run: {"status":502,"code":"workflow_failed","type":"server_error","param":null,"message":"502 Workflow step \"draft\" failed: the deployment \"Support LLM\" has no healthy node right now; retry shortly","x-should-retry":"false","executionId":"54997856-316d-48e3-bf3d-2213cc3a3516","failedStep":"draft","steps":["collect:success","draft:failed"]}
+```
+
+Read against the claims:
+
+- **Listed by `GET /v1/models`** (1): the three enabled workflows, with
+  `wheelsai.kind: "workflow"`, next to the deployment and the agents. The three disabled ones
+  are not listed. The per-workflow base lists the one workflow it serves (1b).
+- **The last user message is the run input; the run's output is the assistant message** (2):
+  the two sentences are the `draft` step's reply, published by its output mapping. The request
+  waited 7.6 s for a run of 7.1 s.
+- **Usage is summed over the steps** (2): 277 prompt and 290 completion tokens are the sum of
+  what Groq reported for `collect` and `draft`.
+- **The same answer as stream chunks** (3): the first chunk arrived 77 ms after the request,
+  carrying the execution id while the run was still going; the answer followed 2 s later as a
+  content chunk, a `stop` chunk with the finished run, the usage chunk that was asked for, and
+  `[DONE]` (four chunks reach the client's iterator).
+- **No output mapping** (4): the seeded three-step workflow publishes nothing, so the answer is
+  the reply of the last step that succeeded. (Its steps have no prompts of their own, so each
+  answered the run prompt; the model said it does not know this week's changes, which is true.)
+- **Refusals name themselves and start nothing** (5): `tools` is a `400` with `param: "tools"`;
+  an unknown slug a `404`; a request with no user message a `400` naming `messages`; a disabled
+  workflow a `400`.
+- **A failed run** (6) is a `502 workflow_failed` naming the run and the step, with
+  `x-should-retry: false`: a repeat would be a new run. This is also the model step: see I6.
+
+The raw stream, for one more request (`curl`, cut at 330 columns):
+
+```bash
+curl -s -X POST $A/v1/chat/completions -H "$H" -H "$J" --max-time 120 \
+  -d '{"model":"workflow/release-brief","messages":[{"role":"user","content":"x"}],"stream":true,"stream_options":{"include_usage":true}}' | cut -c1-330
+```
+
+```
+data: {"id":"chatcmpl-827cbf44-6a22-439c-af93-ded63f9459a6","object":"chat.completion.chunk","created":1791277134,"model":"workflow/release-brief","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}],"wheelsai":{"workflow":{"slug":"release-brief","executionId":"8950319c-9a06-401c-a28a-38341d10ee
+
+data: {"id":"chatcmpl-827cbf44-6a22-439c-af93-ded63f9459a6","object":"chat.completion.chunk","created":1791277134,"model":"workflow/release-brief","choices":[{"index":0,"delta":{"content":"Could you share the list of changes you’d like turned into two concise release‑note sentences?"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-827cbf44-6a22-439c-af93-ded63f9459a6","object":"chat.completion.chunk","created":1791277134,"model":"workflow/release-brief","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"wheelsai":{"workflow":{"slug":"release-brief","executionId":"8950319c-9a06-401c-a28a-38341d10ee65","status":"completed","dur
+
+data: {"id":"chatcmpl-827cbf44-6a22-439c-af93-ded63f9459a6","object":"chat.completion.chunk","created":1791277134,"model":"workflow/release-brief","choices":[],"usage":{"prompt_tokens":245,"completion_tokens":343,"total_tokens":588}}
+
+data: [DONE]
+```
+
+### I4. A run that outlives its request is cancelled
+
+**The decision.** A request waits for its run for the workflow's own time limit plus 30 seconds
+for the queue, and cancels the run if that passes or if the client disconnects. It does not
+wait indefinitely and it does not leave the run going: an abandoned run would keep calling, and
+paying for, steps nobody will read. The cancel is the same compare-and-set cancel the dashboard
+uses, so a run is never billed twice and never left running unbilled: steps that finished are
+billed once by their own rules, the step in flight is aborted, and no later step starts.
+
+**A client that hangs up.** The first attempt at this did not show it, and is recorded as it
+happened: the script hung up 1.5 s after the first chunk, and by then the run (about 2 s on the
+earlier calls) had already finished and delivered its answer.
+
+```
+=== 7. the client disconnects while the run works ===
+stream ended without the abort: UNEXPECTED
+RUN_ID_ABORTED=befdb91c-411c-4d2f-a91b-9be7b5c84c8c
+```
+
+That run, `befdb91c`, is the third `completed` row in the history below. The "UNEXPECTED" was
+the script's own check. A second try with a 250 ms hang-up, `08c0aa42`, did get cancelled on the
+server but printed the same line, because the openai client ends its iterator quietly when its
+own signal aborts instead of throwing. The script was corrected to report that, and run a third
+time:
+
+```bash
+WHEELSAI_API_URL=http://localhost:4230 WHEELSAI_API_KEY=$KEY WORKFLOW_SLUG=release-brief \
+PROOF_ONLY=disconnect npx tsx scripts/run-workflow-v1-proof.ts
+```
+
+```
+openai client 7.28.0  base http://localhost:4230/v1  model workflow/release-brief
+
+=== 7. the client disconnects while the run works ===
+client aborted 250 ms after the first chunk; the stream ended with no answer
+RUN_ID_ABORTED=60d5e172-710e-4d5c-a933-7c1805ee272e
+```
+
+Four seconds later, the run it named:
+
+```bash
+curl -s $A/api/orchestrations/$WF/executions/60d5e172-710e-4d5c-a933-7c1805ee272e -H "$H" \
+  | jq -c '{status, triggeredBy, cancelRequestedAt, completedAt, error, durationMs, steps: [.stepResults[] | {stepName, status, error}]}'
+```
+
+```
+{"status":"cancelled","triggeredBy":"api","cancelRequestedAt":"2026-10-06T08:56:59.969Z","completedAt":"2026-10-06T08:57:00.809Z","error":"cancelled","durationMs":1109,"steps":[{"stepName":"collect","status":"success","error":null}]}
+```
+
+The cancel was requested when the socket closed; the worker ended the run 840 ms later.
+`collect` had finished and stays in the results; `draft` never ran. The workflow's run history,
+every row started by the API:
+
+```bash
+curl -s "$A/api/orchestrations/$WF/executions?limit=10" -H "$H" | jq -c '.executions[] | {id: .id[0:8], status, triggeredBy, durationMs, error}'
+```
+
+```
+{"id":"60d5e172","status":"cancelled","triggeredBy":"api","durationMs":1109,"error":"cancelled"}
+{"id":"08c0aa42","status":"cancelled","triggeredBy":"api","durationMs":1180,"error":"cancelled"}
+{"id":"befdb91c","status":"completed","triggeredBy":"api","durationMs":1997,"error":null}
+{"id":"9af4d458","status":"completed","triggeredBy":"api","durationMs":1964,"error":null}
+{"id":"0b9dbbb7","status":"completed","triggeredBy":"api","durationMs":7134,"error":null}
+```
+
+**A run that reaches its time limit.** A workflow with the shortest time limit the API allows
+(10 s) and a for-each loop over the lines of the prompt, one essay per line:
+
+```bash
+jq '.name = "Release brief (10 s limit)" | .timeout = 10000 | .steps = [ .steps[0] + {
+      "promptTemplate": "Write a detailed 800-word essay about this change, with history and examples: {{item}}",
+      "loop": {"forEach": "$.input.prompt", "maxItems": 20}} ]' wf-brief.json > wf-short.json
+# saved as the workflow with slug "release-brief-10-s-limit"
+date +%T
+curl -s -i -X POST $A/v1/chat/completions -H "$H" -H "$J" -d '{"model":"workflow/release-brief-10-s-limit",
+  "messages":[{"role":"user","content":"streaming for model deployments\nfunction calling for agents\nworkflows through /v1\nper-step usage\nwebhook categories\nagent.deployed events\nmarketplace graph installs\nversion entrypoints"}]}' > timeout.out
+date +%T
+grep -i "^HTTP\|^x-should-retry" timeout.out
+tail -1 timeout.out | jq -c '.error | {code, type, message, executionId, steps: [.workflow.steps[] | {name, iteration, status, error}]}'
+```
+
+```
+09:58:35
+09:58:45
+HTTP/1.1 504 Gateway Timeout
+x-should-retry: false
+{"code":"workflow_timeout","type":"server_error","message":"The workflow reached its time limit of 10000 ms and was stopped. Steps that finished were billed.","executionId":"05f8c466-48f4-4b98-86ea-a6c907480f65","steps":[{"name":"collect","iteration":0,"status":"success","error":null},{"name":"collect","iteration":1,"status":"success","error":null},{"name":"collect","iteration":2,"status":"success","error":null},{"name":"collect","iteration":3,"status":"failed","error":"stopped: the workflow timed out"}]}
+```
+
+(`date` prints this machine's local time, one hour ahead of the server log's UTC.) Ten seconds,
+three essays written and billed, the fourth stopped mid-call, the other four never started, and
+an answer that says so. Three first attempts at this are not shown as results because they
+proved nothing: a 1 s and then a 5 s limit were refused, `400 validation_failed`, the minimum
+being 10 s; and a version with a single essay finished in 5 s and answered `200`.
+
+### I5. What the request cost
+
+**One plan API call per request.** `GET /api/billing/plan`, read with the same key:
+
+```
+before the client script:       {"plan":"pro","usage":{"agents":6,"apiCallsThisMonth":6}}
+after sections 1 to 7 above:    {"plan":"pro","usage":{"agents":6,"apiCallsThisMonth":15}}
+```
+
+The six before are this run's own setup writes with the key (five workflow creates, two of
+them refused as shown in I2, and one delete). The script then made nine `POST`s under `/v1`:
+the plain completion, the stream, the unmapped workflow, four refusals, the failed run and the
+disconnect. Nine calls, nine counted, however many steps each run had; the two model listings
+were free. A refused request is counted like any other, as it is for agents.
+
+**Every step by its usual rules.** The steps here are agents on the platform's free model, so
+their usual rules are the free-model limits and the agent usage rollup. "Research Analyst" is
+the first step of every run above; its usage, read after the two later disconnect runs, filed
+under the source `job`, which is the mode workflow steps run in:
+
+```bash
+curl -s "$A/api/agents/25bc2504-946c-46ab-b1e7-ca82f182cf7e/usage" -H "$H" | jq -c '.usage.bySource'
+```
+
+```
+{"job":{"requests":7,"errors":0,"streamed":0,"answered":7,"inputTokens":968,"outputTokens":1771,"usageUnreported":0,"toolCalls":0,"avgLatencyMs":1812,"p50LatencyMs":2000,"p95LatencyMs":8000,"errorRate":0}}
+```
+
+Seven chats for the seven runs that reached the step by then (three completed and two cancelled
+runs of `release-brief`, the unmapped workflow, and the failed one), each recorded once.
+
+### I6. A workflow with a model step
+
+A model step calls one of the organization's model deployments. A deployment that can answer
+needs a GPU node on Nosana, which does not exist on this machine, so **no model step ran in
+this document, and none was imitated**. What was run is the real path up to the node. Since
+sections E and F4 were recorded, the model step and the deployment restart have been connected
+(`services/deploymentChat.ts`, `services/modelDeploymentLifecycle.ts`), so the step no longer
+refuses as "not connected": it finds the seeded deployment, which is marked running and has no
+node behind it, and fails with that reason (section 6 of the script output above):
+
+```
+failed run: {"status":502,"code":"workflow_failed",…,"message":"502 Workflow step \"draft\" failed: the deployment \"Support LLM\" has no healthy node right now; retry shortly","x-should-retry":"false","executionId":"54997856-316d-48e3-bf3d-2213cc3a3516","failedStep":"draft","steps":["collect:success","draft:failed"]}
+```
+
+The billing of a model step that does answer (included in GPU time, or a credit hold settled
+once) is covered by `deploymentChat.unit.test.ts`, not by this run.
+
+### I7. Also checked on this server
+
+Three of the leftovers fixed with this change, read off the same server:
+
+```bash
+curl -s $A/api/webhooks/events -H "$H" | jq -c '.categories'
+```
+
+```
+{"agent":["agent.created","agent.updated","agent.deleted","agent.deployed","agent.version.created"],"deployment":["deployment.started","deployment.running","deployment.stopped","deployment.failed"],"training":["training.started","training.completed","training.failed"],"alert":["alert.triggered","alert.resolved"],"billing":["billing.low_balance","billing.payment_received"],"workflow":["workflow.completed","workflow.failed"],"scheduled_task":["scheduled_task.failed"],"report":["report.generated"]}
+```
+
+```bash
+# A JSON content type with no body, on a route outside the workflow and scheduler plugins:
+curl -s -o /dev/null -w "%{http_code}\n" -X POST $A/api/versioning/agents/$RESEARCH/versions -H "$H" -H "$J"
+curl -s $A/docs/json | jq -c '.components.securitySchemes | map_values({type, scheme})'
+```
+
+```
+201
+{"bearerAuth":{"type":"http","scheme":"bearer"}}
+```
+
+The server also started, which it would not have if the four webhook plugins that register
+their own JSON parser (Stripe, GitHub, Slack, channels) had collided with the root one.
+
+### I8. What section I does not show
+
+- **A model step answering**, and its billing (I6).
+- **`agent.deployed` being delivered.** It is sent when the deployment-status worker observes an
+  agent deployment reach running on Nosana; that worker was off and there is no Nosana here.
+  Unit-tested (`webhookEventCategories.unit.test.ts`).
+- **The request-side wait running out** (a run still queued after the time limit plus 30 s,
+  cancelled before it starts), the organization's run cap answered through `/v1`, and a scoped
+  key refused for lacking `workflows:invoke`. Unit-tested (`workflowChat.unit.test.ts`,
+  `openaiV1Router.unit.test.ts`).
+- **A marketplace install copying a graph, and a version rollback restoring an entrypoint.**
+  Unit-tested (`marketplaceInstall.unit.test.ts`, `versioningAuthor.unit.test.ts`).
+- **The workflow's API tab in a browser.** Type-checked and its snippet builder unit-tested;
+  not opened.
+- **The dev database.** Not migrated: it still has no `orchestrations.slug` column, five
+  workflows and no key named `workflow-v1-proof-run`.
+
+### I9. Shutdown
+
+```bash
+kill -TERM 1321798        # the tsx process listening on 4230
+node -e "setTimeout(()=>{},7000)"; ss -ltnp | grep ':4230 ' || echo "port 4230 is free"
+```
+
+```
+port 4230 is free
+```
+
+```bash
+psql postgresql://wheelsai:…@localhost:5434/postgres -c "DROP DATABASE wheelsai_wfv1"
+redis-cli -p 6380 -n 6 flushdb
+psql postgresql://wheelsai:…@localhost:5434/postgres -Atc "select datname from pg_database where datname like 'wheelsai%'"
+ss -ltnp | grep ':4230 ' || echo "port 4230 is free"
+```
+
+```
+DROP DATABASE
+OK
+wheelsai
+port 4230 is free
+```
+
+---
+
 ## What this run does not show
 
 - **Model steps running.** They fail by name (section E). One function is missing; it is
-  being extracted from the `/v1` route by other work.
+  being extracted from the `/v1` route by other work. *(Connected since: see I6.)*
 - **A health check restarting a deployment.** Not connected, and refused when saved (F4).
+  *(Connected since; not exercised, because there is no Nosana on this machine.)*
 - **A health check finding a real deployment or agent runtime up.** Neither exists on this
   machine. A URL target was checked up and down.
 - **Email delivery of a report**, and the refusal when no email provider is configured (F5).

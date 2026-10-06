@@ -128,6 +128,14 @@ const cases: Case[] = [
   { name: "inference.chat", run: (w) => w.inference.chat({ model: "agent/support-bot", messages: [{ role: "user", content: "hi" }] }), method: "POST", path: "/v1/chat/completions", body: { model: "agent/support-bot", messages: [{ role: "user", content: "hi" }] } },
   { name: "inference.listModels", run: (w) => w.inference.listModels(), method: "GET", path: "/v1/models" },
 
+  // ---- workflows ----
+  { name: "workflows.list", run: (w) => w.workflows.list({ isEnabled: true, limit: 10 }), method: "GET", path: "/api/orchestrations", query: { isEnabled: "true", limit: "10" } },
+  { name: "workflows.get", run: (w) => w.workflows.get(AGENT), method: "GET", path: `/api/orchestrations/${AGENT}` },
+  { name: "workflows.run", run: (w) => w.workflows.run(AGENT, { prompt: "go", input: { topic: "pricing" } }), method: "POST", path: `/api/orchestrations/${AGENT}/execute`, body: { prompt: "go", input: { topic: "pricing" } } },
+  { name: "workflows.getRun", run: (w) => w.workflows.getRun(AGENT, DEP), method: "GET", path: `/api/orchestrations/${AGENT}/executions/${DEP}` },
+  { name: "workflows.cancelRun", run: (w) => w.workflows.cancelRun(AGENT, DEP), method: "POST", path: `/api/orchestrations/${AGENT}/executions/${DEP}/cancel` },
+  { name: "workflows.chatCompletion", run: (w) => w.workflows.chatCompletion("weekly-release-pipeline", { messages: [{ role: "user", content: "hi" }] }), method: "POST", path: "/v1/workflows/weekly-release-pipeline/chat/completions", body: { messages: [{ role: "user", content: "hi" }] } },
+
   // ---- versioning ----
   { name: "versioning.list", run: (w) => w.versioning.list(AGENT, { limit: 5 }), method: "GET", path: `/api/versioning/agents/${AGENT}/versions`, query: { limit: "5" } },
   { name: "versioning.latest", run: (w) => w.versioning.latest(AGENT), method: "GET", path: `/api/versioning/agents/${AGENT}/versions/latest` },

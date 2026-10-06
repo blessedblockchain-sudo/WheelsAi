@@ -135,6 +135,7 @@ export interface VersionSnapshot {
   env: Record<string, any>;
   graphNodes?: any[];
   graphEdges?: any[];
+  entrypoint?: string | null;
 }
 
 // ============================================
@@ -225,6 +226,9 @@ async function snapshotAgentVersion(
       env: agent.env as any,
       graphNodes: agent.graph?.nodes as any,
       graphEdges: agent.graph?.edges as any,
+      // Whether the agent answers as a chat or through its graph is part of
+      // what a version is: the same prompt and graph behave differently.
+      entrypoint: agent.entrypoint === "graph" ? "graph" : "chat",
       changeLog: input.changeLog,
       changeType: input.changeType || "patch",
       tags: input.tags || [],
@@ -356,6 +360,11 @@ export async function rollbackToVersion(
         sourceCode: targetVersion.sourceCode,
         env: targetVersion.env as any,
         version: targetVersion.version,
+        // Null on a version taken before the entrypoint was recorded: the
+        // agent keeps the one it has rather than being guessed back to chat.
+        ...(targetVersion.entrypoint === "chat" || targetVersion.entrypoint === "graph"
+          ? { entrypoint: targetVersion.entrypoint }
+          : {}),
       },
     });
 
@@ -503,6 +512,7 @@ async function createVersionDiff(
     "sourceType",
     "sourceUrl",
     "sourceCode",
+    "entrypoint",
   ];
 
   for (const field of fieldsToCompare) {

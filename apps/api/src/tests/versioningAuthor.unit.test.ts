@@ -71,7 +71,10 @@ function seed(): Store {
   };
 }
 
-async function buildHarness(principal: unknown, opts: { failVersionCreate?: boolean } = {}) {
+async function buildHarness(
+  principal: unknown,
+  opts: { failVersionCreate?: boolean; arrange?: (store: Store) => void } = {},
+) {
   const [{ versioningRoutes }, { prisma }] = await Promise.all([
     import("../routes/versioning.js"),
     import("@wheelsai/db"),
@@ -91,6 +94,7 @@ async function buildHarness(principal: unknown, opts: { failVersionCreate?: bool
   p.orgSubscription = { findUnique: async () => ({ plan: "enterprise", status: "active" }) };
 
   let store = seed();
+  opts.arrange?.(store);
   let inTx = false;
   const writesOutsideTx: string[] = [];
   const userLookups: string[] = [];
@@ -344,6 +348,100 @@ test("a principal with no identity to record is refused, not attributed to a bla
     }
     assert.equal(h.store().agent.systemPrompt, "new prompt");
     assert.equal(h.store().versions.length, 2);
+  } finally {
+    await h.restore();
+  }
+});
+
+// ============================================
+// The entrypoint is part of a version
+// ============================================
+
+const NODES = [{ id: "in", type: "input" }, { id: "llm", type: "llm" }];
+const EDGES = [{ id: "e1", source: "in", target: "llm" }];
+
+test("a version records whether the agent answers as a chat or through its graph", async () => {
+  const chat = await buildHarness(USER_PRINCIPAL);
+  try {
+    await chat.app.inject({ method: "POST", url: CREATE, payload: {} });
+    assert.equal(chat.store().versions.at(-1)!.entrypoint, "chat");
+  } finally {
+    await chat.restore();
+  }
+
+  const graph = await buildHarness(USER_PRINCIPAL, {
+    arrange: (store) => {
+      store.agent.entrypoint = "graph";
+      store.graph = { nodes: NODES, edges: EDGES };
+    },
+  });
+  try {
+    const res = await graph.app.inject({ method: "POST", url: CREATE, payload: {} });
+    assert.equal(res.statusCode, 201, res.body);
+    const created = graph.store().versions.at(-1)!;
+    assert.equal(created.entrypoint, "graph");
+    assert.deepEqual(created.graphNodes, NODES);
+  } finally {
+    await graph.restore();
+  }
+});
+
+test("rolling back to a graph version restores the graph entrypoint with the graph", async () => {
+  const h = await buildHarness(USER_PRINCIPAL, {
+    arrange: (store) => {
+      // 1.0.0 answered through its graph; the agent was since switched to chat.
+      Object.assign(store.versions[0]!, { entrypoint: "graph", graphNodes: NODES, graphEdges: EDGES });
+      store.versions[1]!.entrypoint = "chat";
+      store.agent.entrypoint = "chat";
+    },
+  });
+  try {
+    const res = await h.app.inject({ method: "POST", url: ROLLBACK, payload: {} });
+    assert.equal(res.statusCode, 200, res.body);
+    const s = h.store();
+    assert.equal(s.agent.entrypoint, "graph");
+    assert.deepEqual(s.graph, { nodes: NODES, edges: EDGES });
+    // The version that records the rollback carries it too, and the diff says so.
+    assert.equal(s.versions.at(-1)!.entrypoint, "graph");
+    assert.deepEqual(s.diffs.at(-1)!.changes.entrypoint, { from: "chat", to: "graph" });
+    assert.deepEqual(h.writesOutsideTx, []);
+  } finally {
+    await h.restore();
+  }
+});
+
+test("rolling back to a chat version switches a graph agent back to chat", async () => {
+  const h = await buildHarness(USER_PRINCIPAL, {
+    arrange: (store) => {
+      store.versions[0]!.entrypoint = "chat";
+      store.versions[1]!.entrypoint = "graph";
+      store.agent.entrypoint = "graph";
+      store.graph = { nodes: NODES, edges: EDGES };
+    },
+  });
+  try {
+    const res = await h.app.inject({ method: "POST", url: ROLLBACK, payload: {} });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(h.store().agent.entrypoint, "chat");
+    assert.equal(h.store().versions.at(-1)!.entrypoint, "chat");
+  } finally {
+    await h.restore();
+  }
+});
+
+test("a version taken before the entrypoint was recorded leaves the agent's entrypoint alone", async () => {
+  const h = await buildHarness(USER_PRINCIPAL, {
+    arrange: (store) => {
+      store.versions[0]!.entrypoint = null;
+      store.agent.entrypoint = "graph";
+      store.graph = { nodes: NODES, edges: EDGES };
+    },
+  });
+  try {
+    const res = await h.app.inject({ method: "POST", url: ROLLBACK, payload: {} });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(h.store().agent.entrypoint, "graph");
+    assert.equal(h.store().agent.systemPrompt, "old prompt");
   } finally {
     await h.restore();
   }

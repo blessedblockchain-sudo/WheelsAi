@@ -8,6 +8,8 @@
  * as a 400.
  */
 
+import { randomBytes } from "node:crypto";
+
 import { Prisma, prisma } from "@wheelsai/db";
 
 import { env } from "../config/env.js";
@@ -18,6 +20,7 @@ import {
   buildStartWorkflowRunDeps,
 } from "./buildWorkflowRunDeps.js";
 import { finishScheduledExecution } from "./finishScheduledExecution.js";
+import { workflowApiEndpoints, type WorkflowApiEndpoints } from "./publicEndpoints.js";
 import {
   startWorkflowRun,
   type QueuedRun,
@@ -30,7 +33,8 @@ import {
   type WorkflowDefinition,
   type WorkflowPatch,
 } from "./workflowDefinition.js";
-import { WorkflowError } from "./workflowErrors.js";
+import { isUniqueViolation, WorkflowError } from "./workflowErrors.js";
+import { generatedWorkflowSlugRoot, pickWorkflowSlug, workflowSlugRoot } from "./workflowSlug.js";
 
 const notFound = () => new WorkflowError("not_found", "Workflow not found");
 
@@ -94,17 +98,54 @@ function settings(def: WorkflowDefinition) {
 
 const withSteps = { steps: { orderBy: { stepOrder: "asc" as const } } };
 
+/**
+ * A workflow as the API returns it: with where it is served under /v1.
+ * `apiEndpoint` and `openaiBaseUrl` are null when PUBLIC_API_URL is not set
+ * (services/publicEndpoints.ts); `openaiModel` is always known.
+ */
+function withApi<T extends { slug: string }>(workflow: T): T & WorkflowApiEndpoints {
+  return { ...workflow, ...workflowApiEndpoints(workflow.slug, env.PUBLIC_API_URL) };
+}
+
+const SLUG_ATTEMPTS = 5;
+
+/** A unique violation on (org, slug), as opposed to the one on (org, name). */
+function isSlugTaken(err: unknown): boolean {
+  if (!isUniqueViolation(err)) return false;
+  const target = (err as { meta?: { target?: unknown } }).meta?.target;
+  const fields = Array.isArray(target) ? target.map(String) : [String(target ?? "")];
+  return fields.some((field) => field.includes("slug"));
+}
+
 export async function createOrchestration(orgId: string, def: WorkflowDefinition) {
   await planWorkflow(orgId, def);
-  return prisma.orchestration.create({
-    data: {
-      orgId,
-      ...settings(def),
-      ...(def.layout ? { layout: def.layout as Prisma.InputJsonValue } : {}),
-      steps: { create: stepRows(def) },
-    },
-    include: withSteps,
-  });
+
+  const root =
+    workflowSlugRoot(def.name) || generatedWorkflowSlugRoot(randomBytes(3).toString("hex"));
+  for (let attempt = 1; ; attempt++) {
+    const taken = await prisma.orchestration.findMany({
+      where: { orgId, slug: { startsWith: root } },
+      select: { slug: true },
+    });
+    try {
+      const created = await prisma.orchestration.create({
+        data: {
+          orgId,
+          ...settings(def),
+          slug: pickWorkflowSlug(root, taken.map((row) => row.slug)),
+          ...(def.layout ? { layout: def.layout as Prisma.InputJsonValue } : {}),
+          steps: { create: stepRows(def) },
+        },
+        include: withSteps,
+      });
+      return withApi(created);
+    } catch (err) {
+      // Two creates picked the same free slug; the loser reads again and
+      // picks the next. A taken NAME is the caller's to fix: it propagates
+      // and the route answers 409 name_taken.
+      if (!isSlugTaken(err) || attempt >= SLUG_ATTEMPTS) throw err;
+    }
+  }
 }
 
 export async function getOrchestrations(orgId: string, options: {
@@ -135,7 +176,7 @@ export async function getOrchestrations(orgId: string, options: {
   ]);
 
   const orchestrations = rows.map(({ executions, _count, ...orchestration }) => ({
-    ...orchestration,
+    ...withApi(orchestration),
     _count: { steps: _count.steps, executions: _count.executions },
     scheduleCount: _count.schedules,
     lastExecution: executions[0] ?? null,
@@ -188,7 +229,7 @@ export async function getOrchestration(id: string, orgId: string) {
     },
   });
   if (!orch) throw notFound();
-  return orch;
+  return withApi(orch);
 }
 
 /**
@@ -253,7 +294,9 @@ export async function replaceOrchestration(
     if (!latest) throw notFound();
     throw stale(latest.updatedAt);
   }
-  return prisma.orchestration.findFirstOrThrow({ where: { id, orgId }, include: withSteps });
+  return withApi(
+    await prisma.orchestration.findFirstOrThrow({ where: { id, orgId }, include: withSteps }),
+  );
 }
 
 /**
@@ -269,7 +312,7 @@ export async function updateOrchestration(id: string, orgId: string, patch: Work
 
   const { count } = await prisma.orchestration.updateMany({ where: { id, orgId }, data });
   if (count === 0) throw notFound();
-  return prisma.orchestration.findFirstOrThrow({ where: { id, orgId } });
+  return withApi(await prisma.orchestration.findFirstOrThrow({ where: { id, orgId } }));
 }
 
 /**

@@ -24,7 +24,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { absoluteApiUrl, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
+import { API_BASE_URL, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
+import { deploymentEndpointUrl } from "@/lib/public-urls";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "success",
@@ -243,9 +244,7 @@ export default function DeploymentDetailPage() {
   // The API returns the full chat-completions URL: absolute when it knows its
   // public address, host-relative otherwise - then it is resolved against the
   // API origin this app talks to, never an aspirational hostname.
-  const endpoint = absoluteApiUrl(
-    deployment.endpoint || `/v1/${encodeURIComponent(deployment.slug)}/chat/completions`
-  );
+  const endpoint = deploymentEndpointUrl(API_BASE_URL, deployment.endpoint, deployment.slug);
   const healthyNodeCount = deployment.nodes.filter(
     (n) => n.healthStatus === "healthy"
   ).length;

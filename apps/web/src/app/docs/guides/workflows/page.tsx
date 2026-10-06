@@ -159,6 +159,13 @@ Category: {{steps.classify.output.category}}`}
         To start runs from your own code, see <Link href="/docs/api/workflows#execute-workflow">Start a run</Link> in the
         API reference: the call answers at once and you poll the run.
       </p>
+      <p>
+        A workflow also answers as an OpenAI chat completion: one request runs it and returns its output as the
+        assistant message. The <strong>API</strong> tab of a workflow shows its endpoint, the base URL for an OpenAI
+        client, its model id (<code>workflow/&lt;slug&gt;</code>) and code to copy. See{" "}
+        <Link href="/docs/api/workflows#openai">OpenAI-compatible endpoint</Link> for what a request costs and what
+        happens to its run if you disconnect.
+      </p>
 
       <h2 id="schedule">Schedule</h2>
       <p>

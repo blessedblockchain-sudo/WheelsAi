@@ -209,6 +209,20 @@ console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
             ),
           },
           {
+            resource: <code>workflows</code>,
+            methods: (
+              <>
+                <code>list</code>, <code>get</code>, <code>run</code>, <code>getRun</code>, <code>cancelRun</code>,{" "}
+                <code>chatCompletion(slug, request)</code>
+              </>
+            ),
+            endpoint: (
+              <>
+                <code>/api/orchestrations</code>, <code>POST /v1/workflows/&#123;slug&#125;/chat/completions</code>
+              </>
+            ),
+          },
+          {
             resource: <code>versioning</code>,
             methods: (
               <>
@@ -238,6 +252,14 @@ console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
           },
         ]}
       />
+      <p>
+        A <code>Workflow</code> carries <code>slug</code>, <code>apiEndpoint</code>, <code>openaiBaseUrl</code> and{" "}
+        <code>openaiModel</code> (<code>workflow/&lt;slug&gt;</code>). <code>workflows.run</code> queues a run and returns
+        at once; <code>workflows.chatCompletion</code> runs the workflow and waits for its answer, so give it a{" "}
+        <code>timeoutMs</code> at least as long as the workflow&apos;s time limit: a client that gives up first
+        disconnects, and a disconnect cancels the run. See{" "}
+        <Link href="/docs/api/workflows#openai">the workflow endpoint</Link>.
+      </p>
       <p>
         Billing amounts are dollars, as the API returns them. There is no <code>agents.stop</code> or{" "}
         <code>billing.addCredits</code>: use <code>agents.stopDeployment(agentId, deploymentId)</code> and{" "}
@@ -305,8 +327,10 @@ await wheels.inference.chat({ model: "agent/my-support-bot", messages: [{ role: 
       <p>
         The official OpenAI clients work unchanged against <code>/v1</code>, and they are how you stream. Set{" "}
         <code>apiKey</code> to your WheelsAI key and <code>baseURL</code> to <code>$WHEELSAI_API_URL/v1</code>; then{" "}
-        <code>model</code> picks what answers: <code>agent/&lt;slug&gt;</code> for an agent, or the slug of a running model
-        deployment. <code>client.models.list()</code> returns both.
+        <code>model</code> picks what answers: <code>agent/&lt;slug&gt;</code> for an agent,{" "}
+        <code>workflow/&lt;slug&gt;</code> for a workflow (one request is one run; see{" "}
+        <Link href="/docs/api/workflows#openai">the workflow endpoint</Link>), or the slug of a running model
+        deployment. <code>client.models.list()</code> returns all three.
       </p>
       <CodeBlock
         language="ts"

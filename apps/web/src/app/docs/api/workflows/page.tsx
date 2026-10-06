@@ -22,6 +22,7 @@ const toc = [
   { id: "execute-workflow", title: "Start a run", sub: true },
   { id: "get-run", title: "Read a run", sub: true },
   { id: "cancel-run", title: "Cancel a run", sub: true },
+  { id: "openai", title: "OpenAI-compatible endpoint" },
   { id: "scheduler", title: "Scheduler" },
   { id: "task-types", title: "Task types", sub: true },
   { id: "create-task", title: "Create a task", sub: true },
@@ -340,6 +341,165 @@ export default function WorkflowsApiPage() {
             that finished before the cancel stay billed and stay in the run&apos;s results.
           </p>
         </Callout>
+      </Endpoint>
+
+      <Endpoint
+        id="openai"
+        method="POST"
+        path="/v1/workflows/{slug}/chat/completions"
+        auth="API key or session"
+        title="OpenAI-compatible endpoint"
+        as="h2"
+      >
+        <p>
+          A workflow also answers as an OpenAI chat completion, so anything that speaks to OpenAI can run it: one request
+          starts one run, waits for it, and returns the run&apos;s output as the assistant message. The same thing is
+          reachable on the <Link href="/docs/api/inference#base-url">unified base URL</Link>,{" "}
+          <code>POST /v1/chat/completions</code> with <code>&quot;model&quot;: &quot;workflow/&lt;slug&gt;&quot;</code>, and{" "}
+          <code>GET /v1/models</code> lists every enabled workflow with <code>wheelsai.kind: &quot;workflow&quot;</code>.
+        </p>
+        <p>
+          Every workflow has a <code>slug</code>, derived from its name when it is created and unique in your organization.
+          Renaming the workflow does not change it. Each workflow read (<code>GET /api/orchestrations</code> and{" "}
+          <code>GET /api/orchestrations/&#123;id&#125;</code>) returns <code>slug</code>, <code>apiEndpoint</code> (this
+          URL), <code>openaiBaseUrl</code> (<code>…/v1/workflows/&lt;slug&gt;</code>, the base URL for an OpenAI client) and{" "}
+          <code>openaiModel</code> (<code>workflow/&lt;slug&gt;</code>). The two URLs are <code>null</code> when the server
+          has no public address configured. The dashboard shows all three on the workflow&apos;s <strong>API</strong> tab.
+        </p>
+        <CodeBlock
+          language="ts"
+          code={`import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: \`\${process.env.WHEELSAI_API_URL}/v1\`,
+  apiKey: process.env.WHEELSAI_API_KEY,
+  timeout: 11 * 60 * 1000, // longer than the workflow's time limit
+  maxRetries: 0,            // a repeat is a new run
+});
+
+const reply = await client.chat.completions.create({
+  model: "workflow/weekly-release-pipeline",
+  messages: [{ role: "user", content: "Changes merged this week: ..." }],
+});
+console.log(reply.choices[0].message.content);`}
+        />
+        <Fields
+          title="Request"
+          fields={[
+            {
+              name: "messages",
+              type: "array",
+              required: true,
+              description: (
+                <>
+                  The last <code>user</code> message is the run&apos;s input: it becomes <code>input.prompt</code> (up to
+                  20,000 characters) and the whole conversation is available to steps as <code>input.messages</code>. If
+                  the workflow has an input schema and the last user message is a JSON object, that object is the run
+                  input instead, checked against the schema. The run input is at most 64 KB.
+                </>
+              ),
+            },
+            { name: "model", type: "string", description: <>Ignored on this path. On the unified base it is <code>workflow/&lt;slug&gt;</code> and required.</> },
+            { name: "stream", type: "boolean", description: "See Streaming below." },
+            { name: "stream_options.include_usage", type: "boolean", description: "Adds one usage chunk before the end of a stream, when usage is known." },
+            { name: "tools, tool_choice", type: "", description: <>Refused with <code>400</code> (<code>param: &quot;tools&quot;</code>): a workflow cannot hand a function call back to the caller.</> },
+          ]}
+        />
+        <p>
+          Sampling parameters such as <code>temperature</code> and <code>max_tokens</code> are accepted and not applied:
+          each step runs on the settings of its own agent or deployment.
+        </p>
+        <Fields
+          title="Response"
+          fields={[
+            { name: "model", type: "string", description: <><code>workflow/&lt;slug&gt;</code>.</> },
+            {
+              name: "choices[0].message.content",
+              type: "string",
+              description: (
+                <>
+                  The run&apos;s output. If the steps&apos; output mappings publish exactly one string, that string; if they
+                  publish anything else, the mapped output as JSON; if nothing is mapped, the output of the last step in
+                  plan order that succeeded. <code>finish_reason</code> is <code>stop</code>.
+                </>
+              ),
+            },
+            {
+              name: "usage",
+              type: "object",
+              description: "Tokens summed over the run's steps. Left out when any step's model call reported none (a graph agent, or a provider that sent no count), or when no step reported any: a partial sum is never shown as the total.",
+            },
+            {
+              name: "wheelsai.workflow",
+              type: "object",
+              description: (
+                <>
+                  <code>slug</code>, <code>executionId</code> (read the run with{" "}
+                  <a href="#get-run">GET …/executions/&#123;runId&#125;</a>), <code>status</code>, <code>durationMs</code>{" "}
+                  and <code>steps</code>: each step&apos;s <code>name</code>, <code>type</code>, <code>status</code>,{" "}
+                  <code>durationMs</code> and <code>error</code>.
+                </>
+              ),
+            },
+          ]}
+        />
+        <h4>What a request costs, and what happens to its run</h4>
+        <ul>
+          <li>
+            The request counts as one API call on your plan. Each step is billed by its own rules, exactly as when the
+            dashboard or the scheduler starts the same workflow: a per-request marketplace agent is charged per step, a
+            free model counts against the free-model limits, a model deployment is billed as on <code>/v1</code>. The run
+            appears in the workflow&apos;s run history with <code>triggeredBy: &quot;api&quot;</code>.
+          </li>
+          <li>
+            The request waits for the run for the workflow&apos;s own time limit (<code>timeout</code>, 10 minutes by
+            default) plus 30 seconds for the queue. A run that reaches its time limit is stopped by the worker and the
+            request answers <code>504 workflow_timeout</code>. If the wait itself runs out because the run was still
+            queued, the run is cancelled before it starts.
+          </li>
+          <li>
+            If you disconnect before the answer, the run is cancelled the same way as <a href="#cancel-run">Cancel a run</a>:
+            a queued run never starts, a running one has its call in flight aborted. Steps that already finished stay
+            billed. Set your client&apos;s timeout above the workflow&apos;s time limit, or it will cancel runs that were
+            about to finish.
+          </li>
+          <li>
+            A failed, timed-out or cancelled run answers with <code>x-should-retry: false</code>, which the OpenAI SDKs
+            honour: sending the request again starts, and bills, a whole new run.
+          </li>
+        </ul>
+        <h4>Streaming</h4>
+        <p>
+          A workflow produces its answer at the end, not token by token. With <code>stream: true</code> the response opens
+          as soon as the run is queued, with a first chunk that carries <code>wheelsai.workflow.executionId</code> and{" "}
+          <code>status: &quot;running&quot;</code>; a <code>: keep-alive</code> comment is sent every 15 seconds while the
+          run works; then the answer arrives as content chunks, a chunk with <code>finish_reason: &quot;stop&quot;</code>{" "}
+          and the final <code>wheelsai.workflow</code>, an optional usage chunk, and <code>[DONE]</code>. A run that fails
+          after the stream opened ends with one <code>&#123; &quot;error&quot;: … &#125;</code> event and no{" "}
+          <code>[DONE]</code>. Use streaming for long workflows behind proxies that cut idle connections.
+        </p>
+        <DocTable
+          caption="Errors (OpenAI shape: error.code)"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error.code" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "400", error: <code>validation_failed</code>, when: <>No user message, or the input does not match the input schema (<code>details</code> lists each problem). No run is created.</> },
+            { status: "400", error: <code>unsupported_parameter</code>, when: <><code>tools</code> or <code>tool_choice</code> was sent.</> },
+            { status: "400", error: <code>messages_too_large</code>, when: "The prompt is over 20,000 characters or the run input over 64 KB." },
+            { status: "400", error: <code>workflow_disabled</code>, when: "The workflow is disabled." },
+            { status: "403", error: <code>insufficient_scope</code>, when: <>The API key has scopes and none of them is <code>workflows:invoke</code> or <code>*</code>. A key without scopes has full access.</> },
+            { status: "404", error: <code>workflow_not_found</code>, when: "No workflow with that slug in your organization." },
+            { status: "409", error: <code>workflow_cancelled</code>, when: "Someone cancelled the run while the request waited." },
+            { status: "429", error: <code>workflow_run_limit</code>, when: "Your organization already has the allowed number of runs queued or running. Nothing was started; safe to retry." },
+            { status: "501", error: <code>workflow_runner_disabled</code>, when: "This server runs no workflow worker." },
+            { status: "502", error: <code>workflow_failed</code>, when: <>The run failed. <code>error.executionId</code>, <code>error.failedStep</code> and <code>error.workflow</code> (the steps) say where.</> },
+            { status: "503", error: <code>service_unavailable</code>, when: "The run could not be queued. Nothing was called; safe to retry." },
+            { status: "504", error: <code>workflow_timeout</code>, when: <>The run reached the workflow&apos;s time limit, or did not start in time and was cancelled. <code>error.executionId</code> names it.</> },
+          ]}
+        />
       </Endpoint>
 
       <h2 id="scheduler">Scheduler</h2>

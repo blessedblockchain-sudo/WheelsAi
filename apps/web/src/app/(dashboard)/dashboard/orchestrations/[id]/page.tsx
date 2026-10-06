@@ -29,6 +29,7 @@ import { RunDialog } from "@/components/dashboard/workflows/run-dialog";
 import { RunList, RunView } from "@/components/dashboard/workflows/run-history";
 import { StatusBadge } from "@/components/dashboard/workflows/status-badge";
 import { TaskFormDialog } from "@/components/dashboard/workflows/task-form-dialog";
+import { WorkflowApiTab } from "@/components/dashboard/workflows/workflow-api-tab";
 import {
   resourceNameMap,
   useWorkflowResources,
@@ -36,8 +37,8 @@ import {
 import { WorkflowEditor } from "@/components/dashboard/workflows/workflow-editor";
 
 const LIST = "/dashboard/orchestrations";
-type TabId = "editor" | "runs" | "schedules";
-const TABS: TabId[] = ["editor", "runs", "schedules"];
+type TabId = "editor" | "runs" | "schedules" | "api";
+const TABS: TabId[] = ["editor", "runs", "schedules", "api"];
 
 export default function WorkflowPage() {
   return (
@@ -168,7 +169,14 @@ function WorkflowContent() {
     <div className="space-y-4 p-6">
       <PageHeader
         title={workflow.name}
-        description={workflow.description ?? undefined}
+        description={
+          <>
+            {workflow.description && <span className="block">{workflow.description}</span>}
+            <span className="block">
+              Model id <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{workflow.openaiModel}</code>
+            </span>
+          </>
+        }
         breadcrumbs={[
           {
             label: (
@@ -225,6 +233,7 @@ function WorkflowContent() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="api">API</TabsTrigger>
         </TabsList>
 
         {/* Kept mounted so unsaved edits survive a look at the runs. */}
@@ -275,6 +284,10 @@ function WorkflowContent() {
             onChanged={load}
             onOpenRun={(run) => go({ tab: "runs", run })}
           />
+        </TabsContent>
+
+        <TabsContent value="api">
+          <WorkflowApiTab workflow={workflow} />
         </TabsContent>
       </Tabs>
 

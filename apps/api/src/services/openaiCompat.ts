@@ -150,7 +150,13 @@ export type OpenAiErrorCode =
   | "model_provider_not_configured"
   | "hosted_model_not_available"
   | "hosted_model_not_running"
-  | "workflow_api_not_available"
+  | "workflow_not_found"
+  | "workflow_disabled"
+  | "workflow_run_limit"
+  | "workflow_cancelled"
+  | "workflow_runner_disabled"
+  | "workflow_failed"
+  | "workflow_timeout"
   | "graph_run_failed"
   | "upstream_error"
   | "provider_auth_failed"
@@ -279,11 +285,22 @@ const ERROR_RULES: Record<OpenAiErrorCode, ErrorRule> = {
     "The WheelsAI-hosted model this agent uses has no running deployment.",
     false,
   ),
-  workflow_api_not_available: server(
-    501,
-    "Workflows are not served through /v1 yet.",
-    false,
-  ),
+  workflow_not_found: invalid(404, "No workflow with that slug exists in this organization.", false),
+  // Its owner enables it; repeating the call cannot.
+  workflow_disabled: invalid(400, "This workflow is disabled.", false),
+  // The organization's cap on concurrent runs. Nothing was started.
+  workflow_run_limit: {
+    status: 429,
+    type: "requests",
+    message: "This organization has too many workflow runs in progress.",
+  },
+  // Someone cancelled the run from outside while this request waited.
+  workflow_cancelled: invalid(409, "The workflow run was cancelled.", false),
+  workflow_runner_disabled: server(501, "Workflow runs are switched off on this server.", false),
+  // A finished run is not retried by the SDK: every repeat is a whole new
+  // run, and its steps are billed again.
+  workflow_failed: server(502, "The workflow run failed.", false),
+  workflow_timeout: server(504, "The workflow did not finish in time and was cancelled.", false),
   upstream_error: server(502, "The model provider had an error."),
   // A provider 401/403 is OUR configuration (or the agent's key), never the
   // caller's WheelsAI key: answering 401 would send them to rotate the wrong

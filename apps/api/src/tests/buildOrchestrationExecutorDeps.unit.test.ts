@@ -60,6 +60,7 @@ function record(over: Partial<StepRecord> = {}): StepRecord {
     input: { prompt: "hi" },
     output: "hello",
     truncated: false,
+    usage: null,
     error: null,
     startedAt: new Date(1),
     completedAt: new Date(2),
@@ -228,4 +229,18 @@ test("progress is only written while the run is still running", async () => {
     where: { id: "exec-1", status: "running" },
     data: { progress: 40 },
   });
+});
+
+// The /v1 workflow answer reports usage summed over the run's steps, read
+// back from these rows by a different process than the one that ran them.
+test("a step row stores reported tokens, marks an unreported model call, and stores nothing when no model answered", async () => {
+  const { deps, writes } = await build();
+  await deps.recordStepResult(record({ usage: { inputTokens: 12, outputTokens: 30 } }));
+  await deps.recordStepResult(record({ usage: "unreported" }));
+  await deps.recordStepResult(record({ stepType: "retrieval", usage: null }));
+
+  const [reported, unreported, none] = writes.map((w) => w.args.data);
+  assert.deepEqual(reported.usage, { inputTokens: 12, outputTokens: 30 });
+  assert.deepEqual(unreported.usage, { unreported: true });
+  assert.equal(none.usage, undefined);
 });

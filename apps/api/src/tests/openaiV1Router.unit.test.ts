@@ -12,10 +12,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import type { AgentChatAgent, AgentChatDeps } from "../services/agentChat.js";
 import type { ChatResult } from "../services/mastra-runtime.js";
+import type { WorkflowChatDeps, WorkflowRunSnapshot } from "../services/workflowChat.js";
 
 // The unified OpenAI base URL: one `<api>/v1`, with `model` picking what
 // answers. An OpenAI client configured once must reach an agent and a model
-// deployment, and list both.
+// deployment, and list both. A workflow is the third thing `model` can name.
 
 const ORG = "11111111-1111-4111-8111-111111111111";
 
@@ -74,18 +75,85 @@ interface Built {
   calls: string[];
   deploymentTargets: unknown[];
   metered: string[];
+  startedRuns: Array<Record<string, unknown>>;
 }
 
-async function buildApp(opts: { realDeploymentHandler?: boolean } = {}): Promise<Built> {
+const WORKFLOW = {
+  id: "33333333-3333-4333-8333-333333333333",
+  slug: "nightly-report",
+  name: "Nightly report",
+  isEnabled: true,
+  timeout: 60_000,
+  inputSchema: {},
+  createdAt: new Date("2026-10-03T00:00:00Z"),
+};
+const RUN_ID = "44444444-4444-4444-8444-444444444444";
+
+const FINISHED_RUN: WorkflowRunSnapshot = {
+  id: RUN_ID,
+  status: "completed",
+  output: { answer: "the report" },
+  context: {},
+  error: null,
+  durationMs: 1200,
+  stepOrder: ["draft"],
+  failedStepName: null,
+  steps: [
+    {
+      stepName: "draft",
+      stepType: "agent",
+      status: "success",
+      iteration: null,
+      durationMs: 1100,
+      error: null,
+      usage: { inputTokens: 20, outputTokens: 30 },
+    },
+  ],
+};
+
+/** A workflow service whose one run is finished by the time it is read. */
+function workflowChatDeps(built: Built): WorkflowChatDeps {
+  return {
+    findWorkflow: async (orgId, slug) => (orgId === ORG && slug === WORKFLOW.slug ? WORKFLOW : null),
+    startRun: async (args) => {
+      built.calls.push("workflow");
+      built.startedRuns.push(args);
+      return { id: RUN_ID };
+    },
+    runStatus: async () => "completed",
+    loadRun: async () => FINISHED_RUN,
+    cancelRun: async () => void built.calls.push("workflow-cancel"),
+    sleep: async () => {},
+    now: () => 1_760_000_000_000,
+  };
+}
+
+async function buildApp(
+  opts: { realDeploymentHandler?: boolean; scopes?: string[] } = {},
+): Promise<Built> {
   const { createOpenAiV1Routes } = await import("../routes/openaiV1.js");
-  const { createOpenAiAuth, AGENTS_INVOKE_SCOPE } = await import("../middleware/openaiAuth.js");
-  const built: Built = { app: Fastify(), calls: [], deploymentTargets: [], metered: [] };
+  const { createOpenAiAuth, AGENTS_INVOKE_SCOPE, WORKFLOWS_INVOKE_SCOPE } = await import(
+    "../middleware/openaiAuth.js"
+  );
+  const built: Built = {
+    app: Fastify(),
+    calls: [],
+    deploymentTargets: [],
+    metered: [],
+    startedRuns: [],
+  };
   const meter = async (orgId: string) => void built.metered.push(orgId);
   const { app } = built;
   await app.register(sensible);
   app.decorateRequest("auth", null);
   app.addHook("onRequest", async (request) => {
-    (request as { auth: unknown }).auth = { userId: null, orgId: ORG, type: "api_key", scopes: [] };
+    (request as { auth: unknown }).auth = {
+      userId: null,
+      orgId: ORG,
+      type: "api_key",
+      scopes: opts.scopes ?? [],
+      apiKeyId: "key-1",
+    };
   });
   // The per-deployment route as index.ts mounts it: at the root, full path.
   app.post("/v1/:deploymentSlug/chat/completions", async (request) => {
@@ -97,6 +165,8 @@ async function buildApp(opts: { realDeploymentHandler?: boolean } = {}): Promise
       chatDeps: () => agentChatDeps(built.calls),
       auth: createOpenAiAuth({ scope: AGENTS_INVOKE_SCOPE, meter }),
       unifiedAuth: createOpenAiAuth({ meter }),
+      workflowDeps: () => workflowChatDeps(built),
+      workflowAuth: createOpenAiAuth({ scope: WORKFLOWS_INVOKE_SCOPE, meter }),
       ...(opts.realDeploymentHandler
         ? {}
         : {
@@ -115,6 +185,7 @@ async function buildApp(opts: { realDeploymentHandler?: boolean } = {}): Promise
             { slug: "support-bot", createdAt: new Date("2026-10-01T00:00:00Z") },
             { slug: "sales-bot", createdAt: new Date("2026-10-02T00:00:00Z") },
           ],
+          workflows: [{ slug: WORKFLOW.slug, createdAt: WORKFLOW.createdAt }],
         };
       },
     }),
@@ -148,7 +219,7 @@ test("model agent/<slug> goes to the agent; a bare slug goes to the deployment, 
   }
 });
 
-test("an agent that does not exist, a missing model and a workflow each get their own OpenAI-shaped answer", async () => {
+test("an agent that does not exist, a missing model and a workflow that does not exist each get their own OpenAI-shaped answer", async () => {
   const { app, calls } = await buildApp();
   try {
     const noAgent = await complete(app, "agent/nope");
@@ -162,11 +233,12 @@ test("an agent that does not exist, a missing model and a workflow each get thei
       assert.equal(res.json().error.param, "model");
     }
 
-    // Not built yet, and said so - never looked up as a deployment slug.
-    const workflow = await complete(app, "workflow/nightly-report");
-    assert.equal(workflow.statusCode, 501);
-    assert.equal(workflow.json().error.code, "workflow_api_not_available");
-    assert.equal(workflow.json().error.type, "server_error");
+    // Looked up as a workflow of this organization - never as a deployment
+    // slug called "workflow/...".
+    const workflow = await complete(app, "workflow/no-such-workflow");
+    assert.equal(workflow.statusCode, 404);
+    assert.equal(workflow.json().error.code, "workflow_not_found");
+    assert.equal(workflow.json().error.type, "invalid_request_error");
     assert.equal(workflow.headers["x-should-retry"], "false");
 
     assert.deepEqual(calls, []);
@@ -213,7 +285,7 @@ test("an unknown deployment slug is 404 model_not_found from the real deployment
   }
 });
 
-test("GET /v1/models lists running deployments and agents with wheelsai.kind", async () => {
+test("GET /v1/models lists running deployments, agents and enabled workflows with wheelsai.kind", async () => {
   const { app, metered } = await buildApp();
   try {
     const res = await app.inject({ method: "GET", url: "/v1/models" });
@@ -226,8 +298,10 @@ test("GET /v1/models lists running deployments and agents with wheelsai.kind", a
         ["llama-prod", "model", "wheelsai", "deployment"],
         ["agent/support-bot", "model", "wheelsai", "agent"],
         ["agent/sales-bot", "model", "wheelsai", "agent"],
+        ["workflow/nightly-report", "model", "wheelsai", "workflow"],
       ],
     );
+    assert.equal(body.data[3].created, Math.floor(WORKFLOW.createdAt.getTime() / 1000));
     assert.equal(body.data[0].root, "meta-llama/Meta-Llama-3.1-8B-Instruct");
     assert.equal(body.data[0].created, Math.floor(Date.parse("2026-09-01T00:00:00Z") / 1000));
     assert.deepEqual(metered, [], "listing models is a read: free");
@@ -308,6 +382,109 @@ test("a deployment refusal on the unified base is OpenAI-shaped and keeps its ma
     }
   } finally {
     p.deployment = saved;
+    await app.close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// model: "workflow/<slug>"
+// ---------------------------------------------------------------------------
+
+test("model workflow/<slug> runs the workflow once and answers as a chat completion", async () => {
+  const { app, calls, metered, startedRuns } = await buildApp();
+  try {
+    const res = await complete(app, "workflow/nightly-report");
+    assert.equal(res.statusCode, 200, res.body);
+    const body = res.json();
+    assert.equal(body.object, "chat.completion");
+    assert.equal(body.model, "workflow/nightly-report");
+    assert.deepEqual(body.choices[0].message, { role: "assistant", content: "the report", refusal: null });
+    assert.equal(body.choices[0].finish_reason, "stop");
+    assert.deepEqual(body.usage, { prompt_tokens: 20, completion_tokens: 30, total_tokens: 50 });
+    assert.equal(body.wheelsai.workflow.executionId, RUN_ID);
+
+    // One run, started for this organization with the user message as input.
+    assert.deepEqual(calls, ["workflow"]);
+    assert.equal(startedRuns[0]!.orgId, ORG);
+    assert.equal(startedRuns[0]!.orchestrationId, WORKFLOW.id);
+    assert.equal(startedRuns[0]!.prompt, "hi");
+    assert.equal(startedRuns[0]!.triggeredById, "key-1");
+    // And one plan API call, however many steps the run has.
+    assert.deepEqual(metered, [ORG]);
+  } finally {
+    await app.close();
+  }
+});
+
+test("the per-workflow base URL serves the same run and lists the workflow as its one model", async () => {
+  const { app, calls, metered } = await buildApp();
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/workflows/nightly-report/chat/completions",
+      payload: { messages: MESSAGES },
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().model, "workflow/nightly-report");
+    assert.deepEqual(calls, ["workflow"]);
+    assert.deepEqual(metered, [ORG]);
+
+    const models = await app.inject({ method: "GET", url: "/v1/workflows/nightly-report/models" });
+    assert.deepEqual(models.json().data.map((m: any) => [m.id, m.wheelsai.kind]), [
+      ["workflow/nightly-report", "workflow"],
+    ]);
+    assert.deepEqual(metered, [ORG], "listing is free");
+
+    const missing = await app.inject({ method: "GET", url: "/v1/workflows/nope/models" });
+    assert.equal(missing.statusCode, 404);
+    assert.equal(missing.json().error.code, "workflow_not_found");
+  } finally {
+    await app.close();
+  }
+});
+
+test("a scoped key needs workflows:invoke to run a workflow; agents:invoke alone is not enough", async () => {
+  const agentsOnly = await buildApp({ scopes: ["agents:invoke"] });
+  try {
+    for (const res of [
+      await complete(agentsOnly.app, "workflow/nightly-report"),
+      await agentsOnly.app.inject({
+        method: "POST",
+        url: "/v1/workflows/nightly-report/chat/completions",
+        payload: { messages: MESSAGES },
+      }),
+    ]) {
+      assert.equal(res.statusCode, 403);
+      assert.equal(res.json().error.code, "insufficient_scope");
+      assert.match(res.json().error.message, /workflows:invoke/);
+    }
+    assert.deepEqual(agentsOnly.calls, []);
+    // Its agent access is untouched.
+    assert.equal((await complete(agentsOnly.app, "agent/support-bot")).statusCode, 200);
+  } finally {
+    await agentsOnly.app.close();
+  }
+
+  const scoped = await buildApp({ scopes: ["workflows:invoke"] });
+  try {
+    assert.equal((await complete(scoped.app, "workflow/nightly-report")).statusCode, 200);
+    assert.equal((await complete(scoped.app, "agent/support-bot")).statusCode, 403);
+  } finally {
+    await scoped.app.close();
+  }
+});
+
+test("a deployment whose slug is 'workflows' still resolves at /v1/workflows/chat/completions", async () => {
+  const { app, calls } = await buildApp();
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/workflows/chat/completions",
+      payload: { messages: MESSAGES },
+    });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(calls, ["deployment-route:workflows"]);
+  } finally {
     await app.close();
   }
 });

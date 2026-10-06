@@ -31,6 +31,13 @@ import { countsAsApiCall } from "./auth.js";
 /** The scope a scoped API key needs to call an agent through /v1. */
 export const AGENTS_INVOKE_SCOPE = "agents:invoke";
 
+/**
+ * The scope a scoped API key needs to run a workflow through /v1. Its own
+ * scope, not agents:invoke: one request fans out into every step of the
+ * workflow, so a key cut down to chatting with agents does not get it.
+ */
+export const WORKFLOWS_INVOKE_SCOPE = "workflows:invoke";
+
 export function sendOpenAiError(reply: FastifyReply, error: OpenAiErrorResponse): FastifyReply {
   for (const [name, value] of Object.entries(error.headers)) reply.header(name, value);
   return reply.status(error.status).send(error.body);
@@ -163,6 +170,6 @@ export function openAiErrorHandler(error: FastifyError, request: FastifyRequest,
 export function openAiNotFoundHandler(request: FastifyRequest, reply: FastifyReply) {
   const path = request.url.split("?")[0];
   return replyOpenAiError(reply, "not_found", {
-    message: `${request.method} ${path} is not part of this API. The OpenAI-compatible endpoints are POST /v1/chat/completions, POST /v1/agents/{slug}/chat/completions, POST /v1/{deployment}/chat/completions and GET /v1/models.`,
+    message: `${request.method} ${path} is not part of this API. The OpenAI-compatible endpoints are POST /v1/chat/completions, POST /v1/agents/{slug}/chat/completions, POST /v1/workflows/{slug}/chat/completions, POST /v1/{deployment}/chat/completions and GET /v1/models.`,
   });
 }

@@ -249,15 +249,13 @@ async function main() {
       ],
       components: {
         securitySchemes: {
+          // The one header authentication reads. An API key is sent the
+          // same way as a session token; there is no X-API-Key header.
           bearerAuth: {
             type: "http",
             scheme: "bearer",
-            bearerFormat: "JWT",
-          },
-          apiKey: {
-            type: "apiKey",
-            in: "header",
-            name: "X-API-Key",
+            description:
+              "Authorization: Bearer <token>. The token is an API key (wheels_..., created in the dashboard under API Keys) or a session JWT. The dashboard itself authenticates with an httpOnly session cookie.",
           },
         },
       },

@@ -70,9 +70,30 @@ export function sanitizeMessage(message: unknown): unknown {
 /** Fields that conventionally carry a human-readable failure string. */
 const MESSAGE_FIELDS = ["error", "message", "detail", "details", "reason"];
 
+/** Scrubs the message fields of one object; null when nothing changed. */
+function scrubFields(source: Record<string, unknown>): Record<string, unknown> | null {
+  let out: Record<string, unknown> | null = null;
+  for (const field of MESSAGE_FIELDS) {
+    const value = source[field];
+    if (typeof value !== "string") continue;
+    const cleaned = sanitizeMessage(value);
+    if (cleaned !== value) {
+      out ??= { ...source };
+      out[field] = cleaned;
+    }
+  }
+  return out;
+}
+
 /**
  * Scrubs an already-parsed JSON error body. Returns the same object when
  * nothing changed, so the caller can skip re-serializing.
+ *
+ * Two shapes leave this API: the flat `{ error: "…", message }` and, under
+ * /v1, OpenAI's `{ error: { message, type, param, code } }`. The nested
+ * object is scrubbed by the same rule: openAiError() sanitises the messages
+ * it builds, but a handler that assembles that shape by hand, or relays one
+ * from upstream, would otherwise pass straight through.
  */
 export function sanitizeErrorBody(body: unknown): {
   body: unknown;
@@ -84,18 +105,18 @@ export function sanitizeErrorBody(body: unknown): {
   }
   if (Array.isArray(body)) return { body, changed: false };
 
-  let changed = false;
-  const out: Record<string, unknown> = { ...(body as Record<string, unknown>) };
-  for (const field of MESSAGE_FIELDS) {
-    const value = out[field];
-    if (typeof value !== "string") continue;
-    const cleaned = sanitizeMessage(value);
-    if (cleaned !== value) {
-      out[field] = cleaned;
-      changed = true;
+  const source = body as Record<string, unknown>;
+  let out = scrubFields(source);
+
+  const nested = source.error;
+  if (typeof nested === "object" && nested !== null && !Array.isArray(nested)) {
+    const cleaned = scrubFields(nested as Record<string, unknown>);
+    if (cleaned) {
+      out ??= { ...source };
+      out.error = cleaned;
     }
   }
-  return { body: changed ? out : body, changed };
+  return { body: out ?? body, changed: out !== null };
 }
 
 /**

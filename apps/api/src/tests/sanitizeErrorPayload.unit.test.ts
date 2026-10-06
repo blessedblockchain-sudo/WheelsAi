@@ -141,3 +141,58 @@ test("index.ts registers the hook BEFORE the first route plugin", async () => {
     "hooks propagate only to child contexts created after them — same trap as setErrorHandler",
   );
 });
+
+// The /v1 API answers in OpenAI's shape: the message is one level down, in
+// error.message, where the flat-field scrub never looked.
+test("the nested error.message of an OpenAI-shaped body is scrubbed", () => {
+  const { body, changed } = sanitizeErrorBody({
+    error: { message: PRISMA_LEAK, type: "server_error", param: null, code: "internal_error" },
+  });
+  assert.equal(changed, true);
+  const error = (body as { error: Record<string, unknown> }).error;
+  assert.equal(error.message, "The request could not be completed.");
+  // Everything an SDK branches on is kept.
+  assert.deepEqual([error.type, error.param, error.code], ["server_error", null, "internal_error"]);
+});
+
+test("a nested reason or detail carrying internals is scrubbed too, and top-level fields still are", () => {
+  const { body, changed } = sanitizeErrorBody({
+    message: PRISMA_LEAK,
+    error: { message: "The model provider had an error.", reason: PRISMA_LEAK, code: "upstream_error" },
+    requestId: "req_1",
+  });
+  assert.equal(changed, true);
+  const out = body as { message: string; requestId: string; error: Record<string, unknown> };
+  assert.equal(out.message, "The request could not be completed.");
+  assert.equal(out.requestId, "req_1");
+  assert.equal(out.error.message, "The model provider had an error.");
+  assert.equal(out.error.reason, "The request could not be completed.");
+});
+
+test("a clean OpenAI-shaped body is returned as the same object", () => {
+  const input = {
+    error: {
+      message: "No agent with that slug exists in this organization.",
+      type: "invalid_request_error",
+      param: null,
+      code: "agent_not_found",
+    },
+  };
+  const { body, changed } = sanitizeErrorBody(input);
+  assert.equal(changed, false);
+  assert.equal(body, input);
+});
+
+test("the hook scrubs a hand-built OpenAI-shaped error on its way out", async () => {
+  const app = Fastify();
+  app.addHook("onSend", sanitizeErrorPayloadHook as never);
+  await app.register(async (child) => {
+    child.post("/v1/chat/completions", async (_req, reply) =>
+      reply.status(502).send({ error: { message: PRISMA_LEAK, type: "server_error", code: "upstream_error" } }),
+    );
+  });
+  const res = await app.inject({ method: "POST", url: "/v1/chat/completions" });
+  assert.equal(res.statusCode, 502);
+  assert.doesNotMatch(res.body, /\/home\/|prisma\./);
+  assert.equal(res.json().error.code, "upstream_error");
+});

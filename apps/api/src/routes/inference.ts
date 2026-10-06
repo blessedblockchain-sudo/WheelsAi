@@ -2,12 +2,16 @@ import { FastifyPluginAsync, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
-import { requireTokenHolding } from "../middleware/tokenGate.js";
 import { env } from "../config/env.js";
+import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { createLogger } from "../utils/logger.js";
 import { Prisma, prisma } from "@wheelsai/db";
 import { PRICING_TIERS, calculateTokenCost } from "@wheelsai/shared";
 import { getPricePerSecond } from "../services/computeMetering.js";
+import { gpuBillingArrears } from "../services/gpuBilling.js";
+import { isAllowedNodeUrl } from "../services/nodeUrlAllowlist.js";
+import { isGpuBilledDeployment } from "../services/nosanaIds.js";
+import { nodeUrlAllowlistOptions } from "../services/nosana.js";
 import {
   DEFAULT_COMPLETION_TOKENS,
   MAX_COMPLETION_TOKENS,
@@ -42,7 +46,12 @@ interface NodeInfo {
   latencyMs: number | null;
 }
 
-type BillingMode = "credits" | "x402";
+/**
+ * "credits" / "x402": per-request billing. "gpu_included": the deployment is
+ * billed per GPU-second by the GPU billing worker (services/gpuBilling.ts), so
+ * the request itself is free of a per-token hold / charge and of x402.
+ */
+type BillingMode = "credits" | "x402" | "gpu_included";
 
 interface BillingResolution {
   mode: BillingMode;
@@ -87,10 +96,15 @@ export function createInferenceRoutes(
   /**
    * OpenAI-compatible chat completions endpoint
    * POST /v1/:deploymentSlug/chat/completions
+   *
+   * Serves only the CALLER'S OWN deployments (the lookup is org-scoped), so
+   * there is no token gate here: the only party it could ever block is the
+   * publisher. Buyers of a tokenized listing are gated in
+   * services/tokenAccess.ts, on install and on every chat path.
    */
   app.post(
     "/v1/:deploymentSlug/chat/completions",
-    { preHandler: [requireAuth, requireTokenHolding()] },
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const { deploymentSlug } = z
         .object({ deploymentSlug: z.string() })
@@ -125,21 +139,84 @@ export function createInferenceRoutes(
         });
       }
 
-      // 2. Resolve billing mode (credits or X402)
-      const creditBalance = await prisma.creditBalance.findUnique({
-        where: { orgId },
-      });
+      // 2. Resolve billing mode.
+      //
+      // A deployment with a real Nosana id is billed per GPU-second by the GPU
+      // billing worker (price(tier) x replicas x seconds, ledger `gpu_usage`):
+      // that is what the org pays for dedicated hardware. Taking a per-token
+      // hold/charge or an x402 payment here as well would bill the same GPU
+      // twice, so such requests are admitted on the checks that remain - the
+      // deployment is running (queried above), a healthy node exists (below) and
+      // the plan's API-call metering (requireAuth -> meterApiCall). A deployment
+      // the worker does NOT bill (the dev-only mock) keeps per-request billing.
+      const gpuBilled = isGpuBilledDeployment(deployment);
+      // "Included in the GPU bill" is only true while something is billing the
+      // GPU. With the per-second worker switched off (GPU_BILLING_INTERVAL_MS=0)
+      // nothing charges a running deployment and nothing stops it when the org
+      // runs out, so serving it here would be free inference. Per-token billing
+      // is not a fallback either - the stop/degrade settlement still bills the
+      // GPU seconds, so it would charge twice. Refuse.
+      if (gpuBilled && getNosanaDeployConfig().gpuBillingIntervalMs <= 0) {
+        return reply.status(503).send({
+          error: "gpu_billing_disabled",
+          message:
+            "Per-second GPU billing is not running on this server (GPU_BILLING_INTERVAL_MS=0), so dedicated deployments cannot serve requests.",
+        });
+      }
+      // The other way "included in the GPU bill" stops being true: the worker
+      // runs but is not collecting for THIS deployment (see gpuBillingArrears) -
+      // the org cannot pay and the stop keeps failing on Nosana, or the worker
+      // is stuck. Either way nothing is paying for the GPU, so it is not served.
+      if (gpuBilled) {
+        const arrears = gpuBillingArrears({
+          gpuTier: deployment.gpuTier,
+          replicas: deployment.replicas ?? 1,
+          billedThroughAt: deployment.billedThroughAt,
+          now: new Date(),
+          billingIntervalMs: getNosanaDeployConfig().gpuBillingIntervalMs,
+          pricePerSecondUsd: getPricePerSecond,
+        });
+        if (arrears) {
+          const balanceCents =
+            (await prisma.creditBalance.findUnique({ where: { orgId } }))?.balanceCents ?? 0n;
+          if (balanceCents < arrears.owedCents) {
+            return reply.status(402).send({
+              error: "Payment Required",
+              message:
+                "The GPU time this deployment has used is unpaid and your credits do not cover it. Add credits to continue.",
+              requiredCents: Number(arrears.owedCents),
+            });
+          }
+          return reply.status(503).send({
+            error: "gpu_billing_stalled",
+            message:
+              "Per-second GPU billing has not been collected for this deployment for several billing intervals, so it is not serving requests. Retry shortly.",
+          });
+        }
+      }
+      let billingResolution: BillingResolution | null;
+      if (gpuBilled) {
+        billingResolution = {
+          mode: "gpu_included",
+          requestId: getOrCreateRequestId(request.headers),
+        };
+      } else {
+        // Credits or X402
+        const creditBalance = await prisma.creditBalance.findUnique({
+          where: { orgId },
+        });
 
-      const billingResolution = await resolveBilling({
-        request,
-        reply,
-        orgId,
-        deploymentId: deployment.id,
-        modelTier: deployment.model.pricingTier as keyof typeof PRICING_TIERS,
-        body,
-        creditBalanceCents: creditBalance?.balanceCents ?? null,
-        verifyPaymentFn,
-      });
+        billingResolution = await resolveBilling({
+          request,
+          reply,
+          orgId,
+          deploymentId: deployment.id,
+          modelTier: deployment.model.pricingTier as keyof typeof PRICING_TIERS,
+          body,
+          creditBalanceCents: creditBalance?.balanceCents ?? null,
+          verifyPaymentFn,
+        });
+      }
 
       if (!billingResolution) {
         return;
@@ -213,7 +290,11 @@ export function createInferenceRoutes(
 
       try {
         response = await proxyToNode(node.nodeUrl, body, request);
-        responseBody = await response.json();
+        if (response.ok) {
+          responseBody = await response.json();
+        } else {
+          await response.body?.cancel().catch(() => {});
+        }
       } catch (error: any) {
         logger.error({ error, nodeUrl: node.nodeUrl }, "Node request failed");
 
@@ -237,6 +318,26 @@ export function createInferenceRoutes(
         });
       }
 
+      // The node answered, but not with a completion. Nothing is charged for
+      // it and its body is not relayed as if it were a 200.
+      if (!response.ok) {
+        logger.error(
+          { nodeUrl: node.nodeUrl, status: response.status },
+          "Node returned non-OK for /v1 chat completion",
+        );
+        await releaseHold(`inference node responded ${response.status}`);
+        if (billingResolution.x402PaymentId) {
+          await markX402PaymentFailed(
+            billingResolution.x402PaymentId,
+            `Inference node responded ${response.status}`
+          );
+        }
+        return reply.status(502).send({
+          error: "Bad Gateway",
+          message: `Inference node responded ${response.status}`,
+        });
+      }
+
       const latencyMs = Date.now() - startTime;
 
       // 5. Calculate usage cost
@@ -245,11 +346,12 @@ export function createInferenceRoutes(
         completion_tokens: 0,
       };
 
-      const costCents = calculateTokenCost(
-        usage.prompt_tokens,
-        usage.completion_tokens,
-        pricingTier
-      );
+      // What the ORG is charged for this request. Zero for a GPU-billed
+      // deployment: the GPU seconds are billed by the worker, not per token.
+      const costCents =
+        billingResolution.mode === "gpu_included"
+          ? 0
+          : calculateTokenCost(usage.prompt_tokens, usage.completion_tokens, pricingTier);
 
       // 6. Apply billing side effects
       if (billingResolution.mode === "credits") {
@@ -601,33 +703,12 @@ function selectNode(nodes: NodeInfo[]): NodeInfo | null {
   return healthyNodes[0]!;
 }
 
-// Allowed node URL patterns — prevents SSRF via compromised DB records
-const ALLOWED_NODE_PATTERNS = [
-  /^https:\/\/[\w-]+\.nos\.ci(:\d+)?$/,
-  /^https:\/\/[\w-]+\.nosana\.\w+(:\d+)?$/,
-  /^https:\/\/[\w-]+\.openclaw\.wheelsai\.com(:\d+)?$/,
-  /^https?:\/\/localhost(:\d+)?$/, // dev only
-  /^https?:\/\/127\.0\.0\.1(:\d+)?$/, // dev only
-];
-
-function isAllowedNodeUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    // Block private/internal IPs
-    const hostname = parsed.hostname;
-    if (
-      hostname.startsWith("10.") ||
-      hostname.startsWith("172.") ||
-      hostname.startsWith("192.168.") ||
-      hostname === "169.254.169.254" || // AWS metadata
-      hostname === "0.0.0.0"
-    ) {
-      return false;
-    }
-    return ALLOWED_NODE_PATTERNS.some((pattern) => pattern.test(url));
-  } catch {
-    return false;
-  }
+// SSRF guard for node URLs lives in services/nodeUrlAllowlist.ts (multi-label
+// Nosana hosts such as https://<id>.node.k8s.prd.nos.ci, https-only, no
+// userinfo/path). Loopback needs a development process AND an explicit opt-in
+// (ALLOW_LOOPBACK_NODE_URLS).
+function isNodeUrlAllowed(url: string): boolean {
+  return isAllowedNodeUrl(url, nodeUrlAllowlistOptions());
 }
 
 async function proxyToNode(
@@ -636,7 +717,7 @@ async function proxyToNode(
   _request: FastifyRequest
 ): Promise<Response> {
   // Validate node URL to prevent SSRF
-  if (!isAllowedNodeUrl(nodeUrl)) {
+  if (!isNodeUrlAllowed(nodeUrl)) {
     throw new Error(`Node URL not allowed: ${nodeUrl}`);
   }
 
@@ -652,12 +733,21 @@ async function proxyToNode(
   const timeout = setTimeout(() => controller.abort(), env.INFERENCE_TIMEOUT_MS);
 
   try {
-    return await fetch(targetUrl, {
+    const response = await fetch(targetUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
+      // Never follow a redirect off the allowlisted host: the node is run by a
+      // third party, and a 307 to loopback or an internal address would have
+      // this server re-POST the caller's body there and relay the answer.
+      redirect: "manual",
     });
+    if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`Node answered with a redirect (${response.status}); refusing to follow it`);
+    }
+    return response;
   } finally {
     clearTimeout(timeout);
   }

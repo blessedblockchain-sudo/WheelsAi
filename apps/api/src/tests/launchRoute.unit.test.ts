@@ -231,7 +231,7 @@ test("POST /launch persists + submits + returns 200 with deployment + job ids on
   assert.equal(p.envValues.OPENAI_API_KEY, "sk-test");
 
   assert.equal(submitCalls.length, 1);
-  assert.equal(submitCalls[0]!.m, "4090MarketAddressPlaceholder");
+  assert.equal(submitCalls[0]!.m, "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf");
 });
 
 test("POST /launch honors a replicas override and forwards it to persist", async () => {

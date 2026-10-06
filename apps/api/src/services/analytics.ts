@@ -410,7 +410,18 @@ export async function projectMonthlyCost(orgId: string): Promise<{
     },
   });
 
-  const currentSpend = records.reduce((sum, r) => sum + Number(r.costCents), 0);
+  // Usage records carry the per-token cost of a request. A dedicated (GPU)
+  // deployment is billed per GPU-second instead - its requests record a zero
+  // cost, and the charge exists only as `gpu_usage` debits in the ledger - so
+  // those are added here, or such an org would appear to spend nothing.
+  const gpuUsage = await prisma.creditTransaction.aggregate({
+    where: { orgId, type: "gpu_usage", createdAt: { gte: startOfMonth } },
+    _sum: { amountCents: true },
+  });
+  const gpuSpend = -Number(gpuUsage._sum.amountCents ?? 0n);
+
+  const currentSpend =
+    records.reduce((sum, r) => sum + Number(r.costCents), 0) + gpuSpend;
   const dailyAverage = daysPassed > 0 ? currentSpend / daysPassed : 0;
   const projectedSpend = currentSpend + dailyAverage * daysRemaining;
 

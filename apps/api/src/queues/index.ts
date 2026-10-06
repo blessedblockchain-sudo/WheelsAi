@@ -30,6 +30,10 @@ export {
   stopDeploymentStatusQueue,
 } from "./deployment-status.queue.js";
 export {
+  startGpuBillingQueue,
+  stopGpuBillingQueue,
+} from "./gpu-billing.queue.js";
+export {
   startAgentMessageQueue,
   stopAgentMessageQueue,
 } from "./agent-message.queue.js";

@@ -164,9 +164,9 @@ console.log(completion.choices[0]?.message.content);`}
         </p>
       </Callout>
       <p>
-        Each request holds the worst-case token cost from your credits before it reaches the GPU and settles to the actual
-        usage afterwards. See <Link href="/docs/api/inference">Chat completions</Link> for the request fields, the{" "}
-        <code>max_tokens</code> cap and the x402 pay-per-request option.
+        Requests are covered by the deployment&apos;s GPU time: nothing is held or charged per token on top of it. See{" "}
+        <Link href="/docs/api/inference">Chat completions</Link> for the request fields, the <code>max_tokens</code> cap and
+        the errors.
       </p>
 
       <h2 id="billing">How GPU time is billed</h2>
@@ -174,7 +174,8 @@ console.log(completion.choices[0]?.message.content);`}
         A running deployment is charged for GPU time at its tier&apos;s per-second rate, times its replica count, from your credit
         balance. Charges are whole cents; time worth less than a cent carries over to the next charge rather than being rounded
         up. When the balance can no longer cover the GPU time, the deployment is stopped, so a deployment never runs on credit you
-        do not have. Token charges for <code>/v1</code> requests are separate and appear as their own ledger rows.
+        do not have. Requests you send to the deployment through <code>/v1</code> are included in this GPU time: there is no
+        separate token charge and no extra ledger row per request.
       </p>
       <p>
         Read more about the design in{" "}
@@ -185,7 +186,8 @@ console.log(completion.choices[0]?.message.content);`}
       <ul>
         <li>
           <code>PATCH /api/deployments/&#123;id&#125;</code> updates <code>replicas</code> (1 to 10) or{" "}
-          <code>config.maxTokens</code>.
+          <code>config.maxTokens</code>. One replica change runs at a time, and the new count is billed only once Nosana
+          has applied it.
         </li>
         <li>
           <code>POST /api/deployments/&#123;id&#125;/restart</code> resubmits the job.

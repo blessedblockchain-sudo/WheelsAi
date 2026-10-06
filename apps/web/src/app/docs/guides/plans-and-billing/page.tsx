@@ -101,12 +101,10 @@ export default function PlansBillingPage() {
       <h3 id="what-uses-credits">What uses credits</h3>
       <ul>
         <li>
-          <strong>Inference on your deployments</strong> through <code>/v1</code>: token usage at the model&apos;s pricing tier,
-          held before the request and settled after it. See <Link href="/docs/api/inference#pricing">token pricing</Link>.
-        </li>
-        <li>
           <strong>GPU time</strong> for running deployments, per second at the tier&apos;s rate, with one hour reserved when a
           deployment starts and returned when it ends. See <Link href="/docs/guides/deploy-a-model#billing">Deploy a model</Link>.
+          Requests you send to a running deployment through <code>/v1</code> are included in that GPU time: they are not held
+          or charged per token on top of it. See <Link href="/docs/api/inference#billing">how a request is billed</Link>.
         </li>
         <li>
           <strong>Marketplace purchases</strong>: per-request runs and monthly subscriptions of paid listings.
@@ -157,8 +155,9 @@ export default function PlansBillingPage() {
 
       <h3 id="x402">x402 per request</h3>
       <p>
-        On servers with x402 enabled, calls to <code>/v1</code> can be paid one request at a time with a signed Solana payment
-        instead of from credits. The API answers <code>402 Payment Required</code> with the exact amount, asset and recipient;
+        On servers with x402 enabled, calls to a <code>/v1</code> deployment that is billed per request can be paid one request
+        at a time with a signed Solana payment instead of from credits. A dedicated deployment is billed for GPU time and is
+        never challenged for an x402 payment. The API answers <code>402 Payment Required</code> with the exact amount, asset and recipient;
         your client signs a matching transfer and retries with an <code>X-Payment</code> header. A payment transaction can be
         used once. See the <Link href="/docs/api/inference#x402">x402 flow</Link> for the headers and body.
       </p>

@@ -128,8 +128,6 @@ async function v1App(p: any) {
     app,
     restore: async () => {
       await app.close();
-      const { disconnectTokenGateCache } = await import("../middleware/tokenGate.js");
-      disconnectTokenGateCache();
       Object.assign(prisma as any, saved);
     },
   };

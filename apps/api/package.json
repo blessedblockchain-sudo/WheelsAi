@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit",
     "test:x402": "tsx --test src/tests/x402.integration.test.ts",
     "test:wallet-auth": "tsx --test src/tests/wallet-auth.integration.test.ts",
-    "test:token-gate": "tsx --test src/tests/token-gate.integration.test.ts",
     "test:nosana": "tsx --test src/tests/nosana.integration.test.ts",
     "test:unit": "tsx --test src/tests/*.unit.test.ts",
     "test:integration": "tsx --test src/tests/*.integration.test.ts",

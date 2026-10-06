@@ -25,6 +25,7 @@ test("generateVllmJobDefinition returns correct job definition structure", async
     engine: "vllm" as const,
     maxTokens: 4096,
     gpuMemoryUtilization: 0.9,
+    hfToken: "hf_real_token",
   };
 
   const job = generateVllmJobDefinition(config);
@@ -58,9 +59,26 @@ test("generateVllmJobDefinition returns correct job definition structure", async
   assert.ok(cmd.includes("--gpu-memory-utilization"), "cmd should include GPU mem util");
   assert.ok(cmd.includes("0.9"), "cmd should include GPU mem util value");
 
-  // Env should include HF_TOKEN placeholder
-  assert.ok(op.args.env, "env should be defined");
-  assert.equal(op.args.env!.HF_TOKEN, "${HF_TOKEN}");
+  // The token is the REAL one handed to the generator (the job is created
+  // confidential), never the literal "${HF_TOKEN}" placeholder nothing ever
+  // substituted.
+  assert.ok(op.args.env, "env should be defined when a token is configured");
+  assert.equal(op.args.env!.HF_TOKEN, "hf_real_token");
+});
+
+test("generateVllmJobDefinition omits HF_TOKEN entirely when none is configured", async () => {
+  setupEnv();
+  const { generateVllmJobDefinition } = await import("../services/nosana.js");
+  const job = generateVllmJobDefinition({
+    modelId: "model_1",
+    hfModelId: "meta-llama/Meta-Llama-3.1-8B-Instruct",
+    engine: "vllm" as const,
+    maxTokens: 4096,
+    gpuMemoryUtilization: 0.9,
+  });
+  const args = job.ops[0]!.args;
+  assert.equal(args.env, undefined, "no env block");
+  assert.ok(!JSON.stringify(job).includes("${HF_TOKEN}"), "the literal placeholder is gone");
 });
 
 // ============================================
@@ -315,18 +333,15 @@ test("generateJobDefinition throws for unsupported engine", async () => {
 });
 
 // ============================================
-// Test 11: NosanaClient.getMarkets falls back to static data
+// Test 11: NosanaClient.getChainMarkets never falls back to static data
 // ============================================
 
-test("NosanaClient.getMarkets returns static markets when SDK fails", async () => {
+test("NosanaClient.getChainMarkets THROWS when the chain read fails (no silent static fallback)", async () => {
   setupEnv();
 
   const { NosanaClient } = await import("../services/nosana.js");
-
-  // Create client but don't call initialize() — instead inject a mock SDK
   const client = new NosanaClient();
 
-  // Monkey-patch the private sdk field with a mock that throws
   (client as any).sdk = {
     jobs: {
       allMarkets: async () => {
@@ -336,27 +351,14 @@ test("NosanaClient.getMarkets returns static markets when SDK fails", async () =
   };
   (client as any).isInitialized = true;
 
-  const markets = await client.getMarkets();
-
-  assert.ok(Array.isArray(markets), "markets should be an array");
-  assert.ok(markets.length >= 5, `Expected at least 5 static markets, got ${markets.length}`);
-
-  // Verify static market structure
-  const rtx4090 = markets.find((m) => m.gpuModel === "RTX 4090");
-  assert.ok(rtx4090, "Should include RTX 4090 market");
-  assert.equal(rtx4090!.vram, 24);
-  assert.ok(rtx4090!.pricePerSecond > 0);
-
-  const h100 = markets.find((m) => m.gpuModel === "H100");
-  assert.ok(h100, "Should include H100 market");
-  assert.equal(h100!.vram, 80);
+  await assert.rejects(() => client.getChainMarkets(), /RPC unavailable/);
 });
 
 // ============================================
-// Test 12: NosanaClient.getMarkets returns live data when available
+// Test 12: NosanaClient.getChainMarkets returns NOS base units, not USD
 // ============================================
 
-test("NosanaClient.getMarkets uses live chain data when SDK succeeds", async () => {
+test("NosanaClient.getChainMarkets maps jobPrice to NOS base units per second (bigint)", async () => {
   setupEnv();
 
   const { NosanaClient } = await import("../services/nosana.js");
@@ -368,7 +370,8 @@ test("NosanaClient.getMarkets uses live chain data when SDK succeeds", async () 
       allMarkets: async () => [
         {
           address: { toBase58: () => "LiveMarketAddress111111111111111111111" },
-          jobPrice: 500000, // 0.5 NOS/second
+          // anchor returns u64 as a BN: only toString() is relied on.
+          jobPrice: { toString: () => "202" },
           queue: [1, 2, 3],
         },
       ],
@@ -376,19 +379,20 @@ test("NosanaClient.getMarkets uses live chain data when SDK succeeds", async () 
   };
   (client as any).isInitialized = true;
 
-  const markets = await client.getMarkets();
+  const markets = await client.getChainMarkets();
 
   assert.equal(markets.length, 1);
   assert.equal(markets[0]!.address, "LiveMarketAddress111111111111111111111");
-  assert.equal(markets[0]!.pricePerSecond, 0.5);
+  assert.equal(markets[0]!.jobPriceNosBaseUnitsPerSecond, 202n);
   assert.equal(markets[0]!.queueLength, 3);
+  assert.ok(!("pricePerSecond" in markets[0]!), "no USD field is ever derived from a chain NOS price");
 });
 
 // ============================================
 // Test 13: NosanaClient requires SDK initialization
 // ============================================
 
-test("NosanaClient.getMarkets throws when SDK not initialized", async () => {
+test("NosanaClient.getChainMarkets throws when SDK not initialized", async () => {
   setupEnv();
 
   const { NosanaClient } = await import("../services/nosana.js");
@@ -397,7 +401,7 @@ test("NosanaClient.getMarkets throws when SDK not initialized", async () => {
   // Do NOT initialize or set sdk — it should be null
 
   await assert.rejects(
-    () => client.getMarkets(),
+    () => client.getChainMarkets(),
     /not initialised/i
   );
 });

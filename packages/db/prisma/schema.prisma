@@ -183,6 +183,52 @@ model Deployment {
   reservationCents      BigInt?   @map("reservation_cents")
   reservationReleasedAt DateTime? @map("reservation_released_at")
 
+  // Nosana lifecycle (W2). nosanaJobIds[0] is the Nosana Deployment-Manager
+  // id (NOT an on-chain job address).
+  //
+  // billedThroughAt is the per-second GPU billing cursor: usage up to this
+  // instant has been charged to the org (ledger type 'gpu_usage'). It is
+  // set when the status worker first observes the deployment running with
+  // a live endpoint, and advanced ONLY by a compare-and-set on its previous
+  // value, so concurrent billing ticks cannot bill a window twice.
+  billedThroughAt DateTime? @map("billed_through_at")
+  // Why the deployment left service ('nosana_error', 'insufficient_credits',
+  // 'user_stopped', ...). Null while healthy.
+  statusReason String? @map("status_reason")
+  // Set once the platform's Nosana vault funds were verified recovered
+  // (vault.withdraw + zero-balance check). Null on a stopped/failed
+  // deployment means the status worker still has to retry the reclaim.
+  vaultReclaimedAt DateTime? @map("vault_reclaimed_at")
+  // Which RUN of this row is current. A restart reuses the row for a new
+  // Nosana deployment and bumps this inside its claim; every writer that can
+  // land late (a slow submit, stop, status tick, billing stop) carries the
+  // generation it read and makes its write conditional on it, so an earlier
+  // run's result can never be written onto a later run.
+  runGeneration Int @default(0) @map("run_generation")
+
+  // A replica change in flight (PATCH). `replicas` is the CONFIRMED count -
+  // what Nosana is known to run and what billing charges - and only moves once
+  // Nosana has confirmed the change. Until then the target sits here as a
+  // claim: replicaChangeId is its token (null = no change in flight), so a
+  // second PATCH cannot claim, and the request that made the claim commits or
+  // clears it by CAS on its own token. A claim left behind by a crash or an
+  // ambiguous Nosana failure is resolved by the status worker from Nosana's
+  // real replica count once replicaChangeAt is stale.
+  pendingReplicas  Int?      @map("pending_replicas")
+  replicaChangeId  String?   @map("replica_change_id")
+  replicaChangeAt  DateTime? @map("replica_change_at")
+  // Credits added to the hold by a pending scale-UP claim, so clearing the
+  // claim returns exactly what it took.
+  replicaChangeHoldCents BigInt? @map("replica_change_hold_cents")
+  // When Nosana confirmed this run's GPUs stopped. Written right after the
+  // stop call, before (and outside) the transaction that marks the row
+  // stopped: if that transaction fails, the retry ends the final billing
+  // window here instead of at its own later clock.
+  gpuStoppedAt DateTime? @map("gpu_stopped_at")
+  // Last Nosana vault runway check, claimed by CAS so the billing workers of
+  // several API replicas check a deployment once per interval between them.
+  runwayCheckedAt DateTime? @map("runway_checked_at")
+
   org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   model        Model            @relation(fields: [modelId], references: [id])
   nodes        DeploymentNode[]
@@ -210,6 +256,26 @@ model DeploymentNode {
 
   @@index([deploymentId])
   @@map("deployment_nodes")
+}
+
+// A Nosana deployment the platform funded that no deployment row tracks (any
+// longer): its writer lost a compare-and-set to a later run, its row was
+// deleted, or its table has no vault stamp (agent deployments, training jobs).
+// The status worker's vault sweep stops it if it is still running and retries
+// the vault withdraw until the funds are verified recovered (reclaimedAt).
+model NosanaOrphanDeployment {
+  id                 String    @id @default(uuid()) @db.Uuid
+  nosanaDeploymentId String    @unique @map("nosana_deployment_id")
+  // Where the id came from, for an operator. Not a relation: the source row
+  // may already be gone.
+  sourceKind         String    @map("source_kind") // 'model', 'agent', 'training'
+  sourceId           String?   @map("source_id")
+  reason             String
+  createdAt          DateTime  @default(now()) @map("created_at")
+  reclaimedAt        DateTime? @map("reclaimed_at")
+
+  @@index([reclaimedAt, createdAt])
+  @@map("nosana_orphan_deployments")
 }
 
 // ============================================

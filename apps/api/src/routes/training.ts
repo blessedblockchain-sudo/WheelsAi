@@ -25,6 +25,8 @@ import {
   deleteDatasetObject,
 } from "../services/dataset.js";
 import { getNosanaClient } from "../services/nosana.js";
+import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
+import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
 
 const logger = createLogger("training-routes");
 
@@ -576,9 +578,24 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     // Stop Nosana job
     if (job.nosanaJobId) {
       const nosana = await getNosanaClient();
-      await nosana.stopDeployment(job.nosanaJobId).catch((err) => {
-        logger.error({ err, jobId, nosanaJobId: job.nosanaJobId }, "Failed to stop Nosana job");
-      });
+      const settled = await nosana
+        .stopDeployment(job.nosanaJobId)
+        .then((stop) => stop.reclaimed)
+        .catch((err) => {
+          logger.error({ err, jobId, nosanaJobId: job.nosanaJobId }, "Failed to stop Nosana job");
+          return false;
+        });
+      // A cancelled job is never looked at again and TrainingJob has no vault
+      // stamp: unless the stop landed AND the vault is verified empty, hand the
+      // id to the vault sweep, which stops it and retries the withdraw.
+      if (!settled) {
+        await recordNosanaOrphan(prisma, {
+          nosanaDeploymentId: job.nosanaJobId,
+          sourceKind: "training",
+          sourceId: jobId,
+          reason: "training_cancelled",
+        });
+      }
     }
 
     // Update status
@@ -795,7 +812,13 @@ async function submitTrainingJob(
 
     // Submit to Nosana
     const nosana = await getNosanaClient();
-    const nosanaJob = await nosana.createDeployment(jobDefinition as any, gpuTier, 1);
+    // kind "batch": finite work. It runs once (strategy SIMPLE), is never
+    // auto-extended, and is bounded by NOSANA_BATCH_JOB_TIMEOUT_SECONDS - a
+    // long-running "service" deployment here would burn platform funds until
+    // someone remembered to stop it.
+    const nosanaJob = await nosana.createDeployment(jobDefinition as any, gpuTier, 1, {
+      kind: "batch",
+    });
 
     // Store Nosana job ID
     await prisma.trainingJob.update({
@@ -806,6 +829,21 @@ async function submitTrainingJob(
     logger.info({ jobId, nosanaJobId: nosanaJob.id }, "Training job submitted to Nosana");
   } catch (error) {
     logger.error({ error, jobId }, "Failed to submit training job to Nosana");
+
+    // A failure after creation carries the Nosana id; unless its cleanup
+    // verified it stopped and drained, keep it for the vault sweep.
+    if (
+      error instanceof NosanaLifecycleError &&
+      error.deploymentId &&
+      !(error.cleanup?.stopped && error.cleanup.reclaimed)
+    ) {
+      await recordNosanaOrphan(prisma, {
+        nosanaDeploymentId: error.deploymentId,
+        sourceKind: "training",
+        sourceId: jobId,
+        reason: "submit_failed",
+      });
+    }
 
     await prisma.trainingJob.update({
       where: { id: jobId },

@@ -1,12 +1,46 @@
 import { Connection, Keypair } from "@solana/web3.js";
-import { Client, type Market as NosanaSDKMarket } from "@nosana/sdk";
+import { Client } from "@nosana/sdk";
 import { env } from "../config/env.js";
+import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { createLogger } from "../utils/logger.js";
+import {
+  isAllowedNodeUrl,
+  loopbackNodeUrlsAllowed,
+  type NodeUrlAllowlistOptions,
+} from "./nodeUrlAllowlist.js";
+import { isMockNosanaId } from "./nosanaIds.js";
+import {
+  MARKETS,
+  MarketNotConfiguredError,
+  resolveMarketAddress,
+  toNosanaNetwork,
+  type NosanaMarket,
+  type NosanaNetwork,
+} from "./nosanaMarkets.js";
+import {
+  createAndStartDeployment,
+  ensureVaultRunway,
+  readDeployment,
+  reclaimVault,
+  scaleDeployment,
+  stopAndReclaim,
+  toBaseUnits,
+  type CreateDeploymentBody,
+  type DeploymentSnapshot,
+  type EndpointSnapshot,
+  type NosanaDeploymentsPort,
+  type ReclaimResult,
+  type RunwayResult,
+  type ScaleResult,
+  type SdkDeploymentLike,
+  type StopAndReclaimResult,
+} from "./nosanaDeploymentLifecycle.js";
 
 const logger = createLogger("nosana-service");
 
-// Default job timeout for inference deployments: 30 days in seconds
-const DEFAULT_JOB_TIMEOUT_SECONDS = 30 * 24 * 60 * 60;
+// The GPU tier catalog lives in nosanaMarkets.ts (SDK-free); re-exported here
+// because billing and routes have always imported it from this module.
+export { MARKETS, MarketNotConfiguredError, type NosanaMarket };
 
 // ============================================
 // Types
@@ -39,13 +73,11 @@ export interface NosanaOperation {
   };
 }
 
-export interface NosanaMarket {
+/** A market as read from the chain. Prices here are NOS base units, never USD. */
+export interface ChainMarket {
   address: string;
-  name: string;
-  gpuModel: string;
-  vram: number;
-  pricePerSecond: number;
-  nodeCount: number;
+  /** market.jobPrice: NOS base units (1e-6 NOS) per second. */
+  jobPriceNosBaseUnitsPerSecond: bigint;
   queueLength: number;
 }
 
@@ -66,72 +98,77 @@ export interface NosanaJob {
 
 const SYSTEM_PROGRAM_ZERO_PUBKEY = "11111111111111111111111111111111";
 
+/** What createDeployment returns: a started Nosana deployment. */
 export interface NosanaDeployment {
+  /** Nosana Deployment-Manager id (store it in `nosanaJobIds`). */
   id: string;
   market: string;
   replicas: number;
   status: "active" | "stopped";
-  nodes: Array<{
-    id: string;
-    url: string;
-    status: string;
-  }>;
+  /**
+   * Public endpoints Nosana has reported. Always empty right after creation -
+   * a deployment has no URL until a host picks the job up; the status worker
+   * learns the real URLs from the Nosana API. Never synthesised.
+   */
+  endpoints: EndpointSnapshot[];
+  /** Vault holding the platform's funding for this deployment. */
+  vaultAddress?: string;
+  /** True ONLY for the dev-only mock: such an id does not exist on Nosana. */
+  mock?: boolean;
 }
 
-// ============================================
-// GPU Market Configuration
-// ============================================
+export interface CreateDeploymentOptions {
+  /**
+   * "service" (default): long-running inference, kept alive by the configured
+   * strategy (SIMPLE-EXTEND). "batch": finite work (training) - strategy SIMPLE,
+   * never auto-extended, bounded by NOSANA_BATCH_JOB_TIMEOUT_SECONDS.
+   */
+  kind?: "service" | "batch";
+  name?: string;
+}
 
-// Known Nosana market addresses (devnet/mainnet).
-// Exported so compute-metering and treasury settlement can price jobs against
-// the same source of truth the scheduler uses.
-export const MARKETS: Record<string, NosanaMarket> = {
-  "3060": {
-    address: "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf", // Example
-    name: "RTX 3060",
-    gpuModel: "RTX 3060",
-    vram: 12,
-    pricePerSecond: 0.0001,
-    nodeCount: 150,
-    queueLength: 0,
-  },
-  "4070": {
-    address: "4070MarketAddressPlaceholder",
-    name: "RTX 4070",
-    gpuModel: "RTX 4070",
-    vram: 12,
-    pricePerSecond: 0.00015,
-    nodeCount: 80,
-    queueLength: 0,
-  },
-  "4090": {
-    address: "4090MarketAddressPlaceholder",
-    name: "RTX 4090",
-    gpuModel: "RTX 4090",
-    vram: 24,
-    pricePerSecond: 0.00025,
-    nodeCount: 45,
-    queueLength: 0,
-  },
-  a100: {
-    address: "A100MarketAddressPlaceholder",
-    name: "A100 40GB",
-    gpuModel: "A100",
-    vram: 40,
-    pricePerSecond: 0.0008,
-    nodeCount: 20,
-    queueLength: 0,
-  },
-  h100: {
-    address: "H100MarketAddressPlaceholder",
-    name: "H100 80GB",
-    gpuModel: "H100",
-    vram: 80,
-    pricePerSecond: 0.0015,
-    nodeCount: 5,
-    queueLength: 0,
-  },
-};
+/** Thrown when Nosana deployments are requested but no platform wallet exists. */
+export class NosanaNotConfiguredError extends Error {
+  readonly code = "nosana_not_configured";
+  constructor(message = "Nosana deployments are not configured: NOSANA_WALLET_PRIVATE_KEY is not set") {
+    super(message);
+    this.name = "NosanaNotConfiguredError";
+  }
+}
+
+// isMockNosanaId lives in nosanaIds.ts (import-free); re-exported because
+// routes and tests have always imported it from here.
+export { isMockNosanaId };
+
+/**
+ * The dev-only mock is honoured only when ALLOW_NOSANA_MOCK is set AND this is a
+ * development process. Production boot already rejects the flag (validateEnv);
+ * the NODE_ENV check makes the mock structurally unreachable in staging too.
+ */
+export function isNosanaMockEnabled(
+  source: { ALLOW_NOSANA_MOCK?: boolean; NODE_ENV?: string } = env,
+): boolean {
+  return source.ALLOW_NOSANA_MOCK === true && source.NODE_ENV === "development";
+}
+
+/**
+ * Options every server-side node fetch (the /v1 proxy, the playground proxy and
+ * the health probe) passes to the SSRF allowlist. Loopback needs a development
+ * process AND the explicit ALLOW_LOOPBACK_NODE_URLS opt-in.
+ */
+export function nodeUrlAllowlistOptions(): NodeUrlAllowlistOptions {
+  return {
+    allowLoopback: loopbackNodeUrlsAllowed(
+      env.NODE_ENV,
+      getNosanaDeployConfig().allowLoopbackNodeUrls,
+    ),
+  };
+}
+
+/** Engine-specific readiness probe: vLLM serves /health; Ollama does not. */
+export function nodeHealthPath(engine?: string): string {
+  return engine === "ollama" ? "/api/tags" : "/health";
+}
 
 // ============================================
 // Nosana Client
@@ -142,12 +179,12 @@ export class NosanaClient {
   private wallet: Keypair | null = null;
   private sdk: Client | null = null;
   private isInitialized = false;
-  private network: "devnet" | "mainnet";
+  private network: NosanaNetwork;
 
   constructor() {
     this.connection = new Connection(env.SOLANA_RPC_URL, "confirmed");
     // SOLANA_NETWORK is typed as "devnet" | "mainnet-beta"; Nosana SDK only accepts "devnet" | "mainnet"
-    this.network = env.SOLANA_NETWORK === "mainnet-beta" ? "mainnet" : "devnet";
+    this.network = toNosanaNetwork(env.SOLANA_NETWORK);
   }
 
   async initialize(): Promise<void> {
@@ -184,11 +221,12 @@ export class NosanaClient {
           }
         : undefined;
 
-    this.sdk = new Client(
-      this.network,
-      sdkWallet,
-      ipfsConfig ? { ipfs: ipfsConfig } : undefined
-    );
+    // Use OUR RPC for the SDK's on-chain calls (vault top-ups, job listing,
+    // market reads) instead of the SDK's built-in shared endpoint.
+    this.sdk = new Client(this.network, sdkWallet, {
+      solana: { network: env.SOLANA_RPC_URL },
+      ...(ipfsConfig ? { ipfs: ipfsConfig } : {}),
+    });
 
     logger.info(
       { network: this.network, ipfsConfigured: !!ipfsConfig },
@@ -204,7 +242,7 @@ export class NosanaClient {
 
   private requireWallet(): Keypair {
     if (!this.wallet) {
-      throw new Error("Wallet not configured - cannot submit jobs");
+      throw new NosanaNotConfiguredError("Wallet not configured - cannot submit jobs");
     }
     return this.wallet;
   }
@@ -216,31 +254,50 @@ export class NosanaClient {
     return this.sdk;
   }
 
-  /**
-   * Map raw Nosana SDK Market onto our NosanaMarket interface.
-   * jobPrice is stored on-chain in µNOS (1e6 per NOS); convert to NOS/second.
-   */
-  private mapSdkMarket(
-    sdkMarket: NosanaSDKMarket & { address?: { toBase58?: () => string } }
-  ): NosanaMarket {
-    const address =
-      typeof sdkMarket.address === "object" &&
-      typeof (sdkMarket.address as { toBase58?: () => string }).toBase58 === "function"
-        ? (sdkMarket.address as { toBase58: () => string }).toBase58()
-        : String(sdkMarket.address ?? "");
+  /** True when a platform wallet is loaded (deploys can be funded). */
+  isConfigured(): boolean {
+    return this.wallet !== null;
+  }
 
-    // jobPrice is in µNOS; convert to NOS/second
-    const pricePerSecond = (sdkMarket.jobPrice ?? 0) / 1e6;
-    const queueLength = Array.isArray(sdkMarket.queue) ? sdkMarket.queue.length : 0;
+  getNetwork(): NosanaNetwork {
+    return this.network;
+  }
+
+  /**
+   * Pre-flight for routes: throws NosanaNotConfiguredError /
+   * MarketNotConfiguredError so an unconfigured platform answers 501 BEFORE any
+   * credits are reserved. The dev-only mock passes (it never touches Nosana).
+   */
+  assertCanDeploy(tier: string): void {
+    if (isNosanaMockEnabled()) return;
+    if (!this.wallet) throw new NosanaNotConfiguredError();
+    resolveMarketAddress(tier, this.network);
+  }
+
+  /** Market address for a tier on this client's network, or an honest error. */
+  resolveMarketAddress(tier: string): string {
+    return resolveMarketAddress(tier, this.network);
+  }
+
+  /**
+   * Map a raw SDK Market onto ChainMarket. `jobPrice` is a u64 (an anchor BN at
+   * runtime, typed `number` by the SDK) in NOS base units per second.
+   */
+  private mapSdkMarket(sdkMarket: {
+    address?: unknown;
+    jobPrice?: unknown;
+    queue?: unknown;
+  }): ChainMarket {
+    const rawAddress = sdkMarket.address as { toBase58?: () => string } | string | undefined;
+    const address =
+      typeof rawAddress === "object" && rawAddress !== null && typeof rawAddress.toBase58 === "function"
+        ? rawAddress.toBase58()
+        : String(rawAddress ?? "");
 
     return {
       address,
-      name: address.slice(0, 6) + "…",
-      gpuModel: "Unknown",
-      vram: 0,
-      pricePerSecond,
-      nodeCount: 0,
-      queueLength,
+      jobPriceNosBaseUnitsPerSecond: toBaseUnits(sdkMarket.jobPrice),
+      queueLength: Array.isArray(sdkMarket.queue) ? sdkMarket.queue.length : 0,
     };
   }
 
@@ -262,49 +319,51 @@ export class NosanaClient {
     }
   }
 
+  /** The lifecycle module's port, backed by the real SDK. */
+  private deploymentsPort(): NosanaDeploymentsPort {
+    const sdk = this.requireSdk();
+    return {
+      create: async (body: CreateDeploymentBody) =>
+        (await sdk.deployments.create(
+          body as unknown as Parameters<typeof sdk.deployments.create>[0]
+        )) as unknown as SdkDeploymentLike,
+      get: async (id: string) =>
+        (await sdk.deployments.get(id)) as unknown as SdkDeploymentLike,
+      getMarketJobPrice: async (marketAddress: string) => {
+        const market = await sdk.jobs.getMarket(marketAddress);
+        return toBaseUnits((market as { jobPrice?: unknown }).jobPrice);
+      },
+    };
+  }
+
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
 
   /**
-   * Get available GPU markets.
-   * Attempts a live chain query via nosana.jobs.allMarkets(); falls back to
-   * the static MARKETS table if the RPC call fails.
+   * Live chain read of every Nosana market. Prices are NOS base units per
+   * second - a different unit from MARKETS[tier].pricePerSecond (USD), which is
+   * why this returns its own type. THROWS on RPC failure: the static catalog is
+   * pricing configuration, not a stand-in for chain state.
    */
-  async getMarkets(): Promise<NosanaMarket[]> {
+  async getChainMarkets(): Promise<ChainMarket[]> {
     const sdk = this.requireSdk();
+    const rawMarkets = await sdk.jobs.allMarkets();
+    logger.debug({ count: rawMarkets.length }, "Fetched markets from chain");
+    return rawMarkets.map((m) => this.mapSdkMarket(m as never));
+  }
 
-    try {
-      const rawMarkets = await sdk.jobs.allMarkets();
-
-      if (Array.isArray(rawMarkets) && rawMarkets.length > 0) {
-        logger.debug(
-          { count: rawMarkets.length },
-          "Fetched markets from chain"
-        );
-        return rawMarkets.map((m: NosanaSDKMarket) => this.mapSdkMarket(m));
-      }
-
-      logger.warn(
-        "Chain returned empty market list - falling back to static data"
-      );
-    } catch (error) {
-      logger.warn(
-        { error: (error as Error).message },
-        "Failed to fetch markets from chain - falling back to static data"
-      );
-    }
-
-    return Object.values(MARKETS);
+  /** On-chain job price (NOS base units / second) for one market. */
+  async getMarketJobPrice(marketAddress: string): Promise<bigint> {
+    return this.deploymentsPort().getMarketJobPrice(marketAddress);
   }
 
   /**
-   * Get specific market by tier key.
-   * Falls back to static data; never queries chain individually to avoid
-   * unnecessary latency on the hot path.
+   * Get specific market by tier key. Static catalog (USD retail pricing, VRAM);
+   * never queries chain individually to avoid latency on the hot path.
    */
   async getMarket(tier: string): Promise<NosanaMarket | null> {
-    return MARKETS[tier] ?? null;
+    return Object.hasOwn(MARKETS, tier) ? (MARKETS[tier] ?? null) : null;
   }
 
   /**
@@ -332,16 +391,19 @@ export class NosanaClient {
   }
 
   /**
-   * Submit a single job to a Nosana market.
+   * Submit a single one-shot job to a Nosana market (legacy path, used by
+   * OpenClaw). It has NO extend strategy: the job ends at
+   * NOSANA_SINGLE_JOB_TIMEOUT_SECONDS. Long-running inference goes through
+   * createDeployment.
    *
    * Flow:
-   *  1. Resolve market address from tier key.
+   *  1. Resolve the market address for the tier on this network.
    *  2. Pin job definition to IPFS via the SDK (uses Pinata under the hood).
    *  3. Call nosana.jobs.list() to create the on-chain job listing.
    *  4. Return a NosanaJob with the on-chain job address as the ID.
    *
-   * Falls back to a mock job ID if the SDK call fails, so callers are not
-   * broken during development without a funded wallet.
+   * A failure is a failure. Only the dev-only mock (isNosanaMockEnabled) may
+   * substitute a fake `mock_job_*` id, and it logs loudly when it does.
    */
   async submitJob(
     definition: NosanaJobDefinition,
@@ -352,8 +414,9 @@ export class NosanaClient {
 
     const market = await this.getMarket(marketTier);
     if (!market) {
-      throw new Error(`Unknown market tier: ${marketTier}`);
+      throw new MarketNotConfiguredError(marketTier, this.network, "unknown_tier");
     }
+    const marketAddress = this.resolveMarketAddress(marketTier);
 
     logger.info(
       { market: market.name, jobType: definition.type },
@@ -365,8 +428,8 @@ export class NosanaClient {
       // IPFS internally and create the on-chain listing.
       const result = await sdk.jobs.list(
         definition as unknown as Parameters<typeof sdk.jobs.list>[0],
-        DEFAULT_JOB_TIMEOUT_SECONDS,
-        market.address
+        getNosanaDeployConfig().singleJobTimeoutSeconds,
+        marketAddress
       );
 
       // result is { tx, job, run } when instructionOnly is false (default)
@@ -377,27 +440,26 @@ export class NosanaClient {
 
       return {
         id: jobAddress,
-        market: market.address,
+        market: marketAddress,
         status: "queued",
         startTime: new Date(),
       };
     } catch (error) {
-      if (!env.ALLOW_NOSANA_MOCK) {
+      if (!isNosanaMockEnabled()) {
         logger.error(
           { error: (error as Error).message, market: market.name },
-          "Nosana job submission failed and mock fallback is disabled"
+          "Nosana job submission failed"
         );
         throw error;
       }
       logger.warn(
-        { error: (error as Error).message, market: market.name },
-        "SDK job submission failed - returning mock job ID (ALLOW_NOSANA_MOCK=true)"
+        { error: (error as Error).message, market: market.name, mock: true },
+        "MOCK: SDK job submission failed - returning a FAKE mock_job id (ALLOW_NOSANA_MOCK, development only)"
       );
 
-      const fallbackId = `mock_job_${Date.now().toString(36)}`;
       return {
-        id: fallbackId,
-        market: market.address,
+        id: `mock_job_${Date.now().toString(36)}`,
+        market: marketAddress,
         status: "queued",
         startTime: new Date(),
       };
@@ -438,15 +500,16 @@ export class NosanaClient {
   }
 
   /**
-   * Query on-chain job status for a given job address.
-   * Falls back to a "running" stub if the RPC call fails (e.g. mock IDs).
+   * Query on-chain job status for a given ON-CHAIN JOB address (not a
+   * Deployment-Manager id - use getDeploymentStatus for those).
+   * Falls back to a "running" stub if the RPC call fails.
    */
   async getJobStatus(jobId: string): Promise<NosanaJob | null> {
     const sdk = this.requireSdk();
 
     logger.debug({ jobId }, "Getting job status");
 
-    // Mock IDs (created by the fallback path) cannot be queried on-chain
+    // Mock IDs (created by the dev-only fallback) cannot be queried on-chain
     if (jobId.startsWith("mock_job_")) {
       return {
         id: jobId,
@@ -475,18 +538,18 @@ export class NosanaClient {
   }
 
   /**
-   * Strict job-state read for the deployment-status poller (plan D8).
+   * Strict on-chain job read: THROWS on SDK/RPC failure instead of returning a
+   * "running" stub. Mock IDs also throw - mock handling is env-gated at the
+   * tick layer, not here.
    *
-   * Unlike getJobStatus this THROWS on SDK/RPC failure instead of
-   * returning a "running" stub — the poller must leave rows untouched
-   * when the chain can't be read, and a fabricated "running" would be
-   * exactly the lie D8 removes. Mock IDs also throw: mock handling is
-   * env-gated at the tick layer (ALLOW_NOSANA_MOCK), not here.
+   * NOTE: takes an on-chain job address. Deployment-Manager ids (what
+   * `Deployment.nosanaJobIds` holds) are NOT job addresses and make
+   * `jobs.get` throw; use getDeploymentStatus for those.
    */
   async getJobStatusStrict(jobId: string): Promise<NosanaJob> {
     const sdk = this.requireSdk();
 
-    if (jobId.startsWith("mock_job_") || jobId.startsWith("mock_deploy_")) {
+    if (isMockNosanaId(jobId)) {
       throw new Error(`Mock Nosana id cannot be queried on-chain: ${jobId}`);
     }
 
@@ -494,259 +557,261 @@ export class NosanaClient {
     return this.toNosanaJob(jobId, sdkJob);
   }
 
+  private mockDeployment(
+    marketAddress: string,
+    replicas: number,
+    reason: string
+  ): NosanaDeployment {
+    logger.warn(
+      { reason, mock: true },
+      "MOCK: returning a FAKE mock_deploy id - nothing is running on Nosana (ALLOW_NOSANA_MOCK, development only)"
+    );
+    return {
+      id: `mock_deploy_${Date.now().toString(36)}`,
+      market: marketAddress,
+      replicas,
+      status: "active",
+      endpoints: [],
+      mock: true,
+    };
+  }
+
   /**
-   * Create a deployment (multiple replicas with auto-restart) via the Nosana
-   * Deployments API.
+   * Create, FUND and START a deployment via the Nosana Deployment Manager.
    *
-   * Uses nosana.deployments.create() which provisions a vault, submits
-   * replica jobs, and returns a managed Deployment object.
+   * `sdk.deployments.create()` alone yields a DRAFT with an empty vault - no GPU
+   * host would ever run it. The lifecycle (nosanaDeploymentLifecycle.ts) tops the
+   * vault up with NOS + SOL and calls start(); on any failure after creation it
+   * stops and withdraws so platform funds are not stranded, then throws a
+   * NosanaLifecycleError carrying the Nosana deployment id for the caller to
+   * persist.
    */
   async createDeployment(
     definition: NosanaJobDefinition,
     marketTier: string,
-    replicas: number
+    replicas: number,
+    options: CreateDeploymentOptions = {}
   ): Promise<NosanaDeployment> {
-    this.requireWallet();
-    const sdk = this.requireSdk();
+    const mockEnabled = isNosanaMockEnabled();
+
+    if (!this.wallet) {
+      if (mockEnabled) return this.mockDeployment("", replicas, "no wallet configured");
+      throw new NosanaNotConfiguredError();
+    }
+    this.requireSdk();
 
     const market = await this.getMarket(marketTier);
     if (!market) {
-      throw new Error(`Unknown market tier: ${marketTier}`);
+      throw new MarketNotConfiguredError(marketTier, this.network, "unknown_tier");
     }
 
+    let marketAddress: string;
+    try {
+      marketAddress = this.resolveMarketAddress(marketTier);
+    } catch (error) {
+      if (mockEnabled && error instanceof MarketNotConfiguredError) {
+        return this.mockDeployment("", replicas, error.message);
+      }
+      throw error;
+    }
+
+    const cfg = getNosanaDeployConfig();
+    const batch = options.kind === "batch";
+    const jobTimeoutSeconds = batch ? cfg.batchJobTimeoutSeconds : cfg.jobTimeoutSeconds;
+
     logger.info(
-      { market: market.name, replicas },
+      { market: market.name, replicas, kind: options.kind ?? "service", jobTimeoutSeconds },
       "Creating Nosana deployment"
     );
 
     try {
-      const deployment = await sdk.deployments.create({
-        name: `wheelsai-${Date.now().toString(36)}`,
-        market: market.address,
+      const created = await createAndStartDeployment(this.deploymentsPort(), {
+        name: options.name ?? `wheelsai-${Date.now().toString(36)}`,
+        marketAddress,
         replicas,
-        timeout: DEFAULT_JOB_TIMEOUT_SECONDS,
-        strategy: "INFINITE" as const,
-        job_definition: definition as unknown as Parameters<
-          typeof sdk.deployments.create
-        >[0]["job_definition"],
+        jobTimeoutSeconds,
+        definition,
+        fundSeconds: batch ? jobTimeoutSeconds : cfg.vaultFundSeconds,
+        strategy: batch ? "SIMPLE" : cfg.strategy,
+        solFeeLamportsPerReplica: cfg.vaultSolLamportsPerReplica,
+        networkFeeBps: cfg.networkFeeBps,
       });
 
-      const deploymentId =
-        typeof deployment.id === "string"
-          ? deployment.id
-          : String(deployment.id);
-
       logger.info(
-        { deploymentId, replicas },
-        "Deployment created via Nosana SDK"
+        {
+          deploymentId: created.deploymentId,
+          replicas,
+          strategy: created.strategy,
+          fundedNosBaseUnits: created.funding.nosBaseUnits.toString(),
+          fundedSolLamports: created.funding.solLamports.toString(),
+        },
+        "Nosana deployment created, funded and started"
       );
 
-      const tasks = await deployment.getTasks().catch(() => []);
-      const nodes = tasks.map((task: { id?: string; url?: string; status?: string }, i: number) => ({
-        id: task.id ?? `node_${i}`,
-        url: task.url ?? "",
-        status: task.status ?? "provisioning",
-      }));
-
       return {
-        id: deploymentId,
-        market: market.address,
+        id: created.deploymentId,
+        market: marketAddress,
         replicas,
         status: "active",
-        nodes,
+        endpoints: [],
+        vaultAddress: created.vaultAddress,
       };
     } catch (error) {
-      if (!env.ALLOW_NOSANA_MOCK) {
+      if (!mockEnabled) {
         logger.error(
-          { error: (error as Error).message, market: market.name, replicas },
-          "Nosana deployment creation failed and mock fallback is disabled"
+          {
+            error: (error as Error).message,
+            market: market.name,
+            replicas,
+            deploymentId: (error as { deploymentId?: string }).deploymentId,
+          },
+          "Nosana deployment creation failed"
         );
         throw error;
       }
-      logger.warn(
-        { error: (error as Error).message, market: market.name, replicas },
-        "SDK deployment creation failed - returning mock deployment (ALLOW_NOSANA_MOCK=true)"
-      );
-
-      const fallbackId = `mock_deploy_${Date.now().toString(36)}`;
-      const nodes = Array.from({ length: replicas }, (_, i) => ({
-        id: `node_${i}`,
-        url: "",
-        status: "provisioning",
-      }));
-
-      return {
-        id: fallbackId,
-        market: market.address,
-        replicas,
-        status: "active",
-        nodes,
-      };
+      return this.mockDeployment(marketAddress, replicas, (error as Error).message);
     }
   }
 
   /**
-   * Query current status of a deployment and its replica jobs.
+   * STRICT read of a Deployment-Manager deployment: status, REAL endpoints
+   * reported by Nosana, jobs and events. Throws on API failure (and on mock
+   * ids) - a failed read must never become a fabricated state.
    */
-  async getDeploymentStatus(
-    deploymentId: string
-  ): Promise<NosanaDeployment | null> {
-    const sdk = this.requireSdk();
-
-    logger.debug({ deploymentId }, "Getting deployment status");
-
-    if (deploymentId.startsWith("mock_deploy_")) {
-      return {
-        id: deploymentId,
-        market: "",
-        replicas: 1,
-        status: "active",
-        nodes: [{ id: "node_0", url: "", status: "running" }],
-      };
+  async getDeploymentStatus(deploymentId: string): Promise<DeploymentSnapshot> {
+    this.requireSdk();
+    if (isMockNosanaId(deploymentId)) {
+      throw new Error(`Mock Nosana id cannot be queried: ${deploymentId}`);
     }
-
-    try {
-      const deployment = await sdk.deployments.get(deploymentId);
-      const tasks = await deployment.getTasks().catch(() => []);
-
-      const sdkStatus = String(deployment.status ?? "").toUpperCase();
-      const status: NosanaDeployment["status"] =
-        sdkStatus === "STOPPED" ||
-        sdkStatus === "STOPPING" ||
-        sdkStatus === "ARCHIVED"
-          ? "stopped"
-          : "active";
-
-      const nodes = tasks.map((task: { id?: string; url?: string; status?: string }, i: number) => ({
-        id: task.id ?? `node_${i}`,
-        url: task.url ?? "",
-        status: (task.status ?? "unknown").toLowerCase(),
-      }));
-
-      return {
-        id: deploymentId,
-        market: "",
-        replicas: deployment.replicas ?? nodes.length,
-        status,
-        nodes,
-      };
-    } catch (error) {
-      logger.warn(
-        { deploymentId, error: (error as Error).message },
-        "Failed to fetch deployment status - returning null"
-      );
-      return null;
-    }
+    return readDeployment(this.deploymentsPort(), deploymentId);
   }
 
   /**
-   * Stop all replica jobs for a deployment.
+   * Stop a deployment and try to reclaim its vault. Throws if the stop did not
+   * take effect; `reclaimed: false` means the withdraw must be retried later
+   * (reclaimDeploymentVault).
    */
-  async stopDeployment(deploymentId: string): Promise<void> {
+  async stopDeployment(deploymentId: string): Promise<StopAndReclaimResult> {
     this.requireWallet();
-    const sdk = this.requireSdk();
+    this.requireSdk();
 
     logger.info({ deploymentId }, "Stopping deployment");
 
-    if (deploymentId.startsWith("mock_deploy_")) {
-      logger.debug({ deploymentId }, "Mock deployment - stop is a no-op");
-      return;
+    if (isMockNosanaId(deploymentId)) {
+      logger.debug({ deploymentId, mock: true }, "Mock deployment - stop is a no-op");
+      return {
+        deploymentId,
+        stopped: true,
+        alreadyStopped: false,
+        reclaimed: true,
+        remainingNosBaseUnits: 0n,
+      };
     }
 
-    try {
-      const deployment = await sdk.deployments.get(deploymentId);
-      await deployment.stop();
-      logger.info({ deploymentId }, "Deployment stopped via Nosana SDK");
-    } catch (error) {
-      logger.error(
-        { deploymentId, error: (error as Error).message },
-        "Failed to stop deployment"
-      );
-      throw error;
+    const result = await stopAndReclaim(this.deploymentsPort(), deploymentId);
+    logger.info(
+      { deploymentId, reclaimed: result.reclaimed, alreadyStopped: result.alreadyStopped },
+      "Deployment stopped via Nosana SDK"
+    );
+    return result;
+  }
+
+  /** Retry the vault withdraw for a stopped/failed deployment. */
+  async reclaimDeploymentVault(deploymentId: string): Promise<ReclaimResult> {
+    this.requireWallet();
+    this.requireSdk();
+    if (isMockNosanaId(deploymentId)) {
+      return {
+        deploymentId,
+        state: "stopped",
+        reclaimed: true,
+        remainingNosBaseUnits: 0n,
+      };
     }
+    return reclaimVault(this.deploymentsPort(), deploymentId);
   }
 
   /**
-   * Scale a deployment to a new replica count.
+   * Scale a RUNNING deployment to a new replica count. Extra replicas are funded
+   * before the count changes. Throws NosanaLifecycleError(code
+   * "nosana_not_running") when the deployment is not running.
    */
   async scaleDeployment(
     deploymentId: string,
-    newReplicas: number
-  ): Promise<NosanaDeployment> {
+    newReplicas: number,
+    marketTier: string
+  ): Promise<ScaleResult> {
     this.requireWallet();
-    const sdk = this.requireSdk();
+    this.requireSdk();
 
     logger.info({ deploymentId, newReplicas }, "Scaling deployment");
 
-    if (deploymentId.startsWith("mock_deploy_")) {
-      return {
-        id: deploymentId,
-        market: "",
-        replicas: newReplicas,
-        status: "active",
-        nodes: Array.from({ length: newReplicas }, (_, i) => ({
-          id: `node_${i}`,
-          url: "",
-          status: "provisioning",
-        })),
-      };
+    if (isMockNosanaId(deploymentId)) {
+      return { deploymentId, previousReplicas: newReplicas, replicas: newReplicas, funded: null };
     }
 
-    try {
-      const deployment = await sdk.deployments.get(deploymentId);
-      await deployment.updateReplicaCount(newReplicas);
+    const cfg = getNosanaDeployConfig();
+    return scaleDeployment(this.deploymentsPort(), deploymentId, newReplicas, {
+      marketAddress: this.resolveMarketAddress(marketTier),
+      fundSeconds: cfg.vaultFundSeconds,
+      solFeeLamportsPerReplica: cfg.vaultSolLamportsPerReplica,
+      networkFeeBps: cfg.networkFeeBps,
+    });
+  }
 
-      logger.info(
-        { deploymentId, newReplicas },
-        "Deployment scaled via Nosana SDK"
-      );
-
-      // Re-fetch tasks to get updated node list
-      const tasks = await deployment.getTasks().catch(() => []);
-      const nodes = tasks.map((task: { id?: string; url?: string; status?: string }, i: number) => ({
-        id: task.id ?? `node_${i}`,
-        url: task.url ?? "",
-        status: (task.status ?? "provisioning").toLowerCase(),
-      }));
-
-      return {
-        id: deploymentId,
-        market: "",
-        replicas: newReplicas,
-        status: "active",
-        nodes,
-      };
-    } catch (error) {
-      logger.error(
-        { deploymentId, newReplicas, error: (error as Error).message },
-        "Failed to scale deployment"
-      );
-      throw error;
-    }
+  /** Refill the vault of a running deployment so its next extension is funded. */
+  async ensureDeploymentRunway(
+    deploymentId: string,
+    marketTier: string,
+    replicas: number
+  ): Promise<RunwayResult> {
+    this.requireWallet();
+    this.requireSdk();
+    const cfg = getNosanaDeployConfig();
+    return ensureVaultRunway(this.deploymentsPort(), deploymentId, {
+      marketAddress: this.resolveMarketAddress(marketTier),
+      replicas,
+      minRunwaySeconds: cfg.vaultMinRunwaySeconds,
+      fundSeconds: cfg.vaultFundSeconds,
+      solFeeLamportsPerReplica: cfg.vaultSolLamportsPerReplica,
+      networkFeeBps: cfg.networkFeeBps,
+    });
   }
 
   /**
-   * Check node health by making an HTTP request to the node's /health endpoint.
+   * Probe a node's readiness over HTTP. The path depends on the engine: vLLM
+   * serves /health, Ollama does not (it serves /api/tags). The URL is checked
+   * against the SSRF allowlist first; a disallowed URL is simply unhealthy.
+   * Never throws.
    */
   async checkNodeHealth(
-    nodeUrl: string
+    nodeUrl: string,
+    engine?: string
   ): Promise<{ healthy: boolean; latencyMs: number }> {
     const startTime = Date.now();
+
+    if (!isAllowedNodeUrl(nodeUrl, nodeUrlAllowlistOptions())) {
+      logger.warn({ nodeUrl }, "Refusing to probe a node URL outside the allowlist");
+      return { healthy: false, latencyMs: 0 };
+    }
 
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 5000);
 
-      const response = await fetch(`${nodeUrl}/health`, {
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      return {
-        healthy: response.ok,
-        latencyMs: Date.now() - startTime,
-      };
+      try {
+        const response = await fetch(`${nodeUrl}${nodeHealthPath(engine)}`, {
+          signal: controller.signal,
+          // Never follow a redirect off the allowlisted host.
+          redirect: "manual",
+        });
+        return {
+          healthy: response.ok,
+          latencyMs: Date.now() - startTime,
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch {
       return {
         healthy: false,
@@ -781,6 +846,12 @@ export interface ModelDeploymentConfig {
   maxTokens: number;
   gpuMemoryUtilization: number;
   quantization?: string;
+  /**
+   * Hugging Face token for gated models. Only ever set on jobs created with
+   * `confidential: true` (createDeployment always does), because Nosana pins
+   * non-confidential job definitions to PUBLIC IPFS. Omitted => no HF_TOKEN.
+   */
+  hfToken?: string;
 }
 
 export function generateVllmJobDefinition(
@@ -818,9 +889,10 @@ export function generateVllmJobDefinition(
           cmd: vllmArgs,
           gpu: true,
           expose: [8000],
-          env: {
-            HF_TOKEN: "${HF_TOKEN}",
-          },
+          // The old literal "${HF_TOKEN}" was never substituted by anything, so
+          // gated models were handed that string as their token. Real token or
+          // nothing.
+          ...(config.hfToken ? { env: { HF_TOKEN: config.hfToken } } : {}),
         },
       },
     ],

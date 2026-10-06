@@ -35,16 +35,26 @@ interface LedgerRow {
   balanceAfter: bigint;
 }
 
-function makeTx(opts: { casCount?: number; balance?: bigint } = {}) {
+function makeTx(
+  opts: { casCount?: number; balance?: bigint; held?: bigint | null } = {},
+) {
   const state = {
     balance: opts.balance ?? 1_000n,
+    // What the row ACTUALLY holds when the release's barrier is won. Tests that
+    // care set it to something other than what the caller believes.
+    held: opts.held === undefined ? 37n : opts.held,
     ledger: [] as LedgerRow[],
     casWheres: [] as unknown[],
+    reads: 0,
   };
   const table = {
     updateMany: async (args: { where: unknown }) => {
       state.casWheres.push(args.where);
       return { count: opts.casCount ?? 1 };
+    },
+    findUnique: async () => {
+      state.reads += 1;
+      return { reservationCents: state.held };
     },
   };
   const tx = {
@@ -109,7 +119,7 @@ test("LOSING the CAS refunds nothing — two ticks cannot double-refund", async 
 
 test("the CAS guards on reservationReleasedAt being null", async () => {
   const { releaseDeploymentReservation } = await loadGate();
-  const { tx, state } = makeTx();
+  const { tx, state } = makeTx({ held: 10n });
   await releaseDeploymentReservation({
     tx: tx as never,
     kind: "agent",
@@ -122,6 +132,108 @@ test("the CAS guards on reservationReleasedAt being null", async () => {
     id: "ad-1",
     reservationReleasedAt: null,
   });
+});
+
+// Review finding #1: the tick loaded the hold at the START of the tick; a
+// concurrent PATCH (replica change) resizes it before the release runs.
+
+test("the credited amount is the hold AS IT IS when the release wins its CAS, not the caller's earlier read (scale-down)", async () => {
+  const { releaseDeploymentReservation } = await loadGate();
+  // The tick loaded 200; a scale-down 2 -> 1 cut the hold to 100 meanwhile.
+  const { tx, state } = makeTx({ balance: 1_000n, held: 100n });
+  const result = await releaseDeploymentReservation({
+    tx: tx as never,
+    kind: "model",
+    deploymentId: "dep-1",
+    orgId: "org-1",
+    reservationCents: 200n, // stale
+    reason: "failed",
+  });
+  assert.deepEqual(result, { released: true, amountCents: 100n });
+  assert.equal(state.balance, 1_100n, "refunded 100, not the stale 200");
+  assert.equal(state.ledger[0]!.amountCents, 100n);
+  assert.equal(state.ledger[0]!.balanceAfter, 1_100n);
+});
+
+test("...and after a scale-up the extra hold is refunded too, not lost", async () => {
+  const { releaseDeploymentReservation } = await loadGate();
+  // The tick loaded 100; a scale-up 1 -> 2 raised the hold to 200.
+  const { tx, state } = makeTx({ balance: 1_000n, held: 200n });
+  const result = await releaseDeploymentReservation({
+    tx: tx as never,
+    kind: "model",
+    deploymentId: "dep-1",
+    orgId: "org-1",
+    reservationCents: 100n, // stale
+    reason: "stopped",
+  });
+  assert.deepEqual(result, { released: true, amountCents: 200n });
+  assert.equal(state.balance, 1_200n);
+});
+
+test("the amount is read AFTER the barrier is won (and never when it is lost)", async () => {
+  const { releaseDeploymentReservation } = await loadGate();
+  const won = makeTx();
+  await releaseDeploymentReservation({
+    tx: won.tx as never, kind: "model", deploymentId: "d", orgId: "o", reservationCents: 37n, reason: "x",
+  });
+  assert.equal(won.state.reads, 1);
+
+  const lost = makeTx({ casCount: 0 });
+  await releaseDeploymentReservation({
+    tx: lost.tx as never, kind: "model", deploymentId: "d", orgId: "o", reservationCents: 37n, reason: "x",
+  });
+  assert.equal(lost.state.reads, 0, "no read, no credit for a lost barrier");
+});
+
+test("a barrier won on a row that holds nothing (any longer) credits nothing", async () => {
+  const { releaseDeploymentReservation } = await loadGate();
+  const { tx, state } = makeTx({ held: 0n });
+  const result = await releaseDeploymentReservation({
+    tx: tx as never, kind: "model", deploymentId: "d", orgId: "o", reservationCents: 50n, reason: "x",
+  });
+  assert.deepEqual(result, { released: false, reason: "nothing_reserved" });
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.balance, 1_000n);
+
+  const nul = makeTx({ held: null });
+  assert.deepEqual(
+    await releaseDeploymentReservation({
+      tx: nul.tx as never, kind: "model", deploymentId: "d", orgId: "o", reservationCents: 50n, reason: "x",
+    }),
+    { released: false, reason: "nothing_reserved" },
+  );
+});
+
+// A release that arrives LATE (after the user restarted the deployment) must not
+// claim the new run's live hold: a restart resets reservationReleasedAt to null.
+
+test("onlyIfStatusIn restricts the barrier to terminal rows", async () => {
+  const { releaseDeploymentReservation } = await loadGate();
+  const { tx, state } = makeTx();
+  await releaseDeploymentReservation({
+    tx: tx as never,
+    kind: "model",
+    deploymentId: "dep-1",
+    orgId: "org-1",
+    reservationCents: 37n,
+    reason: "failed",
+    onlyIfStatusIn: ["stopped", "failed"],
+  });
+  assert.deepEqual(state.casWheres[0], {
+    id: "dep-1",
+    reservationReleasedAt: null,
+    status: { in: ["stopped", "failed"] },
+  });
+});
+
+test("the status guard is opt-in: restart (which releases while the row is `pending`) passes none", async () => {
+  const { releaseDeploymentReservation } = await loadGate();
+  const { tx, state } = makeTx();
+  await releaseDeploymentReservation({
+    tx: tx as never, kind: "model", deploymentId: "d", orgId: "o", reservationCents: 37n, reason: "restart",
+  });
+  assert.ok(!("status" in (state.casWheres[0] as object)));
 });
 
 test("a zero reservation is a no-op, not a zero-value ledger row", async () => {
@@ -149,7 +261,7 @@ function tickDeps(
   const released: unknown[] = [];
   const deps: DeploymentStatusTickDeps = {
     loadDeployments: async () => [],
-    getJobState: async () => "failed",
+    observeDeployment: async () => ({ state: "error" as const, endpoints: [] }),
     persistTransition: async () => ({ count: 1 }),
     checkNodeHealth: async () => ({ healthy: true, latencyMs: 1 }),
     persistNodeHealth: async () => {},
@@ -176,10 +288,10 @@ function row(over: Record<string, unknown> = {}) {
   };
 }
 
-test("a deployment observed FAILED releases its hold", async () => {
+test("a deployment observed in ERROR (-> failed) releases its hold", async () => {
   const { deps, released } = tickDeps({
     loadDeployments: async () => [row()],
-    getJobState: async () => "failed",
+    observeDeployment: async () => ({ state: "error" as const, endpoints: [] }),
   });
   const result = await runDeploymentStatusTick({ now: new Date() }, deps);
   assert.equal(result.reservationsReleased, 1);
@@ -187,12 +299,12 @@ test("a deployment observed FAILED releases its hold", async () => {
   assert.equal((released[0] as { reservationCents: bigint }).reservationCents, 37n);
 });
 
-test("a deployment observed COMPLETED (stopped) also releases — the hold is not a fee", async () => {
+test("a deployment observed STOPPED also releases — the hold is not a fee", async () => {
   // The ticket bought admission; actual consumption is billed by
   // metering. Keeping the hold after the run would charge twice.
   const { deps, released } = tickDeps({
     loadDeployments: async () => [row()],
-    getJobState: async () => "completed",
+    observeDeployment: async () => ({ state: "stopped" as const, endpoints: [] }),
   });
   const result = await runDeploymentStatusTick({ now: new Date() }, deps);
   assert.equal(result.reservationsReleased, 1);

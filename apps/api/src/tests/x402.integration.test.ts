@@ -44,6 +44,10 @@ test("x402 handshake and paid inference flow", async () => {
     slug: "demo",
     name: "Demo Deployment",
     status: "running",
+    // A deployment the GPU billing worker does NOT bill (here: the dev-only
+    // mock). Real Nosana deployments are billed per GPU-second and never take
+    // an x402 payment on /v1 (see inferenceGpuBilled.unit.test.ts).
+    nosanaJobIds: ["mock_deploy_x402test"],
     model: { pricingTier: "small", hfId: "demo/model" },
     nodes: [
       {

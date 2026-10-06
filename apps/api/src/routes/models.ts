@@ -1,24 +1,36 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { getAllFreeModels, getAvailableFreeModels } from "../config/free-models.js";
-import { MARKETS } from "../services/nosana.js";
+import { env } from "../config/env.js";
+import { isNosanaMockEnabled } from "../services/nosana.js";
+import { listDeployableTiers, toNosanaNetwork } from "../services/nosanaMarkets.js";
 import { MODEL_CATALOG } from "../config/modelCatalog.js";
 
 
 
 // GPU tiers derived from the SAME market table compute metering and
-// treasury settlement bill against (services/nosana.ts MARKETS). This
+// treasury settlement bill against (services/nosanaMarkets.ts MARKETS). This
 // used to be a second hand-typed table whose prices disagreed with both
 // the wizard AND the metered rate — a user picked "$0.25/hr" and was
 // billed $0.54. One source of truth; if MARKETS moves, every surface
 // moves. Availability counts were invented ("150 available") and are
 // intentionally absent until the market-sync worker reports real ones.
-const GPU_TIERS = Object.entries(MARKETS).map(([id, market]) => ({
-  id,
-  name: market.name,
-  vram: market.vram,
-  pricePerHour: Math.round(market.pricePerSecond * 3600 * 100) / 100,
-}));
+//
+// Only tiers that can actually be DEPLOYED are offered: a tier whose Nosana
+// market address is not configured for this network (e.g. the built-in mainnet
+// markets on devnet with no NOSANA_MARKETS_JSON override) is not selectable —
+// the wizard must not offer what deploy would refuse. The dev-only mock
+// (ALLOW_NOSANA_MOCK) offers every tier, since it never touches a market.
+function getGpuTiers() {
+  return listDeployableTiers(toNosanaNetwork(env.SOLANA_NETWORK), {
+    allowMock: isNosanaMockEnabled(),
+  }).map(([id, market]) => ({
+    id,
+    name: market.name,
+    vram: market.vram,
+    pricePerHour: Math.round(market.pricePerSecond * 3600 * 100) / 100,
+  }));
+}
 
 export const modelRoutes: FastifyPluginAsync = async (app) => {
   // List free models
@@ -75,7 +87,7 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
 
     // Include free models in default response unless tier=gpu
     if (tier === "gpu") {
-      return { models: gpuModels, gpuTiers: GPU_TIERS };
+      return { models: gpuModels, gpuTiers: getGpuTiers() };
     }
 
     const freeModels = getAvailableFreeModels().map((m) => ({
@@ -89,7 +101,7 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       models: [...freeModels, ...gpuModels],
-      gpuTiers: GPU_TIERS,
+      gpuTiers: getGpuTiers(),
     };
   });
 
@@ -108,7 +120,7 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
     // Find compatible GPU tiers
     const tierOrder = ["3060", "4070", "4090", "a100", "h100"];
     const minIndex = tierOrder.indexOf(model.minGpuTier);
-    const compatibleTiers = GPU_TIERS.filter(
+    const compatibleTiers = getGpuTiers().filter(
       (t) => tierOrder.indexOf(t.id) >= minIndex
     );
 
@@ -134,7 +146,7 @@ export const modelRoutes: FastifyPluginAsync = async (app) => {
       .parse(request.body);
 
     const model = MODEL_CATALOG.find((m) => m.id === modelId);
-    const gpu = GPU_TIERS.find((t) => t.id === gpuTier);
+    const gpu = getGpuTiers().find((t) => t.id === gpuTier);
 
     if (!model || !gpu) {
       return reply.badRequest("Invalid model or GPU tier");

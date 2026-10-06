@@ -9,13 +9,13 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Chat completions (/v1)",
   description:
-    "The OpenAI-compatible WheelsAI inference API: POST /v1/{deploymentSlug}/chat/completions, request fields, max_tokens cap, credit hold and settle, token pricing, errors and the x402 pay-per-request flow.",
+    "The OpenAI-compatible WheelsAI inference API: POST /v1/{deploymentSlug}/chat/completions, request fields, max_tokens cap, how requests to a dedicated deployment are covered by its per-second GPU billing, errors and the x402 pay-per-request flow.",
 };
 
 const toc = [
   { id: "chat-completions", title: "Create a chat completion" },
   { id: "billing", title: "How a request is billed" },
-  { id: "pricing", title: "Token pricing" },
+  { id: "pricing", title: "Per-request token pricing" },
   { id: "errors", title: "Errors" },
   { id: "list-models", title: "List your models" },
   { id: "x402", title: "Paying per request with x402" },
@@ -26,7 +26,7 @@ export default function InferenceApiPage() {
     <DocPage
       href="/docs/api/inference"
       title="Chat completions (/v1)"
-      lead="Each running model deployment is reachable through an OpenAI-compatible chat completions endpoint on the WheelsAI API. Requests are authenticated, metered against your plan, and paid from credits or, where enabled, per request with x402."
+      lead="Each running model deployment is reachable through an OpenAI-compatible chat completions endpoint on the WheelsAI API. Requests are authenticated and metered against your plan. A request to a dedicated deployment is covered by that deployment's per-second GPU billing: it is not charged again per token."
       toc={toc}
     >
       <Endpoint
@@ -61,7 +61,7 @@ export default function InferenceApiPage() {
               description: (
                 <>
                   Completion cap, 1 to <strong>8192</strong>. Defaults to <strong>4096</strong> when omitted. It is always sent
-                  to the model server, so every request has a bounded worst-case cost.
+                  to the model server, so every request does a bounded amount of work.
                 </>
               ),
             },
@@ -95,38 +95,49 @@ export default function InferenceApiPage() {
         <p>
           The response is the model server&apos;s OpenAI-format chat completion, including <code>choices</code> and{" "}
           <code>usage</code> (<code>prompt_tokens</code>, <code>completion_tokens</code>). Every response carries an{" "}
-          <code>X-Request-Id</code> header: yours if you sent one, otherwise a generated id. The same id labels the ledger rows
-          for the request.
+          <code>X-Request-Id</code> header: yours if you sent one, otherwise a generated id.
         </p>
       </Endpoint>
 
       <h2 id="billing">How a request is billed</h2>
-      <p>With credits (the default), each request goes through a hold and a settlement:</p>
-      <ol>
-        <li>
-          <strong>Hold.</strong> Before any GPU work, the worst-case cost is reserved from your balance: the prompt&apos;s
-          estimated tokens (characters divided by four, plus a 25% margin) and the full <code>max_tokens</code>, at the
-          model&apos;s pricing tier. The reservation only succeeds if your balance covers it, so concurrent requests cannot
-          overdraw. Your balance must also be at least $0.10 to start a request.
-        </li>
-        <li>
-          <strong>Settle.</strong> After the response, the charge is corrected to the actual <code>usage</code> and the
-          difference is returned. If actual usage exceeds the hold, the extra is charged only if your balance covers it; the
-          balance never goes negative.
-        </li>
-        <li>
-          <strong>Release.</strong> If no node is healthy or the node cannot be reached, the whole hold is returned.
-        </li>
-      </ol>
       <p>
-        Each <code>/v1</code> request also counts as one API call toward your plan&apos;s monthly quota. GPU time for the
-        deployment itself is billed separately; see{" "}
+        A request to a running deployment is <strong>included in that deployment&apos;s GPU bill</strong>. The deployment is
+        charged per second of GPU time for as long as it runs, whether it serves one request or a million, so a request to it:
+      </p>
+      <ul>
+        <li>takes no hold from your credit balance and is not charged per token;</li>
+        <li>writes no ledger row of its own (the GPU time appears as <code>gpu_usage</code> rows for the deployment);</li>
+        <li>is not checked against your credit balance and is never answered with an x402 payment challenge.</li>
+      </ul>
+      <p>
+        Token counts are still returned in <code>usage</code> and recorded in the deployment&apos;s metrics. What ends service
+        is the GPU bill: when your credits can no longer cover the deployment&apos;s GPU time it is stopped, and its endpoint
+        answers <code>404</code> until you restart it. If the GPU time has gone unpaid for several billing intervals and the
+        deployment could not be stopped yet, requests are refused in the meantime: <code>402</code> when your credits do not
+        cover what is owed, <code>503</code> (<code>gpu_billing_stalled</code>) when they do and billing itself is behind. If
+        per-second GPU billing is switched off on a self-hosted server, dedicated deployments do not serve requests at all (
+        <code>503</code>, <code>gpu_billing_disabled</code>) rather than serving them unbilled.
+      </p>
+      <p>
+        Each <code>/v1</code> request also counts as one API call toward your plan&apos;s monthly quota, including{" "}
+        <code>GET</code> requests such as <code>/v1/models</code> and requests made with a signed-in session. GPU time for the
+        deployment itself is what you pay for; see{" "}
         <Link href="/docs/guides/deploy-a-model#billing">How GPU time is billed</Link>.
       </p>
 
-      <h2 id="pricing">Token pricing</h2>
+      <h2 id="pricing">Per-request token pricing</h2>
+      <Callout variant="warning" title="Does not apply to dedicated deployments">
+        <p>
+          Every deployment you create runs on dedicated GPUs and is billed per second of GPU time, so the per-token prices and
+          the x402 flow on this page are not charged for it. They apply only to a deployment that is billed per request instead
+          of per GPU-second.
+        </p>
+      </Callout>
       <p>
-        Every catalog model has a <code>pricingTier</code> (shown by <code>GET /api/models</code>). Prices per million tokens:
+        Every catalog model has a <code>pricingTier</code> (shown by <code>GET /api/models</code>). Where a deployment is billed
+        per request, the worst-case cost (estimated prompt tokens plus the full <code>max_tokens</code>) is held from your
+        credits before the request reaches the GPU, settled to the actual <code>usage</code> afterwards, and returned in full
+        if the node cannot serve it. Prices per million tokens:
       </p>
       <DocTable
         caption="Token prices by pricing tier, US dollars per million tokens"
@@ -141,7 +152,7 @@ export default function InferenceApiPage() {
           { tier: <code>large</code>, input: "$0.90", output: "$3.60" },
         ]}
       />
-      <p>Each request&apos;s cost is rounded up to the next whole cent.</p>
+      <p>A per-request charge is rounded up to the next whole cent.</p>
 
       <h2 id="errors">Errors</h2>
       <DocTable
@@ -157,16 +168,31 @@ export default function InferenceApiPage() {
             status: <code>402</code>,
             when: (
               <>
-                Not enough credits: <code>&#123; &quot;error&quot;: &quot;Payment Required&quot;, &quot;message&quot;: ..., &quot;requiredCents&quot;: n &#125;</code>
-                . Or, where x402 is enabled, a payment challenge (below).
+                Not enough credits,{" "}
+                <code>&#123; &quot;error&quot;: &quot;Payment Required&quot;, &quot;message&quot;: ..., &quot;requiredCents&quot;: n &#125;</code>
+                . For a dedicated deployment this means its GPU time has gone unpaid and your balance does not cover it; a
+                single request is never the reason. For a deployment billed per request it is the request&apos;s own cost, or,
+                where x402 is enabled, a payment challenge (below).
               </>
             ),
           },
           { status: <code>404</code>, when: "No deployment with that slug in your organization, or it is not running." },
           { status: <code>409</code>, when: "The x402 payment transaction was already used for another request." },
           { status: <code>429</code>, when: <>Monthly API calls used up (<code>plan_limit_reached</code>) or a rate limit.</> },
-          { status: <code>502</code>, when: "The GPU node could not be reached. The hold is released." },
-          { status: <code>503</code>, when: "The deployment has no healthy node right now. The hold is released." },
+          {
+            status: <code>502</code>,
+            when: "The GPU node could not be reached, or it answered with an error or a redirect. Nothing is charged for the request.",
+          },
+          {
+            status: <code>503</code>,
+            when: (
+              <>
+                The deployment has no healthy node right now, per-second GPU billing is not running on this server (
+                <code>gpu_billing_disabled</code>), or it is running but has not collected this deployment&apos;s GPU time for
+                several intervals (<code>gpu_billing_stalled</code>).
+              </>
+            ),
+          },
         ]}
       />
 
@@ -189,7 +215,9 @@ export default function InferenceApiPage() {
 
       <h2 id="x402">Paying per request with x402</h2>
       <p>
-        On servers where x402 is enabled, <code>/v1</code> requests can be paid individually with a Solana payment, following
+        A dedicated deployment is never challenged for an x402 payment: its requests are already paid for by its GPU time (see{" "}
+        <a href="#billing">How a request is billed</a>). For a deployment billed per request, on servers where x402 is
+        enabled, <code>/v1</code> requests can be paid individually with a Solana payment, following
         the HTTP 402 pattern. The server runs in one of two modes: <strong>fallback</strong> (use credits when the balance covers
         the request, otherwise ask for payment) or <strong>required</strong> (every request is paid). When x402 is off, requests
         use credits only. You still authenticate as usual; x402 replaces the credit charge, not the API key.

@@ -90,7 +90,8 @@ test("compileDeployPlan picks the right Nosana market + price for the tier", asy
     gpuTier: "4090",
   });
 
-  assert.equal(plan.resourcePlan.market, "4090MarketAddressPlaceholder");
+  // The real Nosana mainnet nvidia-4090 market (services/nosanaMarkets.ts).
+  assert.equal(plan.resourcePlan.market, "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf");
   assert.equal(plan.resourcePlan.pricePerSecondUsd, 0.00025);
   assert.equal(plan.resourcePlan.replicas, 1);
 });

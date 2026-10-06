@@ -3,7 +3,8 @@ import { Queue, Worker } from "bullmq";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { buildDeploymentStatusTickDeps } from "../services/buildDeploymentStatusTickDeps.js";
-import { getNosanaClient } from "../services/nosana.js";
+import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
+import { getNosanaClient, isNosanaMockEnabled } from "../services/nosana.js";
 import { runDeploymentStatusTick } from "../services/runDeploymentStatusTick.js";
 import { triggerWebhook } from "../services/webhooks.js";
 import { createLogger } from "../utils/logger.js";
@@ -19,8 +20,9 @@ let worker: Worker | null = null;
 
 /**
  * Starts the BullMQ-backed deployment-status queue and worker (plan D8).
- * Polls Nosana job state for non-terminal model/agent deployments and
- * persists OBSERVED transitions — replaces the deleted setTimeout
+ * Polls the Nosana Deployment Manager for non-terminal model/agent
+ * deployments and persists OBSERVED transitions (and their real endpoints as
+ * DeploymentNodes) — replaces the deleted setTimeout
  * status simulation in routes/agents.ts / routes/deployments.ts.
  * Only starts if `env.DEPLOYMENT_STATUS_INTERVAL_MS` is greater than 0.
  */
@@ -58,12 +60,17 @@ export async function startDeploymentStatusQueue(): Promise<void> {
       const client = await getNosanaClient();
       const deps = buildDeploymentStatusTickDeps({
         prisma,
-        // Strict read: throws on SDK/RPC failure so rows stay untouched
-        // during an outage (getJobStatus's "running" stub would be the
-        // exact fabrication D8 removes).
-        getJobStatus: (jobId) => client.getJobStatusStrict(jobId),
-        checkNodeHealth: (nodeUrl) => client.checkNodeHealth(nodeUrl),
-        allowMock: env.ALLOW_NOSANA_MOCK,
+        // Strict read of the Nosana Deployment-Manager deployment (status +
+        // the real endpoints): throws on API failure so rows stay untouched
+        // during an outage. `nosanaJobIds[0]` is a Deployment-Manager id, NOT
+        // an on-chain job address, so jobs.get() cannot be used.
+        getDeploymentStatus: (id) => client.getDeploymentStatus(id),
+        checkNodeHealth: (nodeUrl, engine) => client.checkNodeHealth(nodeUrl, engine),
+        // Retry vault.withdraw for stopped/failed deployments until the
+        // platform's funds are verified recovered.
+        reclaimVault: (id) => client.reclaimDeploymentVault(id),
+        reclaimMaxAgeHours: getNosanaDeployConfig().reclaimMaxAgeHours,
+        allowMock: isNosanaMockEnabled(),
         // Tick-observed deployment.* events (running / failed / job-ended
         // stopped). degraded has no event type — skipped.
         emitTransition: async (t) => {

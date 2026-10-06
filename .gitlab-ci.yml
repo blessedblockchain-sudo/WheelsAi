@@ -159,10 +159,9 @@ migrations:
 # on a single run.
 # ---------------------------------------------------------------------------
 
-# Status: 1 of 4 files passes.
-#   - token-gate.integration.test.ts  hangs after its assertions pass (open
+# Status: 1 of 3 files passes.
+#   - x402.integration.test.ts        hangs after its assertions pass (open
 #     handle keeps the event loop alive; the runner never exits)
-#   - x402.integration.test.ts        same
 #   - wallet-auth.integration.test.ts fails outright: it assigns to an ES
 #     module export ("Cannot assign to read only property 'generateNonce' of
 #     object '[object Module]'"). Needs the patch-the-object approach used in

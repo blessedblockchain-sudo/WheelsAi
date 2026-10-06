@@ -9,7 +9,13 @@ import { env } from "../config/env.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { mergeAgentEnv, redactAgentEnv, sealAgentEnv } from "../services/agentSecrets.js";
 import { assertCanCreateAgent } from "../services/orgPlan.js";
-import { getNosanaClient } from "../services/nosana.js";
+import {
+  MarketNotConfiguredError,
+  NosanaNotConfiguredError,
+  getNosanaClient,
+} from "../services/nosana.js";
+import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
+import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
 import {
   parseGitHubUrl,
   detectFramework,
@@ -23,6 +29,9 @@ import {
 import { AGENT_FRAMEWORKS } from "../config/frameworks.js";
 
 const logger = createLogger("agent-routes");
+
+/** Statuses in which an agent deployment may still be consuming a GPU. */
+const AGENT_DEPLOYMENT_LIVE_STATUSES = ["pending", "building", "deploying", "running"];
 
 /** Rolls the deployment row back with a failed credit admission. */
 class InsufficientCreditsError extends Error {
@@ -378,15 +387,39 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.notFound("Agent not found");
     }
 
-    // Stop any running deployments
-    const runningDeployments = agent.deployments.filter((d) => d.status === "running");
-    if (runningDeployments.length > 0) {
+    // Stop every deployment that may still hold a GPU (a `deploying` one with
+    // a Nosana id is as live as a `running` one). Deleting the agent deletes
+    // its deployment rows, and with them the only record of their Nosana ids:
+    // one that was not verified stopped AND drained is handed to the vault
+    // sweep first. If even that cannot be recorded the delete is refused - a
+    // deleted row must never leave a GPU running on platform funds.
+    const liveDeployments = agent.deployments.filter(
+      (d) => AGENT_DEPLOYMENT_LIVE_STATUSES.includes(d.status) && d.nosanaJobIds.length > 0,
+    );
+    if (liveDeployments.length > 0) {
       const nosana = await getNosanaClient();
-      for (const deployment of runningDeployments) {
+      for (const deployment of liveDeployments) {
         for (const jobId of deployment.nosanaJobIds) {
-          await nosana.stopDeployment(jobId).catch((err) => {
+          let settled = false;
+          try {
+            settled = (await nosana.stopDeployment(jobId)).reclaimed;
+          } catch (err) {
             logger.error({ err, jobId }, "Failed to stop agent deployment");
+          }
+          if (settled) continue;
+          const recorded = await recordNosanaOrphan(prisma, {
+            nosanaDeploymentId: jobId,
+            sourceKind: "agent",
+            sourceId: deployment.id,
+            reason: "agent_deleted",
           });
+          if (!recorded) {
+            return reply.status(502).send({
+              error: "nosana_stop_failed",
+              message:
+                "Nosana did not confirm that the agent's deployment stopped. The agent was not deleted; retry shortly.",
+            });
+          }
         }
       }
     }
@@ -441,6 +474,29 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       if (modelDeployment.status !== "running") {
         return reply.badRequest("Model deployment is not running");
       }
+    }
+
+    // Pre-flight BEFORE any credits are reserved (as POST /deployments does):
+    // an unconfigured platform (no Nosana wallet, or no market for this GPU
+    // tier on this network) answers 501 here. It used to answer 201, take the
+    // reservation, and only then fail in the background submit.
+    try {
+      (await getNosanaClient()).assertCanDeploy(body.gpuTier);
+    } catch (err) {
+      if (err instanceof NosanaNotConfiguredError) {
+        return reply.status(501).send({ error: err.code, message: err.message });
+      }
+      if (err instanceof MarketNotConfiguredError) {
+        return err.code === "unknown_tier"
+          ? reply.status(400).send({ error: "unknown_gpu_tier", message: err.message })
+          : reply.status(501).send({ error: "gpu_market_not_configured", message: err.message });
+      }
+      // The client could not be built at all (bad wallet key, RPC setup).
+      logger.error({ err, agentId }, "Nosana client unavailable for agent deploy");
+      return reply.status(503).send({
+        error: "nosana_unavailable",
+        message: "The compute backend is not available right now; nothing was reserved. Retry shortly.",
+      });
     }
 
     // A4: Nosana jobs are platform-paid — gate admission on a per-org
@@ -584,12 +640,32 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         return reply.notFound("Deployment not found");
       }
 
-      // Stop Nosana jobs
+      // Stop Nosana FIRST and fail closed, as the model stop route does: a row
+      // marked `stopped` is never polled again, so marking it while the stop
+      // did not land would leave the GPU running on platform funds unseen.
       const nosana = await getNosanaClient();
       for (const jobId of deployment.nosanaJobIds) {
-        await nosana.stopDeployment(jobId).catch((err) => {
+        let reclaimed: boolean;
+        try {
+          reclaimed = (await nosana.stopDeployment(jobId)).reclaimed;
+        } catch (err) {
           logger.error({ err, jobId }, "Failed to stop Nosana job");
-        });
+          return reply.status(502).send({
+            error: "nosana_stop_failed",
+            message:
+              "Nosana did not confirm the stop. The deployment was left as it was; retry shortly.",
+          });
+        }
+        // AgentDeployment has no vault stamp: a withdraw that is still pending
+        // (common right after a stop) is retried by the orphan sweep.
+        if (!reclaimed) {
+          await recordNosanaOrphan(prisma, {
+            nosanaDeploymentId: jobId,
+            sourceKind: "agent",
+            sourceId: deploymentId,
+            reason: "agent_stop_vault_pending",
+          });
+        }
       }
 
       await prisma.agentDeployment.update({
@@ -682,14 +758,39 @@ async function submitAgentToNosana(
       config.replicas
     );
 
-    // Update with Nosana job IDs
-    await prisma.agentDeployment.update({
-      where: { id: deploymentId },
+    // Update with Nosana job IDs - only while the row is still being
+    // submitted. A stop that landed during createDeployment found no id to
+    // stop; writing the id onto the stopped row now would leave the deployment
+    // running with nothing polling it.
+    const stored = await prisma.agentDeployment.updateMany({
+      where: { id: deploymentId, status: { in: ["pending", "building", "deploying"] } },
       data: {
         nosanaJobIds: [nosanaDeployment.id],
         endpoint: `https://agents.wheelsai.io/${agent.slug}`,
       },
     });
+    if (stored.count === 0) {
+      logger.warn(
+        { deploymentId, nosanaId: nosanaDeployment.id },
+        "Agent deployment was stopped during submit; stopping the Nosana deployment just created",
+      );
+      const settled = await nosana
+        .stopDeployment(nosanaDeployment.id)
+        .then((stop) => stop.reclaimed)
+        .catch((err) => {
+          logger.error({ err, deploymentId }, "Failed to stop an orphaned agent deployment");
+          return false;
+        });
+      if (!settled) {
+        await recordNosanaOrphan(prisma, {
+          nosanaDeploymentId: nosanaDeployment.id,
+          sourceKind: "agent",
+          sourceId: deploymentId,
+          reason: "stopped_during_submit",
+        });
+      }
+      return;
+    }
 
     // Status stays "deploying" until the deployment-status worker
     // (queues/deployment-status.queue.ts) OBSERVES the Nosana job
@@ -699,6 +800,22 @@ async function submitAgentToNosana(
     logger.info({ deploymentId, nosanaId: nosanaDeployment.id }, "Agent submitted to Nosana");
   } catch (error: any) {
     logger.error({ error, deploymentId }, "Failed to submit agent to Nosana");
+
+    // A failure after creation carries the Nosana id. Unless its cleanup
+    // verified it stopped and drained, keep the id for the vault sweep: the
+    // row is about to be `failed` with no id, and nothing else would stop it.
+    if (
+      error instanceof NosanaLifecycleError &&
+      error.deploymentId &&
+      !(error.cleanup?.stopped && error.cleanup.reclaimed)
+    ) {
+      await recordNosanaOrphan(prisma, {
+        nosanaDeploymentId: error.deploymentId,
+        sourceKind: "agent",
+        sourceId: deploymentId,
+        reason: "submit_failed",
+      });
+    }
 
     await prisma.agentDeployment.update({
       where: { id: deploymentId },

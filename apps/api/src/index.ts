@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { Redis } from "ioredis";
-import { disconnectTokenGateCache } from "./middleware/tokenGate.js";
 import { syncModelCatalog, type ModelCatalogDb } from "./services/syncModelCatalog.js";
 import { emailAuthRoutes } from "./routes/emailAuth.js";
 import { stripeWebhookRoutes } from "./routes/stripeWebhook.js";
@@ -95,6 +94,8 @@ import {
   stopReputationAttestationQueue,
   startDeploymentStatusQueue,
   stopDeploymentStatusQueue,
+  startGpuBillingQueue,
+  stopGpuBillingQueue,
   startAgentMessageQueue,
   stopAgentMessageQueue,
   startSchedulerQueue,
@@ -179,7 +180,6 @@ async function main() {
   );
   app.addHook("onClose", async () => {
     rateLimitRedis.disconnect();
-    disconnectTokenGateCache();
     disconnectPlanUsage();
   });
   await app.register(rateLimit, {
@@ -424,6 +424,7 @@ async function main() {
   await startFeeRouterQueue();
   await startReputationAttestationQueue();
   await startDeploymentStatusQueue();
+  await startGpuBillingQueue();
   await startAgentMessageQueue();
   await startSchedulerQueue();
   await startUptimeProberQueue();
@@ -447,6 +448,7 @@ async function main() {
       await stopFeeRouterQueue();
       await stopReputationAttestationQueue();
       await stopDeploymentStatusQueue();
+      await stopGpuBillingQueue();
       await stopAgentMessageQueue();
       await stopSchedulerQueue();
       await stopUptimeProberQueue();

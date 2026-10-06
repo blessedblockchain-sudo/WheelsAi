@@ -176,8 +176,36 @@ export default function DeploymentsApiPage() {
         />
         <p>
           Replica changes apply to a running deployment. Adding replicas reserves credit for the added replicas first, the same
-          way as creation.
+          way as creation; removing replicas returns their share of the reservation. The GPU time used so far is charged at
+          the current replica count before the change, and the new count is billed only from the moment Nosana has applied
+          it.
         </p>
+        <p>
+          One replica change runs at a time. While it is in progress the response&apos;s <code>replicas</code> is still the
+          count that is running (and billed) and <code>pendingReplicas</code> is the target.
+        </p>
+        <ul>
+          <li>
+            <code>402</code> <code>insufficient_credits</code>: your balance does not cover the GPU time used so far, or the
+            reservation for the added replicas. Nothing was changed.
+          </li>
+          <li>
+            <code>409</code> <code>replica_change_in_progress</code>: an earlier change has not finished. Retry once it has.
+          </li>
+          <li>
+            <code>409</code> <code>deployment_not_running</code> or <code>deployment_conflict</code>: the deployment is not
+            running, or it changed while it was being scaled.
+          </li>
+          <li>
+            <code>502</code> <code>nosana_scale_failed</code>: Nosana refused the change. Replicas and reservation are as they
+            were.
+          </li>
+          <li>
+            <code>502</code> <code>nosana_scale_unconfirmed</code>: Nosana did not confirm the change and could not be asked.
+            The deployment keeps its current count, and the change is resolved to what Nosana actually runs within a few
+            minutes; further replica changes answer <code>409</code> until then.
+          </li>
+        </ul>
       </Endpoint>
 
       <Endpoint id="restart-deployment" method="POST" path="/api/deployments/{deploymentId}/restart" auth="API key or session" title="Restart a deployment">

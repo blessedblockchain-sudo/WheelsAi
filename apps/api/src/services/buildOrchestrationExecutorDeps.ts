@@ -14,9 +14,11 @@
  *               inference path for every non-interactive caller means
  *               orchestration cannot drift into a second, differently
  *               behaving engine.
- *   model     — must go through the deployment chat service, which holds
- *               credits before the call, settles on success and releases
- *               on failure. See PRODUCTION_MODEL_INVOKER below.
+ *   model     — the deployment chat service (deploymentChat.ts), which
+ *               admits and bills a deployment by the rules /v1 uses: a
+ *               GPU-billed deployment is included in its GPU time, a
+ *               per-request one holds credits before the call, settles on
+ *               the answer and releases on failure.
  *   retrieval — searchKnowledgeBase, which is not billed anywhere.
  *
  * Every lookup is org-scoped: a step referencing an agent or knowledge
@@ -28,6 +30,7 @@
  */
 
 import { prisma as defaultPrisma } from "../lib/prisma.js";
+import { chatWithDeployment as defaultChatWithDeployment } from "./buildDeploymentChatDeps.js";
 import type { ExecuteScheduledTaskDeps } from "./executeScheduledTask.js";
 import { searchKnowledgeBase } from "./knowledge.js";
 import { buildProductionExecutorDeps } from "./scheduledTaskExecutorProduction.js";
@@ -40,24 +43,13 @@ type InvokeModel = NonNullable<OrchestrationRunDeps["invokeModel"]>;
 type SearchKnowledge = NonNullable<OrchestrationRunDeps["searchKnowledge"]>;
 
 /**
- * The function model steps call. It MUST be the deployment chat service
- * that applies the deployment's billing rules (credit hold, settle,
- * release; nothing charged for gpu_included). That logic currently lives
- * inside the /v1 route handler and is not exported, so there is nothing
- * safe to call yet: wiring a model step to anything else would run GPU
- * inference without charging for it. Until the service is extracted this
- * stays null and a model step fails with MODEL_STEPS_UNAVAILABLE_REASON.
+ * Whether model steps can run here; reported in plan previews. They always
+ * can: the deployment chat service is part of this server. What a particular
+ * deployment cannot do (not running, unpaid GPU time, no credits) is that
+ * step's own named failure when the run reaches it.
  */
-const PRODUCTION_MODEL_INVOKER: InvokeModel | null = null;
-
-export const MODEL_STEPS_UNAVAILABLE_REASON =
-  "the deployment chat service that bills model calls is not connected to the workflow engine on this server";
-
-/** Whether model steps can run here; reported in plan previews. */
 export function modelStepCapability(): { available: boolean; reason?: string } {
-  return PRODUCTION_MODEL_INVOKER
-    ? { available: true }
-    : { available: false, reason: MODEL_STEPS_UNAVAILABLE_REASON };
+  return { available: true };
 }
 
 interface StepResultPrisma {
@@ -75,7 +67,9 @@ interface StepResultPrisma {
 export interface OrchestrationExecutorOverrides {
   prisma?: StepResultPrisma;
   executor?: Pick<ExecuteScheduledTaskDeps, "loadAgent" | "runAgentChat">;
-  invokeModel?: InvokeModel | null;
+  invokeModel?: InvokeModel;
+  /** The service behind the default model invoker. */
+  chatWithDeployment?: typeof defaultChatWithDeployment;
   searchKnowledge?: SearchKnowledge;
 }
 
@@ -100,8 +94,7 @@ export function buildOrchestrationExecutorDeps(
 > {
   const prisma = overrides.prisma ?? (defaultPrisma as unknown as StepResultPrisma);
   const executor = overrides.executor ?? buildProductionExecutorDeps();
-  const invokeModel =
-    overrides.invokeModel === undefined ? PRODUCTION_MODEL_INVOKER : overrides.invokeModel;
+  const chatWithDeployment = overrides.chatWithDeployment ?? defaultChatWithDeployment;
 
   return {
     invokeAgent: async ({ agentId, orgId, prompt, signal }) => {
@@ -113,9 +106,19 @@ export function buildOrchestrationExecutorDeps(
     },
 
     invokeModel:
-      invokeModel ??
-      (async () => {
-        throw new Error(`model steps cannot run yet: ${MODEL_STEPS_UNAVAILABLE_REASON}`);
+      overrides.invokeModel ??
+      (async ({ deploymentId, modelId, orgId, prompt, signal }) => {
+        // Org-scoped inside: another tenant's deployment is "not running or
+        // does not exist". A refusal throws with its reason, which is what
+        // the step row records.
+        const result = await chatWithDeployment({
+          orgId,
+          deploymentId,
+          modelId,
+          messages: [{ role: "user", content: prompt }],
+          signal,
+        });
+        return { content: result.content, ...(result.usage && { usage: result.usage }) };
       }),
 
     searchKnowledge:

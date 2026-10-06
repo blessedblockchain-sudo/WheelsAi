@@ -91,16 +91,85 @@ test("an agent outside the organization is not found and is never invoked", asyn
   assert.equal(chats.length, 0);
 });
 
-test("a model step fails with the named reason while no billed model path is wired", async () => {
-  const { deps, mod } = await build();
-  assert.deepEqual(mod.modelStepCapability(), {
-    available: false,
-    reason: mod.MODEL_STEPS_UNAVAILABLE_REASON,
+test("a model step goes to the deployment chat service, in the run's organization, with its signal", async () => {
+  const calls: unknown[] = [];
+  const controller = new AbortController();
+  const { deps, mod } = await build({
+    chatWithDeployment: async (request: unknown) => {
+      calls.push(request);
+      return {
+        content: "from the deployment",
+        usage: { inputTokens: 3, outputTokens: 5 },
+        finishReason: "stop",
+        billing: { mode: "credits", chargedCents: 2 },
+        requestId: "req-1",
+      };
+    },
+  });
+  // Nothing to warn about in a plan preview any more.
+  assert.deepEqual(mod.modelStepCapability(), { available: true });
+
+  const result = await deps.invokeModel!({
+    deploymentId: "dep-1",
+    modelId: "llama-3.1-8b",
+    orgId: "org-1",
+    prompt: "hi",
+    signal: controller.signal,
+  });
+  assert.deepEqual(result, { content: "from the deployment", usage: { inputTokens: 3, outputTokens: 5 } });
+  assert.deepEqual(calls, [
+    {
+      orgId: "org-1",
+      deploymentId: "dep-1",
+      modelId: "llama-3.1-8b",
+      messages: [{ role: "user", content: "hi" }],
+      signal: controller.signal,
+    },
+  ]);
+});
+
+test("a model step the service refuses fails with the service's reason; unreported usage is not invented", async () => {
+  const refused = await build({
+    chatWithDeployment: async () => {
+      throw new Error("model deployment dep-1 does not exist in this organization or is not running");
+    },
   });
   await assert.rejects(
-    deps.invokeModel!({ deploymentId: "dep-1", modelId: null, orgId: "org-1", prompt: "hi" }),
-    new RegExp(`model steps cannot run yet: ${mod.MODEL_STEPS_UNAVAILABLE_REASON}`),
+    refused.deps.invokeModel!({ deploymentId: "dep-1", modelId: null, orgId: "org-2", prompt: "hi" }),
+    /does not exist in this organization or is not running/,
   );
+
+  const silent = await build({
+    chatWithDeployment: async () => ({
+      content: "ok",
+      usage: null,
+      finishReason: "stop",
+      billing: { mode: "gpu_included", chargedCents: 0 },
+      requestId: "req-2",
+    }),
+  });
+  assert.deepEqual(
+    await silent.deps.invokeModel!({ deploymentId: "dep-1", modelId: null, orgId: "org-1", prompt: "hi" }),
+    { content: "ok" },
+  );
+});
+
+test("the default model invoker is the billed deployment chat, not a bare node call", async () => {
+  setupEnv();
+  const { readFileSync } = await import("node:fs");
+  const read = (file: string) => readFileSync(new URL(`../services/${file}`, import.meta.url), "utf8");
+  const wiring = read("buildOrchestrationExecutorDeps.ts");
+  assert.match(wiring, /overrides\.chatWithDeployment \?\? defaultChatWithDeployment/);
+  assert.doesNotMatch(wiring, /model steps cannot run|fetch\(/);
+  const bound = read("buildDeploymentChatDeps.ts");
+  assert.match(bound, /where: \{ id: deploymentId, orgId, status: "running" \}/);
+  assert.match(bound, /gpuBillingBlock: \(deployment, orgId\) => gpuBillingBlock\(deployment, orgId\)/);
+  assert.match(bound, /holdInferenceCredits\(tx as unknown as InferenceHoldPrisma, args\)/);
+  assert.match(bound, /callNode: proxyToNode/);
+  assert.match(bound, /redirect: "manual"/);
+  // The /v1 route calls the node and counts usage through the same two functions.
+  const route = readFileSync(new URL("../routes/inference.ts", import.meta.url), "utf8");
+  assert.match(route, /import \{ proxyToNode, recordDeploymentUsage as recordUsage \} from "\.\.\/services\/buildDeploymentChatDeps\.js"/);
 });
 
 test("an injected model invoker is used as is", async () => {

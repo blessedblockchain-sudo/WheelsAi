@@ -196,8 +196,8 @@ export default function WorkflowsApiPage() {
 }`}
         />
         <p>
-          <code>warnings</code> lists what will run but may surprise you, for example a model step on a server where model
-          steps are not connected yet.
+          <code>warnings</code> lists what will run but may surprise you, for example a fallback agent on a step whose{" "}
+          <code>onError</code> is not <code>fallback</code>, which is never used.
         </p>
       </Endpoint>
 

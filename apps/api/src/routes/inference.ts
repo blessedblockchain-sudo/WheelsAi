@@ -12,24 +12,34 @@ import {
   parseChatCompletionRequest,
   type CompletionMeta,
   type NormalizedMessage,
-  type OpenAiErrorResponse,
 } from "../services/openaiCompat.js";
 import { env } from "../config/env.js";
 import { createLogger } from "../utils/logger.js";
 import { Prisma, prisma } from "@wheelsai/db";
 import { PRICING_TIERS, calculateTokenCost } from "@wheelsai/shared";
 import { abortOnClientClose, CLIENT_GONE } from "../services/chatStreamSettlement.js";
-import { getPricePerSecond } from "../services/computeMetering.js";
+import { proxyToNode, recordDeploymentUsage as recordUsage } from "../services/buildDeploymentChatDeps.js";
+import {
+  MIN_INFERENCE_BALANCE_CENTS,
+  completionChars,
+  estimatePromptTokens,
+  inferenceHoldCents,
+  nodeErrorMessage,
+  nodeStatusError,
+  pricedUsage,
+  reportedNodeUsage,
+  retryAfterOf,
+  startNodeDeadline,
+  type NodeUsage,
+} from "../services/deploymentChat.js";
 import { gpuBillingBlock, selectNode, type NodeInfo } from "../services/hostedModel.js";
-import { passthroughStream, type Deadline } from "../services/mastra-runtime.js";
-import { isAllowedNodeUrl } from "../services/nodeUrlAllowlist.js";
+import { passthroughStream } from "../services/mastra-runtime.js";
 import { isGpuBilledDeployment } from "../services/nosanaIds.js";
-import { nodeUrlAllowlistOptions, servedModelName } from "../services/nosana.js";
+import { servedModelName } from "../services/nosana.js";
 import { streamToReply } from "../services/sseReply.js";
 import {
   DEFAULT_COMPLETION_TOKENS,
   MAX_COMPLETION_TOKENS,
-  PROMPT_ESTIMATE_MARGIN,
   holdInferenceCredits,
   releaseInferenceHold,
   settleInferenceHold,
@@ -48,6 +58,10 @@ import {
 } from "../services/x402.js";
 
 const logger = createLogger("inference-routes");
+
+// The node-facing helpers live with the deployment chat service, which a
+// workflow's model step uses too; these two are part of this module's surface.
+export { nodeErrorMessage, nodeStatusError };
 
 // ============================================
 // Types
@@ -81,11 +95,6 @@ interface BillableRequest {
   max_tokens: number;
 }
 
-interface NodeUsage {
-  prompt_tokens: number;
-  completion_tokens: number;
-}
-
 /**
  * Conversations with tool results in them are larger than Fastify's 1 MiB
  * default allows; the message cap in openaiCompat bounds what is accepted.
@@ -96,143 +105,6 @@ const DEPLOYMENT_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
 
 /** Keeps an idle proxy from cutting a stream while the model is thinking. */
 const STREAM_HEARTBEAT_MS = 15_000;
-
-// ============================================
-// Node errors
-// ============================================
-
-const NODE_ERROR_MESSAGE_CHARS = 500;
-
-/**
- * The human-readable part of an inference server's error body: vLLM answers
- * `{ object: "error", message }`, OpenAI-style servers `{ error: { message } }`
- * and Ollama `{ error: "…" }`. Bounded, and null when there is none.
- */
-export function nodeErrorMessage(body: string): string | null {
-  let text: unknown = null;
-  try {
-    const json = JSON.parse(body) as Record<string, unknown> | null;
-    if (json && typeof json === "object") {
-      const error = json.error;
-      text =
-        typeof json.message === "string"
-          ? json.message
-          : typeof error === "string"
-            ? error
-            : typeof (error as { message?: unknown } | null)?.message === "string"
-              ? (error as { message: string }).message
-              : typeof json.detail === "string"
-                ? json.detail
-                : null;
-    }
-  } catch {
-    // Not JSON (a proxy's HTML page): nothing worth relaying.
-  }
-  if (typeof text !== "string") return null;
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return null;
-  return trimmed.length > NODE_ERROR_MESSAGE_CHARS
-    ? `${trimmed.slice(0, NODE_ERROR_MESSAGE_CHARS)}…`
-    : trimmed;
-}
-
-/**
- * What the caller is told when the inference node answered with an error
- * status. The status is passed through, in OpenAI's error shape, so a client
- * can tell its own mistake (a 400 for a `tools` request the model server
- * cannot parse) from an outage (a 5xx it may retry).
- *
- * Three statuses are NOT passed through, because of what an OpenAI SDK does
- * with them on this API: 401 and 403 would read as "your WheelsAI key is
- * wrong", and 404 as "no such deployment", when the deployment was found and
- * the key accepted - the node refusing us is a fault on our side of the
- * proxy, so those answer 502.
- *
- * A 4xx carries the model server's own message: it describes the caller's
- * request to the caller's own deployment. A 5xx does not.
- */
-export function nodeStatusError(
-  status: number,
-  nodeMessage: string | null,
-  retryAfterSeconds: number | null,
-): OpenAiErrorResponse {
-  if (status === 401 || status === 403) {
-    return openAiError("provider_auth_failed", {
-      message: `The inference node refused the request (status ${status}).`,
-    });
-  }
-  if (status === 404) {
-    return openAiError("provider_model_not_found", {
-      message: "The inference node does not serve this deployment's model.",
-    });
-  }
-  if (status === 408 || status === 504) {
-    return { ...openAiError("upstream_timeout", { message: "The inference node timed out." }), status };
-  }
-  if (status === 429) {
-    return openAiError("provider_rate_limited", {
-      message: "The inference node is at capacity. Retry shortly.",
-      ...(retryAfterSeconds !== null && { retryAfterSeconds }),
-    });
-  }
-  if (status >= 400 && status < 500) {
-    return {
-      ...openAiError("provider_rejected_request", {
-        message: nodeMessage
-          ? `The model server rejected the request: ${nodeMessage}`
-          : `The model server rejected the request (status ${status}).`,
-      }),
-      status,
-    };
-  }
-  const passed = status >= 500 && status <= 599 ? status : 502;
-  return {
-    ...openAiError(passed === 503 ? "service_unavailable" : "upstream_error", {
-      message: `The inference node answered ${status}.`,
-    }),
-    status: passed,
-  };
-}
-
-function retryAfterOf(response: Response): number | null {
-  const raw = response.headers.get("retry-after");
-  if (!raw) return null;
-  const seconds = Number(raw);
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
-}
-
-// ============================================
-// Node call deadline
-// ============================================
-
-interface NodeDeadline extends Deadline {
-  signal: AbortSignal;
-  /** Restarts the clock: called for every chunk a stream delivers. */
-  touch(): void;
-}
-
-/**
- * INFERENCE_TIMEOUT_MS as a limit on SILENCE, kept alive until the body has
- * been read. It used to be cleared when the response headers arrived, which
- * left the body read with no limit at all; as a wall-clock limit it would cut
- * every long streamed answer. So: the node has this long to answer, and a
- * stream has this long between chunks. The client going away aborts too.
- */
-function startNodeDeadline(idleMs: number, client: AbortSignal): NodeDeadline {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const arm = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(new Error("inference node timed out")), idleMs);
-  };
-  arm();
-  return {
-    signal: AbortSignal.any([client, controller.signal]),
-    expired: () => controller.signal.aborted,
-    touch: arm,
-    clear: () => clearTimeout(timer),
-  };
-}
 
 // ============================================
 // Deployment completion
@@ -371,13 +243,7 @@ export function createDeploymentCompletionHandler(
     const holdDescription = `Inference: ${deployment.name}`;
     let heldCents = 0n;
     if (billing.mode === "credits") {
-      const holdCents = BigInt(
-        calculateTokenCost(
-          Math.ceil(estimatePromptTokens(billable.messages) * PROMPT_ESTIMATE_MARGIN),
-          billable.max_tokens,
-          pricingTier,
-        ),
-      );
+      const holdCents = inferenceHoldCents(billable.messages, billable.max_tokens, pricingTier);
       const held = await prisma.$transaction((tx) =>
         holdInferenceCredits(tx as unknown as InferenceHoldPrisma, {
           orgId,
@@ -435,10 +301,7 @@ export function createDeploymentCompletionHandler(
       if (closed) return;
       closed = true;
       const latencyMs = Date.now() - startTime;
-      const priced: NodeUsage = reported ?? {
-        prompt_tokens: estimatePromptTokens(billable.messages),
-        completion_tokens: Math.ceil(generatedChars / 4),
-      };
+      const priced = pricedUsage(reported, billable.messages, generatedChars);
 
       // What the ORG is charged for this request. Zero for a GPU-billed
       // deployment: the GPU seconds are billed by the worker, not per token.
@@ -680,35 +543,11 @@ export function createDeploymentCompletionHandler(
       });
     }
 
-    const reported: NodeUsage | null =
-      typeof responseBody.usage?.prompt_tokens === "number"
-        ? {
-            prompt_tokens: responseBody.usage.prompt_tokens,
-            completion_tokens:
-              typeof responseBody.usage.completion_tokens === "number"
-                ? responseBody.usage.completion_tokens
-                : 0,
-          }
-        : null;
+    const reported = reportedNodeUsage(responseBody);
     await charge(reported, completionChars(responseBody.choices));
 
     return { ...responseBody, model: deployment.slug };
   };
-}
-
-/** Characters of generated text and tool-call arguments in a completion. */
-function completionChars(choices: unknown[]): number {
-  let chars = 0;
-  for (const choice of choices) {
-    const message = (choice as { message?: { content?: unknown; tool_calls?: unknown } } | null)?.message;
-    if (typeof message?.content === "string") chars += message.content.length;
-    if (Array.isArray(message?.tool_calls)) {
-      for (const call of message.tool_calls as Array<{ function?: { arguments?: unknown } }>) {
-        if (typeof call?.function?.arguments === "string") chars += call.function.arguments.length;
-      }
-    }
-  }
-  return chars;
 }
 
 // ============================================
@@ -784,9 +623,8 @@ export async function resolveBilling(params: {
     creditBalanceCents,
     verifyPaymentFn,
   } = params;
-  const minBalance = BigInt(10); // 10 cents minimum
   const hasSufficientCredits =
-    creditBalanceCents !== null && creditBalanceCents >= minBalance;
+    creditBalanceCents !== null && creditBalanceCents >= MIN_INFERENCE_BALANCE_CENTS;
   const requestId = getOrCreateRequestId(request.headers);
 
   const x402Mode = env.X402_ENABLED ? env.X402_INFERENCE_MODE : "off";
@@ -996,135 +834,7 @@ export function getOrCreateRequestId(
   return createPaymentRequestId();
 }
 
-function estimatePromptTokens(messages: NormalizedMessage[]): number {
-  let charCount = 0;
-  for (const message of messages) {
-    charCount += message.content?.length ?? 0;
-    if (message.role === "assistant") {
-      // Replayed tool calls are prompt too.
-      for (const call of message.tool_calls ?? []) {
-        charCount += call.function.name.length + call.function.arguments.length;
-      }
-    }
-  }
-  return Math.max(1, Math.ceil(charCount / 4));
-}
-
 function estimateCompletionTokens(maxTokens?: number): number {
   const defaultOutputTokens = 512;
   return Math.max(64, Math.min(maxTokens ?? defaultOutputTokens, 8192));
-}
-
-// ============================================
-// Helper Functions
-// ============================================
-
-// SSRF guard for node URLs lives in services/nodeUrlAllowlist.ts (multi-label
-// Nosana hosts such as https://<id>.node.k8s.prd.nos.ci, https-only, no
-// userinfo/path). Loopback needs a development process AND an explicit opt-in
-// (ALLOW_LOOPBACK_NODE_URLS).
-function isNodeUrlAllowed(url: string): boolean {
-  return isAllowedNodeUrl(url, nodeUrlAllowlistOptions());
-}
-
-async function proxyToNode(
-  nodeUrl: string,
-  body: Record<string, unknown>,
-  // The caller's deadline: it outlives this function, because the body is
-  // read (or streamed) after the headers arrive.
-  signal: AbortSignal,
-): Promise<Response> {
-  // Validate node URL to prevent SSRF
-  if (!isNodeUrlAllowed(nodeUrl)) {
-    throw new Error(`Node URL not allowed: ${nodeUrl}`);
-  }
-
-  const targetUrl = `${nodeUrl}/v1/chat/completions`;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    // Do NOT forward the caller's auth header to inference nodes —
-    // it would leak JWTs/API keys to potentially untrusted endpoints.
-  };
-
-  const response = await fetch(targetUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal,
-    // Never follow a redirect off the allowlisted host: the node is run by a
-    // third party, and a 307 to loopback or an internal address would have
-    // this server re-POST the caller's body there and relay the answer.
-    redirect: "manual",
-  });
-  if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
-    await response.body?.cancel().catch(() => {});
-    throw new Error(`Node answered with a redirect (${response.status}); refusing to follow it`);
-  }
-  return response;
-}
-
-async function recordUsage(
-  orgId: string,
-  deploymentId: string,
-  // null = the node reported none; nothing is added to the token totals.
-  usage: NodeUsage | null,
-  latencyMs: number,
-  costCents: number,
-  gpuTier: string,
-  failed: boolean,
-): Promise<void> {
-  // Get current hour boundary
-  const now = new Date();
-  const periodStart = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-    now.getHours()
-  );
-  const periodEnd = new Date(periodStart.getTime() + 60 * 60 * 1000);
-
-  // Per-request compute metering: latencyMs is wall-clock GPU time for a
-  // single inference. We convert to seconds and price at the tier's
-  // authoritative rate. Batching + idle GPU time are reconciled by the
-  // treasury-settlement worker against real Nosana job durations (plan A3).
-  const computeSeconds = Math.max(0, Math.round(latencyMs / 1000));
-  const pricePerSecondUsd = getPricePerSecond(gpuTier);
-  const actualCostCents = Math.round(computeSeconds * pricePerSecondUsd * 100);
-  const inputTokens = usage?.prompt_tokens ?? 0;
-  const outputTokens = usage?.completion_tokens ?? 0;
-
-  await prisma.usageRecord.upsert({
-    where: {
-      orgId_deploymentId_periodStart: {
-        orgId,
-        deploymentId,
-        periodStart,
-      },
-    },
-    create: {
-      orgId,
-      deploymentId,
-      periodStart,
-      periodEnd,
-      requestCount: 1,
-      inputTokens: BigInt(inputTokens),
-      outputTokens: BigInt(outputTokens),
-      totalLatencyMs: BigInt(latencyMs),
-      errorCount: failed ? 1 : 0,
-      costCents: BigInt(costCents),
-      computeSeconds: BigInt(computeSeconds),
-      actualCostCents: BigInt(actualCostCents),
-    },
-    update: {
-      requestCount: { increment: 1 },
-      inputTokens: { increment: inputTokens },
-      outputTokens: { increment: outputTokens },
-      totalLatencyMs: { increment: latencyMs },
-      ...(failed && { errorCount: { increment: 1 } }),
-      costCents: { increment: BigInt(costCents) },
-      computeSeconds: { increment: BigInt(computeSeconds) },
-      actualCostCents: { increment: BigInt(actualCostCents) },
-    },
-  });
 }

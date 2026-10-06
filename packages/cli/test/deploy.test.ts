@@ -41,8 +41,8 @@ function happyRoutes(extra: Record<string, Route> = {}): Record<string, Route> {
     [`POST ${AGENT_PATH}/deploy`]: status(201, { deployment: { id: DEPLOYMENT_ID, status: "pending" }, message: "Agent deployment started" }),
     [`GET ${DEPLOYMENT_PATH}`]: sequence(
       { deployment: deployment({ status: "building" }) },
-      { deployment: deployment({ status: "deploying", endpoint: "https://agents.example.test/my-support-bot" }) },
-      { deployment: deployment({ status: "running", endpoint: "https://agents.example.test/my-support-bot" }) },
+      { deployment: deployment({ status: "deploying", endpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions" }) },
+      { deployment: deployment({ status: "running", endpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions" }) },
     ),
     "GET /api/openclaw": { deployments: [] },
     ...extra,
@@ -69,7 +69,7 @@ describe("runDeploy", () => {
 
     assert.equal(result.agent.id, AGENT_ID);
     assert.equal(result.deployment.status, "running");
-    assert.equal(result.deployment.endpoint, "https://agents.example.test/my-support-bot");
+    assert.equal(result.deployment.endpoint, "https://api.example.test/v1/agents/my-support-bot/chat/completions");
     assert.deepEqual(result.channels, { kind: "none-reported" });
     assert.equal(result.listing, undefined);
 
@@ -369,7 +369,7 @@ describe("runDeploy", () => {
         happyRoutes({
           [`GET ${DEPLOYMENT_PATH}`]: sequence<unknown>(
             ...Array.from({ length: 12 }, () => unavailable),
-            { deployment: deployment({ status: "running", endpoint: "https://agents.example.test/my-support-bot" }) },
+            { deployment: deployment({ status: "running", endpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions" }) },
           ),
         }),
       );

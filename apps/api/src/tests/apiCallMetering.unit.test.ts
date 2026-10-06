@@ -5,8 +5,10 @@ import Fastify from "fastify";
 // What counts against a plan's monthly API calls (middleware/auth.ts).
 // requireAuth used to count every API-key request, so status polling and
 // listing spent the allowance: a CLI waiting ten minutes at one poll every
-// three seconds burned 200 of Starter's 1,000 calls. Reads with a key are now
-// free; every /v1 request and every other API-key request still counts.
+// three seconds burned 200 of Starter's 1,000 calls. The rule: a request
+// counts when it is not a read (GET, HEAD, OPTIONS) and is made with an API
+// key or to /v1, however it is authenticated. So a chat completion counts
+// once, and an OpenAI client listing /v1/models spends nothing.
 
 process.env.NODE_ENV ??= "development";
 process.env.LOG_LEVEL ??= "error";
@@ -32,11 +34,15 @@ const CASES: Array<{
   { authType: "api_key", method: "PATCH", url: "/api/agents/a1", counts: true },
   { authType: "api_key", method: "DELETE", url: "/api/agents/a1", counts: true },
   { authType: "api_key", method: "POST", url: "/api/agents/a1/playground/chat", counts: true },
-  // /v1 counts whatever the method and however it is authenticated.
+  // A /v1 call that does work counts however it is authenticated...
   { authType: "api_key", method: "POST", url: "/v1/chat/completions", counts: true },
-  { authType: "api_key", method: "GET", url: "/v1/models", counts: true },
   { authType: "jwt", method: "POST", url: "/v1/chat/completions", counts: true },
-  { authType: "jwt", method: "GET", url: "/v1/models", counts: true },
+  { authType: "api_key", method: "POST", url: "/v1/agents/support-bot/chat/completions", counts: true },
+  { authType: "jwt", method: "POST", url: "/v1/agents/support-bot/chat/completions", counts: true },
+  // ...and a /v1 read is free, like every other read.
+  { authType: "api_key", method: "GET", url: "/v1/models", counts: false },
+  { authType: "jwt", method: "GET", url: "/v1/models", counts: false },
+  { authType: "api_key", method: "GET", url: "/v1/agents/support-bot/models", counts: false },
   // The dashboard session is never metered outside /v1.
   { authType: "jwt", method: "GET", url: "/api/agents", counts: false },
   { authType: "jwt", method: "POST", url: "/api/agents", counts: false },
@@ -119,12 +125,13 @@ test("an API-key write is metered once per request", async () => {
   }
 });
 
-test("every /v1 request is metered, reads and sessions included", async () => {
+test("a /v1 write is metered for keys and sessions alike; a /v1 read is free", async () => {
   const key = await meteredApp(KEY);
   try {
     await key.app.inject({ method: "GET", url: "/v1/models" });
+    assert.equal(key.state.planLookups, 0, "listing models spends nothing");
     await key.app.inject({ method: "POST", url: "/v1/models" });
-    assert.equal(key.state.planLookups, 2);
+    assert.equal(key.state.planLookups, 1);
   } finally {
     await key.restore();
   }
@@ -132,7 +139,9 @@ test("every /v1 request is metered, reads and sessions included", async () => {
   try {
     await session.app.inject({ method: "GET", url: "/v1/models" });
     await session.app.inject({ method: "POST", url: "/api/deployments/d1" });
-    assert.equal(session.state.planLookups, 1);
+    assert.equal(session.state.planLookups, 0, "a session read of /v1 and a session write outside it are free");
+    await session.app.inject({ method: "POST", url: "/v1/models" });
+    assert.equal(session.state.planLookups, 1, "a session write to /v1 counts");
   } finally {
     await session.restore();
   }

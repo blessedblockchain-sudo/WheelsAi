@@ -144,7 +144,10 @@ What it does, in order, stopping at the first failure:
    Ctrl-C stops watching and prints how to look at the deployment later (exit code 130); the
    deployment itself carries on server-side.
 6. **Report** what the API returned, once the deployment is `running`: the endpoint, exactly
-   as returned, and the channels. No endpoint returned means `none returned by the API`. The
+   as returned, and the channels. The endpoint is the agent's OpenAI-compatible URL on the API
+   (`<api>/v1/agents/<slug>/chat/completions`), followed by the base URL and model id an OpenAI
+   client needs. The API builds it from its configured public address (`PUBLIC_API_URL`); when
+   that is not set it returns none, and the CLI prints `none returned by the API`. The
    agent-deployment record carries no channels today, so the CLI also looks at the agent's
    OpenClaw (Discord, Telegram, Slack) deployment and prints its channels if it is `RUNNING`
    and has any; otherwise `none reported by the API`. `logs` and `agents get` show an endpoint
@@ -163,7 +166,9 @@ What it does, in order, stopping at the first failure:
   Agent live!
   Deployment    94aa7943-...
   GPU           3060 x1
-  Endpoint      <as returned by the API>
+  Endpoint      https://api.example.com/v1/agents/my-support-bot/chat/completions
+  OpenAI base   https://api.example.com/v1/agents/my-support-bot
+  Model         agent/my-support-bot
   Channels      none reported by the API
 
   Listed on the marketplace
@@ -173,7 +178,11 @@ What it does, in order, stopping at the first failure:
 ```
 
 Progress goes to stderr and results to stdout, so `--json` (one JSON document on stdout:
-`agent`, `deployment`, `endpoint`, `channels`, `listing`) is safe to pipe.
+`agent`, `deployment`, `endpoint`, `openaiBaseUrl`, `openaiModel`, `channels`, `listing`) is safe
+to pipe.
+
+The agent's `/v1` endpoint is served by the API itself and answers whether or not a deployment
+is running; `wheelsai agents get <agent>` shows it at any time.
 
 ### Once a deployment exists
 

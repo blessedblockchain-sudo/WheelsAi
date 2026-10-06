@@ -22,7 +22,8 @@ import { Select } from "@/components/ui/select";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { deploymentsApi, playgroundApi, type Deployment, getErrorMessage } from "@/lib/api";
+import { API_BASE_URL, deploymentsApi, playgroundApi, type Deployment, getErrorMessage } from "@/lib/api";
+import { deploymentSnippets } from "@/lib/public-urls";
 import { cn } from "@/lib/utils";
 
 interface Message {
@@ -145,6 +146,17 @@ export default function PlaygroundPage() {
   }
 
   const selectedDeploymentData = deployments.find((d) => d.id === selectedDeployment);
+  // Built from the endpoint the API returned and the deployment's slug; null
+  // when the deployment is not running, because then nothing is served.
+  const snippets = selectedDeploymentData
+    ? deploymentSnippets({
+        endpoint: selectedDeploymentData.endpoint,
+        slug: selectedDeploymentData.slug,
+        apiBase: API_BASE_URL,
+        temperature,
+        maxTokens,
+      })
+    : null;
 
   return (
     <div className="flex h-[calc(100vh-4rem)] flex-col">
@@ -396,56 +408,22 @@ export default function PlaygroundPage() {
         {selectedDeploymentData && (
           <div className="hidden w-80 border-l bg-gray-900 p-4 lg:block">
             <h3 className="text-sm font-medium text-gray-400">API Example</h3>
-            <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
-{`curl ${selectedDeploymentData.endpoint}/chat/completions \\
-  -H "Authorization: Bearer $API_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{
-  "messages": [
-    {"role": "user", "content": "Hello!"}
-  ],
-  "temperature": ${temperature},
-  "max_tokens": ${maxTokens}
-}'`}
-            </pre>
+            {snippets ? (
+              <>
+                <pre className="mt-3 overflow-x-auto text-xs text-gray-300">{snippets.curl}</pre>
 
-            <h3 className="mt-6 text-sm font-medium text-gray-400">Python</h3>
-            <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
-{`from openai import OpenAI
+                <h3 className="mt-6 text-sm font-medium text-gray-400">Python</h3>
+                <pre className="mt-3 overflow-x-auto text-xs text-gray-300">{snippets.python}</pre>
 
-client = OpenAI(
-    base_url="${selectedDeploymentData.endpoint}",
-    api_key="YOUR_API_KEY"
-)
-
-response = client.chat.completions.create(
-    model="${selectedDeploymentData.model}",
-    messages=[
-        {"role": "user", "content": "Hello!"}
-    ],
-    temperature=${temperature},
-    max_tokens=${maxTokens}
-)`}
-            </pre>
-
-            <h3 className="mt-6 text-sm font-medium text-gray-400">JavaScript</h3>
-            <pre className="mt-3 overflow-x-auto text-xs text-gray-300">
-{`import OpenAI from 'openai';
-
-const client = new OpenAI({
-  baseURL: '${selectedDeploymentData.endpoint}',
-  apiKey: 'YOUR_API_KEY'
-});
-
-const response = await client.chat.completions.create({
-  model: '${selectedDeploymentData.model}',
-  messages: [
-    { role: 'user', content: 'Hello!' }
-  ],
-  temperature: ${temperature},
-  max_tokens: ${maxTokens}
-});`}
-            </pre>
+                <h3 className="mt-6 text-sm font-medium text-gray-400">JavaScript</h3>
+                <pre className="mt-3 overflow-x-auto text-xs text-gray-300">{snippets.javascript}</pre>
+              </>
+            ) : (
+              <p className="mt-3 text-xs text-gray-400">
+                This deployment has no API endpoint while it is {selectedDeploymentData.status}.
+                Examples appear here once it is running.
+              </p>
+            )}
           </div>
         )}
       </div>

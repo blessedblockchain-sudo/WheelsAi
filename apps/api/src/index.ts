@@ -36,6 +36,7 @@ import { createMetricsRoutes } from "./routes/metrics.js";
 import { buildMetricsRuntime } from "./services/buildMetricsDeps.js";
 import { cancelInFlightGraphRuns } from "./services/runAgentGraph.js";
 import { inferenceRoutes } from "./routes/inference.js";
+import { openAiV1Routes } from "./routes/openaiV1.js";
 import { billingRoutes } from "./routes/billing.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -75,6 +76,10 @@ import {
   createAgentListRoutesProduction,
 } from "./routes/transparencyBindings.js";
 import { playgroundRoutes } from "./routes/playground.js";
+import {
+  cancelInFlightAgentChats,
+  closeAgentChatConnections,
+} from "./services/buildAgentChatDeps.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
 import { createChannelWebhookRoutesProduction } from "./routes/channelWebhookBindings.js";
 import {
@@ -163,6 +168,20 @@ async function main() {
     // Reflect any origin only in local development.
     origin: env.NODE_ENV === "development" ? true : env.CORS_ORIGIN,
     credentials: true,
+    // Without this a browser client can read none of them: the request id to
+    // quote in a report, how long to wait after a 429, or whether a /v1
+    // failure is worth retrying.
+    exposedHeaders: [
+      "X-Request-Id",
+      "Retry-After",
+      "x-should-retry",
+      "x-ratelimit-remaining-requests",
+      "x-ratelimit-reset-requests",
+      "X-RateLimit-Remaining-RPM",
+      "X-RateLimit-Remaining-RPD",
+      "X-RateLimit-Reset-RPM",
+      "X-RateLimit-Reset-RPD",
+    ],
   });
 
   await app.register(helmet, {
@@ -183,6 +202,8 @@ async function main() {
   app.addHook("onClose", async () => {
     rateLimitRedis.disconnect();
     disconnectPlanUsage();
+    // Agent chat's tool-continuation Redis (opened on the first chat).
+    await closeAgentChatConnections();
   });
   await app.register(rateLimit, {
     max: Number(process.env.RATE_LIMIT_MAX_PER_MINUTE ?? 100),
@@ -221,6 +242,7 @@ async function main() {
         { name: "OpenClaw", description: "Managed OpenClaw deployments" },
         { name: "Knowledge", description: "RAG knowledge bases" },
         { name: "Monitoring", description: "Alerts and uptime monitoring" },
+        { name: "OpenAI-compatible", description: "The /v1 API for agents and model deployments" },
       ],
       components: {
         securitySchemes: {
@@ -390,7 +412,11 @@ async function main() {
   // Treasury read routes — runway / payments / chart at /api/agents/:slug/*
   const { agentTreasuryRoutes } = await import("./routes/agent-treasury.js");
   await app.register(agentTreasuryRoutes, { prefix: "/api" });
-  await app.register(inferenceRoutes); // OpenAI-compatible API at /v1/*
+  await app.register(inferenceRoutes); // POST /v1/:deploymentSlug/chat/completions
+  // The rest of the OpenAI-compatible API: agents at /v1/agents/:slug, the
+  // unified POST /v1/chat/completions (routed on `model`) and GET /v1/models.
+  // Prefixed so its OpenAI-shaped error and not-found handlers cover /v1.
+  await app.register(openAiV1Routes, { prefix: "/v1" });
 
   // The deployable model catalog lives in code; make sure the models table
   // matches it before accepting traffic (a fresh database has no rows).
@@ -450,11 +476,22 @@ async function main() {
       // run refund its marketplace charge and close its execution row; killed
       // mid-run it would leave the buyer debited for nothing. New runs are
       // refused (503) from here on.
-      const graphRuns = await cancelInFlightGraphRuns(GRAPH_RUN_DRAIN_MS);
+      // Agent chats (playground and /v1) hold the same kind of charge and are
+      // cancelled in the same window, not after it.
+      const [graphRuns, agentChats] = await Promise.all([
+        cancelInFlightGraphRuns(GRAPH_RUN_DRAIN_MS),
+        cancelInFlightAgentChats(GRAPH_RUN_DRAIN_MS),
+      ]);
       if (graphRuns.cancelled > 0) {
         app.log[graphRuns.unfinished > 0 ? "error" : "info"](
           graphRuns,
           "Cancelled in-flight graph runs for shutdown",
+        );
+      }
+      if (agentChats.cancelled > 0) {
+        app.log[agentChats.unfinished > 0 ? "error" : "info"](
+          agentChats,
+          "Cancelled in-flight agent chats for shutdown",
         );
       }
       await stopX402Queue();

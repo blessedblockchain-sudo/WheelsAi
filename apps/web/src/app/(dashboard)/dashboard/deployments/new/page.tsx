@@ -16,6 +16,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
+import { deploymentEndpointPattern } from "@/lib/public-urls";
 import { cn } from "@/lib/utils";
 
 type Step = "model" | "config" | "review";
@@ -672,8 +673,10 @@ export default function NewDeploymentPage() {
                         health check, your OpenAI-compatible endpoint goes
                         live at:{" "}
                         <code className="rounded bg-primary/15 px-1">
-                          {API_BASE_URL}/v1/{name}
+                          {deploymentEndpointPattern(API_BASE_URL)}
                         </code>
+                        . The slug is assigned from the name when the
+                        deployment is created and shown on its page.
                       </p>
                       {selectedEngine === "ollama" && (
                         <p className="mt-2 text-sm text-primary-700">

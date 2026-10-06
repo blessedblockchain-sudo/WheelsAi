@@ -18,12 +18,38 @@
  *     empty streamed reply and a provider failure still surfaces as a normal
  *     HTTP error before any header is flushed. (Token-level streaming of the
  *     final answer for tool-using agents is not implemented.)
+ *
+ * The pass-through contract is deliberately raw: the provider's bytes are
+ * forwarded untouched. Making a stream safe for an OpenAI SDK (our ids, no
+ * vendor fields, one [DONE], no provider error text) is the job of
+ * `createOpenAiStreamAdapter` in openaiCompat.ts, applied by the /v1 routes.
+ *
+ * Function calling for API callers: `clientTools` are offered to the model
+ * next to the agent's own skills. Skills run here; a call to a client tool is
+ * handed back (`clientToolCalls`) for the caller to execute.
  */
 
 import { randomUUID } from "node:crypto";
 
 import { createLogger } from "../utils/logger.js";
-import { isFreeModel, resolveFreeModelConfig } from "../config/free-models.js";
+import {
+  freeModelProviderAndName,
+  isFreeModel,
+  resolveFreeModelConfig,
+} from "../config/free-models.js";
+import {
+  extensionChunk,
+  normalizeFinishReason,
+  pickProviderParams,
+  toChunk,
+  toolCallDeltas,
+  usageChunk,
+  type ClientToolSpec,
+  type CompletionMeta,
+  type NormalizedMessage,
+  type ProviderRequestParams,
+  type ToolChoice,
+} from "./openaiCompat.js";
 import type { SkillRegistry } from "./skills/registry.js";
 import type { ToolMode, ToolSpec } from "./skills/types.js";
 import {
@@ -31,6 +57,7 @@ import {
   type CallModel,
   type ModelMessage,
   type ModelToolCall,
+  type OfferedTool,
   type TokenUsage,
   type ToolCallRecord,
 } from "./toolLoop.js";
@@ -41,22 +68,38 @@ const logger = createLogger("mastra-runtime");
 // Types
 // ============================================
 
-export interface ChatMessage {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
+/**
+ * A conversation turn. Besides plain system/user/assistant text it carries
+ * what function calling needs replayed: an assistant turn's `tool_calls` and
+ * the `tool` results that answer them.
+ */
+export type ChatMessage = NormalizedMessage;
 
 export interface ChatResult {
+  /** Empty when the turn ended in a hand-back (`clientToolCalls`). */
   content: string;
+  /**
+   * Summed over every provider call; a call that reported no usage adds
+   * zero. Kept for the callers that total it. Anything that SHOWS usage reads
+   * `reportedUsage`, which does not pass an unknown off as zero.
+   */
   usage: {
     inputTokens: number;
     outputTokens: number;
   };
+  /** null when any provider call in this run reported no usage. */
+  reportedUsage: TokenUsage | null;
+  /** The provider's finish_reason for the final turn; "tool_calls" on a hand-back. */
+  finishReason: string | null;
   /** Every tool the model called, and how each call ended. */
   toolCalls?: ToolCallRecord[];
+  /** Calls to the caller's own functions, for the caller to execute. */
+  clientToolCalls: ModelToolCall[];
+  /** What the run appended server-side (see ToolLoopResult.transcript). */
+  transcript: ModelMessage[];
 }
 
-interface AgentPlaygroundConfig {
+export interface AgentPlaygroundConfig {
   name: string;
   systemPrompt?: string;
   tools: Array<{
@@ -81,14 +124,53 @@ export interface RunChatOptions {
   mode?: ToolMode;
   signal?: AbortSignal;
   maxToolRounds?: number;
+  /**
+   * Caller-supplied sampling parameters. Only the allowlisted keys
+   * (openaiCompat.PROVIDER_PARAM_KEYS) are ever sent to the provider;
+   * `temperature` and `max_tokens` override the agent's own.
+   */
+  requestParams?: ProviderRequestParams;
+  /** Functions the caller executes; offered next to the agent's skills. */
+  clientTools?: ClientToolSpec[];
+  /** The caller's tool_choice, applied to the first model call only. */
+  toolChoice?: ToolChoice;
+  /**
+   * Ask the provider to report token usage on a stream. Sent only to
+   * providers known to accept `stream_options`; others stream without it and
+   * the outcome's usage stays null.
+   */
+  requestUsage?: boolean;
+  /**
+   * Wall-clock limit for the whole run (every tool round, and a stream until
+   * its last byte). A provider that hangs past it fails with
+   * ChatDeadlineError instead of holding the request open.
+   */
+  deadlineMs?: number;
   /** Test seams. */
   registry?: SkillRegistry;
   fetchImpl?: typeof fetch;
 }
 
+/** Why a stream did not produce an answer; drives what the client is told. */
+export type StreamFailureCode =
+  | "provider_error"
+  | "empty_answer"
+  | "truncated"
+  | "transport"
+  | "client_gone"
+  | "deadline";
+
 export type StreamOutcome =
-  | { ok: true; usage: TokenUsage | null; toolCalls: ToolCallRecord[] }
-  | { ok: false; error: string; toolCalls: ToolCallRecord[] };
+  | {
+      ok: true;
+      usage: TokenUsage | null;
+      toolCalls: ToolCallRecord[];
+      finishReason?: string | null;
+      /** Set when the stream ended in a hand-back from the tool loop. */
+      clientToolCalls?: ModelToolCall[];
+      transcript?: ModelMessage[];
+    }
+  | { ok: false; error: string; toolCalls: ToolCallRecord[]; code?: StreamFailureCode };
 
 export interface ChatStream {
   /** OpenAI-format SSE bytes, ready to forward to a client. */
@@ -105,9 +187,93 @@ export interface ChatStream {
 // ============================================
 
 export interface ResolvedModel {
+  /** Empty for an endpoint that takes no key (an inference node). */
   apiKey: string;
   baseUrl: string;
   modelName: string;
+  /**
+   * The endpoint is a third party's server reached by a stored URL (a
+   * deployment's inference node): a redirect is refused rather than followed
+   * to wherever it points.
+   */
+  refuseRedirects?: boolean;
+  /** The endpoint accepts `stream_options.include_usage` (see STREAM_USAGE_HOSTS). */
+  streamUsage?: boolean;
+}
+
+/**
+ * The PLATFORM has no key for this free model's provider. Nothing the caller
+ * can fix: the honest answer is 501 with this reason.
+ */
+export class ModelNotConfiguredError extends Error {
+  readonly code = "model_provider_not_configured";
+  constructor(readonly modelId: string) {
+    super(
+      `Free model "${modelId}" is not available. The required API key is not configured on the platform.`,
+    );
+    this.name = "ModelNotConfiguredError";
+  }
+}
+
+/** The AGENT's own provider key is missing from its environment (a 400). */
+export class ModelKeyMissingError extends Error {
+  readonly code = "agent_model_key_missing";
+  constructor(
+    readonly modelId: string,
+    readonly envKey: string,
+  ) {
+    super(
+      `Model "${modelId}" requires an API key. Set ${envKey} in your agent's environment variables.`,
+    );
+    this.name = "ModelKeyMissingError";
+  }
+}
+
+/** A model id no provider table knows: a typo or a retired id (a 400). */
+export class UnknownModelError extends Error {
+  readonly code = "unknown_model";
+  constructor(message: string) {
+    super(message);
+    this.name = "UnknownModelError";
+  }
+}
+
+/**
+ * `wheelsai/<model>`: a model the org hosts on its own GPU deployment. Agent
+ * chat (the playground and /v1) resolves it to that deployment before it gets
+ * here (services/hostedModel.ts). The callers that resolve a model with this
+ * function alone - graph llm nodes, scheduled tasks - cannot reach a
+ * deployment's node yet, so there it is refused by name (501) rather than
+ * reported as an unknown provider.
+ */
+export class HostedModelNotAvailableError extends Error {
+  readonly code = "hosted_model_not_available";
+  constructor(readonly modelId: string) {
+    super(
+      `Model "${modelId}" is a WheelsAI-hosted model, which graph nodes and scheduled tasks cannot call yet. It works in the agent's own chat (playground and /v1); here, use a free or bring-your-own-key model.`,
+    );
+    this.name = "HostedModelNotAvailableError";
+  }
+}
+
+/** The provider answered with a non-2xx status. The body went to the log. */
+export class ProviderHttpError extends Error {
+  constructor(
+    readonly status: number,
+    /** The provider's own retry-after, in seconds, when it sent one. */
+    readonly retryAfterSeconds: number | null,
+  ) {
+    super(`Model API returned ${status} (${providerErrorHint(status)})`);
+    this.name = "ProviderHttpError";
+  }
+}
+
+/** The run outlived `deadlineMs`. */
+export class ChatDeadlineError extends Error {
+  constructor(readonly deadlineMs: number) {
+    super(`the model did not answer within ${Math.round(deadlineMs / 1000)}s`);
+    this.name = "ChatDeadlineError";
+  }
 }
 
 /**
@@ -122,9 +288,10 @@ export function resolveModelForPlayground(
   if (isFreeModel(modelId)) {
     const config = resolveFreeModelConfig(modelId);
     if (!config) {
-      throw new Error(
-        `Free model "${modelId}" is not available. The required API key is not configured on the platform.`
-      );
+      if (!freeModelProviderAndName(modelId)) {
+        throw new UnknownModelError(`Free model "${modelId}" is not in the model catalog.`);
+      }
+      throw new ModelNotConfiguredError(modelId);
     }
     return config;
   }
@@ -141,16 +308,16 @@ export function resolveModelForPlayground(
     groq: { envKey: "GROQ_API_KEY", baseUrl: "https://api.groq.com/openai/v1" },
   };
 
+  if (provider === "wheelsai") throw new HostedModelNotAvailableError(modelId);
+
   const config = providerConfig[provider ?? "openai"];
   if (!config) {
-    throw new Error(`Unknown model provider: ${provider}`);
+    throw new UnknownModelError(`Unknown model provider: ${provider}`);
   }
 
   const apiKey = agentEnv?.[config.envKey];
   if (!apiKey) {
-    throw new Error(
-      `Model "${modelId}" requires an API key. Set ${config.envKey} in your agent's environment variables.`
-    );
+    throw new ModelKeyMissingError(modelId, config.envKey);
   }
 
   return { apiKey, baseUrl: config.baseUrl, modelName };
@@ -188,14 +355,79 @@ function buildRequestBody(
   agentConfig: AgentPlaygroundConfig,
   messages: unknown[],
   extra: Record<string, unknown>,
+  requestParams?: ProviderRequestParams,
 ): Record<string, unknown> {
+  // The allowlist is applied HERE, at the last step before the wire, so no
+  // caller can widen what reaches a provider by passing a looser object.
+  const params: Record<string, unknown> = { ...pickProviderParams(requestParams as Record<string, unknown>) };
+  // Some providers reject parallel_tool_calls on a request with no tools.
+  if (!extra.tools) delete params.parallel_tool_calls;
   return {
     model: resolved.modelName,
     messages,
     temperature: agentConfig.modelConfig.temperature,
     max_tokens: agentConfig.modelConfig.maxTokens,
+    ...params,
     ...extra,
   };
+}
+
+/** Providers whose chat API accepts `stream_options.include_usage`. */
+const STREAM_USAGE_HOSTS: ReadonlySet<string> = new Set([
+  "api.openai.com",
+  "api.groq.com",
+  "api.together.xyz",
+  "generativelanguage.googleapis.com",
+]);
+
+function providerAcceptsStreamUsage(resolved: ResolvedModel): boolean {
+  if (resolved.streamUsage !== undefined) return resolved.streamUsage;
+  try {
+    return STREAM_USAGE_HOSTS.has(new URL(resolved.baseUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function retryAfterSeconds(res: Response): number | null {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? null : Math.max(0, (at - Date.now()) / 1000);
+}
+
+export interface Deadline {
+  /** The client's signal combined with the deadline (or just the client's). */
+  signal: AbortSignal | undefined;
+  expired(): boolean;
+  clear(): void;
+}
+
+/**
+ * A real (ref'd) timer that is always cleared, for the reason toolLoop's
+ * runWithTimeout gives: `AbortSignal.timeout` is unref'd.
+ */
+function startDeadline(deadlineMs: number | undefined, client?: AbortSignal): Deadline {
+  if (!deadlineMs || deadlineMs <= 0) {
+    return { signal: client, expired: () => false, clear: () => {} };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new ChatDeadlineError(deadlineMs)), deadlineMs);
+  return {
+    signal: client ? AbortSignal.any([client, controller.signal]) : controller.signal,
+    expired: () => controller.signal.aborted,
+    clear: () => clearTimeout(timer),
+  };
+}
+
+/** A failure caused by the deadline surfaces as ChatDeadlineError, whatever fetch threw. */
+function deadlineError(err: unknown, deadline: Deadline, options: RunChatOptions): unknown {
+  if (deadline.expired() && !options.signal?.aborted && options.deadlineMs) {
+    return new ChatDeadlineError(options.deadlineMs);
+  }
+  return err;
 }
 
 /** What a status means to the user, without anything the provider wrote. */
@@ -218,11 +450,18 @@ async function postChatCompletion(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${resolved.apiKey}`,
+      ...(resolved.apiKey && { Authorization: `Bearer ${resolved.apiKey}` }),
     },
     body: JSON.stringify(body),
     signal,
+    ...(resolved.refuseRedirects && { redirect: "manual" as const }),
   });
+
+  if (resolved.refuseRedirects && (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))) {
+    await res.body?.cancel().catch(() => {});
+    logger.error({ status: res.status }, "Model endpoint answered with a redirect; refusing to follow it");
+    throw new ProviderHttpError(502, null);
+  }
 
   if (!res.ok) {
     // The provider's error body can quote the request, name the account or
@@ -231,7 +470,7 @@ async function postChatCompletion(
     // and a generic reason.
     const errText = await res.text().catch(() => "Unknown error");
     logger.error({ status: res.status, errText: errText.slice(0, 2_000) }, "Model API error");
-    throw new Error(`Model API returned ${res.status} (${providerErrorHint(res.status)})`);
+    throw new ProviderHttpError(res.status, retryAfterSeconds(res));
   }
   return res;
 }
@@ -241,18 +480,19 @@ function createProviderCallModel(
   fetchImpl: typeof fetch,
   resolved: ResolvedModel,
   agentConfig: AgentPlaygroundConfig,
+  requestParams?: ProviderRequestParams,
 ): CallModel {
   return async ({ messages, tools, toolChoice, signal }) => {
     const extra: Record<string, unknown> = { stream: false };
     if (tools && tools.length > 0) {
       extra.tools = tools;
-      // "auto" is the provider default; only the forcing value is sent.
-      if (toolChoice === "none") extra.tool_choice = "none";
+      // "auto" is the provider default; only a forcing value is sent.
+      if (toolChoice && toolChoice !== "auto") extra.tool_choice = toolChoice;
     }
     const res = await postChatCompletion(
       fetchImpl,
       resolved,
-      buildRequestBody(resolved, agentConfig, messages, extra),
+      buildRequestBody(resolved, agentConfig, messages, extra, requestParams),
       signal,
     );
 
@@ -286,10 +526,15 @@ function createProviderCallModel(
     return {
       content: typeof message?.content === "string" ? message.content : "",
       toolCalls,
-      usage: {
-        inputTokens: data.usage?.prompt_tokens ?? 0,
-        outputTokens: data.usage?.completion_tokens ?? 0,
-      },
+      // A provider that sends no usage block reported nothing: that is
+      // null, not zero tokens.
+      usage:
+        typeof data.usage?.prompt_tokens === "number"
+          ? {
+              inputTokens: data.usage.prompt_tokens,
+              outputTokens: data.usage.completion_tokens ?? 0,
+            }
+          : null,
       finishReason: choice?.finish_reason ?? null,
     };
   };
@@ -322,8 +567,33 @@ function buildMessages(
   if (agentConfig.systemPrompt) {
     full.push({ role: "system", content: agentConfig.systemPrompt });
   }
-  for (const m of messages) full.push({ role: m.role, content: m.content });
+  for (const m of messages) {
+    // Field by field: a caller's message object never reaches the provider
+    // with keys this function did not put there.
+    if (m.role === "tool") {
+      full.push({ role: "tool", content: m.content, tool_call_id: m.tool_call_id });
+    } else if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+      full.push({
+        role: "assistant",
+        content: m.content,
+        tool_calls: m.tool_calls.map((call) => ({
+          id: call.id,
+          type: "function" as const,
+          function: { name: call.function.name, arguments: call.function.arguments },
+        })),
+      });
+    } else {
+      full.push({ role: m.role, content: m.content ?? "" });
+    }
+  }
   return full;
+}
+
+function offeredClientTools(options: RunChatOptions): OfferedTool[] {
+  return (options.clientTools ?? []).map((tool) => ({
+    type: "function" as const,
+    function: { ...tool.function },
+  }));
 }
 
 async function runToolChat(
@@ -333,6 +603,7 @@ async function runToolChat(
   plan: ToolingPlan,
   options: RunChatOptions,
   fetchImpl: typeof fetch,
+  signal: AbortSignal | undefined,
 ): Promise<ChatResult> {
   const mode = options.mode ?? "playground";
   const ctxBase = {
@@ -345,63 +616,81 @@ async function runToolChat(
   const result = await runToolLoop({
     messages: buildMessages(agentConfig, messages),
     tools: plan.specs,
+    clientTools: offeredClientTools(options),
+    toolChoice: options.toolChoice,
     maxRounds: options.maxToolRounds,
-    signal: options.signal,
-    callModel: createProviderCallModel(fetchImpl, resolved, agentConfig),
-    executeTool: async (name, input, signal) => {
+    signal,
+    callModel: createProviderCallModel(fetchImpl, resolved, agentConfig, options.requestParams),
+    executeTool: async (name, input, toolSignal) => {
       if (!registry) return { status: "error", message: `unknown tool "${name}"` };
-      return registry.execute(name, input, { ...ctxBase, signal });
+      return registry.execute(name, input, { ...ctxBase, signal: toolSignal });
     },
   });
 
   return {
     content: result.content,
     usage: result.usage,
+    reportedUsage: result.reportedUsage,
+    finishReason: result.finishReason,
     toolCalls: result.toolCalls,
+    clientToolCalls: result.clientToolCalls,
+    transcript: result.transcript,
   };
 }
 
-/** Emits an already-complete answer as OpenAI-format SSE. */
-function answerToStream(
-  content: string,
+/** Emits an already-complete turn as OpenAI-format SSE. */
+export function answerToStream(
+  result: ChatResult,
   modelName: string,
-  toolCalls: ToolCallRecord[],
+  includeUsage: boolean,
 ): ReadableStream<Uint8Array> {
-  const id = `chatcmpl-${randomUUID()}`;
-  const created = Math.floor(Date.now() / 1000);
-  const chunk = (delta: Record<string, unknown>, finish: string | null) =>
-    sseEvent({
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model: modelName,
-      choices: [{ index: 0, delta, finish_reason: finish }],
-    });
+  const meta: CompletionMeta = {
+    id: `chatcmpl-${randomUUID()}`,
+    created: Math.floor(Date.now() / 1000),
+    model: modelName,
+  };
+  const toolCalls = result.toolCalls ?? [];
+  const handBack = result.clientToolCalls.length > 0;
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
       if (toolCalls.length > 0) {
-        // Extension event: clients that only read `choices` ignore it.
+        // Extension event. It is a full chunk with `choices: []` so a client
+        // that reads `chunk.choices[0]?.delta` gets undefined, not a throw.
         controller.enqueue(
-          sseEvent({
-            wheelsai: {
+          sseEvent(
+            extensionChunk(meta, {
               toolCalls: toolCalls.map((c) => ({
                 name: c.name,
                 status: c.status,
                 detail: c.detail,
               })),
-            },
-          }),
+            }),
+          ),
         );
       }
       let first = true;
-      for (const piece of chunkText(content, SSE_CHUNK_CHARS)) {
+      for (const piece of chunkText(result.content, SSE_CHUNK_CHARS)) {
         controller.enqueue(
-          chunk(first ? { role: "assistant", content: piece } : { content: piece }, null),
+          sseEvent(toChunk(meta, first ? { role: "assistant", content: piece } : { content: piece })),
         );
         first = false;
       }
-      controller.enqueue(chunk({}, "stop"));
+      if (handBack) {
+        controller.enqueue(
+          sseEvent(
+            toChunk(meta, {
+              ...(first && { role: "assistant" }),
+              tool_calls: toolCallDeltas(result.clientToolCalls),
+            }),
+          ),
+        );
+      }
+      controller.enqueue(
+        sseEvent(toChunk(meta, {}, normalizeFinishReason(result.finishReason, handBack))),
+      );
+      const usage = includeUsage ? usageChunk(meta, result.reportedUsage) : null;
+      if (usage) controller.enqueue(sseEvent(usage));
       controller.enqueue(SSE_DONE);
       controller.close();
     },
@@ -417,6 +706,8 @@ class SseWatcher {
   private buffer = "";
   private decoder = new TextDecoder();
   contentChars = 0;
+  /** Deltas that carried tool calls: a function-calling turn has no text. */
+  toolCallDeltas = 0;
   errorMessage: string | null = null;
   sawDone = false;
   finishReason: string | null = null;
@@ -462,6 +753,8 @@ class SseWatcher {
     const choice = json?.choices?.[0];
     const content = choice?.delta?.content;
     if (typeof content === "string") this.contentChars += content.length;
+    const toolCalls = choice?.delta?.tool_calls;
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) this.toolCallDeltas += 1;
     if (choice?.finish_reason) this.finishReason = choice.finish_reason;
     const usage = json?.usage ?? json?.x_groq?.usage;
     if (usage && typeof usage.prompt_tokens === "number") {
@@ -473,11 +766,33 @@ class SseWatcher {
   }
 }
 
-/** Forwards a provider stream untouched while judging its outcome. */
-function passthroughStream(
+/** What a watched stream has carried so far. */
+export interface StreamProgress {
+  /** Characters of answer text forwarded. */
+  contentChars: number;
+  /** The provider's own token count, once (and if) it has sent one. */
+  usage: TokenUsage | null;
+}
+
+export interface WatchedChatStream extends ChatStream {
+  /**
+   * Readable at any time, including after a stream that failed or was cut
+   * short: per-token billing has to price what WAS generated, and the outcome
+   * of a stream that did not finish carries no usage.
+   */
+  progress(): StreamProgress;
+}
+
+/**
+ * Forwards a provider stream untouched while judging its outcome. Exported
+ * for the model-deployment proxy (routes/inference.ts), whose upstream is an
+ * inference node rather than a model provider but speaks the same SSE.
+ */
+export function passthroughStream(
   body: ReadableStream<Uint8Array>,
-  signal?: AbortSignal,
-): ChatStream {
+  signal: AbortSignal | undefined,
+  deadline: Deadline,
+): WatchedChatStream {
   const reader = body.getReader();
   const watcher = new SseWatcher();
   let settled = false;
@@ -488,6 +803,7 @@ function passthroughStream(
   const finish = (o: StreamOutcome) => {
     if (settled) return;
     settled = true;
+    deadline.clear();
     resolveOutcome(o);
   };
 
@@ -504,26 +820,40 @@ function passthroughStream(
         watcher.flush();
         if (watcher.errorMessage) {
           // The provider's own error event was already forwarded verbatim.
-          finish({ ok: false, error: watcher.errorMessage, toolCalls: [] });
-        } else if (watcher.contentChars === 0) {
+          finish({ ok: false, error: watcher.errorMessage, toolCalls: [], code: "provider_error" });
+        } else if (watcher.contentChars === 0 && watcher.toolCallDeltas === 0) {
+          // Tool calls ARE an answer: a function-calling turn carries no text.
           const error = `the model returned no answer${
             watcher.finishReason ? ` (finish_reason: ${watcher.finishReason})` : ""
           }`;
           controller.enqueue(sseError(error));
-          finish({ ok: false, error, toolCalls: [] });
+          finish({ ok: false, error, toolCalls: [], code: "empty_answer" });
         } else if (!watcher.sawDone && !watcher.finishReason) {
           const error = "the model stream ended before the answer finished";
           controller.enqueue(sseError(error));
-          finish({ ok: false, error, toolCalls: [] });
+          finish({ ok: false, error, toolCalls: [], code: "truncated" });
         } else {
-          finish({ ok: true, usage: watcher.usage, toolCalls: [] });
+          finish({
+            ok: true,
+            usage: watcher.usage,
+            toolCalls: [],
+            finishReason: watcher.finishReason,
+          });
         }
         controller.close();
       } catch (err) {
-        const error = signal?.aborted
-          ? "request cancelled before the answer finished"
-          : `model stream failed: ${err instanceof Error ? err.message : String(err)}`;
-        finish({ ok: false, error, toolCalls: [] });
+        const timedOut = deadline.expired() && !signal?.aborted;
+        const error = timedOut
+          ? "the model did not answer in time"
+          : signal?.aborted
+            ? "request cancelled before the answer finished"
+            : `model stream failed: ${err instanceof Error ? err.message : String(err)}`;
+        finish({
+          ok: false,
+          error,
+          toolCalls: [],
+          code: timedOut ? "deadline" : signal?.aborted ? "client_gone" : "transport",
+        });
         try {
           controller.enqueue(sseError(error));
           controller.close();
@@ -537,12 +867,17 @@ function passthroughStream(
         ok: false,
         error: "client disconnected before the answer finished",
         toolCalls: [],
+        code: "client_gone",
       });
       return reader.cancel(reason);
     },
   });
 
-  return { stream, outcome };
+  return {
+    stream,
+    outcome,
+    progress: () => ({ contentChars: watcher.contentChars, usage: watcher.usage }),
+  };
 }
 
 /**
@@ -558,31 +893,67 @@ export async function runChatStream(
 ): Promise<ChatStream> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const plan = await planTooling(agentConfig, options.mode ?? "playground", options.registry);
+  const deadline = startDeadline(options.deadlineMs, options.signal);
 
-  if (plan.specs.length > 0) {
-    const result = await runToolChat(resolved, agentConfig, messages, plan, options, fetchImpl);
-    return {
-      stream: answerToStream(result.content, resolved.modelName, result.toolCalls ?? []),
-      outcome: Promise.resolve({
-        ok: true as const,
-        usage: result.usage,
-        toolCalls: result.toolCalls ?? [],
-      }),
-    };
-  }
+  try {
+    if (plan.specs.length > 0) {
+      const result = await runToolChat(
+        resolved,
+        agentConfig,
+        messages,
+        plan,
+        options,
+        fetchImpl,
+        deadline.signal,
+      );
+      deadline.clear();
+      return {
+        stream: answerToStream(result, resolved.modelName, options.requestUsage === true),
+        outcome: Promise.resolve({
+          ok: true as const,
+          // Never the zero-filled sum: an unreported round makes it unknown.
+          usage: result.reportedUsage,
+          toolCalls: result.toolCalls ?? [],
+          finishReason: result.finishReason,
+          clientToolCalls: result.clientToolCalls,
+          transcript: result.transcript,
+        }),
+      };
+    }
 
-  const res = await postChatCompletion(
-    fetchImpl,
-    resolved,
-    buildRequestBody(resolved, agentConfig, buildMessages(agentConfig, messages), {
-      stream: true,
-    }),
-    options.signal,
-  );
-  if (!res.body) {
-    throw new Error("No response body for streaming");
+    // No server tools: the provider's stream goes straight through. A
+    // caller's own functions ride along and come back as tool_call deltas.
+    const extra: Record<string, unknown> = { stream: true };
+    const clientTools = offeredClientTools(options);
+    if (clientTools.length > 0) {
+      extra.tools = clientTools;
+      if (options.toolChoice && options.toolChoice !== "auto") extra.tool_choice = options.toolChoice;
+    }
+    if (options.requestUsage && providerAcceptsStreamUsage(resolved)) {
+      extra.stream_options = { include_usage: true };
+    }
+
+    const res = await postChatCompletion(
+      fetchImpl,
+      resolved,
+      buildRequestBody(
+        resolved,
+        agentConfig,
+        buildMessages(agentConfig, messages),
+        extra,
+        options.requestParams,
+      ),
+      deadline.signal,
+    );
+    if (!res.body) {
+      throw new Error("No response body for streaming");
+    }
+    // The deadline keeps running until the stream's last byte.
+    return passthroughStream(res.body, options.signal, deadline);
+  } catch (err) {
+    deadline.clear();
+    throw deadlineError(err, deadline, options);
   }
-  return passthroughStream(res.body, options.signal);
 }
 
 /**
@@ -616,5 +987,20 @@ export async function runChat(
 
   const fetchImpl = options.fetchImpl ?? fetch;
   const plan = await planTooling(agentConfig, options.mode ?? "playground", options.registry);
-  return runToolChat(resolved, agentConfig, messages, plan, options, fetchImpl);
+  const deadline = startDeadline(options.deadlineMs, options.signal);
+  try {
+    return await runToolChat(
+      resolved,
+      agentConfig,
+      messages,
+      plan,
+      options,
+      fetchImpl,
+      deadline.signal,
+    );
+  } catch (err) {
+    throw deadlineError(err, deadline, options);
+  } finally {
+    deadline.clear();
+  }
 }

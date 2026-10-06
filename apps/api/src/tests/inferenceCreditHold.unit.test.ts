@@ -152,21 +152,23 @@ function routeDb(start: bigint, nodes: unknown[], pricingTier = "small") {
       creditBalance: { ...db.creditBalance },
       creditTransaction: db.creditTransaction,
       deploymentNode: { update: async () => ({}) },
+      usageRecord: { upsert: async () => ({}) },
       $transaction: async (fn: any) => fn(db),
     },
   };
 }
 
 test("/v1 refuses with 402 when the worst-case hold is not covered", async () => {
-  // Passes the old 10-cent admission check, but a ~500k-character prompt
-  // on the large tier costs well over 10 cents.
+  // Passes the old 10-cent admission check, but a ~390k-character prompt
+  // (just under the request's own size limit) on the large tier costs well
+  // over 10 cents.
   const { p, state } = routeDb(12n, [], "large");
   const { app, restore } = await v1App(p);
   try {
     const res = await app.inject({
       method: "POST",
       url: "/v1/d/chat/completions",
-      payload: { messages: [{ role: "user", content: "x".repeat(500_000) }], max_tokens: 8192 },
+      payload: { messages: [{ role: "user", content: "x".repeat(390_000) }], max_tokens: 8192 },
     });
     assert.equal(res.statusCode, 402);
     assert.equal(state.balance, 12n);

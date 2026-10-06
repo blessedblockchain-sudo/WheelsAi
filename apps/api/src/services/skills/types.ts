@@ -21,11 +21,20 @@
  *   test        the agent test runner: the agent's saved data must not change
  *               and nothing may spend money (file_write and every
  *               money-moving skill are refused)
+ *   api         a call to the agent's /v1 endpoint by its owner (an API key or
+ *               a session): the same authority as the playground
  *
  * `trial` is also what a marketplace BUYER's run uses (see runMode.ts): the
  * agent's prompt and tools were written by someone else.
  */
-export type ToolMode = "playground" | "job" | "trial" | "scheduled" | "graph" | "test";
+export type ToolMode =
+  | "playground"
+  | "job"
+  | "trial"
+  | "scheduled"
+  | "graph"
+  | "test"
+  | "api";
 
 export interface ToolContext {
   mode: ToolMode;

@@ -6,6 +6,7 @@ import { createSession } from "../client.js";
 import { CliError } from "../errors.js";
 import { findAgentDeployment } from "../lib/logs.js";
 import { parseWholeNumber } from "../lib/numbers.js";
+import { absoluteEndpoint } from "../lib/urls.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, colorStatus, field, printJson } from "../ui.js";
 
@@ -34,7 +35,7 @@ export const logsCommand = new Command("logs")
     if (opts.model && opts.agent) throw new CliError("--model and --agent cannot be used together.");
     const lines = opts.lines ? parseWholeNumber("--lines", opts.lines, 10) : undefined;
 
-    const { wheels } = createSession();
+    const { wheels, config } = createSession();
     const reporter = new Reporter(opts.json);
     reporter.start("Finding deployment");
 
@@ -89,10 +90,15 @@ export const logsCommand = new Command("logs")
         logsError: eventsError ? { status: eventsError.status, code: eventsError.code, message: eventsError.message } : undefined,
       });
     }
-    printModelDeployment(deployment, events, eventsError);
+    printModelDeployment(deployment, events, eventsError, config.apiUrl);
   });
 
-function printModelDeployment(deployment: DeploymentDetail, events: DeploymentLogs | undefined, eventsError: WheelsAIError | undefined): void {
+function printModelDeployment(
+  deployment: DeploymentDetail,
+  events: DeploymentLogs | undefined,
+  eventsError: WheelsAIError | undefined,
+  apiUrl: string,
+): void {
   const healthy = deployment.nodes.filter((node) => node.healthStatus === "healthy").length;
   console.log(chalk.bold(`\n  Model deployment ${chalk.cyan(clean(deployment.name))}\n`));
   console.log(field("ID", deployment.id));
@@ -101,7 +107,9 @@ function printModelDeployment(deployment: DeploymentDetail, events: DeploymentLo
   console.log(field("Model", clean(deployment.model.displayName)));
   console.log(field("Engine", clean(deployment.engine)));
   console.log(field("GPU", `${clean(deployment.gpuTier)} x${deployment.replicas}`));
-  console.log(field("Endpoint", clean(deployment.endpoint) ?? chalk.dim("none (not running)")));
+  // A model deployment's endpoint comes back host-relative when the API does not know its
+  // public address: it is on the API this command just talked to.
+  console.log(field("Endpoint", clean(absoluteEndpoint(deployment.endpoint, apiUrl)) ?? chalk.dim("none (not running)")));
   console.log(field("Nodes", `${healthy}/${deployment.nodes.length} healthy`));
   console.log(chalk.bold("\n  Events"));
   if (eventsError) {

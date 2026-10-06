@@ -16,14 +16,14 @@ const args = (base: Parameters<typeof resolveToolMode>[0]["base"]) => ({
 
 test("a marketplace buyer's agent runs in trial mode, from every entry point", async () => {
   const deps = { isMarketplaceInstall: async () => true };
-  for (const base of ["playground", "graph", "scheduled", "job"] as const) {
+  for (const base of ["playground", "graph", "scheduled", "job", "api"] as const) {
     assert.equal(await resolveToolMode(args(base), deps), "trial", base);
   }
 });
 
 test("an agent that is not an install keeps the mode the caller chose", async () => {
   const deps = { isMarketplaceInstall: async () => false };
-  for (const base of ["playground", "graph", "scheduled", "job"] as const) {
+  for (const base of ["playground", "graph", "scheduled", "job", "api"] as const) {
     assert.equal(await resolveToolMode(args(base), deps), base);
   }
 });

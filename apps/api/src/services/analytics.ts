@@ -1,5 +1,11 @@
 import { prisma } from "@wheelsai/db";
 
+import {
+  summarizeAgentUsage,
+  type AgentUsageRow,
+  type AgentUsageSummary,
+} from "./agentUsage.js";
+
 // ============================================
 // Real-time Analytics
 // ============================================
@@ -259,7 +265,13 @@ export async function createDailySnapshot(orgId: string, date: Date) {
     },
   });
 
-  if (records.length === 0) return null;
+  // Agent chat traffic (playground and /v1). It runs on the platform's chat
+  // runtime, not on a model deployment, so none of it is in `records`.
+  const agentChatRows = await prisma.agentUsageRecord.findMany({
+    where: { orgId, periodStart: { gte: startOfDay, lte: endOfDay } },
+  });
+
+  if (records.length === 0 && agentChatRows.length === 0) return null;
 
   const totalRequests = records.reduce((sum, r) => sum + r.requestCount, 0);
   const totalTokensIn = records.reduce((sum, r) => sum + Number(r.inputTokens), 0);
@@ -325,6 +337,23 @@ export async function createDailySnapshot(orgId: string, date: Date) {
     existing.tokensOut += stats.tokensOut;
     existing.costCents += stats.costCents;
     agentStats[link.agentId] = existing;
+  }
+
+  // The agent's own chat traffic sits next to the deployment-derived numbers
+  // under `chat`, not added into them: the top-level totals of this snapshot
+  // are model-deployment usage (they carry a cost), and an agent that chats
+  // on a deployment of its own would otherwise be counted twice.
+  const chatRowsByAgent = new Map<string, AgentUsageRow[]>();
+  for (const row of agentChatRows) {
+    const rows = chatRowsByAgent.get(row.agentId) ?? [];
+    rows.push(row);
+    chatRowsByAgent.set(row.agentId, rows);
+  }
+  for (const [agentId, rows] of chatRowsByAgent) {
+    agentStats[agentId] = {
+      ...(agentStats[agentId] ?? { requests: 0, tokensIn: 0, tokensOut: 0, costCents: 0 }),
+      chat: summarizeAgentUsage(rows),
+    };
   }
 
   return prisma.analyticsSnapshot.upsert({
@@ -485,4 +514,79 @@ export async function getSpendingAlerts(
   }
 
   return alerts;
+}
+
+// ============================================
+// Agent chat usage
+// ============================================
+
+export const AGENT_USAGE_PERIODS = { "24h": 24, "7d": 24 * 7, "30d": 24 * 30 } as const;
+export type AgentUsagePeriod = keyof typeof AGENT_USAGE_PERIODS;
+
+export interface AgentChatUsage {
+  period: AgentUsagePeriod;
+  since: string;
+  /** Everything in the period. */
+  total: AgentUsageSummary;
+  /** The same, per entry point ('playground', 'api', ...). */
+  bySource: Record<string, AgentUsageSummary>;
+  /** One point per UTC hour that had traffic, oldest first. */
+  series: Array<{
+    periodStart: string;
+    requests: number;
+    errors: number;
+    inputTokens: number;
+    outputTokens: number;
+  }>;
+}
+
+type AgentUsageReader = Pick<typeof prisma, "agentUsageRecord">;
+
+/**
+ * An agent's chat traffic over a period, from the hourly rollup the shared
+ * agent-chat service writes. Scoped by BOTH ids: a row is only ever read for
+ * the organization that owns the agent.
+ */
+export async function getAgentChatUsage(
+  orgId: string,
+  agentId: string,
+  period: AgentUsagePeriod,
+  options: { db?: AgentUsageReader; now?: Date } = {},
+): Promise<AgentChatUsage> {
+  const db = options.db ?? prisma;
+  const now = options.now ?? new Date();
+  const since = new Date(now.getTime() - AGENT_USAGE_PERIODS[period] * 60 * 60 * 1000);
+
+  const rows = await db.agentUsageRecord.findMany({
+    where: { orgId, agentId, periodStart: { gte: since } },
+    orderBy: { periodStart: "asc" },
+  });
+
+  const bySourceRows = new Map<string, typeof rows>();
+  const byHour = new Map<string, typeof rows>();
+  for (const row of rows) {
+    bySourceRows.set(row.source, [...(bySourceRows.get(row.source) ?? []), row]);
+    const hour = row.periodStart.toISOString();
+    byHour.set(hour, [...(byHour.get(hour) ?? []), row]);
+  }
+
+  const bySource: Record<string, AgentUsageSummary> = {};
+  for (const [source, sourceRows] of bySourceRows) bySource[source] = summarizeAgentUsage(sourceRows);
+
+  return {
+    period,
+    since: since.toISOString(),
+    total: summarizeAgentUsage(rows),
+    bySource,
+    series: [...byHour.entries()].map(([periodStart, hourRows]) => {
+      const hour = summarizeAgentUsage(hourRows);
+      return {
+        periodStart,
+        requests: hour.requests,
+        errors: hour.errors,
+        inputTokens: hour.inputTokens,
+        outputTokens: hour.outputTokens,
+      };
+    }),
+  };
 }

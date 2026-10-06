@@ -169,7 +169,7 @@ test("money-moving skills are withheld from the model in trial mode and run else
     registry.toolSpecs(["hire_agent", "calculator"], { mode }).map((s) => s.function.name);
 
   assert.deepEqual(names("trial"), ["calculator"]);
-  for (const mode of ["playground", "job", "scheduled", "graph"] as const) {
+  for (const mode of ["playground", "job", "scheduled", "graph", "api"] as const) {
     assert.deepEqual(names(mode), ["hire_agent", "calculator"], mode);
   }
 });

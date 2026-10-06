@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { CliError } from "../src/errors.js";
-import { deriveWebUrl, isLoopbackHost, listingUrl, normalizeUrl, parseBaseUrl, plainHttpWarning, sameOrigin } from "../src/lib/urls.js";
+import { absoluteEndpoint, deriveWebUrl, isLoopbackHost, listingUrl, normalizeUrl, parseBaseUrl, plainHttpWarning, sameOrigin } from "../src/lib/urls.js";
 
 describe("parseBaseUrl", () => {
   it("accepts http(s) URLs and normalizes them, keeping a path prefix", () => {
@@ -93,5 +93,28 @@ describe("listingUrl and normalizeUrl", () => {
 
   it("strips whitespace and trailing slashes", () => {
     assert.equal(normalizeUrl("  https://x.test// "), "https://x.test");
+  });
+});
+
+describe("absoluteEndpoint", () => {
+  it("returns an absolute endpoint exactly as the API gave it", () => {
+    assert.equal(
+      absoluteEndpoint("https://api.example.test/v1/agents/my-support-bot/chat/completions", "http://localhost:4000"),
+      "https://api.example.test/v1/agents/my-support-bot/chat/completions",
+    );
+  });
+
+  it("resolves a host-relative endpoint against the API being talked to", () => {
+    assert.equal(
+      absoluteEndpoint("/v1/my-chat/chat/completions", "http://localhost:4000/"),
+      "http://localhost:4000/v1/my-chat/chat/completions",
+    );
+    assert.equal(absoluteEndpoint("v1/my-chat/chat/completions", "https://x.test"), "https://x.test/v1/my-chat/chat/completions");
+  });
+
+  it("invents nothing when the API returned no endpoint", () => {
+    assert.equal(absoluteEndpoint(null, "http://localhost:4000"), null);
+    assert.equal(absoluteEndpoint(undefined, "http://localhost:4000"), null);
+    assert.equal(absoluteEndpoint("", "http://localhost:4000"), null);
   });
 });

@@ -14,7 +14,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET ?? "1234567890123456789012345678
 // deployment the route must not ALSO take a per-token hold/charge or an x402
 // payment - that would bill the same GPU twice. It keeps the admission checks
 // that remain: the deployment is running, a healthy node exists, and the plan's
-// API-call metering (requireAuth -> meterApiCall, untouched). A deployment the
+// API-call metering (the /v1 guard -> meterApiCall, untouched). A deployment the
 // worker does NOT bill (the dev-only mock) keeps today's per-request billing.
 
 interface Ledger {
@@ -28,7 +28,7 @@ function makeDb(balance: bigint) {
     ledger: [] as Ledger[],
     balanceReads: 0,
     x402Creates: 0,
-    usage: [] as Array<{ costCents: bigint }>,
+    usage: [] as Array<{ costCents: bigint; errorCount: number; inputTokens: bigint }>,
     findFirstArgs: [] as any[],
     planLookups: 0,
     listingLookups: 0,
@@ -111,7 +111,7 @@ async function v1App(opts: {
         };
       },
     },
-    // requireAuth -> meterApiCall -> getOrgPlan. An enterprise plan has no call
+    // The /v1 guard -> meterApiCall -> getOrgPlan. An enterprise plan has no call
     // cap, so the test needs no Redis; the lookup count proves the metering ran.
     orgSubscription: {
       findUnique: async () => {
@@ -129,7 +129,11 @@ async function v1App(opts: {
     },
     usageRecord: {
       upsert: async ({ create }: any) => {
-        state.usage.push({ costCents: create.costCents });
+        state.usage.push({
+          costCents: create.costCents,
+          errorCount: create.errorCount,
+          inputTokens: create.inputTokens,
+        });
         return {};
       },
     },
@@ -184,6 +188,8 @@ async function v1App(opts: {
       JSON.stringify({
         id: "chatcmpl_1",
         object: "chat.completion",
+        model: "x/y",
+        choices: [{ index: 0, message: { role: "assistant", content: "hi there" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 120, completion_tokens: 80 },
       }),
       { status: 200, headers: { "content-type": "application/json" } },
@@ -294,7 +300,7 @@ test("a GPU-billed deployment is still only served while it is RUNNING (the look
   }
 });
 
-test("the plan's API-call metering still runs for a GPU-billed request (requireAuth -> meterApiCall)", async () => {
+test("the plan's API-call metering still runs for a GPU-billed request (the /v1 guard -> meterApiCall)", async () => {
   const { app, state, restore } = await v1App({ balance: 0n, deployment: deploymentRow() });
   try {
     const res = await chat(app);
@@ -455,7 +461,11 @@ test("/v1 never follows a node's redirect: one outbound request, 502, node demot
       assert.ok(!JSON.stringify(res.json()).includes("127.0.0.1"), "the redirect target is not echoed to the caller");
       assert.equal(state.nodeUpdates[0]?.data.healthStatus, "unhealthy", "a node that redirects is taken out of rotation");
       await new Promise((resolve) => setTimeout(resolve, 20));
-      assert.equal(state.usage.length, 0, "nothing is recorded as served");
+      assert.deepEqual(
+        state.usage.map((u) => [u.errorCount, u.costCents]),
+        [[1, 0n]],
+        "recorded as a failed request, never as a served one",
+      );
     } finally {
       await restore();
     }
@@ -478,7 +488,7 @@ test("a redirecting node on a per-request-billed deployment gives the whole hold
   }
 });
 
-test("a node error is a 502, not relayed as a 200, and nothing is charged for it", async () => {
+test("a node error keeps its status, is not relayed as a 200, and nothing is charged for it", async () => {
   const mock = deploymentRow({ nosanaJobIds: ["mock_deploy_abc"] });
   const { app, state, restore } = await v1App({
     balance: 10_000n,
@@ -491,8 +501,13 @@ test("a node error is a 502, not relayed as a 200, and nothing is charged for it
   });
   try {
     const res = await chat(app);
-    assert.equal(res.statusCode, 502);
-    assert.equal(res.json().message, "Inference node responded 500");
+    assert.equal(res.statusCode, 500, "the node's own status, not a blanket 502");
+    assert.deepEqual(res.json().error, {
+      message: "The inference node answered 500.",
+      type: "server_error",
+      param: null,
+      code: "upstream_error",
+    });
     assert.ok(!res.body.includes("stack trace"));
     assert.equal(state.balance, 10_000n, "the hold is released in full");
     assert.deepEqual(state.ledger.map((l) => l.type), ["usage", "usage_release"]);
@@ -514,7 +529,8 @@ test("with the per-second GPU billing worker disabled, a dedicated deployment is
   try {
     const res = await chat(app);
     assert.equal(res.statusCode, 503);
-    assert.equal(res.json().error, "gpu_billing_disabled", "a named reason");
+    assert.equal(res.json().error.reason, "gpu_billing_disabled", "a named reason");
+    assert.equal(res.json().error.code, "service_unavailable");
     assert.equal(fetched.length, 0, "no GPU work");
     assert.deepEqual(state.ledger, [], "and no per-token billing as a fallback (the stop edge still bills the GPU seconds)");
     assert.equal(state.x402Creates, 0);
@@ -562,7 +578,9 @@ test("a deployment whose GPU time has gone uncollected is refused: 402 when the 
     const res = await chat(app);
     assert.equal(res.statusCode, 402);
     // 600 s x 250 uUSD = 15 cents owed.
-    assert.equal(res.json().requiredCents, 15);
+    assert.equal(res.json().error.requiredCents, 15);
+    assert.equal(res.json().error.code, "insufficient_credits");
+    assert.equal(res.headers["x-should-retry"], "false", "an SDK does not retry an unpaid bill");
     assert.deepEqual(fetched, [], "no node was contacted");
     assert.deepEqual(state.ledger, [], "an admission check: no hold, no ledger row");
     assert.equal(state.balance, 0n);
@@ -579,7 +597,7 @@ test("uncollected GPU time the org COULD pay is a 503 gpu_billing_stalled, not a
   try {
     const res = await chat(app);
     assert.equal(res.statusCode, 503);
-    assert.equal(res.json().error, "gpu_billing_stalled");
+    assert.equal(res.json().error.reason, "gpu_billing_stalled");
     assert.deepEqual(fetched, []);
     assert.equal(state.balance, 10_000n, "the route never bills GPU time itself");
     assert.deepEqual(state.ledger, []);
@@ -624,4 +642,33 @@ test("gpuBillingArrears: a cent must have been due for three whole intervals; su
   assert.equal(check(ago(600), { pricePerSecondUsd: () => 0.00001 }), null);
   assert.equal(check(ago(600), { pricePerSecondUsd: () => 0 }), null, "a free tier owes nothing");
   assert.equal(check(ago(600), { billingIntervalMs: 0 }), null, "worker disabled: refused elsewhere (503 gpu_billing_disabled)");
+});
+
+// ============================================
+// The model name the node is asked for
+// ============================================
+
+test("the node is asked for the model it serves, whatever name the caller sent", async () => {
+  // vLLM answers only to the HF id it was started with; Ollama only to the
+  // pulled tag. Callers name the deployment by its slug (as /v1/models lists
+  // it) or leave `model` out.
+  const cases: Array<[Record<string, unknown>, string | undefined, string]> = [
+    [{ engine: "vllm", model: { pricingTier: "small", hfId: "meta-llama/Meta-Llama-3.1-8B-Instruct" } }, "d", "meta-llama/Meta-Llama-3.1-8B-Instruct"],
+    [{ engine: "vllm", model: { pricingTier: "small", hfId: "meta-llama/Meta-Llama-3.1-8B-Instruct" } }, undefined, "meta-llama/Meta-Llama-3.1-8B-Instruct"],
+    [{ engine: "ollama", model: { pricingTier: "small", hfId: "meta-llama/Meta-Llama-3.1-8B-Instruct" } }, "gpt-4o", "llama3.1:8b"],
+  ];
+  for (const [over, sent, served] of cases) {
+    const { app, fetchInits, restore } = await v1App({ balance: 0n, deployment: deploymentRow(over) });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/d/chat/completions",
+        payload: { ...(sent !== undefined && { model: sent }), messages: [{ role: "user", content: "hello" }] },
+      });
+      assert.equal(res.statusCode, 200);
+      assert.equal(JSON.parse(fetchInits[0].body).model, served);
+    } finally {
+      await restore();
+    }
+  }
 });

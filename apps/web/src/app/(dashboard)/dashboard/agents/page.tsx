@@ -200,13 +200,13 @@ export default function AgentsPage() {
                     </div>
 
                     <div className="mt-4 flex items-center justify-between border-t pt-4 text-sm">
-                      {agent.latestDeployment?.endpoint ? (
-                        <code className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">
-                          {agent.slug}
-                        </code>
-                      ) : (
-                        <span className="text-muted-foreground">Not deployed</span>
-                      )}
+                      {/* The agent's /v1 API is always on; its model id is how a client names it. */}
+                      <code
+                        className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground"
+                        title="Model id on the OpenAI-compatible API"
+                      >
+                        {agent.openaiModel ?? `agent/${agent.slug}`}
+                      </code>
                       <span className="text-muted-foreground">
                         {new Date(agent.updatedAt).toLocaleDateString()}
                       </span>

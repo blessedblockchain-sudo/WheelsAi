@@ -246,13 +246,53 @@ test("execution that succeeds settles exactly once", async () => {
 // ============================================
 
 test("every real inference path meters", () => {
-  // Interactive chat — the path a buyer actually uses.
+  // Interactive chat — the path a buyer actually uses. The metering lives
+  // in the shared agent-chat service (the playground and the /v1 agent API
+  // both run through it), bound to the real charge in its composition root.
+  const agentChat = source("services/agentChat.ts");
+  assert.match(agentChat, /await deps\.beginMetering\(\{ agentId, orgId \}\)/);
+  assert.match(agentChat, /meter\?\.settle\(\)/);
+  assert.match(agentChat, /meter\?\.refund\(/);
+  assert.match(agentChat, /kind: "payment_required"/);
+  assert.match(agentChat, /kind: "licence_revoked"/);
+  assert.ok(
+    agentChat.indexOf("await deps.beginMetering(") < agentChat.indexOf("deps.runChat("),
+    "the buyer is charged (or refused) before the model is called",
+  );
+  assert.match(
+    source("services/buildAgentChatDeps.ts"),
+    /beginMetering: beginMarketplaceMetering,/,
+    "the production binding is the real charge, not a stub",
+  );
+
+  // The playground is an adapter over that service: it must go through it,
+  // answer a buyer who cannot pay with 402/403, and hand the stream's charge
+  // to the forwarder that settles on delivery.
   const playground = source("routes/playground.ts");
-  assert.match(playground, /beginMarketplaceMetering/);
+  assert.match(playground, /await prepareAgentChat\(/);
+  assert.doesNotMatch(playground, /runChat\(|runChatStream\(/, "no chat path that bypasses the service");
   assert.match(playground, /status\(402\)/);
   assert.match(playground, /status\(403\)/);
-  assert.match(playground, /meter\?\.settle\(\)/);
-  assert.match(playground, /meter\?\.refund\(/);
+  assert.match(playground, /session\.complete\(\)/);
+  assert.match(playground, /streamToReply\(reply, started\.chat, \{ meter: session\.meter, abort \}\)/);
+
+  // So is the OpenAI-compatible /v1 agent API, which the unified
+  // /v1/chat/completions route reaches through the same handler.
+  const v1 = source("routes/agentCompletions.ts");
+  assert.match(v1, /await prepareAgentChat\(/);
+  assert.doesNotMatch(v1, /runChat\(|runChatStream\(|beginMarketplaceMetering/, "no chat path that bypasses the service");
+  assert.match(v1, /openAiError\("marketplace_payment_required"/);
+  assert.match(v1, /openAiError\("licence_revoked"/);
+  assert.match(v1, /session\.complete\(\)/);
+  assert.match(v1, /streamToReply\(reply, started\.chat, \{\n\s+meter: session\.meter,\n\s+abort,/);
+  const unified = source("routes/openaiV1.ts");
+  assert.match(unified, /completeAgent\(request, reply, \{ agentSlug: target\.slug/);
+  assert.doesNotMatch(unified, /prepareAgentChat|runChat\(|runChatStream\(/, "the unified route adds no chat path of its own");
+
+  const sseReply = source("services/sseReply.ts");
+  assert.match(sseReply, /forwardAndSettle\(\{/);
+  assert.match(sseReply, /\n\s+meter,\n/);
+  assert.match(sseReply, /meter\?\.refund\(CLIENT_GONE\)/);
 
   // Scheduler, "trigger now", orchestration and the test runner all share
   // this one binding, so metering it once covers all four.

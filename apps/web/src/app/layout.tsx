@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import { Toaster } from "sonner";
 
 import { Providers } from "@/components/providers";
+import { siteMetadataBase } from "@/lib/public-urls";
 import "./globals.css";
 
 const inter = Inter({
@@ -34,7 +35,7 @@ export const metadata: Metadata = {
     "deploy AI",
     "monetize AI",
   ],
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "https://wheelsai.io"),
+  metadataBase: siteMetadataBase(process.env.NEXT_PUBLIC_APP_URL),
   openGraph: {
     type: "website",
     siteName: "WheelsAI",

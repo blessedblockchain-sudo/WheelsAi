@@ -5,9 +5,21 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 /**
  * The API origin the app is actually talking to — for user-facing surfaces
  * that print endpoint URLs (deployment cards, code snippets). Never
- * hardcode a hostname in a component: api.wheelsai.io isn't deployed.
+ * hardcode a hostname in a component: an endpoint is only true on the host
+ * this build is configured against.
  */
-export const API_BASE_URL = API_URL;
+export const API_BASE_URL = API_URL.replace(/\/+$/, "");
+
+/**
+ * An endpoint the API returned, as a URL a user can paste. The API answers
+ * absolute URLs when PUBLIC_API_URL is configured and host-relative paths
+ * (`/v1/...`) when it is not; a relative one is resolved against the API
+ * origin this app talks to.
+ */
+export function absoluteApiUrl(pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  return `${API_BASE_URL}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
+}
 
 interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -901,6 +913,21 @@ export interface Agent {
   version: string;
   tags: string[];
   isPublic: boolean;
+  /**
+   * The agent's OpenAI-compatible chat-completions URL, served by the
+   * platform API whether or not anything is deployed. null when the API has
+   * no PUBLIC_API_URL configured: there is no honest absolute URL to show.
+   */
+  apiEndpoint: string | null;
+  /** `base_url` for an OpenAI client talking to this one agent; null as above. */
+  openaiBaseUrl: string | null;
+  /** The `model` id that selects this agent on the unified /v1 base: `agent/<slug>`. */
+  openaiModel: string;
+  /**
+   * What answers a chat (playground and /v1): the agent's prompt, model and
+   * tools, or the graph saved in the builder.
+   */
+  entrypoint: AgentEntrypoint;
   latestDeployment: {
     id: string;
     status: string;
@@ -909,6 +936,46 @@ export interface Agent {
   } | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type AgentEntrypoint = "chat" | "graph";
+
+/** Sums of an agent's chat traffic (playground and /v1) over a period. */
+export interface AgentUsageSummary {
+  requests: number;
+  errors: number;
+  streamed: number;
+  /** Chats that produced an answer: the base of the latency numbers. */
+  answered: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Answered chats whose provider reported no tokens; NOT in the sums above. */
+  usageUnreported: number;
+  toolCalls: number;
+  /** null when nothing was answered. */
+  avgLatencyMs: number | null;
+  /** Upper bounds of the bucket the percentile falls in; null when unknown. */
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  /** errors / requests, 0..1. */
+  errorRate: number;
+}
+
+export type AgentUsagePeriod = "24h" | "7d" | "30d";
+
+export interface AgentChatUsage {
+  period: AgentUsagePeriod;
+  since: string;
+  total: AgentUsageSummary;
+  /** Per entry point: "playground", "api". */
+  bySource: Record<string, AgentUsageSummary>;
+  series: Array<{
+    periodStart: string;
+    requests: number;
+    errors: number;
+    inputTokens: number;
+    outputTokens: number;
+  }>;
 }
 
 export interface AgentDetail extends Omit<Agent, "latestDeployment"> {
@@ -990,11 +1057,14 @@ export const agentsApi = {
       { method: "POST", body: input }
     ),
 
-  update: (id: string, updates: Partial<CreateAgentInput>) =>
+  update: (id: string, updates: Partial<CreateAgentInput> & { entrypoint?: AgentEntrypoint }) =>
     api<{ agent: AgentDetail }>(`/api/agents/${id}`, {
       method: "PATCH",
       body: updates,
     }),
+
+  usage: (id: string, period: AgentUsagePeriod = "24h") =>
+    api<{ usage: AgentChatUsage }>(`/api/agents/${id}/usage?period=${period}`),
 
   delete: (id: string) =>
     api<{ message: string }>(`/api/agents/${id}`, { method: "DELETE" }),

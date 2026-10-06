@@ -97,3 +97,15 @@ export function deriveWebUrl(apiUrl: string): string {
 export function listingUrl(webUrl: string, slug: string): string {
   return `${normalizeUrl(webUrl)}/marketplace/${encodeURIComponent(slug)}`;
 }
+
+/**
+ * An endpoint the API returned, as a URL that can be pasted. The API answers absolute URLs
+ * when it knows its public address and host-relative paths (`/v1/...`) when it does not; a
+ * relative one is resolved against the API this CLI is talking to. Nothing is invented: no
+ * endpoint in means none out.
+ */
+export function absoluteEndpoint(endpoint: string | null | undefined, apiUrl: string): string | null {
+  if (!endpoint) return null;
+  if (/^https?:\/\//i.test(endpoint)) return endpoint;
+  return `${normalizeUrl(apiUrl)}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
+}

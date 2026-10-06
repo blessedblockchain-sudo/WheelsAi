@@ -1,4 +1,5 @@
 import { seg, type RequestOptions, type WheelsAIClient } from "../client.js";
+import type { ChatCompletionRequest, ChatCompletionResponse } from "./inference.js";
 
 export type AgentFramework = "mastra" | "langchain" | "autogen" | "elizaos" | "crewai" | "custom";
 export type AgentSourceType = "inline" | "github" | "ipfs";
@@ -37,6 +38,43 @@ export interface AgentLatestDeployment {
 }
 
 /** One row of `GET /api/agents`. */
+/** What answers a chat: the agent's prompt, model and tools, or its saved graph. */
+export type AgentEntrypoint = "chat" | "graph";
+
+/** Sums of an agent's chat traffic (playground and `/v1`) over a period. */
+export interface AgentUsageSummary {
+  requests: number;
+  /** Chats that produced no answer. A caller that hung up is not an error. */
+  errors: number;
+  streamed: number;
+  /** Chats that produced an answer: the base of the latency numbers. */
+  answered: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Answered chats whose provider reported no tokens; NOT in the two sums above. */
+  usageUnreported: number;
+  toolCalls: number;
+  /** null when nothing was answered. */
+  avgLatencyMs: number | null;
+  /** The upper bound of the latency bucket the percentile falls in; null when unknown. */
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  /** errors / requests, 0..1. */
+  errorRate: number;
+}
+
+export type AgentUsagePeriod = "24h" | "7d" | "30d";
+
+export interface AgentChatUsage {
+  period: AgentUsagePeriod;
+  since: string;
+  total: AgentUsageSummary;
+  /** Per entry point: `playground`, `api`. */
+  bySource: Record<string, AgentUsageSummary>;
+  /** One point per UTC hour that had traffic, oldest first. */
+  series: Array<{ periodStart: string; requests: number; errors: number; inputTokens: number; outputTokens: number }>;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -46,6 +84,17 @@ export interface Agent {
   version: string;
   tags: string[];
   isPublic: boolean;
+  /**
+   * The agent's OpenAI-compatible chat-completions URL on this API
+   * (`<api>/v1/agents/<slug>/chat/completions`). Always on: no deployment is needed.
+   * null when the API has no public address configured (PUBLIC_API_URL).
+   */
+  apiEndpoint: string | null;
+  /** `baseURL` for an OpenAI client talking to this one agent; null as above. */
+  openaiBaseUrl: string | null;
+  /** The `model` that selects this agent on the unified `<api>/v1` base: `agent/<slug>`. */
+  openaiModel: string;
+  entrypoint: AgentEntrypoint;
   latestDeployment: AgentLatestDeployment | null;
   createdAt: string;
   updatedAt: string;
@@ -58,7 +107,7 @@ export interface AgentDeployment {
   gpuTier: string;
   replicas: number;
   status: AgentDeploymentStatus;
-  /** Set by the API once it has one; null until then. */
+  /** The agent's `/v1` chat-completions URL while the deployment is `running`; null otherwise. */
   endpoint: string | null;
   modelDeploymentId: string | null;
   externalModelUrl: string | null;
@@ -92,6 +141,11 @@ export interface AgentDetail {
   version: string;
   isPublic: boolean;
   tags: string[];
+  /** See `Agent.apiEndpoint`. */
+  apiEndpoint: string | null;
+  openaiBaseUrl: string | null;
+  openaiModel: string;
+  entrypoint: AgentEntrypoint;
   createdAt: string;
   updatedAt: string;
   /** Every deployment of the agent, newest first. */
@@ -120,6 +174,11 @@ export interface CreateAgentInput {
 export interface UpdateAgentInput extends Partial<Omit<CreateAgentInput, "env">> {
   /** A string sets or replaces a variable; null deletes it. */
   env?: Record<string, string | null>;
+  /**
+   * `graph` makes the agent answer the playground and `/v1` by running its saved graph.
+   * The API answers 400 `agent_graph_missing` until the agent has one.
+   */
+  entrypoint?: AgentEntrypoint;
 }
 
 export interface DeployAgentInput {
@@ -219,6 +278,14 @@ export function agentsResource(client: WheelsAIClient) {
       client.delete<{ message: string }>(`/api/agents/${seg(id)}`),
 
     /**
+     * The agent's chat traffic over a period: requests, errors, tokens and latency, in total,
+     * per entry point and per hour. Tokens the provider did not report are counted in
+     * `usageUnreported`, never as zero.
+     */
+    usage: (id: string, period: AgentUsagePeriod = "24h") =>
+      client.get<{ usage: AgentChatUsage }>(`/api/agents/${seg(id)}/usage?period=${period}`),
+
+    /**
      * Start a deployment. The response is immediate (status `pending`); poll
      * `getDeployment` for progress. The agent needs `modelConfig.externalModel`,
      * or pass `modelDeploymentId` / `externalModelUrl`.
@@ -255,6 +322,21 @@ export function agentsResource(client: WheelsAIClient) {
       body: { messages: Array<{ role: "user" | "assistant" | "system"; content: string }>; model?: string },
       options?: RequestOptions,
     ) => client.post<PlaygroundChatResponse>(`/api/agents/${seg(id)}/playground/chat`, body, options),
+
+    /**
+     * An OpenAI-format chat completion from an agent: `POST /v1/agents/{slug}/chat/completions`.
+     * Takes the agent's SLUG (not its id). The agent answers with its own prompt, model, tools and
+     * knowledge base; `tools` in the request are functions YOU run, handed back as
+     * `choices[0].message.tool_calls` with `finish_reason: "tool_calls"` - send the conversation
+     * again with a `tool` message per call to continue. `model` in the request is ignored.
+     * An agent whose `entrypoint` is `graph` answers by running its graph instead: it refuses
+     * `tools` (400) and its response has no `usage`.
+     *
+     * Not streamed: for server-sent events point the OpenAI SDK at the agent's `openaiBaseUrl`.
+     * Tool rounds can outlast the default timeout; raise it with `options.timeoutMs`.
+     */
+    chatCompletion: (agentSlug: string, request: ChatCompletionRequest, options?: RequestOptions) =>
+      client.post<ChatCompletionResponse>(`/v1/agents/${seg(agentSlug)}/chat/completions`, request, options),
 
     playgroundModels: (id: string) =>
       client.get<{ freeModels: unknown[]; externalModels: unknown[] }>(`/api/agents/${seg(id)}/playground/models`),

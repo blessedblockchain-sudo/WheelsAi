@@ -63,20 +63,21 @@ export default function PlansBillingPage() {
       </p>
 
       <h2 id="api-calls">What counts as an API call</h2>
+      <p>
+        A request counts when it changes or runs something (any method other than <code>GET</code>, <code>HEAD</code> or{" "}
+        <code>OPTIONS</code>) and is either:
+      </p>
       <ul>
+        <li>authenticated with an API key, to any endpoint, or</li>
         <li>
-          every request authenticated with an API key that changes or runs something: any method other than{" "}
-          <code>GET</code>, <code>HEAD</code> or <code>OPTIONS</code>, to any endpoint, and
-        </li>
-        <li>
-          every request to the OpenAI-compatible <code>/v1</code> API, whatever the method and however it is authenticated.
+          made to the OpenAI-compatible <code>/v1</code> API, however it is authenticated (an API key or a signed-in session).
         </li>
       </ul>
       <p>
-        Reading with an API key is free: listing agents, fetching a deployment or polling its status with <code>GET</code> does
-        not use up calls, so a script or the CLI can wait on a deployment without spending the month&apos;s allowance. Reads are
-        still subject to the <Link href="/docs/api#rate-limits">rate limits</Link>. The one exception is <code>/v1</code>, where
-        a <code>GET</code> such as <code>/v1/models</code> counts like any other <code>/v1</code> request.
+        So one chat completion is one API call. Reads are free everywhere: listing agents, polling a deployment&apos;s status,
+        or an OpenAI client listing <code>/v1/models</code> does not use up calls, so a script or the CLI can wait on a
+        deployment without spending the month&apos;s allowance. Reads are still subject to the{" "}
+        <Link href="/docs/api#rate-limits">rate limits</Link>.
       </p>
       <p>
         Using the dashboard with your signed-in session does not count, except for <code>/v1</code> calls. Calls are counted per

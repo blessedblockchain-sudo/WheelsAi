@@ -67,8 +67,9 @@ export function extractErrorInfo(
   if (typeof apiError === "string" && apiError) {
     return { message: detail ? `${apiError}: ${detail}` : apiError, code: apiError };
   }
+  // The OpenAI-compatible /v1 API: `{ error: { message, type, param, code } }`.
   if (isRecord(apiError) && typeof apiError.message === "string") {
-    return { message: apiError.message };
+    return { message: apiError.message, code: typeof apiError.code === "string" ? apiError.code : undefined };
   }
   return { message: detail ?? fallback };
 }

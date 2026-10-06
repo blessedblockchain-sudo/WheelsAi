@@ -13,7 +13,7 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { SkeletonTable } from "@/components/ui/skeleton";
-import { apiKeysApi, type ApiKey, getErrorMessage } from "@/lib/api";
+import { API_BASE_URL, apiKeysApi, type ApiKey, getErrorMessage } from "@/lib/api";
 
 export default function ApiKeysPage() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -334,19 +334,37 @@ export default function ApiKeysPage() {
           <CardHeader>
             <CardTitle className="text-base">Usage Example</CardTitle>
             <CardDescription>
-              Use your API key to authenticate requests to your deployed models
+              One OpenAI-compatible base URL serves your agents and your model deployments.{" "}
+              <code>model</code> picks which: <code>agent/&lt;slug&gt;</code> for an agent, or the slug of a
+              running deployment.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <pre className="overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">
-{`curl https://api.wheelsai.io/v1/your-deployment/chat/completions \\
+{`curl ${API_BASE_URL}/v1/chat/completions \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "max_tokens": 100
+    "model": "agent/your-agent",
+    "messages": [{"role": "user", "content": "Hello!"}]
   }'`}
             </pre>
+            <pre className="overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">
+{`from openai import OpenAI
+
+client = OpenAI(base_url="${API_BASE_URL}/v1", api_key="YOUR_API_KEY")
+
+print([m.id for m in client.models.list()])   # your agents and running deployments
+
+reply = client.chat.completions.create(
+    model="agent/your-agent",                 # or a deployment slug
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(reply.choices[0].message.content)`}
+            </pre>
+            <p className="text-sm text-muted-foreground">
+              A chat completion counts as one API call on your plan. Listing models and other reads are free.
+            </p>
           </CardContent>
         </Card>
       </div>

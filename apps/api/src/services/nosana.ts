@@ -854,6 +854,44 @@ export interface ModelDeploymentConfig {
   hfToken?: string;
 }
 
+/** The vLLM image every deployment ran on before tool calling was wired. */
+const VLLM_IMAGE = "vllm/vllm-openai:v0.6.0";
+
+interface VllmToolCalling {
+  /** vLLM's --tool-call-parser value for this model family. */
+  parser: "hermes" | "mistral" | "llama3_json";
+  /** The oldest pinned image whose server has that parser. */
+  image: string;
+}
+
+/**
+ * Model families vLLM can parse tool calls for, by Hugging Face id prefix.
+ * `hermes` and `mistral` shipped with automatic tool choice in v0.6.0;
+ * `llama3_json` came later, so those models run a newer pinned image and
+ * every other model stays on the image it has always run on.
+ *
+ * Deliberately short: a parser pointed at a model whose chat template has no
+ * tool section yields malformed calls, which is worse than the server's own
+ * "tool choice is not enabled" answer.
+ */
+const VLLM_TOOL_CALLING: ReadonlyArray<{ prefix: string } & VllmToolCalling> = [
+  { prefix: "meta-llama/Meta-Llama-3.1-", parser: "llama3_json", image: "vllm/vllm-openai:v0.6.3" },
+  { prefix: "meta-llama/Llama-3.2-", parser: "llama3_json", image: "vllm/vllm-openai:v0.6.3" },
+  { prefix: "mistralai/Mistral-7B-Instruct-v0.3", parser: "mistral", image: VLLM_IMAGE },
+  { prefix: "Qwen/Qwen2.5-", parser: "hermes", image: VLLM_IMAGE },
+];
+
+/**
+ * How vLLM is started so `tool_choice: "auto"` works for this model, or null
+ * when the model has no parser. Without one, a request with `tools` still
+ * reaches the model server, which answers 400 for "auto" - passed through to
+ * the caller as it is (routes/inference.ts).
+ */
+export function vllmToolCalling(hfModelId: string): VllmToolCalling | null {
+  const match = VLLM_TOOL_CALLING.find((entry) => hfModelId.startsWith(entry.prefix));
+  return match ? { parser: match.parser, image: match.image } : null;
+}
+
 export function generateVllmJobDefinition(
   config: ModelDeploymentConfig
 ): NosanaJobDefinition {
@@ -874,6 +912,13 @@ export function generateVllmJobDefinition(
     vllmArgs.push("--quantization", config.quantization);
   }
 
+  // Function calling on /v1: the model decides when to call a tool
+  // (tool_choice "auto"), and vLLM turns its output into `tool_calls`.
+  const toolCalling = vllmToolCalling(config.hfModelId);
+  if (toolCalling) {
+    vllmArgs.push("--enable-auto-tool-choice", "--tool-call-parser", toolCalling.parser);
+  }
+
   return {
     version: "0.1",
     type: "container",
@@ -885,7 +930,7 @@ export function generateVllmJobDefinition(
         type: "container/run",
         id: "vllm-inference",
         args: {
-          image: "vllm/vllm-openai:v0.6.0",
+          image: toolCalling?.image ?? VLLM_IMAGE,
           cmd: vllmArgs,
           gpu: true,
           expose: [8000],
@@ -992,6 +1037,15 @@ export function generateOllamaWithProxyJobDefinition(
       },
     ],
   };
+}
+
+/**
+ * The model name the engine of a deployment answers to: the HF id on vLLM
+ * (started without --served-model-name), the pulled tag on Ollama. The /v1
+ * proxy rewrites a request's `model` to this.
+ */
+export function servedModelName(engine: string | null | undefined, hfModelId: string): string {
+  return engine === "ollama" ? mapToOllamaModel(hfModelId) : hfModelId;
 }
 
 function mapToOllamaModel(hfModelId: string): string {

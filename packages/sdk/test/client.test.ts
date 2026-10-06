@@ -113,6 +113,29 @@ describe("errors", () => {
     });
   });
 
+  it("reads the message and code out of an OpenAI-shaped /v1 error", async () => {
+    const body = {
+      error: {
+        message: "No agent with that slug exists in this organization.",
+        type: "invalid_request_error",
+        param: null,
+        code: "agent_not_found",
+      },
+    };
+    const wheels = failing(404, body);
+    await assert.rejects(
+      wheels.agents.chatCompletion("nope", { messages: [{ role: "user", content: "hi" }] }),
+      (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.equal(err.status, 404);
+        assert.equal(err.message, "No agent with that slug exists in this organization.");
+        assert.equal(err.code, "agent_not_found");
+        assert.deepEqual(err.data, body);
+        return true;
+      },
+    );
+  });
+
   it("falls back to the error field (graph and versioning routes)", async () => {
     const wheels = failing(404, { success: false, error: "Agent not found or access denied" });
     await assert.rejects(wheels.agents.getGraph("x"), { message: "Agent not found or access denied", status: 404 });

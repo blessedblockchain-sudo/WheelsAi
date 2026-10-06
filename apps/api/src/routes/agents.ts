@@ -1,7 +1,9 @@
-import { FastifyPluginAsync } from "fastify";
+import { randomBytes } from "node:crypto";
+
+import { FastifyPluginAsync, type preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth as defaultRequireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import { triggerWebhook } from "../services/webhooks.js";
@@ -28,6 +30,12 @@ import {
   reserveDeploymentCredits,
 } from "../services/deploymentCreditGate.js";
 import { AGENT_FRAMEWORKS } from "../config/frameworks.js";
+import { agentApiEndpoints, serializeAgentDeployment } from "../services/publicEndpoints.js";
+import {
+  getAgentChatUsage,
+  type AgentChatUsage,
+  type AgentUsagePeriod,
+} from "../services/analytics.js";
 
 const logger = createLogger("agent-routes");
 
@@ -79,6 +87,9 @@ const updateAgentSchema = createAgentSchema.partial().extend({
   // Secrets are write-only: clients never see values, so a PATCH merges.
   // A string sets or replaces a variable; null deletes it.
   env: z.record(z.string().max(8192).nullable()).optional(),
+  // What answers a chat (playground and /v1): the agent's prompt, model and
+  // tools, or the graph saved in the builder.
+  entrypoint: z.enum(["chat", "graph"]).optional(),
 });
 
 /**
@@ -115,7 +126,25 @@ const deployAgentSchema = z.object({
 // Routes
 // ============================================
 
-export const agentRoutes: FastifyPluginAsync = async (app) => {
+export interface AgentRouteDeps {
+  requireAuth?: preHandlerHookHandler;
+  /** The read routes' database handle (list, detail, deployment status). */
+  prisma?: Pick<typeof prisma, "agent" | "agentDeployment">;
+  /** PUBLIC_API_URL; a function so a test can vary it per app. */
+  publicApiUrl?: () => string | undefined;
+  /** The usage read behind GET /:agentId/usage. */
+  agentUsage?: (orgId: string, agentId: string, period: AgentUsagePeriod) => Promise<AgentChatUsage>;
+}
+
+export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync {
+  const requireAuth = deps.requireAuth ?? defaultRequireAuth;
+  const reads = deps.prisma ?? prisma;
+  const publicApiUrl = deps.publicApiUrl ?? (() => env.PUBLIC_API_URL);
+  const agentUsage =
+    deps.agentUsage ??
+    ((orgId: string, agentId: string, period: AgentUsagePeriod) => getAgentChatUsage(orgId, agentId, period));
+
+  return async (app) => {
   /**
    * Import agent from GitHub — detects framework and pre-fills config
    */
@@ -167,7 +196,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "List all agents", security: [{ bearerAuth: [] }] } }, async (request) => {
     const { orgId } = request.auth!;
 
-    const agents = await prisma.agent.findMany({
+    const agents = await reads.agent.findMany({
       where: { orgId },
       include: {
         deployments: {
@@ -194,7 +223,14 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         version: agent.version,
         tags: agent.tags,
         isPublic: agent.isPublic,
-        latestDeployment: agent.deployments[0] || null,
+        // What answers a chat: the agent's prompt, or its saved graph.
+        entrypoint: agent.entrypoint ?? "chat",
+        // The agent is served by this API whether or not it has a GPU
+        // deployment, so its endpoint does not depend on one.
+        ...agentApiEndpoints(agent.slug, publicApiUrl()),
+        latestDeployment: agent.deployments[0]
+          ? serializeAgentDeployment(agent.deployments[0], agent.slug, publicApiUrl())
+          : null,
         createdAt: agent.createdAt,
         updatedAt: agent.updatedAt,
       })),
@@ -209,7 +245,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     const { orgId } = request.auth!;
     const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
 
-    const agent = await prisma.agent.findFirst({
+    const agent = await reads.agent.findFirst({
       where: { id: agentId, orgId },
       include: {
         deployments: {
@@ -225,6 +261,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return {
       agent: {
         ...agent,
+        ...agentApiEndpoints(agent.slug, publicApiUrl()),
+        deployments: agent.deployments.map((deployment) =>
+          serializeAgentDeployment(deployment, agent.slug, publicApiUrl()),
+        ),
         // Values never leave the API: only the names of set variables.
         env: redactAgentEnv(agent.env),
         secrets: undefined,
@@ -253,11 +293,15 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "");
 
-    let slug = baseSlug;
+    // A name with no ASCII letters or digits slugifies to "", which gave the
+    // agent an empty (then "-1") slug and so no addressable /v1 path.
+    const rootSlug = baseSlug.length > 0 ? baseSlug : `agent-${randomBytes(3).toString("hex")}`;
+
+    let slug = rootSlug;
     let counter = 0;
     while (await prisma.agent.findUnique({ where: { orgId_slug: { orgId, slug } } })) {
       counter++;
-      slug = `${baseSlug}-${counter}`;
+      slug = `${rootSlug}-${counter}`;
     }
 
     if (
@@ -309,6 +353,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         name: agent.name,
         slug: agent.slug,
         framework: agent.framework,
+        ...agentApiEndpoints(agent.slug, publicApiUrl()),
       },
       message: "Agent created successfully",
     };
@@ -337,13 +382,35 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply.badRequest("Knowledge base not found");
     }
 
+    // An agent cannot be told to answer through a graph it does not have:
+    // every chat would then fail. (Deleting the graph afterwards is answered
+    // per chat, with a named 400.)
+    if (updates.entrypoint === "graph" && agent.entrypoint !== "graph") {
+      const graph = await prisma.agentGraph.findUnique({
+        where: { agentId },
+        select: { nodes: true },
+      });
+      if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+        return reply.status(400).send({
+          error: "agent_graph_missing",
+          message: "This agent has no saved graph. Build one in the graph builder before making it the entrypoint.",
+        });
+      }
+    }
+
     // Increment version when behaviour actually changes (a settings save
     // that resends an unchanged prompt is not a new version).
-    const differs = (key: "sourceCode" | "sourceUrl" | "systemPrompt" | "tools") =>
+    const differs = (key: "sourceCode" | "sourceUrl" | "systemPrompt" | "tools" | "entrypoint") =>
       updates[key] !== undefined &&
       JSON.stringify(updates[key]) !== JSON.stringify((agent as Record<string, unknown>)[key] ?? null);
     let newVersion = agent.version;
-    if (differs("sourceCode") || differs("sourceUrl") || differs("systemPrompt") || differs("tools")) {
+    if (
+      differs("sourceCode") ||
+      differs("sourceUrl") ||
+      differs("systemPrompt") ||
+      differs("tools") ||
+      differs("entrypoint")
+    ) {
       const [major = 1, minor = 0, patch = 0] = agent.version.split(".").map(Number);
       newVersion = `${major}.${minor}.${patch + 1}`;
     }
@@ -369,8 +436,36 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       updatedAgent.id,
     ).catch((err) => logger.error({ err }, "webhook agent.updated failed"));
 
-    return { agent: { ...updatedAgent, env: redactAgentEnv(updatedAgent.env), secrets: undefined } };
+    return {
+      agent: {
+        ...updatedAgent,
+        ...agentApiEndpoints(updatedAgent.slug, publicApiUrl()),
+        env: redactAgentEnv(updatedAgent.env),
+        secrets: undefined,
+      },
+    };
   });
+
+  /**
+   * Chat traffic of one agent (playground and /v1): requests, errors, tokens
+   * and latency over a period, from the hourly rollup.
+   */
+  app.get(
+    "/:agentId/usage",
+    { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Agent chat usage and latency" } },
+    async (request, reply) => {
+      const { orgId } = request.auth!;
+      const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
+      const { period } = z
+        .object({ period: z.enum(["24h", "7d", "30d"]).default("24h") })
+        .parse(request.query);
+
+      const agent = await reads.agent.findFirst({ where: { id: agentId, orgId }, select: { id: true } });
+      if (!agent) return reply.notFound("Agent not found");
+
+      return { usage: await agentUsage(orgId, agentId, period) };
+    },
+  );
 
   /**
    * Delete agent
@@ -597,7 +692,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         .object({ agentId: z.string().uuid(), deploymentId: z.string().uuid() })
         .parse(request.params);
 
-      const agent = await prisma.agent.findFirst({
+      const agent = await reads.agent.findFirst({
         where: { id: agentId, orgId },
       });
 
@@ -605,7 +700,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         return reply.notFound("Agent not found");
       }
 
-      const deployment = await prisma.agentDeployment.findFirst({
+      const deployment = await reads.agentDeployment.findFirst({
         where: { id: deploymentId, agentId },
       });
 
@@ -613,7 +708,9 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         return reply.notFound("Deployment not found");
       }
 
-      return { deployment };
+      return {
+        deployment: serializeAgentDeployment(deployment, agent.slug, publicApiUrl()),
+      };
     }
   );
 
@@ -721,7 +818,10 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       };
     }
   );
-};
+  };
+}
+
+export const agentRoutes: FastifyPluginAsync = createAgentRoutes();
 
 // ============================================
 // Helper Functions
@@ -769,10 +869,9 @@ async function submitAgentToNosana(
     // running with nothing polling it.
     const stored = await prisma.agentDeployment.updateMany({
       where: { id: deploymentId, status: { in: ["pending", "building", "deploying"] } },
-      data: {
-        nosanaJobIds: [nosanaDeployment.id],
-        endpoint: `https://agents.wheelsai.io/${agent.slug}`,
-      },
+      // No endpoint is stored: the agent's endpoint is this API's
+      // /v1/agents/<slug>, computed on read (services/publicEndpoints.ts).
+      data: { nosanaJobIds: [nosanaDeployment.id] },
     });
     if (stored.count === 0) {
       logger.warn(

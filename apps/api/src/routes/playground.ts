@@ -3,33 +3,32 @@
  *
  * Chat interface for testing agents with free or paid models,
  * without requiring GPU deployment.
+ *
+ * The chat route is an adapter: who may chat, on which model, with what
+ * grounding and at whose expense is decided by the shared agent-chat service
+ * (services/agentChat.ts), which the /v1 agent API uses too. This file only
+ * translates between that service and the playground's own request and
+ * response shapes, which the dashboard depends on.
  */
 
-import { FastifyPluginAsync } from "fastify";
-import { openAgentEnv } from "../services/agentSecrets.js";
+import { FastifyPluginAsync, type preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
-import { checkFreeTierLimit } from "../middleware/free-tier-limit.js";
 import {
-  resolveModelForPlayground,
-  runChat,
-  runChatStream,
-  type ChatMessage,
-} from "../services/mastra-runtime.js";
-import {
-  abortOnClientClose,
-  CLIENT_GONE,
-  forwardAndSettle,
-  watchDelivery,
-} from "../services/chatStreamSettlement.js";
+  prepareAgentChat,
+  SHUTTING_DOWN,
+  type AgentChatDeps,
+  type AgentChatFailure,
+  type AgentChatNotAnswered,
+  type AgentChatRefusal,
+} from "../services/agentChat.js";
+import { buildAgentChatDeps } from "../services/buildAgentChatDeps.js";
+import { abortOnClientClose, CLIENT_GONE } from "../services/chatStreamSettlement.js";
 import { publicFallbackReason } from "../services/skills/knowledgeSearchSkill.js";
-import { resolveToolMode } from "../services/skills/runMode.js";
-import { isFreeModel, getAvailableFreeModels, getAllFreeModels } from "../config/free-models.js";
-import { retrieveContextForAgent } from "../services/agentRetrieval.js";
-import { beginMarketplaceMetering } from "../services/marketplaceMeteringProduction.js";
+import { getAllFreeModels } from "../config/free-models.js";
 import { licenceRevokedMessage } from "../services/marketplaceMetering.js";
-import { buildAgentRetrievalDeps } from "../services/buildAgentRetrievalDeps.js";
+import { streamToReply } from "../services/sseReply.js";
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 
@@ -46,14 +45,25 @@ const chatBodySchema = z.object({
   stream: z.boolean().optional().default(false),
 });
 
-export const playgroundRoutes: FastifyPluginAsync = async (app) => {
+export interface PlaygroundRouteDeps {
+  /** Built on first use, so registering the routes opens no connection. */
+  chatDeps?: () => AgentChatDeps;
+  requireAuth?: preHandlerHookHandler;
+}
+
+export function createPlaygroundRoutes(deps: PlaygroundRouteDeps = {}): FastifyPluginAsync {
+  const auth = deps.requireAuth ?? requireAuth;
+  let chatDeps: AgentChatDeps | null = null;
+  const getChatDeps = () => (chatDeps ??= (deps.chatDeps ?? buildAgentChatDeps)());
+
+  return async (app) => {
   /**
    * POST /api/agents/:agentId/playground/chat
    * Chat with an agent using free or paid models
    */
   app.post(
     "/agents/:agentId/playground/chat",
-    { preHandler: [requireAuth], schema: { tags: ["Playground"], description: "Chat with agent using free or paid models" } },
+    { preHandler: [auth], schema: { tags: ["Playground"], description: "Chat with agent using free or paid models" } },
     async (request, reply) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const body = chatBodySchema.parse(request.body);
@@ -67,263 +77,155 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
       const clientGone = () =>
         reply.status(499).send({ error: "ClientClosedRequest", message: CLIENT_GONE });
 
-      // Load agent and verify ownership
-      const agent = await prisma.agent.findFirst({
-        where: { id: agentId, orgId },
-      });
+      const refused = (refusal: AgentChatRefusal) => {
+        switch (refusal.kind) {
+          case "agent_not_found":
+            return reply.notFound("Agent not found");
+          case "invalid_request":
+          case "model_invalid":
+            return reply.badRequest(refusal.message);
+          case "not_configured":
+            // Nothing the user can fix from here: the platform has no
+            // provider for this model. Said as what it is, not as a bad
+            // request.
+            return reply.status(501).send({ error: refusal.code, message: refusal.message });
+          case "rate_limited":
+            return reply.status(429).send({
+              error: "RateLimitExceeded",
+              message: "Free tier rate limit exceeded. Try again later or use a paid model.",
+              remaining: refusal.limit.remaining,
+              resetAt: refusal.limit.resetAt,
+            });
+          case "licence_revoked":
+            return reply.status(403).send({
+              error: "LicenceRevoked",
+              reason: refusal.revocation,
+              message: licenceRevokedMessage(refusal.listingTitle, refusal.revocation, refusal.token),
+              ...(refusal.token && { tokenSymbol: refusal.token.symbol, mintAddress: refusal.token.mintAddress }),
+            });
+          case "payment_required":
+            return reply.status(402).send({
+              error: "PaymentRequired",
+              message: `"${refusal.listingTitle}" is billed per request by its publisher. This request costs ${(
+                Number(refusal.requiredCents) / 100
+              ).toFixed(4)} USD and your balance is ${(
+                Number(refusal.balanceCents) / 100
+              ).toFixed(2)} USD.`,
+              requiredCents: Number(refusal.requiredCents),
+              balanceCents: Number(refusal.balanceCents),
+            });
+          case "hosted_model_unavailable":
+            return reply.status(503).send({ error: "hosted_model_not_running", message: refusal.message });
+          case "shutting_down":
+            return reply
+              .status(503)
+              .header("retry-after", "5")
+              .send({ error: "ServiceUnavailable", message: SHUTTING_DOWN });
+          case "client_gone":
+            return clientGone();
+        }
+      };
 
-      if (!agent) {
-        return reply.notFound("Agent not found");
-      }
+      // The charge, if there was one, is already refunded by the service.
+      const failed = (failure: AgentChatFailure) =>
+        failure.code === "client_gone"
+          ? clientGone()
+          : failure.code === "service_unavailable"
+            ? reply
+                .status(503)
+                .header("retry-after", "5")
+                .send({ error: "ServiceUnavailable", message: failure.message })
+            : reply.status(502).send({ error: "ModelError", message: failure.message, ...failure.detail });
 
-      const modelConfig = (agent.modelConfig as any) ?? {};
-      const agentTools = (agent.tools as any[]) ?? [];
+      // A graph agent learns "licence revoked", "cannot pay" and "has no
+      // graph" when its run is attempted; those are refusals like any other.
+      const notAnswered = (result: AgentChatNotAnswered) =>
+        result.refusal ? refused(result.refusal) : failed(result.failure);
 
-      // Resolve which model to use
-      const modelId =
-        body.model ||
-        modelConfig.externalModel ||
-        getFirstAvailableFreeModel();
+      const prepared = await prepareAgentChat(
+        {
+          orgId,
+          agent: { id: agentId },
+          caller: "owner",
+          source: "playground",
+          messages: body.messages,
+          modelOverride: body.model,
+          signal: abort.signal,
+        },
+        getChatDeps(),
+      );
 
-      if (!modelId) {
-        return reply.badRequest(
-          "No model specified and no free models are available. Configure a provider API key on the platform."
-        );
-      }
-
-      // Rate limit free models
-      if (isFreeModel(modelId)) {
-        const limit = await checkFreeTierLimit(orgId);
+      // The limiter's verdict rides on every answer for a free model,
+      // refused or not.
+      const limit = prepared.ok
+        ? prepared.session.rateLimit
+        : prepared.refusal.kind === "rate_limited"
+          ? prepared.refusal.limit
+          : null;
+      if (limit) {
         reply.header("X-RateLimit-Remaining-RPM", limit.remaining.rpm);
         reply.header("X-RateLimit-Remaining-RPD", limit.remaining.rpd);
         reply.header("X-RateLimit-Reset-RPM", limit.resetAt.rpm);
         reply.header("X-RateLimit-Reset-RPD", limit.resetAt.rpd);
-
-        if (!limit.allowed) {
-          return reply.status(429).send({
-            error: "RateLimitExceeded",
-            message: "Free tier rate limit exceeded. Try again later or use a paid model.",
-            remaining: limit.remaining,
-            resetAt: limit.resetAt,
-          });
-        }
       }
+      if (!prepared.ok) return refused(prepared.refusal);
 
-      // Resolve model connection config
-      let resolved;
-      try {
-        const agentEnv = openAgentEnv(agent.env);
-        resolved = resolveModelForPlayground(modelId, agentEnv);
-      } catch (err) {
-        return reply.badRequest(
-          err instanceof Error ? err.message : "Failed to resolve model"
-        );
-      }
-
-      // RAG grounding (W2): only for agents bound to a knowledge base.
-      // Unbound agents take the identical path they always did.
-      let retrieval: Awaited<ReturnType<typeof retrieveContextForAgent>> = null;
-      const lastUserMessage = [...body.messages]
-        .reverse()
-        .find((m) => m.role === "user");
-      if (agent.knowledgeBaseId && lastUserMessage) {
-        try {
-          retrieval = await retrieveContextForAgent(
-            { agentId, orgId, query: lastUserMessage.content },
-            buildAgentRetrievalDeps(),
-          );
-        } catch (err) {
-          // Retrieval is an enhancement — never fail the chat over it.
-          logger.warn({ err, agentId }, "retrieval failed; answering ungrounded");
-        }
-      }
-
-      // Marketplace metering (W2): if this agent is a per-request
-      // install, the buyer pays their publisher for THIS request. Charged
-      // before a single token is generated, refunded if generation fails,
-      // and answered as 402 before any response bytes are written — the
-      // streaming branch cannot take that back once it has flushed a
-      // header.
-      // Nobody is waiting for this answer any more: stop before charging.
-      if (abort.signal.aborted) return clientGone();
-
-      const metering = await beginMarketplaceMetering({ agentId, orgId });
-      if (metering && !metering.ok && metering.reason === "licence_revoked") {
-        return reply.status(403).send({
-          error: "LicenceRevoked",
-          reason: metering.revocation,
-          message: licenceRevokedMessage(metering.listingTitle, metering.revocation, metering.token),
-          ...(metering.token && { tokenSymbol: metering.token.symbol, mintAddress: metering.token.mintAddress }),
-        });
-      }
-      if (metering && !metering.ok) {
-        return reply.status(402).send({
-          error: "PaymentRequired",
-          message: `"${metering.listingTitle}" is billed per request by its publisher. This request costs ${(
-            Number(metering.requiredCents) / 100
-          ).toFixed(4)} USD and your balance is ${(
-            Number(metering.balanceCents) / 100
-          ).toFixed(2)} USD.`,
-          requiredCents: Number(metering.requiredCents),
-          balanceCents: Number(metering.balanceCents),
-        });
-      }
-      const meter = metering?.ok ? metering.handle : null;
-
-      const agentConfig = {
-        name: agent.name,
-        systemPrompt: agent.systemPrompt ?? undefined,
-        tools: agentTools,
-        modelConfig: {
-          externalModel: modelId,
-          temperature: modelConfig.temperature ?? 0.7,
-          maxTokens: modelConfig.maxTokens ?? 4096,
-        },
-      };
-
-      // Grounding rides as its own system turn ahead of the conversation,
-      // so the user's own message is never rewritten.
-      const chatMessages = (
-        retrieval
-          ? [
-              { role: "system", content: retrieval.contextBlock },
-              ...body.messages,
-            ]
-          : body.messages
-      ) as ChatMessage[];
-
-      const chatOptions = {
-        agentId,
-        orgId,
-        // A marketplace buyer's copy of someone else's agent runs in `trial`
-        // mode: money-moving tools are withheld.
-        mode: await resolveToolMode({ agentId, orgId, base: "playground" }),
-        signal: abort.signal,
-      };
+      const { session } = prepared;
+      const { modelId, retrieval, billing } = session;
 
       // Streaming response
       if (body.stream) {
-        let chat;
-        try {
-          // Tool rounds (if any) and the provider's acceptance of the request
-          // happen BEFORE this resolves, so a failure here is still a plain
-          // HTTP error: no header has been flushed and nothing was billed.
-          chat = await runChatStream(resolved, agentConfig, chatMessages, chatOptions);
-        } catch (err) {
-          logger.error({ err, agentId, modelId }, "Streaming chat error");
-          await meter?.refund(
-            err instanceof Error ? err.message : "streaming failed",
-          );
-          return reply.status(502).send({
-            error: "ModelError",
-            message: err instanceof Error ? err.message : "Failed to stream chat response",
-          });
-        }
+        const started = await session.stream();
+        if (!started.ok) return notAnswered(started);
 
-        // The whole answer of a tool-using chat exists by now, and the
-        // client may have left while it was produced. Its charge goes back.
-        if (abort.signal.aborted || reply.raw.destroyed) {
-          await chat.stream.cancel().catch(() => {});
-          await meter?.refund(CLIENT_GONE);
-          return clientGone();
-        }
-
-        // Billing follows the stream's outcome: a real answer settles; a
-        // provider error event, an empty answer, a cut-off stream or a
-        // vanished client refunds. (write() on a closed socket returns false
-        // - it never throws - so the byte loop alone cannot tell.)
-        const delivered = watchDelivery(reply.raw, abort.signal);
-
-        reply.raw.writeHead(200, {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        });
-
-        const outcome = await forwardAndSettle({
-          chat,
-          write: (chunk) => {
-            reply.raw.write(chunk);
-          },
-          end: () => {
-            reply.raw.end();
-          },
-          delivered,
-          meter,
-        });
-        if (!outcome.ok) {
-          logger.warn({ agentId, modelId, error: outcome.error }, "Streamed chat produced no answer");
+        // Headers set so far (CORS, rate limits) go out with the stream, and
+        // billing settles only on an answer that was produced AND delivered.
+        const sent = await streamToReply(reply, started.chat, { meter: session.meter, abort });
+        if (!sent.started) return clientGone();
+        if (!sent.outcome.ok) {
+          logger.warn({ agentId, modelId, error: sent.outcome.error }, "Streamed chat produced no answer");
         }
         return;
       }
 
       // Non-streaming response
-      try {
-        const result = await runChat(
-          resolved,
-          agentConfig,
-          chatMessages,
-          false,
-          chatOptions
-        );
+      const completed = await session.complete();
+      if (!completed.ok) return notAnswered(completed);
+      const { result } = completed;
 
-        // Generated, but the client hung up while it was: not delivered.
-        if (abort.signal.aborted) {
-          await meter?.refund(CLIENT_GONE);
-          return clientGone();
-        }
-
-        await meter?.settle();
-
-        // Fire-and-forget usage tracking
-        trackUsage(orgId, modelId, result.usage.inputTokens, result.usage.outputTokens).catch(
-          (err) => logger.error({ err }, "Failed to track usage")
-        );
-
-        return {
-          content: result.content,
-          model: modelId,
-          usage: result.usage,
-          // Every tool the model called and how each call ended, so the UI
-          // can say "web_search: unavailable" instead of leaving it to the
-          // model's paraphrase.
-          toolCalls: result.toolCalls ?? [],
-          // What this answer cost the buyer and who it went to. A charge
-          // the user only discovers on their statement is a charge we hid.
-          billing: meter
-            ? {
-                listingTitle: meter.charge.install.listingTitle,
-                chargedCents: Number(meter.charge.grossCents),
-                creatorCents: Number(meter.charge.creatorCents),
-              }
-            : null,
-          // What grounded this answer, and by which retrieval mode — so
-          // the UI can cite sources and never imply "semantic" when the
-          // passages were word-overlap matched.
-          retrieval: retrieval
-            ? {
-                mode: retrieval.mode,
-                // Never the embedding provider's own error body: that is
-                // the operator's account talking, not the tenant's.
-                fallbackReason: publicFallbackReason(retrieval.fallbackReason),
-                sources: retrieval.sources.map((s) => ({
-                  chunkId: s.chunkId,
-                  documentId: s.documentId,
-                  documentTitle: s.documentTitle,
-                  score: s.score,
-                })),
-              }
-            : null,
-        };
-      } catch (err) {
-        logger.error({ err, agentId, modelId }, "Chat error");
-        await meter?.refund(err instanceof Error ? err.message : "chat failed");
-        const message = err instanceof Error ? err.message : "Chat failed";
-        return reply.status(502).send({
-          error: "ModelError",
-          message,
-        });
-      }
+      return {
+        content: result.content,
+        // For a graph agent: the model its llm nodes default to, or "graph"
+        // when the agent configures none.
+        model: modelId ?? "graph",
+        usage: result.usage,
+        // The run behind a graph agent's answer; absent for a chat agent.
+        ...(completed.graph && { graph: completed.graph }),
+        // Every tool the model called and how each call ended, so the UI
+        // can say "web_search: unavailable" instead of leaving it to the
+        // model's paraphrase.
+        toolCalls: result.toolCalls ?? [],
+        // What this answer cost the buyer and who it went to. A charge
+        // the user only discovers on their statement is a charge we hid.
+        billing,
+        // What grounded this answer, and by which retrieval mode — so
+        // the UI can cite sources and never imply "semantic" when the
+        // passages were word-overlap matched.
+        retrieval: retrieval
+          ? {
+              mode: retrieval.mode,
+              // Never the embedding provider's own error body: that is
+              // the operator's account talking, not the tenant's.
+              fallbackReason: publicFallbackReason(retrieval.fallbackReason),
+              sources: retrieval.sources.map((s) => ({
+                chunkId: s.chunkId,
+                documentId: s.documentId,
+                documentTitle: s.documentTitle,
+                score: s.score,
+              })),
+            }
+          : null,
+      };
     }
   );
 
@@ -333,7 +235,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
    */
   app.get(
     "/agents/:agentId/playground/models",
-    { preHandler: [requireAuth], schema: { tags: ["Playground"], description: "List available models for playground" } },
+    { preHandler: [auth], schema: { tags: ["Playground"], description: "List available models for playground" } },
     async (request, reply) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const orgId = request.auth!.orgId;
@@ -364,44 +266,7 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
       };
     }
   );
-};
-
-function getFirstAvailableFreeModel(): string | null {
-  const available = getAvailableFreeModels();
-  return available[0]?.id ?? null;
+  };
 }
 
-async function trackUsage(
-  orgId: string,
-  model: string,
-  inputTokens: number,
-  outputTokens: number
-): Promise<void> {
-  const provider = model.split("/")[1] ?? model.split("/")[0] ?? "unknown";
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  try {
-    await prisma.freeTierUsage.upsert({
-      where: {
-        orgId_model_date: { orgId, model, date: today },
-      },
-      update: {
-        inputTokens: { increment: inputTokens },
-        outputTokens: { increment: outputTokens },
-        requestCount: { increment: 1 },
-      },
-      create: {
-        orgId,
-        model,
-        provider,
-        inputTokens,
-        outputTokens,
-        requestCount: 1,
-        date: today,
-      },
-    });
-  } catch {
-    // Usage tracking is best-effort — don't fail the request
-  }
-}
+export const playgroundRoutes: FastifyPluginAsync = createPlaygroundRoutes();

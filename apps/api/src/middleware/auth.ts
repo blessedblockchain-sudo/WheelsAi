@@ -235,27 +235,27 @@ function toLegacyUser(auth: NonNullable<FastifyRequest["auth"]>): LegacyJwtUser 
 // Auth Guards
 // ============================================
 
-// Reads are free: polling a deployment's status or listing agents must not
-// spend the plan's monthly calls (a CLI waiting ten minutes at one poll every
-// three seconds would burn a fifth of Starter). The global rate limit still
-// bounds them.
+// Reads are free: polling a deployment's status, listing agents or an
+// OpenAI client listing /v1/models must not spend the plan's monthly calls (a
+// CLI waiting ten minutes at one poll every three seconds would burn a fifth
+// of Starter). The global rate limit still bounds them.
 const UNMETERED_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 /**
- * Whether a request counts against the plan's monthly API calls: every
- * request to the OpenAI-compatible /v1 API, however it is authenticated, and
- * every API-key request that is not a read.
+ * Whether a request counts against the plan's monthly API calls: a request
+ * that is not a read, made with an API key or to the OpenAI-compatible /v1
+ * API (however that one is authenticated). So a chat completion counts once
+ * and `GET /v1/models` is free.
+ *
+ * The /v1 guard (middleware/openaiAuth.ts) applies this same rule.
  */
 export function countsAsApiCall(request: {
   authType: "jwt" | "api_key";
   method: string;
   url: string;
 }): boolean {
-  if (request.url.startsWith("/v1/")) return true;
-  return (
-    request.authType === "api_key" &&
-    !UNMETERED_METHODS.has(request.method.toUpperCase())
-  );
+  if (UNMETERED_METHODS.has(request.method.toUpperCase())) return false;
+  return request.authType === "api_key" || request.url.startsWith("/v1/");
 }
 
 /**

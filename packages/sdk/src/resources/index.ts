@@ -15,6 +15,10 @@ export {
   type AgentDetail,
   type AgentDeployment,
   type AgentDeploymentStatus,
+  type AgentChatUsage,
+  type AgentEntrypoint,
+  type AgentUsagePeriod,
+  type AgentUsageSummary,
   type AgentFramework,
   type AgentLatestDeployment,
   type AgentModelConfig,
@@ -65,8 +69,13 @@ export {
 export {
   inferenceResource,
   type ChatMessage,
+  type ChatTool,
+  type ChatToolCall,
+  type ChatToolChoice,
   type ChatCompletionRequest,
   type ChatCompletionResponse,
+  type ChatCompletionExtension,
+  type ModelEntry,
 } from "./inference.js";
 export { versioningResource, type AgentVersion, type ChangeType, type VersionDiff } from "./versioning.js";
 export { openclawResource, type OpenClawChannel, type OpenClawDeployment } from "./openclaw.js";

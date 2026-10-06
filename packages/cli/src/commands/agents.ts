@@ -60,6 +60,14 @@ agentsCommand
     console.log(field("Tools", clean(agent.tools.map((tool) => tool.name).join(", "))));
     console.log(field("Model", clean(agent.modelConfig?.externalModel ?? agent.modelConfig?.modelId)));
     console.log(field("Secrets", agent.env.keys.length > 0 ? clean(agent.env.keys.join(", ")) : null));
+    // What answers a chat, in the playground and on /v1.
+    console.log(field("Answers with", agent.entrypoint === "graph" ? "its graph" : "prompt, model and tools"));
+    // The agent's OpenAI-compatible API is served by the platform, deployed or not.
+    console.log(field("API", clean(agent.apiEndpoint) ?? chalk.dim("not configured on the API (PUBLIC_API_URL is not set)")));
+    if (agent.openaiBaseUrl) {
+      console.log(field("OpenAI base", clean(agent.openaiBaseUrl)));
+      console.log(field("Model id", clean(agent.openaiModel)));
+    }
 
     if (agent.deployments.length > 0) {
       console.log(chalk.bold(`\n  Deployments (${agent.deployments.length})`));

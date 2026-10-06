@@ -64,7 +64,8 @@ export default function ApiOverviewPage() {
         </li>
         <li>
           Requests made with a key count toward the plan&apos;s monthly API calls, except reads: <code>GET</code>,{" "}
-          <code>HEAD</code> and <code>OPTIONS</code> are free outside <code>/v1</code>. See{" "}
+          <code>HEAD</code> and <code>OPTIONS</code> are free, <code>/v1/models</code> included. A <code>/v1</code> chat
+          completion counts once, with a key or a session. See{" "}
           <Link href="/docs/guides/plans-and-billing#api-calls">what counts as an API call</Link>.
         </li>
         <li>
@@ -212,7 +213,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
         ]}
         rows={[
           { group: <Link href="/docs/api/inference">Chat completions (OpenAI-compatible)</Link>, prefix: <code>/v1</code> },
-          { group: <Link href="/docs/api/agents">Agents, GitHub import and playground</Link>, prefix: <code>/api/agents</code> },
+          { group: <Link href="/docs/api/agents">Agents, GitHub import, playground and the agent API</Link>, prefix: <><code>/api/agents</code>, <code>/v1/agents</code></> },
           { group: <Link href="/docs/api/deployments">Models and deployments</Link>, prefix: <><code>/api/models</code>, <code>/api/deployments</code></> },
           { group: <Link href="/docs/api/marketplace">Marketplace</Link>, prefix: <code>/api/marketplace</code> },
           { group: <Link href="/docs/api/billing">Billing and plans</Link>, prefix: <code>/api/billing</code> },

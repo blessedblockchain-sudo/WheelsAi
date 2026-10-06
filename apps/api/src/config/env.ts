@@ -154,6 +154,12 @@ const envSchema = z.object({
   EMBEDDING_BACKFILL_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
   FREE_TIER_RPM: z.coerce.number().default(20),
   FREE_TIER_RPD: z.coerce.number().default(200),
+  // Wall-clock limit for one agent chat (every tool round, and a stream until
+  // its last byte). A provider that hangs past it fails the request (504 on
+  // /v1) and refunds any marketplace charge. Keep it below the platform's
+  // shutdown drain window so an in-flight chat settles or refunds before the
+  // process is killed.
+  AGENT_CHAT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
 
   // Token Marketplace
   PUMPFUN_API_KEY: z.string().optional(),

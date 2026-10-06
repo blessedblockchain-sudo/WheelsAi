@@ -22,6 +22,34 @@ const { deployment } = await wheels.agents.deploy(agent!.id, { gpuTier: tiers[0]
 const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deployment.id);
 ```
 
+## Talking to an agent
+
+Every agent has an OpenAI-compatible endpoint on the API, on as soon as the agent exists. Each
+agent row says where: `apiEndpoint`, `openaiBaseUrl` and `openaiModel` (`agent/<slug>`); the
+two URLs are `null` when the API has no public address configured.
+
+```ts
+// One call, OpenAI's response shape. `tools` are functions YOU run: they come back as
+// message.tool_calls with finish_reason "tool_calls"; send a `tool` message per call to continue.
+const reply = await wheels.agents.chatCompletion(
+  "my-support-bot",
+  { messages: [{ role: "user", content: "How long do refunds take?" }] },
+  { timeoutMs: 120_000 },
+);
+console.log(reply.choices[0]?.message.content, reply.wheelsai?.model);
+
+// The same on the unified base, where `model` picks an agent or a model deployment:
+const { data: models } = await wheels.inference.listModels(); // free: not a metered call
+await wheels.inference.chat({ model: "agent/my-support-bot", messages: [{ role: "user", content: "Hi" }] });
+```
+
+These methods return whole responses. For streaming, point the official OpenAI client at
+`agent.openaiBaseUrl` (or `<api>/v1` with `model: "agent/<slug>"` or a deployment's slug) with your
+WheelsAI API key. Model deployments stream and take `tools` too.
+
+`agents.update(id, { entrypoint: "graph" })` makes an agent answer through its saved graph, and
+`agents.usage(id, "7d")` returns its measured requests, errors, tokens and latency.
+
 ## Authentication
 
 An API key (`apiKey`) and a session token (`token`, from `auth.login`) are both sent as
@@ -40,8 +68,11 @@ Every failure throws a `WheelsAIError`: `status` (the HTTP status, or `0` for a 
 timeout), `message` (the API's `message` or `error`, with zod field errors spelled out), `code`
 (the API's `error` code, e.g. `insufficient_credits`) and `data` (the parsed body, which carries
 extras such as `requiredCents` or a token-gated listing's `tokenSymbol` and `mintAddress`).
-Requests time out after 30 seconds (`timeoutMs`); `agents.playgroundChat` and
-`inference.chatCompletion` take `{ timeoutMs }` as a last argument for a longer wait on one call.
+The `/v1` API answers in OpenAI's shape, `{ error: { message, type, param, code } }`; `message`
+and `code` are read from there too (e.g. `agent_not_found`, `plan_limit_reached`).
+Requests time out after 30 seconds (`timeoutMs`); `agents.chatCompletion`, `agents.playgroundChat`,
+`inference.chat` and `inference.chatCompletion` take `{ timeoutMs }` as a last argument for a
+longer wait on one call.
 
 Ids and slugs are percent-encoded into the path. An empty one, `.` and `..` are refused (they
 would name a different route). A credential containing whitespace or control characters is

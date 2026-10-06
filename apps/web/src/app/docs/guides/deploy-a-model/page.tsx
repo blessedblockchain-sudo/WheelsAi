@@ -158,9 +158,12 @@ const completion = await client.chat.completions.create({
 });
 console.log(completion.choices[0]?.message.content);`}
       />
-      <Callout variant="warning" title="Streaming is not available on /v1 yet">
+      <Callout variant="note" title="Streaming and function calling">
         <p>
-          Omit <code>stream</code> (or send <code>false</code>). The endpoint currently returns complete JSON responses only.
+          Send <code>stream: true</code> for server-sent events, and <code>tools</code> with <code>tool_choice</code> for
+          function calling. Both are described under{" "}
+          <Link href="/docs/api/inference#streaming">Chat completions</Link>, including which model families parse tool
+          calls.
         </p>
       </Callout>
       <p>

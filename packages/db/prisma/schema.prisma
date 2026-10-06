@@ -568,6 +568,11 @@ model Agent {
   // never delete it.
   knowledgeBaseId String? @map("knowledge_base_id") @db.Uuid
 
+  // What answers a chat (playground and /v1): 'chat' runs the prompt, model
+  // and tools above; 'graph' runs the graph saved in the builder
+  // (AgentGraph). Set by the agent's owner; 'chat' unless they switch.
+  entrypoint    String   @default("chat")
+
   // Metadata
   version       String   @default("1.0.0")
   isPublic      Boolean  @default(false) @map("is_public")
@@ -623,6 +628,43 @@ model AgentContributor {
   @@map("agent_contributors")
 }
 
+// Hourly rollup of agent chat traffic, written by the shared agent-chat
+// service (apps/api/src/services/agentUsage.ts) for every chat that was
+// admitted: playground and /v1, streamed or not, answered or failed.
+// No relations on purpose: agents are hard-deleted and their usage history
+// must survive them.
+model AgentUsageRecord {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @map("org_id") @db.Uuid
+  agentId      String   @map("agent_id") @db.Uuid
+  // 'playground' | 'api' | 'widget'
+  source       String
+  // Start of the UTC hour.
+  periodStart  DateTime @map("period_start")
+  requestCount Int      @default(0) @map("request_count")
+  // Chats that produced no answer. A client that hung up is not an error.
+  errorCount   Int      @default(0) @map("error_count")
+  streamedCount Int     @default(0) @map("streamed_count")
+  inputTokens  BigInt   @default(0) @map("input_tokens")
+  outputTokens BigInt   @default(0) @map("output_tokens")
+  // Answered chats whose provider reported no token usage. Their tokens are
+  // NOT in the two sums above; nothing is zero-filled or estimated.
+  usageUnreportedCount Int @default(0) @map("usage_unreported_count")
+  // Answered chats only, so an average is not skewed by fast failures.
+  totalLatencyMs BigInt @default(0) @map("total_latency_ms")
+  toolCallCount Int     @default(0) @map("tool_call_count")
+  // Answered chats per latency bucket (LATENCY_BUCKETS_MS in agentUsage.ts),
+  // for percentiles. Incremented element-wise in SQL.
+  latencyHistogram Int[] @default([]) @map("latency_histogram")
+
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([agentId, source, periodStart])
+  @@index([orgId, periodStart])
+  @@map("agent_usage_records")
+}
+
 model AgentDeployment {
   id            String   @id @default(uuid()) @db.Uuid
   agentId       String   @map("agent_id") @db.Uuid
@@ -640,7 +682,10 @@ model AgentDeployment {
 
   // Status
   status        String   @default("pending") // 'pending', 'building', 'deploying', 'running', 'stopped', 'failed'
-  endpoint      String?  // Public endpoint URL
+  // Legacy column, no longer written or returned. The agent's endpoint is the
+  // platform API's /v1/agents/<slug>, computed on read from PUBLIC_API_URL
+  // (apps/api/src/services/publicEndpoints.ts).
+  endpoint      String?
   nosanaJobIds  String[] @map("nosana_job_ids")
 
   // Wallet for autonomous payments

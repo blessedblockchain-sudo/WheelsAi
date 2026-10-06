@@ -1,5 +1,19 @@
 import { Check, Terminal } from "lucide-react";
 
+import { landingAgentEndpoint, landingMarketplaceUrl } from "@/lib/public-urls";
+
+const AGENT_SLUG = "my-support-bot";
+
+// The endpoint `wheelsai deploy` prints: the agent's /v1 URL on the API this
+// site is configured against (NEXT_PUBLIC_API_URL), so the line is true
+// wherever the site is deployed. A build without it shows a placeholder host
+// rather than a developer's localhost.
+const AGENT_ENDPOINT = landingAgentEndpoint(process.env.NEXT_PUBLIC_API_URL, AGENT_SLUG);
+
+// The listing URL is on this site's own origin (NEXT_PUBLIC_APP_URL), or the
+// path alone when the build does not know it.
+const MARKETPLACE_URL = landingMarketplaceUrl(process.env.NEXT_PUBLIC_APP_URL, AGENT_SLUG);
+
 const bullets = [
   "OpenAI-compatible API endpoints",
   "Always-on availability with auto-scaling",
@@ -10,19 +24,19 @@ const bullets = [
 ];
 
 const terminalLines = [
-  { text: "$ wheelsai deploy --agent my-support-bot", color: "text-white" },
+  { text: `$ wheelsai deploy --agent ${AGENT_SLUG}`, color: "text-white" },
   { text: "", color: "" },
   { text: "  ✓ Building agent graph... 4 nodes, 3 tools", color: "text-success" },
   { text: "  ✓ Compute provisioned, treasury PDA created", color: "text-success" },
   { text: "  ✓ Deploying agent...", color: "text-success" },
   { text: "", color: "" },
   { text: "  Agent live!", color: "text-white font-bold" },
-  { text: "    Endpoint:  https://api.wheelsai.com/v1/chat", color: "text-navy-400" },
+  { text: `    Endpoint:  ${AGENT_ENDPOINT}`, color: "text-navy-400" },
   { text: "    Channels:  Discord, Telegram, Slack, Web", color: "text-navy-400" },
   { text: "    Latency:   47ms avg", color: "text-navy-400" },
   { text: "", color: "" },
   { text: "  ✓ Publishing to marketplace...", color: "text-success" },
-  { text: "  ✓ Listed! wheelsai.com/marketplace/my-support-bot", color: "text-success" },
+  { text: `  ✓ Listed! ${MARKETPLACE_URL}`, color: "text-success" },
   { text: "", color: "" },
   { text: "█", color: "text-navy-400 animate-blink" },
 ];

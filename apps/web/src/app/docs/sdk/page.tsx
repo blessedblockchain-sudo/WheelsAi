@@ -17,6 +17,7 @@ const toc = [
   { id: "sdk-auth", title: "Create a client", sub: true },
   { id: "sdk-methods", title: "Resources and methods", sub: true },
   { id: "sdk-errors", title: "Errors and timeouts", sub: true },
+  { id: "sdk-agent-chat", title: "Talking to an agent", sub: true },
   { id: "openai", title: "Using the OpenAI SDK for /v1" },
   { id: "cli", title: "CLI" },
   { id: "cli-login", title: "wheelsai login", sub: true },
@@ -83,7 +84,10 @@ const { deployment } = await wheels.agents.deploy(agent!.id, { gpuTier: tiers[0]
 
 // The deploy answer is immediate (status "pending"): poll for progress.
 const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deployment.id);
-console.log(row.status, row.endpoint);`}
+console.log(row.status, row.endpoint);
+
+// The agent's OpenAI-compatible API is on whether or not anything is deployed.
+console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
       />
       <p>
         To sign in with a password instead, call <code>auth.login(email, password)</code> and pass the returned token to{" "}
@@ -131,15 +135,19 @@ console.log(row.status, row.endpoint);`}
             methods: (
               <>
                 <code>list</code>, <code>resolve</code>, <code>findBySlug</code>, <code>get</code>, <code>create</code>,{" "}
-                <code>update</code> (PATCH), <code>delete</code>, <code>deploy</code>, <code>getDeployment</code>,{" "}
-                <code>stopDeployment</code>, <code>deploymentLogs</code>, <code>playgroundChat</code>,{" "}
-                <code>playgroundModels</code>, <code>getGraph</code>, <code>saveGraph</code>, <code>validateGraph</code>
+                <code>update</code> (PATCH; <code>entrypoint</code> switches between the agent&apos;s prompt and its graph),{" "}
+                <code>usage(id, period)</code>, <code>delete</code>, <code>deploy</code>, <code>getDeployment</code>,{" "}
+                <code>stopDeployment</code>, <code>deploymentLogs</code>, <code>chatCompletion(agentSlug, request)</code>,{" "}
+                <code>playgroundChat</code>, <code>playgroundModels</code>, <code>getGraph</code>, <code>saveGraph</code>,{" "}
+                <code>validateGraph</code>
               </>
             ),
             endpoint: (
               <>
-                <code>/api/agents</code>, <code>/api/agents/&#123;id&#125;/deploy</code>,{" "}
-                <code>/api/agents/&#123;id&#125;/deployments/&#123;deploymentId&#125;</code>
+                <code>/api/agents</code>, <code>/api/agents/&#123;id&#125;/usage</code>,{" "}
+                <code>/api/agents/&#123;id&#125;/deploy</code>,{" "}
+                <code>/api/agents/&#123;id&#125;/deployments/&#123;deploymentId&#125;</code>,{" "}
+                <code>POST /v1/agents/&#123;slug&#125;/chat/completions</code>
               </>
             ),
           },
@@ -190,12 +198,13 @@ console.log(row.status, row.endpoint);`}
             resource: <code>inference</code>,
             methods: (
               <>
-                <code>chatCompletion(deploymentSlug, request)</code>, <code>listModels</code>
+                <code>chat(request)</code>, <code>chatCompletion(deploymentSlug, request)</code>, <code>listModels</code>
               </>
             ),
             endpoint: (
               <>
-                <code>POST /v1/&#123;deploymentSlug&#125;/chat/completions</code>, <code>GET /v1/models</code>
+                <code>POST /v1/chat/completions</code>, <code>POST /v1/&#123;deploymentSlug&#125;/chat/completions</code>,{" "}
+                <code>GET /v1/models</code>
               </>
             ),
           },
@@ -241,7 +250,9 @@ console.log(row.status, row.endpoint);`}
         network error or timeout), <code>message</code> (the API&apos;s <code>message</code> or <code>error</code>, with
         validation errors spelled out), <code>code</code> (the API&apos;s <code>error</code> code, such as{" "}
         <code>insufficient_credits</code>) and <code>data</code> (the parsed body). See{" "}
-        <Link href="/docs/api#errors">Errors</Link> for the shapes.
+        <Link href="/docs/api#errors">Errors</Link> for the shapes. The <code>/v1</code> agent API answers in OpenAI&apos;s
+        shape, <code>&#123; error: &#123; message, type, param, code &#125; &#125;</code>; <code>message</code> and{" "}
+        <code>code</code> are read from there too (for example <code>agent_not_found</code>).
       </p>
       <CodeBlock
         language="ts"
@@ -257,15 +268,71 @@ console.log(row.status, row.endpoint);`}
       />
       <p>
         Requests time out after 30 seconds (<code>timeoutMs</code> in the constructor; <code>0</code> disables it). A playground
-        turn with tools, or a long completion, can take longer: <code>agents.playgroundChat</code> and{" "}
-        <code>inference.chatCompletion</code> accept <code>&#123; timeoutMs &#125;</code> as a last argument for that one call.
+        turn with tools, or a long completion, can take longer: <code>agents.chatCompletion</code>,{" "}
+        <code>agents.playgroundChat</code>, <code>inference.chat</code> and <code>inference.chatCompletion</code> accept{" "}
+        <code>&#123; timeoutMs &#125;</code> as a last argument for that one call.
+      </p>
+
+      <h3 id="sdk-agent-chat">Talking to an agent</h3>
+      <p>
+        Every agent has an OpenAI-compatible endpoint on the API, on as soon as the agent exists. An agent row says where:{" "}
+        <code>apiEndpoint</code>, <code>openaiBaseUrl</code> and <code>openaiModel</code> (<code>agent/&lt;slug&gt;</code>).
+        The two URLs are <code>null</code> when the API server has no public address configured.
+      </p>
+      <CodeBlock
+        language="ts"
+        code={`// One call, in OpenAI's response shape. It takes the agent's slug.
+const reply = await wheels.agents.chatCompletion(
+  "my-support-bot",
+  { messages: [{ role: "user", content: "How long do refunds take?" }] },
+  { timeoutMs: 120_000 },
+);
+console.log(reply.choices[0]?.message.content);
+console.log(reply.wheelsai?.model, reply.wheelsai?.tool_calls); // what answered, and the agent's own tool calls
+
+// The unified base: model picks an agent or a running model deployment.
+const { data: models } = await wheels.inference.listModels();   // free: not a metered call
+await wheels.inference.chat({ model: "agent/my-support-bot", messages: [{ role: "user", content: "Hi" }] });`}
+      />
+      <p>
+        Pass your own functions in <code>tools</code>: when the model calls one, the reply has{" "}
+        <code>finish_reason: &quot;tool_calls&quot;</code> and <code>message.tool_calls</code>; run it and call again with the
+        assistant message and a <code>tool</code> message per call. See{" "}
+        <Link href="/docs/api/agents#agent-tools">function calling</Link>.
       </p>
 
       <h2 id="openai">Using the OpenAI SDK for /v1</h2>
       <p>
-        For chat completions against your deployments, the official OpenAI client works unchanged: set <code>baseURL</code> to{" "}
-        <code>$WHEELSAI_API_URL/v1/&#123;deploymentSlug&#125;</code> and <code>apiKey</code> to your WheelsAI key. It also
-        gives you streaming, which <code>inference.chatCompletion</code> does not. See{" "}
+        The official OpenAI clients work unchanged against <code>/v1</code>, and they are how you stream. Set{" "}
+        <code>apiKey</code> to your WheelsAI key and <code>baseURL</code> to <code>$WHEELSAI_API_URL/v1</code>; then{" "}
+        <code>model</code> picks what answers: <code>agent/&lt;slug&gt;</code> for an agent, or the slug of a running model
+        deployment. <code>client.models.list()</code> returns both.
+      </p>
+      <CodeBlock
+        language="ts"
+        code={`import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: \`\${process.env.WHEELSAI_API_URL}/v1\`,
+  apiKey: process.env.WHEELSAI_API_KEY,
+});
+
+const stream = await client.chat.completions.create({
+  model: "agent/my-support-bot",
+  messages: [{ role: "user", content: "How long do refunds take?" }],
+  stream: true,
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content ?? "");
+}`}
+      />
+      <p>
+        Agents support streaming, function calling and their own server-side tools on this API; see{" "}
+        <Link href="/docs/api/agents#agent-api">the agent API</Link>. A client that is tied to one model name can use the
+        per-agent base URL instead, <code>$WHEELSAI_API_URL/v1/agents/&#123;slug&#125;</code> (an agent&apos;s{" "}
+        <code>openaiBaseUrl</code>), or <code>$WHEELSAI_API_URL/v1/&#123;deploymentSlug&#125;</code> for a model deployment.
+        Model deployments speak the same format: they stream, and <code>tools</code> and <code>tool_choice</code> are
+        forwarded to the model server (see <Link href="/docs/api/inference#tools">which models parse tool calls</Link>). See{" "}
         <Link href="/docs/guides/deploy-a-model#call">Deploy a model</Link> for a full example.
       </p>
 
@@ -332,7 +399,9 @@ wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
           every <code>--interval</code> seconds (default 30) up to <code>--timeout</code> seconds (default 600);
         </li>
         <li>
-          prints the endpoint and channels exactly as the API returned them, or says that none was returned;
+          prints the endpoint and channels exactly as the API returned them, or says that none was returned. The endpoint is
+          the agent&apos;s OpenAI-compatible URL on the API (<code>&lt;api&gt;/v1/agents/&lt;slug&gt;/chat/completions</code>),
+          followed by the OpenAI base URL and the model id (<code>agent/&lt;slug&gt;</code>);
         </li>
         <li>
           with <code>--publish</code>, lists the agent on the marketplace.

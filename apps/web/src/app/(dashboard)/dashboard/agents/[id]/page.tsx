@@ -27,6 +27,7 @@ import { agentsApi, ApiError, type AgentDetail, getErrorMessage } from "@/lib/ap
 import { cn } from "@/lib/utils";
 import {
   OverviewTab,
+  ApiTab,
   DeploymentsTab,
   VersionsTab,
   CodeTab,
@@ -51,7 +52,17 @@ const statusColors: Record<string, "success" | "warning" | "destructive" | "seco
   failed: "destructive",
 };
 
-type Tab = "overview" | "deployments" | "versions" | "code" | "logs" | "settings";
+type Tab = "overview" | "api" | "deployments" | "versions" | "code" | "logs" | "settings";
+
+const TABS: Array<{ id: Tab; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "api", label: "API" },
+  { id: "deployments", label: "Deployments" },
+  { id: "versions", label: "Versions" },
+  { id: "code", label: "Code" },
+  { id: "logs", label: "Logs" },
+  { id: "settings", label: "Settings" },
+];
 
 /**
  * The API answers 404 for an agent outside this workspace and 400 for an id
@@ -86,7 +97,7 @@ function AgentDetailSkeleton() {
       </Card>
 
       <div className="mb-6 flex gap-2 border-b">
-        {Array.from({ length: 6 }).map((_, i) => (
+        {Array.from({ length: TABS.length }).map((_, i) => (
           <div key={i} className="border-b-2 border-transparent px-4 py-2">
             <Skeleton className="h-5 w-16" />
           </div>
@@ -279,13 +290,22 @@ export default function AgentDetailPage() {
                       </Badge>
                     )}
                   </div>
-                  {latestDeployment?.endpoint && (
+                  {/* The agent's /v1 endpoint is served by the platform API
+                      whether or not a deployment is running. */}
+                  {agent.apiEndpoint ? (
                     <div className="mt-1 flex items-center gap-2">
-                      <code className="text-sm text-muted-foreground">{latestDeployment.endpoint}</code>
-                      <button onClick={() => copyToClipboard(latestDeployment.endpoint!)}>
-                        <Copy className="h-4 w-4 text-gray-400 hover:text-foreground" />
+                      <code className="text-sm text-muted-foreground">{agent.apiEndpoint}</code>
+                      <button
+                        onClick={() => copyToClipboard(agent.apiEndpoint!)}
+                        aria-label="Copy API endpoint"
+                      >
+                        <Copy className="h-4 w-4 text-muted-foreground hover:text-foreground" />
                       </button>
                     </div>
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      API endpoint not configured on this server
+                    </p>
                   )}
                 </div>
               </div>
@@ -340,18 +360,18 @@ export default function AgentDetailPage() {
 
         {/* Tabs */}
         <div className="mb-6 flex gap-2 border-b">
-          {(["overview", "deployments", "versions", "code", "logs", "settings"] as Tab[]).map((tab) => (
+          {TABS.map((tab) => (
             <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
               className={cn(
                 "border-b-2 px-4 py-2 text-sm font-medium transition-colors",
-                activeTab === tab
+                activeTab === tab.id
                   ? "border-primary-500 text-primary-600"
                   : "border-transparent text-muted-foreground hover:text-foreground"
               )}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {tab.label}
             </button>
           ))}
         </div>
@@ -365,6 +385,9 @@ export default function AgentDetailPage() {
             deployConfig={deployConfig}
             setDeployConfig={setDeployConfig}
           />
+        )}
+        {activeTab === "api" && (
+          <ApiTab agent={agent} agentId={agentId} loadAgent={loadAgent} />
         )}
         {activeTab === "deployments" && (
           <DeploymentsTab agent={agent} agentId={agentId} loadAgent={loadAgent} />

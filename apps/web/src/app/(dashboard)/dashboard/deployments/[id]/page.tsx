@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API_BASE_URL, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
+import { absoluteApiUrl, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "success",
@@ -241,8 +241,12 @@ export default function DeploymentDetailPage() {
     );
   }
 
-  // The real API origin this app talks to — not an aspirational hostname.
-  const endpoint = deployment.endpoint || `${API_BASE_URL}/v1/${deployment.slug}`;
+  // The API returns the full chat-completions URL: absolute when it knows its
+  // public address, host-relative otherwise - then it is resolved against the
+  // API origin this app talks to, never an aspirational hostname.
+  const endpoint = absoluteApiUrl(
+    deployment.endpoint || `/v1/${encodeURIComponent(deployment.slug)}/chat/completions`
+  );
   const healthyNodeCount = deployment.nodes.filter(
     (n) => n.healthStatus === "healthy"
   ).length;
@@ -351,12 +355,12 @@ export default function DeploymentDetailPage() {
             <CardContent>
               <div className="flex items-center gap-2">
                 <code className="flex-1 rounded-lg bg-muted px-4 py-3 text-sm">
-                  {endpoint}/chat/completions
+                  {endpoint}
                 </code>
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={() => copyToClipboard(`${endpoint}/chat/completions`)}
+                  onClick={() => copyToClipboard(endpoint)}
                 >
                   <Copy className="h-4 w-4" />
                 </Button>
@@ -364,7 +368,7 @@ export default function DeploymentDetailPage() {
               <div className="mt-4">
                 <p className="text-sm font-medium text-foreground">Usage Example</p>
                 <pre className="mt-2 overflow-x-auto rounded-lg bg-gray-900 p-4 text-sm text-gray-100">
-{`curl ${endpoint}/chat/completions \\
+{`curl ${endpoint} \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{

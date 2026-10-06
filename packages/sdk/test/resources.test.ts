@@ -57,13 +57,15 @@ const cases: Case[] = [
   { name: "agents.resolve", run: (w) => w.agents.resolve("my-bot"), method: "GET", path: "/api/agents" },
   { name: "agents.get", run: (w) => w.agents.get(AGENT), method: "GET", path: `/api/agents/${AGENT}` },
   { name: "agents.create", run: (w) => w.agents.create({ name: "My Bot", framework: "custom", sourceType: "inline", sourceCode: "x", modelConfig: {} }), method: "POST", path: "/api/agents", body: { name: "My Bot", framework: "custom", sourceType: "inline", sourceCode: "x", modelConfig: {} } },
-  { name: "agents.update", run: (w) => w.agents.update(AGENT, { description: "new", env: { KEY: null } }), method: "PATCH", path: `/api/agents/${AGENT}`, body: { description: "new", env: { KEY: null } } },
+  { name: "agents.update", run: (w) => w.agents.update(AGENT, { description: "new", env: { KEY: null }, entrypoint: "graph" }), method: "PATCH", path: `/api/agents/${AGENT}`, body: { description: "new", env: { KEY: null }, entrypoint: "graph" } },
   { name: "agents.delete", run: (w) => w.agents.delete(AGENT), method: "DELETE", path: `/api/agents/${AGENT}` },
+  { name: "agents.usage", run: (w) => w.agents.usage(AGENT, "7d"), method: "GET", path: `/api/agents/${AGENT}/usage`, query: { period: "7d" } },
   { name: "agents.deploy", run: (w) => w.agents.deploy(AGENT, { gpuTier: "3060", replicas: 2 }), method: "POST", path: `/api/agents/${AGENT}/deploy`, body: { gpuTier: "3060", replicas: 2 } },
   { name: "agents.getDeployment", run: (w) => w.agents.getDeployment(AGENT, DEP), method: "GET", path: `/api/agents/${AGENT}/deployments/${DEP}` },
   { name: "agents.stopDeployment", run: (w) => w.agents.stopDeployment(AGENT, DEP), method: "POST", path: `/api/agents/${AGENT}/deployments/${DEP}/stop` },
   { name: "agents.deploymentLogs", run: (w) => w.agents.deploymentLogs(AGENT, DEP), method: "GET", path: `/api/agents/${AGENT}/deployments/${DEP}/logs` },
   { name: "agents.playgroundChat", run: (w) => w.agents.playgroundChat(AGENT, { messages: [{ role: "user", content: "hi" }], model: "free/groq/llama-3.3-70b" }), method: "POST", path: `/api/agents/${AGENT}/playground/chat`, body: { messages: [{ role: "user", content: "hi" }], model: "free/groq/llama-3.3-70b" } },
+  { name: "agents.chatCompletion", run: (w) => w.agents.chatCompletion("support-bot", { messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "get_weather" } }] }), method: "POST", path: "/v1/agents/support-bot/chat/completions", body: { messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "get_weather" } }] } },
   { name: "agents.playgroundModels", run: (w) => w.agents.playgroundModels(AGENT), method: "GET", path: `/api/agents/${AGENT}/playground/models` },
   { name: "agents.getGraph", run: (w) => w.agents.getGraph(AGENT), method: "GET", path: `/api/agents/${AGENT}/graph` },
   { name: "agents.saveGraph", run: (w) => w.agents.saveGraph(AGENT, graph), method: "PUT", path: `/api/agents/${AGENT}/graph`, body: graph },
@@ -123,6 +125,7 @@ const cases: Case[] = [
 
   // ---- inference (OpenAI-compatible) ----
   { name: "inference.chatCompletion", run: (w) => w.inference.chatCompletion("my-chat", { messages: [{ role: "user", content: "hi" }], max_tokens: 64 }), method: "POST", path: "/v1/my-chat/chat/completions", body: { messages: [{ role: "user", content: "hi" }], max_tokens: 64 } },
+  { name: "inference.chat", run: (w) => w.inference.chat({ model: "agent/support-bot", messages: [{ role: "user", content: "hi" }] }), method: "POST", path: "/v1/chat/completions", body: { model: "agent/support-bot", messages: [{ role: "user", content: "hi" }] } },
   { name: "inference.listModels", run: (w) => w.inference.listModels(), method: "GET", path: "/v1/models" },
 
   // ---- versioning ----

@@ -299,7 +299,7 @@ describe("wheelsai (the built command)", () => {
       [`GET ${AGENT_PATH}/graph`]: reply(404, { success: false, error: "The request could not be completed." }),
       "GET /api/models": { models: [], gpuTiers: [{ id: "3060", name: "NVIDIA 3060", vram: 12, pricePerHour: 0.2 }] },
       [`POST ${AGENT_PATH}/deploy`]: reply(201, { deployment: { id: DEPLOYMENT_ID, status: "pending" }, message: "Agent deployment started" }),
-      [`GET ${AGENT_PATH}/deployments/${DEPLOYMENT_ID}`]: { deployment: deployment({ status: "running", endpoint: "https://agents.example.test/my-support-bot" }) },
+      [`GET ${AGENT_PATH}/deployments/${DEPLOYMENT_ID}`]: { deployment: deployment({ status: "running", endpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions" }) },
       "GET /api/openclaw": { deployments: [] },
     });
     const deployPosts = () => api.seen.filter((s) => s.method === "POST" && s.path === `${AGENT_PATH}/deploy`);
@@ -317,7 +317,10 @@ describe("wheelsai (the built command)", () => {
       assert.deepEqual(deployPosts()[0]?.body, { gpuTier: "3060", replicas: 1 });
       assert.match(result.stdout, /Agent live!/);
       assert.match(result.stdout, new RegExp(`Deployment\\s+${DEPLOYMENT_ID}`));
-      assert.match(result.stdout, /Endpoint\s+https:\/\/agents\.example\.test\/my-support-bot/);
+      // The agent's /v1 URL on the API, as the API returned it, plus what an OpenAI client needs.
+      assert.match(result.stdout, /Endpoint\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\/chat\/completions\n/);
+      assert.match(result.stdout, /OpenAI base\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\n/);
+      assert.match(result.stdout, /Model\s+agent\/my-support-bot\n/);
       assert.match(result.stdout, /Channels\s+none reported by the API/);
       assert.doesNotMatch(result.stdout, /Listed on the marketplace/, "listing needs --publish");
     });
@@ -327,14 +330,19 @@ describe("wheelsai (the built command)", () => {
       assert.equal(result.code, 0, result.stderr);
       const document = JSON.parse(result.stdout);
       assert.equal(document.deployment.id, DEPLOYMENT_ID);
-      assert.equal(document.endpoint, "https://agents.example.test/my-support-bot");
+      assert.equal(document.endpoint, "https://api.example.test/v1/agents/my-support-bot/chat/completions");
+      assert.equal(document.openaiBaseUrl, "https://api.example.test/v1/agents/my-support-bot");
+      assert.equal(document.openaiModel, "agent/my-support-bot");
       assert.deepEqual(document.agent, { id: AGENT_ID, slug: "my-support-bot", name: "My Support Bot" });
     });
 
-    it("prints 'none returned by the API' when the running deployment has no endpoint", async () => {
+    it("prints 'none returned by the API' when the API has no public address, and invents no OpenAI base", async () => {
+      api.routes["GET /api/agents"] = { agents: [agent({ apiEndpoint: null, openaiBaseUrl: null })], total: 1 };
       api.routes[`GET ${AGENT_PATH}/deployments/${DEPLOYMENT_ID}`] = { deployment: deployment({ status: "running", endpoint: null }) };
       const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
       assert.match(result.stdout, /Endpoint\s+none returned by the API/);
+      assert.doesNotMatch(result.stdout, /OpenAI base/);
+      assert.doesNotMatch(result.stdout, /\/v1\/agents/);
     });
 
     it("with --json, a failure after the deployment exists still puts its id on stdout", async () => {
@@ -469,17 +477,17 @@ describe("wheelsai (the built command)", () => {
     });
 
     it("shows an agent deployment, and does not present its endpoint as live before it runs", async () => {
-      api.routes[`GET /api/agents/${AGENT_ID}/deployments/${DEPLOYMENT_ID}`] = { deployment: deployment({ status: "deploying", endpoint: "https://agents.example.test/my-support-bot" }) };
+      api.routes[`GET /api/agents/${AGENT_ID}/deployments/${DEPLOYMENT_ID}`] = { deployment: deployment({ status: "deploying", endpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions" }) };
       api.routes[`GET /api/agents/${AGENT_ID}/deployments/${DEPLOYMENT_ID}/logs`] = { logs: "No logs available", error: null };
       const result = await wheelsai(["logs", DEPLOYMENT_ID]);
       assert.equal(result.code, 0, result.stderr);
       assert.match(result.stdout, /Agent deployment my-support-bot/);
-      assert.match(result.stdout, /Endpoint\s+https:\/\/agents\.example\.test\/my-support-bot \(not live: the deployment is deploying\)/);
+      assert.match(result.stdout, /Endpoint\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\/chat\/completions \(not live: the deployment is deploying\)/);
       assert.match(result.stdout, /No logs available/);
 
-      api.routes[`GET /api/agents/${AGENT_ID}/deployments/${DEPLOYMENT_ID}`] = { deployment: deployment({ status: "running", endpoint: "https://agents.example.test/my-support-bot" }) };
+      api.routes[`GET /api/agents/${AGENT_ID}/deployments/${DEPLOYMENT_ID}`] = { deployment: deployment({ status: "running", endpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions" }) };
       const running = await wheelsai(["logs", DEPLOYMENT_ID]);
-      assert.match(running.stdout, /Endpoint\s+https:\/\/agents\.example\.test\/my-support-bot\n/);
+      assert.match(running.stdout, /Endpoint\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\/chat\/completions\n/);
     });
 
     it("falls back to a model deployment, and still shows it (exit 1) when its events cannot be read", async () => {
@@ -494,6 +502,42 @@ describe("wheelsai (the built command)", () => {
       assert.match(result.stdout, /Unavailable: Nosana could not be reached/);
       assert.match(result.stdout, /HTTP 502 nosana_unavailable/);
       assert.equal(api.seen.filter((s) => s.path.startsWith("/api/agents")).length, 0, "--model skips the agent search");
+    });
+
+    it("makes a model deployment's host-relative endpoint absolute against the API it talks to", async () => {
+      api.routes[`GET /api/deployments/${MODEL_DEPLOYMENT}`] = {
+        deployment: { id: MODEL_DEPLOYMENT, name: "my-chat", status: "running", statusReason: null, engine: "vllm", gpuTier: "3060", replicas: 1, endpoint: "/v1/my-chat/chat/completions", model: { id: "m", displayName: "Llama 3" }, nodes: [] },
+      };
+      api.routes[`GET /api/deployments/${MODEL_DEPLOYMENT}/logs`] = { logs: [], note: "events" };
+      const result = await wheelsai(["logs", MODEL_DEPLOYMENT, "--model"]);
+      assert.ok(result.stdout.includes(`${api.url}/v1/my-chat/chat/completions`), result.stdout);
+    });
+
+    it("agents get shows the agent's API endpoint, OpenAI base URL and model id as the API returned them", async () => {
+      const detail = {
+        ...agent(),
+        orgId: "o",
+        systemPrompt: null,
+        tools: [],
+        modelConfig: { externalModel: "free/groq/llama-3.3-70b", temperature: 0.7, maxTokens: 4096 },
+        sourceType: "inline",
+        sourceUrl: null,
+        sourceCode: null,
+        env: { keys: [] },
+        knowledgeBaseId: null,
+        deployments: [],
+      };
+      api.routes[`GET /api/agents/${AGENT_ID}`] = { agent: detail };
+      const shown = await wheelsai(["agents", "get", "my-support-bot"]);
+      assert.equal(shown.code, 0, shown.stderr);
+      assert.match(shown.stdout, /API\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\/chat\/completions\n/);
+      assert.match(shown.stdout, /OpenAI base\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\n/);
+      assert.match(shown.stdout, /Model id\s+agent\/my-support-bot\n/);
+
+      api.routes[`GET /api/agents/${AGENT_ID}`] = { agent: { ...detail, apiEndpoint: null, openaiBaseUrl: null } };
+      const unset = await wheelsai(["agents", "get", "my-support-bot"]);
+      assert.match(unset.stdout, /API\s+not configured on the API \(PUBLIC_API_URL is not set\)/);
+      assert.doesNotMatch(unset.stdout, /OpenAI base/);
     });
 
     it("refuses --model with --agent, an id that is not a UUID, and --lines below 10, before any request", async () => {

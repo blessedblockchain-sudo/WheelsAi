@@ -5,9 +5,14 @@ import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
+import {
+  createDeploymentCompletionHandler,
+  type DeploymentCompletionHandler,
+} from "./inference.js";
 import { prisma as defaultPrisma } from "@wheelsai/db";
 import { triggerWebhook as defaultTriggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
+import { deploymentEndpoint as buildDeploymentEndpoint } from "../services/publicEndpoints.js";
 import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import {
   MarketNotConfiguredError,
@@ -15,12 +20,10 @@ import {
   generateJobDefinition,
   getNosanaClient,
   isMockNosanaId,
-  nodeUrlAllowlistOptions,
   type ModelDeploymentConfig,
   type NosanaClient,
 } from "../services/nosana.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
-import { isAllowedNodeUrl } from "../services/nodeUrlAllowlist.js";
 import { recordNosanaOrphan, type NosanaOrphanPrisma } from "../services/nosanaOrphans.js";
 import {
   holdAdditionalReplicas,
@@ -108,8 +111,7 @@ const updateDeploymentSchema = z.object({
  * URL. PUBLIC_API_URL when configured, otherwise a host-relative path.
  */
 export function deploymentEndpoint(slug: string): string {
-  const base = (env.PUBLIC_API_URL ?? "").replace(/\/+$/, "");
-  return `${base}/v1/${slug}/chat/completions`;
+  return buildDeploymentEndpoint(slug, env.PUBLIC_API_URL);
 }
 
 function truncate(text: string, max = 300): string {
@@ -415,6 +417,8 @@ export interface DeploymentRouteDeps {
   getNosana?: () => Promise<NosanaPort>;
   triggerWebhook?: typeof defaultTriggerWebhook;
   now?: () => Date;
+  /** The dashboard playground's completion handler (routes/inference.ts). */
+  chatCompletion?: DeploymentCompletionHandler;
   /**
    * Async submit to Nosana after the row + reservation exist. `runGeneration`
    * is the run the submit belongs to (Deployment.runGeneration as claimed by
@@ -440,6 +444,8 @@ export function createDeploymentRoutes(
   const getNosana: () => Promise<NosanaPort> = deps.getNosana ?? getNosanaClient;
   const triggerWebhook = deps.triggerWebhook ?? defaultTriggerWebhook;
   const now = deps.now ?? (() => new Date());
+  // Built on first use: the handler talks to the global Prisma client.
+  let chatCompletion = deps.chatCompletion ?? null;
   const submit =
     deps.submit ??
     ((deploymentId, config, gpuTier, replicas, runGeneration) =>
@@ -586,8 +592,13 @@ export function createDeploymentRoutes(
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, "");
 
+      // A name with no ASCII letters or digits slugifies to "": that slug
+      // has no /v1/<slug> path, so such a deployment gets a generated one.
+      const rootSlug =
+        baseSlug.length > 0 ? baseSlug : `deployment-${randomUUID().slice(0, 6)}`;
+
       // Ensure slug is unique for this org
-      let slug = baseSlug;
+      let slug = rootSlug;
       let counter = 0;
       while (
         await prisma.deployment.findUnique({
@@ -595,7 +606,7 @@ export function createDeploymentRoutes(
         })
       ) {
         counter++;
-        slug = `${baseSlug}-${counter}`;
+        slug = `${rootSlug}-${counter}`;
       }
 
       const config = body.config ?? {
@@ -1444,122 +1455,23 @@ export function createDeploymentRoutes(
     );
 
     /**
-     * Playground chat endpoint - proxies to deployment
+     * Playground chat endpoint - the dashboard's way into a deployment.
+     *
+     * The same handler as POST /v1/:deploymentSlug/chat/completions, named by
+     * id instead of slug. It used to be a second node proxy of its own, which
+     * sent the engine no `model` (so vLLM refused every request), never
+     * streamed, and skipped the GPU-billing admission checks the /v1 route
+     * makes. One handler cannot drift from itself.
      */
     app.post(
       "/:deploymentId/chat",
-      { preHandler: [requireAuth] },
+      { preHandler: [requireAuth], bodyLimit: 4 * 1024 * 1024 },
       async (request, reply) => {
-        const { orgId } = request.auth!;
         const { deploymentId } = z
-          .object({ deploymentId: z.string() })
+          .object({ deploymentId: z.string().uuid() })
           .parse(request.params);
-
-        const chatSchema = z.object({
-          messages: z.array(
-            z.object({
-              role: z.enum(["system", "user", "assistant"]),
-              content: z.string(),
-            })
-          ),
-          temperature: z.number().min(0).max(2).optional().default(0.7),
-          max_tokens: z.number().int().min(1).max(32768).optional().default(1024),
-          stream: z.boolean().optional().default(false),
-        });
-
-        const body = chatSchema.parse(request.body);
-
-        const deployment = await prisma.deployment.findFirst({
-          where: { id: deploymentId, orgId },
-          include: {
-            model: true,
-            nodes: {
-              where: { healthStatus: "healthy" },
-            },
-          },
-        });
-
-        if (!deployment) {
-          return reply.notFound("Deployment not found");
-        }
-
-        if (deployment.status !== "running") {
-          return reply.badRequest("Deployment is not running");
-        }
-
-        if (deployment.nodes.length === 0) {
-          return reply.serviceUnavailable("No healthy nodes available");
-        }
-
-        // Pick a random healthy node
-        const node = deployment.nodes[Math.floor(Math.random() * deployment.nodes.length)];
-        if (!node) {
-          return reply.serviceUnavailable("No healthy nodes available");
-        }
-
-        // Same SSRF allowlist the /v1 proxy applies to DB-sourced node URLs.
-        if (!isAllowedNodeUrl(node.nodeUrl, nodeUrlAllowlistOptions())) {
-          logger.error({ deploymentId, nodeId: node.id }, "Node URL is outside the allowlist");
-          return reply.status(502).send({
-            error: "Bad Gateway",
-            message: "Inference node URL is not allowed",
-          });
-        }
-
-        // Real proxy to the healthy node (W0-3). This used to return a
-        // hardcoded mock even when a healthy node existed — now that the
-        // status tick genuinely probes node health (A2), the gate above is
-        // meaningful and the playground answers with real model output.
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 60_000);
-          let response: Response;
-          try {
-            response = await fetch(`${node.nodeUrl}/v1/chat/completions`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                messages: body.messages,
-                temperature: body.temperature,
-                max_tokens: body.max_tokens,
-                // Streaming lands with the SSE plumbing; keep the node call
-                // non-streaming regardless of the client flag for now.
-                stream: false,
-              }),
-              signal: controller.signal,
-              redirect: "manual",
-            });
-          } finally {
-            clearTimeout(timer);
-          }
-
-          if (!response.ok) {
-            logger.error(
-              { deploymentId, nodeId: node.id, status: response.status },
-              "Node returned non-OK for playground chat"
-            );
-            return reply.status(502).send({
-              error: "Bad Gateway",
-              message: `Inference node responded ${response.status}`,
-            });
-          }
-
-          return await response.json();
-        } catch (error) {
-          logger.error({ error, deploymentId, nodeId: node.id }, "Chat request failed");
-          // Same demotion the /v1 proxy applies: an unreachable node is not
-          // healthy; the status tick promotes it again when /health recovers.
-          await prisma.deploymentNode
-            .updateMany({
-              where: { id: node.id },
-              data: { healthStatus: "unhealthy" },
-            })
-            .catch(() => {});
-          return reply.status(502).send({
-            error: "Bad Gateway",
-            message: "Failed to reach the inference node",
-          });
-        }
+        chatCompletion ??= createDeploymentCompletionHandler();
+        return chatCompletion(request, reply, { deploymentId });
       }
     );
   };

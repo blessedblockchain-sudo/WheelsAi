@@ -271,28 +271,67 @@ const source = (relative: string) => readFileSync(path.join(SRC, relative), "utf
 
 test("the playground streams with a delivery check, a resolved tool mode and an abort signal", () => {
   const playground = source("routes/playground.ts");
+  const agentChat = source("services/agentChat.ts");
+  const sseReply = source("services/sseReply.ts");
+
   // The delivery watch and the disconnect signal live in
-  // chatStreamSettlement.ts now (driven against a real socket below); the
-  // route must still wire both, and wire the signal before its first await.
-  assert.match(playground, /const delivered = watchDelivery\(reply\.raw, abort\.signal\)/);
-  assert.match(playground, /\n\s+delivered,\n/, "billing must consult delivery");
+  // chatStreamSettlement.ts (driven against a real socket below). The stream
+  // is written by sseReply.ts, which must wire the watch before its first
+  // write and hand it to the settlement.
+  assert.match(sseReply, /const delivered = watchDelivery\(reply\.raw, abort\.signal, options\.deliveryTimeoutMs\)/);
+  assert.match(sseReply, /\n\s+delivered,\n/, "billing must consult delivery");
   assert.ok(
-    playground.indexOf("abortOnClientClose(reply.raw)") < playground.indexOf("await prisma.agent.findFirst"),
+    sseReply.indexOf("const delivered = watchDelivery(") < sseReply.indexOf("reply.raw.writeHead("),
+    "delivery is watched before the first byte",
+  );
+  assert.match(sseReply, /\.\.\.headers,\n\s+"Content-Type": "text\/event-stream"/, "headers already set go out with the stream");
+
+  // The route wires the disconnect signal before its first await and passes
+  // it into the service...
+  assert.ok(
+    playground.indexOf("abortOnClientClose(reply.raw)") < playground.indexOf("await prepareAgentChat("),
     "the disconnect signal is wired before the handler's first await",
   );
+  assert.match(playground, /signal: abort\.signal/);
+  assert.match(playground, /streamToReply\(reply, started\.chat, \{ meter: session\.meter, abort \}\)/);
+
+  // The /v1 agent route makes the same three promises.
+  const v1 = source("routes/agentCompletions.ts");
   assert.ok(
-    playground.indexOf("if (abort.signal.aborted) return clientGone();") <
-      playground.indexOf("await beginMarketplaceMetering("),
+    v1.indexOf("abortOnClientClose(reply.raw)") < v1.indexOf("await prepareAgentChat("),
+    "the /v1 abort is wired before the first await too",
+  );
+  assert.match(v1, /signal: abort\.signal/);
+  assert.match(v1, /source: "api"/);
+  assert.match(v1, /streamToReply\(reply, started\.chat, \{\n\s+meter: session\.meter,\n\s+abort,/);
+
+  // ...and the service turns a client that already left away before it is
+  // charged, runs every chat under that signal, and resolves the tool mode.
+  // (`clientSignal` is the caller's own signal; the run's `signal` also fires
+  // on shutdown, which is not the client leaving.)
+  const preCharge = 'if (clientSignal.aborted) return refuse({ kind: "client_gone" });';
+  assert.ok(agentChat.indexOf(preCharge) > 0, "the pre-charge disconnect check exists");
+  assert.ok(
+    agentChat.indexOf(preCharge) < agentChat.indexOf("await deps.beginMetering("),
     "a client that already left is turned away before it is charged",
   );
+  // A chat is registered for shutdown before it is charged, as a graph run is.
+  assert.ok(
+    agentChat.indexOf("deps.beginRun ? deps.beginRun() : undefined") < agentChat.indexOf("await deps.beginMetering("),
+    "a chat is registered for shutdown before it is charged",
+  );
+  assert.match(agentChat, /if \(slot === null\) return refuse\(\{ kind: "shutting_down" \}\)/);
+  assert.match(agentChat, /deps\.resolveToolMode\(\{ agentId, orgId, base: TOOL_MODE_BASE\[input\.source\] \}\)/);
+  assert.match(agentChat, /playground: "playground",/);
+  assert.match(agentChat, /mode: toolMode,\n\s+signal,/);
+  assert.match(source("services/buildAgentChatDeps.ts"), /resolveToolMode: \(args\) => resolveToolMode\(args\)/);
+
   const settlement = source("services/chatStreamSettlement.ts");
   assert.match(settlement, /res\.once\("finish"/);
   assert.match(settlement, /if \(res\.destroyed\) abort\.abort\(\)/);
-  assert.match(playground, /resolveToolMode\(\{ agentId, orgId, base: "playground" \}\)/);
-  assert.match(playground, /signal: abort\.signal/);
   // The pre-existing pins the marketplace wiring test relies on still hold.
-  assert.match(playground, /meter\?\.settle\(\)/);
-  assert.match(playground, /meter\?\.refund\(/);
+  assert.match(agentChat, /meter\?\.settle\(\)/);
+  assert.match(agentChat, /meter\?\.refund\(/);
 });
 
 test("graph runs are cancelled when the client closes the request, and resolve their tool mode", () => {
@@ -313,7 +352,17 @@ test("graph runs are cancelled when the client closes the request, and resolve t
     run.indexOf("inFlightGraphRuns.begin()") < run.indexOf("beginMarketplaceMetering("),
     "a run is registered for shutdown before it is charged",
   );
-  assert.match(source("index.ts"), /await cancelInFlightGraphRuns\(/);
+  // Shutdown cancels graph runs and agent chats together, and waits for both
+  // before the queue drain eats the kill window.
+  const index = source("index.ts");
+  assert.match(
+    index,
+    /await Promise\.all\(\[\n\s+cancelInFlightGraphRuns\(GRAPH_RUN_DRAIN_MS\),\n\s+cancelInFlightAgentChats\(GRAPH_RUN_DRAIN_MS\),\n\s+\]\)/,
+  );
+  assert.ok(
+    index.indexOf("cancelInFlightAgentChats(GRAPH_RUN_DRAIN_MS)") < index.indexOf("await stopX402Queue()"),
+    "in-flight chats are cancelled first, not after the queues have drained",
+  );
 });
 
 test("scheduled and orchestration runs resolve their tool mode; the test runner runs in 'test' mode", () => {

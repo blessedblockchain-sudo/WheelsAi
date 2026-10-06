@@ -95,7 +95,10 @@ test("a tool call on round 1 and content on round 2 yields the answer", async ()
   const second = requests[1]!.messages;
   assert.equal(second.at(-2)!.role, "assistant");
   assert.equal(second.at(-2)!.tool_calls![0]!.function.name, "calculator");
-  assert.deepEqual(second.at(-1), { role: "tool", tool_call_id: "id_calculator", content: "391" });
+  // The result answers the id the loop assigned, not the provider's own.
+  const assignedId = second.at(-2)!.tool_calls![0]!.id;
+  assert.match(assignedId, /^call_[0-9a-f]{32}$/);
+  assert.deepEqual(second.at(-1), { role: "tool", tool_call_id: assignedId, content: "391" });
 });
 
 test("tool rounds are capped at four, then the model is forced to answer", async () => {
@@ -320,4 +323,151 @@ test("aborting during a tool call cancels the run", async () => {
   });
   setTimeout(() => controller.abort(), 10);
   await assert.rejects(running, (err: unknown) => (err as Error).name === "AbortError");
+});
+
+// ============================================
+// Client tools (OpenAI function calling)
+// ============================================
+
+const clientTool = (name: string) => ({
+  type: "function" as const,
+  function: { name, description: `${name} (runs on the caller's side)` },
+});
+
+test("a client tool call ends the loop and is returned, never executed or reported unknown", async () => {
+  const { callModel, requests } = scripted([
+    turn({ toolCalls: [call("get_weather", { city: "Lagos" })], finishReason: "tool_calls" }),
+  ]);
+  const result = await runToolLoop({
+    messages: [{ role: "user", content: "weather in Lagos?" }],
+    tools: [spec("calculator")],
+    clientTools: [clientTool("get_weather")],
+    callModel,
+    executeTool: async () => assert.fail("a client tool is never executed server-side"),
+  });
+
+  assert.equal(requests.length, 1, "the loop stops: the caller has to act next");
+  assert.deepEqual(
+    result.clientToolCalls.map((c) => [c.name, c.arguments]),
+    [["get_weather", '{"city":"Lagos"}']],
+  );
+  assert.equal(result.finishReason, "tool_calls");
+  assert.deepEqual(result.toolCalls, [], "it is not a server tool call, and not 'unknown'");
+  // Both kinds of tool were offered to the model.
+  assert.deepEqual(
+    requests[0]!.tools!.map((t) => t.function.name),
+    ["calculator", "get_weather"],
+  );
+  // No tool message was fabricated for the call the caller still has to run.
+  assert.deepEqual(result.transcript.map((m) => m.role), ["assistant"]);
+});
+
+test("a mixed turn runs its server calls and hands back only the client calls with the server transcript", async () => {
+  const { callModel } = scripted([
+    turn({
+      content: "Let me check both.",
+      toolCalls: [call("calculator", { expression: "2+2" }), call("get_weather", { city: "Oslo" })],
+    }),
+  ]);
+  const ran: string[] = [];
+  const result = await runToolLoop({
+    messages: [
+      { role: "system", content: "sys" },
+      { role: "user", content: "2+2 and the weather" },
+    ],
+    tools: [spec("calculator")],
+    clientTools: [clientTool("get_weather")],
+    callModel,
+    executeTool: async (name) => {
+      ran.push(name);
+      return ok("4");
+    },
+  });
+
+  assert.deepEqual(ran, ["calculator"], "the server call in the same turn still ran");
+  assert.deepEqual(result.clientToolCalls.map((c) => c.name), ["get_weather"]);
+  assert.deepEqual(result.toolCalls, [{ round: 1, name: "calculator", status: "ok", detail: null }]);
+  assert.equal(result.content, "Let me check both.");
+
+  // The transcript is what resuming needs: the assistant turn with BOTH
+  // calls, and the result of the one that ran here. Nothing the caller sent.
+  const [assistant, toolResult, ...rest] = result.transcript;
+  assert.deepEqual(rest, []);
+  assert.deepEqual(
+    assistant!.tool_calls!.map((c) => c.function.name),
+    ["calculator", "get_weather"],
+  );
+  assert.equal(toolResult!.role, "tool");
+  assert.equal(toolResult!.content, "4");
+  assert.equal(toolResult!.tool_call_id, assistant!.tool_calls![0]!.id);
+  assert.equal(result.clientToolCalls[0]!.id, assistant!.tool_calls![1]!.id);
+});
+
+test("an empty-content turn with client calls is not EmptyModelAnswerError", async () => {
+  const { callModel } = scripted([turn({ content: "", toolCalls: [call("lookup")] })]);
+  const result = await runToolLoop({
+    messages: [{ role: "user", content: "x" }],
+    tools: [],
+    clientTools: [clientTool("lookup")],
+    callModel,
+    executeTool: async () => assert.fail("not run"),
+  });
+  assert.equal(result.content, "");
+  assert.equal(result.clientToolCalls.length, 1);
+});
+
+test("the caller tool_choice is sent on the first call only", async () => {
+  const { callModel, requests } = scripted([
+    turn({ toolCalls: [call("calculator", { expression: "1+1" })] }),
+    turn({ content: "2" }),
+  ]);
+  const choice = { type: "function" as const, function: { name: "lookup" } };
+  await runToolLoop({
+    messages: [{ role: "user", content: "x" }],
+    tools: [spec("calculator")],
+    clientTools: [clientTool("lookup")],
+    toolChoice: choice,
+    callModel,
+    executeTool: async () => ok("2"),
+  });
+  assert.deepEqual(requests[0]!.toolChoice, choice);
+  assert.equal(requests[1]!.toolChoice, "auto", "forcing it again would loop until the rounds ran out");
+});
+
+test("every call gets a fresh unique id", async () => {
+  // The provider reuses one id for every call, across rounds.
+  const { callModel, requests } = scripted([
+    turn({ toolCalls: [call("calculator", {}, "call_1"), call("calculator", {}, "call_1")] }),
+    turn({ toolCalls: [call("calculator", {}, "call_1")] }),
+    turn({ content: "done" }),
+  ]);
+  await runToolLoop({
+    messages: [{ role: "user", content: "x" }],
+    tools: [spec("calculator")],
+    callModel,
+    executeTool: async () => ok("1"),
+  });
+  const last = requests[2]!.messages;
+  const assigned = last.flatMap((m) => m.tool_calls?.map((c) => c.id) ?? []);
+  assert.equal(assigned.length, 3);
+  assert.equal(new Set(assigned).size, 3, "no two calls share an id");
+  assert.ok(assigned.every((id) => id !== "call_1" && id.length <= 40));
+  // Every tool result answers exactly one assigned id.
+  const answered = last.filter((m) => m.role === "tool").map((m) => m.tool_call_id);
+  assert.deepEqual([...answered].sort(), [...assigned].sort());
+});
+
+test("usage a provider did not report is null, never a partial sum", async () => {
+  const { callModel } = scripted([
+    turn({ toolCalls: [call("calculator")] }),
+    turn({ content: "ok", usage: null }),
+  ]);
+  const result = await runToolLoop({
+    messages: [{ role: "user", content: "x" }],
+    tools: [spec("calculator")],
+    callModel,
+    executeTool: async () => ok("1"),
+  });
+  assert.equal(result.reportedUsage, null);
+  assert.deepEqual(result.usage, { inputTokens: 10, outputTokens: 5 }, "the legacy sum counts what was reported");
 });

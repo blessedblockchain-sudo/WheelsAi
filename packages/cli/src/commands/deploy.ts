@@ -1,6 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import type { AgentDeployment, AgentListing } from "@wheelsai/sdk";
+import type { Agent, AgentDeployment, AgentListing } from "@wheelsai/sdk";
 
 import { createSession } from "../client.js";
 import { CliError } from "../errors.js";
@@ -110,23 +110,33 @@ export const deployCommand = new Command("deploy")
         agent: { id: result.agent.id, slug: result.agent.slug, name: result.agent.name },
         deployment: result.deployment,
         endpoint: result.deployment.endpoint,
+        openaiBaseUrl: result.agent.openaiBaseUrl ?? null,
+        openaiModel: result.agent.openaiModel ?? null,
         channels: result.channels,
         listing: result.listing ? { ...result.listing.listing, url: result.listing.url } : undefined,
       });
     }
 
-    printLive(result.deployment, result.channels);
+    printLive(result.agent, result.deployment, result.channels);
     if (result.listing) printListing(result.listing.listing, result.listing.url);
   });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Only reached with a deployment the API reports as `running`; the endpoint is printed exactly as returned. */
-function printLive(deployment: AgentDeployment, channels: ChannelReport): void {
+/**
+ * Only reached with a deployment the API reports as `running`. The endpoint is the agent's
+ * OpenAI-compatible URL on the API, printed exactly as returned, with what an OpenAI client
+ * needs to use it: the base URL and the model id.
+ */
+function printLive(agent: Agent, deployment: AgentDeployment, channels: ChannelReport): void {
   console.log(chalk.bold("\n  Agent live!"));
   console.log(field("Deployment", deployment.id));
   console.log(field("GPU", `${clean(deployment.gpuTier)} x${deployment.replicas}`));
   console.log(field("Endpoint", clean(deployment.endpoint) ?? chalk.dim("none returned by the API")));
+  if (agent.openaiBaseUrl) {
+    console.log(field("OpenAI base", clean(agent.openaiBaseUrl)));
+    console.log(field("Model", clean(agent.openaiModel)));
+  }
   console.log(
     field(
       "Channels",

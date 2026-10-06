@@ -33,6 +33,9 @@ import {
 } from "@/lib/api";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 type Tab = "overview" | "alerts" | "rules" | "channels" | "uptime";
 
@@ -60,6 +63,7 @@ export default function MonitoringPage() {
   const confirmAction = useConfirm();
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // Data states
   const [alertStats, setAlertStats] = useState<AlertStats | null>(null);
@@ -79,6 +83,7 @@ export default function MonitoringPage() {
   }, []);
 
   async function loadData() {
+    setLoadError(null);
     try {
       const [statsRes, uptimeRes, alertsRes, rulesRes, channelsRes, monitorsRes] =
         await Promise.all([
@@ -98,9 +103,17 @@ export default function MonitoringPage() {
       setUptimeMonitors(monitorsRes.data);
     } catch (error) {
       console.error("Failed to load monitoring data:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
+  }
+
+  // loadData also refreshes in place after actions, so only a retry from the
+  // error state brings the skeleton back.
+  function retryLoad() {
+    setLoading(true);
+    void loadData();
   }
 
   async function handleAcknowledgeAlert(alertId: string) {
@@ -159,15 +172,35 @@ export default function MonitoringPage() {
     }
   }
 
+  const header = (
+    <div className="flex items-center justify-between">
+      <div>
+        <h1 className="text-2xl font-bold">Monitoring</h1>
+        <p className="text-muted-foreground">
+          Alerts, uptime monitoring, and notification channels
+        </p>
+      </div>
+    </div>
+  );
+
   if (loading) {
     return (
       <div className="p-6 space-y-6">
-        <div className="h-8 w-48 bg-muted animate-pulse rounded" />
-        <div className="grid grid-cols-4 gap-4">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="h-24 bg-card border rounded-lg animate-pulse" />
-          ))}
-        </div>
+        {header}
+        <MonitoringOverviewSkeleton />
+      </div>
+    );
+  }
+
+  if (loadError !== null) {
+    return (
+      <div className="p-6 space-y-6">
+        {header}
+        <ErrorState
+          title="Couldn't load monitoring data"
+          error={loadError}
+          onRetry={retryLoad}
+        />
       </div>
     );
   }
@@ -175,14 +208,7 @@ export default function MonitoringPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Monitoring</h1>
-          <p className="text-muted-foreground">
-            Alerts, uptime monitoring, and notification channels
-          </p>
-        </div>
-      </div>
+      {header}
 
       {/* Tabs */}
       <div className="flex gap-2 border-b">
@@ -276,10 +302,11 @@ export default function MonitoringPage() {
             </div>
 
             {alerts.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <CheckCircle className="h-12 w-12 mx-auto mb-2 opacity-20" />
-                <p>No active alerts</p>
-              </div>
+              <EmptyState
+                icon={CheckCircle}
+                title="No active alerts"
+                description="Alerts appear here when one of your alert rules is triggered."
+              />
             ) : (
               <div className="space-y-3">
                 {alerts.slice(0, 5).map((alert) => (
@@ -335,11 +362,14 @@ export default function MonitoringPage() {
               </button>
             </div>
 
-            {uptimeSummary?.monitors.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Activity className="h-12 w-12 mx-auto mb-2 opacity-20" />
-                <p>No uptime monitors configured</p>
-              </div>
+            {!uptimeSummary?.monitors.length ? (
+              <EmptyState
+                icon={Activity}
+                title="No uptime monitors configured"
+                description="Monitor your deployments and endpoints."
+                actionLabel="Add Monitor"
+                onAction={() => setShowUptimeModal(true)}
+              />
             ) : (
               <div className="space-y-3">
                 {uptimeSummary?.monitors.slice(0, 5).map((monitor) => (
@@ -384,10 +414,11 @@ export default function MonitoringPage() {
           <h2 className="text-lg font-semibold mb-4">All Alerts</h2>
 
           {alerts.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <CheckCircle className="h-16 w-16 mx-auto mb-3 opacity-20" />
-              <p className="text-lg">No alerts</p>
-            </div>
+            <EmptyState
+              icon={CheckCircle}
+              title="No alerts"
+              description="Alerts appear here when one of your alert rules is triggered."
+            />
           ) : (
             <div className="space-y-3">
               {alerts.map((alert) => (
@@ -452,11 +483,13 @@ export default function MonitoringPage() {
           </div>
 
           {rules.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <Bell className="h-16 w-16 mx-auto mb-3 opacity-20" />
-              <p className="text-lg">No alert rules configured</p>
-              <p className="text-sm">Create a rule to start monitoring</p>
-            </div>
+            <EmptyState
+              icon={Bell}
+              title="No alert rules configured"
+              description="Create a rule to start monitoring."
+              actionLabel="Create Rule"
+              onAction={() => setShowRuleModal(true)}
+            />
           ) : (
             <div className="space-y-3">
               {rules.map((rule) => (
@@ -521,11 +554,13 @@ export default function MonitoringPage() {
           </div>
 
           {channels.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <Bell className="h-16 w-16 mx-auto mb-3 opacity-20" />
-              <p className="text-lg">No notification channels</p>
-              <p className="text-sm">Add Slack, Discord, or email to receive alerts</p>
-            </div>
+            <EmptyState
+              icon={Bell}
+              title="No notification channels"
+              description="Add Slack, Discord, or email to receive alerts."
+              actionLabel="Add Channel"
+              onAction={() => setShowChannelModal(true)}
+            />
           ) : (
             <div className="space-y-3">
               {channels.map((channel) => {
@@ -594,11 +629,13 @@ export default function MonitoringPage() {
           </div>
 
           {uptimeMonitors.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              <Activity className="h-16 w-16 mx-auto mb-3 opacity-20" />
-              <p className="text-lg">No uptime monitors</p>
-              <p className="text-sm">Monitor your deployments and endpoints</p>
-            </div>
+            <EmptyState
+              icon={Activity}
+              title="No uptime monitors"
+              description="Monitor your deployments and endpoints."
+              actionLabel="Add Monitor"
+              onAction={() => setShowUptimeModal(true)}
+            />
           ) : (
             <div className="space-y-3">
               {uptimeMonitors.map((monitor) => (
@@ -674,6 +711,65 @@ export default function MonitoringPage() {
       {showUptimeModal && (
         <UptimeModal onClose={() => setShowUptimeModal(false)} onSave={loadData} />
       )}
+    </div>
+  );
+}
+
+// Loading placeholder shaped like the Overview tab (the default tab)
+function MonitoringOverviewSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true">
+      {/* Tabs */}
+      <div className="flex gap-2 border-b">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="px-4 py-2 border-b-2 border-transparent">
+            <Skeleton className="h-5 w-16" />
+          </div>
+        ))}
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="bg-card border rounded-lg p-4">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-9 w-9 rounded-lg" />
+              <div className="space-y-2">
+                <Skeleton className="h-7 w-16" />
+                <Skeleton className="h-4 w-24" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Recent Alerts, Uptime Status */}
+      {Array.from({ length: 2 }).map((_, i) => (
+        <div key={i} className="bg-card border rounded-lg p-6">
+          <div className="flex items-center justify-between mb-4">
+            <Skeleton className="h-6 w-32" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+          <div className="space-y-3">
+            {Array.from({ length: 3 }).map((_, j) => (
+              <div
+                key={j}
+                className="flex items-center justify-between py-3 border-b last:border-0"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <Skeleton className="h-5 w-14 shrink-0" />
+                  <div className="min-w-0 space-y-2">
+                    <Skeleton className="h-5 w-40 max-w-full" />
+                    <Skeleton className="h-4 w-56 max-w-full" />
+                  </div>
+                </div>
+                <Skeleton className="h-4 w-28 shrink-0" />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <span className="sr-only">Loading monitoring data</span>
     </div>
   );
 }

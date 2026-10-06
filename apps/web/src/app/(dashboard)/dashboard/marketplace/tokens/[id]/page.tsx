@@ -6,13 +6,16 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "sonner";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { TokenTradePanel } from "@/components/dashboard/token-trade-panel";
 import { BondingCurveProgress } from "@/components/dashboard/bonding-curve-progress";
 import { usePolling } from "@/lib/use-polling";
 import { cn } from "@/lib/utils";
-import { ArrowLeft, Copy } from "lucide-react";
+import { ArrowRightLeft, Coins, Copy } from "lucide-react";
 import { getErrorMessage } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
@@ -113,6 +116,105 @@ function useRelativeTime(date: Date | null): string {
   return label;
 }
 
+/** Mirrors the loaded layout: chart + trades on the left, trading on the right. */
+function TokenDetailSkeleton() {
+  return (
+    <div className="p-8" aria-busy="true">
+      <span className="sr-only">Loading token</span>
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="lg:col-span-2 space-y-6">
+          {/* Token header */}
+          <Card>
+            <CardContent className="p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex flex-1 items-center gap-4">
+                  <Skeleton className="h-16 w-16 shrink-0 rounded-full" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-8 w-1/3" />
+                    <Skeleton className="h-4 w-2/3" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                </div>
+                <Skeleton className="h-5 w-24 rounded-full" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Price chart */}
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-5 w-28" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-[300px] w-full" />
+            </CardContent>
+          </Card>
+
+          {/* Recent trades */}
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="h-4 w-16" />
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-5 w-full" />
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          {/* Trade panel */}
+          <Card>
+            <CardHeader className="pb-3">
+              <Skeleton className="h-6 w-1/2" />
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Skeleton className="h-11 w-full" />
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-1/3" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+              <Skeleton className="h-10 w-full" />
+            </CardContent>
+          </Card>
+
+          {/* Bonding curve */}
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-4 w-28" />
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <div className="flex justify-between gap-4">
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-4 w-1/4" />
+              </div>
+              <Skeleton className="h-3 w-full rounded-full" />
+              <Skeleton className="h-3 w-2/3" />
+            </CardContent>
+          </Card>
+
+          {/* Token info */}
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-4 w-24" />
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex justify-between gap-4">
+                  <Skeleton className="h-4 w-1/3" />
+                  <Skeleton className="h-4 w-1/4" />
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function TokenDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -147,11 +249,31 @@ export default function TokenDetailPage() {
     };
   }, [tokenId]);
 
-  const { data, isLoading: loading } = usePolling<TokenPageData>({
+  // Must keep a stable identity: usePolling re-subscribes and fetches again
+  // whenever onError changes, so an inline arrow refetched on every render
+  // (and repeated the error toast in a loop) instead of every 15s.
+  const handleLoadError = useCallback((err: Error) => {
+    toast.error(getErrorMessage(err, "Failed to load token details"));
+  }, []);
+
+  const {
+    data,
+    isLoading: loading,
+    error: loadError,
+    refresh,
+  } = usePolling<TokenPageData>({
     fetcher,
     interval: 15_000,
-    onError: (err) => toast.error(getErrorMessage(err, "Failed to load token details")),
+    onError: handleLoadError,
   });
+
+  // "Try again" on the load error shows the skeleton until the retry settles.
+  const [retrying, setRetrying] = useState(false);
+  const retryLoad = async () => {
+    setRetrying(true);
+    await refresh();
+    setRetrying(false);
+  };
 
   const token = data?.token ?? null;
   const trades = data?.trades ?? [];
@@ -162,12 +284,29 @@ export default function TokenDetailPage() {
     toast.success("Address copied");
   };
 
-  if (loading) {
+  if (loading || retrying) {
     return (
       <div className="flex flex-col">
         <Header title="Loading..." />
-        <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto" />
+        <TokenDetailSkeleton />
+      </div>
+    );
+  }
+
+  // No data and an error means the load itself failed; that is not the same
+  // as a token that does not exist (the API answers that with token: null).
+  if (!data && loadError) {
+    return (
+      <div className="flex flex-col">
+        <Header title="Agent Token" />
+        <div className="p-8">
+          <ErrorState
+            title="Couldn't load token"
+            error={loadError}
+            onRetry={() => void retryLoad()}
+            actionLabel="Back to Marketplace"
+            actionHref="/dashboard/marketplace/tokens"
+          />
         </div>
       </div>
     );
@@ -178,15 +317,13 @@ export default function TokenDetailPage() {
       <div className="flex flex-col">
         <Header title="Token Not Found" />
         <div className="p-8">
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <h3 className="text-lg font-semibold mb-2">Token not found</h3>
-              <Button onClick={() => router.push("/dashboard/marketplace/tokens")}>
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Back to Marketplace
-              </Button>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Coins}
+            title="Token not found"
+            description="Check the link, or go back to the token marketplace."
+            actionLabel="Back to Marketplace"
+            actionHref="/dashboard/marketplace/tokens"
+          />
         </div>
       </div>
     );
@@ -279,9 +416,11 @@ export default function TokenDetailPage() {
               </CardHeader>
               <CardContent>
                 {trades.length === 0 ? (
-                  <div className="text-center py-8 text-sm text-muted-foreground">
-                    No trades yet
-                  </div>
+                  <EmptyState
+                    icon={ArrowRightLeft}
+                    title="No trades yet"
+                    description="No buys or sells have been recorded for this token yet."
+                  />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">

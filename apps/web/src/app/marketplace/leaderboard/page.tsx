@@ -16,6 +16,45 @@ import {
   ReputationTierBadge,
 } from "@/components/reputation/reputation-score";
 import { ReputationBadgeList } from "@/components/reputation/reputation-badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
+
+/** Placeholder shaped like one of the four stat cards in the header. */
+function StatCardSkeleton() {
+  return (
+    <div className="bg-card rounded-lg p-4 border">
+      <Skeleton className="h-5 w-28" />
+      <Skeleton className="mt-1 h-8 w-12" />
+    </div>
+  );
+}
+
+/** Placeholder shaped like one publisher row: rank, avatar, info, score, link. */
+function PublisherRowSkeleton() {
+  return (
+    <div className="bg-card border rounded-lg p-4">
+      <div className="flex items-center gap-4">
+        <div className="flex-shrink-0 w-12">
+          <Skeleton className="mx-auto h-8 w-8" />
+        </div>
+        <Skeleton className="h-12 w-12 flex-shrink-0 rounded-full" />
+        <div className="flex-1 min-w-0 space-y-2">
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-5 w-16 rounded-full" />
+          </div>
+          <Skeleton className="h-4 w-36" />
+        </div>
+        <div className="flex-shrink-0 space-y-1">
+          <Skeleton className="ml-auto h-8 w-10" />
+          <Skeleton className="h-4 w-12" />
+        </div>
+        <Skeleton className="h-9 w-9 flex-shrink-0 rounded-lg" />
+      </div>
+    </div>
+  );
+}
 
 export default function LeaderboardPage() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -26,6 +65,7 @@ export default function LeaderboardPage() {
   } | null>(null);
   const [selectedTier, setSelectedTier] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   useEffect(() => {
     loadData();
@@ -40,6 +80,7 @@ export default function LeaderboardPage() {
   }, [selectedTier]);
 
   async function loadData() {
+    setLoading(true);
     try {
       const [leaderboardRes, statsRes] = await Promise.all([
         reputationApi.getLeaderboard(20),
@@ -47,8 +88,10 @@ export default function LeaderboardPage() {
       ]);
       setLeaderboard(leaderboardRes.data);
       setStats(statsRes.data);
+      setLoadError(null);
     } catch (error) {
       console.error("Failed to load leaderboard:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -59,10 +102,22 @@ export default function LeaderboardPage() {
     try {
       const res = await reputationApi.getPublishersByTier(tier, 20);
       setLeaderboard(res.data);
+      setLoadError(null);
     } catch (error) {
       console.error("Failed to load tier publishers:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // Re-runs whichever load the current tier filter uses.
+  function retryLoad() {
+    setLoadError(null);
+    if (selectedTier) {
+      loadTierPublishers(selectedTier);
+    } else {
+      loadData();
     }
   }
 
@@ -72,6 +127,7 @@ export default function LeaderboardPage() {
     { id: "silver", label: "Silver", color: "bg-gray-400/20 text-gray-300" },
     { id: "bronze", label: "Bronze", color: "bg-orange-500/20 text-orange-400" },
   ];
+  const selectedTierLabel = tiers.find((t) => t.id === selectedTier)?.label;
 
   return (
     <div className="min-h-screen bg-background">
@@ -91,6 +147,13 @@ export default function LeaderboardPage() {
           </div>
 
           {/* Stats */}
+          {!stats && loading && selectedTier === null && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <StatCardSkeleton key={i} />
+              ))}
+            </div>
+          )}
           {stats && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
               <div className="bg-card rounded-lg p-4 border">
@@ -153,18 +216,31 @@ export default function LeaderboardPage() {
 
         {/* Leaderboard Table */}
         {loading ? (
-          <div className="space-y-4">
-            {[...Array(5)].map((_, i) => (
-              <div
-                key={i}
-                className="h-20 bg-card border rounded-lg animate-pulse"
-              />
+          <div className="space-y-3" aria-busy="true">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <PublisherRowSkeleton key={i} />
             ))}
+            <span className="sr-only">Loading publishers</span>
           </div>
+        ) : loadError !== null ? (
+          <ErrorState
+            title="Couldn't load the leaderboard"
+            error={loadError}
+            onRetry={retryLoad}
+          />
         ) : leaderboard.length === 0 ? (
-          <div className="text-center py-12">
-            <p className="text-muted-foreground">No publishers found</p>
-          </div>
+          <EmptyState
+            icon={Trophy}
+            title="No publishers found"
+            description={
+              selectedTierLabel
+                ? `There are no ${selectedTierLabel} publishers right now.`
+                : "There are no publishers on the leaderboard right now."
+            }
+            actionLabel={selectedTier ? "Show all publishers" : "Browse the marketplace"}
+            actionHref={selectedTier ? undefined : "/marketplace"}
+            onAction={selectedTier ? () => setSelectedTier(null) : undefined}
+          />
         ) : (
           <div className="space-y-3">
             {leaderboard.map((publisher, index) => (

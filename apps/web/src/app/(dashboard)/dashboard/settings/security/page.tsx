@@ -24,6 +24,8 @@ import {
   type TwoFactorStatus,
   type TwoFactorSetup,
 } from "@/lib/api";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // ---------------------------------------------------------------------------
 // OTP Input Component
@@ -110,6 +112,7 @@ export default function SecuritySettingsPage() {
   // Status
   const [status, setStatus] = useState<TwoFactorStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Setup flow
@@ -152,11 +155,13 @@ export default function SecuritySettingsPage() {
     try {
       setLoading(true);
       setError(null);
+      setLoadError(null);
       const data = await twoFactorApi.getStatus();
       setStatus(data);
       setRecoveryEmail(data.recoveryEmail || "");
     } catch (err) {
-      setError("Failed to load two-factor authentication status.");
+      // Shown by the <ErrorState> in place of the status cards.
+      setLoadError(err);
     } finally {
       setLoading(false);
     }
@@ -302,13 +307,110 @@ export default function SecuritySettingsPage() {
   // Render
   // -----------------------------------------------------------------------
 
+  // Regenerating invalidates the old codes on the server, so the new ones must
+  // stay on screen whatever the status refresh that follows does: while it is
+  // loading, and next to the <ErrorState> when it fails.
+  const backupCodesCard =
+    setupStep === "idle" &&
+    backupCodes.length > 0 &&
+    (status === null || status.isEnabled) ? (
+      <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <KeyRound className="h-5 w-5 text-primary" />
+          <h3 className="text-lg font-semibold text-gray-100">Backup Codes</h3>
+        </div>
+
+        <div className="flex items-start gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-yellow-400" />
+          <p className="text-sm text-yellow-200">
+            Save these codes in a secure location. They will not be shown again.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {backupCodes.map((code, i) => (
+            <div
+              key={i}
+              className="rounded-md border border-border bg-background px-3 py-2 text-center font-mono text-sm text-gray-300"
+            >
+              {code}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between">
+          <button
+            onClick={copyAllBackupCodes}
+            className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-gray-300
+                       hover:border-primary/40 hover:text-primary transition-colors"
+          >
+            {copiedCodes ? (
+              <Check className="h-4 w-4 text-primary" />
+            ) : (
+              <Copy className="h-4 w-4" />
+            )}
+            {copiedCodes ? "Copied" : "Copy All"}
+          </button>
+          <button
+            onClick={() => { setBackupCodes([]); setCopiedCodes(false); }}
+            className="rounded-lg px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+    ) : null;
+
   if (loading) {
     return (
       <div className="min-h-screen bg-background p-6 md:p-8">
-        <div className="mx-auto max-w-3xl">
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <div className="mx-auto max-w-3xl space-y-8" aria-busy="true">
+          {/* Breadcrumb */}
+          <Skeleton className="h-4 w-32" />
+
+          {/* Header */}
+          <div className="flex items-center gap-4">
+            <Skeleton className="h-12 w-12 shrink-0 rounded-xl" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-7 w-52 max-w-full" />
+              <Skeleton className="h-4 w-80 max-w-full" />
+            </div>
           </div>
+
+          {/* Two-factor status card */}
+          <div className="rounded-xl border border-border bg-card p-6 space-y-6">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex min-w-0 flex-1 items-center gap-4">
+                <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-5 w-56 max-w-full" />
+                  <Skeleton className="h-4 w-72 max-w-full" />
+                </div>
+              </div>
+              <Skeleton className="h-6 w-20 shrink-0 rounded-full" />
+            </div>
+            <Skeleton className="h-36 w-full rounded-lg" />
+            <Skeleton className="h-10 w-64 max-w-full" />
+          </div>
+
+          {backupCodesCard}
+
+          {/* Recovery email card */}
+          <div className="rounded-xl border border-border bg-card p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-5 w-5 shrink-0" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-5 w-36" />
+                <Skeleton className="h-4 w-96 max-w-full" />
+              </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Skeleton className="h-10 w-full sm:flex-1" />
+              <Skeleton className="h-10 w-full sm:w-20" />
+            </div>
+          </div>
+          {/* Last, so the breadcrumb is the first spaced child as on the real page */}
+          <span className="sr-only">Loading security settings</span>
         </div>
       </div>
     );
@@ -345,6 +447,15 @@ export default function SecuritySettingsPage() {
             <AlertTriangle className="h-5 w-5 shrink-0 text-red-400" />
             <p className="text-sm text-red-300">{error}</p>
           </div>
+        )}
+
+        {/* Status failed to load: replaces the status and recovery cards */}
+        {setupStep === "idle" && loadError !== null && (
+          <ErrorState
+            title="Couldn't load two-factor authentication status"
+            error={loadError}
+            onRetry={loadStatus}
+          />
         )}
 
         {/* ----------------------------------------------------------------- */}
@@ -407,6 +518,7 @@ export default function SecuritySettingsPage() {
                 {/* QR Code */}
                 <div className="flex flex-col items-center gap-4">
                   <div className="rounded-xl border border-border bg-white p-4">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- URL comes from the API at runtime; next/image would need its host allowlisted */}
                     <img
                       src={setupData.qrCodeUrl}
                       alt="Two-factor authentication QR code"
@@ -563,9 +675,7 @@ export default function SecuritySettingsPage() {
         {/* ----------------------------------------------------------------- */}
         {/* 2FA Status (shown when not in setup flow) */}
         {/* ----------------------------------------------------------------- */}
-        {setupStep === "idle" && status && (
-          <>
-            {/* Status card */}
+        {setupStep === "idle" && status && loadError === null && (
             <div className="rounded-xl border border-border bg-card p-6 space-y-6">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
@@ -698,57 +808,13 @@ export default function SecuritySettingsPage() {
                 </div>
               )}
             </div>
+        )}
 
-            {/* Backup codes display (after regeneration) */}
-            {status.isEnabled && backupCodes.length > 0 && (
-              <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-                <div className="flex items-center gap-3">
-                  <KeyRound className="h-5 w-5 text-primary" />
-                  <h3 className="text-lg font-semibold text-gray-100">Backup Codes</h3>
-                </div>
+        {/* Backup codes display (after regeneration) */}
+        {backupCodesCard}
 
-                <div className="flex items-start gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3">
-                  <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-yellow-400" />
-                  <p className="text-sm text-yellow-200">
-                    Save these codes in a secure location. They will not be shown again.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  {backupCodes.map((code, i) => (
-                    <div
-                      key={i}
-                      className="rounded-md border border-border bg-background px-3 py-2 text-center font-mono text-sm text-gray-300"
-                    >
-                      {code}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <button
-                    onClick={copyAllBackupCodes}
-                    className="flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-gray-300
-                               hover:border-primary/40 hover:text-primary transition-colors"
-                  >
-                    {copiedCodes ? (
-                      <Check className="h-4 w-4 text-primary" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                    {copiedCodes ? "Copied" : "Copy All"}
-                  </button>
-                  <button
-                    onClick={() => { setBackupCodes([]); setCopiedCodes(false); }}
-                    className="rounded-lg px-4 py-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Recovery Email */}
+        {/* Recovery Email */}
+        {setupStep === "idle" && status && loadError === null && (
             <div className="rounded-xl border border-border bg-card p-6 space-y-4">
               <div className="flex items-center gap-3">
                 <Mail className="h-5 w-5 text-primary" />
@@ -786,7 +852,6 @@ export default function SecuritySettingsPage() {
                 </button>
               </div>
             </div>
-          </>
         )}
 
         {/* ----------------------------------------------------------------- */}

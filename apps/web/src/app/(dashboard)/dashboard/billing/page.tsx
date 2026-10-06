@@ -24,6 +24,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { PlanCard } from "@/components/dashboard/plan-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   billingApi,
   type BillingRails,
@@ -47,6 +50,108 @@ const fallbackPackages: CreditPackage[] = [
   { amount: 500, bonus: 100 },
 ];
 
+// The skeleton comes in three pieces so each can stand in for its own section
+// while <PlanCard> stays mounted above them.
+
+/** Stands in for the three balance tiles. */
+function BalanceTilesSkeleton() {
+  return (
+    <div className="mb-8 grid gap-6 md:grid-cols-3">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <Card key={i}>
+          <CardContent className="py-6">
+            <div className="flex items-center gap-4">
+              <Skeleton className="h-12 w-12 rounded-lg" />
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-28" />
+                <Skeleton className="h-8 w-24" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+/** Stands in for the Add Credits card. */
+function AddCreditsSkeleton() {
+  return (
+    <Card className="mb-8">
+      <CardHeader>
+        <Skeleton className="h-5 w-28" />
+        <Skeleton className="h-4 w-72 max-w-full" />
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-4 md:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div
+              key={i}
+              className="flex flex-col items-center rounded-lg border-2 border-border p-6"
+            >
+              <Skeleton className="h-9 w-16" />
+              <Skeleton className="mt-3 h-4 w-24" />
+              <Skeleton className="mt-4 h-10 w-full" />
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Stands in for the usage breakdown and the transaction history. */
+function BillingDetailsSkeleton() {
+  return (
+    <>
+      <Card className="mb-8">
+        <CardHeader>
+          <Skeleton className="h-5 w-36" />
+          <Skeleton className="h-4 w-64 max-w-full" />
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between gap-4">
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-4 w-28 max-w-full sm:w-40" />
+                <Skeleton className="h-4 w-56 max-w-full" />
+              </div>
+              <Skeleton className="h-6 w-20 shrink-0" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-40" />
+          <Skeleton className="h-4 w-56 max-w-full" />
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div
+              key={i}
+              className="flex items-center justify-between gap-4 rounded-lg border border-border p-4"
+            >
+              <div className="flex min-w-0 flex-1 items-center gap-4">
+                <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-4 w-20 max-w-full sm:w-24" />
+                  <Skeleton className="h-4 w-24 max-w-full sm:w-40" />
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-2">
+                <Skeleton className="h-6 w-16 sm:w-20" />
+                <Skeleton className="h-4 w-16" />
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
 export default function BillingPage() {
   const [balance, setBalance] = useState<CreditBalance | null>(null);
   const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
@@ -54,6 +159,7 @@ export default function BillingPage() {
   const [x402Metrics, setX402Metrics] = useState<X402MetricsResponse | null>(null);
   const [x402History, setX402History] = useState<X402MetricsHistoryPoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [isPurchasing, setIsPurchasing] = useState<number | null>(null);
   const [isWalletPaying, setIsWalletPaying] = useState<number | null>(null);
   const [rails, setRails] = useState<BillingRails | null>(null);
@@ -80,11 +186,19 @@ export default function BillingPage() {
       setUsage(usageData.usage);
       setX402Metrics(x402MetricsData);
       setX402History(x402HistoryData?.history ?? []);
+      setLoadError(null);
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to load billing data"));
+      setLoadError(error);
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    loadBillingData();
   }
 
   const [creditPackages, setCreditPackages] =
@@ -241,32 +355,41 @@ export default function BillingPage() {
     ...x402Trend.map((point) => point.failureRatePercent)
   );
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-col">
-        <Header title="Billing" />
-        <div className="p-8">
-          <div className="grid gap-6 md:grid-cols-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-32 animate-pulse rounded-lg bg-muted" />
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const header = (
+    <Header
+      title="Billing & Credits"
+      description="Manage your account balance and view usage"
+    />
+  );
+
+  // One tree for every state, so <PlanCard> is never unmounted: it fetches the
+  // plan itself and its autoUpgrade must fire once, not again after a retry.
+  const dataReady = !isLoading && loadError === null;
 
   return (
     <div className="flex flex-col">
-      <Header
-        title="Billing & Credits"
-        description="Manage your account balance and view usage"
-      />
+      {header}
 
-      <div className="p-8">
+      <div className="p-8" aria-busy={isLoading}>
         <PlanCard autoUpgrade={autoUpgrade} />
 
+        {isLoading && <BalanceTilesSkeleton />}
+
+        {/* Balance, usage and history failed to load. Plans and Add Credits
+            below do not depend on those requests, so they stay usable. */}
+        {!isLoading && loadError !== null && (
+          <div className="mb-8">
+            <ErrorState
+              title="Couldn't load billing data"
+              description="Your balance, usage and transaction history are unavailable. You can still add credits or change your plan."
+              error={loadError}
+              onRetry={retryLoad}
+            />
+          </div>
+        )}
+
         {/* Balance overview */}
+        {dataReady && (
         <div className="mb-8 grid gap-6 md:grid-cols-3">
           <Card>
             <CardContent className="py-6">
@@ -316,9 +439,13 @@ export default function BillingPage() {
             </CardContent>
           </Card>
         </div>
+        )}
 
         {/* Purchase credits */}
-        <Card className="mb-8">
+        {isLoading ? (
+          <AddCreditsSkeleton />
+        ) : (
+        <Card id="add-credits" className="mb-8 scroll-mt-8">
           <CardHeader>
             <CardTitle className="text-base">Add Credits</CardTitle>
             <CardDescription>
@@ -398,9 +525,17 @@ export default function BillingPage() {
             </p>
           </CardContent>
         </Card>
+        )}
+
+        {isLoading && (
+          <>
+            <BillingDetailsSkeleton />
+            <span className="sr-only">Loading billing</span>
+          </>
+        )}
 
         {/* Usage breakdown */}
-        {usage && (
+        {dataReady && usage && (
           <Card className="mb-8">
             <CardHeader>
               <CardTitle className="text-base">Usage Breakdown</CardTitle>
@@ -460,7 +595,7 @@ export default function BillingPage() {
         )}
 
         {/* X402 settlement health */}
-        {x402Metrics && (
+        {dataReady && x402Metrics && (
           <Card className="mb-8">
             <CardHeader>
               <CardTitle className="text-base">X402 Settlement Health</CardTitle>
@@ -612,6 +747,7 @@ export default function BillingPage() {
         )}
 
         {/* Transaction history */}
+        {dataReady && (
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
@@ -627,10 +763,13 @@ export default function BillingPage() {
           </CardHeader>
           <CardContent>
             {transactions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12">
-                <CreditCard className="h-12 w-12 text-gray-300" />
-                <p className="mt-4 text-muted-foreground">No transactions yet</p>
-              </div>
+              <EmptyState
+                icon={CreditCard}
+                title="No transactions yet"
+                description="Credit purchases, bonuses, usage charges and refunds will show here."
+                actionLabel="Add Credits"
+                actionHref="#add-credits"
+              />
             ) : (
               <div className="space-y-3">
                 {transactions.map((tx) => (
@@ -681,6 +820,7 @@ export default function BillingPage() {
             )}
           </CardContent>
         </Card>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -22,6 +22,9 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { API_BASE_URL, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -33,17 +36,94 @@ const statusColors: Record<string, "success" | "warning" | "destructive" | "seco
   failed: "destructive",
 };
 
+/** The API answers 404 when no deployment with this ID exists in the caller's org. */
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { status?: unknown }).status === 404
+  );
+}
+
+/** Placeholder shaped like the actions row, status card, metrics and configuration below. */
+function DeploymentDetailSkeleton() {
+  return (
+    <div className="p-8" aria-busy="true">
+      <span className="sr-only">Loading deployment</span>
+      <div className="mb-6 flex items-center justify-between">
+        <Skeleton className="h-10 w-48" />
+        <div className="flex items-center gap-2">
+          <Skeleton className="h-10 w-24" />
+          <Skeleton className="h-10 w-28" />
+        </div>
+      </div>
+
+      <Card className="mb-6">
+        <CardContent className="py-6">
+          <div className="flex items-center gap-4">
+            <Skeleton className="h-14 w-14 rounded-lg" />
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-7 w-48" />
+                <Skeleton className="h-5 w-20 rounded-full" />
+              </div>
+              <Skeleton className="h-5 w-40" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="mb-6 grid gap-4 md:grid-cols-4">
+        {[1, 2, 3, 4].map((i) => (
+          <Card key={i}>
+            <CardContent className="py-4">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-5 w-5" />
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-7 w-16" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-32" />
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 md:grid-cols-2">
+            {[1, 2, 3, 4, 5, 6].map((i) => (
+              <div key={i} className="space-y-2">
+                <Skeleton className="h-4 w-28" />
+                <Skeleton className="h-5 w-40" />
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function DeploymentDetailPage() {
   const params = useParams();
   const router = useRouter();
   const [deployment, setDeployment] = useState<DeploymentDetail | null>(null);
   const [metrics, setMetrics] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  // Set once a fetch succeeds. After that a failed poll, Refresh or reload
+  // after Start keeps the last good deployment on screen (with the toast)
+  // instead of the error panel, as the deployments list does.
+  const hasLoadedRef = useRef(false);
 
   const deploymentId = params.id as string;
 
-  async function loadDeployment() {
+  const loadDeployment = useCallback(async () => {
     try {
       const [{ deployment }, metricsData] = await Promise.all([
         deploymentsApi.get(deploymentId),
@@ -51,19 +131,43 @@ export default function DeploymentDetailPage() {
       ]);
       setDeployment(deployment);
       setMetrics(metricsData);
+      hasLoadedRef.current = true;
+      setLoadError(null);
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to load deployment"));
-      router.push("/dashboard/deployments");
+      if (!hasLoadedRef.current) setLoadError(error);
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [deploymentId]);
+
+  // Nothing has loaded and the last attempt failed: the error (or not-found)
+  // panel below is showing.
+  const initialLoadFailed = !deployment && Boolean(loadError);
 
   useEffect(() => {
     loadDeployment();
-    const interval = setInterval(loadDeployment, 10000);
+  }, [loadDeployment]);
+
+  // Poll for updates every 10 seconds, but only when the tab is visible, and
+  // not while the initial load has failed: there "Try again" drives retries,
+  // so a deployment that cannot load is not re-fetched (and re-toasted) every
+  // 10 seconds.
+  useEffect(() => {
+    if (initialLoadFailed) return;
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        loadDeployment();
+      }
+    }, 10000);
     return () => clearInterval(interval);
-  }, [deploymentId]);
+  }, [loadDeployment, initialLoadFailed]);
+
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    loadDeployment();
+  }
 
   async function handleRestart() {
     setActionLoading(true);
@@ -100,15 +204,41 @@ export default function DeploymentDetailPage() {
     return (
       <div className="flex flex-col">
         <Header title="Loading..." />
-        <div className="p-8">
-          <div className="h-64 animate-pulse rounded-lg bg-muted" />
-        </div>
+        <DeploymentDetailSkeleton />
       </div>
     );
   }
 
+  // Only reached when nothing has loaded yet: once a deployment is on screen, a
+  // failed poll or Refresh keeps it there and just toasts.
   if (!deployment) {
-    return null;
+    // A 404 means no deployment with this ID exists in the caller's org, so a
+    // retry cannot help; any other failure is a load error the user can retry.
+    const notFound = !loadError || isNotFoundError(loadError);
+    return (
+      <div className="flex flex-col">
+        <Header title={notFound ? "Deployment Not Found" : "Deployment"} />
+        <div className="p-8">
+          {notFound ? (
+            <EmptyState
+              icon={Cpu}
+              title="Deployment not found"
+              description="Check the link, or go back to your deployments."
+              actionLabel="Back to Deployments"
+              actionHref="/dashboard/deployments"
+            />
+          ) : (
+            <ErrorState
+              title="Couldn't load deployment"
+              error={loadError}
+              onRetry={retryLoad}
+              actionLabel="Back to Deployments"
+              actionHref="/dashboard/deployments"
+            />
+          )}
+        </div>
+      </div>
+    );
   }
 
   // The real API origin this app talks to — not an aspirational hostname.

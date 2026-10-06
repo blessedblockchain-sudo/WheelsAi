@@ -10,11 +10,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable, type Column } from "@/components/ui/data-table";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { SkeletonTable } from "@/components/ui/skeleton";
 import { apiKeysApi, type ApiKey, getErrorMessage } from "@/lib/api";
 
 export default function ApiKeysPage() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -22,12 +26,15 @@ export default function ApiKeysPage() {
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
 
   async function loadApiKeys() {
+    setIsLoading(true);
+    setLoadError(null);
     try {
       const data = await apiKeysApi.list();
       setApiKeys(data?.apiKeys ?? []);
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to load API keys"));
       setApiKeys([]);
+      setLoadError(error);
     } finally {
       setIsLoading(false);
     }
@@ -293,17 +300,29 @@ export default function ApiKeysPage() {
           </CardHeader>
           <CardContent>
             {isLoading ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
-                ))}
+              <div aria-busy="true">
+                <SkeletonTable rows={3} cols={6} />
+                <span className="sr-only">Loading API keys</span>
               </div>
+            ) : loadError !== null ? (
+              <ErrorState
+                title="Couldn't load API keys"
+                error={loadError}
+                onRetry={loadApiKeys}
+              />
+            ) : apiKeys.length === 0 ? (
+              <EmptyState
+                icon={Key}
+                title="No API keys yet"
+                description="Create your first API key to start making requests."
+                actionLabel={showCreateForm ? undefined : "Create New Key"}
+                onAction={showCreateForm ? undefined : () => setShowCreateForm(true)}
+              />
             ) : (
               <DataTable
                 data={apiKeys}
                 columns={keyColumns}
                 pageSize={10}
-                emptyMessage="No API keys yet. Create your first API key to start making requests."
                 keyExtractor={(apiKey) => apiKey.id}
               />
             )}

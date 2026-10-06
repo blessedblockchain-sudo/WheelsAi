@@ -8,22 +8,24 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { OpenClawStatus } from "@/components/dashboard/openclaw-status";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/lib/use-polling";
 import {
   Play,
   Square,
   RotateCw,
   Trash2,
-  ArrowLeft,
   ExternalLink,
   Copy,
   CheckCircle2,
-  XCircle,
   Server,
   Cpu,
   HardDrive,
   Globe,
   Settings,
+  Plug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/api";
@@ -81,6 +83,101 @@ function formatRelativeTime(date: Date): string {
   return `${Math.floor(diffMin / 60)}h ago`;
 }
 
+/** Mirrors the loaded page: status, configuration, channels, metadata. */
+function DeploymentDetailSkeleton() {
+  return (
+    <div className="p-8 space-y-6" aria-busy="true">
+      {/* Status and actions */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-5 w-40 max-w-full" />
+              <Skeleton className="h-4 w-1/2" />
+            </div>
+            <Skeleton className="h-5 w-20 rounded-full" />
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-10 w-20" />
+            <Skeleton className="h-10 w-24" />
+            <Skeleton className="ml-auto h-10 w-36" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Agent configuration */}
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-44 max-w-full" />
+          <Skeleton className="h-4 w-1/3" />
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="space-y-2">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            ))}
+          </div>
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Channels */}
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-32" />
+          <Skeleton className="h-4 w-1/3" />
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div
+              key={i}
+              className="flex items-center justify-between gap-4 rounded-lg border border-border p-4"
+            >
+              <div className="flex flex-1 items-center gap-3">
+                <Skeleton className="h-2 w-2 shrink-0 rounded-full" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-3 w-32 max-w-full" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Skeleton className="h-5 w-16 rounded-full" />
+                <Skeleton className="h-9 w-20" />
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* Metadata */}
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-5 w-24" />
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex justify-between gap-4">
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-4 w-1/3" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {/* Last child, so space-y-6 does not push the first card down. */}
+      <span className="sr-only">Loading deployment details</span>
+    </div>
+  );
+}
+
 export default function OpenClawDeploymentDetailPage() {
   const confirmAction = useConfirm();
   const params = useParams();
@@ -103,15 +200,31 @@ export default function OpenClawDeploymentDetailPage() {
     return data.deployment as OpenClawDeployment;
   }, [deploymentId]);
 
+  // Must keep a stable identity: usePolling re-subscribes and fetches again
+  // whenever onError changes, so an inline arrow refetched on every render
+  // (and repeated the error toast in a loop) instead of every 10s.
+  const handleLoadError = useCallback((err: Error) => {
+    toast.error(getErrorMessage(err, "Failed to load deployment details"));
+  }, []);
+
   const {
     data: deployment,
     isLoading: loading,
+    error: loadError,
     refresh: refreshDeployment,
   } = usePolling<OpenClawDeployment>({
     fetcher,
     interval: 10_000,
-    onError: (err) => toast.error(getErrorMessage(err, "Failed to load deployment details")),
+    onError: handleLoadError,
   });
+
+  // "Try again" on the load error shows the skeleton until the retry settles.
+  const [retrying, setRetrying] = useState(false);
+  const retryLoad = async () => {
+    setRetrying(true);
+    await refreshDeployment();
+    setRetrying(false);
+  };
 
   const handleAction = async (action: "start" | "stop" | "restart" | "delete") => {
     if (!deployment) return;
@@ -178,38 +291,38 @@ export default function OpenClawDeploymentDetailPage() {
     }
   };
 
-  if (loading) {
+  if (loading || retrying) {
     return (
       <div className="flex flex-col">
         <Header title="Loading..." />
-        <div className="flex items-center justify-center py-12">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-            <p className="mt-4 text-sm text-muted-foreground">Loading deployment details...</p>
-          </div>
-        </div>
+        <DeploymentDetailSkeleton />
       </div>
     );
   }
 
   if (!deployment) {
+    // A failed load is retryable; it is not proof the deployment is gone.
     return (
       <div className="flex flex-col">
-        <Header title="Not Found" />
+        <Header title={loadError ? "Deployment" : "Not Found"} />
         <div className="p-8">
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <XCircle className="h-16 w-16 text-red-500 mb-4" />
-              <h3 className="text-lg font-semibold mb-2">Deployment not found</h3>
-              <p className="text-sm text-muted-foreground mb-6">
-                The deployment you&apos;re looking for doesn&apos;t exist or has been deleted.
-              </p>
-              <Button onClick={() => router.push("/dashboard/openclaw")}>
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Back to Deployments
-              </Button>
-            </CardContent>
-          </Card>
+          {loadError ? (
+            <ErrorState
+              title="Couldn't load deployment"
+              error={loadError}
+              onRetry={() => void retryLoad()}
+              actionLabel="Back to Deployments"
+              actionHref="/dashboard/openclaw"
+            />
+          ) : (
+            <EmptyState
+              icon={Server}
+              title="Deployment not found"
+              description="The deployment you're looking for doesn't exist or has been deleted."
+              actionLabel="Back to Deployments"
+              actionHref="/dashboard/openclaw"
+            />
+          )}
         </div>
       </div>
     );
@@ -406,7 +519,11 @@ export default function OpenClawDeploymentDetailPage() {
           </CardHeader>
           <CardContent>
             {deployment.channels.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">No channels configured</div>
+              <EmptyState
+                icon={Plug}
+                title="No channels configured"
+                description="This deployment has no platform integrations."
+              />
             ) : (
               <div className="space-y-3">
                 {deployment.channels.map((channel) => (

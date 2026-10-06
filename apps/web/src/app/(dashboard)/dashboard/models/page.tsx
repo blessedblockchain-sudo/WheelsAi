@@ -11,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
-import { SkeletonCard } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { modelsApi, type ModelListing, type GpuTier, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -22,25 +23,67 @@ const categoryIcons: Record<string, React.ReactNode> = {
   general: <Zap className="h-5 w-5" />,
 };
 
+/** Placeholder shaped like one model card in the catalog grid. */
+function ModelCardSkeleton() {
+  return (
+    <Card className="flex flex-col">
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-lg" />
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+          </div>
+          <Skeleton className="h-5 w-10 rounded-full" />
+        </div>
+        <div className="space-y-2 pt-3">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      </CardHeader>
+      <CardContent className="mt-auto">
+        <div className="flex flex-wrap gap-1.5">
+          <Skeleton className="h-5 w-14 rounded-full" />
+          <Skeleton className="h-5 w-12 rounded-full" />
+          <Skeleton className="h-5 w-16 rounded-full" />
+        </div>
+        <div className="mt-4 flex items-center justify-between border-t pt-4">
+          <Skeleton className="h-5 w-16" />
+          <Skeleton className="h-5 w-16" />
+          <Skeleton className="h-5 w-20" />
+        </div>
+        <Skeleton className="mt-4 h-10 w-full" />
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function ModelsPage() {
   const [models, setModels] = useState<ModelListing[]>([]);
   const [gpuTiers, setGpuTiers] = useState<GpuTier[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function loadModels() {
-      try {
-        const { models, gpuTiers } = await modelsApi.list();
-        setModels(models);
-        setGpuTiers(gpuTiers);
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load models"));
-      } finally {
-        setIsLoading(false);
-      }
+  async function loadModels() {
+    setLoadError(null);
+    setIsLoading(true);
+    try {
+      const { models, gpuTiers } = await modelsApi.list();
+      setModels(models);
+      setGpuTiers(gpuTiers);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to load models"));
+      setLoadError(error);
+    } finally {
+      setIsLoading(false);
     }
+  }
+
+  useEffect(() => {
     loadModels();
   }, []);
 
@@ -111,22 +154,34 @@ export default function ModelsPage() {
 
         {/* Models grid */}
         {isLoading ? (
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+            <span className="sr-only">Loading models</span>
             {Array.from({ length: 6 }).map((_, i) => (
-              <SkeletonCard key={i} />
+              <ModelCardSkeleton key={i} />
             ))}
           </div>
+        ) : loadError ? (
+          <ErrorState
+            title="Couldn't load models"
+            error={loadError}
+            onRetry={loadModels}
+          />
         ) : models.length === 0 ? (
           <EmptyState
             icon={Cpu}
             title="No models available"
-            description="There are no models in the catalog yet. Check back soon as new models are added regularly."
+            description="There are no models in the catalog yet."
           />
         ) : filteredModels.length === 0 ? (
           <EmptyState
             icon={Search}
             title="No models found"
             description="Try adjusting your search query or filters to find what you are looking for."
+            actionLabel="Clear filters"
+            onAction={() => {
+              setSearchQuery("");
+              setSelectedCategory(null);
+            }}
           />
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -205,32 +260,46 @@ export default function ModelsPage() {
           </div>
         )}
 
-        {/* GPU Pricing info */}
-        <Card className="mt-8">
-          <CardHeader>
-            <CardTitle className="text-base">GPU Pricing</CardTitle>
-            <CardDescription>
-              Pay only for the compute you use. All prices are per GPU-hour.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 md:grid-cols-5">
-              {gpuTiers.map((tier) => (
-                <div
-                  key={tier.id}
-                  className="rounded-lg border p-4 text-center"
-                >
-                  <p className="font-semibold">{tier.name}</p>
-                  <p className="text-2xl font-bold text-primary-600">
-                    ${tier.pricePerHour.toFixed(2)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">/hour</p>
-                  <p className="mt-2 text-sm text-muted-foreground">{tier.vram}GB VRAM</p>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        {/* GPU Pricing info (same request as the models; hidden when it failed) */}
+        {!loadError && (
+          <Card className="mt-8">
+            <CardHeader>
+              <CardTitle className="text-base">GPU Pricing</CardTitle>
+              <CardDescription>
+                Pay only for the compute you use. All prices are per GPU-hour.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 md:grid-cols-5" aria-busy={isLoading}>
+                {isLoading
+                  ? [1, 2, 3, 4, 5].map((i) => (
+                      <div
+                        key={i}
+                        className="flex flex-col items-center gap-2 rounded-lg border p-4"
+                      >
+                        <Skeleton className="h-5 w-20" />
+                        <Skeleton className="h-8 w-16" />
+                        <Skeleton className="h-3 w-10" />
+                        <Skeleton className="mt-1 h-4 w-20" />
+                      </div>
+                    ))
+                  : gpuTiers.map((tier) => (
+                      <div
+                        key={tier.id}
+                        className="rounded-lg border p-4 text-center"
+                      >
+                        <p className="font-semibold">{tier.name}</p>
+                        <p className="text-2xl font-bold text-primary-600">
+                          ${tier.pricePerHour.toFixed(2)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">/hour</p>
+                        <p className="mt-2 text-sm text-muted-foreground">{tier.vram}GB VRAM</p>
+                      </div>
+                    ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

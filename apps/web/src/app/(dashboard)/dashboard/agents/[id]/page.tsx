@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -17,10 +17,13 @@ import {
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { agentsApi, type AgentDetail, getErrorMessage } from "@/lib/api";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
+import { agentsApi, ApiError, type AgentDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   OverviewTab,
@@ -50,12 +53,83 @@ const statusColors: Record<string, "success" | "warning" | "destructive" | "seco
 
 type Tab = "overview" | "deployments" | "versions" | "code" | "logs" | "settings";
 
+/**
+ * The API answers 404 for an agent outside this workspace and 400 for an id
+ * that is not a UUID. Both mean there is no such agent, so the page says so
+ * rather than offering a retry that cannot succeed.
+ */
+function isMissingAgent(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 400);
+}
+
+/** Placeholder in the shape of the loaded page: status bar, tab bar, Overview cards. */
+function AgentDetailSkeleton() {
+  return (
+    <div className="p-8" aria-busy="true">
+      <Card className="mb-6">
+        <CardContent className="py-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <Skeleton className="h-12 w-12 rounded-lg" />
+              <div className="space-y-2">
+                <Skeleton className="h-5 w-44" />
+                <Skeleton className="h-4 w-64" />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {["w-32", "w-36", "w-28", "w-32", "w-24", "w-12"].map((width, i) => (
+                <Skeleton key={i} className={cn("h-10", width)} />
+              ))}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="mb-6 flex gap-2 border-b">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="border-b-2 border-transparent px-4 py-2">
+            <Skeleton className="h-5 w-16" />
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-6 md:grid-cols-2">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <Card key={i}>
+            <CardHeader>
+              <Skeleton className="h-5 w-32" />
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {Array.from({ length: 4 }).map((_, j) => (
+                <div key={j} className="space-y-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-5 w-40" />
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        ))}
+        <Card className="md:col-span-2">
+          <CardHeader>
+            <Skeleton className="h-5 w-32" />
+          </CardHeader>
+          <CardContent>
+            <Skeleton className="h-24 w-full" />
+          </CardContent>
+        </Card>
+      </div>
+      <span className="sr-only">Loading agent</span>
+    </div>
+  );
+}
+
 export default function AgentDetailPage() {
   const params = useParams();
   const agentId = params.id as string;
 
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isDeploying, setIsDeploying] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -66,20 +140,32 @@ export default function AgentDetailPage() {
     dailyLimitCents: 1000,
   });
 
-  async function loadAgent() {
+  // Also the background refresh after deploy/stop and in the tabs: a failed
+  // refresh keeps the agent on screen (toast only); loadError replaces the
+  // page only while no agent has loaded yet.
+  const loadAgent = useCallback(async () => {
     try {
       const { agent } = await agentsApi.get(agentId);
       setAgent(agent);
+      setLoadError(null);
     } catch (error) {
+      setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load agent"));
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [agentId]);
 
   useEffect(() => {
     loadAgent();
-  }, [agentId]);
+  }, [loadAgent]);
+
+  /** "Try again" on the error state: back to the skeleton while it reloads. */
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    void loadAgent();
+  }
 
   async function handleDeploy() {
     setIsDeploying(true);
@@ -123,27 +209,40 @@ export default function AgentDetailPage() {
     return (
       <div className="flex flex-col">
         <Header title="Loading..." />
-        <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-muted" />
-        </div>
+        <AgentDetailSkeleton />
       </div>
     );
   }
 
   if (!agent) {
+    if (loadError !== null && !isMissingAgent(loadError)) {
+      return (
+        <div className="flex flex-col">
+          <Header title="Agent" />
+          <div className="p-8">
+            <ErrorState
+              title="Couldn't load agent"
+              error={loadError}
+              onRetry={retryLoad}
+              actionLabel="Back to Agents"
+              actionHref="/dashboard/agents"
+            />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col">
         <Header title="Agent Not Found" />
         <div className="p-8">
-          <Card>
-            <CardContent className="py-16 text-center">
-              <Bot className="mx-auto h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium">Agent not found</h3>
-              <Link href="/dashboard/agents" className="mt-4 inline-block">
-                <Button variant="outline">Back to Agents</Button>
-              </Link>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Bot}
+            title="Agent not found"
+            description="There's no agent with this ID in your workspace."
+            actionLabel="Back to Agents"
+            actionHref="/dashboard/agents"
+          />
         </div>
       </div>
     );

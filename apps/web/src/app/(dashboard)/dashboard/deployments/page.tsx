@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Cpu, MoreVertical, Play, Square, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -9,6 +9,9 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { deploymentsApi, type Deployment, getErrorMessage } from "@/lib/api";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -29,20 +32,60 @@ const statusIcons: Record<string, React.ReactNode> = {
   failed: <span className="h-2 w-2 rounded-full bg-red-500" />,
 };
 
+/** Placeholder shaped like one deployment card below. */
+function DeploymentCardSkeleton() {
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="p-0">
+        <div className="flex items-center justify-between p-6">
+          <div className="flex items-center gap-4">
+            <Skeleton className="h-12 w-12 rounded-lg" />
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-6 w-40" />
+                <Skeleton className="h-5 w-20 rounded-full" />
+              </div>
+              <Skeleton className="h-4 w-64" />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-9 w-20" />
+            <Skeleton className="h-9 w-28" />
+          </div>
+        </div>
+        <div className="h-1 bg-muted" />
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function DeploymentsPage() {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  // Set once a fetch succeeds. After that a failed background poll keeps the
+  // last good list on screen (with the toast) instead of the error panel.
+  const hasLoadedRef = useRef(false);
 
   async function loadDeployments() {
     try {
       const { deployments } = await deploymentsApi.list();
       setDeployments(deployments);
+      hasLoadedRef.current = true;
+      setLoadError(null);
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to load deployments"));
+      if (!hasLoadedRef.current) setLoadError(error);
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    loadDeployments();
   }
 
   useEffect(() => {
@@ -92,29 +135,27 @@ export default function DeploymentsPage() {
 
       <div className="p-8">
         {isLoading ? (
-          <div className="space-y-4">
+          <div className="space-y-4" aria-busy="true">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-24 animate-pulse rounded-lg bg-muted" />
+              <DeploymentCardSkeleton key={i} />
             ))}
+            {/* Last child, so space-y-4 does not push the first card down. */}
+            <span className="sr-only">Loading deployments</span>
           </div>
+        ) : loadError ? (
+          <ErrorState
+            title="Couldn't load deployments"
+            error={loadError}
+            onRetry={retryLoad}
+          />
         ) : deployments.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <Cpu className="h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium text-foreground">
-                No deployments yet
-              </h3>
-              <p className="mt-2 text-muted-foreground">
-                Deploy your first model to get an OpenAI-compatible endpoint
-              </p>
-              <Link href="/dashboard/deployments/new" className="mt-6">
-                <Button size="lg">
-                  <Cpu className="mr-2 h-5 w-5" />
-                  Deploy Your First Model
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Cpu}
+            title="No deployments yet"
+            description="Deploy your first model to get an OpenAI-compatible endpoint."
+            actionLabel="Deploy Your First Model"
+            actionHref="/dashboard/deployments/new"
+          />
         ) : (
           <div className="space-y-4">
             {deployments.map((deployment) => (

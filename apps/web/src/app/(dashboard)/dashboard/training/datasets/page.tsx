@@ -23,6 +23,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { trainingApi, type Dataset, type DatasetDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -39,6 +42,7 @@ export default function DatasetsPage() {
   const confirmAction = useConfirm();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [showUploadForm, setShowUploadForm] = useState(false);
   const [selectedDataset, setSelectedDataset] = useState<DatasetDetail | null>(null);
 
@@ -59,7 +63,9 @@ export default function DatasetsPage() {
     try {
       const { datasets } = await trainingApi.listDatasets();
       setDatasets(datasets);
+      setLoadError(null);
     } catch (error) {
+      setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load datasets"));
     } finally {
       setIsLoading(false);
@@ -69,6 +75,12 @@ export default function DatasetsPage() {
   useEffect(() => {
     loadDatasets();
   }, []);
+
+  function handleRetry() {
+    setLoadError(null);
+    setIsLoading(true);
+    void loadDatasets();
+  }
 
   async function handleUpload() {
     if (!uploadFile || !uploadForm.name) {
@@ -214,23 +226,42 @@ export default function DatasetsPage() {
               </CardHeader>
               <CardContent>
                 {isLoading ? (
-                  <div className="space-y-4">
+                  <div className="space-y-4" aria-busy="true">
                     {[1, 2, 3].map((i) => (
-                      <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
+                      <div
+                        key={i}
+                        className="flex items-center justify-between rounded-lg border p-4"
+                      >
+                        <div className="flex items-center gap-4">
+                          <Skeleton className="h-10 w-10 rounded-lg" />
+                          <div className="space-y-2">
+                            <Skeleton className="h-5 w-40" />
+                            <Skeleton className="h-4 w-32" />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <Skeleton className="h-5 w-16 rounded-full" />
+                          <Skeleton className="h-9 w-9" />
+                          <Skeleton className="h-9 w-9" />
+                        </div>
+                      </div>
                     ))}
+                    <span className="sr-only">Loading datasets</span>
                   </div>
+                ) : loadError ? (
+                  <ErrorState
+                    title="Couldn't load datasets"
+                    error={loadError}
+                    onRetry={handleRetry}
+                  />
                 ) : datasets.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-16">
-                    <Database className="h-16 w-16 text-gray-300" />
-                    <h3 className="mt-4 text-xl font-medium">No datasets yet</h3>
-                    <p className="mt-2 text-muted-foreground">
-                      Upload your first dataset to start training
-                    </p>
-                    <Button onClick={() => setShowUploadForm(true)} className="mt-6">
-                      <Upload className="mr-2 h-4 w-4" />
-                      Upload Dataset
-                    </Button>
-                  </div>
+                  <EmptyState
+                    icon={Database}
+                    title="No datasets yet"
+                    description="Upload your first dataset to start training."
+                    actionLabel="Upload Dataset"
+                    onAction={() => setShowUploadForm(true)}
+                  />
                 ) : (
                   <div className="space-y-4">
                     {datasets.map((dataset) => (

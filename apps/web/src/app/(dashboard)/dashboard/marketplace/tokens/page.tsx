@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent } from "@/components/ui/card";
@@ -8,6 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { DataTable, type Column } from "@/components/ui/data-table";
+import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "sonner";
 import { type TokenCardData } from "@/components/dashboard/token-card";
 import {
@@ -40,13 +43,34 @@ function formatCompact(value: number): string {
   return value.toString();
 }
 
+function StatCardSkeleton() {
+  return (
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <Skeleton className="h-8 w-8 shrink-0" />
+        <div className="flex-1 space-y-2">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-7 w-1/2" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function TokenMarketplacePage() {
   const router = useRouter();
   const [tokens, setTokens] = useState<TokenCardData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("volume");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // Bumped to refetch when neither the sort nor the status filter changed.
+  const [reloadKey, setReloadKey] = useState(0);
+  // True when `tokens` came back already narrowed by the API's search param.
+  // Typing never refetches, so clearing the search alone would leave that
+  // narrowed list (possibly empty) in place of the full one.
+  const tokensAreSearchResultRef = useRef(false);
 
   const [stats, setStats] = useState({
     totalTokens: 0,
@@ -58,6 +82,8 @@ export default function TokenMarketplacePage() {
   const fetchTokens = async () => {
     try {
       setLoading(true);
+      // Every load (first visit, retry, sort or filter change) starts clean.
+      setLoadError(null);
       const params = new URLSearchParams();
       if (sortBy) params.set("sortBy", sortBy);
       if (statusFilter !== "all") params.set("status", statusFilter);
@@ -71,6 +97,7 @@ export default function TokenMarketplacePage() {
 
       const data = await response.json();
       setTokens(data.tokens || []);
+      tokensAreSearchResultRef.current = search !== "";
 
       // Calculate stats from the data
       const all = data.tokens || [];
@@ -84,6 +111,7 @@ export default function TokenMarketplacePage() {
       console.error("Error fetching tokens:", error);
       toast.error(getErrorMessage(error, "Failed to load tokens"));
       setTokens([]);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -91,7 +119,15 @@ export default function TokenMarketplacePage() {
 
   useEffect(() => {
     fetchTokens();
-  }, [sortBy, statusFilter]);
+  }, [sortBy, statusFilter, reloadKey]);
+
+  const clearFilters = () => {
+    setSearch("");
+    setStatusFilter("all");
+    // A status change refetches by itself. A search the API already applied
+    // needs an explicit reload, or its empty result would read as "no tokens".
+    if (tokensAreSearchResultRef.current) setReloadKey((k) => k + 1);
+  };
 
   const filteredTokens = useMemo(() => {
     if (!search) return tokens;
@@ -103,6 +139,10 @@ export default function TokenMarketplacePage() {
         t.agentName?.toLowerCase().includes(q)
     );
   }, [tokens, search]);
+
+  // An empty list under a search or status filter means "nothing matches",
+  // not "no tokens exist".
+  const isFiltered = search !== "" || statusFilter !== "all";
 
   const tokenColumns: Column<TokenCardData>[] = [
     {
@@ -233,45 +273,53 @@ export default function TokenMarketplacePage() {
       />
 
       <div className="p-8 space-y-6">
-        {/* Stats Row */}
-        <div className="grid gap-4 md:grid-cols-4">
-          <Card>
-            <CardContent className="flex items-center gap-3 p-4">
-              <Coins className="h-8 w-8 text-primary" />
-              <div>
-                <div className="text-sm text-muted-foreground">Total Tokens</div>
-                <div className="text-2xl font-bold">{stats.totalTokens}</div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center gap-3 p-4">
-              <BarChart3 className="h-8 w-8 text-blue-500" />
-              <div>
-                <div className="text-sm text-muted-foreground">24h Volume</div>
-                <div className="text-2xl font-bold">{formatUsd(stats.totalVolume)}</div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center gap-3 p-4">
-              <Users className="h-8 w-8 text-green-500" />
-              <div>
-                <div className="text-sm text-muted-foreground">Total Holders</div>
-                <div className="text-2xl font-bold">{stats.totalHolders.toLocaleString()}</div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center gap-3 p-4">
-              <TrendingUp className="h-8 w-8 text-purple-500" />
-              <div>
-                <div className="text-sm text-muted-foreground">Graduated</div>
-                <div className="text-2xl font-bold">{stats.graduated}</div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        {/* Stats Row (hidden after a failed load: zeros would be misleading) */}
+        {loading ? (
+          <div className="grid gap-4 md:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <StatCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : loadError === null ? (
+          <div className="grid gap-4 md:grid-cols-4">
+            <Card>
+              <CardContent className="flex items-center gap-3 p-4">
+                <Coins className="h-8 w-8 text-primary" />
+                <div>
+                  <div className="text-sm text-muted-foreground">Total Tokens</div>
+                  <div className="text-2xl font-bold">{stats.totalTokens}</div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="flex items-center gap-3 p-4">
+                <BarChart3 className="h-8 w-8 text-blue-500" />
+                <div>
+                  <div className="text-sm text-muted-foreground">24h Volume</div>
+                  <div className="text-2xl font-bold">{formatUsd(stats.totalVolume)}</div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="flex items-center gap-3 p-4">
+                <Users className="h-8 w-8 text-green-500" />
+                <div>
+                  <div className="text-sm text-muted-foreground">Total Holders</div>
+                  <div className="text-2xl font-bold">{stats.totalHolders.toLocaleString()}</div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="flex items-center gap-3 p-4">
+                <TrendingUp className="h-8 w-8 text-purple-500" />
+                <div>
+                  <div className="text-sm text-muted-foreground">Graduated</div>
+                  <div className="text-2xl font-bold">{stats.graduated}</div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        ) : null}
 
         {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
@@ -323,22 +371,43 @@ export default function TokenMarketplacePage() {
 
         {/* Token Table */}
         {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto" />
-              <p className="mt-4 text-sm text-muted-foreground">Loading tokens...</p>
-            </div>
+          <div aria-busy="true">
+            <span className="sr-only">Loading tokens</span>
+            <SkeletonTable rows={5} cols={7} />
           </div>
+        ) : loadError !== null ? (
+          <ErrorState
+            title="Couldn't load tokens"
+            error={loadError}
+            onRetry={() => void fetchTokens()}
+          />
+        ) : filteredTokens.length === 0 ? (
+          isFiltered ? (
+            <EmptyState
+              icon={Search}
+              title="No matching tokens"
+              description={
+                search
+                  ? "No tokens match your search. Try a different query."
+                  : "No tokens match this status filter. Try a different one."
+              }
+              actionLabel="Clear filters"
+              onAction={clearFilters}
+            />
+          ) : (
+            <EmptyState
+              icon={Coins}
+              title="No agent tokens yet"
+              description="Deploy an agent and tokenize it to get started."
+              actionLabel="Create Token"
+              actionHref="/dashboard/marketplace/tokens/create"
+            />
+          )
         ) : (
           <DataTable
             data={filteredTokens}
             columns={tokenColumns}
             pageSize={10}
-            emptyMessage={
-              search
-                ? "No tokens match your search. Try a different query."
-                : "No agent tokens have been created yet. Deploy an agent and tokenize it to get started."
-            }
             keyExtractor={(token) => token.id}
             onRowClick={(token) => router.push(`/dashboard/marketplace/tokens/${token.id}`)}
           />

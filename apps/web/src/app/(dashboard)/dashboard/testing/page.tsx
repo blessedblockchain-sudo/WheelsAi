@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Beaker, ListChecks } from "lucide-react";
 import {
   testingApi,
   agentsApi,
@@ -16,6 +17,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // Icons
 function CheckCircleIcon({ className }: { className?: string }) {
@@ -64,22 +68,66 @@ function TrashIcon({ className }: { className?: string }) {
   );
 }
 
-function BeakerIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M4.5 3h15" />
-      <path d="M6 3v16a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V3" />
-      <path d="M6 14h12" />
-    </svg>
-  );
-}
-
 function ClockIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <circle cx="12" cy="12" r="10" />
       <polyline points="12 6 12 12 16 14" />
     </svg>
+  );
+}
+
+/** Mirrors the page layout: header, four stat cards, suite list. */
+function TestingPageSkeleton() {
+  return (
+    <div className="p-8 max-w-6xl mx-auto space-y-8" aria-busy="true">
+      <div className="space-y-3">
+        <Skeleton className="h-9 w-40" />
+        <Skeleton className="h-5 w-96 max-w-full" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="border rounded-lg p-4 space-y-2">
+            <Skeleton className="h-8 w-16" />
+            <Skeleton className="h-4 w-24" />
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <Skeleton className="h-7 w-36" />
+          <Skeleton className="h-10 w-32" />
+        </div>
+        <div className="space-y-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="border rounded-lg p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Skeleton className="h-5 w-48 max-w-full" />
+                    <Skeleton className="h-5 w-14" />
+                  </div>
+                  <Skeleton className="h-4 w-2/3" />
+                  <div className="flex items-center gap-4">
+                    <Skeleton className="h-4 w-28" />
+                    <Skeleton className="h-4 w-16" />
+                    <Skeleton className="h-4 w-24" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <Skeleton className="h-9 w-16" />
+                  <Skeleton className="h-9 w-16" />
+                  <Skeleton className="h-9 w-10" />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <span className="sr-only">Loading test suites</span>
+    </div>
   );
 }
 
@@ -94,6 +142,7 @@ export default function TestingPage() {
     recentRuns: any[];
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -103,6 +152,7 @@ export default function TestingPage() {
   // create cases, so "Run" was permanently disabled on every suite.
   const [cases, setCases] = useState<TestCase[]>([]);
   const [loadingCases, setLoadingCases] = useState(false);
+  const [casesError, setCasesError] = useState<unknown>(null);
   const [savingCase, setSavingCase] = useState(false);
   const [caseForm, setCaseForm] = useState({
     name: "",
@@ -127,6 +177,7 @@ export default function TestingPage() {
 
   async function loadData() {
     setLoading(true);
+    setLoadError(null);
     try {
       const [suitesRes, agentsRes, statsRes] = await Promise.all([
         testingApi.getSuites(),
@@ -138,6 +189,7 @@ export default function TestingPage() {
       setStats(statsRes.data);
     } catch (error) {
       console.error("Failed to load data:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -180,11 +232,13 @@ export default function TestingPage() {
 
   async function loadCases(suiteId: string) {
     setLoadingCases(true);
+    setCasesError(null);
     try {
       const res = await testingApi.getCases(suiteId);
       setCases(res.data);
-    } catch {
+    } catch (error) {
       setCases([]);
+      setCasesError(error);
     } finally {
       setLoadingCases(false);
     }
@@ -279,11 +333,7 @@ export default function TestingPage() {
   }
 
   if (loading) {
-    return (
-      <div className="p-8 flex items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
-      </div>
-    );
+    return <TestingPageSkeleton />;
   }
 
   return (
@@ -295,168 +345,175 @@ export default function TestingPage() {
         </p>
       </div>
 
-      {/* Stats */}
-      {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="border rounded-lg p-4">
-            <div className="text-2xl font-bold">{stats.totalSuites}</div>
-            <div className="text-sm text-muted-foreground">Test Suites</div>
-          </div>
-          <div className="border rounded-lg p-4">
-            <div className="text-2xl font-bold">{stats.totalTests}</div>
-            <div className="text-sm text-muted-foreground">Total Tests</div>
-          </div>
-          <div className="border rounded-lg p-4">
-            <div className="text-2xl font-bold">
-              {stats.avgPassRate.toFixed(1)}%
-            </div>
-            <div className="text-sm text-muted-foreground">Avg Pass Rate</div>
-          </div>
-          <div className="border rounded-lg p-4">
-            <div className="text-2xl font-bold">{stats.recentRuns.length}</div>
-            <div className="text-sm text-muted-foreground">Recent Runs</div>
-          </div>
-        </div>
-      )}
-
-      {/* Test Suites */}
-      <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h2 className="text-xl font-semibold">Test Suites</h2>
-          <Button onClick={() => setShowCreateModal(true)}>
-            <PlusIcon className="w-4 h-4 mr-2" />
-            New Suite
-          </Button>
-        </div>
-
-        {suites.length === 0 ? (
-          <div className="border rounded-lg p-12 text-center">
-            <BeakerIcon className="w-12 h-12 mx-auto text-muted-foreground" />
-            <h3 className="mt-4 font-semibold">No test suites yet</h3>
-            <p className="text-sm text-muted-foreground mt-2">
-              Create a test suite to start testing your agents
-            </p>
-            <Button className="mt-4" onClick={() => setShowCreateModal(true)}>
-              Create Test Suite
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {suites.map((suite) => {
-              const agent = agents.find((a) => a.id === suite.agentId);
-              return (
-                <div
-                  key={suite.id}
-                  className="border rounded-lg p-4 hover:border-primary/50 transition-colors"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{suite.name}</span>
-                        {suite.lastStatus && (
-                          <span
-                            className={`px-2 py-0.5 text-xs rounded capitalize ${getStatusColor(
-                              suite.lastStatus
-                            )}`}
-                          >
-                            {suite.lastStatus}
-                          </span>
-                        )}
-                      </div>
-                      {suite.description && (
-                        <p className="text-sm text-muted-foreground mt-1">
-                          {suite.description}
-                        </p>
-                      )}
-                      <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                        <span>Agent: {agent?.name || "Unknown"}</span>
-                        <span>{suite.totalTests} tests</span>
-                        {suite.passRate !== null && (
-                          <span>{suite.passRate.toFixed(1)}% pass rate</span>
-                        )}
-                        {suite.lastRunAt && (
-                          <span className="flex items-center gap-1">
-                            <ClockIcon className="w-3 h-3" />
-                            Last run: {new Date(suite.lastRunAt).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => runSuite(suite.id)}
-                        disabled={suite.totalTests === 0}
-                      >
-                        <PlayIcon className="w-4 h-4 mr-1" />
-                        Run
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => openSuite(suite)}
-                      >
-                        View
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => deleteSuite(suite.id)}
-                      >
-                        <TrashIcon className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {/* Recent Runs */}
-      {stats && stats.recentRuns.length > 0 && (
-        <div className="space-y-4">
-          <h2 className="text-xl font-semibold">Recent Runs</h2>
-          <div className="border rounded-lg divide-y">
-            {stats.recentRuns.map((run: any) => (
-              <div key={run.id} className="p-4 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{run.suite?.name}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {new Date(run.createdAt).toLocaleString()}
-                  </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <div className={`font-medium ${getRunStatusColor(run.status)}`}>
-                      {run.status}
-                    </div>
-                    <div className="text-sm text-muted-foreground">
-                      {run.passedTests}/{run.totalTests} passed
-                    </div>
-                  </div>
-                  {run.passRate !== null && (
-                    <div
-                      className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                        run.passRate >= 80
-                          ? "bg-green-500/10 text-green-500"
-                          : run.passRate >= 50
-                          ? "bg-yellow-500/10 text-yellow-500"
-                          : "bg-red-500/10 text-red-500"
-                      }`}
-                    >
-                      <span className="text-sm font-bold">
-                        {run.passRate.toFixed(0)}%
-                      </span>
-                    </div>
-                  )}
-                </div>
+      {loadError ? (
+        <ErrorState
+          title="Couldn't load test suites"
+          error={loadError}
+          onRetry={() => void loadData()}
+        />
+      ) : (
+        <>
+          {/* Stats */}
+          {stats && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="border rounded-lg p-4">
+                <div className="text-2xl font-bold">{stats.totalSuites}</div>
+                <div className="text-sm text-muted-foreground">Test Suites</div>
               </div>
-            ))}
+              <div className="border rounded-lg p-4">
+                <div className="text-2xl font-bold">{stats.totalTests}</div>
+                <div className="text-sm text-muted-foreground">Total Tests</div>
+              </div>
+              <div className="border rounded-lg p-4">
+                <div className="text-2xl font-bold">
+                  {stats.avgPassRate.toFixed(1)}%
+                </div>
+                <div className="text-sm text-muted-foreground">Avg Pass Rate</div>
+              </div>
+              <div className="border rounded-lg p-4">
+                <div className="text-2xl font-bold">{stats.recentRuns.length}</div>
+                <div className="text-sm text-muted-foreground">Recent Runs</div>
+              </div>
+            </div>
+          )}
+
+          {/* Test Suites */}
+          <div className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h2 className="text-xl font-semibold">Test Suites</h2>
+              <Button onClick={() => setShowCreateModal(true)}>
+                <PlusIcon className="w-4 h-4 mr-2" />
+                New Suite
+              </Button>
+            </div>
+
+            {suites.length === 0 ? (
+              <EmptyState
+                icon={Beaker}
+                title="No test suites yet"
+                description="Create a test suite to start testing your agents."
+                actionLabel="Create Test Suite"
+                onAction={() => setShowCreateModal(true)}
+              />
+            ) : (
+              <div className="space-y-4">
+                {suites.map((suite) => {
+                  const agent = agents.find((a) => a.id === suite.agentId);
+                  return (
+                    <div
+                      key={suite.id}
+                      className="border rounded-lg p-4 hover:border-primary/50 transition-colors"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{suite.name}</span>
+                            {suite.lastStatus && (
+                              <span
+                                className={`px-2 py-0.5 text-xs rounded capitalize ${getStatusColor(
+                                  suite.lastStatus
+                                )}`}
+                              >
+                                {suite.lastStatus}
+                              </span>
+                            )}
+                          </div>
+                          {suite.description && (
+                            <p className="text-sm text-muted-foreground mt-1">
+                              {suite.description}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+                            <span>Agent: {agent?.name || "Unknown"}</span>
+                            <span>{suite.totalTests} tests</span>
+                            {suite.passRate !== null && (
+                              <span>{suite.passRate.toFixed(1)}% pass rate</span>
+                            )}
+                            {suite.lastRunAt && (
+                              <span className="flex items-center gap-1">
+                                <ClockIcon className="w-3 h-3" />
+                                Last run: {new Date(suite.lastRunAt).toLocaleDateString()}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => runSuite(suite.id)}
+                            disabled={suite.totalTests === 0}
+                          >
+                            <PlayIcon className="w-4 h-4 mr-1" />
+                            Run
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openSuite(suite)}
+                          >
+                            View
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => deleteSuite(suite.id)}
+                          >
+                            <TrashIcon className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
+
+          {/* Recent Runs */}
+          {stats && stats.recentRuns.length > 0 && (
+            <div className="space-y-4">
+              <h2 className="text-xl font-semibold">Recent Runs</h2>
+              <div className="border rounded-lg divide-y">
+                {stats.recentRuns.map((run: any) => (
+                  <div key={run.id} className="p-4 flex items-center justify-between">
+                    <div>
+                      <div className="font-medium">{run.suite?.name}</div>
+                      <div className="text-sm text-muted-foreground">
+                        {new Date(run.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right">
+                        <div className={`font-medium ${getRunStatusColor(run.status)}`}>
+                          {run.status}
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          {run.passedTests}/{run.totalTests} passed
+                        </div>
+                      </div>
+                      {run.passRate !== null && (
+                        <div
+                          className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                            run.passRate >= 80
+                              ? "bg-green-500/10 text-green-500"
+                              : run.passRate >= 50
+                              ? "bg-yellow-500/10 text-yellow-500"
+                              : "bg-red-500/10 text-red-500"
+                          }`}
+                        >
+                          <span className="text-sm font-bold">
+                            {run.passRate.toFixed(0)}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Create Suite Modal */}
@@ -613,12 +670,38 @@ export default function TestingPage() {
                 <h3 className="font-medium mb-3">Test Cases</h3>
 
                 {loadingCases ? (
-                  <p className="text-sm text-muted-foreground">Loading cases…</p>
+                  <div className="space-y-2 mb-4" aria-busy="true">
+                    {Array.from({ length: 2 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start justify-between gap-3 rounded border p-3"
+                      >
+                        <div className="min-w-0 flex-1 space-y-2">
+                          <Skeleton className="h-4 w-1/3" />
+                          <Skeleton className="h-4 w-2/3" />
+                          <Skeleton className="h-3 w-1/4" />
+                        </div>
+                        <Skeleton className="h-9 w-20 shrink-0" />
+                      </div>
+                    ))}
+                    <span className="sr-only">Loading test cases</span>
+                  </div>
+                ) : casesError ? (
+                  <div className="mb-4">
+                    <ErrorState
+                      title="Couldn't load test cases"
+                      error={casesError}
+                      onRetry={() => void loadCases(selectedSuite.id)}
+                    />
+                  </div>
                 ) : cases.length === 0 ? (
-                  <p className="text-sm text-muted-foreground mb-3">
-                    No cases yet. Add one below — a suite needs at least one
-                    case before it can run.
-                  </p>
+                  <div className="mb-4">
+                    <EmptyState
+                      icon={ListChecks}
+                      title="No test cases yet"
+                      description="Add one below — a suite needs at least one case before it can run."
+                    />
+                  </div>
                 ) : (
                   <ul className="space-y-2 mb-4">
                     {cases.map((c) => (

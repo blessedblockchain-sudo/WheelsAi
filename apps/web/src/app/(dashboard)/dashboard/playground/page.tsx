@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import Link from "next/link";
 import {
   Send,
   Settings,
@@ -11,6 +10,7 @@ import {
   Bot,
   Loader2,
   ChevronDown,
+  Cpu,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,6 +19,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { deploymentsApi, playgroundApi, type Deployment, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -39,6 +41,7 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingDeployments, setIsLoadingDeployments] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [showSettings, setShowSettings] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -47,22 +50,26 @@ export default function PlaygroundPage() {
   const [maxTokens, setMaxTokens] = useState(1024);
   const [systemPrompt, setSystemPrompt] = useState("");
 
-  useEffect(() => {
-    async function loadDeployments() {
-      try {
-        const { deployments } = await deploymentsApi.list();
-        const runningDeployments = deployments.filter((d) => d.status === "running");
-        setDeployments(runningDeployments);
-        const firstDeployment = runningDeployments[0];
-        if (firstDeployment) {
-          setSelectedDeployment(firstDeployment.id);
-        }
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load deployments"));
-      } finally {
-        setIsLoadingDeployments(false);
+  async function loadDeployments() {
+    setLoadError(null);
+    setIsLoadingDeployments(true);
+    try {
+      const { deployments } = await deploymentsApi.list();
+      const runningDeployments = deployments.filter((d) => d.status === "running");
+      setDeployments(runningDeployments);
+      const firstDeployment = runningDeployments[0];
+      if (firstDeployment) {
+        setSelectedDeployment(firstDeployment.id);
       }
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to load deployments"));
+      setLoadError(error);
+    } finally {
+      setIsLoadingDeployments(false);
     }
+  }
+
+  useEffect(() => {
     loadDeployments();
   }, []);
 
@@ -158,13 +165,13 @@ export default function PlaygroundPage() {
                 </label>
                 {isLoadingDeployments ? (
                   <Skeleton className="mt-1 h-10 w-full" />
+                ) : loadError ? (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Couldn&apos;t load deployments
+                  </p>
                 ) : deployments.length === 0 ? (
                   <p className="mt-1 text-sm text-muted-foreground">
-                    No running deployments.{" "}
-                    <Link href="/dashboard/deployments/new" className="text-primary-600 hover:underline">
-                      Deploy a model
-                    </Link>{" "}
-                    to get started.
+                    No running deployments
                   </p>
                 ) : (
                   <Select
@@ -259,7 +266,29 @@ export default function PlaygroundPage() {
 
           {/* Messages */}
           <div className="flex-1 overflow-y-auto bg-muted p-6">
-            {messages.length === 0 ? (
+            {loadError ? (
+              <div className="flex min-h-full items-center justify-center">
+                <div className="w-full max-w-lg">
+                  <ErrorState
+                    title="Couldn't load deployments"
+                    error={loadError}
+                    onRetry={loadDeployments}
+                  />
+                </div>
+              </div>
+            ) : !isLoadingDeployments && deployments.length === 0 ? (
+              <div className="flex min-h-full items-center justify-center">
+                <div className="w-full max-w-lg">
+                  <EmptyState
+                    icon={Cpu}
+                    title="No running deployments"
+                    description="Deploy a model to get started. Once it is running, you can chat with it here."
+                    actionLabel="Deploy a model"
+                    actionHref="/dashboard/deployments/new"
+                  />
+                </div>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-center">
                 <Bot className="h-16 w-16 text-gray-300" />
                 <h3 className="mt-4 text-lg font-medium text-foreground">

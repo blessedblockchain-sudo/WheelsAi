@@ -76,13 +76,14 @@ test.describe("Marketplace", () => {
     await expect(page.getByText("WheelsAI").first()).toBeVisible();
   });
 
-  test("should show loading state or results", async ({ page }) => {
+  test("should show results or an error state", async ({ page }) => {
     await page.goto("/marketplace");
 
-    // Either "Loading..." or "X agents found" should appear
-    const resultsText = page.locator("text=Loading...").or(
-      page.locator("text=agents found")
-    );
-    await expect(resultsText.first()).toBeVisible();
+    // The skeleton has no text of its own, so wait for what replaces it:
+    // "X agents found" with an API, the error state without one.
+    const settled = page
+      .getByText("agents found")
+      .or(page.getByRole("alert").filter({ hasText: "Couldn't load the marketplace" }));
+    await expect(settled.first()).toBeVisible();
   });
 });

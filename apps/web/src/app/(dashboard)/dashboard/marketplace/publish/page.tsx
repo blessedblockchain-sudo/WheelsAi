@@ -2,7 +2,6 @@
 
 import { useEffect, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
 import {
   ArrowLeft,
   ArrowRight,
@@ -25,6 +24,9 @@ import {
   Select,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { agentsApi, marketplaceApi, type Agent, type CreateListingInput, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -44,9 +46,75 @@ const CATEGORIES = [
   { value: "other", label: "Other" },
 ];
 
+/** Placeholder shaped like the agent options in the first step. */
+function AgentOptionsSkeleton() {
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-4 rounded-lg border p-4">
+          <Skeleton className="h-4 w-4 shrink-0 rounded-full" />
+          <Skeleton className="h-10 w-10 shrink-0 rounded-lg" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-5 w-40 max-w-full" />
+            <Skeleton className="h-4 w-64 max-w-full" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Placeholder shaped like the progress steps and the first wizard step. */
+function WizardSkeleton() {
+  return (
+    <>
+      <div className="mb-8 flex items-center justify-center">
+        {STEPS.map((step, index) => (
+          <div key={step.id} className="flex min-w-0 items-center">
+            <Skeleton className="h-9 w-12 rounded-full sm:w-36" />
+            {index < STEPS.length - 1 && (
+              <Skeleton className="mx-2 h-0.5 w-8 sm:w-16" />
+            )}
+          </div>
+        ))}
+      </div>
+      <Card className="mx-auto max-w-2xl">
+        <CardContent className="p-6">
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <Skeleton className="h-6 w-40" />
+              <Skeleton className="h-4 w-72 max-w-full" />
+            </div>
+            <AgentOptionsSkeleton />
+          </div>
+          <div className="mt-8 flex items-center justify-between">
+            <Skeleton className="h-10 w-24" />
+            <Skeleton className="h-10 w-24" />
+          </div>
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
 export default function PublishWizardPage() {
   return (
-    <Suspense fallback={<div className="flex h-96 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" /></div>}>
+    <Suspense
+      fallback={
+        <div className="flex flex-col">
+          <div className="flex items-center justify-between border-b border-border bg-card px-8 py-4">
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-8 w-64 max-w-full" />
+              <Skeleton className="h-4 w-80 max-w-full" />
+            </div>
+            <Skeleton className="h-9 w-9" />
+          </div>
+          <div className="p-8">
+            <WizardSkeleton />
+          </div>
+        </div>
+      }
+    >
       <PublishWizardContent />
     </Suspense>
   );
@@ -61,6 +129,9 @@ function PublishWizardContent() {
   const [isLoading, setIsLoading] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoadingAgents, setIsLoadingAgents] = useState(true);
+  const [agentsError, setAgentsError] = useState<unknown>(null);
+  const [isLoadingListing, setIsLoadingListing] = useState(!!editId);
+  const [listingLoadError, setListingLoadError] = useState<unknown>(null);
 
   // Form state
   const [formData, setFormData] = useState<CreateListingInput>({
@@ -76,42 +147,56 @@ function PublishWizardContent() {
 
   // Load agents on mount
   useEffect(() => {
-    async function loadAgents() {
-      try {
-        const { agents } = await agentsApi.list();
-        setAgents(agents);
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load agents"));
-      } finally {
-        setIsLoadingAgents(false);
-      }
-    }
     loadAgents();
   }, []);
+
+  async function loadAgents() {
+    setIsLoadingAgents(true);
+    setAgentsError(null);
+    try {
+      const { agents } = await agentsApi.list();
+      setAgents(agents);
+    } catch (error) {
+      setAgentsError(error);
+      toast.error(getErrorMessage(error, "Failed to load agents"));
+    } finally {
+      setIsLoadingAgents(false);
+    }
+  }
 
   // Load existing listing if editing
   useEffect(() => {
     if (editId) {
-      async function loadListing() {
-        try {
-          const { listing } = await marketplaceApi.getListing(editId ?? "");
-          setFormData({
-            agentId: listing.agentId,
-            title: listing.title,
-            shortDescription: listing.shortDescription,
-            longDescription: listing.longDescription || "",
-            category: listing.category as any,
-            pricingModel: listing.pricingModel,
-            pricePerRequestCents: listing.pricePerRequestCents || undefined,
-            monthlyPriceCents: listing.monthlyPriceCents || undefined,
-          });
-        } catch (error) {
-          toast.error(getErrorMessage(error, "Failed to load listing"));
-        }
-      }
-      loadListing();
+      loadListing(editId);
     }
   }, [editId]);
+
+  async function loadListing(id: string) {
+    setIsLoadingListing(true);
+    setListingLoadError(null);
+    try {
+      const { listing } = await marketplaceApi.getListing(id);
+      setFormData({
+        agentId: listing.agentId,
+        title: listing.title,
+        shortDescription: listing.shortDescription,
+        longDescription: listing.longDescription || "",
+        category: listing.category as any,
+        pricingModel: listing.pricingModel,
+        pricePerRequestCents: listing.pricePerRequestCents || undefined,
+        monthlyPriceCents: listing.monthlyPriceCents || undefined,
+      });
+    } catch (error) {
+      setListingLoadError(error);
+      toast.error(getErrorMessage(error, "Failed to load listing"));
+    } finally {
+      setIsLoadingListing(false);
+    }
+  }
+
+  function retryListing() {
+    if (editId) loadListing(editId);
+  }
 
   const updateForm = (updates: Partial<CreateListingInput>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
@@ -197,12 +282,38 @@ function PublishWizardContent() {
 
   const selectedAgent = agents.find((a) => a.id === formData.agentId);
 
+  const header = (
+    <Header
+      title={editId ? "Edit Listing" : "Publish to Marketplace"}
+      description="Share your agent with the WheelsAI community"
+    />
+  );
+
+  // When editing, the wizard stays hidden until the listing has loaded, so it
+  // never shows blank fields in place of the listing's own.
+  if (editId && (listingLoadError !== null || isLoadingListing)) {
+    return (
+      <div className="flex flex-col">
+        {header}
+
+        <div className="p-8">
+          {listingLoadError !== null ? (
+            <ErrorState
+              title="Couldn't load listing"
+              error={listingLoadError}
+              onRetry={retryListing}
+            />
+          ) : (
+            <WizardSkeleton />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col">
-      <Header
-        title={editId ? "Edit Listing" : "Publish to Marketplace"}
-        description="Share your agent with the WheelsAI community"
-      />
+      {header}
 
       <div className="p-8">
         {/* Progress Steps */}
@@ -256,22 +367,21 @@ function PublishWizardContent() {
                 </div>
 
                 {isLoadingAgents ? (
-                  <div className="flex items-center justify-center py-12">
-                    <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
-                  </div>
+                  <AgentOptionsSkeleton />
+                ) : agentsError !== null ? (
+                  <ErrorState
+                    title="Couldn't load agents"
+                    error={agentsError}
+                    onRetry={loadAgents}
+                  />
                 ) : agents.length === 0 ? (
-                  <div className="py-12 text-center">
-                    <Bot className="mx-auto h-12 w-12 text-gray-300" />
-                    <h3 className="mt-4 font-semibold text-foreground">
-                      No agents found
-                    </h3>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      Create an agent first before publishing to the marketplace
-                    </p>
-                    <Link href="/dashboard/agents/new">
-                      <Button className="mt-4">Create Agent</Button>
-                    </Link>
-                  </div>
+                  <EmptyState
+                    icon={Bot}
+                    title="No agents found"
+                    description="Create an agent first before publishing to the marketplace."
+                    actionLabel="Create Agent"
+                    actionHref="/dashboard/agents/new"
+                  />
                 ) : (
                   <RadioGroup
                     value={formData.agentId}

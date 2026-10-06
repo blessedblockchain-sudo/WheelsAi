@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Plug, Webhook as WebhookLucide } from "lucide-react";
 import {
   webhooksApi,
   integrationsApi,
@@ -17,6 +18,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // Icons
 function WebhookIcon({ className }: { className?: string }) {
@@ -141,6 +145,7 @@ export default function IntegrationsPage() {
   const [availableIntegrations, setAvailableIntegrations] = useState<AvailableIntegration[]>([]);
   const [webhookEvents, setWebhookEvents] = useState<WebhookEventType[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // Modals
   const [showWebhookModal, setShowWebhookModal] = useState(false);
@@ -166,6 +171,7 @@ export default function IntegrationsPage() {
 
   async function loadData() {
     setLoading(true);
+    setLoadError(null);
     try {
       const [webhooksRes, integrationsRes, availableRes, eventsRes] = await Promise.all([
         webhooksApi.getWebhooks(),
@@ -179,6 +185,7 @@ export default function IntegrationsPage() {
       setWebhookEvents(eventsRes.events);
     } catch (error) {
       console.error("Failed to load data:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -272,22 +279,40 @@ export default function IntegrationsPage() {
     }
   }
 
+  const header = (
+    <div>
+      <h1 className="text-3xl font-bold">Webhooks & Integrations</h1>
+      <p className="text-muted-foreground mt-2">
+        Connect WheelsAI to external services and receive real-time event notifications
+      </p>
+    </div>
+  );
+
   if (loading) {
     return (
-      <div className="p-8 flex items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
+      <div className="p-8 max-w-6xl mx-auto space-y-8">
+        {header}
+        <WebhooksTabSkeleton />
+      </div>
+    );
+  }
+
+  if (loadError !== null) {
+    return (
+      <div className="p-8 max-w-6xl mx-auto space-y-8">
+        {header}
+        <ErrorState
+          title="Couldn't load webhooks and integrations"
+          error={loadError}
+          onRetry={loadData}
+        />
       </div>
     );
   }
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold">Webhooks & Integrations</h1>
-        <p className="text-muted-foreground mt-2">
-          Connect WheelsAI to external services and receive real-time event notifications
-        </p>
-      </div>
+      {header}
 
       {/* Tabs */}
       <div className="flex gap-2 border-b">
@@ -332,16 +357,13 @@ export default function IntegrationsPage() {
           </div>
 
           {webhooks.length === 0 ? (
-            <div className="border rounded-lg p-12 text-center">
-              <WebhookIcon className="w-12 h-12 mx-auto text-muted-foreground" />
-              <h3 className="mt-4 font-semibold">No webhooks configured</h3>
-              <p className="text-sm text-muted-foreground mt-2">
-                Create a webhook to receive real-time notifications
-              </p>
-              <Button className="mt-4" onClick={() => setShowWebhookModal(true)}>
-                Create Webhook
-              </Button>
-            </div>
+            <EmptyState
+              icon={WebhookLucide}
+              title="No webhooks configured"
+              description="Create a webhook to receive real-time notifications."
+              actionLabel="Create Webhook"
+              onAction={() => setShowWebhookModal(true)}
+            />
           ) : (
             <div className="space-y-4">
               {webhooks.map((webhook) => (
@@ -424,84 +446,92 @@ export default function IntegrationsPage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {availableIntegrations.map((integration) => {
-              const connected = integrations.find(
-                (i) => i.type === integration.type && i.isConnected
-              );
-              return (
-                <div
-                  key={integration.type}
-                  className="border rounded-lg p-4 hover:border-primary/50 transition-colors"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center text-foreground">
-                        {integrationIcons[integration.type] || (
-                          <PlugIcon className="w-5 h-5" />
-                        )}
-                      </div>
-                      <div>
-                        <h3 className="font-medium">{integration.name}</h3>
-                        {connected && (
-                          <span className="text-xs text-green-600 flex items-center gap-1">
-                            <CheckCircleIcon className="w-3 h-3" />
-                            Connected
-                          </span>
-                        )}
+          {availableIntegrations.length === 0 ? (
+            <EmptyState
+              icon={Plug}
+              title="No integrations available"
+              description="There are no integrations available to connect."
+            />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {availableIntegrations.map((integration) => {
+                const connected = integrations.find(
+                  (i) => i.type === integration.type && i.isConnected
+                );
+                return (
+                  <div
+                    key={integration.type}
+                    className="border rounded-lg p-4 hover:border-primary/50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg bg-secondary flex items-center justify-center text-foreground">
+                          {integrationIcons[integration.type] || (
+                            <PlugIcon className="w-5 h-5" />
+                          )}
+                        </div>
+                        <div>
+                          <h3 className="font-medium">{integration.name}</h3>
+                          {connected && (
+                            <span className="text-xs text-green-600 flex items-center gap-1">
+                              <CheckCircleIcon className="w-3 h-3" />
+                              Connected
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <p className="text-sm text-muted-foreground mt-3">
-                    {integration.description}
-                  </p>
-                  <div className="flex flex-wrap gap-1 mt-3">
-                    {integration.features.map((feature) => (
-                      <span
-                        key={feature}
-                        className="px-2 py-0.5 bg-secondary text-xs rounded capitalize"
-                      >
-                        {feature}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="mt-4">
-                    {connected ? (
-                      <div className="flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="flex-1"
-                          onClick={() => testIntegration(connected.id, integration.type)}
+                    <p className="text-sm text-muted-foreground mt-3">
+                      {integration.description}
+                    </p>
+                    <div className="flex flex-wrap gap-1 mt-3">
+                      {integration.features.map((feature) => (
+                        <span
+                          key={feature}
+                          className="px-2 py-0.5 bg-secondary text-xs rounded capitalize"
                         >
-                          Test
-                        </Button>
+                          {feature}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-4">
+                      {connected ? (
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            onClick={() => testIntegration(connected.id, integration.type)}
+                          >
+                            Test
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            onClick={() => deleteIntegration(connected.id)}
+                          >
+                            Disconnect
+                          </Button>
+                        </div>
+                      ) : (
                         <Button
-                          variant="outline"
-                          size="sm"
-                          className="flex-1"
-                          onClick={() => deleteIntegration(connected.id)}
+                          className="w-full"
+                          onClick={() => {
+                            setSelectedIntegrationType(integration.type);
+                            setIntegrationForm({ name: integration.name, config: {} });
+                            setShowIntegrationModal(true);
+                          }}
                         >
-                          Disconnect
+                          Connect
                         </Button>
-                      </div>
-                    ) : (
-                      <Button
-                        className="w-full"
-                        onClick={() => {
-                          setSelectedIntegrationType(integration.type);
-                          setIntegrationForm({ name: integration.name, config: {} });
-                          setShowIntegrationModal(true);
-                        }}
-                      >
-                        Connect
-                      </Button>
-                    )}
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Connected Integrations */}
           {integrations.length > 0 && (
@@ -764,6 +794,57 @@ export default function IntegrationsPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Loading placeholder shaped like the Webhooks tab (the default tab)
+function WebhooksTabSkeleton() {
+  return (
+    <div className="space-y-8" aria-busy="true">
+      {/* Tabs */}
+      <div className="flex gap-2 border-b">
+        {["w-24", "w-28"].map((width) => (
+          <div key={width} className="px-4 py-2">
+            <Skeleton className={`h-6 ${width}`} />
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-6">
+        <div className="flex justify-between items-center">
+          <div className="min-w-0 flex-1 space-y-2">
+            <Skeleton className="h-7 w-32" />
+            <Skeleton className="h-4 w-80 max-w-full" />
+          </div>
+          <Skeleton className="h-10 w-36 shrink-0" />
+        </div>
+
+        <div className="space-y-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div
+              key={i}
+              className="border rounded-lg p-4 flex items-center justify-between gap-4"
+            >
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-5 w-40 max-w-full" />
+                <Skeleton className="h-4 w-72 max-w-full" />
+                <div className="flex gap-1">
+                  <Skeleton className="h-5 w-24" />
+                  <Skeleton className="h-5 w-28" />
+                  <Skeleton className="h-5 w-20" />
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Skeleton className="h-9 w-14" />
+                <Skeleton className="h-9 w-20" />
+                <Skeleton className="h-9 w-11" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <span className="sr-only">Loading webhooks and integrations</span>
     </div>
   );
 }

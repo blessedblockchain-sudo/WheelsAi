@@ -8,6 +8,7 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { settingsApi, getErrorMessage } from "@/lib/api";
 import { useBranding } from "@/components/providers/branding-provider";
 
@@ -21,7 +22,7 @@ interface BrandingForm {
 }
 
 export default function BrandingSettingsPage() {
-  const { branding, refresh } = useBranding();
+  const { branding, isLoading, refresh } = useBranding();
   const [form, setForm] = useState<BrandingForm>({
     appName: "",
     logo: "",
@@ -63,6 +64,50 @@ export default function BrandingSettingsPage() {
       setIsSaving(false);
     }
   };
+
+  // Until the provider's first fetch lands, the form would show empty fields
+  // and anything typed would be overwritten when the saved values arrive.
+  if (isLoading) {
+    return (
+      <div className="flex flex-col">
+        <Header title="Branding" description="Customize your organization's appearance" />
+
+        <div className="p-8 max-w-2xl" aria-busy="true">
+          <span className="sr-only">Loading branding</span>
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-6 w-52" />
+              <Skeleton className="h-4 w-72 max-w-full" />
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* App name, logo URL, favicon URL */}
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <Skeleton className="h-4 w-24" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ))}
+              {/* Primary and accent colors */}
+              <div className="grid grid-cols-2 gap-4">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <div key={i} className="space-y-2">
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton className="h-10 w-full" />
+                  </div>
+                ))}
+              </div>
+              {/* Support email */}
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+              <Skeleton className="h-10 w-36" />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col">

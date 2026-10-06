@@ -24,7 +24,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { settingsApi, authApi, type UserProfile, type UserSettings, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +36,7 @@ export default function SettingsPage() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [settings, setSettings] = useState<UserSettings | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   // Form state
@@ -46,25 +48,34 @@ export default function SettingsPage() {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  useEffect(() => {
-    async function loadSettings() {
-      try {
-        const [profileData, settingsData] = await Promise.all([
-          settingsApi.getProfile(),
-          settingsApi.getSettings(),
-        ]);
-        setProfile(profileData.profile);
-        setSettings(settingsData.settings);
-        setDisplayName(profileData.profile.displayName || "");
-        setEmail(profileData.profile.email);
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load settings"));
-      } finally {
-        setIsLoading(false);
-      }
+  async function loadSettings() {
+    try {
+      const [profileData, settingsData] = await Promise.all([
+        settingsApi.getProfile(),
+        settingsApi.getSettings(),
+      ]);
+      setProfile(profileData.profile);
+      setSettings(settingsData.settings);
+      setDisplayName(profileData.profile.displayName || "");
+      setEmail(profileData.profile.email);
+      setLoadError(null);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to load settings"));
+      setLoadError(error);
+    } finally {
+      setIsLoading(false);
     }
+  }
+
+  useEffect(() => {
     loadSettings();
   }, []);
+
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    loadSettings();
+  }
 
   async function handleSaveProfile() {
     setIsSaving(true);
@@ -132,32 +143,50 @@ export default function SettingsPage() {
   if (isLoading) {
     return (
       <div className="flex flex-col">
-        <Header title="Settings" />
-        <div className="p-8">
+        <Header title="Settings" description="Manage your account and preferences" />
+        <div className="p-8" aria-busy="true">
+          <span className="sr-only">Loading settings</span>
           <div className="flex gap-8">
-            {/* Sidebar skeleton */}
-            <div className="w-48 shrink-0 space-y-2">
+            {/* Sidebar skeleton: four tabs, then Log out */}
+            <div className="w-48 shrink-0 space-y-1">
               {Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-9 w-full" />
               ))}
-            </div>
-            {/* Content skeleton */}
-            <div className="flex-1">
-              <SkeletonCard />
-              <div className="mt-6 space-y-4">
-                <Skeleton className="h-4 w-1/3" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-4 w-1/3" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-4 w-1/4" />
-                <Skeleton className="h-10 w-full" />
+              <div className="pt-4">
+                <Skeleton className="h-9 w-full" />
               </div>
+            </div>
+            {/* Profile card skeleton: four fields and the save button */}
+            <div className="flex-1">
+              <Card>
+                <CardHeader>
+                  <Skeleton className="h-6 w-48" />
+                  <Skeleton className="h-4 w-72 max-w-full" />
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="space-y-2">
+                      <Skeleton className="h-4 w-28" />
+                      <Skeleton className="h-10 w-full" />
+                    </div>
+                  ))}
+                  <div className="flex justify-end">
+                    <Skeleton className="h-10 w-36" />
+                  </div>
+                </CardContent>
+              </Card>
             </div>
           </div>
         </div>
       </div>
     );
   }
+
+  // Profile and Wallets show the loaded profile, so a failed load replaces
+  // them with the error. Security and Notifications don't read it, so they
+  // (and the sidebar with Log out) stay usable.
+  const showLoadError =
+    loadError !== null && (activeTab === "profile" || activeTab === "wallets");
 
   return (
     <div className="flex flex-col">
@@ -201,8 +230,16 @@ export default function SettingsPage() {
 
           {/* Content */}
           <div className="flex-1">
+            {showLoadError && (
+              <ErrorState
+                title="Couldn't load your profile"
+                error={loadError}
+                onRetry={retryLoad}
+              />
+            )}
+
             {/* Profile tab */}
-            {activeTab === "profile" && (
+            {activeTab === "profile" && !showLoadError && (
               <Card>
                 <CardHeader>
                   <CardTitle>Profile Information</CardTitle>
@@ -463,7 +500,7 @@ export default function SettingsPage() {
             )}
 
             {/* Wallets tab */}
-            {activeTab === "wallets" && (
+            {activeTab === "wallets" && !showLoadError && (
               <WalletsTab profile={profile} onProfileUpdate={setProfile} />
             )}
           </div>

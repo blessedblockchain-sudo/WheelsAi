@@ -32,6 +32,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { ReviewForm } from "@/components/marketplace/review-form";
 import {
   marketplaceApi,
@@ -101,10 +104,54 @@ function formatPrice(listing: MarketplaceListing): string {
   return "Free";
 }
 
+/** Placeholder shaped like one of the three stat cards. */
+function StatCardSkeleton() {
+  return (
+    <Card>
+      <CardContent className="py-4">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-7 w-16" />
+          </div>
+          <Skeleton className="h-10 w-10 rounded-lg" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Placeholder shaped like the rows of the installed agents list. */
+function InstallRowsSkeleton() {
+  return (
+    <div className="divide-y">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="flex items-center justify-between py-4">
+          <div className="flex min-w-0 flex-1 items-center gap-4">
+            <Skeleton className="h-12 w-12 shrink-0 rounded-lg" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-5 w-48 max-w-full" />
+              <Skeleton className="h-4 w-56 max-w-full" />
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-4">
+            <div className="hidden flex-col items-end space-y-2 md:flex">
+              <Skeleton className="h-4 w-24" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+            <Skeleton className="h-10 w-10" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function InstalledAgentsPage() {
   const confirmAction = useConfirm();
   const [installs, setInstalls] = useState<Install[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [reviewingListingId, setReviewingListingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -115,11 +162,19 @@ export default function InstalledAgentsPage() {
     try {
       const { installs } = await marketplaceApi.getMyInstalls();
       setInstalls(installs);
+      setLoadError(null);
     } catch (error) {
+      setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load installed agents"));
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    loadInstalls();
   }
 
   async function handleRenewal(install: Install, action: "cancel" | "resume" | "resubscribe") {
@@ -179,173 +234,184 @@ export default function InstalledAgentsPage() {
       />
 
       <div className="p-8">
-        {/* Stats */}
-        <div className="mb-8 grid gap-4 md:grid-cols-3">
-          <Card>
-            <CardContent className="py-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">Installed Agents</p>
-                  <p className="text-2xl font-bold">{installs.length}</p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
-                  <Download className="h-5 w-5 text-blue-600" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">Total Requests</p>
-                  <p className="text-2xl font-bold">{totalRequests.toLocaleString()}</p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/10">
-                  <Play className="h-5 w-5 text-purple-600" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="py-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">Total Spent</p>
-                  <p className="text-2xl font-bold">${totalSpent.toFixed(2)}</p>
-                </div>
-                <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
-                  <Star className="h-5 w-5 text-green-600" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Installed Agents List */}
-        <Card>
-          <CardHeader>
-            <CardTitle>My Installed Agents</CardTitle>
-          </CardHeader>
-          <CardContent>
+        {loadError !== null ? (
+          <ErrorState
+            title="Couldn't load installed agents"
+            error={loadError}
+            onRetry={retryLoad}
+          />
+        ) : (
+          <>
+            {/* Stats */}
             {isLoading ? (
-              <div className="space-y-4">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
+              <div className="mb-8 grid gap-4 md:grid-cols-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <StatCardSkeleton key={i} />
                 ))}
-              </div>
-            ) : installs.length === 0 ? (
-              <div className="py-12 text-center">
-                <Bot className="mx-auto h-12 w-12 text-gray-300" />
-                <h3 className="mt-4 font-semibold text-foreground">No installed agents</h3>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Browse the marketplace to find agents
-                </p>
-                <Link href="/marketplace">
-                  <Button className="mt-4">Browse Marketplace</Button>
-                </Link>
               </div>
             ) : (
-              <div className="divide-y">
-                {installs.map((install) => (
-                  <div key={install.id} className="flex items-center justify-between py-4">
-                    <div className="flex items-center gap-4">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
-                        <Bot className="h-6 w-6 text-primary-600" />
-                      </div>
+              <div className="mb-8 grid gap-4 md:grid-cols-3">
+                <Card>
+                  <CardContent className="py-4">
+                    <div className="flex items-center justify-between">
                       <div>
-                        <div className="flex items-center gap-2">
-                          <h3 className="font-medium text-foreground">
-                            {install.listing.title}
-                          </h3>
-                          <Badge variant="secondary">
-                            {formatPrice(install.listing)}
-                          </Badge>
-                        </div>
-                        <p className="text-sm text-muted-foreground">
-                          by {install.listing.publisherName} &middot; Installed{" "}
-                          {formatDate(install.installedAt)}
-                        </p>
-                        {(() => {
-                          const line = subscriptionLine(install);
-                          return line ? (
-                            <p className={`text-xs ${TONE_CLASS[line.tone]}`}>{line.text}</p>
-                          ) : null;
-                        })()}
+                        <p className="text-sm text-muted-foreground">Installed Agents</p>
+                        <p className="text-2xl font-bold">{installs.length}</p>
+                      </div>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
+                        <Download className="h-5 w-5 text-blue-600" />
                       </div>
                     </div>
-
-                    <div className="flex items-center gap-4">
-                      <div className="hidden text-right md:block">
-                        <p className="text-sm font-medium text-foreground">
-                          {install.totalRequests.toLocaleString()} requests
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          ${(install.totalSpentCents / 100).toFixed(2)} spent
-                        </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="py-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Requests</p>
+                        <p className="text-2xl font-bold">{totalRequests.toLocaleString()}</p>
                       </div>
-
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem asChild>
-                            <Link href={`/dashboard/agents/${install.clonedAgentId}`}>
-                              <Bot className="mr-2 h-4 w-4" />
-                              View Agent
-                            </Link>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem asChild>
-                            <Link
-                              href={`/marketplace/${install.listing.slug}`}
-                              target="_blank"
-                            >
-                              <ExternalLink className="mr-2 h-4 w-4" />
-                              View Listing
-                            </Link>
-                          </DropdownMenuItem>
-                          {install.listing.pricingModel === "monthly" &&
-                            (install.status === "suspended" || !install.subscription?.hasAccess ? (
-                              <DropdownMenuItem onClick={() => handleRenewal(install, "resubscribe")}>
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                                Resubscribe
-                              </DropdownMenuItem>
-                            ) : install.subscription.cancelAtPeriodEnd ? (
-                              <DropdownMenuItem onClick={() => handleRenewal(install, "resume")}>
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                                Resume renewal
-                              </DropdownMenuItem>
-                            ) : (
-                              <DropdownMenuItem onClick={() => handleRenewal(install, "cancel")}>
-                                <XCircle className="mr-2 h-4 w-4" />
-                                Cancel renewal
-                              </DropdownMenuItem>
-                            ))}
-                          <DropdownMenuItem
-                            onClick={() => setReviewingListingId(install.listingId)}
-                          >
-                            <MessageSquare className="mr-2 h-4 w-4" />
-                            Write Review
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => handleUninstall(install)}
-                            className="text-red-600"
-                          >
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Uninstall
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-500/10">
+                        <Play className="h-5 w-5 text-purple-600" />
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="py-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Spent</p>
+                        <p className="text-2xl font-bold">${totalSpent.toFixed(2)}</p>
+                      </div>
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
+                        <Star className="h-5 w-5 text-green-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             )}
-          </CardContent>
-        </Card>
+
+            {/* Installed Agents List */}
+            <Card>
+              <CardHeader>
+                <CardTitle>My Installed Agents</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <InstallRowsSkeleton />
+                ) : installs.length === 0 ? (
+                  <EmptyState
+                    icon={Bot}
+                    title="No installed agents"
+                    description="Browse the marketplace to find agents."
+                    actionLabel="Browse Marketplace"
+                    actionHref="/marketplace"
+                  />
+                ) : (
+                  <div className="divide-y">
+                    {installs.map((install) => (
+                      <div key={install.id} className="flex items-center justify-between py-4">
+                        <div className="flex items-center gap-4">
+                          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
+                            <Bot className="h-6 w-6 text-primary-600" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-medium text-foreground">
+                                {install.listing.title}
+                              </h3>
+                              <Badge variant="secondary">
+                                {formatPrice(install.listing)}
+                              </Badge>
+                            </div>
+                            <p className="text-sm text-muted-foreground">
+                              by {install.listing.publisherName} &middot; Installed{" "}
+                              {formatDate(install.installedAt)}
+                            </p>
+                            {(() => {
+                              const line = subscriptionLine(install);
+                              return line ? (
+                                <p className={`text-xs ${TONE_CLASS[line.tone]}`}>{line.text}</p>
+                              ) : null;
+                            })()}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-4">
+                          <div className="hidden text-right md:block">
+                            <p className="text-sm font-medium text-foreground">
+                              {install.totalRequests.toLocaleString()} requests
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              ${(install.totalSpentCents / 100).toFixed(2)} spent
+                            </p>
+                          </div>
+
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon">
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem asChild>
+                                <Link href={`/dashboard/agents/${install.clonedAgentId}`}>
+                                  <Bot className="mr-2 h-4 w-4" />
+                                  View Agent
+                                </Link>
+                              </DropdownMenuItem>
+                              <DropdownMenuItem asChild>
+                                <Link
+                                  href={`/marketplace/${install.listing.slug}`}
+                                  target="_blank"
+                                >
+                                  <ExternalLink className="mr-2 h-4 w-4" />
+                                  View Listing
+                                </Link>
+                              </DropdownMenuItem>
+                              {install.listing.pricingModel === "monthly" &&
+                                (install.status === "suspended" || !install.subscription?.hasAccess ? (
+                                  <DropdownMenuItem onClick={() => handleRenewal(install, "resubscribe")}>
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Resubscribe
+                                  </DropdownMenuItem>
+                                ) : install.subscription.cancelAtPeriodEnd ? (
+                                  <DropdownMenuItem onClick={() => handleRenewal(install, "resume")}>
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Resume renewal
+                                  </DropdownMenuItem>
+                                ) : (
+                                  <DropdownMenuItem onClick={() => handleRenewal(install, "cancel")}>
+                                    <XCircle className="mr-2 h-4 w-4" />
+                                    Cancel renewal
+                                  </DropdownMenuItem>
+                                ))}
+                              <DropdownMenuItem
+                                onClick={() => setReviewingListingId(install.listingId)}
+                              >
+                                <MessageSquare className="mr-2 h-4 w-4" />
+                                Write Review
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => handleUninstall(install)}
+                                className="text-red-600"
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Uninstall
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )}
       </div>
 
       {/* Review Dialog */}

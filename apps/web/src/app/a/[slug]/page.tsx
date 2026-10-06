@@ -16,7 +16,10 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
-import { publicAgentApi, type PublicAgentDetail } from "@/lib/api";
+import { ApiError, publicAgentApi, type PublicAgentDetail } from "@/lib/api";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const CLUSTER = process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet";
 
@@ -58,12 +61,75 @@ const paymentStatusStyles: Record<string, string> = {
   FAILED: "bg-red-500/15 text-red-500",
 };
 
+/**
+ * Placeholder shaped like the page: header band, the three economics cards,
+ * the deployments / channels pair and the payments table.
+ */
+function PublicAgentSkeleton() {
+  return (
+    <div className="min-h-screen bg-background" aria-busy="true">
+      <span className="sr-only">Loading agent</span>
+      <div className="border-b bg-card/50">
+        <div className="container mx-auto px-4 py-8">
+          <Skeleton className="h-5 w-28" />
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <Skeleton className="h-14 w-14 rounded-xl" />
+            <div className="min-w-0 space-y-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <Skeleton className="h-8 w-48" />
+                <Skeleton className="h-5 w-16 rounded-full" />
+              </div>
+              <Skeleton className="h-4 w-96 max-w-full" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="container mx-auto max-w-5xl px-4 py-8">
+        <div className="grid gap-4 sm:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="rounded-xl border bg-card p-5">
+              <Skeleton className="h-5 w-36" />
+              <Skeleton className="mt-2 h-8 w-24" />
+              <Skeleton className="mt-1 h-4 w-28" />
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-2">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="rounded-xl border bg-card p-5">
+              <Skeleton className="h-5 w-32" />
+              <Skeleton className="mt-3 h-10 w-full rounded-lg" />
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-6 rounded-xl border bg-card p-5">
+          <Skeleton className="h-5 w-48" />
+          <div className="mt-3 space-y-3">
+            {Array.from({ length: 4 }).map((_, row) => (
+              <div key={row} className="grid grid-cols-4 gap-4">
+                {Array.from({ length: 4 }).map((__, col) => (
+                  <Skeleton key={col} className={row === 0 ? "h-3 w-1/2" : "h-5 w-3/4"} />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PublicAgentPage() {
   const params = useParams<{ slug: string }>();
   const slug = params.slug;
   const [detail, setDetail] = useState<PublicAgentDetail | null>(null);
-  const [notFound, setNotFound] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
+  // Bumped by retryLoad() to run the fetch effect again.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!slug) return;
@@ -71,10 +137,13 @@ export default function PublicAgentPage() {
     publicAgentApi
       .get(slug)
       .then((res) => {
-        if (!cancelled) setDetail(res);
+        if (!cancelled) {
+          setDetail(res);
+          setLoadError(null);
+        }
       })
-      .catch(() => {
-        if (!cancelled) setNotFound(true);
+      .catch((error: unknown) => {
+        if (!cancelled) setLoadError(error);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -82,17 +151,33 @@ export default function PublicAgentPage() {
     return () => {
       cancelled = true;
     };
-  }, [slug]);
+  }, [slug, attempt]);
+
+  function retryLoad() {
+    setLoadError(null);
+    setLoading(true);
+    setAttempt((n) => n + 1);
+  }
 
   if (loading) {
+    return <PublicAgentSkeleton />;
+  }
+
+  // The API answers 404 for a missing or private agent (never revealing which);
+  // anything else is a failed load the visitor can retry.
+  const notFound = loadError instanceof ApiError && loadError.status === 404;
+
+  if (loadError !== null && !notFound) {
     return (
       <div className="min-h-screen bg-background">
-        <div className="container mx-auto px-4 py-16">
-          <div className="mx-auto max-w-3xl space-y-4">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-32 animate-pulse rounded-xl bg-muted" />
-            ))}
-          </div>
+        <div className="container mx-auto max-w-3xl px-4 py-24">
+          <ErrorState
+            title="Couldn't load this agent"
+            error={loadError}
+            onRetry={retryLoad}
+            actionLabel="Browse the marketplace"
+            actionHref="/marketplace"
+          />
         </div>
       </div>
     );
@@ -101,19 +186,14 @@ export default function PublicAgentPage() {
   if (notFound || !detail) {
     return (
       <div className="min-h-screen bg-background">
-        <div className="container mx-auto px-4 py-24 text-center">
-          <Bot className="mx-auto h-12 w-12 text-muted-foreground" />
-          <h1 className="mt-4 text-2xl font-bold">Agent not found</h1>
-          <p className="mt-2 text-muted-foreground">
-            This agent doesn&apos;t exist or isn&apos;t public.
-          </p>
-          <Link
-            href="/marketplace"
-            className="mt-6 inline-flex items-center gap-2 text-primary hover:underline"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Browse the marketplace
-          </Link>
+        <div className="container mx-auto max-w-3xl px-4 py-24">
+          <EmptyState
+            icon={Bot}
+            title="Agent not found"
+            description="This agent doesn't exist or isn't public."
+            actionLabel="Browse the marketplace"
+            actionHref="/marketplace"
+          />
         </div>
       </div>
     );
@@ -292,10 +372,13 @@ export default function PublicAgentPage() {
             Recent compute payments
           </div>
           {recentPayments.length === 0 ? (
-            <p className="mt-3 text-sm text-muted-foreground">
-              No compute payments yet. When this agent&apos;s treasury pays for GPU
-              time, each settlement lands here with its transaction signature.
-            </p>
+            <div className="mt-3">
+              <EmptyState
+                icon={Activity}
+                title="No compute payments yet"
+                description="When this agent's treasury pays for GPU time, each settlement lands here with its transaction signature."
+              />
+            </div>
           ) : (
             <div className="mt-3 overflow-x-auto">
               <table className="w-full text-sm">

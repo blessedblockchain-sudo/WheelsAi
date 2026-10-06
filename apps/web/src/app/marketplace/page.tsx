@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
@@ -25,6 +25,9 @@ import {
 } from "@/lib/api";
 import { TokenCard, type TokenCardData } from "@/components/dashboard/token-card";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const SORT_OPTIONS = [
   { value: "popular", label: "Most Popular" },
@@ -219,9 +222,108 @@ function CategorySidebar({
   );
 }
 
+/** Placeholder shaped like one <AgentCard>. */
+function AgentCardSkeleton() {
+  return (
+    <div className="rounded-lg border bg-card p-5">
+      <div className="flex items-start gap-4">
+        <Skeleton className="h-12 w-12 flex-shrink-0 rounded-lg" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <Skeleton className="h-5 w-2/3" />
+          <Skeleton className="h-4 w-1/3" />
+        </div>
+      </div>
+      <div className="mt-3 space-y-2">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-4/5" />
+      </div>
+      <div className="mt-4 flex items-center gap-3">
+        <Skeleton className="h-4 w-14" />
+        <Skeleton className="h-4 w-24" />
+      </div>
+      <div className="mt-4 flex items-center justify-between">
+        <Skeleton className="h-6 w-16 rounded-full" />
+        <Skeleton className="h-5 w-14" />
+      </div>
+    </div>
+  );
+}
+
+/** Six placeholder cards in the same grid as the results. */
+function ListingGridSkeleton() {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+      <span className="sr-only">Loading agents</span>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <AgentCardSkeleton key={i} />
+      ))}
+    </div>
+  );
+}
+
+/** Placeholder shaped like a sidebar filter card (Categories / Pricing). */
+function FilterCardSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="rounded-lg border bg-card p-4">
+      <Skeleton className="h-5 w-24" />
+      <div className="mt-3 space-y-1">
+        {Array.from({ length: rows }).map((_, i) => (
+          <Skeleton key={i} className="h-9 w-full" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Suspense fallback: the page frame with placeholders, so the first paint
+ * (before the search params resolve on the client) has the loaded layout.
+ */
+function MarketplaceSkeleton() {
+  return (
+    <div className="min-h-screen bg-background" aria-busy="true">
+      <span className="sr-only">Loading marketplace</span>
+      <header className="border-b bg-card">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <Skeleton className="h-8 w-36" />
+          <Skeleton className="h-9 w-44" />
+        </div>
+      </header>
+
+      <div className="bg-gradient-to-b from-primary-600 to-primary-700 py-12">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <Skeleton className="h-9 w-64 bg-primary-foreground/20" />
+          <Skeleton className="mt-2 h-6 w-80 max-w-full bg-primary-foreground/20" />
+          <Skeleton className="mt-6 h-12 w-full rounded-lg bg-primary-foreground/20" />
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="flex gap-8">
+          <aside className="hidden w-64 flex-shrink-0 space-y-6 md:block">
+            <FilterCardSkeleton rows={6} />
+            <FilterCardSkeleton rows={PRICING_OPTIONS.length} />
+          </aside>
+          <div className="flex-1">
+            <div className="mb-4 flex items-center justify-between">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-8 w-48" />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <AgentCardSkeleton key={i} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function MarketplacePage() {
   return (
-    <Suspense fallback={<div className="flex h-screen items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" /></div>}>
+    <Suspense fallback={<MarketplaceSkeleton />}>
       <MarketplaceContent />
     </Suspense>
   );
@@ -237,6 +339,7 @@ function MarketplaceContent() {
   const [trendingTokens, setTrendingTokens] = useState<AgentToken[]>([]);
   const [tokenPriceMap, setTokenPriceMap] = useState<Map<string, number>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [totalCount, setTotalCount] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
 
@@ -263,46 +366,48 @@ function MarketplaceContent() {
     router.push(`/marketplace?${params.toString()}`);
   };
 
-  useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
-      try {
-        const [listingsRes, categoriesRes, featuredRes, trendingRes] =
-          await Promise.all([
-            marketplaceApi.searchListings({
-              query: query || undefined,
-              category: category !== "all" ? category : undefined,
-              pricingModel: pricingModel !== "all" ? pricingModel : undefined,
-              sortBy,
-              page,
-              limit: 12,
-            }),
-            marketplaceApi.getCategories(),
-            marketplaceApi.getFeatured(4),
-            tokenApi.trending().catch(() => ({ tokens: [] })),
-          ]);
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const [listingsRes, categoriesRes, featuredRes, trendingRes] =
+        await Promise.all([
+          marketplaceApi.searchListings({
+            query: query || undefined,
+            category: category !== "all" ? category : undefined,
+            pricingModel: pricingModel !== "all" ? pricingModel : undefined,
+            sortBy,
+            page,
+            limit: 12,
+          }),
+          marketplaceApi.getCategories(),
+          marketplaceApi.getFeatured(4),
+          tokenApi.trending().catch(() => ({ tokens: [] })),
+        ]);
 
-        setListings(listingsRes.listings);
-        setTotalCount(listingsRes.pagination.total);
-        setCategories(categoriesRes.categories);
-        setFeaturedListings(featuredRes.listings);
-        setTrendingTokens(trendingRes.tokens.slice(0, 4));
+      setListings(listingsRes.listings);
+      setTotalCount(listingsRes.pagination.total);
+      setCategories(categoriesRes.categories);
+      setFeaturedListings(featuredRes.listings);
+      setTrendingTokens(trendingRes.tokens.slice(0, 4));
 
-        // Build price lookup: agentListingId -> priceUsd
-        const priceMap = new Map<string, number>();
-        for (const token of trendingRes.tokens) {
-          priceMap.set(token.agentListingId, token.priceUsd);
-        }
-        setTokenPriceMap(priceMap);
-      } catch (error) {
-        console.error("Failed to load marketplace data:", error);
-      } finally {
-        setIsLoading(false);
+      // Build price lookup: agentListingId -> priceUsd
+      const priceMap = new Map<string, number>();
+      for (const token of trendingRes.tokens) {
+        priceMap.set(token.agentListingId, token.priceUsd);
       }
+      setTokenPriceMap(priceMap);
+    } catch (error) {
+      console.error("Failed to load marketplace data:", error);
+      setLoadError(error);
+    } finally {
+      setIsLoading(false);
     }
-
-    loadData();
   }, [query, category, pricingModel, sortBy, page]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const showUnfilteredSections = !query && category === "all" && pricingModel === "all";
 
@@ -433,7 +538,7 @@ function MarketplaceContent() {
           {/* Listings */}
           <div className="flex-1">
             {/* Featured Section */}
-            {showUnfilteredSections && featuredListings.length > 0 && (
+            {showUnfilteredSections && loadError === null && featuredListings.length > 0 && (
               <section className="mb-8">
                 <h2 className="mb-4 text-lg font-semibold text-foreground">
                   Featured Agents
@@ -451,7 +556,7 @@ function MarketplaceContent() {
             )}
 
             {/* Trending Tokens Section */}
-            {showUnfilteredSections && trendingTokens.length > 0 && (
+            {showUnfilteredSections && loadError === null && trendingTokens.length > 0 && (
               <section className="mb-8">
                 <div className="mb-4 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -480,16 +585,16 @@ function MarketplaceContent() {
 
             {/* Results Header */}
             <div className="mb-4 flex items-center justify-between">
-              <p className="text-sm text-muted-foreground">
+              <div className="text-sm text-muted-foreground">
                 {isLoading ? (
-                  "Loading..."
-                ) : (
+                  <Skeleton className="h-4 w-28" />
+                ) : loadError === null ? (
                   <>
                     <span className="font-medium">{totalCount}</span> agents
                     found
                   </>
-                )}
-              </p>
+                ) : null}
+              </div>
               <div className="flex items-center gap-2">
                 <label htmlFor="sort" className="text-sm text-muted-foreground">
                   Sort by:
@@ -511,26 +616,35 @@ function MarketplaceContent() {
 
             {/* Listings Grid */}
             {isLoading ? (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {[...Array(6)].map((_, i) => (
-                  <div
-                    key={i}
-                    className="h-48 animate-pulse rounded-lg border bg-muted"
-                  />
-                ))}
-              </div>
+              <ListingGridSkeleton />
+            ) : loadError !== null ? (
+              <ErrorState
+                title="Couldn't load the marketplace"
+                error={loadError}
+                onRetry={() => void loadData()}
+              />
+            ) : listings.length === 0 && totalCount > 0 ? (
+              // A page past the last one (an old or edited link): there are
+              // results, just none on this page.
+              <EmptyState
+                icon={Search}
+                title="No agents on this page"
+                description="This page is past the end of the results."
+                actionLabel="Go to first page"
+                onAction={() => updateParams({ page: null })}
+              />
             ) : listings.length === 0 ? (
-              <div className="rounded-lg border bg-card py-12 text-center">
-                <p className="text-muted-foreground">No agents found</p>
-                {query && (
-                  <button
-                    onClick={() => updateParams({ q: null })}
-                    className="mt-2 text-sm text-primary-600 hover:text-primary-700"
-                  >
-                    Clear search
-                  </button>
-                )}
-              </div>
+              <EmptyState
+                icon={showUnfilteredSections ? Cpu : Search}
+                title="No agents found"
+                description={
+                  showUnfilteredSections
+                    ? "No agents are listed in the marketplace yet."
+                    : "No agents match your current search or filters."
+                }
+                actionLabel={query ? "Clear search" : undefined}
+                onAction={query ? () => updateParams({ q: null }) : undefined}
+              />
             ) : (
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {listings.map((listing) => (
@@ -544,7 +658,7 @@ function MarketplaceContent() {
             )}
 
             {/* Pagination */}
-            {totalCount > 12 && (
+            {loadError === null && totalCount > 12 && (
               <div className="mt-8 flex items-center justify-center gap-2">
                 <button
                   onClick={() => updateParams({ page: String(page - 1) })}

@@ -9,6 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { OpenClawStatus } from "@/components/dashboard/openclaw-status";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { usePolling } from "@/lib/use-polling";
 import {
   Play,
@@ -84,6 +86,52 @@ function useRelativeTime(date: Date | null): string {
   return label;
 }
 
+function StatCardSkeleton() {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-4 w-4" />
+      </CardHeader>
+      <CardContent>
+        <Skeleton className="h-8 w-12" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function DeploymentCardSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-5 w-2/3" />
+            <Skeleton className="h-3 w-1/3" />
+          </div>
+          <Skeleton className="h-5 w-20 rounded-full" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-4 w-20" />
+          <Skeleton className="h-5 w-8 rounded-full" />
+        </div>
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-4 w-14" />
+          <Skeleton className="h-4 w-1/3" />
+        </div>
+        <Skeleton className="h-3 w-28" />
+        <div className="flex items-center gap-2 border-t border-border pt-2">
+          <Skeleton className="h-9 flex-1" />
+          <Skeleton className="h-9 w-10" />
+          <Skeleton className="h-9 w-10" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function OpenClawDeploymentsPage() {
   const confirmAction = useConfirm();
   const router = useRouter();
@@ -114,13 +162,36 @@ export default function OpenClawDeploymentsPage() {
     return { deployments, stats };
   }, []);
 
-  const { data, isLoading: loading, refresh: refreshDeployments } = usePolling<DeploymentListData>({
+  // Must keep a stable identity: usePolling re-subscribes and fetches again
+  // whenever onError changes, so an inline arrow refetched on every render
+  // (and repeated the error toast in a loop) instead of every 30s.
+  const handleLoadError = useCallback((err: Error) => {
+    toast.error(getErrorMessage(err, "Failed to load deployments"));
+  }, []);
+
+  const {
+    data,
+    isLoading: loading,
+    error: loadError,
+    refresh: refreshDeployments,
+  } = usePolling<DeploymentListData>({
     fetcher,
     interval: 30_000,
-    onError: (err) => {
-      toast.error(getErrorMessage(err, "Failed to load deployments"));
-    },
+    onError: handleLoadError,
   });
+
+  // "Try again" on the load error shows the skeleton until the retry settles.
+  const [retrying, setRetrying] = useState(false);
+  const retryLoad = async () => {
+    setRetrying(true);
+    await refreshDeployments();
+    setRetrying(false);
+  };
+
+  const showSkeleton = loading || retrying;
+  // Only a failed first load replaces the page; a failed background poll
+  // keeps the last good list on screen (the toast still reports it).
+  const showLoadError = !data && loadError !== null;
 
   const deployments = data?.deployments ?? [];
   const stats = data?.stats ?? { total: 0, running: 0, stopped: 0, failed: 0 };
@@ -169,54 +240,62 @@ export default function OpenClawDeploymentsPage() {
       />
 
       <div className="p-8 space-y-6">
-        {/* Stats Bar */}
-        <div className="grid gap-4 md:grid-cols-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Deployments</CardTitle>
-              <Server className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stats.total}</div>
-            </CardContent>
-          </Card>
+        {/* Stats Bar (hidden after a failed load: zeros would be misleading) */}
+        {showSkeleton ? (
+          <div className="grid gap-4 md:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <StatCardSkeleton key={i} />
+            ))}
+          </div>
+        ) : !showLoadError ? (
+          <div className="grid gap-4 md:grid-cols-4">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Total Deployments</CardTitle>
+                <Server className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{stats.total}</div>
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Running</CardTitle>
-              <Activity className="h-4 w-4 text-green-600 dark:text-green-400" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-                {stats.running}
-              </div>
-            </CardContent>
-          </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Running</CardTitle>
+                <Activity className="h-4 w-4 text-green-600 dark:text-green-400" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-green-600 dark:text-green-400">
+                  {stats.running}
+                </div>
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Stopped</CardTitle>
-              <Square className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-muted-foreground">
-                {stats.stopped}
-              </div>
-            </CardContent>
-          </Card>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Stopped</CardTitle>
+                <Square className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-muted-foreground">
+                  {stats.stopped}
+                </div>
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Failed</CardTitle>
-              <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-red-600 dark:text-red-400">
-                {stats.failed}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Failed</CardTitle>
+                <AlertCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold text-red-600 dark:text-red-400">
+                  {stats.failed}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        ) : null}
 
         {/* Last updated indicator */}
         {lastUpdated && (
@@ -230,13 +309,19 @@ export default function OpenClawDeploymentsPage() {
         )}
 
         {/* Deployments Grid */}
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-              <p className="mt-4 text-sm text-muted-foreground">Loading deployments...</p>
-            </div>
+        {showSkeleton ? (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+            <span className="sr-only">Loading deployments</span>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <DeploymentCardSkeleton key={i} />
+            ))}
           </div>
+        ) : showLoadError ? (
+          <ErrorState
+            title="Couldn't load deployments"
+            error={loadError}
+            onRetry={() => void retryLoad()}
+          />
         ) : deployments.length === 0 ? (
           <EmptyState
             icon={Server}

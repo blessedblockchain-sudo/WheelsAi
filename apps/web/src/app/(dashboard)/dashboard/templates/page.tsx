@@ -21,7 +21,9 @@ import {
   HelpCircle,
 } from "lucide-react";
 import { templateApi, type AgentTemplate, getErrorMessage } from "@/lib/api";
-import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -142,6 +144,7 @@ function TemplateIcon({ template }: { template: AgentTemplate }) {
   const Icon = CATEGORY_ICONS[template.category] ?? Bot;
   if (template.iconUrl) {
     return (
+      // eslint-disable-next-line @next/next/no-img-element -- author-supplied URL on any host; next/image needs hosts allowlisted
       <img
         src={template.iconUrl}
         alt={template.title}
@@ -407,6 +410,7 @@ function UseTemplateModal({
 export default function TemplatesPage() {
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
   const [framework, setFramework] = useState("");
@@ -415,11 +419,14 @@ export default function TemplatesPage() {
 
   useEffect(() => {
     loadTemplates();
+    // The search text is applied on submit, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [category, framework, difficulty]);
 
   async function loadTemplates() {
     try {
       setLoading(true);
+      setLoadError(null);
       const res = await templateApi.list({
         category: category || undefined,
         framework: framework || undefined,
@@ -430,6 +437,7 @@ export default function TemplatesPage() {
       setTemplates(res.templates);
     } catch (err) {
       console.error("Failed to load templates:", err);
+      setLoadError(err);
     } finally {
       setLoading(false);
     }
@@ -495,7 +503,8 @@ export default function TemplatesPage() {
 
         {/* Loading State */}
         {loading && (
-          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+            <span className="sr-only">Loading templates</span>
             {Array.from({ length: 6 }).map((_, i) => (
               <div
                 key={i}
@@ -513,7 +522,7 @@ export default function TemplatesPage() {
                 <div className="flex gap-2">
                   <Skeleton className="h-6 w-20" />
                   <Skeleton className="h-6 w-16" />
-                  <Skeleton className="h-6 w-18" />
+                  <Skeleton className="h-6 w-20" />
                 </div>
                 <div className="flex items-center justify-between pt-2">
                   <Skeleton className="h-4 w-16" />
@@ -524,20 +533,31 @@ export default function TemplatesPage() {
           </div>
         )}
 
-        {/* Empty State */}
-        {!loading && templates.length === 0 && (
-          <div className="mt-16 flex flex-col items-center justify-center gap-3 text-center">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-card border border-border">
-              <LayoutTemplate className="h-8 w-8 text-muted-foreground" />
-            </div>
-            <h3 className="text-lg font-semibold text-gray-300">No templates found</h3>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              Try adjusting your search or filters to find what you are looking for.
-            </p>
+        {/* Error State */}
+        {!loading && loadError !== null && (
+          <div className="mt-8">
+            <ErrorState
+              title="Couldn't load templates"
+              error={loadError}
+              onRetry={loadTemplates}
+            />
           </div>
         )}
 
-        {!loading && templates.length > 0 && (
+        {/* Empty State */}
+        {!loading && loadError === null && templates.length === 0 && (
+          <div className="mt-8">
+            <EmptyState
+              icon={LayoutTemplate}
+              title="No templates found"
+              description="Try adjusting your search or filters to find what you are looking for."
+              actionLabel="Create Agent"
+              actionHref="/dashboard/agents/new"
+            />
+          </div>
+        )}
+
+        {!loading && loadError === null && templates.length > 0 && (
           <>
             {/* Featured Templates */}
             {featured.length > 0 && (

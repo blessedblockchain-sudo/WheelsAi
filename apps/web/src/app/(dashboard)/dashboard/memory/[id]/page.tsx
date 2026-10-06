@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { useState, useEffect, useCallback, use } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -24,12 +24,16 @@ import {
   AlertCircle,
 } from "lucide-react";
 import {
+  ApiError,
   memoryApi,
   type ConversationDetail,
   type Message,
   type MemoryContext,
   type ContextType,
 } from "@/lib/api";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function ConversationDetailPage({
   params,
@@ -40,6 +44,7 @@ export default function ConversationDetailPage({
   const router = useRouter();
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [activeTab, setActiveTab] = useState<"messages" | "memory">("messages");
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState("");
@@ -53,23 +58,25 @@ export default function ConversationDetailPage({
     importance: 0.5,
   });
 
-  useEffect(() => {
-    loadConversation();
-  }, [resolvedParams.id]);
-
-  async function loadConversation() {
+  const loadConversation = useCallback(async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const data = await memoryApi.getConversation(resolvedParams.id);
       setConversation(data);
       setTitle(data.title || "");
       setSummary(data.summary || "");
     } catch (error) {
       console.error("Failed to load conversation:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
-  }
+  }, [resolvedParams.id]);
+
+  useEffect(() => {
+    loadConversation();
+  }, [loadConversation]);
 
   async function updateTitle() {
     if (!conversation) return;
@@ -134,25 +141,33 @@ export default function ConversationDetailPage({
   }
 
   if (loading) {
+    return <ConversationDetailSkeleton />;
+  }
+
+  // A 404 is "not found"; anything else is a failed load the user can retry.
+  const notFound = loadError instanceof ApiError && loadError.status === 404;
+
+  if (loadError && !notFound) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"></div>
-      </div>
+      <ErrorState
+        title="Couldn't load conversation"
+        error={loadError}
+        onRetry={() => void loadConversation()}
+        actionLabel="Go back to Memory"
+        actionHref="/dashboard/memory"
+      />
     );
   }
 
-  if (!conversation) {
+  if (notFound || !conversation) {
     return (
-      <div className="text-center py-12">
-        <AlertCircle className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-        <h2 className="text-lg font-medium text-foreground">Conversation not found</h2>
-        <button
-          onClick={() => router.push("/dashboard/memory")}
-          className="mt-4 text-primary-600 hover:underline"
-        >
-          Go back to Memory
-        </button>
-      </div>
+      <EmptyState
+        icon={AlertCircle}
+        title="Conversation not found"
+        description="It may have been deleted, or the link may be wrong."
+        actionLabel="Go back to Memory"
+        actionHref="/dashboard/memory"
+      />
     );
   }
 
@@ -318,23 +333,22 @@ export default function ConversationDetailPage({
       </div>
 
       {/* Messages Tab */}
-      {activeTab === "messages" && (
-        <div className="bg-card rounded-xl border border-border overflow-hidden">
-          {conversation.messages.length === 0 ? (
-            <div className="p-12 text-center">
-              <MessageSquare className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-foreground mb-2">No messages</h3>
-              <p className="text-muted-foreground">This conversation has no messages yet</p>
-            </div>
-          ) : (
+      {activeTab === "messages" &&
+        (conversation.messages.length === 0 ? (
+          <EmptyState
+            icon={MessageSquare}
+            title="No messages"
+            description="This conversation has no messages yet."
+          />
+        ) : (
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
             <div className="divide-y divide-border">
               {conversation.messages.map((message) => (
                 <MessageItem key={message.id} message={message} />
               ))}
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        ))}
 
       {/* Memory Tab */}
       {activeTab === "memory" && (
@@ -432,18 +446,17 @@ export default function ConversationDetailPage({
           )}
 
           {/* Memory List */}
-          <div className="bg-card rounded-xl border border-border overflow-hidden">
-            {conversation.memoryContexts.length === 0 ? (
-              <div className="p-12 text-center">
-                <Brain className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                <h3 className="text-lg font-medium text-foreground mb-2">
-                  No memory contexts
-                </h3>
-                <p className="text-muted-foreground">
-                  Add memory contexts to help your agent remember important information
-                </p>
-              </div>
-            ) : (
+          {conversation.memoryContexts.length === 0 ? (
+            <EmptyState
+              icon={Brain}
+              title="No memory contexts"
+              description="Add memory contexts to help your agent remember important information."
+              actionLabel="Add Memory"
+              // Hidden while the add form above is already open.
+              onAction={showAddMemory ? undefined : () => setShowAddMemory(true)}
+            />
+          ) : (
+            <div className="bg-card rounded-xl border border-border overflow-hidden">
               <div className="divide-y divide-border">
                 {conversation.memoryContexts.map((context) => (
                   <MemoryContextItem
@@ -453,10 +466,62 @@ export default function ConversationDetailPage({
                   />
                 ))}
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Mirrors the page layout: header, summary card, tab bar, message rows. */
+function ConversationDetailSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4 min-w-0">
+          <Skeleton className="h-9 w-9 rounded-lg shrink-0" />
+          <div className="space-y-2 min-w-0">
+            <Skeleton className="h-8 w-64 max-w-full" />
+            <Skeleton className="h-5 w-72 max-w-full" />
+          </div>
+        </div>
+        <Skeleton className="h-8 w-20 rounded-lg shrink-0" />
+      </div>
+
+      <div className="bg-card rounded-xl border border-border p-4 space-y-2">
+        <Skeleton className="h-6 w-28" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+
+      <div className="border-b border-border">
+        <div className="flex space-x-8">
+          <div className="py-4 px-1">
+            <Skeleton className="h-5 w-32" />
+          </div>
+          <div className="py-4 px-1">
+            <Skeleton className="h-5 w-44" />
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-card rounded-xl border border-border overflow-hidden divide-y divide-border">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="px-6 py-4 flex gap-3">
+            <Skeleton className="h-8 w-8 rounded-lg shrink-0" />
+            <div className="flex-1 min-w-0 space-y-2">
+              <div className="flex items-center gap-2">
+                <Skeleton className="h-5 w-20" />
+                <Skeleton className="h-3 w-32" />
+              </div>
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-5/6" />
+            </div>
+          </div>
+        ))}
+      </div>
+      <span className="sr-only">Loading conversation</span>
     </div>
   );
 }

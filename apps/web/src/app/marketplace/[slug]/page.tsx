@@ -1,13 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import {
   Star,
   Download,
   Cpu,
-  ArrowLeft,
   ExternalLink,
   Shield,
   Clock,
@@ -36,6 +35,9 @@ import {
 } from "@/lib/api";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/hooks/use-session";
 
 function formatPrice(listing: MarketplaceListing): string {
@@ -121,6 +123,128 @@ function ReviewCard({ review }: { review: MarketplaceReview }) {
 
 type TabType = "overview" | "reviews" | "token";
 
+/** Placeholder shaped like a sidebar card of label / value rows. */
+function InfoCardSkeleton({ rows }: { rows: number }) {
+  return (
+    <div className="rounded-lg border bg-card p-6">
+      <Skeleton className="h-5 w-28" />
+      <div className="mt-4 space-y-3">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i} className="flex items-center justify-between">
+            <Skeleton className="h-4 w-28" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Placeholder shaped like the review list: name, stars and date, text. */
+function ReviewListSkeleton() {
+  return (
+    <div className="divide-y" aria-busy="true">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="py-4">
+          <Skeleton className="h-5 w-32" />
+          <div className="mt-1 flex items-center gap-2">
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-4 w-20" />
+          </div>
+          <Skeleton className="mt-2 h-4 w-full" />
+          <Skeleton className="mt-1 h-4 w-2/3" />
+        </div>
+      ))}
+      <span className="sr-only">Loading reviews</span>
+    </div>
+  );
+}
+
+/**
+ * Placeholder shaped like the listing page: header, breadcrumb, the details
+ * column (summary card, tabs, overview card) and the sidebar cards.
+ */
+function ListingDetailSkeleton() {
+  return (
+    <div className="min-h-screen bg-background" aria-busy="true">
+      <span className="sr-only">Loading agent</span>
+      <header className="border-b bg-card">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <Skeleton className="h-8 w-36" />
+          <Skeleton className="h-9 w-44" />
+        </div>
+      </header>
+
+      <div className="border-b bg-card">
+        <div className="mx-auto max-w-7xl px-4 py-3 sm:px-6 lg:px-8">
+          <Skeleton className="h-5 w-56" />
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="grid gap-8 lg:grid-cols-3">
+          {/* Details column */}
+          <div className="lg:col-span-2">
+            <div className="rounded-lg border bg-card p-6">
+              <div className="flex items-start gap-4">
+                <Skeleton className="h-16 w-16 flex-shrink-0 rounded-xl" />
+                <div className="min-w-0 flex-1">
+                  <Skeleton className="h-8 w-2/3" />
+                  <Skeleton className="mt-2 h-5 w-40" />
+                  <div className="mt-3 flex flex-wrap items-center gap-4">
+                    <Skeleton className="h-5 w-28" />
+                    <Skeleton className="h-5 w-24" />
+                    <Skeleton className="h-6 w-16 rounded-full" />
+                  </div>
+                </div>
+              </div>
+              <Skeleton className="mt-4 h-5 w-full" />
+            </div>
+
+            <div className="mt-6 flex gap-6 border-b pb-3">
+              <Skeleton className="h-5 w-20" />
+              <Skeleton className="h-5 w-24" />
+            </div>
+
+            <div className="mt-6 rounded-lg border bg-card p-6">
+              <Skeleton className="h-5 w-28" />
+              <div className="mt-4 space-y-2">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-3/4" />
+              </div>
+            </div>
+          </div>
+
+          {/* Sidebar: pricing, statistics, information, publisher */}
+          <div className="space-y-6">
+            <div className="rounded-lg border bg-card p-6">
+              <div className="flex flex-col items-center">
+                <Skeleton className="h-9 w-32" />
+                <Skeleton className="mt-2 h-4 w-40" />
+              </div>
+              <Skeleton className="mt-6 h-12 w-full rounded-lg" />
+              <Skeleton className="mx-auto mt-3 h-3 w-4/5" />
+            </div>
+            <InfoCardSkeleton rows={4} />
+            <InfoCardSkeleton rows={3} />
+            <div className="rounded-lg border bg-card p-6">
+              <Skeleton className="h-5 w-24" />
+              <div className="mt-4 flex items-center gap-3">
+                <Skeleton className="h-10 w-10 rounded-full" />
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-4 w-36" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ListingDetailPage() {
   const params = useParams();
   const router = useRouter();
@@ -129,6 +253,11 @@ export default function ListingDetailPage() {
   const [listing, setListing] = useState<MarketplaceListing | null>(null);
   const [reviews, setReviews] = useState<MarketplaceReview[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  // Reviews are secondary: when only they fail the page still renders, and
+  // the Reviews tab says so instead of claiming there are none.
+  const [reviewsError, setReviewsError] = useState<unknown>(null);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
 
   // Install flow (INT-M1) — the buyer conversion.
@@ -151,53 +280,65 @@ export default function ListingDetailPage() {
     }
   }, []);
 
-  useEffect(() => {
-    async function loadData() {
-      setIsLoading(true);
-      try {
-        const [listingRes, reviewsRes] = await Promise.all([
-          marketplaceApi.getListing(slug),
-          marketplaceApi.getListingReviews(slug, 1, 10).catch(() => ({
-            reviews: [],
-            pagination: { page: 1, limit: 10, total: 0, totalPages: 0 },
-          })),
-        ]);
-
-        setListing(listingRes.listing);
-        setReviews(reviewsRes.reviews);
-
-        // If tokenized, fetch token data
-        if (listingRes.listing.pricingModel === "tokenized") {
-          try {
-            const tokensRes = await tokenApi.list({ limit: 50 });
-            const matchingToken = tokensRes.tokens.find(
-              (t) => t.agentListingId === listingRes.listing.id
-            );
-            if (matchingToken) {
-              setTokenData(matchingToken);
-              // Fetch chart and holders in parallel
-              const [chartRes, holdersRes] = await Promise.all([
-                tokenApi.getChart(matchingToken.id).catch(() => ({ snapshots: [] })),
-                tokenApi.getHolders(matchingToken.id).catch(() => ({ holders: [] })),
-              ]);
-              setChartData(chartRes.snapshots);
-              setHolders(holdersRes.holders);
-            }
-          } catch {
-            // Token data is optional, don't block page
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load listing:", error);
-      } finally {
-        setIsLoading(false);
-      }
+  // The reviews route takes the listing's id (a UUID), not the slug in this
+  // page's URL. Never throws: a failure lands in reviewsError.
+  const loadReviews = useCallback(async (listingId: string) => {
+    setReviewsLoading(true);
+    setReviewsError(null);
+    try {
+      const res = await marketplaceApi.getListingReviews(listingId, 1, 10);
+      setReviews(res.reviews);
+    } catch (error) {
+      setReviews([]);
+      setReviewsError(error);
+    } finally {
+      setReviewsLoading(false);
     }
+  }, []);
 
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const listingRes = await marketplaceApi.getListing(slug);
+      setListing(listingRes.listing);
+      // Not awaited: the page does not wait for its Reviews tab.
+      void loadReviews(listingRes.listing.id);
+
+      // If tokenized, fetch token data
+      if (listingRes.listing.pricingModel === "tokenized") {
+        try {
+          const tokensRes = await tokenApi.list({ limit: 50 });
+          const matchingToken = tokensRes.tokens.find(
+            (t) => t.agentListingId === listingRes.listing.id
+          );
+          if (matchingToken) {
+            setTokenData(matchingToken);
+            // Fetch chart and holders in parallel
+            const [chartRes, holdersRes] = await Promise.all([
+              tokenApi.getChart(matchingToken.id).catch(() => ({ snapshots: [] })),
+              tokenApi.getHolders(matchingToken.id).catch(() => ({ holders: [] })),
+            ]);
+            setChartData(chartRes.snapshots);
+            setHolders(holdersRes.holders);
+          }
+        } catch {
+          // Token data is optional, don't block page
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load listing:", error);
+      setLoadError(error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [slug, loadReviews]);
+
+  useEffect(() => {
     if (slug) {
       loadData();
     }
-  }, [slug]);
+  }, [slug, loadData]);
 
   useEffect(() => {
     if (!authed || !listing) return;
@@ -260,21 +401,15 @@ export default function ListingDetailPage() {
   const monthlyPrice = isMonthly ? `$${(listing!.monthlyPriceCents! / 100).toFixed(2)}` : "";
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-background">
-        <header className="border-b bg-card">
-          <div className="mx-auto flex h-16 max-w-7xl items-center px-4 sm:px-6 lg:px-8">
-            <div className="h-8 w-32 animate-pulse rounded bg-muted" />
-          </div>
-        </header>
-        <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-          <div className="h-64 animate-pulse rounded-lg bg-muted" />
-        </div>
-      </div>
-    );
+    return <ListingDetailSkeleton />;
   }
 
-  if (!listing) {
+  if (loadError !== null || !listing) {
+    // The API answers 404 for a slug with no listing; anything else is a
+    // failed load the visitor can retry.
+    const notFound =
+      loadError === null ||
+      (loadError instanceof ApiError && loadError.status === 404);
     return (
       <div className="min-h-screen bg-background">
         <header className="border-b bg-card">
@@ -287,18 +422,24 @@ export default function ListingDetailPage() {
             </Link>
           </div>
         </header>
-        <div className="mx-auto max-w-7xl px-4 py-16 text-center sm:px-6 lg:px-8">
-          <h1 className="text-2xl font-bold text-foreground">Agent Not Found</h1>
-          <p className="mt-2 text-muted-foreground">
-            The agent you&apos;re looking for doesn&apos;t exist or has been removed.
-          </p>
-          <Link
-            href="/marketplace"
-            className="mt-6 inline-flex items-center gap-2 text-primary-600 hover:text-primary-700"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back to Marketplace
-          </Link>
+        <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
+          {notFound ? (
+            <EmptyState
+              icon={Cpu}
+              title="Agent not found"
+              description="The agent you're looking for doesn't exist or has been removed."
+              actionLabel="Back to Marketplace"
+              actionHref="/marketplace"
+            />
+          ) : (
+            <ErrorState
+              title="Couldn't load this agent"
+              error={loadError}
+              onRetry={() => void loadData()}
+              actionLabel="Back to Marketplace"
+              actionHref="/marketplace"
+            />
+          )}
         </div>
       </div>
     );
@@ -523,14 +664,22 @@ export default function ListingDetailPage() {
 
                     {/* Review List */}
                     <div className="mt-6">
-                      {reviews.length === 0 ? (
-                        <div className="py-8 text-center text-muted-foreground">
-                          <MessageSquare className="mx-auto h-8 w-8 text-gray-300" />
-                          <p className="mt-2">No reviews yet</p>
-                          <p className="text-sm">
-                            Be the first to review this agent
-                          </p>
-                        </div>
+                      {reviewsLoading ? (
+                        <ReviewListSkeleton />
+                      ) : reviewsError !== null ? (
+                        <ErrorState
+                          title="Couldn't load reviews"
+                          error={reviewsError}
+                          onRetry={() => void loadReviews(listing.id)}
+                        />
+                      ) : reviews.length === 0 ? (
+                        <EmptyState
+                          icon={MessageSquare}
+                          title="No reviews yet"
+                          description="Be the first to review this agent."
+                          actionLabel="Write a Review"
+                          actionHref="/login"
+                        />
                       ) : (
                         <div className="divide-y">
                           {reviews.map((review) => (

@@ -12,6 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -71,12 +74,40 @@ const ENGINE_OPTIONS: EngineOption[] = [
   },
 ];
 
+/** Placeholder shaped like one model card in the "Select Model" grid. */
+function ModelCardSkeleton() {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-start justify-between">
+          <Skeleton className="h-5 w-32" />
+          <Skeleton className="h-5 w-10 rounded-full" />
+        </div>
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-2">
+          <Skeleton className="h-5 w-14 rounded-full" />
+          <Skeleton className="h-5 w-12 rounded-full" />
+          <Skeleton className="h-5 w-16 rounded-full" />
+        </div>
+        <div className="mt-3 flex items-center justify-between">
+          <Skeleton className="h-5 w-20" />
+          <Skeleton className="h-5 w-24" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function NewDeploymentPage() {
   const router = useRouter();
   const [step, setStep] = useState<Step>("model");
   const [models, setModels] = useState<Model[]>([]);
   const [gpuTiers, setGpuTiers] = useState<GpuTier[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [isDeploying, setIsDeploying] = useState(false);
 
   // Form state
@@ -91,18 +122,22 @@ export default function NewDeploymentPage() {
   const [selectedSimplifiedTier, setSelectedSimplifiedTier] = useState<SimplifiedTier>("standard");
   const [showAdvancedGpu, setShowAdvancedGpu] = useState(false);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const { models, gpuTiers } = await modelsApi.listDeployable();
-        setModels(models);
-        setGpuTiers(gpuTiers);
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load models"));
-      } finally {
-        setIsLoading(false);
-      }
+  async function loadData() {
+    setLoadError(null);
+    setIsLoading(true);
+    try {
+      const { models, gpuTiers } = await modelsApi.listDeployable();
+      setModels(models);
+      setGpuTiers(gpuTiers);
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to load models"));
+      setLoadError(error);
+    } finally {
+      setIsLoading(false);
     }
+  }
+
+  useEffect(() => {
     loadData();
   }, []);
 
@@ -249,11 +284,26 @@ export default function NewDeploymentPage() {
           <div>
             <h2 className="mb-4 text-lg font-semibold">Choose a model to deploy</h2>
             {isLoading ? (
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+                <span className="sr-only">Loading models</span>
                 {[1, 2, 3, 4, 5, 6].map((i) => (
-                  <div key={i} className="h-48 animate-pulse rounded-lg bg-muted" />
+                  <ModelCardSkeleton key={i} />
                 ))}
               </div>
+            ) : loadError ? (
+              <ErrorState
+                title="Couldn't load models"
+                error={loadError}
+                onRetry={loadData}
+              />
+            ) : models.length === 0 ? (
+              <EmptyState
+                icon={Cpu}
+                title="No models available"
+                description="There are no models in the catalog to deploy yet."
+                actionLabel="Back to Deployments"
+                actionHref="/dashboard/deployments"
+              />
             ) : (
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 {models.map((model) => (

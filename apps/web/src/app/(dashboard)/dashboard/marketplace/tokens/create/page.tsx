@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
@@ -11,6 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
@@ -56,6 +59,7 @@ export default function CreateTokenPage() {
   const [step, setStep] = useState<Step>(1);
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [eligibility, setEligibility] = useState<Record<string, EligibilityResult>>({});
   const [checkingEligibility, setCheckingEligibility] = useState<string | null>(null);
 
@@ -90,22 +94,31 @@ export default function CreateTokenPage() {
   // block the flow early with an actionable message.
   const missingIcon = !!selectedListing && !selectedListing.iconUrl;
 
-  useEffect(() => {
-    async function loadListings() {
-      try {
-        const data = await marketplaceApi.getMyListings();
-        const published = (data.listings || []).filter(
-          (l) => l.status === "published"
-        );
-        setListings(published);
-      } catch (err) {
-        toast.error(getErrorMessage(err, "Failed to load your listings"));
-      } finally {
-        setLoading(false);
-      }
+  const loadListings = useCallback(async () => {
+    try {
+      const data = await marketplaceApi.getMyListings();
+      const published = (data.listings || []).filter(
+        (l) => l.status === "published"
+      );
+      setListings(published);
+      setLoadError(null);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Failed to load your listings"));
+      setLoadError(err);
+    } finally {
+      setLoading(false);
     }
-    loadListings();
   }, []);
+
+  useEffect(() => {
+    loadListings();
+  }, [loadListings]);
+
+  const retryLoadListings = () => {
+    setLoadError(null);
+    setLoading(true);
+    void loadListings();
+  };
 
   const checkEligibility = async (listingId: string) => {
     if (eligibility[listingId]) return;
@@ -385,26 +398,32 @@ export default function CreateTokenPage() {
             </CardHeader>
             <CardContent>
               {loading ? (
-                <div className="flex justify-center py-12">
-                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                <div className="space-y-3" aria-busy="true">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="rounded-lg border border-border p-4">
+                      <div className="space-y-2">
+                        <Skeleton className="h-5 w-1/3" />
+                        <Skeleton className="h-4 w-2/3" />
+                      </div>
+                    </div>
+                  ))}
+                  {/* Last child, so space-y-3 does not push the first row down. */}
+                  <span className="sr-only">Loading your listings</span>
                 </div>
+              ) : loadError !== null ? (
+                <ErrorState
+                  title="Couldn't load your listings"
+                  error={loadError}
+                  onRetry={retryLoadListings}
+                />
               ) : listings.length === 0 ? (
-                <div className="text-center py-12">
-                  <Coins className="mx-auto h-12 w-12 text-muted-foreground" />
-                  <p className="mt-4 text-muted-foreground">
-                    You need at least one published marketplace listing to create
-                    a token.
-                  </p>
-                  <Button
-                    variant="outline"
-                    className="mt-4"
-                    onClick={() =>
-                      router.push("/dashboard/marketplace/publish")
-                    }
-                  >
-                    Publish an Agent
-                  </Button>
-                </div>
+                <EmptyState
+                  icon={Coins}
+                  title="No published listings"
+                  description="You need at least one published marketplace listing to create a token."
+                  actionLabel="Publish an Agent"
+                  actionHref="/dashboard/marketplace/publish"
+                />
               ) : (
                 <div className="space-y-3">
                   {listings.map((listing) => {

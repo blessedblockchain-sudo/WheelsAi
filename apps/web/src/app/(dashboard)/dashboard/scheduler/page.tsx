@@ -26,7 +26,9 @@ import {
   type Agent,
   getErrorMessage,
 } from "@/lib/api";
-import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
+import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
@@ -98,26 +100,47 @@ export default function SchedulerPage() {
   const confirmAction = useConfirm();
   const [activeTab, setActiveTab] = useState<Tab>("tasks");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [stats, setStats] = useState<SchedulerStats | null>(null);
   const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [executions, setExecutions] = useState<TaskExecution[]>([]);
+  const [executionsLoading, setExecutionsLoading] = useState(false);
+  const [executionsError, setExecutionsError] = useState<unknown>(null);
+  // The task the latest executions request was for; the executions or error
+  // held in state belong to it.
+  const [executionsRequestedFor, setExecutionsRequestedFor] = useState<string>();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
+
+  // The task whose executions are shown. A selection that is no longer in the
+  // list (its task was deleted) falls back to the first task, so the picker,
+  // Refresh and Try again never keep requesting a task that no longer exists.
+  const executionsTaskId = tasks.some((t) => t.id === selectedTaskId)
+    ? selectedTaskId
+    : tasks[0]?.id;
+  // Results held for a different task (on first opening the tab, or until the
+  // effect below refetches after a delete or a create) show as loading, so
+  // another task's executions or error never appear under this task's name.
+  const executionsPending =
+    executionsLoading || executionsRequestedFor !== executionsTaskId;
 
   useEffect(() => {
     loadData();
   }, []);
 
+  // Keyed on the resolved task rather than the raw selection, so executions
+  // are refetched when a delete or a create changes which task is shown.
   useEffect(() => {
-    if (activeTab === "executions" && tasks.length > 0) {
-      loadExecutions(selectedTaskId || tasks[0]?.id);
+    if (activeTab === "executions" && executionsTaskId) {
+      loadExecutions(executionsTaskId);
     }
-  }, [activeTab, selectedTaskId]);
+  }, [activeTab, executionsTaskId]);
 
   async function loadData() {
     try {
       setLoading(true);
+      setLoadError(null);
       const [statsRes, tasksRes, agentsRes] = await Promise.all([
         schedulerApi.getStats(),
         schedulerApi.list({ limit: 50 }),
@@ -128,6 +151,7 @@ export default function SchedulerPage() {
       setAgents(agentsRes.agents);
     } catch (error) {
       console.error("Failed to load scheduler data:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -135,11 +159,17 @@ export default function SchedulerPage() {
 
   async function loadExecutions(taskId?: string) {
     if (!taskId) return;
+    setExecutionsRequestedFor(taskId);
+    setExecutionsLoading(true);
+    setExecutionsError(null);
     try {
       const res = await schedulerApi.getExecutions(taskId, { limit: 50 });
       setExecutions(res.executions);
     } catch (error) {
       console.error("Failed to load executions:", error);
+      setExecutionsError(error);
+    } finally {
+      setExecutionsLoading(false);
     }
   }
 
@@ -174,25 +204,18 @@ export default function SchedulerPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="p-6 space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="space-y-2">
-            <Skeleton className="h-8 w-48" />
-            <Skeleton className="h-4 w-72" />
-          </div>
-          <Skeleton className="h-10 w-28" />
-        </div>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
-        <SkeletonTable rows={5} cols={7} />
-      </div>
-    );
-  }
+  const ready = !loading && loadError === null;
+
+  // Shown by both tabs: with no tasks there are no executions to pick from.
+  const noTasksState = (
+    <EmptyState
+      icon={Calendar}
+      title="No scheduled tasks"
+      description="Create a scheduled task to automate your agent workflows."
+      actionLabel="New Task"
+      onAction={() => setShowCreateModal(true)}
+    />
+  );
 
   return (
     <div className="p-6 space-y-6">
@@ -213,8 +236,37 @@ export default function SchedulerPage() {
         </button>
       </div>
 
+      {/* Loading */}
+      {loading && (
+        <div className="space-y-6" aria-busy="true">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <StatsCardSkeleton key={i} />
+            ))}
+          </div>
+          <div className="flex gap-1 border-b border-border">
+            {["w-12", "w-20"].map((width) => (
+              <div key={width} className="px-4 py-2.5 border-b-2 border-transparent">
+                <Skeleton className={`h-5 ${width}`} />
+              </div>
+            ))}
+          </div>
+          <SkeletonTable rows={5} cols={7} />
+          <span className="sr-only">Loading scheduled tasks</span>
+        </div>
+      )}
+
+      {/* Load error */}
+      {!loading && loadError !== null && (
+        <ErrorState
+          title="Couldn't load scheduled tasks"
+          error={loadError}
+          onRetry={loadData}
+        />
+      )}
+
       {/* Stats Cards */}
-      {stats && (
+      {ready && stats && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <StatsCard
             icon={Calendar}
@@ -249,41 +301,30 @@ export default function SchedulerPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-border">
-        {(["tasks", "executions"] as Tab[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${
-              activeTab === tab
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
+      {ready && (
+        <div className="flex gap-1 border-b border-border">
+          {(["tasks", "executions"] as Tab[]).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${
+                activeTab === tab
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {tab}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Tasks Tab */}
-      {activeTab === "tasks" && (
-        <div className="bg-card border rounded-lg overflow-hidden">
-          {tasks.length === 0 ? (
-            <div className="p-12 text-center">
-              <Calendar className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-30" />
-              <h3 className="text-lg font-medium mb-2">No scheduled tasks</h3>
-              <p className="text-muted-foreground text-sm mb-4">
-                Create a scheduled task to automate your agent workflows
-              </p>
-              <button
-                onClick={() => setShowCreateModal(true)}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground font-semibold rounded-lg hover:bg-primary/90 transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                New Task
-              </button>
-            </div>
-          ) : (
+      {ready && activeTab === "tasks" && (
+        tasks.length === 0 ? (
+          noTasksState
+        ) : (
+          <div className="bg-card border rounded-lg overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -432,12 +473,12 @@ export default function SchedulerPage() {
                 </tbody>
               </table>
             </div>
-          )}
-        </div>
+          </div>
+        )
       )}
 
       {/* Executions Tab */}
-      {activeTab === "executions" && (
+      {ready && activeTab === "executions" && (
         <div className="space-y-4">
           {/* Task selector */}
           <div className="flex items-center gap-3">
@@ -445,7 +486,7 @@ export default function SchedulerPage() {
               Task:
             </label>
             <select
-              value={selectedTaskId || tasks[0]?.id || ""}
+              value={executionsTaskId || ""}
               onChange={(e) => {
                 setSelectedTaskId(e.target.value);
                 loadExecutions(e.target.value);
@@ -459,9 +500,7 @@ export default function SchedulerPage() {
               ))}
             </select>
             <button
-              onClick={() =>
-                loadExecutions(selectedTaskId || tasks[0]?.id)
-              }
+              onClick={() => loadExecutions(executionsTaskId)}
               className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
               title="Refresh"
             >
@@ -469,16 +508,27 @@ export default function SchedulerPage() {
             </button>
           </div>
 
-          <div className="bg-card border rounded-lg overflow-hidden">
-            {executions.length === 0 ? (
-              <div className="p-12 text-center">
-                <Clock className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-30" />
-                <h3 className="text-lg font-medium mb-2">No executions yet</h3>
-                <p className="text-muted-foreground text-sm">
-                  Executions will appear here once the task runs
-                </p>
-              </div>
-            ) : (
+          {tasks.length === 0 ? (
+            noTasksState
+          ) : executionsPending ? (
+            <div aria-busy="true">
+              <SkeletonTable rows={5} cols={6} />
+              <span className="sr-only">Loading executions</span>
+            </div>
+          ) : executionsError !== null ? (
+            <ErrorState
+              title="Couldn't load executions"
+              error={executionsError}
+              onRetry={() => loadExecutions(executionsTaskId)}
+            />
+          ) : executions.length === 0 ? (
+            <EmptyState
+              icon={Clock}
+              title="No executions yet"
+              description="Executions will appear here once the task runs."
+            />
+          ) : (
+            <div className="bg-card border rounded-lg overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
@@ -563,8 +613,8 @@ export default function SchedulerPage() {
                   </tbody>
                 </table>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -612,6 +662,20 @@ function StatsCard({
         <div>
           <p className="text-xs text-muted-foreground">{label}</p>
           <p className="text-lg font-bold text-foreground">{value}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatsCardSkeleton() {
+  return (
+    <div className="bg-card border rounded-lg p-4">
+      <div className="flex items-center gap-3">
+        <Skeleton className="h-8 w-8 rounded-lg" />
+        <div className="space-y-2">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-6 w-10" />
         </div>
       </div>
     </div>

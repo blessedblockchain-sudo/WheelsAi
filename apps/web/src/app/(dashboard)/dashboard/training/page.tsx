@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   GraduationCap,
@@ -20,6 +20,9 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { trainingApi, type TrainingJob, type Dataset, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -47,28 +50,46 @@ const methodColors: Record<string, string> = {
   full: "bg-orange-500/10 text-orange-500",
 };
 
+/** A stat card's number, or a skeleton of the same height while loading. */
+function StatValue({ isLoading, children }: { isLoading: boolean; children: React.ReactNode }) {
+  return isLoading ? (
+    <Skeleton className="my-1 h-6 w-12" />
+  ) : (
+    <p className="text-2xl font-bold">{children}</p>
+  );
+}
+
 export default function TrainingPage() {
   const [jobs, setJobs] = useState<TrainingJob[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [jobsRes, datasetsRes] = await Promise.all([
+        trainingApi.listJobs(),
+        trainingApi.listDatasets(),
+      ]);
+      setJobs(jobsRes.jobs);
+      setDatasets(datasetsRes.datasets);
+    } catch (error) {
+      setLoadError(error);
+      toast.error(getErrorMessage(error, "Failed to load training data"));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function load() {
-      try {
-        const [jobsRes, datasetsRes] = await Promise.all([
-          trainingApi.listJobs(),
-          trainingApi.listDatasets(),
-        ]);
-        setJobs(jobsRes.jobs);
-        setDatasets(datasetsRes.datasets);
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load training data"));
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    load();
-  }, []);
+    void load();
+  }, [load]);
+
+  function handleRetry() {
+    setLoadError(null);
+    setIsLoading(true);
+    void load();
+  }
 
   const runningJobs = jobs.filter((j) => j.status === "running");
   const completedJobs = jobs.filter((j) => j.status === "completed");
@@ -78,6 +99,25 @@ export default function TrainingPage() {
     }
     return sum;
   }, 0);
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col">
+        <Header
+          title="Training Studio"
+          description="Fine-tune models with LoRA and QLoRA"
+          action={{ label: "New Training", href: "/dashboard/training/new" }}
+        />
+        <div className="p-8">
+          <ErrorState
+            title="Couldn't load training jobs and datasets"
+            error={loadError}
+            onRetry={handleRetry}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col">
@@ -95,7 +135,7 @@ export default function TrainingPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">Training Jobs</p>
-                  <p className="text-2xl font-bold">{jobs.length}</p>
+                  <StatValue isLoading={isLoading}>{jobs.length}</StatValue>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/15">
                   <GraduationCap className="h-5 w-5 text-primary-600" />
@@ -109,7 +149,7 @@ export default function TrainingPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">Running</p>
-                  <p className="text-2xl font-bold">{runningJobs.length}</p>
+                  <StatValue isLoading={isLoading}>{runningJobs.length}</StatValue>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-yellow-500/10">
                   <Play className="h-5 w-5 text-yellow-600" />
@@ -123,7 +163,7 @@ export default function TrainingPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">Datasets</p>
-                  <p className="text-2xl font-bold">{datasets.length}</p>
+                  <StatValue isLoading={isLoading}>{datasets.length}</StatValue>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
                   <Database className="h-5 w-5 text-blue-600" />
@@ -137,7 +177,7 @@ export default function TrainingPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground">GPU Hours</p>
-                  <p className="text-2xl font-bold">{totalGpuHours.toFixed(1)}</p>
+                  <StatValue isLoading={isLoading}>{totalGpuHours.toFixed(1)}</StatValue>
                 </div>
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-500/10">
                   <Cpu className="h-5 w-5 text-green-600" />
@@ -166,19 +206,32 @@ export default function TrainingPage() {
               </CardHeader>
               <CardContent>
                 {isLoading ? (
-                  <div className="space-y-4">
+                  <div className="space-y-4" aria-busy="true">
                     {[1, 2, 3].map((i) => (
-                      <div key={i} className="h-20 animate-pulse rounded-lg bg-muted" />
+                      <div
+                        key={i}
+                        className="flex items-center justify-between rounded-lg border p-4"
+                      >
+                        <div className="flex items-center gap-4">
+                          <Skeleton className="h-10 w-10 rounded-lg" />
+                          <div className="space-y-2">
+                            <Skeleton className="h-5 w-40" />
+                            <Skeleton className="h-4 w-28" />
+                          </div>
+                        </div>
+                        <Skeleton className="h-5 w-20 rounded-full" />
+                      </div>
                     ))}
+                    <span className="sr-only">Loading training jobs</span>
                   </div>
                 ) : jobs.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-12">
-                    <GraduationCap className="h-12 w-12 text-gray-300" />
-                    <p className="mt-4 text-muted-foreground">No training jobs yet</p>
-                    <Link href="/dashboard/training/new" className="mt-4">
-                      <Button>Start Training</Button>
-                    </Link>
-                  </div>
+                  <EmptyState
+                    icon={GraduationCap}
+                    title="No training jobs yet"
+                    description="Start a fine-tuning run and it will appear here."
+                    actionLabel="Start Training"
+                    actionHref="/dashboard/training/new"
+                  />
                 ) : (
                   <div className="space-y-4">
                     {jobs.slice(0, 5).map((job) => {
@@ -243,21 +296,29 @@ export default function TrainingPage() {
               </CardHeader>
               <CardContent>
                 {isLoading ? (
-                  <div className="space-y-3">
+                  <div className="space-y-3" aria-busy="true">
                     {[1, 2, 3].map((i) => (
-                      <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
+                      <div
+                        key={i}
+                        className="flex items-center justify-between rounded-lg border p-3"
+                      >
+                        <div className="space-y-2">
+                          <Skeleton className="h-4 w-28" />
+                          <Skeleton className="h-3 w-16" />
+                        </div>
+                        <Skeleton className="h-5 w-14 rounded-full" />
+                      </div>
                     ))}
+                    <span className="sr-only">Loading datasets</span>
                   </div>
                 ) : datasets.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8">
-                    <Database className="h-10 w-10 text-gray-300" />
-                    <p className="mt-2 text-sm text-muted-foreground">No datasets yet</p>
-                    <Link href="/dashboard/training/datasets" className="mt-3">
-                      <Button variant="outline" size="sm">
-                        Upload Dataset
-                      </Button>
-                    </Link>
-                  </div>
+                  <EmptyState
+                    icon={Database}
+                    title="No datasets yet"
+                    description="Upload your first dataset to start training."
+                    actionLabel="Upload Dataset"
+                    actionHref="/dashboard/training/datasets"
+                  />
                 ) : (
                   <div className="space-y-3">
                     {datasets.slice(0, 5).map((dataset) => (

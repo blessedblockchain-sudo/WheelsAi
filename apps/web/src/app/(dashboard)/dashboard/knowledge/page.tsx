@@ -14,7 +14,7 @@ import {
   BookOpen,
   Sparkles,
   Hash,
-  AlertCircle,
+  SearchX,
   Loader2,
 } from "lucide-react";
 import {
@@ -26,6 +26,9 @@ import {
 } from "@/lib/api";
 import { toast } from "sonner";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // ---------------------------------------------------------------------------
 // Status badge color map
@@ -43,6 +46,9 @@ function statusClasses(status: string): string {
   return STATUS_COLORS[status] ?? "bg-gray-500/20 text-gray-400 border-gray-500/30";
 }
 
+/** The knowledge base and trimmed query a search ran with. */
+type SearchInputs = { kbId: string; query: string };
+
 // ---------------------------------------------------------------------------
 // Main page component
 // ---------------------------------------------------------------------------
@@ -57,12 +63,14 @@ export default function KnowledgePage() {
     totalChunks: number;
   } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // UI state
   const [activeTab, setActiveTab] = useState<"bases" | "search">("bases");
   const [expandedKbId, setExpandedKbId] = useState<string | null>(null);
   const [expandedDocs, setExpandedDocs] = useState<KnowledgeDocument[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
+  const [docsError, setDocsError] = useState<unknown>(null);
 
   // Modal state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -75,6 +83,10 @@ export default function KnowledgePage() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<unknown>(null);
+  // What the last finished search ran with. Its error or "no results" only
+  // describes the inputs while they still match this (see SearchTab).
+  const [lastSearch, setLastSearch] = useState<SearchInputs | null>(null);
 
   // Create KB form
   const [createForm, setCreateForm] = useState({
@@ -102,6 +114,7 @@ export default function KnowledgePage() {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const [statsData, listData] = await Promise.all([
         knowledgeApi.getStats(),
         knowledgeApi.list({ limit: 50 }),
@@ -110,6 +123,7 @@ export default function KnowledgePage() {
       setKnowledgeBases(listData.knowledgeBases);
     } catch (error) {
       console.error("Failed to load knowledge data:", error);
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
@@ -123,23 +137,29 @@ export default function KnowledgePage() {
   // Expand / collapse a knowledge base to show its documents
   // ---------------------------------------------------------------------------
 
+  async function loadDocuments(kbId: string) {
+    try {
+      setDocsLoading(true);
+      setDocsError(null);
+      const data = await knowledgeApi.getDocuments(kbId, { limit: 50 });
+      setExpandedDocs(data.documents);
+    } catch (error) {
+      console.error("Failed to load documents:", error);
+      setExpandedDocs([]);
+      setDocsError(error);
+    } finally {
+      setDocsLoading(false);
+    }
+  }
+
   async function toggleExpand(kbId: string) {
     if (expandedKbId === kbId) {
       setExpandedKbId(null);
       setExpandedDocs([]);
       return;
     }
-    try {
-      setDocsLoading(true);
-      setExpandedKbId(kbId);
-      const data = await knowledgeApi.getDocuments(kbId, { limit: 50 });
-      setExpandedDocs(data.documents);
-    } catch (error) {
-      console.error("Failed to load documents:", error);
-      setExpandedDocs([]);
-    } finally {
-      setDocsLoading(false);
-    }
+    setExpandedKbId(kbId);
+    await loadDocuments(kbId);
   }
 
   // ---------------------------------------------------------------------------
@@ -218,6 +238,7 @@ export default function KnowledgePage() {
       if (expandedKbId === addDocKbId) {
         const data = await knowledgeApi.getDocuments(addDocKbId, { limit: 50 });
         setExpandedDocs(data.documents);
+        setDocsError(null);
       }
       await loadData();
     } catch (error) {
@@ -249,29 +270,32 @@ export default function KnowledgePage() {
 
   async function handleSearch() {
     if (!searchKbId || !searchQuery.trim()) return;
+    const ranWith: SearchInputs = { kbId: searchKbId, query: searchQuery.trim() };
     try {
       setSearching(true);
+      setSearchError(null);
       const data = await knowledgeApi.search(searchKbId, searchQuery, 10);
       setSearchResults(data.results);
       setSearchTotal(data.totalChunksSearched);
+      // Enter can start a search while another is running; whichever finishes
+      // last owns the results, the error and lastSearch together.
+      setSearchError(null);
     } catch (error) {
       console.error("Search failed:", error);
       setSearchResults([]);
+      setSearchError(error);
     } finally {
+      setLastSearch(ranWith);
       setSearching(false);
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Loading spinner
+  // Loading skeleton
   // ---------------------------------------------------------------------------
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 text-primary animate-spin" />
-      </div>
-    );
+    return <KnowledgePageSkeleton />;
   }
 
   // ---------------------------------------------------------------------------
@@ -299,87 +323,102 @@ export default function KnowledgePage() {
         </button>
       </div>
 
-      {/* Stats Row */}
-      {stats && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard
-            icon={Database}
-            label="Total Bases"
-            value={stats.totalBases}
-          />
-          <StatCard
-            icon={FileText}
-            label="Total Documents"
-            value={stats.totalDocuments}
-          />
-          <StatCard
-            icon={Layers}
-            label="Total Chunks"
-            value={stats.totalChunks}
-          />
-        </div>
-      )}
+      {loadError ? (
+        <ErrorState
+          title="Couldn't load knowledge bases"
+          error={loadError}
+          onRetry={() => void loadData()}
+        />
+      ) : (
+        <>
+          {/* Stats Row */}
+          {stats && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <StatCard
+                icon={Database}
+                label="Total Bases"
+                value={stats.totalBases}
+              />
+              <StatCard
+                icon={FileText}
+                label="Total Documents"
+                value={stats.totalDocuments}
+              />
+              <StatCard
+                icon={Layers}
+                label="Total Chunks"
+                value={stats.totalChunks}
+              />
+            </div>
+          )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-border">
-        <button
-          onClick={() => setActiveTab("bases")}
-          className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-            activeTab === "bases"
-              ? "text-primary"
-              : "text-muted-foreground hover:text-gray-300"
-          }`}
-        >
-          Knowledge Bases
+          {/* Tabs */}
+          <div className="flex gap-1 border-b border-border">
+            <button
+              onClick={() => setActiveTab("bases")}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+                activeTab === "bases"
+                  ? "text-primary"
+                  : "text-muted-foreground hover:text-gray-300"
+              }`}
+            >
+              Knowledge Bases
+              {activeTab === "bases" && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab("search")}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+                activeTab === "search"
+                  ? "text-primary"
+                  : "text-muted-foreground hover:text-gray-300"
+              }`}
+            >
+              Search
+              {activeTab === "search" && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+              )}
+            </button>
+          </div>
+
+          {/* Tab content */}
           {activeTab === "bases" && (
-            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+            <KnowledgeBasesTab
+              knowledgeBases={knowledgeBases}
+              expandedKbId={expandedKbId}
+              expandedDocs={expandedDocs}
+              docsLoading={docsLoading}
+              docsError={docsError}
+              onToggleExpand={toggleExpand}
+              onRetryDocs={(kbId) => void loadDocuments(kbId)}
+              onDeleteKb={handleDeleteKb}
+              onDeleteDoc={handleDeleteDoc}
+              onAddDoc={(kbId) => {
+                setAddDocKbId(kbId);
+                setShowAddDocModal(true);
+              }}
+              onCreateNew={() => setShowCreateModal(true)}
+            />
           )}
-        </button>
-        <button
-          onClick={() => setActiveTab("search")}
-          className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-            activeTab === "search"
-              ? "text-primary"
-              : "text-muted-foreground hover:text-gray-300"
-          }`}
-        >
-          Search
+
           {activeTab === "search" && (
-            <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary" />
+            <SearchTab
+              knowledgeBases={knowledgeBases}
+              searchQuery={searchQuery}
+              searchKbId={searchKbId}
+              searchResults={searchResults}
+              searchTotal={searchTotal}
+              searching={searching}
+              searchError={searchError}
+              lastSearch={lastSearch}
+              onQueryChange={setSearchQuery}
+              onKbChange={setSearchKbId}
+              onSearch={handleSearch}
+              onCreateNew={() => setShowCreateModal(true)}
+            />
           )}
-        </button>
-      </div>
-
-      {/* Tab content */}
-      {activeTab === "bases" && (
-        <KnowledgeBasesTab
-          knowledgeBases={knowledgeBases}
-          expandedKbId={expandedKbId}
-          expandedDocs={expandedDocs}
-          docsLoading={docsLoading}
-          onToggleExpand={toggleExpand}
-          onDeleteKb={handleDeleteKb}
-          onDeleteDoc={handleDeleteDoc}
-          onAddDoc={(kbId) => {
-            setAddDocKbId(kbId);
-            setShowAddDocModal(true);
-          }}
-          onCreateNew={() => setShowCreateModal(true)}
-        />
-      )}
-
-      {activeTab === "search" && (
-        <SearchTab
-          knowledgeBases={knowledgeBases}
-          searchQuery={searchQuery}
-          searchKbId={searchKbId}
-          searchResults={searchResults}
-          searchTotal={searchTotal}
-          searching={searching}
-          onQueryChange={setSearchQuery}
-          onKbChange={setSearchKbId}
-          onSearch={handleSearch}
-        />
+        </>
       )}
 
       {/* Create KB Modal */}
@@ -557,7 +596,9 @@ function KnowledgeBasesTab({
   expandedKbId,
   expandedDocs,
   docsLoading,
+  docsError,
   onToggleExpand,
+  onRetryDocs,
   onDeleteKb,
   onDeleteDoc,
   onAddDoc,
@@ -567,7 +608,9 @@ function KnowledgeBasesTab({
   expandedKbId: string | null;
   expandedDocs: KnowledgeDocument[];
   docsLoading: boolean;
+  docsError: unknown;
   onToggleExpand: (id: string) => void;
+  onRetryDocs: (kbId: string) => void;
   onDeleteKb: (id: string) => void;
   onDeleteDoc: (kbId: string, docId: string) => void;
   onAddDoc: (kbId: string) => void;
@@ -575,22 +618,13 @@ function KnowledgeBasesTab({
 }) {
   if (knowledgeBases.length === 0) {
     return (
-      <div className="text-center py-16">
-        <Database className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-        <h3 className="text-lg font-medium text-gray-300 mb-2">
-          No knowledge bases yet
-        </h3>
-        <p className="text-muted-foreground mb-6">
-          Create your first knowledge base to start adding documents and enable semantic search.
-        </p>
-        <button
-          onClick={onCreateNew}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-primary/10 text-primary border border-primary/30 rounded-lg hover:bg-primary/20 transition-colors font-medium"
-        >
-          <Plus className="h-4 w-4" />
-          New Knowledge Base
-        </button>
-      </div>
+      <EmptyState
+        icon={Database}
+        title="No knowledge bases yet"
+        description="Create your first knowledge base to start adding documents and enable semantic search."
+        actionLabel="New Knowledge Base"
+        onAction={onCreateNew}
+      />
     );
   }
 
@@ -685,14 +719,36 @@ function KnowledgeBasesTab({
                 </div>
 
                 {docsLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                  <div className="space-y-2" aria-busy="true">
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-background border border-border/60"
+                      >
+                        <Skeleton className="h-4 w-4 shrink-0" />
+                        <div className="flex-1 min-w-0 space-y-1.5">
+                          <Skeleton className="h-4 w-1/3" />
+                          <Skeleton className="h-3 w-1/2" />
+                        </div>
+                        <Skeleton className="h-6 w-6 shrink-0" />
+                      </div>
+                    ))}
+                    <span className="sr-only">Loading documents</span>
                   </div>
+                ) : docsError ? (
+                  <ErrorState
+                    title="Couldn't load documents"
+                    error={docsError}
+                    onRetry={() => onRetryDocs(kb.id)}
+                  />
                 ) : expandedDocs.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground text-sm">
-                    <BookOpen className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
-                    No documents yet. Add one to get started.
-                  </div>
+                  <EmptyState
+                    icon={BookOpen}
+                    title="No documents yet"
+                    description="Add a document to this knowledge base to get started."
+                    actionLabel="Add Document"
+                    onAction={() => onAddDoc(kb.id)}
+                  />
                 ) : (
                   <div className="space-y-2">
                     {expandedDocs.map((doc) => (
@@ -754,9 +810,12 @@ function SearchTab({
   searchResults,
   searchTotal,
   searching,
+  searchError,
+  lastSearch,
   onQueryChange,
   onKbChange,
   onSearch,
+  onCreateNew,
 }: {
   knowledgeBases: KnowledgeBase[];
   searchQuery: string;
@@ -764,15 +823,27 @@ function SearchTab({
   searchResults: SearchResult[];
   searchTotal: number;
   searching: boolean;
+  searchError: unknown;
+  lastSearch: SearchInputs | null;
   onQueryChange: (v: string) => void;
   onKbChange: (v: string) => void;
   onSearch: () => void;
+  onCreateNew: () => void;
 }) {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === "Enter") {
       onSearch();
     }
   }
+
+  // The last search's error or "no results" is about the knowledge base and
+  // query it ran with. Once either is edited, that search was not run for what
+  // is on screen, and "Try again" (which searches the current inputs) would not
+  // be retrying it. Matching inputs also guarantee handleSearch's guard passes.
+  const lastSearchMatchesInputs =
+    lastSearch !== null &&
+    lastSearch.kbId === searchKbId &&
+    lastSearch.query === searchQuery.trim();
 
   return (
     <div className="space-y-5">
@@ -818,7 +889,7 @@ function SearchTab({
       </div>
 
       {/* Results */}
-      {searchResults.length > 0 && (
+      {searchResults.length > 0 ? (
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
             {searchResults.length} result{searchResults.length !== 1 ? "s" : ""} found
@@ -850,24 +921,33 @@ function SearchTab({
             </div>
           ))}
         </div>
-      )}
-
-      {/* Empty state for search */}
-      {!searching && searchResults.length === 0 && searchQuery.trim() && searchKbId && (
-        <div className="text-center py-12">
-          <AlertCircle className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-          <p className="text-gray-400">No results found for your query.</p>
-        </div>
-      )}
-
-      {!searchKbId && (
-        <div className="text-center py-12">
-          <Search className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
-          <p className="text-gray-400">
-            Select a knowledge base and enter a query to search.
-          </p>
-        </div>
-      )}
+      ) : knowledgeBases.length === 0 ? (
+        <EmptyState
+          icon={Database}
+          title="No knowledge bases yet"
+          description="Create a knowledge base and add documents to it before searching."
+          actionLabel="New Knowledge Base"
+          onAction={onCreateNew}
+        />
+      ) : !searchKbId ? (
+        <EmptyState
+          icon={Search}
+          title="Search a knowledge base"
+          description="Select a knowledge base and enter a query to search."
+        />
+      ) : lastSearchMatchesInputs && searchError ? (
+        <ErrorState
+          title="Couldn't load search results"
+          error={searchError}
+          onRetry={onSearch}
+        />
+      ) : lastSearchMatchesInputs && !searching ? (
+        <EmptyState
+          icon={SearchX}
+          title="No results found"
+          description="Nothing in this knowledge base matched your query."
+        />
+      ) : null}
     </div>
   );
 }
@@ -875,6 +955,69 @@ function SearchTab({
 // ===========================================================================
 // Shared sub-components
 // ===========================================================================
+
+/** Mirrors the page layout: header, three stat cards, tab bar, base cards. */
+function KnowledgePageSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0 space-y-2">
+          <Skeleton className="h-8 w-56 max-w-full" />
+          <Skeleton className="h-5 w-80 max-w-full" />
+        </div>
+        <Skeleton className="h-10 w-48 shrink-0" />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="rounded-xl border border-border bg-card p-4">
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-8 w-8 rounded-lg" />
+              <div className="space-y-2">
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-6 w-12" />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-1 border-b border-border">
+        <div className="px-4 py-2.5">
+          <Skeleton className="h-5 w-28" />
+        </div>
+        <div className="px-4 py-2.5">
+          <Skeleton className="h-5 w-14" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div
+            key={i}
+            className="rounded-xl border border-border bg-card px-5 py-4 flex items-start gap-4"
+          >
+            <Skeleton className="h-5 w-5 mt-0.5 shrink-0" />
+            <div className="flex-1 min-w-0 space-y-2.5">
+              <div className="flex items-center gap-3">
+                <Skeleton className="h-5 w-48" />
+                <Skeleton className="h-5 w-14" />
+              </div>
+              <Skeleton className="h-4 w-3/4" />
+              <div className="flex items-center gap-5">
+                <Skeleton className="h-3 w-24" />
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-3 w-32" />
+              </div>
+            </div>
+            <Skeleton className="h-8 w-8 shrink-0" />
+          </div>
+        ))}
+      </div>
+      <span className="sr-only">Loading knowledge bases</span>
+    </div>
+  );
+}
 
 function StatCard({
   icon: Icon,

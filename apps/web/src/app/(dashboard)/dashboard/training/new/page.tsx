@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import {
   GraduationCap,
   Database,
@@ -23,6 +22,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   trainingApi,
   type Dataset,
@@ -55,6 +57,7 @@ export default function NewTrainingPage() {
   const [models, setModels] = useState<TrainableModel[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   const [formData, setFormData] = useState<CreateTrainingJobInput>({
     name: "",
@@ -83,23 +86,25 @@ export default function NewTrainingPage() {
     recommendedGpuTier: string;
   } | null>(null);
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [modelsRes, datasetsRes] = await Promise.all([
-          trainingApi.listTrainableModels(),
-          trainingApi.listDatasets(),
-        ]);
-        setModels(modelsRes.models);
-        setDatasets(datasetsRes.datasets.filter((d) => d.isValidated));
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load data"));
-      } finally {
-        setIsLoading(false);
-      }
+  const load = useCallback(async () => {
+    try {
+      const [modelsRes, datasetsRes] = await Promise.all([
+        trainingApi.listTrainableModels(),
+        trainingApi.listDatasets(),
+      ]);
+      setModels(modelsRes.models);
+      setDatasets(datasetsRes.datasets.filter((d) => d.isValidated));
+    } catch (error) {
+      setLoadError(error);
+      toast.error(getErrorMessage(error, "Failed to load data"));
+    } finally {
+      setIsLoading(false);
     }
-    load();
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // Update estimate when config changes
   useEffect(() => {
@@ -163,12 +168,85 @@ export default function NewTrainingPage() {
     }
   }
 
+  function handleRetry() {
+    setLoadError(null);
+    setIsLoading(true);
+    void load();
+  }
+
   if (isLoading) {
     return (
       <div className="flex flex-col">
-        <Header title="New Training Job" />
+        <Header title="New Training Job" description="Fine-tune a model with your data" />
+        <div className="p-8" aria-busy="true">
+          <span className="sr-only">Loading models and datasets</span>
+
+          {/* Progress steps */}
+          <div className="mb-8 flex items-center justify-between">
+            {steps.map((step, index) => (
+              <div key={step.id} className="flex items-center">
+                <Skeleton className="h-9 w-12 md:w-32" />
+                {index < steps.length - 1 && (
+                  <div className="mx-2 h-0.5 w-8 bg-muted md:w-16" />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-8 lg:grid-cols-3">
+            {/* Main content: step heading and option rows */}
+            <div className="lg:col-span-2">
+              <Card>
+                <CardContent className="py-6">
+                  <Skeleton className="h-6 w-48" />
+                  <Skeleton className="mt-2 h-4 w-64" />
+                  <div className="mt-6 space-y-4">
+                    {[1, 2, 3].map((i) => (
+                      <div
+                        key={i}
+                        className="flex items-center justify-between rounded-lg border-2 border-border p-4"
+                      >
+                        <div className="space-y-2">
+                          <Skeleton className="h-5 w-40" />
+                          <Skeleton className="h-4 w-56" />
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <Skeleton className="h-4 w-16" />
+                          <Skeleton className="h-5 w-24 rounded-full" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Navigation */}
+              <div className="mt-6 flex justify-between">
+                <Skeleton className="h-10 w-24" />
+                <Skeleton className="h-10 w-24" />
+              </div>
+            </div>
+
+            {/* Sidebar */}
+            <div>
+              <SkeletonCard />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex flex-col">
+        <Header title="New Training Job" description="Fine-tune a model with your data" />
         <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-muted" />
+          <ErrorState
+            title="Couldn't load models and datasets"
+            error={loadError}
+            onRetry={handleRetry}
+          />
         </div>
       </div>
     );
@@ -227,46 +305,56 @@ export default function NewTrainingPage() {
                       Choose the model you want to fine-tune
                     </p>
 
-                    <div className="mt-6 space-y-4">
-                      {models.map((model) => (
-                        <button
-                          key={model.id}
-                          onClick={() => {
-                            setFormData({
-                              ...formData,
-                              baseModelId: model.id,
-                              gpuTier: model.recommendedGpuTier,
-                              method: model.supportedMethods[0] as any,
-                            });
-                          }}
-                          className={cn(
-                            "w-full rounded-lg border-2 p-4 text-left transition-all",
-                            formData.baseModelId === model.id
-                              ? "border-primary-500 bg-primary/10"
-                              : "border-border hover:border-muted-foreground/40"
-                          )}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-medium">{model.displayName}</p>
-                              <p className="text-sm text-muted-foreground">{model.hfId}</p>
-                            </div>
-                            <div className="text-right">
-                              <p className="text-sm font-medium">
-                                {model.parameters ? `${(model.parameters / 1e9).toFixed(0)}B params` : ""}
-                              </p>
-                              <div className="mt-1 flex gap-1">
-                                {model.supportedMethods.map((method) => (
-                                  <Badge key={method} variant="secondary" className="text-xs">
-                                    {method}
-                                  </Badge>
-                                ))}
+                    {models.length === 0 ? (
+                      <div className="mt-6">
+                        <EmptyState
+                          icon={Cpu}
+                          title="No trainable models available"
+                          description="There are no base models that support fine-tuning to choose from."
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-6 space-y-4">
+                        {models.map((model) => (
+                          <button
+                            key={model.id}
+                            onClick={() => {
+                              setFormData({
+                                ...formData,
+                                baseModelId: model.id,
+                                gpuTier: model.recommendedGpuTier,
+                                method: model.supportedMethods[0] as any,
+                              });
+                            }}
+                            className={cn(
+                              "w-full rounded-lg border-2 p-4 text-left transition-all",
+                              formData.baseModelId === model.id
+                                ? "border-primary-500 bg-primary/10"
+                                : "border-border hover:border-muted-foreground/40"
+                            )}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="font-medium">{model.displayName}</p>
+                                <p className="text-sm text-muted-foreground">{model.hfId}</p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-sm font-medium">
+                                  {model.parameters ? `${(model.parameters / 1e9).toFixed(0)}B params` : ""}
+                                </p>
+                                <div className="mt-1 flex gap-1">
+                                  {model.supportedMethods.map((method) => (
+                                    <Badge key={method} variant="secondary" className="text-xs">
+                                      {method}
+                                    </Badge>
+                                  ))}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -279,12 +367,14 @@ export default function NewTrainingPage() {
                     </p>
 
                     {datasets.length === 0 ? (
-                      <div className="mt-8 flex flex-col items-center justify-center py-12">
-                        <Database className="h-12 w-12 text-gray-300" />
-                        <p className="mt-4 text-muted-foreground">No validated datasets available</p>
-                        <Link href="/dashboard/training/datasets" className="mt-4">
-                          <Button>Upload Dataset</Button>
-                        </Link>
+                      <div className="mt-6">
+                        <EmptyState
+                          icon={Database}
+                          title="No validated datasets available"
+                          description="Training needs a validated dataset. Upload one on the Datasets page."
+                          actionLabel="Upload Dataset"
+                          actionHref="/dashboard/training/datasets"
+                        />
                       </div>
                     ) : (
                       <div className="mt-6 space-y-4">

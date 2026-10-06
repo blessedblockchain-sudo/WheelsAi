@@ -19,6 +19,9 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   analyticsApi,
   marketplaceApi,
@@ -89,19 +92,33 @@ function MetricCard({
   );
 }
 
-function SkeletonCard() {
+function MetricCardSkeleton() {
   return (
     <Card>
       <CardContent className="py-4">
         <div className="flex items-center justify-between">
           <div className="space-y-2">
-            <div className="h-3 w-24 animate-pulse rounded bg-muted" />
-            <div className="h-7 w-16 animate-pulse rounded bg-muted" />
+            <Skeleton className="h-4 w-24" />
+            <Skeleton className="h-7 w-16" />
           </div>
-          <div className="h-10 w-10 animate-pulse rounded-lg bg-muted" />
+          <Skeleton className="h-10 w-10 rounded-lg" />
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/** Placeholder shaped like the labelled horizontal bars in the breakdown cards. */
+function BarListSkeleton({ labelWidth }: { labelWidth: string }) {
+  return (
+    <div className="space-y-4">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="space-y-1">
+          <Skeleton className={`h-4 ${labelWidth}`} />
+          <Skeleton className="h-3 w-full rounded-full" />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -149,8 +166,22 @@ export default function MarketplaceAnalyticsPage() {
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [dashboard, setDashboard] = useState<AnalyticsDashboard | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // One error per source, so a failed source shows an error in the sections it
+  // feeds instead of zeros or an empty state.
+  const [revenueError, setRevenueError] = useState<unknown>(null);
+  const [listingsError, setListingsError] = useState<unknown>(null);
+  const [dashboardError, setDashboardError] = useState<unknown>(null);
 
   useEffect(() => {
+    loadAnalytics();
+  }, []);
+
+  function loadAnalytics() {
+    setIsLoading(true);
+    setRevenueError(null);
+    setListingsError(null);
+    setDashboardError(null);
+
     let done = 0;
     const finish = () => {
       done += 1;
@@ -160,23 +191,26 @@ export default function MarketplaceAnalyticsPage() {
     marketplaceApi
       .getRevenue()
       .then((data) => setRevenue(data as RevenueData))
-      .catch(() => {})
+      .catch((error: unknown) => setRevenueError(error))
       .finally(finish);
 
     marketplaceApi
       .getMyListings()
       .then(({ listings }) => setListings(listings))
-      .catch(() => {})
+      .catch((error: unknown) => setListingsError(error))
       .finally(finish);
 
     analyticsApi
       .getDashboard(30)
       .then((res) => setDashboard(res.data))
-      .catch(() => {})
+      .catch((error: unknown) => setDashboardError(error))
       .finally(finish);
-  }, []);
+  }
 
-  const hasAnyData = revenue !== null || listings.length > 0 || dashboard !== null;
+  const allFailed =
+    revenueError !== null && listingsError !== null && dashboardError !== null;
+  // The overview mixes revenue and listing figures, so either failure hides it.
+  const overviewError = revenueError !== null ? revenueError : listingsError;
 
   // Overview derived values
   const totalRevenueDollars =
@@ -209,6 +243,17 @@ export default function MarketplaceAnalyticsPage() {
     ? Math.max(...timeseries.map((p) => p.requests), 1)
     : 1;
 
+  // Every source loaded and none has anything to show yet: one empty state for
+  // the page instead of zeroed cards over three empty sections.
+  const hasNoData =
+    !isLoading &&
+    revenueError === null &&
+    listingsError === null &&
+    dashboardError === null &&
+    listings.length === 0 &&
+    (revenue?.totalRevenueCents ?? 0) === 0 &&
+    timeseries.length === 0;
+
   return (
     <div className="flex flex-col">
       <Header
@@ -217,258 +262,271 @@ export default function MarketplaceAnalyticsPage() {
       />
 
       <div className="space-y-8 p-8">
-        {/* Empty state */}
-        {!isLoading && !hasAnyData && (
-          <Card>
-            <CardContent className="py-16 text-center">
-              <BarChart3 className="mx-auto h-12 w-12 text-gray-300" />
-              <h3 className="mt-4 text-lg font-medium text-foreground">
-                No analytics data yet
-              </h3>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Deploy an agent to start tracking performance.
-              </p>
-            </CardContent>
-          </Card>
-        )}
+        {!isLoading && allFailed ? (
+          <ErrorState
+            title="Couldn't load marketplace analytics"
+            error={revenueError}
+            onRetry={loadAnalytics}
+          />
+        ) : hasNoData ? (
+          <EmptyState
+            icon={BarChart3}
+            title="No analytics data yet"
+            description="Publish an agent to the marketplace to start tracking its performance."
+            actionLabel="Publish Agent"
+            actionHref="/dashboard/marketplace/publish"
+          />
+        ) : (
+          <>
+            {/* Overview Cards */}
+            <section>
+              <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                Overview
+              </h2>
+              {isLoading ? (
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <MetricCardSkeleton key={i} />
+                  ))}
+                </div>
+              ) : overviewError !== null ? (
+                <ErrorState
+                  title="Couldn't load overview"
+                  error={overviewError}
+                  onRetry={loadAnalytics}
+                />
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <MetricCard
+                    label="Total Revenue"
+                    value={totalRevenueDollars}
+                    icon={DollarSign}
+                    iconBg="bg-green-500/10"
+                    iconColor="text-green-600 dark:text-green-400"
+                    valueColor="text-green-600 dark:text-green-400"
+                  />
+                  <MetricCard
+                    label="Published Agents"
+                    value={publishedListings.length.toString()}
+                    icon={Store}
+                    iconBg="bg-purple-500/10"
+                    iconColor="text-purple-600 dark:text-purple-400"
+                  />
+                  <MetricCard
+                    label="Total Installs"
+                    value={totalInstalls.toLocaleString()}
+                    icon={Download}
+                    iconBg="bg-blue-500/10"
+                    iconColor="text-blue-600 dark:text-blue-400"
+                  />
+                  <MetricCard
+                    label="Avg Rating"
+                    value={avgRating !== null ? `${avgRating.toFixed(1)} / 5` : "—"}
+                    icon={Star}
+                    iconBg="bg-yellow-500/10"
+                    iconColor="text-yellow-600 dark:text-yellow-400"
+                    valueColor="text-yellow-600 dark:text-yellow-400"
+                  />
+                </div>
+              )}
+            </section>
 
-        {/* Overview Cards */}
-        {(isLoading || hasAnyData) && (
-          <section>
-            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Overview
-            </h2>
-            {isLoading ? (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {Array.from({ length: 4 }).map((_, i) => (
-                  <SkeletonCard key={i} />
-                ))}
-              </div>
-            ) : (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <MetricCard
-                  label="Total Revenue"
-                  value={totalRevenueDollars}
-                  icon={DollarSign}
-                  iconBg="bg-green-500/10"
-                  iconColor="text-green-600 dark:text-green-400"
-                  valueColor="text-green-600 dark:text-green-400"
-                />
-                <MetricCard
-                  label="Published Agents"
-                  value={publishedListings.length.toString()}
-                  icon={Store}
-                  iconBg="bg-purple-500/10"
-                  iconColor="text-purple-600 dark:text-purple-400"
-                />
-                <MetricCard
-                  label="Total Installs"
-                  value={totalInstalls.toLocaleString()}
-                  icon={Download}
-                  iconBg="bg-blue-500/10"
-                  iconColor="text-blue-600 dark:text-blue-400"
-                />
-                <MetricCard
-                  label="Avg Rating"
-                  value={avgRating !== null ? `${avgRating.toFixed(1)} / 5` : "—"}
-                  icon={Star}
-                  iconBg="bg-yellow-500/10"
-                  iconColor="text-yellow-600 dark:text-yellow-400"
-                  valueColor="text-yellow-600 dark:text-yellow-400"
-                />
-              </div>
-            )}
-          </section>
-        )}
-
-        {/* Revenue by Agent + Top Categories */}
-        {(isLoading || hasAnyData) && (
-          <div className="grid gap-6 lg:grid-cols-2">
-            {/* Horizontal bar chart: Revenue by Agent */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <BarChart3 className="h-5 w-5 text-primary-500" />
-                  Revenue by Agent
-                </CardTitle>
-                <CardDescription>
-                  Earnings breakdown across your published agents
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {isLoading ? (
-                  <div className="space-y-4">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <div key={i} className="space-y-1">
-                        <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
-                        <div className="h-3 w-full animate-pulse rounded-full bg-muted" />
-                      </div>
-                    ))}
-                  </div>
-                ) : revenueByAgent.length === 0 ? (
-                  <p className="py-4 text-center text-sm text-muted-foreground">
-                    No revenue data yet
-                  </p>
-                ) : (
-                  <div className="space-y-4">
-                    {revenueByAgent.map((item) => {
-                      const widthPct = Math.round(
-                        (item.totalRevenueCents / maxAgentRevenue) * 100
-                      );
-                      const agentName = item.listing?.title ?? item.listingId;
-                      const revenueDisplay = `$${(item.totalRevenueCents / 100).toLocaleString()}`;
-                      return (
-                        <div key={item.listingId}>
-                          <div className="mb-1 flex items-center justify-between text-sm">
-                            <span className="font-medium text-foreground">
-                              {agentName}
-                            </span>
-                            <span className="font-semibold text-green-600 dark:text-green-400">
-                              {revenueDisplay}
-                            </span>
-                          </div>
-                          <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
-                            <div
-                              className="h-full rounded-full bg-primary-500 transition-all"
-                              style={{ width: `${widthPct}%` }}
-                              title={revenueDisplay}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Top Categories */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <PieChart className="h-5 w-5 text-blue-500" />
-                  Top Categories
-                </CardTitle>
-                <CardDescription>
-                  Distribution of installs by agent category
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {isLoading ? (
-                  <div className="space-y-4">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <div key={i} className="space-y-1">
-                        <div className="h-4 w-1/2 animate-pulse rounded bg-muted" />
-                        <div className="h-3 w-full animate-pulse rounded-full bg-muted" />
-                      </div>
-                    ))}
-                  </div>
-                ) : categoryBreakdown.length === 0 ? (
-                  <p className="py-4 text-center text-sm text-muted-foreground">
-                    No category data yet
-                  </p>
-                ) : (
-                  <>
+            {/* Revenue by Agent + Top Categories */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Horizontal bar chart: Revenue by Agent */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <BarChart3 className="h-5 w-5 text-primary-500" />
+                    Revenue by Agent
+                  </CardTitle>
+                  <CardDescription>
+                    Earnings breakdown across your published agents
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {isLoading ? (
+                    <BarListSkeleton labelWidth="w-3/4" />
+                  ) : revenueError !== null ? (
+                    <ErrorState
+                      title="Couldn't load revenue"
+                      error={revenueError}
+                      onRetry={loadAnalytics}
+                    />
+                  ) : revenueByAgent.length === 0 ? (
+                    <EmptyState
+                      icon={DollarSign}
+                      title="No revenue data yet"
+                      description="Earnings from your published agents will show here."
+                    />
+                  ) : (
                     <div className="space-y-4">
-                      {categoryBreakdown.map(({ name, pct, color }) => (
-                        <div key={name}>
-                          <div className="mb-1 flex items-center justify-between text-sm">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={`h-3 w-3 rounded-full ${color}`}
-                                aria-hidden="true"
-                              />
+                      {revenueByAgent.map((item) => {
+                        const widthPct = Math.round(
+                          (item.totalRevenueCents / maxAgentRevenue) * 100
+                        );
+                        const agentName = item.listing?.title ?? item.listingId;
+                        const revenueDisplay = `$${(item.totalRevenueCents / 100).toLocaleString()}`;
+                        return (
+                          <div key={item.listingId}>
+                            <div className="mb-1 flex items-center justify-between text-sm">
                               <span className="font-medium text-foreground">
-                                {name}
+                                {agentName}
+                              </span>
+                              <span className="font-semibold text-green-600 dark:text-green-400">
+                                {revenueDisplay}
                               </span>
                             </div>
-                            <span className="font-semibold text-foreground">
-                              {pct}%
-                            </span>
+                            <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-primary-500 transition-all"
+                                style={{ width: `${widthPct}%` }}
+                                title={revenueDisplay}
+                              />
+                            </div>
                           </div>
-                          <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
+                        );
+                      })}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Top Categories */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <PieChart className="h-5 w-5 text-blue-500" />
+                    Top Categories
+                  </CardTitle>
+                  <CardDescription>
+                    Distribution of installs by agent category
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {isLoading ? (
+                    <BarListSkeleton labelWidth="w-1/2" />
+                  ) : listingsError !== null ? (
+                    <ErrorState
+                      title="Couldn't load categories"
+                      error={listingsError}
+                      onRetry={loadAnalytics}
+                    />
+                  ) : categoryBreakdown.length === 0 ? (
+                    <EmptyState
+                      icon={PieChart}
+                      title="No category data yet"
+                      description="Installs of your published agents, grouped by category, will show here."
+                    />
+                  ) : (
+                    <>
+                      <div className="space-y-4">
+                        {categoryBreakdown.map(({ name, pct, color }) => (
+                          <div key={name}>
+                            <div className="mb-1 flex items-center justify-between text-sm">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className={`h-3 w-3 rounded-full ${color}`}
+                                  aria-hidden="true"
+                                />
+                                <span className="font-medium text-foreground">
+                                  {name}
+                                </span>
+                              </div>
+                              <span className="font-semibold text-foreground">
+                                {pct}%
+                              </span>
+                            </div>
+                            <div className="h-3 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={`h-full rounded-full ${color} transition-all`}
+                                style={{ width: `${pct}%` }}
+                                title={`${name}: ${pct}%`}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-4 text-xs text-muted-foreground">
+                        Based on total installs across all published agents
+                      </p>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Activity / Install Growth — 30-day vertical bar chart from analytics timeseries */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5 text-green-500" />
+                  Request Activity (Last 30 Days)
+                </CardTitle>
+                <CardDescription>
+                  Daily request volume across all your marketplace listings
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {isLoading ? (
+                  <Skeleton className="h-40 w-full" />
+                ) : dashboardError !== null ? (
+                  <ErrorState
+                    title="Couldn't load request activity"
+                    error={dashboardError}
+                    onRetry={loadAnalytics}
+                  />
+                ) : timeseries.length === 0 ? (
+                  <EmptyState
+                    icon={TrendingUp}
+                    title="No activity data for this period"
+                    description="Daily request volume will show here once requests come in."
+                  />
+                ) : (
+                  <>
+                    <div className="flex h-40 items-end gap-px sm:gap-1">
+                      {timeseries.map((point, index) => {
+                        const heightPct = Math.round((point.requests / maxActivity) * 100);
+                        const dayNum = index + 1;
+                        return (
+                          <div
+                            key={index}
+                            className="group relative flex flex-1 flex-col items-center"
+                          >
+                            <span className="pointer-events-none absolute bottom-full mb-1 hidden whitespace-nowrap rounded bg-gray-900 px-1.5 py-0.5 text-xs text-white group-hover:block dark:bg-gray-100 dark:text-gray-900">
+                              Day {dayNum}: {point.requests}
+                            </span>
                             <div
-                              className={`h-full rounded-full ${color} transition-all`}
-                              style={{ width: `${pct}%` }}
-                              title={`${name}: ${pct}%`}
+                              className="w-full rounded-t bg-blue-500 transition-all hover:bg-blue-400"
+                              style={{ height: `${heightPct}%` }}
                             />
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
-                    <p className="mt-4 text-xs text-muted-foreground">
-                      Based on total installs across all published agents
+                    <div className="mt-2 flex">
+                      {timeseries.map((_, index) => {
+                        const dayNum = index + 1;
+                        const showLabel = dayNum === 1 || dayNum % 5 === 0;
+                        return (
+                          <div key={index} className="flex-1 text-center">
+                            {showLabel && (
+                              <span className="text-xs text-muted-foreground">
+                                {dayNum}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-1 text-center text-xs text-muted-foreground">
+                      Day of period
                     </p>
                   </>
                 )}
               </CardContent>
             </Card>
-          </div>
-        )}
-
-        {/* Activity / Install Growth — 30-day vertical bar chart from analytics timeseries */}
-        {(isLoading || hasAnyData) && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5 text-green-500" />
-                Request Activity (Last 30 Days)
-              </CardTitle>
-              <CardDescription>
-                Daily request volume across all your marketplace listings
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {isLoading ? (
-                <div className="h-40 animate-pulse rounded bg-muted" />
-              ) : timeseries.length === 0 ? (
-                <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-                  No activity data for this period
-                </div>
-              ) : (
-                <>
-                  <div className="flex h-40 items-end gap-px sm:gap-1">
-                    {timeseries.map((point, index) => {
-                      const heightPct = Math.round((point.requests / maxActivity) * 100);
-                      const dayNum = index + 1;
-                      return (
-                        <div
-                          key={index}
-                          className="group relative flex flex-1 flex-col items-center"
-                        >
-                          <span className="pointer-events-none absolute bottom-full mb-1 hidden whitespace-nowrap rounded bg-gray-900 px-1.5 py-0.5 text-xs text-white group-hover:block dark:bg-gray-100 dark:text-gray-900">
-                            Day {dayNum}: {point.requests}
-                          </span>
-                          <div
-                            className="w-full rounded-t bg-blue-500 transition-all hover:bg-blue-400"
-                            style={{ height: `${heightPct}%` }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="mt-2 flex">
-                    {timeseries.map((_, index) => {
-                      const dayNum = index + 1;
-                      const showLabel = dayNum === 1 || dayNum % 5 === 0;
-                      return (
-                        <div key={index} className="flex-1 text-center">
-                          {showLabel && (
-                            <span className="text-xs text-muted-foreground">
-                              {dayNum}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <p className="mt-1 text-center text-xs text-muted-foreground">
-                    Day of period
-                  </p>
-                </>
-              )}
-            </CardContent>
-          </Card>
+          </>
         )}
       </div>
     </div>

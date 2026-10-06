@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   BarChart3,
   TrendingUp,
@@ -20,7 +20,8 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Skeleton, SkeletonCard, SkeletonTable } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 
 export default function AnalyticsDashboardPage() {
@@ -28,13 +29,11 @@ export default function AnalyticsDashboardPage() {
   const [alerts, setAlerts] = useState<SpendingAlert[]>([]);
   const [periodDays, setPeriodDays] = useState(30);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
-  useEffect(() => {
-    loadDashboard();
-  }, [periodDays]);
-
-  async function loadDashboard() {
+  const loadDashboard = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [dashboardRes, alertsRes] = await Promise.all([
         analyticsApi.getDashboard(periodDays),
@@ -45,10 +44,16 @@ export default function AnalyticsDashboardPage() {
     } catch (error) {
       console.error("Failed to load analytics:", error);
       toast.error(getErrorMessage(error, "Failed to load analytics data"));
+      setLoadError(error);
     } finally {
       setLoading(false);
     }
-  }
+  }, [periodDays]);
+
+  // Runs on mount and again whenever the period changes.
+  useEffect(() => {
+    loadDashboard();
+  }, [loadDashboard]);
 
   const formatCurrency = (cents: number) => {
     return new Intl.NumberFormat("en-US", {
@@ -63,9 +68,32 @@ export default function AnalyticsDashboardPage() {
     return num.toLocaleString();
   };
 
+  const header = (
+    <div className="flex items-center justify-between">
+      <div>
+        <h1 className="text-2xl font-bold">Analytics</h1>
+        <p className="text-muted-foreground">
+          Usage metrics and cost insights
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <select
+          value={periodDays}
+          onChange={(e) => setPeriodDays(parseInt(e.target.value))}
+          className="bg-card border rounded-lg px-3 py-2 text-sm"
+        >
+          <option value={7}>Last 7 days</option>
+          <option value={14}>Last 14 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+      </div>
+    </div>
+  );
+
   if (loading) {
     return (
-      <div className="p-6 space-y-6">
+      <div className="p-6 space-y-6" aria-busy="true">
         <div className="flex items-center justify-between">
           <div className="space-y-2">
             <Skeleton className="h-8 w-36" />
@@ -73,16 +101,70 @@ export default function AnalyticsDashboardPage() {
           </div>
           <Skeleton className="h-10 w-36" />
         </div>
+
+        {/* Overview cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => (
-            <SkeletonCard key={i} />
+            <div key={i} className="bg-card border rounded-lg p-4 space-y-3">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-9 w-24" />
+              <Skeleton className="h-4 w-32" />
+            </div>
           ))}
         </div>
-        <div className="rounded-lg border border-border bg-card p-6 space-y-4">
-          <Skeleton className="h-5 w-48" />
-          <Skeleton className="h-48 w-full" />
+
+        {/* Cost projection */}
+        <div className="bg-card border rounded-lg p-6">
+          <Skeleton className="mb-4 h-6 w-56" />
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="space-y-2">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-8 w-20" />
+              </div>
+            ))}
+          </div>
         </div>
+
+        {/* Usage over time */}
+        <div className="bg-card border rounded-lg p-6">
+          <Skeleton className="mb-4 h-6 w-40" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+
+        {/* Cost by model, cost by GPU tier */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="bg-card border rounded-lg p-6 space-y-4">
+              <Skeleton className="h-6 w-36" />
+              {Array.from({ length: 3 }).map((_, j) => (
+                <div key={j} className="space-y-2">
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-2 w-full rounded-full" />
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* Deployment performance */}
         <SkeletonTable rows={5} cols={8} />
+        {/* Last, so the header is the first spaced child as on the real page */}
+        <span className="sr-only">Loading analytics</span>
+      </div>
+    );
+  }
+
+  // The header stays so a period that keeps failing can be switched away from.
+  if (loadError !== null) {
+    return (
+      <div className="p-6 space-y-6">
+        {header}
+        <ErrorState
+          title="Couldn't load analytics"
+          error={loadError}
+          onRetry={loadDashboard}
+        />
       </div>
     );
   }
@@ -105,27 +187,7 @@ export default function AnalyticsDashboardPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Analytics</h1>
-          <p className="text-muted-foreground">
-            Usage metrics and cost insights
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={periodDays}
-            onChange={(e) => setPeriodDays(parseInt(e.target.value))}
-            className="bg-card border rounded-lg px-3 py-2 text-sm"
-          >
-            <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
-          </select>
-        </div>
-      </div>
+      {header}
 
       {/* Alerts */}
       {alerts.length > 0 && (
@@ -273,9 +335,11 @@ export default function AnalyticsDashboardPage() {
             })()}
           </div>
         ) : (
-          <div className="h-48 flex items-center justify-center text-muted-foreground">
-            No usage data available
-          </div>
+          <EmptyState
+            icon={TrendingUp}
+            title="No usage data available"
+            description="Request volume for the selected period will show here once requests come in."
+          />
         )}
       </div>
 
@@ -308,9 +372,11 @@ export default function AnalyticsDashboardPage() {
               })}
             </div>
           ) : (
-            <div className="text-center py-8 text-muted-foreground">
-              No model data available
-            </div>
+            <EmptyState
+              icon={BarChart3}
+              title="No model data available"
+              description="Spend per model for the selected period will show here once requests come in."
+            />
           )}
         </div>
 
@@ -345,9 +411,11 @@ export default function AnalyticsDashboardPage() {
               })}
             </div>
           ) : (
-            <div className="text-center py-8 text-muted-foreground">
-              No GPU data available
-            </div>
+            <EmptyState
+              icon={Cpu}
+              title="No GPU data available"
+              description="Spend per GPU tier for the selected period will show here once requests come in."
+            />
           )}
         </div>
       </div>
@@ -413,9 +481,13 @@ export default function AnalyticsDashboardPage() {
             </table>
           </div>
         ) : (
-          <div className="text-center py-8 text-muted-foreground">
-            No deployment data available
-          </div>
+          <EmptyState
+            icon={Server}
+            title="No deployment data available"
+            description="Deploy a model to see its requests, tokens, cost and latency here."
+            actionLabel="Deploy a Model"
+            actionHref="/dashboard/models"
+          />
         )}
       </div>
     </div>

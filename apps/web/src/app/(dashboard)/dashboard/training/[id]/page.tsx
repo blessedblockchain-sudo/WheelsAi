@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
 import {
   GraduationCap,
   Play,
@@ -25,6 +24,9 @@ import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { trainingApi, type TrainingJobDetail, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-dialog";
@@ -49,6 +51,18 @@ const statusIcons: Record<string, React.ElementType> = {
 
 type Tab = "overview" | "logs" | "metrics";
 
+/**
+ * The API answers 404 when no job with this ID exists in the caller's org,
+ * and 400 when the ID is not a UUID (e.g. a truncated or hand-edited link).
+ * The job ID is the endpoint's only input, so a 400 can only mean a bad ID:
+ * both cases mean there is no such job, and retrying can never succeed.
+ */
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const status = (error as { status?: unknown }).status;
+  return status === 404 || status === 400;
+}
+
 export default function TrainingJobDetailPage() {
   const confirmAction = useConfirm();
   const params = useParams();
@@ -58,32 +72,42 @@ export default function TrainingJobDetailPage() {
   const [job, setJob] = useState<TrainingJobDetail | null>(null);
   const [logs, setLogs] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [isCancelling, setIsCancelling] = useState(false);
 
   const logsRef = useRef<HTMLPreElement>(null);
   const pollInterval = useRef<NodeJS.Timeout | null>(null);
 
-  async function loadJob() {
+  const loadJob = useCallback(async () => {
     try {
       const { job } = await trainingApi.getJob(jobId);
       setJob(job);
+      setLoadError(null);
       return job;
     } catch (error) {
+      setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load training job"));
       return null;
     } finally {
       setIsLoading(false);
     }
-  }
+  }, [jobId]);
 
-  async function loadLogs() {
+  const loadLogs = useCallback(async () => {
     try {
       const { logs } = await trainingApi.getJobLogs(jobId, 500);
       setLogs(logs);
     } catch (error) {
       // Ignore log loading errors
     }
+  }, [jobId]);
+
+  function handleRetry() {
+    setLoadError(null);
+    setIsLoading(true);
+    void loadJob();
+    void loadLogs();
   }
 
   useEffect(() => {
@@ -108,7 +132,7 @@ export default function TrainingJobDetailPage() {
         clearInterval(pollInterval.current);
       }
     };
-  }, [jobId]);
+  }, [loadJob, loadLogs]);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -143,27 +167,73 @@ export default function TrainingJobDetailPage() {
     return (
       <div className="flex flex-col">
         <Header title="Loading..." />
-        <div className="p-8">
-          <div className="h-96 animate-pulse rounded-lg bg-muted" />
+        <div className="p-8" aria-busy="true">
+          <span className="sr-only">Loading training job</span>
+
+          {/* Status bar */}
+          <Card className="mb-6">
+            <CardContent className="py-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <Skeleton className="h-12 w-12 rounded-lg" />
+                  <div className="space-y-2">
+                    <Skeleton className="h-5 w-24 rounded-full" />
+                    <Skeleton className="h-4 w-40" />
+                  </div>
+                </div>
+                <Skeleton className="h-10 w-12" />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Tabs */}
+          <div className="mb-6 flex gap-2 border-b">
+            {[1, 2, 3].map((i) => (
+              <div key={i} className="px-4 py-2.5">
+                <Skeleton className="h-4 w-16" />
+              </div>
+            ))}
+          </div>
+
+          {/* Overview cards */}
+          <div className="grid gap-6 md:grid-cols-2">
+            {[1, 2, 3, 4].map((i) => (
+              <SkeletonCard key={i} />
+            ))}
+            <div className="md:col-span-2">
+              <SkeletonCard />
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
   if (!job) {
+    // A 404 (unknown job) or 400 (malformed job ID) means the job does not
+    // exist; any other failure is a load error the user can retry.
+    const notFound = !loadError || isNotFoundError(loadError);
     return (
       <div className="flex flex-col">
-        <Header title="Job Not Found" />
+        <Header title={notFound ? "Job Not Found" : "Training Job"} />
         <div className="p-8">
-          <Card>
-            <CardContent className="py-16 text-center">
-              <GraduationCap className="mx-auto h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium">Training job not found</h3>
-              <Link href="/dashboard/training" className="mt-4 inline-block">
-                <Button variant="outline">Back to Training</Button>
-              </Link>
-            </CardContent>
-          </Card>
+          {notFound ? (
+            <EmptyState
+              icon={GraduationCap}
+              title="Training job not found"
+              description="Check the link, or go back to your training jobs."
+              actionLabel="Back to Training"
+              actionHref="/dashboard/training"
+            />
+          ) : (
+            <ErrorState
+              title="Couldn't load training job"
+              error={loadError}
+              onRetry={handleRetry}
+              actionLabel="Back to Training"
+              actionHref="/dashboard/training"
+            />
+          )}
         </div>
       </div>
     );
@@ -510,12 +580,11 @@ export default function TrainingJobDetailPage() {
                   </pre>
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center py-12">
-                  <TrendingDown className="h-12 w-12 text-gray-300" />
-                  <p className="mt-4 text-muted-foreground">
-                    Metrics will appear here once training starts
-                  </p>
-                </div>
+                <EmptyState
+                  icon={TrendingDown}
+                  title="No metrics yet"
+                  description="Metrics will appear here once training starts."
+                />
               )}
             </CardContent>
           </Card>

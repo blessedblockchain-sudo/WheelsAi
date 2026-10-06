@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Bot, Plus, Play, Square, Code, Zap, MoreVertical } from "lucide-react";
+import { Bot, Play, Square, Code, Zap, MoreVertical } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { agentsApi, type Agent, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -30,23 +32,62 @@ const statusColors: Record<string, "success" | "warning" | "destructive" | "seco
   failed: "destructive",
 };
 
+/** Stand-in for one agent card while the list loads: header, description, tags and footer. */
+function AgentCardSkeleton() {
+  return (
+    <Card className="h-full">
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-lg" />
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-4 w-20" />
+            </div>
+          </div>
+          <Skeleton className="h-5 w-16 rounded-full" />
+        </div>
+        <div className="space-y-2 pt-3">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex gap-1.5">
+          <Skeleton className="h-5 w-14 rounded-full" />
+          <Skeleton className="h-5 w-12 rounded-full" />
+        </div>
+        <div className="mt-4 flex items-center justify-between border-t pt-4">
+          <Skeleton className="h-6 w-24" />
+          <Skeleton className="h-4 w-20" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
+
+  const loadAgents = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const { agents } = await agentsApi.list();
+      setAgents(agents);
+    } catch (error) {
+      setLoadError(error);
+      toast.error(getErrorMessage(error, "Failed to load agents"));
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function loadAgents() {
-      try {
-        const { agents } = await agentsApi.list();
-        setAgents(agents);
-      } catch (error) {
-        toast.error(getErrorMessage(error, "Failed to load agents"));
-      } finally {
-        setIsLoading(false);
-      }
-    }
     loadAgents();
-  }, []);
+  }, [loadAgents]);
 
   return (
     <div className="flex flex-col">
@@ -57,55 +98,59 @@ export default function AgentsPage() {
       />
 
       <div className="p-8">
-        {/* Framework overview */}
-        <div className="mb-8 grid gap-4 md:grid-cols-4">
-          {[
-            { name: "Mastra", count: agents.filter((a) => a.framework === "mastra").length, color: "purple" },
-            { name: "LangChain", count: agents.filter((a) => a.framework === "langchain").length, color: "green" },
-            { name: "AutoGen", count: agents.filter((a) => a.framework === "autogen").length, color: "blue" },
-            { name: "Custom", count: agents.filter((a) => a.framework === "custom").length, color: "gray" },
-          ].map((fw) => (
-            <Card key={fw.name}>
-              <CardContent className="py-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">{fw.name} Agents</p>
-                    <p className="text-2xl font-bold">{fw.count}</p>
+        {/* Framework overview: counts come from the list, so it is hidden
+            (not shown as zeros) when the list failed to load. */}
+        {loadError === null && (
+          <div className="mb-8 grid gap-4 md:grid-cols-4">
+            {[
+              { name: "Mastra", count: agents.filter((a) => a.framework === "mastra").length, color: "purple" },
+              { name: "LangChain", count: agents.filter((a) => a.framework === "langchain").length, color: "green" },
+              { name: "AutoGen", count: agents.filter((a) => a.framework === "autogen").length, color: "blue" },
+              { name: "Custom", count: agents.filter((a) => a.framework === "custom").length, color: "gray" },
+            ].map((fw) => (
+              <Card key={fw.name}>
+                <CardContent className="py-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">{fw.name} Agents</p>
+                      {isLoading ? (
+                        <Skeleton className="my-1 h-6 w-10" />
+                      ) : (
+                        <p className="text-2xl font-bold">{fw.count}</p>
+                      )}
+                    </div>
+                    <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", `bg-${fw.color}-100`)}>
+                      <Bot className={cn("h-5 w-5", `text-${fw.color}-600`)} />
+                    </div>
                   </div>
-                  <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", `bg-${fw.color}-100`)}>
-                    <Bot className={cn("h-5 w-5", `text-${fw.color}-600`)} />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        {/* Agents list */}
-        {isLoading ? (
-          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {[1, 2, 3].map((i) => (
-              <div key={i} className="h-48 animate-pulse rounded-lg bg-muted" />
+                </CardContent>
+              </Card>
             ))}
           </div>
+        )}
+
+        {/* Agents list */}
+        {loadError !== null ? (
+          <ErrorState
+            title="Couldn't load agents"
+            error={loadError}
+            onRetry={() => void loadAgents()}
+          />
+        ) : isLoading ? (
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+            {[1, 2, 3].map((i) => (
+              <AgentCardSkeleton key={i} />
+            ))}
+            <span className="sr-only">Loading agents</span>
+          </div>
         ) : agents.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center justify-center py-16">
-              <Bot className="h-16 w-16 text-gray-300" />
-              <h3 className="mt-4 text-xl font-medium text-foreground">
-                No agents yet
-              </h3>
-              <p className="mt-2 text-center text-muted-foreground">
-                Create your first AI agent to automate tasks and workflows
-              </p>
-              <Link href="/dashboard/agents/new" className="mt-6">
-                <Button>
-                  <Plus className="mr-2 h-4 w-4" />
-                  Create Agent
-                </Button>
-              </Link>
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Bot}
+            title="No agents yet"
+            description="Create your first AI agent to automate tasks and workflows."
+            actionLabel="Create Agent"
+            actionHref="/dashboard/agents/new"
+          />
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
             {agents.map((agent) => (

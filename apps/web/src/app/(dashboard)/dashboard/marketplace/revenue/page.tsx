@@ -31,6 +31,9 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
+import { ErrorState } from "@/components/ui/error-state";
+import { EmptyState } from "@/components/ui/empty-state";
 import { marketplaceApi, getErrorMessage } from "@/lib/api";
 import { ContributionsCard } from "@/components/marketplace/contributions-card";
 import { cn } from "@/lib/utils";
@@ -102,10 +105,72 @@ const payoutMethodLabels: Record<string, string> = {
   crypto_sol: "SOL",
 };
 
+/** Placeholder shaped like the loaded page: stats, payout CTA, two lists, transactions table. */
+function RevenuePageSkeleton() {
+  return (
+    <>
+      <div className="mb-8 grid gap-4 md:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i}>
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-2">
+                  <Skeleton className="h-4 w-28" />
+                  <Skeleton className="h-7 w-20" />
+                </div>
+                <Skeleton className="h-10 w-10 rounded-lg" />
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card className="mb-8">
+        <CardContent className="py-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-5 w-36 max-w-full" />
+              <Skeleton className="h-4 w-64 max-w-full" />
+            </div>
+            <Skeleton className="h-10 w-40 shrink-0" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-8 lg:grid-cols-2">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <Card key={i}>
+            <CardHeader>
+              <Skeleton className="h-5 w-40" />
+              <Skeleton className="h-4 w-56 max-w-full" />
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {Array.from({ length: 3 }).map((_, j) => (
+                <Skeleton key={j} className="h-16 w-full rounded-lg" />
+              ))}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Card className="mt-8">
+        <CardHeader>
+          <Skeleton className="h-5 w-44" />
+          <Skeleton className="h-4 w-60 max-w-full" />
+        </CardHeader>
+        <CardContent>
+          <SkeletonTable rows={5} cols={6} />
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
 export default function RevenueDashboardPage() {
   const [revenue, setRevenue] = useState<RevenueData | null>(null);
   const [payoutHistory, setPayoutHistory] = useState<Payout[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [showPayoutDialog, setShowPayoutDialog] = useState(false);
   const [payoutMethod, setPayoutMethod] = useState<"credits" | "crypto_usdc" | "crypto_sol">("credits");
   const [payoutAddress, setPayoutAddress] = useState("");
@@ -123,11 +188,19 @@ export default function RevenueDashboardPage() {
       ]);
       setRevenue(revenueData);
       setPayoutHistory(payoutsData.payouts);
+      setLoadError(null);
     } catch (error) {
+      setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load revenue data"));
     } finally {
       setIsLoading(false);
     }
+  }
+
+  function retryLoad() {
+    setLoadError(null);
+    setIsLoading(true);
+    loadData();
   }
 
   async function handleRequestPayout() {
@@ -164,13 +237,13 @@ export default function RevenueDashboardPage() {
 
       <div className="p-8">
         {isLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
-          </div>
-        ) : !revenue ? (
-          <div className="py-12 text-center">
-            <p className="text-muted-foreground">Failed to load revenue data</p>
-          </div>
+          <RevenuePageSkeleton />
+        ) : loadError !== null || !revenue ? (
+          <ErrorState
+            title="Couldn't load revenue data"
+            error={loadError}
+            onRetry={retryLoad}
+          />
         ) : (
           <>
             {/* Stats */}
@@ -267,10 +340,11 @@ export default function RevenueDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   {revenue.revenueByListing.length === 0 ? (
-                    <div className="py-8 text-center text-muted-foreground">
-                      <Store className="mx-auto h-8 w-8 text-gray-300" />
-                      <p className="mt-2">No revenue yet</p>
-                    </div>
+                    <EmptyState
+                      icon={Store}
+                      title="No revenue yet"
+                      description="Earnings from your published agents will show here."
+                    />
                   ) : (
                     <div className="space-y-4">
                       {revenue.revenueByListing.map((item) => (
@@ -304,10 +378,11 @@ export default function RevenueDashboardPage() {
                 </CardHeader>
                 <CardContent>
                   {payoutHistory.length === 0 ? (
-                    <div className="py-8 text-center text-muted-foreground">
-                      <CreditCard className="mx-auto h-8 w-8 text-gray-300" />
-                      <p className="mt-2">No payouts yet</p>
-                    </div>
+                    <EmptyState
+                      icon={CreditCard}
+                      title="No payouts yet"
+                      description="Payouts you request will be listed here."
+                    />
                   ) : (
                     <div className="space-y-3">
                       {payoutHistory.slice(0, 5).map((payout) => (
@@ -352,13 +427,11 @@ export default function RevenueDashboardPage() {
               </CardHeader>
               <CardContent>
                 {revenue.recentTransactions.length === 0 ? (
-                  <div className="py-8 text-center text-muted-foreground">
-                    <TrendingUp className="mx-auto h-8 w-8 text-gray-300" />
-                    <p className="mt-2">No transactions yet</p>
-                    <p className="text-sm">
-                      Revenue will appear here when users use your agents
-                    </p>
-                  </div>
+                  <EmptyState
+                    icon={TrendingUp}
+                    title="No transactions yet"
+                    description="Revenue will appear here when users use your agents."
+                  />
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">

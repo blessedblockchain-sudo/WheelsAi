@@ -32,7 +32,7 @@ export function buildOrchestrationExecutorDeps(
       if (!agent) {
         throw new Error(`agent ${agentId} not found in this organization`);
       }
-      return executor.runAgentChat({ agent, prompt });
+      return executor.runAgentChat({ agent, prompt, mode: "job" });
     },
 
     recordStepResult: async (record: StepRecord) => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { Send, Bot, User, Loader2, ChevronLeft, ChevronRight, Settings } from "lucide-react";
+import { Send, Bot, User, Loader2, ChevronLeft, ChevronRight, Settings, Wrench } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
@@ -10,18 +10,49 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ModelSelector } from "@/components/dashboard/model-selector";
+import { SkillStatusBadge, SkillUnavailableNote } from "@/components/dashboard/skill-status";
 import {
   agentsApi,
   playgroundApi,
+  skillsApi,
   streamPlaygroundChat,
   type AgentDetail,
   type PlaygroundAgentChatResponse,
+  type PlaygroundToolCall,
+  type Skill,
   getErrorMessage,
 } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
+  /** Tools the model called to produce this answer, and how each ended. */
+  toolCalls?: PlaygroundToolCall[];
+}
+
+/** One line per tool call, honest about calls that could not run. */
+function ToolCallNote({ call }: { call: PlaygroundToolCall }) {
+  const tone =
+    call.status === "ok"
+      ? "text-muted-foreground"
+      : "text-yellow-600 dark:text-yellow-500";
+  const label =
+    call.status === "ok"
+      ? "used"
+      : call.status === "unavailable"
+        ? "unavailable"
+        : call.status === "unknown"
+          ? "not an enabled tool"
+          : "failed";
+  return (
+    <div className={`flex items-start gap-1.5 text-xs ${tone}`}>
+      <Wrench className="mt-0.5 h-3 w-3 shrink-0" />
+      <span>
+        <span className="font-medium">{call.name}</span> — {label}
+        {call.status !== "ok" && call.detail ? `: ${call.detail}` : ""}
+      </span>
+    </div>
+  );
 }
 
 export default function PlaygroundPage() {
@@ -36,6 +67,8 @@ export default function PlaygroundPage() {
   const [selectedModel, setSelectedModel] = useState("free/groq/llama-3.3-70b");
   const [showSidebar, setShowSidebar] = useState(false);
   const [requestCount, setRequestCount] = useState(0);
+  // Availability of the tools this agent has, from GET /api/skills.
+  const [skills, setSkills] = useState<Skill[] | null>(null);
 
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -51,6 +84,14 @@ export default function PlaygroundPage() {
       })
       .catch((err) => toast.error(getErrorMessage(err, "Failed to load agent")))
       .finally(() => setIsLoadingAgent(false));
+  }, [agentId]);
+
+  useEffect(() => {
+    skillsApi
+      .list(agentId)
+      .then(({ skills }) => setSkills(skills))
+      // The sidebar degrades to plain tool names; chat itself is unaffected.
+      .catch(() => setSkills(null));
   }, [agentId]);
 
   useEffect(() => {
@@ -78,10 +119,21 @@ export default function PlaygroundPage() {
         setMessages((prev) => [...prev, assistantMessage]);
 
         let fullContent = "";
-        for await (const chunk of streamPlaygroundChat(agentId, {
-          messages: chatMessages,
-          model: selectedModel,
-        })) {
+        for await (const chunk of streamPlaygroundChat(
+          agentId,
+          { messages: chatMessages, model: selectedModel },
+          {
+            onToolCalls: (toolCalls) =>
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last?.role === "assistant") {
+                  updated[updated.length - 1] = { ...last, toolCalls };
+                }
+                return updated;
+              }),
+          }
+        )) {
           fullContent += chunk;
           setMessages((prev) => {
             const updated = [...prev];
@@ -100,7 +152,11 @@ export default function PlaygroundPage() {
         });
         setMessages((prev) => [
           ...prev,
-          { role: "assistant", content: result.content },
+          {
+            role: "assistant",
+            content: result.content,
+            toolCalls: result.toolCalls,
+          },
         ]);
         // Marketplace installs bill per request. Say so at the moment the
         // money moves rather than leaving it to the credit statement.
@@ -248,6 +304,13 @@ export default function PlaygroundPage() {
                         <Loader2 className="h-4 w-4 animate-spin" />
                       )}
                   </div>
+                  {message.toolCalls && message.toolCalls.length > 0 && (
+                    <div className="mt-2 space-y-1 border-t border-border/50 pt-2">
+                      {message.toolCalls.map((call, i) => (
+                        <ToolCallNote key={i} call={call} />
+                      ))}
+                    </div>
+                  )}
                 </div>
                 {message.role === "user" && (
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted">
@@ -334,14 +397,31 @@ export default function PlaygroundPage() {
                     Tools ({(agent.tools as any[]).length})
                   </p>
                   <div className="mt-1 space-y-1">
-                    {(agent.tools as any[]).map((tool: any, i: number) => (
-                      <div
-                        key={i}
-                        className="rounded bg-card px-2 py-1 text-xs border"
-                      >
-                        {tool.name}
-                      </div>
-                    ))}
+                    {(agent.tools as any[]).map((tool: any, i: number) => {
+                      const skill = skills?.find((s) => s.key === tool.name);
+                      return (
+                        <div
+                          key={i}
+                          className="rounded bg-card px-2 py-1.5 text-xs border"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-medium">{skill?.name ?? tool.name}</span>
+                            {skill ? (
+                              <SkillStatusBadge skill={skill} />
+                            ) : skills ? (
+                              <Badge variant="secondary">Not supported</Badge>
+                            ) : null}
+                          </div>
+                          {skill && <SkillUnavailableNote skill={skill} />}
+                          {skills && !skill && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              This tool name is not one the server can run, so the model is
+                              not offered it.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}

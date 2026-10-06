@@ -626,7 +626,10 @@ async function callAgentViaModel(
           )
         : JSON.stringify(input);
 
-  const result = await deps.runAgentChat({ agent, prompt });
+  // "test" mode: read-only skills run normally, but file_write (and anything
+  // money-moving) is refused - a test run must not change the agent's saved
+  // files or spend.
+  const result = await deps.runAgentChat({ agent, prompt, mode: "test" });
   return { role: "assistant", content: result.content };
 }
 

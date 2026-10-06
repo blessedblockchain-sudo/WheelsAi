@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Bot,
@@ -24,7 +24,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { agentsApi, type CreateAgentInput, getErrorMessage } from "@/lib/api";
+import { SkillStatusBadge, SkillUnavailableNote } from "@/components/dashboard/skill-status";
+import { agentsApi, skillsApi, type CreateAgentInput, type Skill, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -94,15 +95,6 @@ const frameworks = [
   },
 ];
 
-const builtInTools = [
-  { name: "web_search", label: "Web Search", description: "Search the web for information" },
-  { name: "calculator", label: "Calculator", description: "Perform mathematical calculations" },
-  { name: "code_interpreter", label: "Code Interpreter", description: "Execute Python code" },
-  { name: "http_request", label: "HTTP Request", description: "Make API calls" },
-  { name: "file_read", label: "File Read", description: "Read file contents" },
-  { name: "file_write", label: "File Write", description: "Write to files" },
-];
-
 export default function NewAgentPage() {
   return (
     <Suspense fallback={<div className="flex h-96 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary-500 border-t-transparent" /></div>}>
@@ -141,7 +133,24 @@ function NewAgentContent() {
   });
 
   const [selectedTools, setSelectedTools] = useState<string[]>([]);
+  // The tool list comes from the server (GET /api/skills) so what is
+  // selectable is exactly what the runtime can execute, with honest
+  // availability. Unavailable tools stay selectable, labelled.
+  const [skills, setSkills] = useState<Skill[] | null>(null);
+  const [skillsError, setSkillsError] = useState<string | null>(null);
   const [customEnv, setCustomEnv] = useState<{ key: string; value: string }[]>([]);
+
+  const loadSkills = useCallback(() => {
+    setSkillsError(null);
+    skillsApi
+      .list()
+      .then(({ skills }) => setSkills(skills))
+      .catch((err) => setSkillsError(getErrorMessage(err, "Failed to load tools")));
+  }, []);
+
+  useEffect(() => {
+    loadSkills();
+  }, [loadSkills]);
 
   // Visible steps exclude "start" once past it so progress bar shows correctly
   const visibleSteps = steps.filter((s) => s.id !== "start");
@@ -228,7 +237,7 @@ function NewAgentContent() {
       const tools = selectedTools.map((name) => ({
         name,
         type: "function" as const,
-        description: builtInTools.find((t) => t.name === name)?.description || "",
+        description: skills?.find((t) => t.key === name)?.description || "",
       }));
 
       // Build env from customEnv
@@ -553,36 +562,59 @@ function NewAgentContent() {
                   Select the tools your agent can use
                 </p>
 
-                <div className="mt-6 grid gap-4 md:grid-cols-2">
-                  {builtInTools.map((tool) => (
-                    <label
-                      key={tool.name}
-                      className={cn(
-                        "flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors",
-                        selectedTools.includes(tool.name)
-                          ? "border-primary-500 bg-primary/10"
-                          : "border-border hover:border-muted-foreground/40"
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedTools.includes(tool.name)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedTools([...selectedTools, tool.name]);
-                          } else {
-                            setSelectedTools(selectedTools.filter((t) => t !== tool.name));
-                          }
-                        }}
-                        className="mt-1"
-                      />
-                      <div>
-                        <p className="font-medium">{tool.label}</p>
-                        <p className="text-sm text-muted-foreground">{tool.description}</p>
-                      </div>
-                    </label>
-                  ))}
-                </div>
+                {skillsError && (
+                  <div className="mt-6 flex items-center justify-between gap-3 rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm">
+                    <span>{skillsError}</span>
+                    <Button type="button" variant="outline" size="sm" onClick={loadSkills}>
+                      Retry
+                    </Button>
+                  </div>
+                )}
+
+                {!skills && !skillsError && (
+                  <div className="mt-6 grid gap-4 md:grid-cols-2">
+                    {[0, 1, 2, 3].map((i) => (
+                      <div key={i} className="h-24 animate-pulse rounded-lg bg-muted" />
+                    ))}
+                  </div>
+                )}
+
+                {skills && (
+                  <div className="mt-6 grid gap-4 md:grid-cols-2">
+                    {skills.map((tool) => (
+                      <label
+                        key={tool.key}
+                        className={cn(
+                          "flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors",
+                          selectedTools.includes(tool.key)
+                            ? "border-primary-500 bg-primary/10"
+                            : "border-border hover:border-muted-foreground/40"
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedTools.includes(tool.key)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedTools([...selectedTools, tool.key]);
+                            } else {
+                              setSelectedTools(selectedTools.filter((t) => t !== tool.key));
+                            }
+                          }}
+                          className="mt-1"
+                        />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="font-medium">{tool.name}</p>
+                            <SkillStatusBadge skill={tool} />
+                          </div>
+                          <p className="text-sm text-muted-foreground">{tool.description}</p>
+                          <SkillUnavailableNote skill={tool} />
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
 
                 <div className="mt-6">
                   <h4 className="font-medium">Environment Variables</h4>
@@ -750,11 +782,15 @@ function NewAgentContent() {
                     <h4 className="font-medium">Tools ({selectedTools.length})</h4>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {selectedTools.length > 0 ? (
-                        selectedTools.map((tool) => (
-                          <Badge key={tool} variant="secondary">
-                            {tool}
-                          </Badge>
-                        ))
+                        selectedTools.map((tool) => {
+                          const skill = skills?.find((t) => t.key === tool);
+                          return (
+                            <Badge key={tool} variant={skill && !skill.available ? "warning" : "secondary"}>
+                              {skill?.name ?? tool}
+                              {skill && !skill.available ? " (needs configuration)" : ""}
+                            </Badge>
+                          );
+                        })
                       ) : (
                         <span className="text-sm text-muted-foreground">No tools selected</span>
                       )}

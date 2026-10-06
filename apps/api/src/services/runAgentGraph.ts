@@ -17,11 +17,13 @@ import {
   buildGraphInterpreterDeps,
   loadGraphAgentContext,
 } from "./buildGraphInterpreterDeps.js";
+import { resolveToolMode } from "./skills/runMode.js";
 import {
   MarketplaceLicenceRevokedError,
   MarketplacePaymentRequiredError,
 } from "./marketplaceMetering.js";
 import { beginMarketplaceMetering } from "./marketplaceMeteringProduction.js";
+import { createInFlightRuns, ServerShuttingDownError } from "./inFlightRuns.js";
 import {
   runGraph,
   type GraphRunResult,
@@ -34,10 +36,45 @@ export interface GraphRunRecord extends GraphRunResult {
   durationMs: number;
 }
 
+const SHUTDOWN_ERROR = "run cancelled: the server restarted mid-run; this run was not charged";
+
+/** Every graph run in this process, so shutdown can end them (see below). */
+const inFlightGraphRuns = createInFlightRuns();
+
+/**
+ * Called first on SIGTERM. Cancels every in-flight graph run and waits for
+ * each to refund its marketplace charge and close its execution row, instead
+ * of the process being killed with the charge stranded `pending`. Runs that
+ * arrive afterwards are refused with ServerShuttingDownError, uncharged.
+ */
+export function cancelInFlightGraphRuns(timeoutMs: number) {
+  return inFlightGraphRuns.cancelAll(timeoutMs);
+}
+
 export async function runAgentGraph(
   agentId: string,
   orgId: string,
   input: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GraphRunRecord> {
+  // Taken BEFORE the charge: from here to `done()` shutdown waits for us.
+  const slot = inFlightGraphRuns.begin();
+  if (!slot) throw new ServerShuttingDownError();
+  try {
+    return await runTrackedGraph(agentId, orgId, input, {
+      signal: options.signal ? AbortSignal.any([options.signal, slot.signal]) : slot.signal,
+      shuttingDown: () => slot.signal.aborted,
+    });
+  } finally {
+    slot.done();
+  }
+}
+
+async function runTrackedGraph(
+  agentId: string,
+  orgId: string,
+  input: string,
+  options: { signal: AbortSignal; shuttingDown: () => boolean },
 ): Promise<GraphRunRecord> {
   const agent = await loadGraphAgentContext(agentId, orgId);
   if (!agent) {
@@ -86,12 +123,27 @@ export async function runAgentGraph(
 
   let result: GraphRunResult;
   try {
-    result = await runGraph(nodes, edges, input, buildGraphInterpreterDeps(agent));
+    // `signal` is the client going away or the process shutting down; the
+    // interpreter adds its own wall-clock budget on top. Either way the run
+    // ENDS, comes back `failed`, and the marketplace charge below is refunded
+    // rather than left pending.
+    const toolMode = await resolveToolMode({ agentId, orgId, base: "graph" });
+    result = await runGraph(
+      nodes,
+      edges,
+      input,
+      buildGraphInterpreterDeps(agent, { signal: options.signal, toolMode }),
+    );
   } catch (err) {
     // An interpreter-level throw (not a node failure) still gets recorded
     // rather than leaving a row stuck "running".
     const message = err instanceof Error ? err.message : String(err);
     result = { status: "failed", output: null, error: message, trace: [] };
+  }
+
+  // "run cancelled" would read as the user's own doing; say whose it was.
+  if (result.status === "failed" && options.shuttingDown()) {
+    result = { ...result, error: SHUTDOWN_ERROR };
   }
 
   // The interpreter returns `failed` rather than throwing when a node

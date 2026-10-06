@@ -34,6 +34,7 @@ import { modelRoutes } from "./routes/models.js";
 import { healthRoutes } from "./routes/health.js";
 import { createMetricsRoutes } from "./routes/metrics.js";
 import { buildMetricsRuntime } from "./services/buildMetricsDeps.js";
+import { cancelInFlightGraphRuns } from "./services/runAgentGraph.js";
 import { inferenceRoutes } from "./routes/inference.js";
 import { billingRoutes } from "./routes/billing.js";
 import { settingsRoutes } from "./routes/settings.js";
@@ -47,6 +48,7 @@ import { agentGraphRoutes } from "./routes/agentGraph.js";
 import { monitoringRoutes } from "./routes/monitoring.js";
 import { versioningRoutes } from "./routes/versioning.js";
 import { webhooksRoutes } from "./routes/webhooks.js";
+import { skillsRoutes } from "./routes/skills.js";
 import { createPublicStatsRoutes } from "./routes/publicStats.js";
 import { statusRoutes } from "./routes/status.js";
 import { testingRoutes } from "./routes/testing.js";
@@ -370,6 +372,7 @@ async function main() {
   await app.register(createAgentDetailRoutesProduction(), { prefix: "/api/feed" });
 
   await app.register(playgroundRoutes, { prefix: "/api" });
+  await app.register(skillsRoutes, { prefix: "/api" }); // GET /api/skills
   await app.register(
     createPublicStatsRoutes({
       countPublishedListings: () => prisma.agentListing.count({ where: { status: "published" } }),
@@ -435,10 +438,25 @@ async function main() {
   await startEmbeddingBackfillQueue();
 
   // Graceful shutdown
+  // Well inside the platform's kill_timeout (60s on Fly), leaving the rest
+  // for the queue drain below.
+  const GRAPH_RUN_DRAIN_MS = 15_000;
   const signals = ["SIGINT", "SIGTERM"];
   for (const signal of signals) {
     process.on(signal, async () => {
       app.log.info(`Received ${signal}, shutting down gracefully`);
+      // First, before the queue drain eats the kill window: a graph run may
+      // have minutes left but the process has seconds. Cancelling lets each
+      // run refund its marketplace charge and close its execution row; killed
+      // mid-run it would leave the buyer debited for nothing. New runs are
+      // refused (503) from here on.
+      const graphRuns = await cancelInFlightGraphRuns(GRAPH_RUN_DRAIN_MS);
+      if (graphRuns.cancelled > 0) {
+        app.log[graphRuns.unfinished > 0 ? "error" : "info"](
+          graphRuns,
+          "Cancelled in-flight graph runs for shutdown",
+        );
+      }
       await stopX402Queue();
       await stopTokenIndexerQueue();
       await stopTreasurySettlementQueue();

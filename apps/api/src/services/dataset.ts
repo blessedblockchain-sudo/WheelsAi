@@ -88,6 +88,16 @@ export function isDatasetStorageConfigured(): boolean {
 }
 
 /**
+ * The dataset object store as a handle other features can share (per-agent
+ * files, for one), or null when it is not configured. Reusing the one
+ * client and bucket means a single place decides what "storage is
+ * configured" means.
+ */
+export function getDatasetStorageHandle(): { client: S3Client; bucket: string } | null {
+  return isDatasetStorageConfigured() ? { client: s3Client, bucket: BUCKET_NAME } : null;
+}
+
+/**
  * Best-effort S3 object deletion for a dataset's storageUrl. Failures are
  * logged, not thrown — an orphaned object must not block the DB delete.
  */

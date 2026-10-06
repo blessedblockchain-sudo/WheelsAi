@@ -361,95 +361,11 @@ export interface ToolDefinition {
   config?: Record<string, any>;
 }
 
-/**
- * Built-in tool templates
- */
-export const builtInTools: Record<string, ToolDefinition> = {
-  web_search: {
-    name: "web_search",
-    type: "api",
-    description: "Search the web for information",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query" },
-        num_results: { type: "number", description: "Number of results", default: 5 },
-      },
-      required: ["query"],
-    },
-    config: {
-      provider: "serper", // or "tavily", "bing"
-    },
-  },
-  calculator: {
-    name: "calculator",
-    type: "function",
-    description: "Perform mathematical calculations",
-    inputSchema: {
-      type: "object",
-      properties: {
-        expression: { type: "string", description: "Mathematical expression to evaluate" },
-      },
-      required: ["expression"],
-    },
-  },
-  code_interpreter: {
-    name: "code_interpreter",
-    type: "function",
-    description: "Execute Python code in a sandboxed environment",
-    inputSchema: {
-      type: "object",
-      properties: {
-        code: { type: "string", description: "Python code to execute" },
-      },
-      required: ["code"],
-    },
-    config: {
-      timeout: 30000,
-      max_output: 10000,
-    },
-  },
-  http_request: {
-    name: "http_request",
-    type: "api",
-    description: "Make HTTP requests to external APIs",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to request" },
-        method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE"], default: "GET" },
-        headers: { type: "object", description: "Request headers" },
-        body: { type: "string", description: "Request body" },
-      },
-      required: ["url"],
-    },
-  },
-  file_read: {
-    name: "file_read",
-    type: "function",
-    description: "Read contents of a file",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "File path to read" },
-      },
-      required: ["path"],
-    },
-  },
-  file_write: {
-    name: "file_write",
-    type: "function",
-    description: "Write contents to a file",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "File path to write" },
-        content: { type: "string", description: "Content to write" },
-      },
-      required: ["path", "content"],
-    },
-  },
-};
+// The built-in tool catalogue lives in services/skills/registry.ts. A second
+// list of tool schemas used to sit here; nothing executed it, it named a
+// different search provider than the one the runtime actually calls, and it
+// advertised `code_interpreter` as sandboxed while nothing ran code. There is
+// one list now, and it only contains tools that run (or say why they cannot).
 
 /**
  * Validate tool configuration

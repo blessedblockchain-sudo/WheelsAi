@@ -19,6 +19,8 @@ import { prisma } from "../lib/prisma.js";
 import type { GraphInterpreterDeps } from "./graphInterpreter.js";
 import { searchKnowledgeBase } from "./knowledge.js";
 import { resolveModelForPlayground, runChat } from "./mastra-runtime.js";
+import { getDefaultRegistry, getSandboxRunner } from "./skills/production.js";
+import type { ToolMode } from "./skills/types.js";
 
 export interface GraphAgentContext {
   agentId: string;
@@ -27,13 +29,26 @@ export interface GraphAgentContext {
   systemPrompt: string | null;
   modelConfig: Record<string, unknown>;
   env: Record<string, string>;
+  /** The agent's enabled tools (Agent.tools); llm nodes may use them. */
+  tools?: Array<{ name: string; description?: string }>;
+}
+
+export interface GraphRunOptions {
+  /** Cancels the run (the client went away). */
+  signal?: AbortSignal;
+  /** "graph" by default; "trial" for a marketplace buyer's run. */
+  toolMode?: ToolMode;
 }
 
 export function buildGraphInterpreterDeps(
   agent: GraphAgentContext,
+  options: GraphRunOptions = {},
 ): GraphInterpreterDeps {
+  const toolMode = options.toolMode ?? "graph";
   return {
-    runLlm: async ({ prompt, systemPrompt, model, temperature, maxTokens }) => {
+    signal: options.signal,
+    toolMode,
+    runLlm: async ({ prompt, systemPrompt, model, temperature, maxTokens, tools, signal }) => {
       const configuredModel =
         typeof agent.modelConfig.externalModel === "string"
           ? agent.modelConfig.externalModel
@@ -48,6 +63,14 @@ export function buildGraphInterpreterDeps(
       }
 
       const resolved = resolveModelForPlayground(modelId, agent.env);
+
+      // An llm node gets the agent's enabled tools, and a node may only
+      // NARROW that set (`tools: [...]` on the node) - it cannot enable a
+      // tool the agent's owner did not.
+      const agentTools = (agent.tools ?? []).filter(
+        (t) => !tools || tools.includes(t.name),
+      );
+
       const result = await runChat(
         resolved,
         {
@@ -55,7 +78,10 @@ export function buildGraphInterpreterDeps(
           // A node's own system prompt overrides the agent's for that
           // step — that is the point of putting one on the node.
           systemPrompt: systemPrompt ?? agent.systemPrompt ?? undefined,
-          tools: [],
+          tools: agentTools.map((t) => ({
+            name: t.name,
+            description: t.description ?? "",
+          })),
           modelConfig: {
             externalModel: modelId,
             temperature: temperature ?? 0.7,
@@ -64,6 +90,7 @@ export function buildGraphInterpreterDeps(
         },
         [{ role: "user", content: prompt }],
         false,
+        { agentId: agent.agentId, orgId: agent.orgId, mode: toolMode, signal },
       );
       return { content: result.content };
     },
@@ -79,6 +106,14 @@ export function buildGraphInterpreterDeps(
         .join("\n\n");
       return { text, mode: found.mode };
     },
+
+    // `tool` nodes run registry skills under the same availability rules as
+    // chat; `code` nodes run only in the external sandbox, when configured.
+    skills: getDefaultRegistry(),
+    // A tool node may only use what the agent's owner enabled on the agent.
+    enabledTools: (agent.tools ?? []).map((t) => t.name),
+    toolContext: { agentId: agent.agentId, orgId: agent.orgId },
+    sandbox: getSandboxRunner(),
   };
 }
 
@@ -95,6 +130,7 @@ export async function loadGraphAgentContext(
       systemPrompt: true,
       modelConfig: true,
       env: true,
+      tools: true,
     },
   });
   if (!agent) return null;
@@ -105,5 +141,13 @@ export async function loadGraphAgentContext(
     systemPrompt: agent.systemPrompt,
     modelConfig: (agent.modelConfig as Record<string, unknown>) ?? {},
     env: openAgentEnv(agent.env),
+    tools: Array.isArray(agent.tools)
+      ? (agent.tools as Array<{ name?: unknown; description?: unknown }>)
+          .filter((t) => typeof t?.name === "string")
+          .map((t) => ({
+            name: t.name as string,
+            description: typeof t.description === "string" ? t.description : undefined,
+          }))
+      : [],
   };
 }

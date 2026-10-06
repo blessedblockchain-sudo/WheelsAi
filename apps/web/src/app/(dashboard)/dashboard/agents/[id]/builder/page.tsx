@@ -29,7 +29,130 @@ import {
   Layers,
   Zap,
 } from "lucide-react";
-import { agentsApi, agentGraphApi, type GraphNode, type GraphEdge, type GraphTemplate, type GraphRunResult } from "@/lib/api";
+import {
+  agentsApi,
+  agentGraphApi,
+  knowledgeApi,
+  skillsApi,
+  type GraphNode,
+  type GraphEdge,
+  type GraphTemplate,
+  type GraphRunResult,
+  type KnowledgeBase,
+  type Skill,
+} from "@/lib/api";
+import {
+  SkillNotEnabledNote,
+  SkillStatusBadge,
+  SkillUnavailableNote,
+} from "@/components/dashboard/skill-status";
+
+// ---- shared form bits -------------------------------------------------
+const INPUT_CLS = "w-full px-3 py-2 bg-background border rounded-lg text-sm";
+const AREA_CLS =
+  "w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none font-mono";
+
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="text-sm font-medium block mb-1">{label}</label>
+      {children}
+      {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * A JSON object field that tolerates being mid-edit: the draft text is kept
+ * locally and only a value that parses as an object is committed.
+ */
+function JsonObjectField({
+  value,
+  onCommit,
+  rows = 3,
+  placeholder,
+}: {
+  value: Record<string, unknown> | undefined;
+  onCommit: (next: Record<string, unknown>) => void;
+  rows?: number;
+  placeholder?: string;
+}) {
+  const [draft, setDraft] = useState(() =>
+    value && Object.keys(value).length > 0 ? JSON.stringify(value, null, 2) : ""
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <div>
+      <textarea
+        value={draft}
+        rows={rows}
+        placeholder={placeholder}
+        onChange={(e) => {
+          const text = e.target.value;
+          setDraft(text);
+          if (text.trim() === "") {
+            setError(null);
+            onCommit({});
+            return;
+          }
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              setError(null);
+              onCommit(parsed as Record<string, unknown>);
+            } else {
+              setError("Must be a JSON object");
+            }
+          } catch {
+            setError("Not valid JSON yet");
+          }
+        }}
+        className={AREA_CLS}
+      />
+      {error && <p className="mt-1 text-xs text-yellow-600 dark:text-yellow-500">{error}</p>}
+    </div>
+  );
+}
+
+const CONDITION_OPS = [
+  ["contains", "contains"],
+  ["not_contains", "does not contain"],
+  ["equals", "equals"],
+  ["not_equals", "does not equal"],
+  ["exists", "is not empty"],
+  ["not_exists", "is empty"],
+  ["gt", "is greater than"],
+  ["gte", "is at least"],
+  ["lt", "is less than"],
+  ["lte", "is at most"],
+] as const;
+
+/** The branch names an edge leaving each branching node can carry. */
+const BRANCH_OPTIONS: Record<string, Array<[string, string]>> = {
+  condition: [
+    ["true", "If true"],
+    ["false", "If false"],
+  ],
+  loop: [
+    ["body", "Loop body (runs per item)"],
+    ["done", "After the loop"],
+  ],
+};
+
+function edgeBranch(edge: GraphEdge): string | undefined {
+  const h = edge.sourceHandle?.trim();
+  if (h && h !== "output" && h !== "default") return h;
+  return edge.label?.trim() || undefined;
+}
 
 // Node type definitions with icons and colors
 const NODE_TYPES = {
@@ -134,6 +257,10 @@ export default function AgentBuilderPage() {
   const canvasRef = useRef<HTMLDivElement>(null);
 
   const [agent, setAgent] = useState<any>(null);
+  // Availability of skills (tool and code nodes) and the knowledge bases a
+  // memory node can search. Both are best-effort: the canvas works without.
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 });
@@ -178,10 +305,56 @@ export default function AgentBuilderPage() {
         setViewport(graphRes.data.viewport);
       }
       setTemplates(templatesRes.data);
+      skillsApi
+        .list(agentId)
+        .then((res) => setSkills(res.skills))
+        .catch(() => setSkills([]));
+      knowledgeApi
+        .list({ limit: 100 })
+        .then((res) => setKnowledgeBases(res.knowledgeBases))
+        .catch(() => setKnowledgeBases([]));
     } catch (error) {
       console.error("Failed to load builder:", error);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // --- Tools enabled on the agent ---
+  // A tool node may only run a tool the agent itself has enabled; the run
+  // refuses anything else. So the builder only offers enabled tools, and
+  // enabling one more is a click here rather than a trip to the API.
+  const [enablingTool, setEnablingTool] = useState<string | null>(null);
+  const [enableToolError, setEnableToolError] = useState<string | null>(null);
+  const agentTools: Array<{ name: string; [key: string]: unknown }> = Array.isArray(agent?.tools)
+    ? agent.tools.filter((t: any) => typeof t?.name === "string")
+    : [];
+  const enabledToolNames = new Set(agentTools.map((t) => t.name));
+  const enabledSkills = skills.filter((s) => enabledToolNames.has(s.key));
+  const notEnabledSkills = skills.filter((s) => !enabledToolNames.has(s.key));
+  // Tools the canvas uses that a run would refuse, each once.
+  const refusedToolSkills = notEnabledSkills.filter((s) =>
+    nodes.some((n) => n.type === "tool" && n.data.config.toolName === s.key)
+  );
+
+  async function enableTool(key: string) {
+    const skill = skills.find((s) => s.key === key);
+    if (!skill || !agent || enabledToolNames.has(key)) return;
+    const tools = [
+      ...agentTools,
+      { name: key, type: "function" as const, description: skill.description },
+    ];
+    setEnablingTool(key);
+    setEnableToolError(null);
+    try {
+      const res = await agentsApi.update(agentId, { tools: tools as any });
+      setAgent((prev: any) => ({ ...prev, ...res.agent, tools: res.agent?.tools ?? tools }));
+    } catch (error) {
+      setEnableToolError(
+        error instanceof Error ? error.message : `Could not enable ${skill.name}`
+      );
+    } finally {
+      setEnablingTool(null);
     }
   }
 
@@ -262,24 +435,32 @@ export default function AgentBuilderPage() {
     [nodes.length]
   );
 
+  // Every key here is one the interpreter reads (services/graphInterpreter.ts).
   function getDefaultConfig(type: NodeType): Record<string, any> {
     switch (type) {
       case "llm":
-        return { model: "default", temperature: 0.7, systemPrompt: "" };
+        // No `model`: the node uses the agent's own model unless one is set.
+        return { temperature: 0.7, systemPrompt: "" };
       case "tool":
-        return { toolName: "", timeout: 30000 };
+        return { toolName: "", input: "" };
       case "condition":
-        return { conditions: [] };
+        return { op: "contains", value: "" };
       case "memory":
-        return { operation: "read", key: "" };
+        return { knowledgeBaseId: "", topK: 4 };
       case "transform":
-        return { template: "" };
+        return { template: "{{value}}" };
       case "api":
         return { url: "", method: "GET", headers: {} };
       case "code":
-        return { language: "javascript", code: "" };
+        return { language: "python", code: "" };
       case "delay":
-        return { duration: 1000 };
+        return { ms: 1000 };
+      case "loop":
+        return { mode: "list", format: "json", maxIterations: 20, collect: "array" };
+      case "parallel":
+        return { maxConcurrency: 4 };
+      case "merge":
+        return { mode: "array" };
       default:
         return {};
     }
@@ -637,6 +818,16 @@ export default function AgentBuilderPage() {
                       className="text-muted-foreground"
                       markerEnd="url(#arrowhead)"
                     />
+                    {edgeBranch(edge) && (
+                      <text
+                        x={midX}
+                        y={(y1 + y2) / 2 - 6}
+                        textAnchor="middle"
+                        className="fill-foreground text-[11px] font-medium"
+                      >
+                        {edgeBranch(edge)}
+                      </text>
+                    )}
                     <path
                       d={`M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`}
                       fill="none"
@@ -697,14 +888,38 @@ export default function AgentBuilderPage() {
                       </div>
                     )}
                     {node.type === "tool" && node.data.config.toolName && (
-                      <div>Tool: {node.data.config.toolName}</div>
-                    )}
-                    {node.type === "condition" && (
                       <div>
-                        {node.data.config.conditions?.length || 0} conditions
+                        Tool: {node.data.config.toolName}
+                        {refusedToolSkills.some(
+                          (s) => s.key === node.data.config.toolName
+                        ) && (
+                          <span className="text-yellow-600 dark:text-yellow-500">
+                            {" "}
+                            · not enabled
+                          </span>
+                        )}
                       </div>
                     )}
-                    {!["llm", "tool", "condition"].includes(node.type) && (
+                    {node.type === "condition" && (
+                      <div className="truncate">
+                        {node.data.config.op
+                          ? `${node.data.config.op} ${node.data.config.value ?? ""}`
+                          : "Not configured"}
+                      </div>
+                    )}
+                    {node.type === "api" && node.data.config.url && (
+                      <div className="truncate">
+                        {node.data.config.method || "GET"} {node.data.config.url}
+                      </div>
+                    )}
+                    {node.type === "loop" && (
+                      <div>
+                        {node.data.config.mode === "count"
+                          ? `${node.data.config.count ?? "?"} times`
+                          : "Per list item"}
+                      </div>
+                    )}
+                    {!["llm", "tool", "condition", "api", "loop"].includes(node.type) && (
                       <div className="text-muted-foreground/50">
                         {typeConfig?.description}
                       </div>
@@ -770,193 +985,576 @@ export default function AgentBuilderPage() {
                 />
               </div>
 
-              {/* Type-specific config */}
+              {/* Type-specific config: every field below is one the interpreter reads. */}
               {selectedNode.node.type === "llm" && (
                 <>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      Temperature
-                    </label>
+                  <Field
+                    label="Model"
+                    hint="Leave empty to use this agent's own model."
+                  >
+                    <input
+                      type="text"
+                      value={selectedNode.node.data.config.model || ""}
+                      onChange={(e) => updateNodeConfig("model", e.target.value || undefined)}
+                      placeholder="e.g. free/groq/llama-3.3-70b"
+                      className={INPUT_CLS}
+                    />
+                  </Field>
+                  <Field label="Temperature">
                     <input
                       type="number"
                       min="0"
                       max="2"
                       step="0.1"
-                      value={selectedNode.node.data.config.temperature || 0.7}
+                      value={selectedNode.node.data.config.temperature ?? 0.7}
                       onChange={(e) =>
                         updateNodeConfig("temperature", parseFloat(e.target.value))
                       }
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                      className={INPUT_CLS}
                     />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      System Prompt
-                    </label>
+                  </Field>
+                  <Field label="System Prompt">
                     <textarea
                       value={selectedNode.node.data.config.systemPrompt || ""}
-                      onChange={(e) =>
-                        updateNodeConfig("systemPrompt", e.target.value)
-                      }
+                      onChange={(e) => updateNodeConfig("systemPrompt", e.target.value)}
                       rows={4}
                       className="w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none"
                       placeholder="You are a helpful assistant..."
                     />
-                  </div>
+                  </Field>
+                  <p className="text-xs text-muted-foreground">
+                    The node can use the tools enabled on this agent.
+                  </p>
                 </>
               )}
 
               {selectedNode.node.type === "tool" && (
-                <div>
-                  <label className="text-sm font-medium block mb-1">
-                    Tool Name
-                  </label>
-                  <select
-                    value={selectedNode.node.data.config.toolName || ""}
-                    onChange={(e) => updateNodeConfig("toolName", e.target.value)}
-                    className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                <>
+                  <Field label="Tool">
+                    <select
+                      value={selectedNode.node.data.config.toolName || ""}
+                      onChange={(e) => updateNodeConfig("toolName", e.target.value)}
+                      className={INPUT_CLS}
+                    >
+                      <option value="">Select a tool...</option>
+                      {enabledSkills.map((skill) => (
+                        <option key={skill.key} value={skill.key}>
+                          {skill.name}
+                          {skill.available ? "" : " — needs configuration"}
+                        </option>
+                      ))}
+                      {/* Listed so they can be found, not chosen: a run
+                          refuses a tool the agent has not enabled. */}
+                      {notEnabledSkills.length > 0 && (
+                        <optgroup label="Not enabled on this agent">
+                          {notEnabledSkills.map((skill) => (
+                            <option key={skill.key} value={skill.key} disabled>
+                              {skill.name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </Field>
+                  {(() => {
+                    const chosen = skills.find(
+                      (s) => s.key === selectedNode.node.data.config.toolName
+                    );
+                    return chosen ? (
+                      <>
+                        <div className="rounded-lg border p-2 text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-muted-foreground">{chosen.description}</span>
+                            <SkillStatusBadge skill={chosen} />
+                          </div>
+                          <SkillUnavailableNote skill={chosen} />
+                        </div>
+                        {!enabledToolNames.has(chosen.key) && (
+                          <SkillNotEnabledNote
+                            skill={chosen}
+                            onEnable={() => enableTool(chosen.key)}
+                            enabling={enablingTool === chosen.key}
+                          />
+                        )}
+                      </>
+                    ) : null;
+                  })()}
+                  {notEnabledSkills.length > 0 && (
+                    <div className="text-xs text-muted-foreground">
+                      <div className="mb-1">Enable another tool on this agent:</div>
+                      <div className="flex flex-wrap gap-1">
+                        {notEnabledSkills.map((skill) => (
+                          <button
+                            key={skill.key}
+                            type="button"
+                            onClick={() => enableTool(skill.key)}
+                            disabled={enablingTool !== null}
+                            className="rounded-md border px-2 py-1 hover:bg-accent disabled:opacity-50"
+                          >
+                            {enablingTool === skill.key ? "Enabling..." : `+ ${skill.name}`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {enableToolError && (
+                    <p className="text-xs text-red-500">{enableToolError}</p>
+                  )}
+                  <Field
+                    label="Input"
+                    hint={
+                      <>
+                        Empty: the incoming value goes to the tool&apos;s main text
+                        argument. Or a JSON object of arguments, where values may use{" "}
+                        <code>{"{{value}}"}</code> and <code>{"{{nodes.<id>}}"}</code>.
+                      </>
+                    }
                   >
-                    <option value="">Select a tool...</option>
-                    <option value="web_search">Web Search</option>
-                    <option value="calculator">Calculator</option>
-                    <option value="code_interpreter">Code Interpreter</option>
-                    <option value="file_browser">File Browser</option>
-                  </select>
-                </div>
+                    <textarea
+                      value={
+                        typeof selectedNode.node.data.config.input === "string"
+                          ? selectedNode.node.data.config.input
+                          : selectedNode.node.data.config.input
+                            ? JSON.stringify(selectedNode.node.data.config.input)
+                            : ""
+                      }
+                      onChange={(e) => updateNodeConfig("input", e.target.value)}
+                      rows={3}
+                      placeholder='{"query": "{{value}}"}'
+                      className={AREA_CLS}
+                    />
+                  </Field>
+                </>
+              )}
+
+              {selectedNode.node.type === "condition" && (
+                <>
+                  <Field
+                    label="Check"
+                    hint="Tests the text flowing into this node. Connect each outgoing line below and label it If true or If false."
+                  >
+                    <select
+                      value={selectedNode.node.data.config.op || "contains"}
+                      onChange={(e) => updateNodeConfig("op", e.target.value)}
+                      className={INPUT_CLS}
+                    >
+                      {CONDITION_OPS.map(([op, label]) => (
+                        <option key={op} value={op}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  {!["exists", "not_exists"].includes(
+                    selectedNode.node.data.config.op || "contains"
+                  ) && (
+                    <Field label="Value">
+                      <input
+                        type="text"
+                        value={selectedNode.node.data.config.value ?? ""}
+                        onChange={(e) => updateNodeConfig("value", e.target.value)}
+                        className={INPUT_CLS}
+                      />
+                    </Field>
+                  )}
+                </>
               )}
 
               {selectedNode.node.type === "memory" && (
                 <>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      Operation
-                    </label>
+                  <Field label="Knowledge base" hint="The node searches it with the incoming text.">
                     <select
-                      value={selectedNode.node.data.config.operation || "read"}
-                      onChange={(e) =>
-                        updateNodeConfig("operation", e.target.value)
-                      }
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                      value={selectedNode.node.data.config.knowledgeBaseId || ""}
+                      onChange={(e) => updateNodeConfig("knowledgeBaseId", e.target.value)}
+                      className={INPUT_CLS}
                     >
-                      <option value="read">Read</option>
-                      <option value="write">Write</option>
-                      <option value="search">Vector Search</option>
+                      <option value="">Select a knowledge base...</option>
+                      {knowledgeBases.map((kb) => (
+                        <option key={kb.id} value={kb.id}>
+                          {kb.name}
+                        </option>
+                      ))}
                     </select>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      Key
-                    </label>
+                  </Field>
+                  <Field label="Passages to retrieve">
                     <input
-                      type="text"
-                      value={selectedNode.node.data.config.key || ""}
-                      onChange={(e) => updateNodeConfig("key", e.target.value)}
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
-                      placeholder="memory_key"
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={selectedNode.node.data.config.topK ?? 4}
+                      onChange={(e) => updateNodeConfig("topK", parseInt(e.target.value) || 4)}
+                      className={INPUT_CLS}
                     />
-                  </div>
+                  </Field>
                 </>
               )}
 
               {selectedNode.node.type === "transform" && (
-                <div>
-                  <label className="text-sm font-medium block mb-1">
-                    Template
-                  </label>
+                <Field
+                  label="Template"
+                  hint={
+                    <>
+                      Text with <code>{"{{value}}"}</code> (incoming),{" "}
+                      <code>{"{{nodes.<id>}}"}</code> (an earlier node) and, inside a loop,{" "}
+                      <code>{"{{item}}"}</code> / <code>{"{{index}}"}</code>. Never code.
+                    </>
+                  }
+                >
                   <textarea
                     value={selectedNode.node.data.config.template || ""}
-                    onChange={(e) =>
-                      updateNodeConfig("template", e.target.value)
-                    }
+                    onChange={(e) => updateNodeConfig("template", e.target.value)}
                     rows={4}
-                    className="w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none font-mono"
-                    placeholder="{{input}}"
+                    className={AREA_CLS}
+                    placeholder="{{value}}"
                   />
-                </div>
+                </Field>
               )}
 
               {selectedNode.node.type === "delay" && (
-                <div>
-                  <label className="text-sm font-medium block mb-1">
-                    Duration (ms)
-                  </label>
+                <Field label="Duration (ms)" hint="Up to 30,000.">
                   <input
                     type="number"
                     min="0"
+                    max="30000"
                     step="100"
-                    value={selectedNode.node.data.config.duration || 1000}
-                    onChange={(e) =>
-                      updateNodeConfig("duration", parseInt(e.target.value))
+                    value={
+                      selectedNode.node.data.config.ms ??
+                      selectedNode.node.data.config.duration ??
+                      1000
                     }
-                    className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                    onChange={(e) => updateNodeConfig("ms", parseInt(e.target.value) || 0)}
+                    className={INPUT_CLS}
                   />
-                </div>
+                </Field>
               )}
 
               {selectedNode.node.type === "api" && (
                 <>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      URL
-                    </label>
+                  <Field
+                    label="URL"
+                    hint={
+                      <>
+                        May use <code>{"{{value}}"}</code>; use{" "}
+                        <code>{"{{value | urlencode}}"}</code> inside a query string. Private
+                        and internal addresses are always blocked.
+                      </>
+                    }
+                  >
                     <input
                       type="text"
                       value={selectedNode.node.data.config.url || ""}
                       onChange={(e) => updateNodeConfig("url", e.target.value)}
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                      className={INPUT_CLS}
                       placeholder="https://api.example.com/endpoint"
                     />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      Method
-                    </label>
+                  </Field>
+                  <Field label="Method">
                     <select
                       value={selectedNode.node.data.config.method || "GET"}
-                      onChange={(e) =>
-                        updateNodeConfig("method", e.target.value)
-                      }
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                      onChange={(e) => updateNodeConfig("method", e.target.value)}
+                      className={INPUT_CLS}
                     >
-                      <option value="GET">GET</option>
-                      <option value="POST">POST</option>
-                      <option value="PUT">PUT</option>
-                      <option value="DELETE">DELETE</option>
+                      {["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
                     </select>
-                  </div>
+                  </Field>
+                  <Field label="Headers (JSON)">
+                    <JsonObjectField
+                      key={selectedNode.node.id}
+                      value={selectedNode.node.data.config.headers}
+                      onCommit={(headers) => updateNodeConfig("headers", headers)}
+                      placeholder='{"Authorization": "Bearer …"}'
+                    />
+                  </Field>
+                  {!["GET", "HEAD"].includes(selectedNode.node.data.config.method || "GET") && (
+                    <Field
+                      label="Body"
+                      hint={
+                        <>
+                          For JSON use <code>{"{{value | json}}"}</code> to embed text safely.
+                        </>
+                      }
+                    >
+                      <textarea
+                        value={selectedNode.node.data.config.body || ""}
+                        onChange={(e) => updateNodeConfig("body", e.target.value)}
+                        rows={4}
+                        className={AREA_CLS}
+                        placeholder='{"query": {{value | json}}}'
+                      />
+                    </Field>
+                  )}
+                  <Field label="Timeout (ms)" hint="1,000 to 30,000.">
+                    <input
+                      type="number"
+                      min="1000"
+                      max="30000"
+                      step="500"
+                      value={selectedNode.node.data.config.timeoutMs ?? 10000}
+                      onChange={(e) =>
+                        updateNodeConfig("timeoutMs", parseInt(e.target.value) || 10000)
+                      }
+                      className={INPUT_CLS}
+                    />
+                  </Field>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={selectedNode.node.data.config.failOnHttpError !== false}
+                      onChange={(e) => updateNodeConfig("failOnHttpError", e.target.checked)}
+                    />
+                    Fail the run on a non-2xx response
+                  </label>
+                  <Field
+                    label="If the response is too large"
+                    hint="The limit is 64 KB by default (256 KB at most)."
+                  >
+                    <select
+                      value={selectedNode.node.data.config.onOversize || "fail"}
+                      onChange={(e) => updateNodeConfig("onOversize", e.target.value)}
+                      className={INPUT_CLS}
+                    >
+                      <option value="fail">Fail the run</option>
+                      <option value="truncate">Keep the first part</option>
+                    </select>
+                  </Field>
                 </>
               )}
 
               {selectedNode.node.type === "code" && (
                 <>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      Language
-                    </label>
+                  {(() => {
+                    const sandbox = skills.find((s) => s.key === "code_interpreter");
+                    return sandbox && !sandbox.available ? (
+                      <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-2 text-xs">
+                        This node will be refused when run: {sandbox.unavailableReason}. Code
+                        only ever runs in an external sandbox, never on the API server.
+                      </div>
+                    ) : null;
+                  })()}
+                  <Field label="Language">
                     <select
-                      value={selectedNode.node.data.config.language || "javascript"}
-                      onChange={(e) =>
-                        updateNodeConfig("language", e.target.value)
-                      }
-                      className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+                      value={selectedNode.node.data.config.language || "python"}
+                      onChange={(e) => updateNodeConfig("language", e.target.value)}
+                      className={INPUT_CLS}
                     >
-                      <option value="javascript">JavaScript</option>
                       <option value="python">Python</option>
+                      <option value="javascript">JavaScript</option>
                     </select>
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium block mb-1">
-                      Code
-                    </label>
+                  </Field>
+                  <Field
+                    label="Code"
+                    hint="The incoming value arrives on stdin; whatever the program prints to stdout is the node's output. Not templated."
+                  >
                     <textarea
                       value={selectedNode.node.data.config.code || ""}
                       onChange={(e) => updateNodeConfig("code", e.target.value)}
                       rows={6}
-                      className="w-full px-3 py-2 bg-background text-foreground border border-input rounded-lg text-sm resize-none font-mono"
-                      placeholder="// Your code here"
+                      className={AREA_CLS}
+                      placeholder="import sys&#10;print(sys.stdin.read().upper())"
                     />
-                  </div>
+                  </Field>
                 </>
+              )}
+
+              {selectedNode.node.type === "loop" && (
+                <>
+                  <Field
+                    label="Iterate over"
+                    hint="Connect the loop's first step with a line labelled “Loop body” and the next node with “After the loop” (below). The body is a straight chain, run once per item, at most 20 times."
+                  >
+                    <select
+                      value={selectedNode.node.data.config.mode === "count" ? "count" : "list"}
+                      onChange={(e) => updateNodeConfig("mode", e.target.value)}
+                      className={INPUT_CLS}
+                    >
+                      <option value="list">A list from the previous step</option>
+                      <option value="count">A fixed number of times</option>
+                    </select>
+                  </Field>
+                  {selectedNode.node.data.config.mode === "count" ? (
+                    <Field label="Times (max 20)">
+                      <input
+                        type="number"
+                        min="0"
+                        max="20"
+                        value={selectedNode.node.data.config.count ?? 1}
+                        onChange={(e) => updateNodeConfig("count", parseInt(e.target.value) || 0)}
+                        className={INPUT_CLS}
+                      />
+                    </Field>
+                  ) : (
+                    <>
+                      <Field
+                        label="List"
+                        hint={
+                          <>
+                            Default <code>{"{{value}}"}</code>. Can name an earlier node:{" "}
+                            <code>{"{{nodes.<id>}}"}</code>.
+                          </>
+                        }
+                      >
+                        <input
+                          type="text"
+                          value={selectedNode.node.data.config.list || ""}
+                          onChange={(e) => updateNodeConfig("list", e.target.value)}
+                          placeholder="{{value}}"
+                          className={INPUT_CLS}
+                        />
+                      </Field>
+                      <Field label="List format">
+                        <select
+                          value={selectedNode.node.data.config.format || "json"}
+                          onChange={(e) => updateNodeConfig("format", e.target.value)}
+                          className={INPUT_CLS}
+                        >
+                          <option value="json">JSON array</option>
+                          <option value="lines">One item per line</option>
+                        </select>
+                      </Field>
+                    </>
+                  )}
+                  <Field label="Max iterations (hard limit 20)">
+                    <input
+                      type="number"
+                      min="1"
+                      max="20"
+                      value={selectedNode.node.data.config.maxIterations ?? 20}
+                      onChange={(e) =>
+                        updateNodeConfig("maxIterations", parseInt(e.target.value) || 20)
+                      }
+                      className={INPUT_CLS}
+                    />
+                  </Field>
+                  <Field label="Result">
+                    <select
+                      value={selectedNode.node.data.config.collect || "array"}
+                      onChange={(e) => updateNodeConfig("collect", e.target.value)}
+                      className={INPUT_CLS}
+                    >
+                      <option value="array">JSON array of every iteration</option>
+                      <option value="last">Only the last iteration</option>
+                      <option value="join">Joined text</option>
+                    </select>
+                  </Field>
+                  {selectedNode.node.data.config.collect === "join" && (
+                    <Field label="Separator">
+                      <input
+                        type="text"
+                        value={selectedNode.node.data.config.separator ?? "\n"}
+                        onChange={(e) => updateNodeConfig("separator", e.target.value)}
+                        className={INPUT_CLS}
+                      />
+                    </Field>
+                  )}
+                </>
+              )}
+
+              {selectedNode.node.type === "parallel" && (
+                <Field
+                  label="Max at once"
+                  hint="Every outgoing line is a branch and all branches get the same input. Join them with a Merge node. 1 to 8."
+                >
+                  <input
+                    type="number"
+                    min="1"
+                    max="8"
+                    value={selectedNode.node.data.config.maxConcurrency ?? 4}
+                    onChange={(e) =>
+                      updateNodeConfig("maxConcurrency", parseInt(e.target.value) || 4)
+                    }
+                    className={INPUT_CLS}
+                  />
+                </Field>
+              )}
+
+              {selectedNode.node.type === "merge" && (
+                <>
+                  <Field
+                    label="Combine branches as"
+                    hint="Only the branches that actually ran are included."
+                  >
+                    <select
+                      value={selectedNode.node.data.config.mode || "array"}
+                      onChange={(e) => updateNodeConfig("mode", e.target.value)}
+                      className={INPUT_CLS}
+                    >
+                      <option value="array">JSON array</option>
+                      <option value="object">JSON object keyed by node id</option>
+                      <option value="join">Joined text</option>
+                    </select>
+                  </Field>
+                  {selectedNode.node.data.config.mode === "join" && (
+                    <Field label="Separator">
+                      <input
+                        type="text"
+                        value={selectedNode.node.data.config.separator ?? "\n\n"}
+                        onChange={(e) => updateNodeConfig("separator", e.target.value)}
+                        className={INPUT_CLS}
+                      />
+                    </Field>
+                  )}
+                </>
+              )}
+
+              {/* Branch labels: a condition picks one labelled edge; a loop has a body edge. */}
+              {BRANCH_OPTIONS[selectedNode.node.type] && (
+                <div>
+                  <label className="text-sm font-medium block mb-1">Outgoing lines</label>
+                  {(() => {
+                    const out = edges.filter((e) => e.source === selectedNode.node.id);
+                    if (out.length === 0) {
+                      return (
+                        <p className="text-xs text-muted-foreground">
+                          Drag from this node&apos;s right dot to another node, then label the
+                          line here.
+                        </p>
+                      );
+                    }
+                    const options = BRANCH_OPTIONS[selectedNode.node.type]!;
+                    return (
+                      <div className="space-y-2">
+                        {out.map((edge) => {
+                          const target = nodes.find((n) => n.id === edge.target);
+                          return (
+                            <div key={edge.id} className="flex items-center gap-2">
+                              <span className="flex-1 truncate text-xs">
+                                → {target?.data.label ?? edge.target}
+                              </span>
+                              <select
+                                value={
+                                  options.some(([v]) => v === edgeBranch(edge))
+                                    ? edgeBranch(edge)
+                                    : ""
+                                }
+                                onChange={(e) =>
+                                  setEdges((prev) =>
+                                    prev.map((ed) =>
+                                      ed.id === edge.id
+                                        ? { ...ed, sourceHandle: e.target.value || "output" }
+                                        : ed
+                                    )
+                                  )
+                                }
+                                className="px-2 py-1 bg-background border rounded text-xs"
+                              >
+                                <option value="">Unlabelled</option>
+                                {options.map(([value, label]) => (
+                                  <option key={value} value={value}>
+                                    {label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
               )}
 
               {/* Node ID (read-only) */}
@@ -1049,6 +1647,20 @@ export default function AgentBuilderPage() {
             </button>
           </div>
 
+          {refusedToolSkills.length > 0 && (
+            <div className="px-3 pt-3 space-y-2">
+              {refusedToolSkills.map((skill) => (
+                <SkillNotEnabledNote
+                  key={skill.key}
+                  skill={skill}
+                  onEnable={() => enableTool(skill.key)}
+                  enabling={enablingTool === skill.key}
+                />
+              ))}
+              {enableToolError && <p className="text-xs text-red-500">{enableToolError}</p>}
+            </div>
+          )}
+
           <div className="p-3 border-b flex gap-2">
             <input
               value={runInput}
@@ -1079,14 +1691,21 @@ export default function AgentBuilderPage() {
               </div>
             )}
 
-            {runResult?.trace.map((entry) => (
+            {runResult?.trace.map((entry, traceIndex) => (
               <div
-                key={entry.nodeId}
-                className="rounded-lg border p-2 text-xs space-y-1"
+                key={`${entry.nodeId}-${entry.iteration ?? "main"}-${traceIndex}`}
+                className={`rounded-lg border p-2 text-xs space-y-1 ${
+                  entry.iteration !== undefined ? "ml-4 border-dashed" : ""
+                }`}
               >
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{entry.label}</span>
                   <span className="text-muted-foreground">{entry.nodeType}</span>
+                  {entry.iteration !== undefined && (
+                    <span className="px-1.5 rounded bg-cyan-500/10 text-cyan-500">
+                      iteration {entry.iteration + 1}
+                    </span>
+                  )}
                   <span
                     className={
                       entry.status === "success"

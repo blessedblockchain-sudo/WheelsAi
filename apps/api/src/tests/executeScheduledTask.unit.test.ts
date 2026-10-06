@@ -159,3 +159,66 @@ test("unsupported task types refuse honestly instead of fabricating success", as
     );
   }
 });
+
+// ============================================
+// Webhook SSRF: validated on every hop, and no address oracle
+// ============================================
+
+test("a webhook whose host resolves to an internal address is refused without naming the address", async () => {
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const { deps, fetchCalls } = makeDeps({});
+  await assert.rejects(
+    executeScheduledTask(
+      baseTask({ taskType: "webhook", payload: { url: "https://hooks.corp.example/x" } }),
+      { ...deps, guardDeps: { resolveHost: async () => ["10.0.3.7"] } },
+    ),
+    (err: unknown) => {
+      const message = (err as Error).message;
+      assert.equal(
+        message,
+        "webhook URL refused: blocked outbound request: the host does not resolve to a public internet address",
+      );
+      assert.ok(!message.includes("10.0.3.7"), "the execution row is user-visible");
+      return true;
+    },
+  );
+  assert.equal(fetchCalls.length, 0);
+});
+
+test("a bracketed IPv4-mapped loopback webhook URL is refused", async () => {
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const { deps, fetchCalls } = makeDeps({});
+  for (const url of ["http://[::ffff:127.0.0.1]:6379/", "http://[::ffff:a9fe:a9fe]/latest/meta-data/"]) {
+    await assert.rejects(
+      executeScheduledTask(baseTask({ taskType: "webhook", payload: { url } }), deps),
+      /webhook URL refused/,
+      url,
+    );
+  }
+  assert.equal(fetchCalls.length, 0);
+});
+
+test("a webhook that answers with a redirect is NOT followed (a 302 to the metadata endpoint)", async () => {
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const calls: string[] = [];
+  const { deps } = makeDeps({});
+  const redirecting: typeof deps = {
+    ...deps,
+    guardDeps: { resolveHost: async () => ["93.184.216.34"] },
+    fetchFn: (async (url: string) => {
+      calls.push(String(url));
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data/" },
+      });
+    }) as unknown as typeof fetch,
+  };
+  await assert.rejects(
+    executeScheduledTask(
+      baseTask({ taskType: "webhook", payload: { url: "https://example.com/hook" } }),
+      redirecting,
+    ),
+    /webhook URL redirected; redirects are not followed/,
+  );
+  assert.deepEqual(calls, ["https://example.com/hook"], "the redirect target was never requested");
+});

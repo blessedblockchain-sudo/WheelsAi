@@ -734,6 +734,15 @@ export interface PlaygroundAgentChatResponse {
     chargedCents: number;
     creatorCents: number;
   } | null;
+  /** Every tool the model called in this turn, and how each call ended. */
+  toolCalls?: PlaygroundToolCall[];
+}
+
+/** One tool call: `unavailable` means the tool is not configured on the server. */
+export interface PlaygroundToolCall {
+  name: string;
+  status: "ok" | "unavailable" | "error" | "unknown";
+  detail: string | null;
 }
 
 export interface PlaygroundModel {
@@ -771,6 +780,38 @@ export const playgroundApi = {
 
   models: (agentId: string) =>
     api<PlaygroundModelsResponse>(`/api/agents/${agentId}/playground/models`),
+};
+
+// ============================================
+// Skills (agent tools) API — GET /api/skills
+// ============================================
+
+export interface Skill {
+  key: string;
+  version: string;
+  name: string;
+  description: string;
+  /** JSON schema of the arguments (what the model — or a graph node — supplies). */
+  inputSchema: {
+    type: "object";
+    properties: Record<string, Record<string, unknown>>;
+    required?: string[];
+  };
+  moneyMoving: boolean;
+  /** Server configuration the skill needs (operator-facing). */
+  requires: string[];
+  /** False when the server cannot run it right now. Still listed and selectable. */
+  available: boolean;
+  /** Why it is unavailable, in words a user can read. */
+  unavailableReason: string | null;
+}
+
+export const skillsApi = {
+  /** Pass an agentId to include agent-level facts (e.g. a bound knowledge base). */
+  list: (agentId?: string) =>
+    api<{ skills: Skill[] }>(
+      `/api/skills${agentId ? `?agentId=${encodeURIComponent(agentId)}` : ""}`
+    ),
 };
 
 // ============================================
@@ -2079,6 +2120,10 @@ export interface GraphTraceEntry {
   output: string | null;
   error: string | null;
   durationMs: number;
+  /** 0-based iteration when the node ran inside a loop body. */
+  iteration?: number;
+  /** The loop node whose body this entry belongs to. */
+  loopId?: string;
 }
 
 export interface GraphRunResult {
@@ -4168,7 +4213,8 @@ export const tokenApi = {
  */
 export async function* streamPlaygroundChat(
   agentId: string,
-  body: { messages: Array<{ role: string; content: string }>; model?: string }
+  body: { messages: Array<{ role: string; content: string }>; model?: string },
+  options?: { onToolCalls?: (calls: PlaygroundToolCall[]) => void }
 ): AsyncGenerator<string, void, unknown> {
   const res = await fetch(
     `${API_URL}/api/agents/${agentId}/playground/chat`,
@@ -4203,17 +4249,33 @@ export async function* streamPlaygroundChat(
       buffer = lines.pop() || "";
 
       for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const data = line.slice(6);
-          if (data === "[DONE]") return;
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) yield content;
-          } catch {
-            // Skip unparseable SSE chunks
-          }
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6);
+        if (data === "[DONE]") return;
+
+        let parsed: any;
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          // Skip unparseable SSE chunks
+          continue;
         }
+
+        // A provider (or the server) can report a failure INSIDE a 200
+        // stream. Surface it — never render a half answer as if it were
+        // whole.
+        if (parsed?.error) {
+          const message =
+            typeof parsed.error === "string"
+              ? parsed.error
+              : parsed.error.message ?? "The model stream failed";
+          throw new Error(message);
+        }
+        if (parsed?.wheelsai?.toolCalls && options?.onToolCalls) {
+          options.onToolCalls(parsed.wheelsai.toolCalls as PlaygroundToolCall[]);
+        }
+        const content = parsed?.choices?.[0]?.delta?.content;
+        if (content) yield content;
       }
     }
   } finally {

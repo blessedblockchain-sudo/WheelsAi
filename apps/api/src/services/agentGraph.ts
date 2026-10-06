@@ -58,24 +58,62 @@ export interface AgentGraphData {
 // ============================================
 
 /**
- * Get agent graph
+ * The agent, scoped by ORG like every other agent route. These lookups used
+ * to go through org membership of a user id, and an API key has no user: every
+ * key-authenticated caller got "not found" for its own agents.
  */
-export async function getAgentGraph(agentId: string, userId: string) {
-  // Verify ownership
+async function assertAgentInOrg(agentId: string, orgId: string) {
   const agent = await prisma.agent.findFirst({
-    where: {
-      id: agentId,
-      org: {
-        members: {
-          some: { userId },
-        },
-      },
-    },
+    where: { id: agentId, orgId },
+    select: { id: true, tools: true },
   });
-
   if (!agent) {
     throw new Error("Agent not found or access denied");
   }
+  return agent;
+}
+
+/** Names of the tools enabled on an agent (Agent.tools), org-scoped. */
+export async function getAgentEnabledToolNames(agentId: string, orgId: string): Promise<string[]> {
+  const agent = await assertAgentInOrg(agentId, orgId);
+  return Array.isArray(agent.tools)
+    ? (agent.tools as Array<{ name?: unknown }>)
+        .map((t) => t?.name)
+        .filter((name): name is string => typeof name === "string")
+    : [];
+}
+
+/**
+ * Tool nodes a run would refuse because the agent has not enabled the tool.
+ * A warning rather than an error: the graph is well-formed and becomes
+ * runnable the moment the tool is enabled, which the builder offers in place.
+ */
+export function toolNodeWarnings(
+  nodes: Array<Pick<GraphNode, "type" | "data">>,
+  enabledTools: string[],
+): string[] {
+  const warnings: string[] = [];
+  for (const node of nodes) {
+    if (node.type !== "tool") continue;
+    const config = node.data?.config ?? {};
+    // The same keys, in the same order, as the interpreter's tool node.
+    const key = [config.toolName, config.tool, config.skill].find(
+      (k): k is string => typeof k === "string" && k.length > 0,
+    );
+    if (key && !enabledTools.includes(key)) {
+      warnings.push(
+        `Tool node "${node.data.label}" uses "${key}", which is not enabled on this agent - a run will refuse it until the tool is enabled`,
+      );
+    }
+  }
+  return warnings;
+}
+
+/**
+ * Get agent graph
+ */
+export async function getAgentGraph(agentId: string, orgId: string) {
+  await assertAgentInOrg(agentId, orgId);
 
   const graph = await prisma.agentGraph.findUnique({
     where: { agentId },
@@ -100,24 +138,10 @@ export async function getAgentGraph(agentId: string, userId: string) {
  */
 export async function saveAgentGraph(
   agentId: string,
-  userId: string,
+  orgId: string,
   graphData: AgentGraphData
 ) {
-  // Verify ownership
-  const agent = await prisma.agent.findFirst({
-    where: {
-      id: agentId,
-      org: {
-        members: {
-          some: { userId },
-        },
-      },
-    },
-  });
-
-  if (!agent) {
-    throw new Error("Agent not found or access denied");
-  }
+  await assertAgentInOrg(agentId, orgId);
 
   // Validate graph structure
   validateGraph(graphData);
@@ -144,22 +168,8 @@ export async function saveAgentGraph(
 /**
  * Delete agent graph
  */
-export async function deleteAgentGraph(agentId: string, userId: string) {
-  // Verify ownership
-  const agent = await prisma.agent.findFirst({
-    where: {
-      id: agentId,
-      org: {
-        members: {
-          some: { userId },
-        },
-      },
-    },
-  });
-
-  if (!agent) {
-    throw new Error("Agent not found or access denied");
-  }
+export async function deleteAgentGraph(agentId: string, orgId: string) {
+  await assertAgentInOrg(agentId, orgId);
 
   return prisma.agentGraph.delete({
     where: { agentId },
@@ -258,11 +268,13 @@ export const graphTemplates: Record<string, AgentGraphData> = {
       {
         id: "memory_1",
         type: "memory",
-        position: { x: 350, y: 100 },
+        position: { x: 350, y: 200 },
         data: {
           label: "Vector Search",
+          // Pick the knowledge base to search in the node's properties: a
+          // template cannot know your knowledge base id, so the first run
+          // fails with "pick a knowledge base" until you do.
           config: {
-            operation: "search",
             topK: 5,
           },
         },
@@ -270,18 +282,18 @@ export const graphTemplates: Record<string, AgentGraphData> = {
       {
         id: "transform_1",
         type: "transform",
-        position: { x: 350, y: 300 },
+        position: { x: 600, y: 200 },
         data: {
           label: "Format Context",
           config: {
-            template: "Context:\n{{context}}\n\nQuestion: {{query}}",
+            template: "Context:\n{{value}}\n\nQuestion: {{nodes.input_1}}",
           },
         },
       },
       {
         id: "llm_1",
         type: "llm",
-        position: { x: 600, y: 200 },
+        position: { x: 850, y: 200 },
         data: {
           label: "Generate Answer",
           config: {
@@ -293,7 +305,7 @@ export const graphTemplates: Record<string, AgentGraphData> = {
       {
         id: "output_1",
         type: "output",
-        position: { x: 850, y: 200 },
+        position: { x: 1100, y: 200 },
         data: {
           label: "Response",
           config: { outputType: "text" },
@@ -301,112 +313,114 @@ export const graphTemplates: Record<string, AgentGraphData> = {
       },
     ],
     edges: [
+      // One path: the interpreter follows a single edge out of every node
+      // except a parallel node, so retrieval feeds the prompt in sequence
+      // and the original question comes back via {{nodes.input_1}}.
       { id: "e1", source: "input_1", target: "memory_1" },
-      { id: "e2", source: "input_1", target: "transform_1" },
-      { id: "e3", source: "memory_1", target: "transform_1" },
-      { id: "e4", source: "transform_1", target: "llm_1" },
-      { id: "e5", source: "llm_1", target: "output_1" },
+      { id: "e2", source: "memory_1", target: "transform_1" },
+      { id: "e3", source: "transform_1", target: "llm_1" },
+      { id: "e4", source: "llm_1", target: "output_1" },
     ],
-    viewport: { x: 0, y: 0, zoom: 0.9 },
+    viewport: { x: 0, y: 0, zoom: 0.8 },
   },
+  // Routes a request to the calculator when it needs arithmetic, otherwise
+  // answers directly; a merge joins whichever branch ran. Uses only tools that
+  // need no provider key, so it runs on any server.
   tool_agent: {
     nodes: [
       {
         id: "input_1",
         type: "input",
-        position: { x: 100, y: 200 },
-        data: {
-          label: "User Request",
-          config: { inputType: "text" },
-        },
+        position: { x: 50, y: 200 },
+        data: { label: "User Request", config: { inputType: "text" } },
       },
       {
         id: "llm_1",
         type: "llm",
-        position: { x: 350, y: 200 },
+        position: { x: 280, y: 200 },
         data: {
           label: "Plan Action",
           config: {
-            temperature: 0.5,
-            systemPrompt: "Decide which tool to use based on user request.",
+            temperature: 0,
+            // This llm node is the planner only: no tools, so it cannot
+            // answer by calling one itself.
+            tools: [],
+            systemPrompt:
+              "If the user's request needs arithmetic, reply with ONLY the arithmetic expression (for example 17*23). Otherwise reply with exactly NONE.",
           },
         },
       },
       {
         id: "condition_1",
         type: "condition",
-        position: { x: 600, y: 200 },
+        position: { x: 510, y: 200 },
         data: {
-          label: "Route by Tool",
-          config: {
-            conditions: [
-              { label: "search", expression: "action == 'search'" },
-              { label: "calculate", expression: "action == 'calculate'" },
-              { label: "default", expression: "true" },
-            ],
-          },
-        },
-      },
-      {
-        id: "tool_search",
-        type: "tool",
-        position: { x: 850, y: 100 },
-        data: {
-          label: "Web Search",
-          config: { toolName: "web_search" },
+          label: "Needs Calculator?",
+          config: { op: "not_contains", value: "NONE" },
         },
       },
       {
         id: "tool_calc",
         type: "tool",
-        position: { x: 850, y: 200 },
-        data: {
-          label: "Calculator",
-          config: { toolName: "calculator" },
-        },
+        position: { x: 740, y: 100 },
+        data: { label: "Calculator", config: { toolName: "calculator" } },
       },
       {
-        id: "merge_1",
-        type: "merge",
-        position: { x: 1100, y: 200 },
+        id: "transform_calc",
+        type: "transform",
+        position: { x: 970, y: 100 },
         data: {
-          label: "Merge Results",
-          config: {},
-        },
-      },
-      {
-        id: "llm_2",
-        type: "llm",
-        position: { x: 1350, y: 200 },
-        data: {
-          label: "Format Response",
+          label: "Frame Result",
           config: {
-            temperature: 0.7,
+            template:
+              "The user asked: {{nodes.input_1}}\nThe calculator returned: {{value}}\nAnswer the user.",
           },
         },
       },
       {
+        id: "llm_calc",
+        type: "llm",
+        position: { x: 1200, y: 100 },
+        data: { label: "Explain Result", config: { temperature: 0.3, tools: [] } },
+      },
+      {
+        id: "transform_direct",
+        type: "transform",
+        position: { x: 740, y: 300 },
+        data: { label: "Original Question", config: { template: "{{nodes.input_1}}" } },
+      },
+      {
+        id: "llm_direct",
+        type: "llm",
+        position: { x: 970, y: 300 },
+        data: { label: "Answer Directly", config: { temperature: 0.7 } },
+      },
+      {
+        id: "merge_1",
+        type: "merge",
+        position: { x: 1430, y: 200 },
+        data: { label: "Whichever Ran", config: { mode: "join" } },
+      },
+      {
         id: "output_1",
         type: "output",
-        position: { x: 1600, y: 200 },
-        data: {
-          label: "Response",
-          config: { outputType: "text" },
-        },
+        position: { x: 1660, y: 200 },
+        data: { label: "Response", config: { outputType: "text" } },
       },
     ],
     edges: [
       { id: "e1", source: "input_1", target: "llm_1" },
       { id: "e2", source: "llm_1", target: "condition_1" },
-      { id: "e3", source: "condition_1", target: "tool_search", sourceHandle: "search" },
-      { id: "e4", source: "condition_1", target: "tool_calc", sourceHandle: "calculate" },
-      { id: "e5", source: "condition_1", target: "merge_1", sourceHandle: "default" },
-      { id: "e6", source: "tool_search", target: "merge_1" },
-      { id: "e7", source: "tool_calc", target: "merge_1" },
-      { id: "e8", source: "merge_1", target: "llm_2" },
-      { id: "e9", source: "llm_2", target: "output_1" },
+      { id: "e3", source: "condition_1", target: "tool_calc", sourceHandle: "true" },
+      { id: "e4", source: "condition_1", target: "transform_direct", sourceHandle: "false" },
+      { id: "e5", source: "tool_calc", target: "transform_calc" },
+      { id: "e6", source: "transform_calc", target: "llm_calc" },
+      { id: "e7", source: "llm_calc", target: "merge_1" },
+      { id: "e8", source: "transform_direct", target: "llm_direct" },
+      { id: "e9", source: "llm_direct", target: "merge_1" },
+      { id: "e10", source: "merge_1", target: "output_1" },
     ],
-    viewport: { x: 0, y: 0, zoom: 0.7 },
+    viewport: { x: 0, y: 0, zoom: 0.6 },
   },
 };
 
@@ -427,7 +441,7 @@ export function getGraphTemplates() {
  */
 export async function applyGraphTemplate(
   agentId: string,
-  userId: string,
+  orgId: string,
   templateId: string
 ) {
   const template = graphTemplates[templateId];
@@ -435,14 +449,14 @@ export async function applyGraphTemplate(
     throw new Error(`Template not found: ${templateId}`);
   }
 
-  return saveAgentGraph(agentId, userId, template);
+  return saveAgentGraph(agentId, orgId, template);
 }
 
 function getTemplateDescription(key: string): string {
   const descriptions: Record<string, string> = {
     simple_chat: "Basic chat agent with single LLM node",
     rag_pipeline: "Retrieval-augmented generation with vector search",
-    tool_agent: "Agent with conditional tool routing and merging",
+    tool_agent: "Routes arithmetic to the calculator tool, answers the rest directly, then merges",
   };
   return descriptions[key] || "Custom agent workflow";
 }
@@ -454,8 +468,8 @@ function getTemplateDescription(key: string): string {
 /**
  * Compile graph to executable format
  */
-export async function compileGraph(agentId: string, userId: string) {
-  const graph = await getAgentGraph(agentId, userId);
+export async function compileGraph(agentId: string, orgId: string) {
+  const graph = await getAgentGraph(agentId, orgId);
 
   if (!graph.nodes || (graph.nodes as GraphNode[]).length === 0) {
     throw new Error("Graph is empty");

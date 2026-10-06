@@ -11,6 +11,7 @@
 import { prisma } from "../lib/prisma.js";
 import { openAgentEnv } from "./agentSecrets.js";
 import { withMarketplaceMetering } from "./marketplaceMeteringProduction.js";
+import { resolveToolMode } from "./skills/runMode.js";
 import {
   resolveModelForPlayground,
   runChat,
@@ -37,7 +38,7 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
         },
       }),
 
-    runAgentChat: async ({ agent, prompt }) => {
+    runAgentChat: async ({ agent, prompt, mode }) => {
       const modelConfig =
         (agent.modelConfig as Record<string, unknown> | null) ?? {};
       const agentEnv = openAgentEnv(agent.env);
@@ -54,6 +55,13 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
       }
 
       const resolved = resolveModelForPlayground(modelId, agentEnv);
+      // A marketplace buyer's copy of someone else's agent runs restricted
+      // (money-moving tools withheld) however the run was triggered.
+      const toolMode = await resolveToolMode({
+        agentId: agent.id,
+        orgId: agent.orgId,
+        base: mode ?? "scheduled",
+      });
       // Every non-interactive invocation of an installed marketplace
       // agent is billable: charge the buyer before the model runs, refund
       // if it throws. Agents that are not per-request installs pass
@@ -81,6 +89,9 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
             },
             [{ role: "user", content: prompt }] as ChatMessage[],
             false,
+            // The agent's enabled tools really run here (files and the
+            // knowledge base are scoped to THIS agent and org).
+            { agentId: agent.id, orgId: agent.orgId, mode: toolMode },
           ),
       );
       return { content: result.content, usage: result.usage };

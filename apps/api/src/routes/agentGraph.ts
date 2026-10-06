@@ -1,6 +1,8 @@
 import { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.js";
 import {
+  getAgentEnabledToolNames,
+  toolNodeWarnings,
   getAgentGraph,
   saveAgentGraph,
   deleteAgentGraph,
@@ -14,6 +16,8 @@ import {
   MarketplacePaymentRequiredError,
 } from "../services/marketplaceMetering.js";
 import { getGraphExecutions, runAgentGraph } from "../services/runAgentGraph.js";
+import { abortOnClientClose, CLIENT_GONE } from "../services/chatStreamSettlement.js";
+import { ServerShuttingDownError } from "../services/inFlightRuns.js";
 
 export async function agentGraphRoutes(app: FastifyInstance) {
   // All routes require authentication
@@ -25,11 +29,11 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Get agent graph
   app.get("/agents/:agentId/graph", async (request, reply) => {
-    const { userId } = request.user as { userId: string };
+    const { orgId } = request.auth!;
     const { agentId } = request.params as { agentId: string };
 
     try {
-      const graph = await getAgentGraph(agentId, userId);
+      const graph = await getAgentGraph(agentId, orgId);
 
       return reply.send({
         success: true,
@@ -45,7 +49,7 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Save agent graph
   app.put("/agents/:agentId/graph", async (request, reply) => {
-    const { userId } = request.user as { userId: string };
+    const { orgId } = request.auth!;
     const { agentId } = request.params as { agentId: string };
     const graphData = request.body as AgentGraphData;
 
@@ -57,7 +61,7 @@ export async function agentGraphRoutes(app: FastifyInstance) {
     }
 
     try {
-      const graph = await saveAgentGraph(agentId, userId, graphData);
+      const graph = await saveAgentGraph(agentId, orgId, graphData);
 
       return reply.send({
         success: true,
@@ -74,11 +78,11 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Delete agent graph
   app.delete("/agents/:agentId/graph", async (request, reply) => {
-    const { userId } = request.user as { userId: string };
+    const { orgId } = request.auth!;
     const { agentId } = request.params as { agentId: string };
 
     try {
-      await deleteAgentGraph(agentId, userId);
+      await deleteAgentGraph(agentId, orgId);
 
       return reply.send({
         success: true,
@@ -108,7 +112,7 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Apply template to agent
   app.post("/agents/:agentId/graph/template", async (request, reply) => {
-    const { userId } = request.user as { userId: string };
+    const { orgId } = request.auth!;
     const { agentId } = request.params as { agentId: string };
     const { templateId } = request.body as { templateId: string };
 
@@ -120,7 +124,7 @@ export async function agentGraphRoutes(app: FastifyInstance) {
     }
 
     try {
-      const graph = await applyGraphTemplate(agentId, userId, templateId);
+      const graph = await applyGraphTemplate(agentId, orgId, templateId);
 
       return reply.send({
         success: true,
@@ -140,7 +144,7 @@ export async function agentGraphRoutes(app: FastifyInstance) {
   // ============================================
 
   // ============================================
-  // Execution (W2 — linear interpreter, stage 1)
+  // Execution (graph interpreter: api/tool/loop/parallel/merge nodes)
   // ============================================
 
   // Run the graph. Compiling only produced an ORDER; this walks it.
@@ -150,13 +154,29 @@ export async function agentGraphRoutes(app: FastifyInstance) {
     const body = (request.body ?? {}) as { input?: unknown };
     const input = typeof body.input === "string" ? body.input : "";
 
+    // A client that closes the tab must not leave the graph running (and
+    // a marketplace charge pending): the run is cancelled and refunded. One
+    // that left before this handler even ran is not charged at all.
+    const abort = abortOnClientClose(reply.raw);
+    if (abort.signal.aborted) {
+      return reply.status(499).send({ success: false, error: CLIENT_GONE });
+    }
+
     try {
-      const result = await runAgentGraph(agentId, orgId, input);
+      const result = await runAgentGraph(agentId, orgId, input, { signal: abort.signal });
       // A failed RUN is a 200 with status:"failed" — the trace is the
       // useful part, and the request itself succeeded. Only a bad
       // request (no graph, empty graph, wrong agent) is a 4xx.
       return reply.send({ success: true, data: result });
     } catch (error: any) {
+      // A deploy is in progress: nothing was charged, and the retry lands on
+      // the new instance.
+      if (error instanceof ServerShuttingDownError) {
+        return reply
+          .status(503)
+          .header("Retry-After", "5")
+          .send({ success: false, error: error.message, reason: "server_shutting_down" });
+      }
       if (error instanceof MarketplaceLicenceRevokedError) {
         return reply.status(403).send({ success: false, error: error.message });
       }
@@ -193,11 +213,11 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Compile graph for execution
   app.post("/agents/:agentId/graph/compile", async (request, reply) => {
-    const { userId } = request.user as { userId: string };
+    const { orgId } = request.auth!;
     const { agentId } = request.params as { agentId: string };
 
     try {
-      const compiled = await compileGraph(agentId, userId);
+      const compiled = await compileGraph(agentId, orgId);
 
       return reply.send({
         success: true,
@@ -214,7 +234,23 @@ export async function agentGraphRoutes(app: FastifyInstance) {
 
   // Validate graph without saving
   app.post("/agents/:agentId/graph/validate", async (request, reply) => {
+    const { orgId } = request.auth!;
+    const { agentId } = request.params as { agentId: string };
     const graphData = request.body as AgentGraphData;
+
+    if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.edges)) {
+      return reply.status(400).send({
+        success: false,
+        error: "Invalid graph data. Must include nodes and edges arrays.",
+      });
+    }
+
+    let enabledTools: string[];
+    try {
+      enabledTools = await getAgentEnabledToolNames(agentId, orgId);
+    } catch (error: any) {
+      return reply.status(404).send({ success: false, error: error.message });
+    }
 
     const issues: { type: "error" | "warning"; message: string }[] = [];
 
@@ -270,6 +306,12 @@ export async function agentGraphRoutes(app: FastifyInstance) {
           message: `Tool node "${node.data.label}" has no tool configured`,
         });
       }
+    }
+
+    // "Valid" used to be reported for a graph whose tool nodes every run
+    // refuses, because only the presence of a tool name was checked.
+    for (const message of toolNodeWarnings(graphData.nodes, enabledTools)) {
+      issues.push({ type: "warning", message });
     }
 
     const isValid = issues.filter((i) => i.type === "error").length === 0;

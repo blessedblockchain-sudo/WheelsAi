@@ -11,7 +11,20 @@ import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
 import { checkFreeTierLimit } from "../middleware/free-tier-limit.js";
-import { resolveModelForPlayground, runChat, type ChatMessage } from "../services/mastra-runtime.js";
+import {
+  resolveModelForPlayground,
+  runChat,
+  runChatStream,
+  type ChatMessage,
+} from "../services/mastra-runtime.js";
+import {
+  abortOnClientClose,
+  CLIENT_GONE,
+  forwardAndSettle,
+  watchDelivery,
+} from "../services/chatStreamSettlement.js";
+import { publicFallbackReason } from "../services/skills/knowledgeSearchSkill.js";
+import { resolveToolMode } from "../services/skills/runMode.js";
 import { isFreeModel, getAvailableFreeModels, getAllFreeModels } from "../config/free-models.js";
 import { retrieveContextForAgent } from "../services/agentRetrieval.js";
 import { beginMarketplaceMetering } from "../services/marketplaceMeteringProduction.js";
@@ -45,6 +58,14 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const body = chatBodySchema.parse(request.body);
       const orgId = request.auth!.orgId;
+
+      // Client disconnect cancels the provider call and any running tool, so
+      // a closed tab stops costing money (and is refunded, not settled).
+      // Wired before the first await so a client that leaves during any of
+      // the lookups below is seen - as is one that left before we got here.
+      const abort = abortOnClientClose(reply.raw);
+      const clientGone = () =>
+        reply.status(499).send({ error: "ClientClosedRequest", message: CLIENT_GONE });
 
       // Load agent and verify ownership
       const agent = await prisma.agent.findFirst({
@@ -123,6 +144,9 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
       // and answered as 402 before any response bytes are written — the
       // streaming branch cannot take that back once it has flushed a
       // header.
+      // Nobody is waiting for this answer any more: stop before charging.
+      if (abort.signal.aborted) return clientGone();
+
       const metering = await beginMarketplaceMetering({ agentId, orgId });
       if (metering && !metering.ok && metering.reason === "licence_revoked") {
         return reply.status(403).send({
@@ -168,43 +192,69 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           : body.messages
       ) as ChatMessage[];
 
+      const chatOptions = {
+        agentId,
+        orgId,
+        // A marketplace buyer's copy of someone else's agent runs in `trial`
+        // mode: money-moving tools are withheld.
+        mode: await resolveToolMode({ agentId, orgId, base: "playground" }),
+        signal: abort.signal,
+      };
+
       // Streaming response
       if (body.stream) {
+        let chat;
         try {
-          const stream = await runChat(
-            resolved,
-            agentConfig,
-            chatMessages,
-            true
-          );
-
-          reply.raw.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-          });
-
-          const reader = stream.getReader();
-          try {
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              reply.raw.write(value);
-            }
-          } finally {
-            reader.releaseLock();
-            reply.raw.end();
-          }
-
-          await meter?.settle();
-          return;
+          // Tool rounds (if any) and the provider's acceptance of the request
+          // happen BEFORE this resolves, so a failure here is still a plain
+          // HTTP error: no header has been flushed and nothing was billed.
+          chat = await runChatStream(resolved, agentConfig, chatMessages, chatOptions);
         } catch (err) {
           logger.error({ err, agentId, modelId }, "Streaming chat error");
           await meter?.refund(
             err instanceof Error ? err.message : "streaming failed",
           );
-          return reply.internalServerError("Failed to stream chat response");
+          return reply.status(502).send({
+            error: "ModelError",
+            message: err instanceof Error ? err.message : "Failed to stream chat response",
+          });
         }
+
+        // The whole answer of a tool-using chat exists by now, and the
+        // client may have left while it was produced. Its charge goes back.
+        if (abort.signal.aborted || reply.raw.destroyed) {
+          await chat.stream.cancel().catch(() => {});
+          await meter?.refund(CLIENT_GONE);
+          return clientGone();
+        }
+
+        // Billing follows the stream's outcome: a real answer settles; a
+        // provider error event, an empty answer, a cut-off stream or a
+        // vanished client refunds. (write() on a closed socket returns false
+        // - it never throws - so the byte loop alone cannot tell.)
+        const delivered = watchDelivery(reply.raw, abort.signal);
+
+        reply.raw.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+        });
+
+        const outcome = await forwardAndSettle({
+          chat,
+          write: (chunk) => {
+            reply.raw.write(chunk);
+          },
+          end: () => {
+            reply.raw.end();
+          },
+          delivered,
+          meter,
+        });
+        if (!outcome.ok) {
+          logger.warn({ agentId, modelId, error: outcome.error }, "Streamed chat produced no answer");
+        }
+        return;
       }
 
       // Non-streaming response
@@ -213,8 +263,15 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           resolved,
           agentConfig,
           chatMessages,
-          false
+          false,
+          chatOptions
         );
+
+        // Generated, but the client hung up while it was: not delivered.
+        if (abort.signal.aborted) {
+          await meter?.refund(CLIENT_GONE);
+          return clientGone();
+        }
 
         await meter?.settle();
 
@@ -227,6 +284,10 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           content: result.content,
           model: modelId,
           usage: result.usage,
+          // Every tool the model called and how each call ended, so the UI
+          // can say "web_search: unavailable" instead of leaving it to the
+          // model's paraphrase.
+          toolCalls: result.toolCalls ?? [],
           // What this answer cost the buyer and who it went to. A charge
           // the user only discovers on their statement is a charge we hid.
           billing: meter
@@ -242,7 +303,9 @@ export const playgroundRoutes: FastifyPluginAsync = async (app) => {
           retrieval: retrieval
             ? {
                 mode: retrieval.mode,
-                fallbackReason: retrieval.fallbackReason,
+                // Never the embedding provider's own error body: that is
+                // the operator's account talking, not the tenant's.
+                fallbackReason: publicFallbackReason(retrieval.fallbackReason),
                 sources: retrieval.sources.map((s) => ({
                   chunkId: s.chunkId,
                   documentId: s.documentId,

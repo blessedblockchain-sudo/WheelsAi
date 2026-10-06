@@ -17,7 +17,8 @@
  * All IO is injected so unit tests run without models, fetch, or Prisma.
  */
 
-import { assertUrlAllowed } from "../lib/ssrfGuard.js";
+import { safeFetch, SsrfBlockedError, type UrlGuardDeps } from "../lib/ssrfGuard.js";
+import type { ToolMode } from "./skills/types.js";
 
 export interface ScheduledTaskForExecution {
   id: string;
@@ -46,8 +47,12 @@ export interface ExecuteScheduledTaskDeps {
   runAgentChat: (args: {
     agent: AgentForExecution;
     prompt: string;
+    /** Where the run comes from; gates tools (default "scheduled"). */
+    mode?: ToolMode;
   }) => Promise<{ content: string; usage?: unknown }>;
   fetchFn: typeof fetch;
+  /** DNS seam for the SSRF guard; tests inject it, production uses real DNS. */
+  guardDeps?: UrlGuardDeps;
 }
 
 const AGENT_TASK_TYPES = new Set(["agent_run", "inference"]);
@@ -88,19 +93,13 @@ export async function executeScheduledTask(
     if (typeof url !== "string" || !/^https?:\/\//.test(url)) {
       throw new Error("webhook task requires a payload.url (http/https)");
     }
-    // The URL is user-supplied, so it is an SSRF vector into our own
-    // network. Resolve and validate before firing (lib/ssrfGuard.ts).
-    const verdict = await assertUrlAllowed(url);
-    if (!verdict.ok) {
-      throw new Error(`webhook URL refused: ${verdict.reason}`);
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(
-      () => controller.abort(),
-      Math.min(task.timeout, 60_000),
-    );
+    // The URL is user-supplied, so it is an SSRF vector into our own network.
+    // safeFetch validates it (DNS-resolved addresses, IPv6 forms included) and
+    // does not auto-follow redirects: the old code validated the first URL and
+    // then let `fetch` follow a 302 to wherever it pointed.
+    let res: Response;
     try {
-      const res = await deps.fetchFn(url, {
+      res = await safeFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -109,15 +108,30 @@ export async function executeScheduledTask(
           firedAt: new Date().toISOString(),
           body: payload.body ?? null,
         }),
-        signal: controller.signal,
+        timeoutMs: Math.min(task.timeout, 60_000),
+        // A redirect would turn the POST into a GET (and drop the payload)
+        // without anyone noticing; a webhook that moved should fail loudly.
+        maxRedirects: 0,
+        fetchImpl: deps.fetchFn,
+        guardDeps: deps.guardDeps,
       });
-      if (!res.ok) {
-        throw new Error(`webhook responded ${res.status}`);
+    } catch (err) {
+      if (err instanceof SsrfBlockedError) {
+        // The execution row is shown to the task's owner: no resolved
+        // addresses in it (see SsrfBlockedError.publicMessage).
+        throw new Error(
+          err.message === "too many redirects"
+            ? "webhook URL redirected; redirects are not followed for webhooks - use the final URL"
+            : `webhook URL refused: ${err.publicMessage}`,
+        );
       }
-      return { output: { status: res.status } };
-    } finally {
-      clearTimeout(timer);
+      throw err;
     }
+    await res.body?.cancel().catch(() => {});
+    if (!res.ok) {
+      throw new Error(`webhook responded ${res.status}`);
+    }
+    return { output: { status: res.status } };
   }
 
   throw new Error(

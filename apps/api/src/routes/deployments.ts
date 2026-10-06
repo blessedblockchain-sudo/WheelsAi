@@ -78,6 +78,13 @@ const TERMINAL_STATUSES = ["stopped", "failed"];
 // Schemas
 // ============================================
 
+/**
+ * What a deployment runs with when its config omits a value. Applied when a
+ * deployment is created, submitted and read, so a row that lacks a key (older
+ * rows, rows written by scripts) still answers with a complete config.
+ */
+export const DEFAULT_DEPLOYMENT_CONFIG = { maxTokens: 4096, gpuMemoryUtilization: 0.9 } as const;
+
 const createDeploymentSchema = z.object({
   name: z.string().min(3).max(50),
   modelId: z.string(),
@@ -86,8 +93,8 @@ const createDeploymentSchema = z.object({
   replicas: z.number().int().min(1).max(10).default(1),
   config: z
     .object({
-      maxTokens: z.number().int().min(256).max(32768).default(4096),
-      gpuMemoryUtilization: z.number().min(0.5).max(0.95).default(0.9),
+      maxTokens: z.number().int().min(256).max(32768).default(DEFAULT_DEPLOYMENT_CONFIG.maxTokens),
+      gpuMemoryUtilization: z.number().min(0.5).max(0.95).default(DEFAULT_DEPLOYMENT_CONFIG.gpuMemoryUtilization),
     })
     .optional(),
 });
@@ -533,6 +540,7 @@ export function createDeploymentRoutes(
         return {
           deployment: {
             ...deployment,
+            config: { ...DEFAULT_DEPLOYMENT_CONFIG, ...(deployment.config as Record<string, unknown> | null) },
             // Raw Nosana node URLs are unauthenticated GPU endpoints that would
             // bypass metering - callers go through `endpoint` (our /v1 proxy).
             nodes: deployment.nodes.map(({ nodeUrl: _nodeUrl, nosanaNodeId: _id, ...node }) => node),
@@ -609,10 +617,7 @@ export function createDeploymentRoutes(
         slug = `${rootSlug}-${counter}`;
       }
 
-      const config = body.config ?? {
-        maxTokens: 4096,
-        gpuMemoryUtilization: 0.9,
-      };
+      const config = body.config ?? { ...DEFAULT_DEPLOYMENT_CONFIG };
 
       // Create the deployment and take its credit reservation in ONE
       // transaction. Reserving first in a separate transaction meant a
@@ -1293,8 +1298,8 @@ export function createDeploymentRoutes(
             modelId: deployment.modelId,
             hfModelId: deployment.model.hfId,
             engine: deployment.engine as "vllm" | "ollama",
-            maxTokens: config.maxTokens ?? 4096,
-            gpuMemoryUtilization: config.gpuMemoryUtilization ?? 0.9,
+            maxTokens: config.maxTokens ?? DEFAULT_DEPLOYMENT_CONFIG.maxTokens,
+            gpuMemoryUtilization: config.gpuMemoryUtilization ?? DEFAULT_DEPLOYMENT_CONFIG.gpuMemoryUtilization,
           },
           deployment.gpuTier,
           deployment.replicas,

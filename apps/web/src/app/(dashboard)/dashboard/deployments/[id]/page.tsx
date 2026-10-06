@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   Cpu,
   Copy,
-  ExternalLink,
   RefreshCw,
   Square,
   Play,
@@ -255,7 +254,7 @@ export default function DeploymentDetailPage() {
     <div className="flex flex-col">
       <Header
         title={deployment.name}
-        description={`${deployment.model} on ${deployment.gpuTier}`}
+        description={`${deployment.model.displayName} on ${deployment.gpuTier}`}
       />
 
       <div className="p-8">
@@ -449,7 +448,7 @@ export default function DeploymentDetailPage() {
             <div className="grid gap-4 md:grid-cols-2">
               <div>
                 <p className="text-sm text-muted-foreground">Model</p>
-                <p className="font-medium">{deployment.model}</p>
+                <p className="font-medium">{deployment.model.displayName}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">GPU Tier</p>
@@ -505,22 +504,9 @@ export default function DeploymentDetailPage() {
                         <p className="text-sm text-muted-foreground">{node.healthStatus}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {node.latencyMs && (
-                        <span className="text-sm text-muted-foreground">{node.latencyMs}ms latency</span>
-                      )}
-                      {node.nosanaNodeId && !node.nosanaNodeId.startsWith("node_") && (
-                        <a
-                          href={`https://dashboard.nosana.com/host/${node.nosanaNodeId}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-sm text-primary-600 hover:text-primary-700"
-                        >
-                          View on Nosana
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
-                      )}
-                    </div>
+                    {node.latencyMs !== null && (
+                      <span className="text-sm text-muted-foreground">{node.latencyMs}ms latency</span>
+                    )}
                   </div>
                 ))}
               </div>

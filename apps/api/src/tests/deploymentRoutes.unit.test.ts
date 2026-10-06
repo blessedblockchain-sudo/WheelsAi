@@ -467,6 +467,18 @@ test("GET /:id returns the endpoint and withholds raw node URLs", async () => {
   assert.equal(deployment.nodes[0].healthStatus, "healthy");
 });
 
+test("GET /:id answers with a complete config even when the stored row lacks a key", async () => {
+  // Rows written before the create route filled these in, or by a script.
+  const db = makeDb({ deployments: [running({ config: { maxModelLen: 8192 } })] });
+  const { app } = await makeApp({ db });
+  const { deployment } = (await app.inject({ method: "GET", url: "/dep_1" })).json();
+  assert.deepEqual(deployment.config, { maxTokens: 4096, gpuMemoryUtilization: 0.9, maxModelLen: 8192 });
+
+  const stored = makeDb({ deployments: [running({ config: { maxTokens: 2048, gpuMemoryUtilization: 0.8 } })] });
+  const res = await (await makeApp({ db: stored })).app.inject({ method: "GET", url: "/dep_1" });
+  assert.deepEqual(res.json().deployment.config, { maxTokens: 2048, gpuMemoryUtilization: 0.8 });
+});
+
 test("deployments are tenant-scoped: another org's id is a 404", async () => {
   const db = makeDb({ deployments: [running({ orgId: "org_other" })] });
   const { app } = await makeApp({ db });

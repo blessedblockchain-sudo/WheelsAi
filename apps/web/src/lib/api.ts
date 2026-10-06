@@ -358,16 +358,20 @@ export interface Deployment {
   updatedAt: string;
 }
 
-export interface DeploymentDetail extends Deployment {
+/**
+ * One deployment as GET /api/deployments/:id returns it. Unlike a list row,
+ * `model` is the catalog model itself, and there are no node counts: the
+ * nodes are listed. Node URLs and ids are withheld by the API, because a raw
+ * node is an unauthenticated GPU endpoint.
+ */
+export interface DeploymentDetail extends Omit<Deployment, "model" | "healthyNodes" | "totalNodes"> {
+  model: { id: string; displayName: string };
   config: {
     maxTokens: number;
     gpuMemoryUtilization: number;
   };
   nodes: Array<{
     id: string;
-    // Nosana host pubkey (mock rows use node_N placeholders) — links to
-    // the public Nosana dashboard so the decentralized GPU is verifiable.
-    nosanaNodeId: string;
     healthStatus: string;
     latencyMs: number | null;
   }>;

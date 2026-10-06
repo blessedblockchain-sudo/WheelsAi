@@ -16,6 +16,7 @@
  */
 
 import { prisma } from "../lib/prisma.js";
+import { safeFetch, SsrfBlockedError, type UrlGuardDeps } from "../lib/ssrfGuard.js";
 import { recordUptimeEvent } from "./monitoring.js";
 import type {
   ProbeOutcome,
@@ -23,10 +24,44 @@ import type {
 } from "./runUptimeProberTick.js";
 
 const DEFAULT_BATCH_LIMIT = 50;
+/** How much of a response body an expected-substring check reads. */
+const MAX_BODY_BYTES = 1024 * 1024;
+/** Headers a monitor may not set: they control routing and framing. */
+const RESERVED_HEADERS = new Set(["host", "content-length", "transfer-encoding", "connection"]);
+
+function monitorHeaders(raw: unknown): Record<string, string> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "string" || RESERVED_HEADERS.has(name.toLowerCase())) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
+async function readTextCapped(res: Response, maxBytes: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (total < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).subarray(0, maxBytes).toString("utf8");
+}
 
 export interface BuildUptimeProberTickDepsInput {
   fetchFn?: typeof fetch;
   batchLimit?: number;
+  /** DNS resolution for the SSRF guard; injected by tests. */
+  guardDeps?: UrlGuardDeps;
 }
 
 export function buildUptimeProberTickDeps(
@@ -112,14 +147,18 @@ export function buildUptimeProberTickDeps(
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const startedAt = Date.now();
       try {
-        const headers =
-          typeof monitor.headers === "object" && monitor.headers !== null
-            ? (monitor.headers as Record<string, string>)
-            : undefined;
-        const res = await fetchFn(url, {
+        const headers = monitorHeaders(monitor.headers);
+        // Monitor URLs are user input: every hop is checked against the
+        // SSRF guard, so a monitor cannot probe or read internal addresses
+        // (cloud metadata, private networks, loopback).
+        const res = await safeFetch(url, {
           method: monitor.httpMethod || "GET",
           headers,
           signal: controller.signal,
+          timeoutMs,
+          maxRedirects: 3,
+          fetchImpl: fetchFn,
+          guardDeps: input.guardDeps,
         });
         const latencyMs = Date.now() - startedAt;
 
@@ -132,7 +171,7 @@ export function buildUptimeProberTickDeps(
           };
         }
         if (monitor.expectedBody) {
-          const body = await res.text().catch(() => "");
+          const body = await readTextCapped(res, MAX_BODY_BYTES).catch(() => "");
           if (!body.includes(monitor.expectedBody)) {
             return {
               status: "down",
@@ -145,6 +184,10 @@ export function buildUptimeProberTickDeps(
         return { status: "up", statusCode: res.status, latencyMs };
       } catch (err) {
         const latencyMs = Date.now() - startedAt;
+        if (err instanceof SsrfBlockedError) {
+          // The generic reason only: never which internal address it hit.
+          return { status: "error", latencyMs, errorMessage: err.publicMessage };
+        }
         const aborted =
           err instanceof Error &&
           (err.name === "AbortError" || /abort/i.test(err.message));

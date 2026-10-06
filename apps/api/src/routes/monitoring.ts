@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.js";
 import { triggerWebhook } from "../services/webhooks.js";
+import { assertUrlAllowed } from "../lib/ssrfGuard.js";
 import {
   createAlertChannel,
   getAlertChannels,
@@ -27,6 +28,20 @@ import {
   type CreateAlertRuleInput,
   type CreateUptimeMonitorInput,
 } from "../services/monitoring.js";
+
+/**
+ * Why a monitor URL is refused, in words safe to show the user (never the
+ * address a host resolved to), or null when it may be probed. The prober
+ * re-checks every probe, so this is the early, friendly version of the
+ * same rule.
+ */
+async function monitorUrlRefusal(targetUrl: string): Promise<string | null> {
+  const verdict = await assertUrlAllowed(targetUrl);
+  if (verdict.ok) return null;
+  return verdict.kind === "address"
+    ? "targetUrl must point at a public internet address"
+    : `targetUrl is not allowed: ${verdict.reason}`;
+}
 
 export async function monitoringRoutes(app: FastifyInstance) {
   // All routes require authentication
@@ -437,6 +452,10 @@ export async function monitoringRoutes(app: FastifyInstance) {
         error: "targetUrl is required for custom_url monitors",
       });
     }
+    if (input.targetType === "custom_url") {
+      const refusal = await monitorUrlRefusal(input.targetUrl!);
+      if (refusal) return reply.status(400).send({ success: false, error: refusal });
+    }
 
     try {
       const monitor = await createUptimeMonitor(orgId, input);
@@ -461,6 +480,11 @@ export async function monitoringRoutes(app: FastifyInstance) {
     const updates = request.body as Partial<CreateUptimeMonitorInput> & {
       isEnabled?: boolean;
     };
+
+    if (typeof updates.targetUrl === "string") {
+      const refusal = await monitorUrlRefusal(updates.targetUrl);
+      if (refusal) return reply.status(400).send({ success: false, error: refusal });
+    }
 
     try {
       const monitor = await updateUptimeMonitor(monitorId, orgId, updates);

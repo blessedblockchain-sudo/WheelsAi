@@ -73,6 +73,9 @@ function makeDeps(opts: {
         status: opts.fetchStatus ?? 200,
       } as Response;
     }) as typeof fetch,
+    // The webhook URL passes the SSRF guard, which resolves the host: answer
+    // here so the test needs no DNS and cannot flake on it.
+    guardDeps: { resolveHost: async () => ["93.184.216.34"] },
   };
   return { deps, chatCalls, fetchCalls };
 }

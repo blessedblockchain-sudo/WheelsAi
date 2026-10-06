@@ -3,6 +3,7 @@ import test from "node:test";
 
 import Fastify from "fastify";
 
+import "./unitEnv.js";
 import { createPublicStatsRoutes } from "../routes/publicStats.js";
 
 // The landing page's stats come from here. These pin them to the product

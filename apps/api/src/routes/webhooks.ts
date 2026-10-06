@@ -12,6 +12,7 @@ import {
   retryDelivery,
   WEBHOOK_EVENTS,
 } from "../services/webhooks.js";
+import { webhookEventCategories } from "../services/webhookEventCategories.js";
 import {
   createIntegration,
   getIntegrations,
@@ -47,13 +48,8 @@ export async function webhooksRoutes(app: FastifyInstance) {
   app.get("/webhooks/events", async (request, reply) => {
     return reply.send({
       events: WEBHOOK_EVENTS,
-      categories: {
-        agent: WEBHOOK_EVENTS.filter((e) => e.startsWith("agent.")),
-        deployment: WEBHOOK_EVENTS.filter((e) => e.startsWith("deployment.")),
-        training: WEBHOOK_EVENTS.filter((e) => e.startsWith("training.")),
-        alert: WEBHOOK_EVENTS.filter((e) => e.startsWith("alert.")),
-        billing: WEBHOOK_EVENTS.filter((e) => e.startsWith("billing.")),
-      },
+      // Derived from the list, so every event is in exactly one category.
+      categories: webhookEventCategories(WEBHOOK_EVENTS),
     });
   });
 

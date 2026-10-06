@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 import { CodeBlock } from "@/components/marketing/code-block";
 import { DocPage } from "@/components/marketing/docs/doc-page";
@@ -41,6 +42,11 @@ export default function WebhooksApiPage() {
           { event: <code>agent.created</code>, when: "An agent is created.", data: <code>agentId, name, slug</code> },
           { event: <code>agent.updated</code>, when: "An agent is updated.", data: <code>agentId, name</code> },
           { event: <code>agent.deleted</code>, when: "An agent is deleted.", data: <code>agentId, name</code> },
+          {
+            event: <code>agent.deployed</code>,
+            when: "The platform observes an agent's deployment reach running.",
+            data: <code>agentId, name, slug, deploymentId, observedAt</code>,
+          },
           { event: <code>deployment.started</code>, when: "A model deployment is created.", data: <code>deploymentId, name, slug</code> },
           {
             event: <code>deployment.running</code>,
@@ -70,13 +76,36 @@ export default function WebhooksApiPage() {
             data: <code>alertId, title, metric, value, threshold, severity</code>,
           },
           { event: <code>alert.resolved</code>, when: "An alert is resolved.", data: <code>alertId, title, severity</code> },
+          {
+            event: <code>workflow.completed</code>,
+            when: "A workflow run completes.",
+            data: <code>executionId, orchestrationId, workflowName, status, triggeredBy, durationMs, outputPreview</code>,
+          },
+          {
+            event: <code>workflow.failed</code>,
+            when: "A workflow run fails or times out. A cancelled run sends nothing.",
+            data: <code>executionId, orchestrationId, workflowName, status, triggeredBy, durationMs, error</code>,
+          },
+          {
+            event: <code>scheduled_task.failed</code>,
+            when: "A scheduled task fails, once per firing, after its last attempt.",
+            data: <>See <Link href="/docs/api/workflows#events">workflow and scheduler events</Link>.</>,
+          },
+          {
+            event: <code>report.generated</code>,
+            when: "A report task that asks for it finishes.",
+            data: <>See <Link href="/docs/api/workflows#events">workflow and scheduler events</Link>.</>,
+          },
         ]}
       />
       <p>
-        <code>deploymentKind</code> is <code>model</code> or <code>agent</code>. <code>GET /api/webhooks/events</code> returns
-        the full list of event names you can subscribe to, grouped by category. That list also contains{" "}
-        <code>agent.deployed</code>, <code>agent.version.created</code>, <code>billing.low_balance</code> and{" "}
-        <code>billing.payment_received</code>: you can subscribe to them now, but the platform does not send them yet.
+        <code>deploymentKind</code> is <code>model</code> or <code>agent</code>. An agent deployment that reaches running
+        sends both <code>deployment.running</code> and <code>agent.deployed</code>. <code>GET /api/webhooks/events</code>{" "}
+        returns the full list of event names you can subscribe to, with every one of them in a category:{" "}
+        <code>agent</code>, <code>deployment</code>, <code>training</code>, <code>alert</code>, <code>billing</code>,{" "}
+        <code>workflow</code>, <code>scheduled_task</code> and <code>report</code>. That list also contains{" "}
+        <code>agent.version.created</code>, <code>billing.low_balance</code> and <code>billing.payment_received</code>:
+        you can subscribe to them now, but the platform does not send them yet.
       </p>
 
       <h2 id="payload">Payload and headers</h2>

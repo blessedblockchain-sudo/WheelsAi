@@ -3,6 +3,7 @@ import { Queue, Worker } from "bullmq";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { buildDeploymentStatusTickDeps } from "../services/buildDeploymentStatusTickDeps.js";
+import { createEmitDeploymentTransition } from "../services/deploymentTransitionEvents.js";
 import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { getNosanaClient, isNosanaMockEnabled } from "../services/nosana.js";
 import { runDeploymentStatusTick } from "../services/runDeploymentStatusTick.js";
@@ -71,34 +72,20 @@ export async function startDeploymentStatusQueue(): Promise<void> {
         reclaimVault: (id) => client.reclaimDeploymentVault(id),
         reclaimMaxAgeHours: getNosanaDeployConfig().reclaimMaxAgeHours,
         allowMock: isNosanaMockEnabled(),
-        // Tick-observed deployment.* events (running / failed / job-ended
-        // stopped). degraded has no event type — skipped.
-        emitTransition: async (t) => {
-          const eventType =
-            t.toStatus === "running"
-              ? ("deployment.running" as const)
-              : t.toStatus === "failed"
-                ? ("deployment.failed" as const)
-                : t.toStatus === "stopped"
-                  ? ("deployment.stopped" as const)
-                  : null;
-          if (!eventType) return;
-          await triggerWebhook(
-            t.orgId,
-            eventType,
-            {
-              deploymentId: t.id,
-              deploymentKind: t.kind,
-              fromStatus: t.fromStatus,
-              toStatus: t.toStatus,
-              observedAt: t.observedAt.toISOString(),
-            },
-            "deployment",
-            t.id,
-          ).catch((err) =>
-            logger.error({ err, eventType }, "tick webhook emission failed"),
-          );
-        },
+        // Tick-observed events: deployment.running / failed / stopped, plus
+        // agent.deployed when an agent deployment starts running. degraded
+        // has no event type.
+        emitTransition: createEmitDeploymentTransition({
+          loadDeployedAgent: async (deploymentId, orgId) => {
+            const row = await prisma.agentDeployment.findFirst({
+              where: { id: deploymentId, agent: { orgId } },
+              select: { agent: { select: { id: true, name: true, slug: true } } },
+            });
+            return row ? { agentId: row.agent.id, name: row.agent.name, slug: row.agent.slug } : null;
+          },
+          triggerWebhook,
+          onError: (err, eventType) => logger.error({ err, eventType }, "tick webhook emission failed"),
+        }),
       });
       const result = await runDeploymentStatusTick({ now: new Date() }, deps);
       logger.info(result, "Deployment status tick complete");

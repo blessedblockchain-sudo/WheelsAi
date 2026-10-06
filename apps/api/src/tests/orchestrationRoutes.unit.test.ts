@@ -41,6 +41,7 @@ async function makeApp(
   const { createOrchestrationRoutes } = await import("../routes/orchestration.js");
   const { WorkflowError } = await import("../services/workflowErrors.js");
   const { globalErrorHandler } = await import("../lib/errorHandler.js");
+  const { acceptEmptyJsonBody } = await import("../routes/emptyJsonBody.js");
 
   const calls: Calls = [];
   const notFound = () => new WorkflowError("not_found", "Workflow not found");
@@ -109,6 +110,8 @@ async function makeApp(
   const app = Fastify();
   await app.register(sensible);
   app.setErrorHandler(globalErrorHandler);
+  // As index.ts does at the root, before any route plugin.
+  acceptEmptyJsonBody(app);
   app.decorateRequest("auth", null);
   app.addHook("onRequest", async (request) => {
     if (opts.auth === null) return;

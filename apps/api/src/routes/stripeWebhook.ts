@@ -10,8 +10,10 @@ import { prisma } from "../lib/prisma.js";
 import { env } from "../config/env.js";
 import { getStripe } from "../services/stripe/stripeClient.js";
 import { processStripeEvent, type StripeWebhookTx } from "../services/stripe/stripeWebhook.js";
+import { replaceJsonBodyParser } from "./emptyJsonBody.js";
 
 export const stripeWebhookRoutes: FastifyPluginAsync = async (app) => {
+  replaceJsonBodyParser(app);
   app.addContentTypeParser("application/json", { parseAs: "buffer", bodyLimit: 1_048_576 }, (_req, body, done) =>
     done(null, body),
   );

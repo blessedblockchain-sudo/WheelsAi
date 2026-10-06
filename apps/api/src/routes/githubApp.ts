@@ -29,6 +29,7 @@ import {
   type PushPayload,
 } from "../services/githubPushHandler.js";
 import { createLogger } from "../utils/logger.js";
+import { replaceJsonBodyParser } from "./emptyJsonBody.js";
 
 const logger = createLogger("github-app");
 
@@ -77,6 +78,7 @@ export function createGitHubAppRoutes(
   return async (app) => {
     // Plugin-scoped raw body: the signature covers the exact bytes GitHub
     // sent, and re-serializing the parsed object would not reproduce them.
+    replaceJsonBodyParser(app);
     app.addContentTypeParser(
       "application/json",
       { parseAs: "string", bodyLimit: WEBHOOK_BODY_LIMIT },

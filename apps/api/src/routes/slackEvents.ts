@@ -21,6 +21,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import { verifySlackSignature } from "../services/channelAuth.js";
 import { createLogger } from "../utils/logger.js";
+import { replaceJsonBodyParser } from "./emptyJsonBody.js";
 
 const logger = createLogger("slack-events");
 
@@ -53,6 +54,7 @@ export function createSlackEventsRoutes(
     // change key order and unicode escaping and break verification. This
     // repo does not use fastify-plugin, so the parser stays private to
     // this plugin rather than leaking to sibling routes.
+    replaceJsonBodyParser(app);
     app.addContentTypeParser(
       "application/json",
       { parseAs: "string" },

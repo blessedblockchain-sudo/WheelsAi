@@ -54,6 +54,7 @@ async function makeApp(
   setupEnv();
   const { createSchedulerRoutes } = await import("../routes/scheduler.js");
   const { globalErrorHandler } = await import("../lib/errorHandler.js");
+  const { acceptEmptyJsonBody } = await import("../routes/emptyJsonBody.js");
 
   const calls: Array<{ fn: string; args: unknown[] }> = [];
   const scoped = (id: string) => {
@@ -87,6 +88,8 @@ async function makeApp(
   const app = Fastify();
   await app.register(sensible);
   app.setErrorHandler(globalErrorHandler);
+  // As index.ts does at the root, before any route plugin.
+  acceptEmptyJsonBody(app);
   app.decorateRequest("auth", null);
   app.addHook("onRequest", async (request) => {
     if (opts.authed !== false) request.auth = { userId: "u1", orgId: "org_1", type: "jwt" };

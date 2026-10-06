@@ -30,6 +30,7 @@ import {
   type SupportedPlatform,
 } from "../services/channelNormalize.js";
 import { createLogger } from "../utils/logger.js";
+import { replaceJsonBodyParser } from "./emptyJsonBody.js";
 
 const logger = createLogger("channel-webhook");
 
@@ -67,6 +68,7 @@ export function createChannelWebhookRoutes(
     // Need access to the raw body to recompute signatures. Register a
     // content-type parser that keeps the body as a string alongside the
     // parsed JSON.
+    replaceJsonBodyParser(app);
     app.addContentTypeParser(
       "application/json",
       { parseAs: "string" },

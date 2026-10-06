@@ -58,6 +58,7 @@ import { domainsRoutes } from "./routes/domains.js";
 import { schedulerRoutes } from "./routes/scheduler.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { orchestrationRoutes } from "./routes/orchestration.js";
+import { acceptEmptyJsonBody } from "./routes/emptyJsonBody.js";
 import { templateRoutes } from "./routes/templates.js";
 import { twoFactorRoutes } from "./routes/twoFactor.js";
 import { x402Routes } from "./routes/x402.js";
@@ -313,6 +314,13 @@ async function main() {
   // echoes internal error messages. That is exactly what was happening:
   // an invalid uuid path param answered 500 with the raw Zod issue list.
   app.setErrorHandler(globalErrorHandler);
+
+  // A JSON content type with no body ("run now", "cancel", any client that
+  // always sets the header) reaches its handler instead of Fastify's parser
+  // 400. At the root, before the routes, so every plugin inherits it; the
+  // webhook plugins that verify signatures over raw bytes replace it in
+  // their own scope.
+  acceptEmptyJsonBody(app);
 
   // Register routes
   await app.register(healthRoutes, { prefix: "/health" });

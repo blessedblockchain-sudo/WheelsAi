@@ -1,6 +1,5 @@
 /**
- * Lets a route plugin accept `Content-Type: application/json` with no
- * body.
+ * Lets the API accept `Content-Type: application/json` with no body.
  *
  * Fastify refuses that pair (FST_ERR_CTP_EMPTY_JSON_BODY, a 400) while it
  * parses the body, before authentication and before the handler. Actions
@@ -12,8 +11,13 @@
  * schema.
  *
  * Anything else goes through Fastify's own JSON parser, so the
- * prototype-poisoning checks and the body limit are unchanged. Register
- * inside the plugin: the parser is scoped to that plugin's routes.
+ * prototype-poisoning checks and the body limit are unchanged.
+ *
+ * Registered ONCE, on the root instance before the route plugins
+ * (index.ts), so every route inherits it. Fastify refuses a second custom
+ * parser for a content type that already has one, so a plugin that needs
+ * the raw bytes (signature-verified webhooks) calls replaceJsonBodyParser
+ * to swap it out in its own scope.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -27,4 +31,13 @@ export function acceptEmptyJsonBody(app: FastifyInstance): void {
     }
     parseJson(request, body as string, done);
   });
+}
+
+/**
+ * For a plugin with its own JSON parser. Removing first is what lets the
+ * plugin register under a root that already carries acceptEmptyJsonBody;
+ * the removal, like the parser added after it, stays inside the plugin.
+ */
+export function replaceJsonBodyParser(app: FastifyInstance): void {
+  app.removeContentTypeParser("application/json");
 }

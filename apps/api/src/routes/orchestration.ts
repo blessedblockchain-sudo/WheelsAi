@@ -25,7 +25,6 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
-import { acceptEmptyJsonBody } from "./emptyJsonBody.js";
 import type * as orchestrationService from "../services/orchestration.js";
 import {
   workflowDefinitionSchema,
@@ -140,8 +139,6 @@ export function createOrchestrationRoutes(deps: OrchestrationRouteDeps = {}): Fa
     (loaded ??= await import("../services/orchestration.js"));
 
   return async (app) => {
-    // "Run now" and "cancel" take no body; see emptyJsonBody.ts.
-    acceptEmptyJsonBody(app);
     app.addHook("preHandler", requireAuth);
 
     app.get(

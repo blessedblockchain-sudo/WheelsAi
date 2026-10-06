@@ -20,7 +20,6 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
-import { acceptEmptyJsonBody } from "./emptyJsonBody.js";
 import type * as schedulerService from "../services/scheduler.js";
 import { TASK_TYPE_IDS } from "../services/scheduledTaskTypes.js";
 import { MAX_INTERVAL_SECONDS } from "../services/scheduleCalc.js";
@@ -197,8 +196,6 @@ export function createSchedulerRoutes(deps: SchedulerRouteDeps = {}): FastifyPlu
     (loaded ??= await import("../services/scheduler.js"));
 
   return async (app) => {
-    // "Run now" and "cancel" take no body; see emptyJsonBody.ts.
-    acceptEmptyJsonBody(app);
     app.addHook("preHandler", requireAuth);
 
     app.get(

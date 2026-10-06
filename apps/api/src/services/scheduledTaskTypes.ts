@@ -371,7 +371,7 @@ const DEFINITIONS: TaskTypeDefinition[] = [
           { value: "none", label: "Only record the failure", available: true },
           {
             value: "restart_deployment",
-            label: "Restart the deployment if it is stopped or failed",
+            label: "Restart the deployment if it failed or the platform stopped it (never one you stopped; at most 5 restarts a day)",
             available: caps.deploymentRestartAvailable,
             ...(caps.deploymentRestartAvailable ? {} : { reason: RESTART_UNAVAILABLE_REASON }),
           },

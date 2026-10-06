@@ -21,7 +21,18 @@
  * credits; when the server has none, the result says the action is
  * unavailable and why.
  *
- * Pure: resolution, the probe, the recorder and the restart are injected.
+ * A restart is a new Nosana deployment and a new hold on the owner's
+ * credits, so the remediation is held to two rules:
+ *   - a deployment its owner stopped stays stopped. Stopping is how an
+ *     owner stops paying, and a check that undid it on the next tick
+ *     would leave disabling the task as the only way to stop;
+ *   - automatic restarts of one deployment are limited and backed off
+ *     (autoRestartDecision), so a deployment that fails every time it
+ *     starts is not restarted on every tick for as long as the task runs.
+ * Either way the result says the restart was skipped, and why.
+ *
+ * Pure: resolution, the probe, the recorder, the restart and the claim on
+ * the restart counter are injected.
  */
 
 import {
@@ -52,12 +63,24 @@ export interface MonitorForCheck extends ProbeSpec {
   url: string | null;
 }
 
+/** Automatic restarts tried in the current window, and when the last one was. */
+export interface AutoRestartRecord {
+  count: number;
+  lastAt: Date | null;
+}
+
+export interface DeploymentForCheck {
+  id: string;
+  status: string;
+  /** Its owner pressed Stop (as opposed to the platform stopping it). */
+  stoppedByOwner: boolean;
+  healthUrl: string | null;
+  autoRestarts: AutoRestartRecord;
+}
+
 export interface HealthCheckDeps {
   /** Org-scoped. `healthUrl` is null while the deployment has no node URL. */
-  loadDeployment: (
-    deploymentId: string,
-    orgId: string,
-  ) => Promise<{ id: string; status: string; healthUrl: string | null } | null>;
+  loadDeployment: (deploymentId: string, orgId: string) => Promise<DeploymentForCheck | null>;
   /** Org-scoped. `healthUrl` is null while the agent has no runtime URL. */
   loadAgentRuntime: (
     agentId: string,
@@ -68,13 +91,74 @@ export interface HealthCheckDeps {
   /** Classifies; never throws. Goes through the SSRF guard. */
   probe: (spec: ProbeSpec, url: string) => Promise<ProbeResult>;
   recordUptimeEvent: (monitorId: string, result: ProbeResult) => Promise<void>;
-  /** Null when this server has no restart service that applies billing. */
+  /**
+   * Null when this server has no restart service that applies billing.
+   * The service refuses a deployment its owner stopped, in its own claim.
+   */
   restartDeployment:
     | null
     | ((deploymentId: string, orgId: string) => Promise<{ status: string }>);
+  /**
+   * Org-scoped compare-and-set of the deployment's restart record from
+   * `expected` to `next`. False when it no longer reads `expected`: another
+   * task watching the same deployment recorded a restart first.
+   */
+  claimAutoRestart: (
+    deploymentId: string,
+    orgId: string,
+    expected: AutoRestartRecord,
+    next: AutoRestartRecord,
+  ) => Promise<boolean>;
 }
 
 const RESTARTABLE = new Set(["stopped", "failed"]);
+
+/**
+ * At most `max` automatic restarts of one deployment per window, each one
+ * waiting twice as long as the one before (5, 10, 20, 40 minutes). The
+ * window ends `windowMs` after the last restart; the owner restarting the
+ * deployment by hand ends it at once.
+ */
+export const AUTO_RESTART_LIMITS = {
+  max: 5,
+  windowMs: 24 * 60 * 60_000,
+  firstBackoffMs: 5 * 60_000,
+};
+
+export type AutoRestartDecision =
+  | { allowed: true; next: AutoRestartRecord }
+  | { allowed: false; reason: string };
+
+/**
+ * Whether one more automatic restart may be tried now. A restart the
+ * service then refuses (no credits, quota) still counts: its reason is
+ * retried on the same backoff rather than on every tick.
+ */
+export function autoRestartDecision(
+  record: AutoRestartRecord,
+  now: Date,
+  limits: typeof AUTO_RESTART_LIMITS = AUTO_RESTART_LIMITS,
+): AutoRestartDecision {
+  const last = record.lastAt;
+  if (!last || record.count <= 0 || now.getTime() - last.getTime() >= limits.windowMs) {
+    return { allowed: true, next: { count: 1, lastAt: now } };
+  }
+  if (record.count >= limits.max) {
+    const resumes = new Date(last.getTime() + limits.windowMs).toISOString();
+    return {
+      allowed: false,
+      reason: `restart limit reached: ${record.count} automatic restarts, the last at ${last.toISOString()}; restart it by hand, or automatic restarts resume after ${resumes}`,
+    };
+  }
+  const notBefore = last.getTime() + limits.firstBackoffMs * 2 ** (record.count - 1);
+  if (now.getTime() < notBefore) {
+    return {
+      allowed: false,
+      reason: `backing off after automatic restart ${record.count} of ${limits.max} at ${last.toISOString()}; the next is not tried before ${new Date(notBefore).toISOString()}`,
+    };
+  }
+  return { allowed: true, next: { count: record.count + 1, lastAt: now } };
+}
 
 type Remediation =
   | { action: "restart_deployment"; status: "restarted"; deploymentStatus: string }
@@ -95,7 +179,7 @@ export async function runHealthCheck(
   };
   let url: string | null = null;
   let unresolved = "";
-  let deployment: { id: string; status: string } | null = null;
+  let deployment: DeploymentForCheck | null = null;
 
   const monitor = payload.monitorId
     ? await deps.loadMonitor(payload.monitorId, task.orgId)
@@ -113,7 +197,7 @@ export async function runHealthCheck(
     }
     const row = await deps.loadDeployment(payload.deploymentId, task.orgId);
     if (!row) throw permanentFailure("deployment not found in this organization");
-    deployment = { id: row.id, status: row.status };
+    deployment = row;
     url = row.healthUrl;
     if (!url) unresolved = `the deployment has no node URL to probe (status: ${row.status})`;
   } else if (payload.target === "agent") {
@@ -152,6 +236,12 @@ export async function runHealthCheck(
         status: "skipped",
         reason: `the deployment is ${deployment.status}; only a stopped or failed deployment is restarted`,
       };
+    } else if (deployment.stoppedByOwner) {
+      remediation = {
+        action: "restart_deployment",
+        status: "skipped",
+        reason: "the deployment was stopped by its owner and stays stopped; start it by hand to resume",
+      };
     } else if (!deps.restartDeployment) {
       remediation = {
         action: "restart_deployment",
@@ -159,22 +249,7 @@ export async function runHealthCheck(
         reason: RESTART_UNAVAILABLE_REASON,
       };
     } else {
-      try {
-        const restarted = await deps.restartDeployment(deployment.id, task.orgId);
-        remediation = {
-          action: "restart_deployment",
-          status: "restarted",
-          deploymentStatus: restarted.status,
-        };
-      } catch (err) {
-        // Out of credits, a lost race with another restart: the owner
-        // needs the real reason next to the failed check.
-        remediation = {
-          action: "restart_deployment",
-          status: "failed",
-          reason: err instanceof Error ? err.message : String(err),
-        };
-      }
+      remediation = await restartWithinLimits(deployment, task.orgId, ctx.now, deps.restartDeployment, deps);
     }
   }
 
@@ -199,4 +274,41 @@ export async function runHealthCheck(
     throw permanentFailure(`health check ${result.status}${detail}${fix}`, output);
   }
   return { output };
+}
+
+async function restartWithinLimits(
+  deployment: DeploymentForCheck,
+  orgId: string,
+  now: Date,
+  restartDeployment: NonNullable<HealthCheckDeps["restartDeployment"]>,
+  deps: Pick<HealthCheckDeps, "claimAutoRestart">,
+): Promise<Remediation> {
+  const decision = autoRestartDecision(deployment.autoRestarts, now);
+  if (!decision.allowed) {
+    return { action: "restart_deployment", status: "skipped", reason: decision.reason };
+  }
+  // Recorded BEFORE the restart is asked for, and only if the record still
+  // reads what the decision was made on: two tasks on one deployment cannot
+  // both spend the same slot, and a crash after the restart cannot leave it
+  // uncounted.
+  const claimed = await deps.claimAutoRestart(deployment.id, orgId, deployment.autoRestarts, decision.next);
+  if (!claimed) {
+    return {
+      action: "restart_deployment",
+      status: "skipped",
+      reason: "another check recorded an automatic restart of this deployment at the same moment",
+    };
+  }
+  try {
+    const restarted = await restartDeployment(deployment.id, orgId);
+    return { action: "restart_deployment", status: "restarted", deploymentStatus: restarted.status };
+  } catch (err) {
+    // Out of credits, a lost race with another restart: the owner
+    // needs the real reason next to the failed check.
+    return {
+      action: "restart_deployment",
+      status: "failed",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
 }

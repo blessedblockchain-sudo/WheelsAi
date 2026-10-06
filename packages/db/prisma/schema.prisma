@@ -228,6 +228,12 @@ model Deployment {
   // Last Nosana vault runway check, claimed by CAS so the billing workers of
   // several API replicas check a deployment once per interval between them.
   runwayCheckedAt DateTime? @map("runway_checked_at")
+  // Automatic restarts (a health_check task's onDown = restart_deployment)
+  // tried in the current window, and when the last one was. Claimed by CAS
+  // before each restart so the limit and its backoff hold across every task
+  // watching this deployment; cleared when the owner restarts it by hand.
+  autoRestartCount  Int       @default(0) @map("auto_restart_count")
+  lastAutoRestartAt DateTime? @map("last_auto_restart_at")
 
   org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   model        Model            @relation(fields: [modelId], references: [id])

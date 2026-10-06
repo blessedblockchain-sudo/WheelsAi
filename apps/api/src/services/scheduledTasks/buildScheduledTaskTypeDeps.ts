@@ -7,13 +7,12 @@
  * agent, when the task has one) in its own WHERE clause. No executor is
  * trusted to have checked first.
  *
- * Not connected, and reported as such rather than faked:
- *   deployment restart  the restart logic lives inline in the deployments
- *                       route with its credit-reservation compare-and-set
- *                       and is not exported, so `restartDeployment` is
- *                       null and a health check reports the action as
- *                       unavailable (DEPLOYMENT_RESTART is the one line
- *                       to change when a service exists).
+ * A health check's "restart the deployment" is the deployments route's own
+ * restart (services/modelDeploymentLifecycle.ts): the same run-generation
+ * claim, vault check, hold refund and fresh reservation, so a task cannot
+ * restart a deployment on easier terms than its owner can by hand. Its terms
+ * are harder: asked for as `automatic`, it refuses a deployment the owner
+ * stopped, and the health check limits how often it is asked at all.
  */
 
 import { createHash } from "node:crypto";
@@ -31,6 +30,7 @@ import type {
   ScheduledTaskTypeDeps,
 } from "../executeScheduledTask.js";
 import { addDocument, deleteDocument } from "../knowledge.js";
+import { OWNER_STOP_REASON, restartDeploymentForOrg } from "../modelDeploymentLifecycle.js";
 import { recordUptimeEvent } from "../monitoring.js";
 import { runAgentGraph } from "../runAgentGraph.js";
 import type { TaskTypeCapabilities } from "../scheduledTaskTypes.js";
@@ -40,8 +40,8 @@ import type { HealthCheckDeps, ProbeSpec } from "./healthCheck.js";
 import type { ReportWindow } from "./report.js";
 import { buildReportDelivery } from "./reportDelivery.js";
 
-/** No exported service restarts a model deployment with its billing rules yet. */
-const DEPLOYMENT_RESTART: HealthCheckDeps["restartDeployment"] = null;
+/** Org-scoped; a refusal (no credits, quota, a lost race) throws with its reason. */
+const DEPLOYMENT_RESTART: HealthCheckDeps["restartDeployment"] = restartDeploymentForOrg;
 
 /** What this server can do, for the catalogue and for saving a task. */
 export function productionTaskTypeCapabilities(): TaskTypeCapabilities {
@@ -156,10 +156,22 @@ export function buildScheduledTaskTypeDeps(
       loadDeployment: async (deploymentId, orgId) => {
         const row = await prisma.deployment.findFirst({
           where: { id: deploymentId, orgId },
-          select: { id: true, status: true },
+          select: {
+            id: true,
+            status: true,
+            statusReason: true,
+            autoRestartCount: true,
+            lastAutoRestartAt: true,
+          },
         });
         if (!row) return null;
-        return { ...row, healthUrl: await resolveTarget("deployment", row.id) };
+        return {
+          id: row.id,
+          status: row.status,
+          stoppedByOwner: row.statusReason === OWNER_STOP_REASON,
+          healthUrl: await resolveTarget("deployment", row.id),
+          autoRestarts: { count: row.autoRestartCount, lastAt: row.lastAutoRestartAt },
+        };
       },
       loadAgentRuntime: async (agentId, orgId) => {
         const agent = await prisma.agent.findFirst({
@@ -212,6 +224,18 @@ export function buildScheduledTaskTypeDeps(
         ),
       recordUptimeEvent: (monitorId, result) => recordUptimeEvent(monitorId, result),
       restartDeployment: DEPLOYMENT_RESTART,
+      claimAutoRestart: async (deploymentId, orgId, expected, next) => {
+        const claimed = await prisma.deployment.updateMany({
+          where: {
+            id: deploymentId,
+            orgId,
+            autoRestartCount: expected.count,
+            lastAutoRestartAt: expected.lastAt,
+          },
+          data: { autoRestartCount: next.count, lastAutoRestartAt: next.lastAt },
+        });
+        return claimed.count === 1;
+      },
     },
 
     report: {

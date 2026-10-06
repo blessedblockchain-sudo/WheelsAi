@@ -16,7 +16,13 @@ import {
 } from "../services/executeScheduledTask.js";
 import type { CleanupDeps } from "../services/scheduledTasks/cleanup.js";
 import type { DataSyncDeps } from "../services/scheduledTasks/dataSync.js";
-import type { HealthCheckDeps, ProbeResult } from "../services/scheduledTasks/healthCheck.js";
+import {
+  AUTO_RESTART_LIMITS,
+  autoRestartDecision,
+  type AutoRestartRecord,
+  type HealthCheckDeps,
+  type ProbeResult,
+} from "../services/scheduledTasks/healthCheck.js";
 import type { ReportChannel, ReportDeps } from "../services/scheduledTasks/report.js";
 import { buildReportDelivery } from "../services/scheduledTasks/reportDelivery.js";
 import { isPermanentFailure } from "../services/scheduledTasks/taskError.js";
@@ -288,19 +294,36 @@ test("data_sync falls back to the agent's knowledge base, and says so when there
 
 function healthCheck(opts: {
   probe?: ProbeResult;
-  deployment?: { status: string; healthUrl: string | null } | null;
+  deployment?: {
+    status: string;
+    healthUrl: string | null;
+    stoppedByOwner?: boolean;
+    autoRestarts?: AutoRestartRecord;
+  } | null;
   runtime?: { healthUrl: string | null } | null;
   monitor?: { url: string | null; expectedStatus?: number } | null;
   restart?: "none" | "ok" | Error;
+  /** The stored restart record differs from the one the check read. */
+  claimLost?: boolean;
 }) {
   const probes: Array<{ url: string; expectedStatus: number; timeoutSeconds: number }> = [];
   const events: Array<{ monitorId: string; status: string }> = [];
   const restarts: string[] = [];
   const lookups: Array<[string, string]> = [];
+  const claims: Array<{ id: string; orgId: string; expected: AutoRestartRecord; next: AutoRestartRecord }> = [];
+  // What happened, in order: a restart must come after its claim.
+  const order: string[] = [];
   const deps: HealthCheckDeps = {
     loadDeployment: async (id, orgId) => {
       lookups.push([id, orgId]);
-      return opts.deployment ? { id, ...opts.deployment } : null;
+      return opts.deployment
+        ? { id, stoppedByOwner: false, autoRestarts: { count: 0, lastAt: null }, ...opts.deployment }
+        : null;
+    },
+    claimAutoRestart: async (id, orgId, expected, next) => {
+      claims.push({ id, orgId, expected, next });
+      order.push("claim");
+      return !opts.claimLost;
     },
     loadAgentRuntime: async (id, orgId) => {
       lookups.push([id, orgId]);
@@ -332,11 +355,12 @@ function healthCheck(opts: {
         ? null
         : async (id) => {
             restarts.push(id);
+            order.push("restart");
             if (opts.restart instanceof Error) throw opts.restart;
             return { status: "provisioning" };
           },
   };
-  return { deps, probes, events, restarts, lookups };
+  return { deps, probes, events, restarts, lookups, claims, order };
 }
 
 const checkTask = (payload: Record<string, unknown>, overrides: Partial<ScheduledTaskForExecution> = {}) =>
@@ -482,6 +506,112 @@ test("health_check: a restart that fails (no credits) surfaces its reason; no re
     status: "unavailable",
     reason: RESTART_UNAVAILABLE_REASON,
   });
+});
+
+const RESTART_PAYLOAD = { target: "deployment", deploymentId: DEPLOYMENT, onDown: "restart_deployment" };
+
+test("health_check: a deployment its owner stopped is never restarted", async () => {
+  const stopped = healthCheck({
+    deployment: { status: "stopped", healthUrl: null, stoppedByOwner: true },
+    restart: "ok",
+  });
+  const err = await failure(run(checkTask(RESTART_PAYLOAD), { healthCheck: stopped.deps }));
+  assert.deepEqual(stopped.restarts, []);
+  // Not even a slot of the restart limit is spent on it.
+  assert.deepEqual(stopped.claims, []);
+  assert.deepEqual(err.output.remediation, {
+    action: "restart_deployment",
+    status: "skipped",
+    reason: "the deployment was stopped by its owner and stays stopped; start it by hand to resume",
+  });
+  assert.match(err.message, /restart skipped: the deployment was stopped by its owner/);
+
+  // Stopped by the platform (out of credits, a node error): still restarted.
+  const platform = healthCheck({ deployment: { status: "stopped", healthUrl: null }, restart: "ok" });
+  await failure(run(checkTask(RESTART_PAYLOAD), { healthCheck: platform.deps }));
+  assert.deepEqual(platform.restarts, [DEPLOYMENT]);
+});
+
+test("health_check: each restart is claimed on the deployment's record before it is asked for", async () => {
+  const lastAt = new Date(NOW.getTime() - 60 * 60_000);
+  const dead = healthCheck({
+    deployment: { status: "failed", healthUrl: null, autoRestarts: { count: 2, lastAt } },
+    restart: "ok",
+  });
+  await failure(run(checkTask(RESTART_PAYLOAD), { healthCheck: dead.deps }));
+  assert.deepEqual(dead.claims, [
+    { id: DEPLOYMENT, orgId: ORG, expected: { count: 2, lastAt }, next: { count: 3, lastAt: NOW } },
+  ]);
+  assert.deepEqual(dead.order, ["claim", "restart"]);
+
+  // Another task on the same deployment recorded its restart first.
+  const lost = healthCheck({ deployment: { status: "failed", healthUrl: null }, restart: "ok", claimLost: true });
+  const err = await failure(run(checkTask(RESTART_PAYLOAD), { healthCheck: lost.deps }));
+  assert.deepEqual(lost.restarts, []);
+  assert.equal(err.output.remediation.status, "skipped");
+  assert.match(err.output.remediation.reason, /another check recorded an automatic restart/);
+
+  // A refused restart (no credits) has still spent its slot: its reason is
+  // retried on the backoff, not on every tick.
+  const broke = healthCheck({ deployment: { status: "failed", healthUrl: null }, restart: new Error("insufficient credits") });
+  const refused = await failure(run(checkTask(RESTART_PAYLOAD), { healthCheck: broke.deps }));
+  assert.equal(refused.output.remediation.status, "failed");
+  assert.equal(broke.claims.length, 1);
+});
+
+test("health_check: a deployment that keeps failing is restarted on a growing backoff and then no more", async () => {
+  // One deployment that fails again after every restart, checked every minute for two days.
+  let record: AutoRestartRecord = { count: 0, lastAt: null };
+  const restartedAt: number[] = [];
+  const skipped = new Set<string>();
+  for (let minute = 0; minute < 2 * 24 * 60; minute++) {
+    const now = new Date(NOW.getTime() + minute * 60_000);
+    const world = healthCheck({ deployment: { status: "failed", healthUrl: null, autoRestarts: record }, restart: "ok" });
+    const err = await failure(run(checkTask(RESTART_PAYLOAD), { healthCheck: world.deps }, {}, { now }));
+    if (world.restarts.length === 1) {
+      record = world.claims[0]!.next;
+      restartedAt.push(minute);
+    } else {
+      assert.equal(err.output.remediation.status, "skipped");
+      skipped.add(err.output.remediation.reason.split(/[:;]| after/)[0]);
+    }
+  }
+  // 5 in the first day (waits of 5, 10, 20, 40 minutes), nothing until a
+  // day after the last, then a new window.
+  const day = 24 * 60;
+  assert.deepEqual(restartedAt, [0, 5, 15, 35, 75, 75 + day, 80 + day, 90 + day, 110 + day, 150 + day]);
+  assert.deepEqual([...skipped].sort(), ["backing off", "restart limit reached"]);
+});
+
+test("autoRestartDecision: the limit, the backoff and the window", () => {
+  const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
+  assert.deepEqual(autoRestartDecision({ count: 0, lastAt: null }, NOW), {
+    allowed: true,
+    next: { count: 1, lastAt: NOW },
+  });
+  // Backoff doubles: 5, 10, 20, 40 minutes after restarts 1 to 4.
+  for (const [count, wait] of [[1, 5], [2, 10], [3, 20], [4, 40]] as const) {
+    const early = autoRestartDecision({ count, lastAt: NOW }, at(wait - 1));
+    assert.equal(early.allowed, false, `count ${count}`);
+    assert.match((early as { reason: string }).reason, new RegExp(`^backing off after automatic restart ${count} of 5 at `));
+    assert.deepEqual(autoRestartDecision({ count, lastAt: NOW }, at(wait)), {
+      allowed: true,
+      next: { count: count + 1, lastAt: at(wait) },
+    });
+  }
+  // At the limit nothing is tried until the window has passed, and the reason says when.
+  const full = { count: AUTO_RESTART_LIMITS.max, lastAt: NOW };
+  const blocked = autoRestartDecision(full, at(23 * 60 + 59));
+  assert.equal(blocked.allowed, false);
+  assert.match(
+    (blocked as { reason: string }).reason,
+    new RegExp(`^restart limit reached: 5 automatic restarts, the last at .*resume after ${at(24 * 60).toISOString()}$`),
+  );
+  assert.deepEqual(autoRestartDecision(full, at(24 * 60)), { allowed: true, next: { count: 1, lastAt: at(24 * 60) } });
+  // A record past the limit (written by hand, a lowered limit) is still blocked.
+  assert.equal(autoRestartDecision({ count: 9, lastAt: NOW }, at(60)).allowed, false);
+  // A quiet day starts a new window whatever the count was.
+  assert.deepEqual(autoRestartDecision({ count: 3, lastAt: NOW }, at(24 * 60)).allowed, true);
 });
 
 // ============================================

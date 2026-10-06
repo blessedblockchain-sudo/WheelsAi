@@ -13,18 +13,28 @@ import { prisma as defaultPrisma } from "@wheelsai/db";
 import { triggerWebhook as defaultTriggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import { deploymentEndpoint as buildDeploymentEndpoint } from "../services/publicEndpoints.js";
-import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import {
   MarketNotConfiguredError,
   NosanaNotConfiguredError,
-  generateJobDefinition,
   getNosanaClient,
   isMockNosanaId,
   type ModelDeploymentConfig,
   type NosanaClient,
 } from "../services/nosana.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
-import { recordNosanaOrphan, type NosanaOrphanPrisma } from "../services/nosanaOrphans.js";
+import {
+  ACTIVE_STATUSES,
+  DEFAULT_DEPLOYMENT_CONFIG,
+  DeploymentConflictError,
+  InsufficientCreditsError,
+  NO_REPLICA_CHANGE,
+  OWNER_STOP_REASON,
+  TERMINAL_STATUSES,
+  restartModelDeployment,
+  submitToNosana,
+  type Db,
+  type NosanaPort,
+} from "../services/modelDeploymentLifecycle.js";
 import {
   holdAdditionalReplicas,
   releaseDeploymentReservation,
@@ -41,22 +51,9 @@ import {
 
 const logger = createLogger("deployment-routes");
 
-/**
- * Signals a failed admission from inside a transaction, so the row changes roll
- * back with it instead of being left half-applied.
- */
-class InsufficientCreditsError extends Error {
-  constructor(readonly requiredCents: bigint) {
-    super("insufficient_credits");
-  }
-}
-
-/** A concurrent writer changed the deployment under a compare-and-set. */
-class DeploymentConflictError extends Error {
-  constructor(message = "deployment_conflict") {
-    super(message);
-  }
-}
+// Part of this module's surface: the submit and the restart themselves live in
+// services/modelDeploymentLifecycle.ts, where the scheduler reaches them too.
+export { DEFAULT_DEPLOYMENT_CONFIG, submitToNosana };
 
 /** Another replica change already holds the claim on the deployment. */
 class ReplicaChangeInProgressError extends Error {
@@ -68,22 +65,10 @@ class ReplicaChangeInProgressError extends Error {
 /** Statuses from which a model deployment can still be stopped. */
 const STOPPABLE_STATUSES = ["pending", "provisioning", "running", "degraded"];
 const STOPPABLE_NOT_RUNNING = STOPPABLE_STATUSES.filter((status) => status !== "running");
-/** Statuses that count against the per-org active quota. */
-const ACTIVE_STATUSES = ["pending", "building", "deploying", "provisioning", "running", "degraded"];
-const RESTARTABLE_STATUSES = ["stopped", "failed"];
-/** A credit hold is only released while the row is terminal (see releaseDeploymentReservation). */
-const TERMINAL_STATUSES = ["stopped", "failed"];
 
 // ============================================
 // Schemas
 // ============================================
-
-/**
- * What a deployment runs with when its config omits a value. Applied when a
- * deployment is created, submitted and read, so a row that lacks a key (older
- * rows, rows written by scripts) still answers with a complete config.
- */
-export const DEFAULT_DEPLOYMENT_CONFIG = { maxTokens: 4096, gpuMemoryUtilization: 0.9 } as const;
 
 const createDeploymentSchema = z.object({
   name: z.string().min(3).max(50),
@@ -119,17 +104,6 @@ const updateDeploymentSchema = z.object({
  */
 export function deploymentEndpoint(slug: string): string {
   return buildDeploymentEndpoint(slug, env.PUBLIC_API_URL);
-}
-
-function truncate(text: string, max = 300): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function failureReason(error: unknown): string {
-  if (error instanceof NosanaLifecycleError) {
-    return truncate(`${error.code}: ${error.message}`);
-  }
-  return truncate(error instanceof Error ? error.message : "submit_failed");
 }
 
 /**
@@ -173,13 +147,6 @@ interface ReplicaChange {
   /** This request's claim token (Deployment.replicaChangeId). */
   changeId: string;
 }
-
-const NO_REPLICA_CHANGE = {
-  pendingReplicas: null,
-  replicaChangeId: null,
-  replicaChangeAt: null,
-  replicaChangeHoldCents: null,
-};
 
 /**
  * Claims a replica change. One transaction, before Nosana is called.
@@ -407,17 +374,6 @@ async function replicaChangeOutcome(
     return null;
   }
 }
-
-type Db = typeof defaultPrisma;
-type NosanaPort = Pick<
-  NosanaClient,
-  | "assertCanDeploy"
-  | "createDeployment"
-  | "stopDeployment"
-  | "scaleDeployment"
-  | "getDeploymentStatus"
-  | "reclaimDeploymentVault"
->;
 
 export interface DeploymentRouteDeps {
   prisma?: Db;
@@ -984,7 +940,7 @@ export function createDeploymentRoutes(
           const stopData = {
             status: "stopped",
             stoppedAt,
-            statusReason: "user_stopped",
+            statusReason: OWNER_STOP_REASON,
             // Explicit either way: never inherit a stale "recovered" stamp from
             // an earlier run (the status worker's sweep keys off it).
             vaultReclaimedAt: nosanaId && reclaimed ? stoppedAt : null,
@@ -1156,157 +1112,31 @@ export function createDeploymentRoutes(
           .object({ deploymentId: z.string() })
           .parse(request.params);
 
-        const deployment = await prisma.deployment.findFirst({
-          where: { id: deploymentId, orgId },
-          include: { model: true },
-        });
-
-        if (!deployment) {
-          return reply.notFound("Deployment not found");
-        }
-
-        if (!RESTARTABLE_STATUSES.includes(deployment.status)) {
-          return reply.status(409).send({
-            error: "deployment_not_restartable",
-            message: `Only stopped or failed deployments can be restarted (status: ${deployment.status}).`,
-          });
-        }
-
-        const nosana = await getNosana();
-        try {
-          nosana.assertCanDeploy(deployment.gpuTier);
-        } catch (err) {
-          if (replyForPreflightError(reply, err)) return reply;
-          throw err;
-        }
-
-        const activeCount = await prisma.deployment.count({
-          where: { orgId, status: { in: ACTIVE_STATUSES } },
-        });
-        if (activeCount >= env.MAX_ACTIVE_DEPLOYMENTS_PER_ORG) {
-          return reply.status(429).send({
-            error: "deployment_quota_exceeded",
-            message: `Organization already has ${activeCount} active deployments (limit ${env.MAX_ACTIVE_DEPLOYMENTS_PER_ORG}).`,
-          });
-        }
-
-        // The previous run's Nosana id is about to be forgotten: make sure its
-        // vault funds are back with the platform first, or they would be orphaned.
-        const previousId = deployment.nosanaJobIds[0];
-        if (previousId && !deployment.vaultReclaimedAt && !isMockNosanaId(previousId)) {
-          const outcome = await nosana.reclaimDeploymentVault(previousId).catch(() => null);
-          if (!outcome?.reclaimed) {
-            return reply.status(409).send({
-              error: "previous_run_winding_down",
-              message:
-                "The previous run is still being wound down on Nosana. Retry in a minute.",
-            });
-          }
-        }
-
-        try {
-          await prisma.$transaction(async (tx) => {
-            // Claim the restart. Only one concurrent request can win this CAS,
-            // and only against the row as this request read it: the same run,
-            // still holding exactly the Nosana id whose vault was checked above.
-            // An id recorded since (an orphan cleanup, or a faster restart that
-            // has already failed) would be forgotten unreclaimed by the reset
-            // below; the miss is a 409 and the retry checks that vault first.
-            const claimed = await tx.deployment.updateMany({
-              where: {
-                id: deploymentId,
-                status: { in: RESTARTABLE_STATUSES },
-                runGeneration: deployment.runGeneration,
-                nosanaJobIds: previousId ? { has: previousId } : { isEmpty: true },
-              },
-              data: {
-                runGeneration: { increment: 1 },
-                status: "pending",
-                stoppedAt: null,
-                statusReason: null,
-                billedThroughAt: null,
-                vaultReclaimedAt: null,
-                gpuStoppedAt: null,
-                nosanaJobIds: [],
-                // A replica change the previous run never finished is void.
-                ...NO_REPLICA_CHANGE,
-              },
-            });
-            if (claimed.count === 0) throw new DeploymentConflictError();
-
-            // A previous hold that was never released is refunded, not
-            // overwritten (overwriting would lose the org's money).
-            const old = await tx.deployment.findUnique({
-              where: { id: deploymentId },
-              select: { reservationCents: true, reservationReleasedAt: true },
-            });
-            if (old?.reservationCents && old.reservationCents > 0n && !old.reservationReleasedAt) {
-              await releaseDeploymentReservation({
-                tx: tx as never,
-                kind: "model",
-                deploymentId,
-                orgId,
-                reservationCents: old.reservationCents,
-                reason: "restart",
-                now,
-              });
-            }
-
-            const reservation = await reserveDeploymentCredits({
-              tx: tx as never,
-              orgId,
-              gpuTier: deployment.gpuTier,
-              replicas: deployment.replicas,
-              referenceId: deploymentId,
-            });
-            if (!reservation.ok) throw new InsufficientCreditsError(reservation.requiredCents);
-
-            await tx.deployment.update({
-              where: { id: deploymentId },
-              data: {
-                reservationCents: reservation.reservedCents,
-                reservationReleasedAt: null,
-              },
-            });
-          });
-        } catch (err) {
-          if (err instanceof InsufficientCreditsError) {
-            return reply.status(402).send({
-              error: "insufficient_credits",
-              message: `Restarting requires a reservation of $${(
-                Number(err.requiredCents) / 100
-              ).toFixed(2)} in credits. Add credits and retry.`,
-            });
-          }
-          if (err instanceof DeploymentConflictError) {
-            return reply.status(409).send({
-              error: "deployment_not_restartable",
-              message: "The deployment changed while restarting; retry.",
-            });
-          }
-          throw err;
-        }
-
-        // Re-submit to Nosana
-        const config = (deployment.config ?? {}) as {
-          maxTokens?: number;
-          gpuMemoryUtilization?: number;
-        };
-        submit(
-          deploymentId,
+        const restarted = await restartModelDeployment(
           {
-            modelId: deployment.modelId,
-            hfModelId: deployment.model.hfId,
-            engine: deployment.engine as "vllm" | "ollama",
-            maxTokens: config.maxTokens ?? DEFAULT_DEPLOYMENT_CONFIG.maxTokens,
-            gpuMemoryUtilization: config.gpuMemoryUtilization ?? DEFAULT_DEPLOYMENT_CONFIG.gpuMemoryUtilization,
+            prisma,
+            getNosana,
+            now,
+            submit,
+            maxActiveDeployments: env.MAX_ACTIVE_DEPLOYMENTS_PER_ORG,
           },
-          deployment.gpuTier,
-          deployment.replicas,
-          deployment.runGeneration + 1,
-        ).catch((err) => {
-          logger.error({ err, deploymentId }, "Failed to restart deployment");
-        });
+          { deploymentId, orgId },
+        );
+        if (!restarted.ok) {
+          switch (restarted.code) {
+            case "not_found":
+              return reply.notFound("Deployment not found");
+            case "preflight_failed":
+              if (replyForPreflightError(reply, restarted.error)) return reply;
+              throw restarted.error;
+            case "deployment_quota_exceeded":
+              return reply.status(429).send({ error: restarted.code, message: restarted.message });
+            case "insufficient_credits":
+              return reply.status(402).send({ error: restarted.code, message: restarted.message });
+            default:
+              return reply.status(409).send({ error: restarted.code, message: restarted.message });
+          }
+        }
 
         return {
           message: "Deployment restarting",
@@ -1483,250 +1313,3 @@ export function createDeploymentRoutes(
 }
 
 export const deploymentRoutes: FastifyPluginAsync = createDeploymentRoutes();
-
-// ============================================
-// Helper Functions
-// ============================================
-
-interface SubmitDeps {
-  prisma: Db;
-  getNosana: () => Promise<NosanaPort>;
-  now: () => Date;
-}
-
-/**
- * Creates, funds and starts the Nosana deployment for a row that already holds
- * its credit reservation.
- *
- * The row stays `provisioning` until the deployment-status worker OBSERVES the
- * deployment running with a real endpoint (queues/deployment-status.queue.ts);
- * DeploymentNodes are created there from Nosana's reported endpoints - there are
- * no nodes and no URLs before that, and none are invented here.
- *
- * createDeployment takes seconds (several Solana transactions), long enough for
- * the user to stop AND restart the row. Every write below is therefore
- * conditional on `runGeneration`, the run this submit was started for: a submit
- * that outlived its run can neither hand its Nosana id to the new run nor fail
- * it and release its hold. The deployment it created is then stopped and its id
- * kept where the vault sweep finds it (retireUnownedNosanaDeployment).
- */
-export async function submitToNosana(
-  deps: SubmitDeps,
-  deploymentId: string,
-  config: ModelDeploymentConfig,
-  gpuTier: string,
-  replicas: number,
-  runGeneration: number,
-): Promise<void> {
-  const { prisma, getNosana, now } = deps;
-  const thisRun = { id: deploymentId, runGeneration };
-  let createdNosanaId: string | undefined;
-
-  try {
-    // pending -> provisioning by CAS: a deployment stopped before we got here
-    // must not be revived.
-    const claimed = await prisma.deployment.updateMany({
-      where: { ...thisRun, status: "pending" },
-      data: { status: "provisioning" },
-    });
-    if (claimed.count === 0) {
-      logger.info({ deploymentId }, "Deployment left pending before submit; not submitting");
-      return;
-    }
-
-    // Generate job definition. The HF token (when configured) goes only into a
-    // CONFIDENTIAL job definition (createDeployment always sets that).
-    const jobDefinition = generateJobDefinition({
-      ...config,
-      hfToken: getNosanaDeployConfig().hfToken,
-    });
-
-    // Get Nosana client and submit
-    const nosana = await getNosana();
-    const nosanaDeployment = await nosana.createDeployment(
-      jobDefinition,
-      gpuTier,
-      replicas
-    );
-    createdNosanaId = nosanaDeployment.id;
-
-    // Store the Nosana Deployment-Manager id - but only while this run is still
-    // in a submit state. If the user stopped it meanwhile (and perhaps
-    // restarted it), the deployment we just started belongs to nobody: stop it
-    // and recover its vault.
-    const stored = await prisma.deployment.updateMany({
-      where: { ...thisRun, status: { in: ["pending", "provisioning"] } },
-      data: { nosanaJobIds: [nosanaDeployment.id] },
-    });
-    if (stored.count === 0) {
-      logger.warn(
-        { deploymentId, nosanaId: nosanaDeployment.id },
-        "Deployment was stopped during submit; stopping the Nosana deployment just created"
-      );
-      await retireUnownedNosanaDeployment(deps, thisRun, nosanaDeployment.id, {
-        stopped: false,
-        reclaimed: false,
-        reason: "stopped_during_submit",
-      });
-      return;
-    }
-
-    logger.info(
-      { deploymentId, nosanaId: nosanaDeployment.id },
-      "Submitted to Nosana"
-    );
-  } catch (error) {
-    logger.error({ error, deploymentId }, "Failed to submit to Nosana");
-
-    // A failure after creation carries the Nosana id and whether its vault was
-    // recovered; persist both so the status worker can retry the reclaim.
-    const partialId =
-      error instanceof NosanaLifecycleError ? error.deploymentId : createdNosanaId;
-    const cleanup = error instanceof NosanaLifecycleError ? error.cleanup : undefined;
-    const stoppedAt = now();
-
-    const failed = await prisma.deployment
-      .updateMany({
-        where: { ...thisRun, status: { in: ["pending", "provisioning"] } },
-        data: {
-          status: "failed",
-          stoppedAt,
-          statusReason: failureReason(error),
-          ...(partialId
-            ? {
-                nosanaJobIds: [partialId],
-                // Explicit either way, as on every other terminal write.
-                vaultReclaimedAt: cleanup?.reclaimed ? stoppedAt : null,
-              }
-            : {}),
-        },
-      })
-      .catch((err) => {
-        logger.error({ err, deploymentId }, "failed to mark deployment failed");
-        return null;
-      });
-
-    // The run was stopped (or restarted) while the create was failing, so the
-    // update above did not record the partial id. It may still be running and
-    // its vault may still be funded: never drop it.
-    if (partialId && (!failed || failed.count === 0)) {
-      await retireUnownedNosanaDeployment(deps, thisRun, partialId, {
-        stopped: cleanup?.stopped ?? false,
-        reclaimed: cleanup?.reclaimed ?? false,
-        reason: "submit_failed_after_stop",
-      });
-    }
-
-    // Submit never happened, so no capacity was ever delivered — give the
-    // admission hold back. This is the path that actually fires in
-    // practice (a submit failure leaves the row with NO job ids, so the
-    // status worker never polls it and would never release it either).
-    await refundDeploymentReservation(prisma, thisRun, "submit_failed", now);
-
-    throw error;
-  }
-}
-
-/**
- * A submit created a Nosana deployment its run no longer wants (the run was
- * stopped, or stopped and restarted, while createDeployment was in flight).
- * Stops it, then keeps its id somewhere the vault sweep reads:
- *
- *  - on the row, when the row is still this submit's own run, terminal and
- *    holding no id (the plain "stopped during submit" case);
- *  - otherwise in nosana_orphan_deployments - the row now belongs to a later
- *    run, or its single id slot is taken.
- *
- * Only a deployment that is verified stopped AND drained may be forgotten.
- */
-async function retireUnownedNosanaDeployment(
-  deps: SubmitDeps,
-  thisRun: { id: string; runGeneration: number },
-  nosanaId: string,
-  state: { stopped: boolean; reclaimed: boolean; reason: string },
-): Promise<void> {
-  const { prisma, getNosana, now } = deps;
-  let { stopped, reclaimed } = state;
-
-  if (!stopped) {
-    try {
-      reclaimed = (await (await getNosana()).stopDeployment(nosanaId)).reclaimed;
-      stopped = true;
-    } catch (err) {
-      // Left to the sweep, which stops a deployment that is terminal in our
-      // records but still running on Nosana.
-      logger.error(
-        { err, deploymentId: thisRun.id, nosanaId },
-        "Failed to stop an orphaned Nosana deployment"
-      );
-    }
-  }
-  const settled = stopped && reclaimed;
-
-  const kept = await prisma.deployment
-    .updateMany({
-      where: {
-        ...thisRun,
-        status: { in: TERMINAL_STATUSES },
-        nosanaJobIds: { isEmpty: true },
-      },
-      data: { nosanaJobIds: [nosanaId], vaultReclaimedAt: settled ? now() : null },
-    })
-    .catch((err) => {
-      logger.error({ err, deploymentId: thisRun.id, nosanaId }, "Failed to record an orphan's id");
-      return { count: 0 };
-    });
-  if (kept.count > 0 || settled) return;
-
-  await recordNosanaOrphan(prisma as unknown as NosanaOrphanPrisma, {
-    nosanaDeploymentId: nosanaId,
-    sourceKind: "model",
-    sourceId: thisRun.id,
-    reason: state.reason,
-  });
-}
-
-/**
- * Releases a deployment's credit hold after a terminal outcome that the
- * status worker will never observe.
- *
- * The worker only polls rows carrying Nosana job ids; a deployment that
- * failed to submit has none, so without this the org stays charged for a
- * deployment that never existed. Best-effort by design — a refund
- * failure must not mask the original submit error.
- */
-async function refundDeploymentReservation(
-  prisma: Db,
-  thisRun: { id: string; runGeneration: number },
-  reason: string,
-  now: () => Date = () => new Date(),
-): Promise<void> {
-  const deploymentId = thisRun.id;
-  try {
-    const row = await prisma.deployment.findUnique({
-      where: { id: deploymentId },
-      select: { orgId: true, reservationCents: true },
-    });
-    if (!row?.reservationCents || row.reservationCents <= 0n) return;
-
-    await prisma.$transaction((tx) =>
-      releaseDeploymentReservation({
-        tx: tx as never,
-        kind: "model",
-        deploymentId,
-        orgId: row.orgId,
-        reservationCents: row.reservationCents!,
-        reason,
-        now,
-        // Only while the row is terminal AND still this submit's run: a late
-        // refund must not claim the live hold of a run the user restarted in
-        // the meantime - nor that run's hold once it has itself gone terminal
-        // (its own writer releases it).
-        onlyIfStatusIn: TERMINAL_STATUSES,
-        onlyIfRunGeneration: thisRun.runGeneration,
-      }),
-    );
-  } catch (err) {
-    logger.error({ err, deploymentId }, "failed to release deployment reservation");
-  }
-}

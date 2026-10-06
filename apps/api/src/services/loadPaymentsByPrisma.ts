@@ -12,14 +12,15 @@
  *   prisma.computePayment.count    — totalCount under the same filters.
  *
  * Return contract (the route distinguishes these states):
- *   null                                → 404 ("agent not found OR no
- *                                              payments path")
- *   { payments: [], totalCount: 0 }     → 200 (tokenized, treasury exists,
- *                                              no payments yet)
+ *   null                                → 404 (no such agent in this org)
+ *   { payments: [], totalCount: 0 }     → 200 (the agent has no treasury
+ *                                              yet, or has one with no
+ *                                              payments)
  *
- * The payment queries are skipped entirely when the agent has no
- * treasury — the route shows 404 rather than burning two round-trips
- * on an empty result.
+ * An agent without a treasury is the normal case (most agents are not
+ * tokenized), and the dashboard asks for every agent's payments: answering
+ * 404 "agent_not_found" for an agent that exists showed an error on its
+ * page. The payment queries are still skipped when there is no treasury.
  */
 
 import type {
@@ -123,7 +124,7 @@ export async function loadPaymentsByPrisma(
   if (!agent) return null;
 
   const treasuryId = agent.listing?.agentToken?.treasury?.id;
-  if (!treasuryId) return null;
+  if (!treasuryId) return { payments: [], totalCount: 0 };
 
   const where = buildWhere(treasuryId, input.status, input.from, input.to);
 

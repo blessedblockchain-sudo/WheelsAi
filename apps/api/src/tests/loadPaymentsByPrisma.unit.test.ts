@@ -168,7 +168,7 @@ test("loadPaymentsByPrisma returns null on cross-org access", async () => {
 // Treasury gates (null = "no payments path")
 // ============================================
 
-test("loadPaymentsByPrisma returns null when agent has no listing", async () => {
+test("loadPaymentsByPrisma returns an empty page when the agent has no listing", async () => {
   const { loadPaymentsByPrisma } = await import(
     "../services/loadPaymentsByPrisma.js"
   );
@@ -187,13 +187,14 @@ test("loadPaymentsByPrisma returns null when agent has no listing", async () => 
     },
     { prisma: stub.prisma as any },
   );
-  assert.equal(result, null);
+  // The agent exists; it just has nothing to pay from yet.
+  assert.deepEqual(result, { payments: [], totalCount: 0 });
   // Skip the payment query — agent isn't tokenized.
   assert.equal(stub.observed.findManyArgs, undefined);
   assert.equal(stub.observed.countArgs, undefined);
 });
 
-test("loadPaymentsByPrisma returns null when listing has no agentToken (not tokenized yet)", async () => {
+test("loadPaymentsByPrisma returns an empty page when the listing has no agentToken (not tokenized yet)", async () => {
   const { loadPaymentsByPrisma } = await import(
     "../services/loadPaymentsByPrisma.js"
   );
@@ -212,13 +213,12 @@ test("loadPaymentsByPrisma returns null when listing has no agentToken (not toke
     },
     { prisma: stub.prisma as any },
   );
-  assert.equal(result, null);
+  assert.deepEqual(result, { payments: [], totalCount: 0 });
 });
 
-test("loadPaymentsByPrisma returns null when token has no treasury yet", async () => {
+test("loadPaymentsByPrisma returns an empty page when the token has no treasury yet", async () => {
   // A token can exist on pump.fun before its on-chain treasury PDA has
-  // been initialized. The route shows 404 — there's no payments surface
-  // until the treasury exists.
+  // been initialized. Until then there are no payments to list.
   const { loadPaymentsByPrisma } = await import(
     "../services/loadPaymentsByPrisma.js"
   );
@@ -242,7 +242,7 @@ test("loadPaymentsByPrisma returns null when token has no treasury yet", async (
     },
     { prisma: stub.prisma as any },
   );
-  assert.equal(result, null);
+  assert.deepEqual(result, { payments: [], totalCount: 0 });
   assert.equal(stub.observed.findManyArgs, undefined);
 });
 

@@ -118,6 +118,14 @@ export default function MarketplaceApiPage() {
           <Link href="/docs/api/agents#playground-chat">playground endpoint</Link>. The publisher&apos;s environment variables are
           never copied.
         </p>
+        <p>
+          A graph agent is copied with its graph. In the copy, the request of an <code>api</code> node (URL, headers, body), the
+          source of a <code>code</code> node and the input of an <code>http_request</code> or <code>code_interpreter</code> tool
+          node are kept only where they are built from template references alone; literal text in them, which is where a
+          publisher&apos;s keys and endpoints live, is not copied. <code>clonedAgent.needsConfiguration</code> lists each such node
+          (<code>nodeId</code>, <code>label</code>, <code>type</code>, <code>fields</code>); set your own values in the builder
+          before running the copy.
+        </p>
         <ul>
           <li>
             <code>402</code> <code>insufficient_credits</code> with <code>requiredCents</code>: a monthly listing whose first

@@ -373,6 +373,16 @@ export default function ListingDetailPage() {
       } else {
         toast.success(`${listing.title} installed. It's now in your agents.`);
       }
+      const unconfigured = res.clonedAgent.needsConfiguration ?? [];
+      if (unconfigured.length > 0) {
+        toast.warning(
+          `Before it can run, set your own request details on: ${unconfigured.map((n) => n.label).join(", ")}.`,
+          {
+            description: "A publisher's endpoints, keys and code are not copied into your organization.",
+            duration: 15_000,
+          },
+        );
+      }
     } catch (error) {
       if (error instanceof ApiError && error.status === 402) {
         toast.error(getErrorMessage(error, "Not enough credits"), {

@@ -114,6 +114,36 @@ test("validation warns about tool nodes the agent has not enabled, instead of ca
   assert.deepEqual(toolNodeWarnings([{ type: "tool", data: { label: "T", config: {} } }], []), []);
 });
 
+test("validation names api nodes with no URL, which is how a marketplace copy of one arrives", async () => {
+  const { apiNodeErrors } = await import("../services/agentGraph.js");
+  const { cloneAgentBehaviour } = await import("../services/marketplaceClone.js");
+  const node = (label: string, config: Record<string, unknown>, type = "api") =>
+    ({ id: label, type, data: { label, config } }) as never;
+
+  assert.deepEqual(
+    apiNodeErrors([
+      node("Set", { url: "https://example.com/a" }),
+      node("From upstream", { url: "{{value}}" }),
+      node("Missing", {}),
+      node("Blank", { url: "  " }),
+      node("Not text", { url: 7 }),
+      node("An llm", {}, "llm"),
+    ]),
+    [
+      'API node "Missing" has no URL configured',
+      'API node "Blank" has no URL configured',
+      'API node "Not text" has no URL configured',
+    ],
+  );
+
+  // A publisher's literal URL is not copied, and the copy's validation says so.
+  const copy = cloneAgentBehaviour({
+    entrypoint: "graph",
+    graph: { nodes: [node("Price feed", { url: "https://hooks.example.com/services/T0/B0/secret" })], edges: [] },
+  });
+  assert.deepEqual(apiNodeErrors(copy.graph!.nodes as never), ['API node "Price feed" has no URL configured']);
+});
+
 test("rag_pipeline is one path, asks for a knowledge base, and then grounds the answer", async () => {
   const { rag_pipeline } = await templates();
   const deps: GraphInterpreterDeps = {

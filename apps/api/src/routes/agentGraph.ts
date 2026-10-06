@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { authenticate } from "../middleware/auth.js";
 import {
   getAgentEnabledToolNames,
+  apiNodeErrors,
   toolNodeWarnings,
   getAgentGraph,
   saveAgentGraph,
@@ -312,6 +313,10 @@ export async function agentGraphRoutes(app: FastifyInstance) {
     // refuses, because only the presence of a tool name was checked.
     for (const message of toolNodeWarnings(graphData.nodes, enabledTools)) {
       issues.push({ type: "warning", message });
+    }
+
+    for (const message of apiNodeErrors(graphData.nodes)) {
+      issues.push({ type: "error", message });
     }
 
     const isValid = issues.filter((i) => i.type === "error").length === 0;

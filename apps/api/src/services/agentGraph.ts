@@ -110,6 +110,24 @@ export function toolNodeWarnings(
 }
 
 /**
+ * Api nodes a run would fail because they have no URL. An error, not a
+ * warning: nothing short of editing the node makes it runnable. It is also
+ * how a marketplace copy arrives, because a publisher's request details are
+ * not copied (marketplaceClone.ts), so the builder names the node to fill in.
+ */
+export function apiNodeErrors(nodes: Array<Pick<GraphNode, "type" | "data">>): string[] {
+  const errors: string[] = [];
+  for (const node of nodes) {
+    if (node.type !== "api") continue;
+    const url = node.data?.config?.url;
+    if (typeof url !== "string" || url.trim() === "") {
+      errors.push(`API node "${node.data?.label}" has no URL configured`);
+    }
+  }
+  return errors;
+}
+
+/**
  * Get agent graph
  */
 export async function getAgentGraph(agentId: string, orgId: string) {

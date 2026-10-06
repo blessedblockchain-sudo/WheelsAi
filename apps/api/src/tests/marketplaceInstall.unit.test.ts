@@ -40,6 +40,8 @@ function makeWorld(opts: {
   sub?: Row;
   agents?: string[];
   balance?: bigint;
+  /** Extra fields of the listed agent (entrypoint, graph). */
+  sourceAgent?: Row;
 }) {
   const state = {
     listing: {
@@ -52,7 +54,14 @@ function makeWorld(opts: {
       pricePerRequestCents: opts.pricePerRequestCents ?? null,
       totalInstalls: 0,
       activeInstalls: 0,
-      agent: { id: "agent_src", name: "Analyst", slug: "analyst", tags: [], framework: "mastra" },
+      agent: {
+        id: "agent_src",
+        name: "Analyst",
+        slug: "analyst",
+        tags: [],
+        framework: "mastra",
+        ...(opts.sourceAgent ?? {}),
+      },
     } as Row,
     installs: (opts.install
       ? [{ id: "ins_1", listingId: LISTING_ID, buyerId: BUYER, uninstalledAt: null, ...opts.install }]
@@ -502,4 +511,208 @@ test("a legacy subscription with no stored price reports null, never the listing
     const [install] = await getMyInstalls(BUYER);
     assert.equal(install!.subscription!.priceCents, null);
   });
+});
+
+// ============================================
+// What the copy carries: entrypoint and graph
+// ============================================
+
+const GRAPH_NODES = [
+  { id: "in", type: "input", data: { label: "Question", config: {} } },
+  {
+    id: "lookup",
+    type: "api",
+    data: {
+      label: "Price feed",
+      config: {
+        method: "POST",
+        timeoutMs: 5000,
+        url: "https://prices.example.com/v1/quote",
+        headers: { Authorization: "Bearer publisher-secret", "X-Api-Key": "pk_live_1", Accept: "application/json" },
+      },
+    },
+  },
+  { id: "answer", type: "llm", data: { label: "Answer", config: { systemPrompt: "Use the quote." } } },
+];
+const GRAPH_EDGES = [
+  { id: "e1", source: "in", target: "lookup" },
+  { id: "e2", source: "lookup", target: "answer" },
+];
+
+test("installing a graph agent copies its entrypoint and its graph", async () => {
+  const world = makeWorld({
+    pricingModel: "free",
+    sourceAgent: {
+      entrypoint: "graph",
+      graph: { nodes: GRAPH_NODES, edges: GRAPH_EDGES, viewport: { x: 1, y: 2, zoom: 0.5 }, isValid: true },
+    },
+  });
+  await withWorld(world, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+
+  const clone = world.state.agents[0]!;
+  assert.equal(clone.orgId, BUYER);
+  assert.equal(clone.entrypoint, "graph");
+  const graph = clone.graph.create;
+  assert.deepEqual(graph.edges, GRAPH_EDGES);
+  assert.deepEqual(graph.viewport, { x: 1, y: 2, zoom: 0.5 });
+  assert.deepEqual(
+    graph.nodes.map((n: Row) => [n.id, n.type, n.data.label]),
+    [
+      ["in", "input", "Question"],
+      ["lookup", "api", "Price feed"],
+      ["answer", "llm", "Answer"],
+    ],
+  );
+  assert.deepEqual(graph.nodes[0], GRAPH_NODES[0]);
+  assert.deepEqual(graph.nodes[2], GRAPH_NODES[2]);
+  // What is not a request detail stays on the api node.
+  assert.equal(graph.nodes[1].data.config.method, "POST");
+  assert.equal(graph.nodes[1].data.config.timeoutMs, 5000);
+});
+
+test("a graph with no literal request details is copied whole and stays valid", async () => {
+  const nodes = [
+    GRAPH_NODES[0],
+    {
+      id: "call",
+      type: "api",
+      data: {
+        label: "Follow the link",
+        config: { url: "{{nodes.in}}", headers: { "X-Trace": "{{value | urlencode}}" }, body: "{{value | json}}" },
+      },
+    },
+    { id: "sum", type: "tool", data: { label: "Sum", config: { toolName: "calculator", input: { expression: "2+2" } } } },
+    GRAPH_NODES[2],
+  ];
+  const world = makeWorld({
+    pricingModel: "free",
+    sourceAgent: { entrypoint: "graph", graph: { nodes, edges: GRAPH_EDGES, isValid: true } },
+  });
+  const result = await withWorld(world, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+
+  const graph = world.state.agents[0]!.graph.create;
+  assert.deepEqual(graph.nodes, nodes);
+  assert.equal(graph.isValid, true);
+  assert.equal("validationErrors" in graph, false);
+  assert.deepEqual(result.clonedAgent.needsConfiguration, []);
+});
+
+test("the publisher's request details in an api node are not copied to the buyer, whatever the header is called", async () => {
+  const world = makeWorld({
+    pricingModel: "free",
+    sourceAgent: { entrypoint: "graph", graph: { nodes: GRAPH_NODES, edges: GRAPH_EDGES, isValid: true } },
+  });
+  const result = await withWorld(world, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+
+  const graph = world.state.agents[0]!.graph.create;
+  const copied = graph.nodes[1].data.config;
+  assert.deepEqual(copied.headers, {});
+  assert.equal("url" in copied, false);
+  assert.doesNotMatch(JSON.stringify(world.state.agents[0]), /publisher-secret|pk_live_1|prices\.example\.com/);
+  // The copy is not runnable yet, and says which node and why.
+  assert.equal(graph.isValid, false);
+  assert.equal(graph.validationErrors.length, 1);
+  assert.match(graph.validationErrors[0], /"Price feed" \(api\).*url, headers\.Authorization, headers\.X-Api-Key, headers\.Accept/);
+  assert.deepEqual(result.clonedAgent.needsConfiguration, [
+    {
+      nodeId: "lookup",
+      label: "Price feed",
+      type: "api",
+      fields: ["url", "headers.Authorization", "headers.X-Api-Key", "headers.Accept"],
+    },
+  ]);
+  // The publisher's own graph is untouched.
+  assert.equal(GRAPH_NODES[1]!.data.config.headers!.Authorization, "Bearer publisher-secret");
+  assert.equal(GRAPH_NODES[1]!.data.config.url, "https://prices.example.com/v1/quote");
+});
+
+// A graph template cannot read the agent's variables, so a credential is a
+// literal, and it can sit anywhere in the request. Each of these reached
+// the buyer while only headers with a credential-sounding name were dropped.
+const SECRET_PLACES: Array<[string, { type: string; config: Record<string, unknown> }]> = [
+  ["the URL path", { type: "api", config: { url: "https://api.telegram.org/bot123456:AAE-secret/sendMessage" } }],
+  ["the query string", { type: "api", config: { url: "https://api.example.com/v1/data?api_key=AAE-secret&q={{input | urlencode}}" } }],
+  ["the URL's userinfo", { type: "api", config: { url: "https://user:AAE-secret@api.example.com/v1" } }],
+  ["a header with a plain name", { type: "api", config: { url: "{{value}}", headers: { "X-Auth": "AAE-secret" } } }],
+  ["a header next to a reference", { type: "api", config: { url: "{{value}}", headers: { "X-Auth": "AAE-secret {{value}}" } } }],
+  ["headers that are not an object", { type: "api", config: { url: "{{value}}", headers: "X-Auth: AAE-secret" } }],
+  ["the body", { type: "api", config: { url: "{{value}}", method: "POST", body: '{"key":"AAE-secret","q":"{{input}}"}' } }],
+  ["something dressed as a reference", { type: "api", config: { url: "{{AAE-secret}}" } }],
+  ["a code node's source", { type: "code", config: { language: "python", code: 'KEY = "AAE-secret"\nprint(KEY)' } }],
+  ["an http_request tool node", { type: "tool", config: { toolName: "http_request", input: { url: "{{value}}", headers: { "X-Auth": "AAE-secret" } } } }],
+  ["an http_request tool node's JSON text", { type: "tool", config: { tool: "http_request", input: '{"url":"https://hooks.example.com/AAE-secret"}' } }],
+  ["a code_interpreter tool node", { type: "tool", config: { skill: "code_interpreter", input: { code: 'print("AAE-secret")' } } }],
+];
+
+for (const [place, node] of SECRET_PLACES) {
+  test(`a publisher's credential in ${place} does not reach the buyer`, async () => {
+    const nodes = [GRAPH_NODES[0], { id: "lookup", type: node.type, data: { label: "Call", config: node.config } }, GRAPH_NODES[2]];
+    const world = makeWorld({
+      pricingModel: "free",
+      sourceAgent: { entrypoint: "graph", graph: { nodes, edges: GRAPH_EDGES, isValid: true } },
+    });
+    const result = await withWorld(world, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+
+    assert.doesNotMatch(JSON.stringify(world.state.agents[0]), /AAE-secret/);
+    assert.doesNotMatch(JSON.stringify(result), /AAE-secret/);
+    const graph = world.state.agents[0]!.graph.create;
+    assert.equal(graph.nodes[1].id, "lookup");
+    assert.equal(graph.isValid, false);
+    assert.equal(result.clonedAgent.needsConfiguration.length, 1);
+    assert.equal(result.clonedAgent.needsConfiguration[0]!.nodeId, "lookup");
+  });
+}
+
+test("a reinstall that reuses the buyer's copy reports nothing to configure and writes no graph", async () => {
+  const world = makeWorld({
+    pricingModel: "free",
+    install: { status: "uninstalled", clonedAgentId: "agent_c0" },
+    agents: ["agent_c0"],
+    sourceAgent: { entrypoint: "graph", graph: { nodes: GRAPH_NODES, edges: GRAPH_EDGES } },
+  });
+  const result = await withWorld(world, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+  assert.equal(result.clonedAgent.id, "agent_c0");
+  assert.deepEqual(result.clonedAgent.needsConfiguration, []);
+  assert.equal(world.state.agents.length, 1);
+});
+
+test("a chat agent's copy is a chat agent, and a saved but unused graph still comes along", async () => {
+  const plain = makeWorld({ pricingModel: "free" });
+  await withWorld(plain, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+  assert.equal(plain.state.agents[0]!.entrypoint, "chat");
+  assert.equal("graph" in plain.state.agents[0]!, false);
+
+  const drafted = makeWorld({
+    pricingModel: "free",
+    sourceAgent: { entrypoint: "chat", graph: { nodes: GRAPH_NODES, edges: GRAPH_EDGES } },
+  });
+  await withWorld(drafted, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+  assert.equal(drafted.state.agents[0]!.entrypoint, "chat");
+  assert.equal(drafted.state.agents[0]!.graph.create.nodes.length, 3);
+});
+
+test("a graph agent listed with no graph is copied as it is: graph entrypoint, no graph", async () => {
+  const world = makeWorld({ pricingModel: "free", sourceAgent: { entrypoint: "graph", graph: null } });
+  await withWorld(world, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+  assert.equal(world.state.agents[0]!.entrypoint, "graph");
+  assert.equal("graph" in world.state.agents[0]!, false);
+});
+
+test("only text made of the interpreter's own references counts as no literal", async () => {
+  const { isReferenceOnly } = await import("../services/marketplaceClone.js");
+  const { renderTemplate } = await import("../services/graphInterpreter.js");
+  const references = ["", "  ", "{{value}}", "{{ input }}", "{{nodes.a-1.b}}", "{{item}}{{index}}", "{{value | urlencode}} {{nodes.x|json}}"];
+  for (const text of references) {
+    assert.equal(isReferenceOnly(text), true, text);
+    // Agreement with the interpreter: with nothing to substitute, such a
+    // text renders to no literal characters of its own.
+    assert.equal(renderTemplate(text, "", {}, { item: "", index: "" }).replace(/""/g, "").trim(), "", text);
+  }
+  const literals = ["a", "Bearer {{value}}", "{{value}}/path", "{{ env.KEY }}", "{{sk_live_1}}", "{{value | sk_live_1}}", "{value}", "{{nodes.}}"];
+  for (const text of literals) {
+    assert.equal(isReferenceOnly(text), false, text);
+  }
+  for (const notText of [undefined, null, 42, true, {}, ["{{value}}"]]) {
+    assert.equal(isReferenceOnly(notText), false, String(notText));
+  }
 });

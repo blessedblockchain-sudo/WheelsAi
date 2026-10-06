@@ -1568,7 +1568,13 @@ export const marketplaceApi = {
     api<{
       message: string;
       install: { id: string; status: string };
-      clonedAgent: { id: string; name: string; slug: string };
+      clonedAgent: {
+        id: string;
+        name: string;
+        slug: string;
+        /** Graph nodes installed without the publisher's request details or code. */
+        needsConfiguration?: Array<{ nodeId: string; label: string; type: string; fields: string[] }>;
+      };
       subscription: { id: string; currentPeriodEnd: string } | null;
     }>(`/api/marketplace/listings/${listingId}/install`, {
       method: "POST",

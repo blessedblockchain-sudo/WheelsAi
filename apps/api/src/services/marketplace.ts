@@ -1,5 +1,6 @@
 import { prisma } from "@wheelsai/db";
 import { getOrgPlan } from "./orgPlan.js";
+import { cloneAgentBehaviour } from "./marketplaceClone.js";
 import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
 import {
   installAccess,
@@ -801,7 +802,8 @@ export async function installAgent(
   const listing = await prisma.agentListing.findUnique({
     where: { id: listingId },
     include: {
-      agent: true,
+      // The graph is part of how a graph agent answers, so it is copied too.
+      agent: { include: { graph: true } },
     },
   });
 
@@ -901,6 +903,7 @@ export async function installAgent(
       ? await tx.agent.findFirst({ where: { id: existingInstall.clonedAgentId, orgId: buyerId } })
       : null;
 
+    const behaviour = cloneAgentBehaviour(listing.agent);
     const clonedAgent =
       previousClone ??
       (await tx.agent.create({
@@ -922,6 +925,22 @@ export async function installAgent(
           version: listing.agent.version,
           isPublic: false,
           tags: listing.agent.tags,
+          // The copy answers the way the original does: through its graph
+          // when that is its entrypoint (see marketplaceClone.ts).
+          entrypoint: behaviour.entrypoint,
+          ...(behaviour.graph && {
+            graph: {
+              create: {
+                nodes: behaviour.graph.nodes as any,
+                edges: behaviour.graph.edges as any,
+                ...(behaviour.graph.viewport !== null && { viewport: behaviour.graph.viewport as any }),
+                isValid: behaviour.graph.isValid,
+                ...(behaviour.graph.validationErrors !== null && {
+                  validationErrors: behaviour.graph.validationErrors as any,
+                }),
+              },
+            },
+          }),
         },
       }));
 
@@ -991,7 +1010,14 @@ export async function installAgent(
       });
     }
 
-    return { install, clonedAgent, subscription };
+    return {
+      install,
+      clonedAgent,
+      subscription,
+      // Only a copy made now: a reused copy is the buyer's own and is left
+      // as they have it.
+      needsConfiguration: previousClone ? [] : (behaviour.graph?.needsConfiguration ?? []),
+    };
   }).catch((err) => {
     // A concurrent first install (or first subscribe) won the unique
     // constraint and this transaction rolled back whole. Translated out
@@ -1025,6 +1051,9 @@ export async function installAgent(
       id: result.clonedAgent.id,
       name: result.clonedAgent.name,
       slug: result.clonedAgent.slug,
+      // Graph nodes whose request details or code stayed with the publisher
+      // (marketplaceClone.ts); the buyer sets their own before it can run.
+      needsConfiguration: result.needsConfiguration,
     },
   };
 }

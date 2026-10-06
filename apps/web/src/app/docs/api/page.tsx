@@ -217,6 +217,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { group: <Link href="/docs/api/deployments">Models and deployments</Link>, prefix: <><code>/api/models</code>, <code>/api/deployments</code></> },
           { group: <Link href="/docs/api/marketplace">Marketplace</Link>, prefix: <code>/api/marketplace</code> },
           { group: <Link href="/docs/api/billing">Billing and plans</Link>, prefix: <code>/api/billing</code> },
+          { group: <Link href="/docs/api/workflows">Workflows and scheduler</Link>, prefix: <><code>/api/orchestrations</code>, <code>/api/scheduler</code></> },
           { group: <Link href="/docs/api/webhooks">Webhooks</Link>, prefix: <code>/api/webhooks</code> },
           { group: <Link href="/docs/guides/templates#api">Templates</Link>, prefix: <code>/api/templates</code> },
           { group: <Link href="/status">Platform status</Link>, prefix: <code>/api/status</code> },
@@ -225,8 +226,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
       <p>
         Other groups used by the dashboard are available in the OpenAPI explorer and follow the same authentication and error
         rules: knowledge bases (<code>/api/knowledge</code>), agent memory (<code>/api/memory</code>), monitoring and alerts (
-        <code>/api/monitoring</code>), scheduled tasks (<code>/api/scheduler</code>), orchestrations (
-        <code>/api/orchestrations</code>), agent versions (<code>/api/versioning</code>), analytics (<code>/api/analytics</code>),
+        <code>/api/monitoring</code>), agent versions (<code>/api/versioning</code>), analytics (<code>/api/analytics</code>),
         fine-tuning (<code>/api/training</code>), custom domains (<code>/api/domains</code>), integrations, agent tokens (
         <code>/api/tokens</code>), reputation (<code>/api/reputation</code>), two-factor authentication (<code>/api/2fa</code>)
         and settings (<code>/api/settings</code>).

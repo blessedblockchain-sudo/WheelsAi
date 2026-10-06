@@ -22,7 +22,11 @@ export type WebhookEventType =
   | "alert.triggered"
   | "alert.resolved"
   | "billing.low_balance"
-  | "billing.payment_received";
+  | "billing.payment_received"
+  | "workflow.completed"
+  | "workflow.failed"
+  | "scheduled_task.failed"
+  | "report.generated";
 
 export const WEBHOOK_EVENTS: WebhookEventType[] = [
   "agent.created",
@@ -41,6 +45,13 @@ export const WEBHOOK_EVENTS: WebhookEventType[] = [
   "alert.resolved",
   "billing.low_balance",
   "billing.payment_received",
+  "workflow.completed",
+  "workflow.failed",
+  // A scheduled task's firing ended failed after its last attempt. (A
+  // scheduled workflow run reports through workflow.failed instead.)
+  "scheduled_task.failed",
+  // A report task asked for its report to be sent to the org's webhooks.
+  "report.generated",
 ];
 
 export interface CreateWebhookInput {

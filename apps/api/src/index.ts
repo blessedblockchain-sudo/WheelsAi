@@ -107,6 +107,8 @@ import {
   stopAgentMessageQueue,
   startSchedulerQueue,
   stopSchedulerQueue,
+  startWorkflowRunQueue,
+  stopWorkflowRunQueue,
   startUptimeProberQueue,
   stopUptimeProberQueue,
   startAlertEvaluatorQueue,
@@ -456,6 +458,7 @@ async function main() {
   await startGpuBillingQueue();
   await startAgentMessageQueue();
   await startSchedulerQueue();
+  await startWorkflowRunQueue();
   await startUptimeProberQueue();
   await startAlertEvaluatorQueue();
   await startAnalyticsSnapshotQueue();
@@ -506,6 +509,7 @@ async function main() {
       await stopGpuBillingQueue();
       await stopAgentMessageQueue();
       await stopSchedulerQueue();
+      await stopWorkflowRunQueue();
       await stopUptimeProberQueue();
       await stopAlertEvaluatorQueue();
       await stopAnalyticsSnapshotQueue();

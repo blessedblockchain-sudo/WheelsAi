@@ -42,6 +42,10 @@ export {
   stopSchedulerQueue,
 } from "./scheduler.queue.js";
 export {
+  startWorkflowRunQueue,
+  stopWorkflowRunQueue,
+} from "./workflow-run.queue.js";
+export {
   startUptimeProberQueue,
   stopUptimeProberQueue,
 } from "./uptime-prober.queue.js";

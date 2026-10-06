@@ -19,6 +19,13 @@
  *   $.steps.<stepName>.output   another step's output
  *   $.steps.<stepName>.output.x a path into it
  *   $.previous.output           the previous step's output (pipeline)
+ *   $.item / $.index            the current item of a for-each loop
+ *   $.iteration                 the current pass of an until loop (from 1)
+ *
+ * Prompt templates use the same references inside `{{ }}`, without the
+ * `$.` prefix: `Summarize: {{steps.research.output}}`. A template is
+ * substitution only: each `{{ }}` holds one reference and at most one
+ * named filter, and anything else between the braces is left as text.
  *
  * A string without the `$.` prefix is a literal, so plain prompts need no
  * escaping. An unresolvable reference yields `undefined` rather than
@@ -33,6 +40,11 @@ export interface MappingContext {
   steps: Record<string, { output: unknown }>;
   /** Output of the immediately preceding step, if any. */
   previous?: { output: unknown };
+  /** Set while a for-each loop runs one of its items. */
+  item?: unknown;
+  index?: number;
+  /** Set while an until loop runs; the first pass is 1. */
+  iteration?: number;
 }
 
 const REFERENCE_PREFIX = "$.";
@@ -42,6 +54,9 @@ function readPath(root: unknown, path: string[]): unknown {
   for (const key of path) {
     if (current === null || current === undefined) return undefined;
     if (typeof current !== "object") return undefined;
+    // Own properties only: `constructor`, `__proto__` and the rest of the
+    // prototype chain are not data the author put there.
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return undefined;
     current = (current as Record<string, unknown>)[key];
   }
   return current;
@@ -73,6 +88,9 @@ export function resolveValue(value: unknown, ctx: MappingContext): unknown {
       if (field !== "output") return undefined;
       return readPath(step.output, tail);
     }
+    if (head === "item") return readPath(ctx.item, rest);
+    if (head === "index") return rest.length === 0 ? ctx.index : undefined;
+    if (head === "iteration") return rest.length === 0 ? ctx.iteration : undefined;
     return undefined;
   }
 
@@ -99,15 +117,189 @@ export function applyInputMapping(
   return resolveValue(mapping, ctx) as Record<string, unknown>;
 }
 
+// ============================================
+// References and prompt templates
+// ============================================
+
+export type ReferenceKind =
+  | "input"
+  | "steps"
+  | "previous"
+  | "item"
+  | "index"
+  | "iteration";
+
+export interface Reference {
+  kind: ReferenceKind;
+  /** The step named by a `steps.<name>` reference. */
+  step?: string;
+  /** The reference as written, without `$.` or braces. */
+  raw: string;
+}
+
+const REFERENCE_HEADS = new Set<string>([
+  "input",
+  "steps",
+  "previous",
+  "item",
+  "index",
+  "iteration",
+]);
+
+const TEMPLATE_FILTERS = new Set(["json"]);
+
+/** `{{ ... }}` with no nested braces; anything else is plain text. */
+const TEMPLATE_TOKEN = /\{\{([^{}]*)\}\}/g;
+
+export class PromptTemplateError extends Error {}
+
+function parseReference(expression: string): Reference | null {
+  const [head, ...rest] = expression.split(".");
+  if (!head || !REFERENCE_HEADS.has(head)) return null;
+  if (rest.some((segment) => segment.length === 0)) return null;
+  if (head === "steps") {
+    // steps.<name>.output[.path] is the only readable shape.
+    if (rest.length < 2 || rest[1] !== "output") return null;
+    return { kind: "steps", step: rest[0], raw: expression };
+  }
+  if (head === "previous" && rest[0] !== "output") return null;
+  if ((head === "index" || head === "iteration") && rest.length > 0) return null;
+  return { kind: head as ReferenceKind, raw: expression };
+}
+
+interface TemplateToken {
+  reference: Reference;
+  filter: string | null;
+}
+
 /**
- * Builds the prompt a step sends to its agent.
+ * Reads one `{{ }}` body. Null means "not a reference": the braces are
+ * left in the prompt untouched, so text that merely looks like code
+ * (`{{constructor.constructor('x')()}}`) is never interpreted.
+ */
+function parseTemplateToken(body: string): TemplateToken | null {
+  const [expression = "", ...filters] = body.split("|").map((part) => part.trim());
+  const reference = parseReference(expression);
+  if (!reference) return null;
+  if (filters.length > 1) {
+    throw new PromptTemplateError(
+      `template reference "{{${body.trim()}}}" has more than one filter`,
+    );
+  }
+  const filter = filters[0] ?? null;
+  if (filter !== null && !TEMPLATE_FILTERS.has(filter)) {
+    throw new PromptTemplateError(
+      `unknown template filter "${filter}" in "{{${body.trim()}}}" (supported: json)`,
+    );
+  }
+  return { reference, filter };
+}
+
+function renderValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/**
+ * Fills a prompt template from the run context.
+ *
+ * Substitution goes through resolveValue, the same reader the mappings
+ * use, so a template can read exactly what a mapping can and nothing is
+ * ever evaluated. A reference that resolves to nothing renders as an
+ * empty string and is listed in `missingRefs`, so the step record shows
+ * which input was absent. The `json` filter renders a JSON literal
+ * (strings quoted and escaped) for prompts that embed data.
+ */
+export function renderPromptTemplate(
+  template: string,
+  ctx: MappingContext,
+): { text: string; missingRefs: string[] } {
+  const missingRefs: string[] = [];
+  const text = template.replace(TEMPLATE_TOKEN, (whole, body: string) => {
+    const token = parseTemplateToken(body);
+    if (!token) return whole;
+    const value = resolveValue(`${REFERENCE_PREFIX}${token.reference.raw}`, ctx);
+    if (value === undefined || value === null) missingRefs.push(token.reference.raw);
+    if (token.filter === "json") return JSON.stringify(value ?? null);
+    return renderValue(value);
+  });
+  return { text, missingRefs };
+}
+
+/** Every reference a prompt template makes. Throws on an unknown filter. */
+export function collectTemplateReferences(template: string): Reference[] {
+  const references: Reference[] = [];
+  for (const match of template.matchAll(TEMPLATE_TOKEN)) {
+    const token = parseTemplateToken(match[1] ?? "");
+    if (token) references.push(token.reference);
+  }
+  return references;
+}
+
+/**
+ * Every `$.` reference inside a mapping, condition or loop source, found
+ * without resolving anything. A `$.` string that is not a readable
+ * reference is reported with kind null so a save-time check can name it.
+ */
+export function collectReferences(
+  value: unknown,
+): Array<Reference | { kind: null; raw: string }> {
+  if (typeof value === "string") {
+    if (!value.startsWith(REFERENCE_PREFIX)) return [];
+    const raw = value.slice(REFERENCE_PREFIX.length);
+    return [parseReference(raw) ?? { kind: null, raw }];
+  }
+  if (Array.isArray(value)) return value.flatMap((v) => collectReferences(v));
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap((v) =>
+      collectReferences(v),
+    );
+  }
+  return [];
+}
+
+// ============================================
+// Step output
+// ============================================
+
+export class StepOutputError extends Error {}
+
+const CODE_FENCE = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/;
+
+/**
+ * Turns a step's raw text into the value later steps read. `text` keeps
+ * the string. `json` parses it, after removing the code fence models
+ * like to wrap JSON in, so `$.steps.x.output.field` can branch on it.
+ * Invalid JSON is an error: a step that promised structure and returned
+ * prose must fail rather than hand prose to a condition.
+ */
+export function parseStepOutput(content: string, format: string): unknown {
+  if (format !== "json") return content;
+  const trimmed = content.trim();
+  const fenced = CODE_FENCE.exec(trimmed);
+  const body = fenced ? (fenced[1] ?? "").trim() : trimmed;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    throw new StepOutputError(
+      `output is not valid JSON (outputFormat is json): ${body.slice(0, 120)}`,
+    );
+  }
+}
+
+/**
+ * Builds the prompt a step sends when it has no prompt template.
  *
  * Precedence: an explicit `prompt` in the resolved input mapping wins.
- * Otherwise `pipeline` mode chains the previous step's output, and the
- * first step falls back to the run input's `prompt`/`input`. When none of
- * those exist the step has nothing to say, and returning null lets the
- * engine fail it with a specific message instead of invoking a model with
- * an empty string.
+ * Otherwise `pipeline` mode chains the previous step's output. Otherwise
+ * the step gets the run input's `prompt`/`input`; that last fallback
+ * applies to EVERY step, not only the first, so a sequential workflow
+ * with no templates or mappings sends the same run prompt to each step.
+ * When none of those exist the step has nothing to say, and returning
+ * null lets the engine fail it with a specific message instead of
+ * invoking a model with an empty string.
  */
 export function resolveStepPrompt(
   resolvedInput: Record<string, unknown>,

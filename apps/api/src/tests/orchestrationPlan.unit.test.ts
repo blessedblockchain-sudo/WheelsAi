@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ancestorSets,
+  findReferenceViolations,
   OrchestrationPlanError,
   planOrchestration,
   planOrder,
@@ -132,4 +134,54 @@ test("only parallel mode gets concurrency > 1 — modes never override dependenc
     planOrchestration(steps, "sequential", 4).levels.map((l) => l.length),
     planOrchestration(steps, "parallel", 4).levels.map((l) => l.length),
   );
+});
+
+test("ancestor sets are transitive", () => {
+  const ancestors = ancestorSets([
+    step("a", 0),
+    step("b", 1, ["a"]),
+    step("c", 2, ["b"]),
+    step("side", 3),
+  ]);
+  assert.deepEqual([...ancestors.get("c")!].sort(), ["a", "b"]);
+  assert.deepEqual([...ancestors.get("a")!], []);
+  assert.deepEqual([...ancestors.get("side")!], []);
+});
+
+test("parallel mode: a step may only read its transitive dependencies", () => {
+  const steps = [step("a", 0), step("side", 1), step("b", 2, ["a"]), step("c", 3, ["b"])];
+  const plan = planOrchestration(steps, "parallel", 5);
+  const violations = findReferenceViolations(steps, "parallel", plan, [
+    // `a` is a transitive dependency of c: fine. `side` runs a level
+    // earlier but c does not depend on it: refused.
+    { step: "c", references: ["a", "side"] },
+  ]);
+  assert.equal(violations.length, 1);
+  assert.equal(violations[0]!.reference, "side");
+  assert.equal(violations[0]!.reason, "not_available");
+  assert.match(violations[0]!.message, /does not depend on it/);
+});
+
+test("one-at-a-time modes: a step may read anything earlier in the plan, nothing later", () => {
+  const steps = [step("a", 0), step("b", 1), step("c", 2)];
+  const plan = planOrchestration(steps, "sequential", 5);
+  assert.deepEqual(
+    findReferenceViolations(steps, "sequential", plan, [{ step: "c", references: ["a", "b"] }]),
+    [],
+  );
+  const later = findReferenceViolations(steps, "sequential", plan, [
+    { step: "a", references: ["c"] },
+  ]);
+  assert.equal(later[0]!.reason, "not_available");
+  assert.match(later[0]!.message, /runs after it/);
+});
+
+test("a reference to a step that does not exist is named", () => {
+  const steps = [step("a", 0)];
+  const plan = planOrchestration(steps, "sequential", 5);
+  const violations = findReferenceViolations(steps, "sequential", plan, [
+    { step: "a", references: ["ghost"] },
+  ]);
+  assert.equal(violations[0]!.reason, "unknown_step");
+  assert.match(violations[0]!.message, /step "a" references unknown step "ghost"/);
 });

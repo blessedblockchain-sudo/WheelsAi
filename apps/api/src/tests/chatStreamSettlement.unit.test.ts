@@ -366,9 +366,14 @@ test("graph runs are cancelled when the client closes the request, and resolve t
 });
 
 test("scheduled and orchestration runs resolve their tool mode; the test runner runs in 'test' mode", () => {
+  // The call itself moved into sharedAgentChat.ts (a pure core); the
+  // production executor binds the real install lookup into it.
   const executor = source("services/scheduledTaskExecutorProduction.ts");
-  assert.match(executor, /resolveToolMode\(/);
-  assert.match(executor, /mode: toolMode/);
+  assert.match(executor, /import \{ resolveToolMode \} from "\.\/skills\/runMode\.js"/);
+  assert.match(executor, /\n\s+resolveToolMode,\n/);
+  const shared = source("services/sharedAgentChat.ts");
+  assert.match(shared, /await seams\.resolveToolMode\(/);
+  assert.match(shared, /mode: toolMode/);
   assert.match(source("services/testing.ts"), /runAgentChat\(\{ agent, prompt, mode: "test" \}\)/);
 });
 

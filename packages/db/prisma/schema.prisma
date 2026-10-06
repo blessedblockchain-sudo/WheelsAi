@@ -2106,7 +2106,10 @@ model DomainEvent {
 model ScheduledTask {
   id            String   @id @default(uuid()) @db.Uuid
   orgId         String   @map("org_id") @db.Uuid
-  agentId       String   @map("agent_id") @db.Uuid
+  // Each task type decides whether it needs an agent.
+  agentId       String?  @map("agent_id") @db.Uuid
+  // The workflow a workflow_run task starts.
+  orchestrationId String? @map("orchestration_id") @db.Uuid
   name          String
   description   String?
 
@@ -2118,7 +2121,7 @@ model ScheduledTask {
   timezone      String   @default("UTC")
 
   // Task configuration
-  taskType      String   @map("task_type") // 'inference', 'webhook', 'custom'
+  taskType      String   @map("task_type") // agent_run|inference|webhook|data_sync|health_check|report|cleanup|custom|workflow_run
   payload       Json     @default("{}")
   timeout       Int      @default(300000)
   maxRetries    Int      @default(3) @map("max_retries")
@@ -2141,11 +2144,13 @@ model ScheduledTask {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   executions    TaskExecution[]
+  orchestration Orchestration? @relation(fields: [orchestrationId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, name])
   @@index([orgId, isEnabled])
   @@index([nextRunAt, isEnabled])
   @@index([status])
+  @@index([orchestrationId])
   @@map("scheduled_tasks")
 }
 
@@ -2168,12 +2173,17 @@ model TaskExecution {
 
   triggeredBy   String   @default("scheduler") @map("triggered_by")
 
+  // The workflow run a workflow_run execution started; that run's worker
+  // finishes this row.
+  orchestrationExecutionId String? @unique @map("orchestration_execution_id") @db.Uuid
+
   createdAt     DateTime @default(now()) @map("created_at")
 
   task          ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
   @@index([taskId, status])
   @@index([taskId, createdAt])
+  @@index([status, startedAt])
   @@map("task_executions")
 }
 
@@ -2293,6 +2303,9 @@ model Orchestration {
   inputSchema   Json?    @map("input_schema")
   outputSchema  Json?    @map("output_schema")
 
+  // Editor canvas state: step positions keyed by step name, and the viewport.
+  layout        Json?
+
   isEnabled     Boolean  @default(true) @map("is_enabled")
 
   totalRuns     Int      @default(0) @map("total_runs")
@@ -2306,6 +2319,7 @@ model Orchestration {
 
   steps         OrchestrationStep[]
   executions    OrchestrationExecution[]
+  schedules     ScheduledTask[]
 
   @@unique([orgId, name])
   @@index([orgId])
@@ -2318,12 +2332,24 @@ model OrchestrationStep {
 
   name            String
   stepOrder       Int      @map("step_order")
-  agentId         String   @map("agent_id") @db.Uuid
 
+  // 'agent' | 'model' | 'retrieval'. Exactly one resource is set to match:
+  // agentId, deploymentId (optionally modelId), or knowledgeBaseId.
+  stepType        String   @default("agent") @map("step_type")
+  agentId         String?  @map("agent_id") @db.Uuid
+  deploymentId    String?  @map("deployment_id") @db.Uuid
+  modelId         String?  @map("model_id")
+  knowledgeBaseId String?  @map("knowledge_base_id") @db.Uuid
+
+  promptTemplate  String?  @map("prompt_template") @db.Text
   inputMapping    Json?    @map("input_mapping")
   outputMapping   Json?    @map("output_mapping")
+  outputFormat    String   @default("text") @map("output_format") // 'text' | 'json'
 
   condition       Json?
+  // { forEach: "$.steps.x.output", maxItems } or
+  // { until: <condition>, maxIterations, onExhausted: 'fail' | 'continue' }
+  loop            Json?
 
   onError         String   @default("fail") @map("on_error")
   fallbackAgentId String?  @map("fallback_agent_id") @db.Uuid
@@ -2347,6 +2373,8 @@ model OrchestrationExecution {
   id              String   @id @default(uuid()) @db.Uuid
   orchestrationId String   @map("orchestration_id") @db.Uuid
 
+  // queued | running | completed | failed | cancelled. Every change is a
+  // compare-and-set on the previous status.
   status          String   @default("pending")
   progress        Int      @default(0)
 
@@ -2358,8 +2386,15 @@ model OrchestrationExecution {
   completedAt     DateTime? @map("completed_at")
   durationMs      Int?      @map("duration_ms")
 
-  triggeredBy     String   @default("manual") @map("triggered_by")
+  triggeredBy     String   @default("manual") @map("triggered_by") // manual | api | schedule | job
   triggeredById   String?  @map("triggered_by_id") @db.Uuid
+
+  // Set when a running run is asked to stop; its worker ends it.
+  cancelRequestedAt DateTime? @map("cancel_requested_at")
+  // What started the run, when it was not a person.
+  scheduledTaskId String?  @map("scheduled_task_id") @db.Uuid
+  taskExecutionId String?  @unique @map("task_execution_id") @db.Uuid
+  jobId           String?  @map("job_id") @db.Uuid
 
   error           String?
   failedStepId    String?  @map("failed_step_id") @db.Uuid
@@ -2371,6 +2406,7 @@ model OrchestrationExecution {
 
   @@index([orchestrationId, status])
   @@index([orchestrationId, createdAt])
+  @@index([status, createdAt])
   @@map("orchestration_executions")
 }
 
@@ -2381,7 +2417,12 @@ model OrchestrationStepResult {
   stepName      String   @map("step_name")
 
   status        String   @default("pending")
-  agentId       String   @map("agent_id") @db.Uuid
+  stepType      String   @default("agent") @map("step_type")
+  agentId       String?  @map("agent_id") @db.Uuid
+  // The deployment or knowledge base a non-agent step used.
+  resourceId    String?  @map("resource_id") @db.Uuid
+  // Loop pass: the item index (forEach) or the pass number (until).
+  iteration     Int?
 
   input         Json?
   output        Json?

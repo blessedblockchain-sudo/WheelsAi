@@ -1,254 +1,198 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { Calendar, Clock, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
+import { toast } from "sonner";
+
 import {
-  Calendar,
-  Clock,
-  Plus,
-  Play,
-  Pause,
-  Trash2,
-  Zap,
-  CheckCircle,
-  XCircle,
-  BarChart3,
-  Timer,
-  RefreshCw,
-  X,
-  AlertTriangle,
-} from "lucide-react";
-import {
-  schedulerApi,
   agentsApi,
-  type ScheduledTask,
-  type TaskExecution,
-  type SchedulerStats,
-  type Agent,
   getErrorMessage,
+  orchestrationApi,
+  schedulerApi,
+  type Agent,
+  type ScheduledTask,
+  type SchedulerStats,
+  type TaskExecution,
+  type TaskTypeCatalogue,
 } from "@/lib/api";
-import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
-import { toast } from "sonner";
-import { useConfirm } from "@/components/ui/confirm-dialog";
+import { PageHeader } from "@/components/ui/page-header";
+import { Select } from "@/components/ui/select";
+import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
+import { Stat } from "@/components/ui/stat";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ExecutionDetailDrawer } from "@/components/dashboard/workflows/execution-detail-drawer";
+import { formatDuration, formatRelative, formatSchedule } from "@/components/dashboard/workflows/format";
+import { StatusBadge } from "@/components/dashboard/workflows/status-badge";
+import { TaskFormDialog } from "@/components/dashboard/workflows/task-form-dialog";
+import { usePoll } from "@/components/dashboard/workflows/use-poll";
 
-type Tab = "tasks" | "executions";
+type TabId = "tasks" | "executions";
 
-const statusBadgeClasses: Record<string, string> = {
-  active: "bg-green-500/15 text-green-400 border border-green-500/30",
-  paused: "bg-yellow-500/15 text-yellow-400 border border-yellow-500/30",
-  completed: "bg-blue-500/15 text-blue-400 border border-blue-500/30",
-  failed: "bg-red-500/15 text-red-400 border border-red-500/30",
-  disabled: "bg-gray-500/15 text-gray-400 border border-gray-500/30",
-  running: "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30",
-  pending: "bg-yellow-500/15 text-yellow-400 border border-yellow-500/30",
-  success: "bg-green-500/15 text-green-400 border border-green-500/30",
-  error: "bg-red-500/15 text-red-400 border border-red-500/30",
-};
-
-function getStatusBadge(status: string): string {
-  return statusBadgeClasses[status] ?? statusBadgeClasses.disabled ?? "";
+interface PageData {
+  stats: SchedulerStats;
+  tasks: ScheduledTask[];
+  agents: Agent[];
+  catalogue: TaskTypeCatalogue;
+  workflows: Array<{ id: string; name: string }>;
 }
 
-function formatSchedule(task: ScheduledTask): string {
-  if (task.scheduleType === "interval" && task.intervalSeconds) {
-    const seconds = task.intervalSeconds;
-    if (seconds < 60) return `Every ${seconds}s`;
-    if (seconds < 3600) return `Every ${Math.floor(seconds / 60)} min`;
-    if (seconds < 86400) return `Every ${Math.floor(seconds / 3600)}h`;
-    return `Every ${Math.floor(seconds / 86400)}d`;
-  }
-  if (task.scheduleType === "cron" && task.cronExpression) {
-    return task.cronExpression;
-  }
-  if (task.scheduleType === "once" && task.scheduledAt) {
-    return new Date(task.scheduledAt).toLocaleString();
-  }
-  return "N/A";
-}
-
-function formatDate(dateStr?: string): string {
-  if (!dateStr) return "Never";
-  const date = new Date(dateStr);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(Math.abs(diffMs) / 60000);
-  const diffHours = Math.floor(Math.abs(diffMs) / 3600000);
-  const diffDays = Math.floor(Math.abs(diffMs) / 86400000);
-  const isFuture = diffMs < 0;
-
-  if (diffMins < 1) return isFuture ? "In a moment" : "Just now";
-  if (diffMins < 60) return isFuture ? `In ${diffMins}m` : `${diffMins}m ago`;
-  if (diffHours < 24) return isFuture ? `In ${diffHours}h` : `${diffHours}h ago`;
-  if (diffDays < 7) return isFuture ? `In ${diffDays}d` : `${diffDays}d ago`;
-  return date.toLocaleDateString();
-}
-
-function formatDuration(ms?: number): string {
-  if (!ms) return "N/A";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
-}
-
-function getTaskSuccessRate(task: ScheduledTask): string {
-  if (task.totalRuns === 0) return "N/A";
-  return `${((task.successfulRuns / task.totalRuns) * 100).toFixed(0)}%`;
-}
+const th = "px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground";
+const rowAction =
+  "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 
 export default function SchedulerPage() {
   const confirmAction = useConfirm();
-  const [activeTab, setActiveTab] = useState<Tab>("tasks");
-  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<TabId>("tasks");
+  const [data, setData] = useState<PageData | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
-  const [stats, setStats] = useState<SchedulerStats | null>(null);
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
-  const [executions, setExecutions] = useState<TaskExecution[]>([]);
-  const [executionsLoading, setExecutionsLoading] = useState(false);
-  const [executionsError, setExecutionsError] = useState<unknown>(null);
-  // The task the latest executions request was for; the executions or error
-  // held in state belong to it.
-  const [executionsRequestedFor, setExecutionsRequestedFor] = useState<string>();
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [selectedTaskId, setSelectedTaskId] = useState<string>("");
+  const [form, setForm] = useState<{ task?: ScheduledTask } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [detail, setDetail] = useState<{ task: ScheduledTask; execution: TaskExecution } | null>(null);
 
-  // The task whose executions are shown. A selection that is no longer in the
-  // list (its task was deleted) falls back to the first task, so the picker,
-  // Refresh and Try again never keep requesting a task that no longer exists.
-  const executionsTaskId = tasks.some((t) => t.id === selectedTaskId)
-    ? selectedTaskId
-    : tasks[0]?.id;
-  // Results held for a different task (on first opening the tab, or until the
-  // effect below refetches after a delete or a create) show as loading, so
-  // another task's executions or error never appear under this task's name.
-  const executionsPending =
-    executionsLoading || executionsRequestedFor !== executionsTaskId;
-
-  useEffect(() => {
-    loadData();
+  const load = useCallback(async () => {
+    try {
+      const [stats, tasksRes, agentsRes, catalogue, workflowsRes] = await Promise.all([
+        schedulerApi.getStats(),
+        schedulerApi.list({ limit: 100 }),
+        agentsApi.list(),
+        schedulerApi.taskTypes(),
+        orchestrationApi.list({ limit: 100 }),
+      ]);
+      setData({
+        stats,
+        tasks: tasksRes.tasks,
+        agents: agentsRes.agents,
+        catalogue,
+        workflows: workflowsRes.orchestrations.map((w) => ({ id: w.id, name: w.name })),
+      });
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(error);
+    }
   }, []);
 
-  // Keyed on the resolved task rather than the raw selection, so executions
-  // are refetched when a delete or a create changes which task is shown.
   useEffect(() => {
-    if (activeTab === "executions" && executionsTaskId) {
-      loadExecutions(executionsTaskId);
-    }
-  }, [activeTab, executionsTaskId]);
+    load();
+  }, [load]);
 
-  async function loadData() {
+  const tasks = data?.tasks ?? [];
+  // A selection whose task was deleted falls back to the first task, so
+  // the executions tab never keeps asking for a task that is gone.
+  const executionsTaskId = tasks.some((t) => t.id === selectedTaskId) ? selectedTaskId : (tasks[0]?.id ?? null);
+  const executionsTask = tasks.find((t) => t.id === executionsTaskId);
+
+  const executions = usePoll({
+    key: tab === "executions" ? executionsTaskId : null,
+    load: () => schedulerApi.getExecutions(executionsTaskId!, { limit: 50 }),
+    shouldContinue: (value) => value.executions.some((e) => e.status === "running"),
+    intervalMs: 3000,
+  });
+
+  async function trigger(task: ScheduledTask) {
+    setBusy(task.id);
     try {
-      setLoading(true);
-      setLoadError(null);
-      const [statsRes, tasksRes, agentsRes] = await Promise.all([
-        schedulerApi.getStats(),
-        schedulerApi.list({ limit: 50 }),
-        agentsApi.list(),
-      ]);
-      setStats(statsRes);
-      setTasks(tasksRes.tasks);
-      setAgents(agentsRes.agents);
+      const execution = await schedulerApi.trigger(task.id);
+      if (execution.status === "running") {
+        toast.success("Workflow run started; this execution follows its outcome");
+      } else if (execution.status === "success") {
+        toast.success(`"${task.name}" ran successfully`);
+      } else {
+        toast.error(`"${task.name}" ${execution.status}${execution.error ? `: ${execution.error}` : ""}`);
+      }
+      setDetail({ task, execution });
+      load();
+      executions.refresh();
     } catch (error) {
-      console.error("Failed to load scheduler data:", error);
-      setLoadError(error);
+      toast.error(getErrorMessage(error, "Could not trigger the task"));
     } finally {
-      setLoading(false);
+      setBusy(null);
     }
   }
 
-  async function loadExecutions(taskId?: string) {
-    if (!taskId) return;
-    setExecutionsRequestedFor(taskId);
-    setExecutionsLoading(true);
-    setExecutionsError(null);
+  async function toggle(task: ScheduledTask) {
+    setBusy(task.id);
     try {
-      const res = await schedulerApi.getExecutions(taskId, { limit: 50 });
-      setExecutions(res.executions);
+      await schedulerApi.toggle(task.id, !task.isEnabled);
+      load();
     } catch (error) {
-      console.error("Failed to load executions:", error);
-      setExecutionsError(error);
+      toast.error(getErrorMessage(error, task.isEnabled ? "Could not pause the task" : "Could not resume the task"));
     } finally {
-      setExecutionsLoading(false);
+      setBusy(null);
     }
   }
 
-  async function handleTrigger(taskId: string) {
+  async function remove(task: ScheduledTask) {
+    const confirmed = await confirmAction({
+      title: `Delete "${task.name}"?`,
+      description: "The task and its execution history are deleted. This cannot be undone.",
+      confirmLabel: "Delete task",
+      destructive: true,
+    });
+    if (!confirmed) return;
     try {
-      await schedulerApi.trigger(taskId);
-      loadData();
+      await schedulerApi.delete(task.id);
+      toast.success("Task deleted");
+      load();
     } catch (error) {
-      console.error("Failed to trigger task:", error);
-      toast.error(getErrorMessage(error, "Failed to trigger task"));
+      toast.error(getErrorMessage(error, "Could not delete the task"));
     }
   }
 
-  async function handleToggle(taskId: string, isEnabled: boolean) {
-    try {
-      await schedulerApi.toggle(taskId, isEnabled);
-      loadData();
-    } catch (error) {
-      console.error("Failed to toggle task:", error);
-      toast.error(getErrorMessage(error, "Failed to toggle task"));
+  const typeLabel = (type: string) => data?.catalogue.taskTypes.find((t) => t.type === type)?.label ?? type;
+
+  /** What the task acts on, and whether that still exists. */
+  function target(task: ScheduledTask): { text: string; missing: boolean; href?: string } | null {
+    if (task.orchestrationId) {
+      const workflow = data?.workflows.find((w) => w.id === task.orchestrationId);
+      return workflow
+        ? { text: workflow.name, missing: false, href: `/dashboard/orchestrations/${workflow.id}` }
+        : { text: "workflow no longer exists", missing: true };
     }
+    if (task.agentId) {
+      const agent = data?.agents.find((a) => a.id === task.agentId);
+      return agent
+        ? { text: agent.name, missing: false, href: `/dashboard/agents/${agent.id}` }
+        : { text: "agent no longer exists", missing: true };
+    }
+    return null;
   }
 
-  async function handleDelete(taskId: string) {
-    if (!(await confirmAction({ title: "Delete this scheduled task?", destructive: true }))) return;
-    try {
-      await schedulerApi.delete(taskId);
-      setTasks((prev) => prev.filter((t) => t.id !== taskId));
-      loadData();
-    } catch (error) {
-      console.error("Failed to delete task:", error);
-    }
-  }
+  const newTaskButton = (
+    <Button onClick={() => setForm({})} disabled={!data}>
+      <Plus className="mr-1.5 h-4 w-4" aria-hidden="true" />
+      New task
+    </Button>
+  );
 
-  const ready = !loading && loadError === null;
-
-  // Shown by both tabs: with no tasks there are no executions to pick from.
-  const noTasksState = (
+  const noTasks = (
     <EmptyState
       icon={Calendar}
       title="No scheduled tasks"
-      description="Create a scheduled task to automate your agent workflows."
-      actionLabel="New Task"
-      onAction={() => setShowCreateModal(true)}
+      description="Run an agent, a workflow, a knowledge sync, a health check, a report or a cleanup on a schedule."
+      actionLabel="New task"
+      onAction={() => setForm({})}
     />
   );
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Scheduled Tasks</h1>
-          <p className="text-muted-foreground mt-1">
-            Manage cron jobs and scheduled task executions for your agents
-          </p>
-        </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground font-semibold rounded-lg hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="h-4 w-4" />
-          New Task
-        </button>
-      </div>
+    <div className="space-y-6 p-6">
+      <PageHeader
+        title="Scheduler"
+        description="Run agents, workflows, knowledge syncs, health checks, reports, cleanups and webhooks on a cron expression, at an interval, or once."
+        actions={newTaskButton}
+      />
 
-      {/* Loading */}
-      {loading && (
+      {!data && loadError === null && (
         <div className="space-y-6" aria-busy="true">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
             {Array.from({ length: 5 }).map((_, i) => (
-              <StatsCardSkeleton key={i} />
-            ))}
-          </div>
-          <div className="flex gap-1 border-b border-border">
-            {["w-12", "w-20"].map((width) => (
-              <div key={width} className="px-4 py-2.5 border-b-2 border-transparent">
-                <Skeleton className={`h-5 ${width}`} />
-              </div>
+              <Skeleton key={i} className="h-16 w-full" />
             ))}
           </div>
           <SkeletonTable rows={5} cols={7} />
@@ -256,695 +200,321 @@ export default function SchedulerPage() {
         </div>
       )}
 
-      {/* Load error */}
-      {!loading && loadError !== null && (
-        <ErrorState
-          title="Couldn't load scheduled tasks"
-          error={loadError}
-          onRetry={loadData}
-        />
+      {!data && loadError !== null && (
+        <ErrorState title="Couldn't load scheduled tasks" error={loadError} onRetry={load} />
       )}
 
-      {/* Stats Cards */}
-      {ready && stats && (
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <StatsCard
-            icon={Calendar}
-            label="Total Tasks"
-            value={stats.totalTasks}
-          />
-          <StatsCard
-            icon={Play}
-            label="Active"
-            value={stats.activeTasks}
-            accent="green"
-          />
-          <StatsCard
-            icon={Pause}
-            label="Paused"
-            value={stats.pausedTasks}
-            accent="yellow"
-          />
-          <StatsCard
-            icon={Zap}
-            label="Runs Today"
-            value={stats.totalRunsToday}
-            accent="cyan"
-          />
-          <StatsCard
-            icon={BarChart3}
-            label="Success Rate"
-            value={`${stats.successRateToday.toFixed(0)}%`}
-            accent="green"
-          />
-        </div>
-      )}
-
-      {/* Tabs */}
-      {ready && (
-        <div className="flex gap-1 border-b border-border">
-          {(["tasks", "executions"] as Tab[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors capitalize ${
-                activeTab === tab
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Tasks Tab */}
-      {ready && activeTab === "tasks" && (
-        tasks.length === 0 ? (
-          noTasksState
-        ) : (
-          <div className="bg-card border rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-border">
-                    <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Name
-                    </th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Schedule
-                    </th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Last Run
-                    </th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Next Run
-                    </th>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Success Rate
-                    </th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {tasks.map((task) => {
-                    const agent = agents.find((a) => a.id === task.agentId);
-                    return (
-                      <tr
-                        key={task.id}
-                        className="hover:bg-muted/50 transition-colors"
-                      >
-                        <td className="px-4 py-3">
-                          <div>
-                            <div className="font-medium text-foreground">
-                              {task.name}
-                            </div>
-                            <div className="text-xs text-muted-foreground mt-0.5">
-                              {agent?.name || "Unknown Agent"} &middot;{" "}
-                              <span className="text-muted-foreground/70">
-                                {task.taskType}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <Timer className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="text-sm font-mono text-foreground">
-                              {formatSchedule(task)}
-                            </span>
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-0.5 capitalize">
-                            {task.scheduleType}
-                            {task.timezone && task.timezone !== "UTC"
-                              ? ` (${task.timezone})`
-                              : ""}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize ${getStatusBadge(
-                              task.status
-                            )}`}
-                          >
-                            {task.status}
-                          </span>
-                          {task.lastRunStatus && task.lastRunStatus !== task.status && (
-                            <div className="mt-1">
-                              <span
-                                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium capitalize ${getStatusBadge(
-                                  task.lastRunStatus
-                                )}`}
-                              >
-                                Last: {task.lastRunStatus}
-                              </span>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-sm text-foreground">
-                            {formatDate(task.lastRunAt)}
-                          </div>
-                          {task.lastRunDurationMs != null && (
-                            <div className="text-xs text-muted-foreground mt-0.5">
-                              {formatDuration(task.lastRunDurationMs)}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-sm text-foreground">
-                            {formatDate(task.nextRunAt)}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="text-sm font-medium text-foreground">
-                            {getTaskSuccessRate(task)}
-                          </div>
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            {task.successfulRuns}/{task.totalRuns} runs
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-end gap-1">
-                            <button
-                              onClick={() => handleTrigger(task.id)}
-                              className="p-1.5 rounded-md text-muted-foreground hover:text-cyan-400 hover:bg-cyan-500/10 transition-colors"
-                              title="Trigger now"
-                            >
-                              <Zap className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={() =>
-                                handleToggle(task.id, !task.isEnabled)
-                              }
-                              className={`p-1.5 rounded-md transition-colors ${
-                                task.isEnabled
-                                  ? "text-green-400 hover:bg-green-500/10"
-                                  : "text-muted-foreground hover:bg-yellow-500/10 hover:text-yellow-400"
-                              }`}
-                              title={
-                                task.isEnabled ? "Pause task" : "Resume task"
-                              }
-                            >
-                              {task.isEnabled ? (
-                                <Pause className="h-4 w-4" />
-                              ) : (
-                                <Play className="h-4 w-4" />
-                              )}
-                            </button>
-                            <button
-                              onClick={() => handleDelete(task.id)}
-                              className="p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
-                              title="Delete task"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )
-      )}
-
-      {/* Executions Tab */}
-      {ready && activeTab === "executions" && (
-        <div className="space-y-4">
-          {/* Task selector */}
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium text-muted-foreground">
-              Task:
-            </label>
-            <select
-              value={executionsTaskId || ""}
-              onChange={(e) => {
-                setSelectedTaskId(e.target.value);
-                loadExecutions(e.target.value);
-              }}
-              className="px-3 py-1.5 bg-background border border-border rounded-lg text-sm text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-            >
-              {tasks.map((task) => (
-                <option key={task.id} value={task.id}>
-                  {task.name}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() => loadExecutions(executionsTaskId)}
-              className="p-1.5 rounded-md text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
-              title="Refresh"
-            >
-              <RefreshCw className="h-4 w-4" />
-            </button>
-          </div>
-
-          {tasks.length === 0 ? (
-            noTasksState
-          ) : executionsPending ? (
-            <div aria-busy="true">
-              <SkeletonTable rows={5} cols={6} />
-              <span className="sr-only">Loading executions</span>
-            </div>
-          ) : executionsError !== null ? (
-            <ErrorState
-              title="Couldn't load executions"
-              error={executionsError}
-              onRetry={() => loadExecutions(executionsTaskId)}
-            />
-          ) : executions.length === 0 ? (
-            <EmptyState
-              icon={Clock}
-              title="No executions yet"
-              description="Executions will appear here once the task runs."
-            />
-          ) : (
-            <div className="bg-card border rounded-lg overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Status
-                      </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Started
-                      </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Duration
-                      </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Attempt
-                      </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Triggered By
-                      </th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        Error
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-border">
-                    {executions.map((exec) => (
-                      <tr
-                        key={exec.id}
-                        className="hover:bg-muted/50 transition-colors"
-                      >
-                        <td className="px-4 py-3">
-                          <span
-                            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium capitalize ${getStatusBadge(
-                              exec.status
-                            )}`}
-                          >
-                            {exec.status === "success" && (
-                              <CheckCircle className="h-3 w-3" />
-                            )}
-                            {(exec.status === "failed" ||
-                              exec.status === "error") && (
-                              <XCircle className="h-3 w-3" />
-                            )}
-                            {exec.status === "running" && (
-                              <RefreshCw className="h-3 w-3 animate-spin" />
-                            )}
-                            {exec.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-foreground">
-                          {exec.startedAt
-                            ? new Date(exec.startedAt).toLocaleString()
-                            : "Pending"}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-foreground font-mono">
-                          {formatDuration(exec.durationMs)}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-foreground">
-                          {exec.attempt}
-                        </td>
-                        <td className="px-4 py-3">
-                          <span className="text-xs px-2 py-0.5 rounded bg-muted text-muted-foreground capitalize">
-                            {exec.triggeredBy}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3">
-                          {exec.error ? (
-                            <span
-                              className="text-xs text-red-400 max-w-xs truncate block"
-                              title={exec.error}
-                            >
-                              {exec.error}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">
-                              --
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Create Task Modal */}
-      {showCreateModal && (
-        <CreateTaskModal
-          agents={agents}
-          onClose={() => setShowCreateModal(false)}
-          onSave={loadData}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Stats Card                                                          */
-/* ------------------------------------------------------------------ */
-
-function StatsCard({
-  icon: Icon,
-  label,
-  value,
-  accent = "default",
-}: {
-  icon: React.ElementType;
-  label: string;
-  value: number | string;
-  accent?: "default" | "green" | "yellow" | "cyan" | "red";
-}) {
-  const accentStyles = {
-    default: "text-muted-foreground bg-muted",
-    green: "text-green-400 bg-green-500/10",
-    yellow: "text-yellow-400 bg-yellow-500/10",
-    cyan: "text-cyan-400 bg-cyan-500/10",
-    red: "text-red-400 bg-red-500/10",
-  };
-
-  return (
-    <div className="bg-card border rounded-lg p-4">
-      <div className="flex items-center gap-3">
-        <div className={`p-2 rounded-lg ${accentStyles[accent]}`}>
-          <Icon className="h-4 w-4" />
-        </div>
-        <div>
-          <p className="text-xs text-muted-foreground">{label}</p>
-          <p className="text-lg font-bold text-foreground">{value}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatsCardSkeleton() {
-  return (
-    <div className="bg-card border rounded-lg p-4">
-      <div className="flex items-center gap-3">
-        <Skeleton className="h-8 w-8 rounded-lg" />
-        <div className="space-y-2">
-          <Skeleton className="h-3 w-16" />
-          <Skeleton className="h-6 w-10" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Create Task Modal                                                    */
-/* ------------------------------------------------------------------ */
-
-function CreateTaskModal({
-  agents,
-  onClose,
-  onSave,
-}: {
-  agents: Agent[];
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    agentId: "",
-    scheduleType: "cron" as "cron" | "interval" | "once",
-    cronExpression: "",
-    intervalSeconds: 300,
-    scheduledAt: "",
-    taskType: "agent_run",
-    timezone: "UTC",
-  });
-
-  function updateForm(updates: Partial<typeof form>) {
-    setForm((prev) => ({ ...prev, ...updates }));
-  }
-
-  async function handleCreate() {
-    if (!form.name || !form.agentId) return;
-    setSaving(true);
-    try {
-      const payload: Partial<ScheduledTask> = {
-        name: form.name,
-        agentId: form.agentId,
-        scheduleType: form.scheduleType,
-        taskType: form.taskType,
-        timezone: form.timezone,
-      };
-
-      if (form.scheduleType === "cron") {
-        payload.cronExpression = form.cronExpression;
-      } else if (form.scheduleType === "interval") {
-        payload.intervalSeconds = form.intervalSeconds;
-      } else if (form.scheduleType === "once") {
-        payload.scheduledAt = form.scheduledAt;
-      }
-
-      await schedulerApi.create(payload);
-      onSave();
-      onClose();
-    } catch (error) {
-      console.error("Failed to create task:", error);
-      toast.error(getErrorMessage(error, "Failed to create task"));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const isValid =
-    form.name &&
-    form.agentId &&
-    ((form.scheduleType === "cron" && form.cronExpression) ||
-      (form.scheduleType === "interval" && form.intervalSeconds > 0) ||
-      (form.scheduleType === "once" && form.scheduledAt));
-
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-card border border-border rounded-xl p-6 w-full max-w-lg shadow-lg shadow-black/30">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-semibold text-foreground">
-            Create Scheduled Task
-          </h2>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="space-y-4">
-          {/* Task Name */}
-          <div>
-            <label className="block text-sm font-medium text-foreground mb-1">
-              Name
-            </label>
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => updateForm({ name: e.target.value })}
-              placeholder="Daily data sync"
-              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-            />
-          </div>
-
-          {/* Agent */}
-          <div>
-            <label className="block text-sm font-medium text-foreground mb-1">
-              Agent
-            </label>
-            <select
-              value={form.agentId}
-              onChange={(e) => updateForm({ agentId: e.target.value })}
-              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-            >
-              <option value="">Select an agent</option>
-              {agents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Schedule Type */}
-          <div>
-            <label className="block text-sm font-medium text-foreground mb-1">
-              Schedule Type
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["cron", "interval", "once"] as const).map((type) => (
-                <button
-                  key={type}
-                  onClick={() => updateForm({ scheduleType: type })}
-                  className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors capitalize ${
-                    form.scheduleType === type
-                      ? "bg-primary/15 text-primary border border-primary/30"
-                      : "bg-muted text-muted-foreground border border-transparent hover:border-border"
-                  }`}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Schedule Value */}
-          {form.scheduleType === "cron" && (
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                Cron Expression
-              </label>
-              <input
-                type="text"
-                value={form.cronExpression}
-                onChange={(e) =>
-                  updateForm({ cronExpression: e.target.value })
-                }
-                placeholder="*/5 * * * *"
-                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground font-mono placeholder:text-muted-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Standard cron syntax: minute hour day month weekday
+      {data && (
+        <>
+          {!data.stats.schedulerEnabled && (
+            <div role="status" className="rounded-lg border border-border bg-muted px-4 py-3 text-sm text-foreground">
+              <p className="font-medium">Scheduling is switched off on this server.</p>
+              <p className="mt-1 text-muted-foreground">
+                No worker is firing schedules, so the next-run times below will not be acted on. Tasks can still be
+                saved and triggered by hand. An operator turns the scheduler on by setting SCHEDULER_INTERVAL_MS above
+                zero.
               </p>
             </div>
           )}
-
-          {form.scheduleType === "interval" && (
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                Interval (seconds)
-              </label>
-              <input
-                type="number"
-                min={1}
-                value={form.intervalSeconds}
-                onChange={(e) =>
-                  updateForm({
-                    intervalSeconds: parseInt(e.target.value) || 0,
-                  })
-                }
-                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground font-mono focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                {form.intervalSeconds > 0
-                  ? `Runs every ${formatSchedule({
-                      scheduleType: "interval",
-                      intervalSeconds: form.intervalSeconds,
-                    } as ScheduledTask)}`
-                  : "Enter interval in seconds"}
-              </p>
-            </div>
+          {/* A reload that failed after the first load: say so, keep the table. */}
+          {loadError !== null && (
+            <p role="status" className="text-sm text-muted-foreground">
+              Could not refresh just now ({getErrorMessage(loadError, "request failed")}); showing what was loaded
+              before.
+            </p>
           )}
 
-          {form.scheduleType === "once" && (
-            <div>
-              <label className="block text-sm font-medium text-foreground mb-1">
-                Scheduled At
-              </label>
-              <input
-                type="datetime-local"
-                value={form.scheduledAt}
-                onChange={(e) =>
-                  updateForm({ scheduledAt: e.target.value })
-                }
-                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-              />
-            </div>
-          )}
-
-          {/* Task Type */}
-          <div>
-            <label className="block text-sm font-medium text-foreground mb-1">
-              Task Type
-            </label>
-            {/* Only the types the execution engine actually runs — the
-                other four advertised here were backed by nothing and are
-                offered again when their executors exist. */}
-            <select
-              value={form.taskType}
-              onChange={(e) => updateForm({ taskType: e.target.value })}
-              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-            >
-              <option value="agent_run">Agent Run — prompt your agent on a schedule</option>
-              <option value="webhook">Webhook — POST to a URL on a schedule</option>
-            </select>
+          <div className="grid gap-4 rounded-lg border border-border bg-card p-4 sm:grid-cols-3 lg:grid-cols-5">
+            <Stat label="Tasks" value={data.stats.totalTasks} size="sm" />
+            <Stat label="Active" value={data.stats.activeTasks} size="sm" />
+            <Stat label="Running now" value={data.stats.runningExecutions} size="sm" />
+            <Stat label="Runs today" value={data.stats.totalRunsToday} size="sm" />
+            <Stat
+              label="Succeeded today"
+              value={data.stats.totalRunsToday > 0 ? `${data.stats.successRateToday.toFixed(0)}%` : "--"}
+              hint={data.stats.failedRunsToday > 0 ? `${data.stats.failedRunsToday} failed` : undefined}
+              size="sm"
+            />
           </div>
 
-          {/* Timezone */}
-          <div>
-            <label className="block text-sm font-medium text-foreground mb-1">
-              Timezone
-            </label>
-            <select
-              value={form.timezone}
-              onChange={(e) => updateForm({ timezone: e.target.value })}
-              className="w-full px-3 py-2 bg-background border border-border rounded-lg text-foreground focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-colors"
-            >
-              <option value="UTC">UTC</option>
-              <option value="America/New_York">America/New_York (EST)</option>
-              <option value="America/Chicago">America/Chicago (CST)</option>
-              <option value="America/Denver">America/Denver (MST)</option>
-              <option value="America/Los_Angeles">
-                America/Los_Angeles (PST)
-              </option>
-              <option value="Europe/London">Europe/London (GMT)</option>
-              <option value="Europe/Berlin">Europe/Berlin (CET)</option>
-              <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
-              <option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
-              <option value="Australia/Sydney">Australia/Sydney (AEST)</option>
-            </select>
-          </div>
-        </div>
+          <Tabs value={tab} onValueChange={(value) => setTab(value as TabId)}>
+            <TabsList aria-label="Scheduler sections">
+              <TabsTrigger value="tasks">Tasks</TabsTrigger>
+              <TabsTrigger value="executions">Executions</TabsTrigger>
+            </TabsList>
 
-        {/* Actions */}
-        <div className="flex gap-3 mt-6 pt-4 border-t border-border">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2 border border-border rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleCreate}
-            disabled={saving || !isValid}
-            className="flex-1 px-4 py-2 bg-primary text-primary-foreground font-semibold rounded-lg hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {saving ? "Creating..." : "Create Task"}
-          </button>
-        </div>
-      </div>
+            <TabsContent value="tasks">
+              {tasks.length === 0 ? (
+                noTasks
+              ) : (
+                <div className="overflow-hidden rounded-lg border border-border bg-card">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th scope="col" className={th}>Task</th>
+                          <th scope="col" className={th}>Schedule</th>
+                          <th scope="col" className={th}>Status</th>
+                          <th scope="col" className={th}>Last run</th>
+                          <th scope="col" className={th}>Next run</th>
+                          <th scope="col" className={th}>Runs</th>
+                          <th scope="col" className={`${th} text-right`}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {tasks.map((task) => {
+                          const on = target(task);
+                          return (
+                            <tr key={task.id} className="transition-colors hover:bg-muted/50">
+                              <td className="px-4 py-3">
+                                <div className="font-medium text-foreground">{task.name}</div>
+                                <div className="mt-0.5 text-xs text-muted-foreground">
+                                  {typeLabel(task.taskType)}
+                                  {on && (
+                                    <>
+                                      {" · "}
+                                      {on.href ? (
+                                        <Link href={on.href} className="hover:text-foreground hover:underline">
+                                          {on.text}
+                                        </Link>
+                                      ) : (
+                                        <span className={on.missing ? "text-danger" : undefined}>{on.text}</span>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="font-mono text-sm text-foreground">{formatSchedule(task)}</div>
+                                <div className="mt-0.5 text-xs text-muted-foreground">
+                                  {task.scheduleType}
+                                  {task.scheduleType !== "interval" ? ` · ${task.timezone}` : ""}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <StatusBadge status={task.status} />
+                                {task.status === "failed" && task.lastError && (
+                                  <div className="mt-1 max-w-[16rem] truncate text-xs text-danger" title={task.lastError}>
+                                    {task.lastError}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="text-sm text-foreground">{formatRelative(task.lastRunAt)}</div>
+                                {task.lastRunStatus && (
+                                  <div className="mt-0.5 text-xs text-muted-foreground">
+                                    {task.lastRunStatus}
+                                    {task.lastRunDurationMs != null ? ` · ${formatDuration(task.lastRunDurationMs)}` : ""}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-foreground">
+                                {task.isEnabled && task.status === "active"
+                                  ? formatRelative(task.nextRunAt, "None")
+                                  : "Not scheduled"}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="text-sm text-foreground">
+                                  {task.totalRuns === 0
+                                    ? "None yet"
+                                    : `${((task.successfulRuns / task.totalRuns) * 100).toFixed(0)}% succeeded`}
+                                </div>
+                                {task.totalRuns > 0 && (
+                                  <div className="mt-0.5 text-xs text-muted-foreground">
+                                    {task.successfulRuns} of {task.totalRuns}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center justify-end gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => trigger(task)}
+                                    disabled={busy === task.id}
+                                    className={rowAction}
+                                    aria-label={`Run "${task.name}" now`}
+                                    title="Run now"
+                                  >
+                                    {busy === task.id ? (
+                                      <RefreshCw className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Zap className="h-4 w-4" />
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggle(task)}
+                                    disabled={busy === task.id}
+                                    className={rowAction}
+                                    aria-label={task.isEnabled ? `Pause "${task.name}"` : `Resume "${task.name}"`}
+                                    title={task.isEnabled ? "Pause" : "Resume"}
+                                  >
+                                    {task.isEnabled ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setForm({ task })}
+                                    className={rowAction}
+                                    aria-label={`Edit "${task.name}"`}
+                                    title="Edit"
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedTaskId(task.id);
+                                      setTab("executions");
+                                    }}
+                                    className={rowAction}
+                                    aria-label={`Show executions of "${task.name}"`}
+                                    title="Executions"
+                                  >
+                                    <Clock className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => remove(task)}
+                                    className={`${rowAction} hover:bg-danger/10 hover:text-danger`}
+                                    aria-label={`Delete "${task.name}"`}
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="executions">
+              {tasks.length === 0 || !executionsTask ? (
+                noTasks
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-3">
+                    <label htmlFor="executions-task" className="text-sm font-medium text-muted-foreground">
+                      Task
+                    </label>
+                    <div className="w-full max-w-xs">
+                      <Select
+                        id="executions-task"
+                        value={executionsTask.id}
+                        onChange={(event) => setSelectedTaskId(event.target.value)}
+                      >
+                        {tasks.map((task) => (
+                          <option key={task.id} value={task.id}>
+                            {task.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                    <button type="button" onClick={executions.refresh} className={rowAction} aria-label="Refresh executions">
+                      <RefreshCw className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {executions.loading && !executions.data ? (
+                    <div aria-busy="true">
+                      <SkeletonTable rows={5} cols={6} />
+                      <span className="sr-only">Loading executions</span>
+                    </div>
+                  ) : !executions.data ? (
+                    <ErrorState title="Couldn't load executions" error={executions.error} onRetry={executions.refresh} />
+                  ) : executions.data.executions.length === 0 ? (
+                    <EmptyState
+                      icon={Clock}
+                      title="No executions yet"
+                      description="An execution is recorded each time this task fires or is run by hand."
+                    />
+                  ) : (
+                    <div className="overflow-hidden rounded-lg border border-border bg-card">
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="border-b border-border">
+                              <th scope="col" className={th}>Status</th>
+                              <th scope="col" className={th}>Started</th>
+                              <th scope="col" className={th}>Took</th>
+                              <th scope="col" className={th}>Attempt</th>
+                              <th scope="col" className={th}>Started by</th>
+                              <th scope="col" className={th}>Result</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {executions.data.executions.map((execution) => (
+                              <tr key={execution.id} className="transition-colors hover:bg-muted/50">
+                                <td className="px-4 py-3">
+                                  <StatusBadge status={execution.status} />
+                                </td>
+                                <td className="px-4 py-3 text-sm text-foreground">
+                                  {execution.startedAt ? new Date(execution.startedAt).toLocaleString() : "Not started"}
+                                </td>
+                                <td className="px-4 py-3 font-mono text-sm text-foreground">
+                                  {formatDuration(execution.durationMs)}
+                                </td>
+                                <td className="px-4 py-3 text-sm text-foreground">{execution.attempt}</td>
+                                <td className="px-4 py-3 text-sm text-muted-foreground">
+                                  {execution.triggeredBy === "manual" ? "by hand" : execution.triggeredBy}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => setDetail({ task: executionsTask, execution })}
+                                    className="max-w-xs truncate rounded text-left text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                  >
+                                    {execution.error ? (
+                                      <span className="text-danger">{execution.error}</span>
+                                    ) : (
+                                      "View output"
+                                    )}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
+
+      {form && data && (
+        <TaskFormDialog
+          catalogue={data.catalogue}
+          agents={data.agents}
+          workflows={data.workflows}
+          task={form.task}
+          onClose={() => setForm(null)}
+          onSaved={() => {
+            setForm(null);
+            load();
+          }}
+        />
+      )}
+
+      {detail && (
+        <ExecutionDetailDrawer
+          task={detail.task}
+          execution={detail.execution}
+          onClose={() => setDetail(null)}
+          onChanged={() => {
+            load();
+            executions.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

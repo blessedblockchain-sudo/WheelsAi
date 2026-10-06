@@ -11,8 +11,12 @@ function setupEnv() {
 }
 
 // Drives apps/api/src/services/executeScheduledTask.ts — the per-task
-// executor shared by the scheduler worker and "trigger now" (Wave 1).
-// Two real types (agent_run, webhook); everything else refuses honestly.
+// executor shared by the scheduler worker and "trigger now". It
+// dispatches through the task-type registry: agent_run, webhook,
+// data_sync, health_check, report, cleanup, custom and workflow_run each
+// run for real (see scheduledTaskExecutors.unit.test.ts for the last
+// six); a type that is not registered, or whose services are not wired
+// into the process, refuses honestly.
 
 import type {
   ScheduledTaskForExecution,
@@ -147,17 +151,131 @@ test("webhook non-2xx is a failure, and a missing/invalid url refuses up front",
   );
 });
 
-test("unsupported task types refuse honestly instead of fabricating success", async () => {
+test("only a truly unknown task type refuses now, and it is not retried", async () => {
+  const { executeScheduledTask } = await import(
+    "../services/executeScheduledTask.js"
+  );
+  const { isPermanentFailure } = await import("../services/scheduledTasks/taskError.js");
+  const { deps, chatCalls, fetchCalls } = makeDeps({});
+  await assert.rejects(
+    executeScheduledTask(baseTask({ taskType: "telepathy" }), deps),
+    (err: unknown) => {
+      assert.match((err as Error).message, /task type "telepathy" is not supported/);
+      assert.equal(isPermanentFailure(err), true);
+      return true;
+    },
+  );
+  assert.equal(chatCalls.length + fetchCalls.length, 0);
+});
+
+test("a registered type whose services are not wired refuses by name instead of fabricating success", async () => {
   const { executeScheduledTask } = await import(
     "../services/executeScheduledTask.js"
   );
   const { deps } = makeDeps({});
-  for (const taskType of ["data_sync", "health_check", "report", "cleanup", "custom"]) {
+  const payloads: Record<string, unknown> = {
+    data_sync: { knowledgeBaseId: "11111111-1111-4111-8111-111111111111", sources: [{ url: "https://example.com" }] },
+    health_check: { target: "url", url: "https://example.com" },
+    report: {},
+    cleanup: { archiveConversationsOlderThanDays: 30 },
+    custom: { input: "go" },
+    workflow_run: {},
+  };
+  for (const [taskType, payload] of Object.entries(payloads)) {
     await assert.rejects(
-      executeScheduledTask(baseTask({ taskType }), deps),
-      /not supported yet/,
+      executeScheduledTask(baseTask({ taskType, payload }), deps),
+      new RegExp(`task type "${taskType}" cannot run here: its services are not connected`),
+      taskType,
     );
   }
+});
+
+test("a stored payload that is not valid for its type fails naming the field, without running", async () => {
+  const { executeScheduledTask } = await import(
+    "../services/executeScheduledTask.js"
+  );
+  const { deps } = makeDeps({});
+  await assert.rejects(
+    executeScheduledTask(
+      baseTask({ taskType: "health_check", payload: { target: "url" } }),
+      { ...deps, taskTypes: { healthCheck: {} as never } },
+    ),
+    /payload is not valid for a health_check task \(payload\.url: a url health check needs url\)/,
+  );
+});
+
+test("agent_run hands the run's abort signal to the model call", async () => {
+  const { executeScheduledTask } = await import(
+    "../services/executeScheduledTask.js"
+  );
+  const { deps } = makeDeps({});
+  const controller = new AbortController();
+  let seen: AbortSignal | undefined;
+  await executeScheduledTask(
+    baseTask(),
+    {
+      ...deps,
+      runAgentChat: async ({ signal }) => {
+        seen = signal;
+        return { content: "ok" };
+      },
+    },
+    { signal: controller.signal },
+  );
+  assert.equal(seen, controller.signal);
+});
+
+test("a webhook body carries executionId and attempt so a receiver can drop a retry", async () => {
+  const { executeScheduledTask } = await import(
+    "../services/executeScheduledTask.js"
+  );
+  const { deps, fetchCalls } = makeDeps({});
+  await executeScheduledTask(
+    baseTask({ taskType: "webhook", payload: { url: "https://example.com/hook", body: { a: 1 } } }),
+    deps,
+    { executionId: "exec_7", attempt: 2, now: new Date("2026-10-06T12:00:00Z") },
+  );
+  assert.deepEqual(fetchCalls[0]!.body, {
+    taskId: "task_1",
+    taskName: "digest",
+    executionId: "exec_7",
+    attempt: 2,
+    firedAt: "2026-10-06T12:00:00.000Z",
+    body: { a: 1 },
+  });
+});
+
+test("webhook headers are sent, and a header that steers routing is refused before any request", async () => {
+  const { executeScheduledTask } = await import(
+    "../services/executeScheduledTask.js"
+  );
+  const seen: Array<Record<string, string>> = [];
+  const { deps } = makeDeps({});
+  const capturing = {
+    ...deps,
+    fetchFn: (async (_url: string, init?: RequestInit) => {
+      seen.push(init?.headers as Record<string, string>);
+      return { ok: true, status: 200 } as Response;
+    }) as unknown as typeof fetch,
+  };
+  await executeScheduledTask(
+    baseTask({
+      taskType: "webhook",
+      payload: { url: "https://example.com/hook", headers: { "X-Api-Key": "k", "Content-Type": "text/plain" } },
+    }),
+    capturing,
+  );
+  assert.equal(seen[0]!["X-Api-Key"], "k");
+  assert.equal(seen[0]!["Content-Type"], "application/json", "the body is JSON whatever was asked");
+
+  await assert.rejects(
+    executeScheduledTask(
+      baseTask({ taskType: "webhook", payload: { url: "https://example.com/hook", headers: { Host: "internal" } } }),
+      capturing,
+    ),
+    /webhook headers refused/,
+  );
+  assert.equal(seen.length, 1);
 });
 
 // ============================================

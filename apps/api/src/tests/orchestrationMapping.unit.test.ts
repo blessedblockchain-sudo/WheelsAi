@@ -4,9 +4,15 @@ import test from "node:test";
 import {
   applyInputMapping,
   applyOutputMapping,
+  collectReferences,
+  collectTemplateReferences,
   evaluateCondition,
+  parseStepOutput,
+  PromptTemplateError,
+  renderPromptTemplate,
   resolveStepPrompt,
   resolveValue,
+  StepOutputError,
   type MappingContext,
 } from "../services/orchestrationMapping.js";
 
@@ -175,4 +181,139 @@ test("a MALFORMED condition skips the step rather than letting it run", () => {
   assert.match(unknown.reason!, /unsupported condition operator/);
 
   assert.equal(evaluateCondition("truthy string", ctx()).run, false);
+});
+
+// ============================================
+// Prompt templates
+// ============================================
+
+test("a template substitutes run input, step outputs and the previous output", () => {
+  const rendered = renderPromptTemplate(
+    "Topic: {{input.topic}}. Class: {{ steps.classify.output }}. Before: {{previous.output}}.",
+    ctx({
+      input: { topic: "tides" },
+      previous: { output: "earlier text" },
+    }),
+  );
+  assert.equal(rendered.text, "Topic: tides. Class: science. Before: earlier text.");
+  assert.deepEqual(rendered.missingRefs, []);
+});
+
+test("a template reads nested paths inside a JSON step output", () => {
+  const rendered = renderPromptTemplate(
+    "{{steps.extract.output.customer.name}} has {{steps.extract.output.items.1}}",
+    ctx({
+      steps: { extract: { output: { customer: { name: "Ada" }, items: ["pen", "ink"] } } },
+    }),
+  );
+  assert.equal(rendered.text, "Ada has ink");
+});
+
+test("loop variables render: item, index and iteration", () => {
+  const forEach = renderPromptTemplate(
+    "#{{index}} {{item}} / {{item.title}}",
+    ctx({ item: { title: "Row" }, index: 2 }),
+  );
+  assert.equal(forEach.text, '#2 {"title":"Row"} / Row');
+  assert.equal(renderPromptTemplate("pass {{iteration}}", ctx({ iteration: 3 })).text, "pass 3");
+});
+
+test("objects render as JSON, and the json filter renders a quoted literal", () => {
+  const context = ctx({ input: { name: 'Ada "the" Great', tags: ["a", "b"], count: 3 } });
+  assert.equal(renderPromptTemplate("{{input.tags}}", context).text, '["a","b"]');
+  assert.equal(renderPromptTemplate("{{input.count}}", context).text, "3");
+  assert.equal(
+    renderPromptTemplate("name = {{ input.name | json }}", context).text,
+    'name = "Ada \\"the\\" Great"',
+  );
+  assert.equal(renderPromptTemplate("{{input.nope | json}}", context).text, "null");
+});
+
+test("a reference that resolves to nothing renders empty and is reported", () => {
+  const rendered = renderPromptTemplate("A{{steps.ghost.output}}B{{input.nope}}C", ctx());
+  assert.equal(rendered.text, "ABC");
+  assert.deepEqual(rendered.missingRefs, ["steps.ghost.output", "input.nope"]);
+});
+
+test("JS-looking template text stays inert", () => {
+  const hostile = [
+    "{{constructor.constructor('return process')()}}",
+    "{{ process.exit(1) }}",
+    "{{ 1 + 1 }}",
+    "{{input.x}}{{__proto__.polluted}}",
+    "${input.question} {{ require('child_process') }}",
+  ].join(" | ");
+  const rendered = renderPromptTemplate(hostile, ctx({ input: { x: "X" } }));
+  assert.equal(
+    rendered.text,
+    [
+      "{{constructor.constructor('return process')()}}",
+      "{{ process.exit(1) }}",
+      "{{ 1 + 1 }}",
+      "X{{__proto__.polluted}}",
+      "${input.question} {{ require('child_process') }}",
+    ].join(" | "),
+  );
+});
+
+test("a reference cannot reach the prototype chain", () => {
+  const context = ctx({ input: { safe: { a: 1 } } });
+  assert.equal(resolveValue("$.input.constructor", context), undefined);
+  assert.equal(resolveValue("$.input.safe.__proto__", context), undefined);
+  assert.equal(resolveValue("$.input.safe.toString", context), undefined);
+  assert.equal(renderPromptTemplate("{{input.safe.constructor.name}}", context).text, "");
+});
+
+test("an unknown filter is an error, not a silent no-op", () => {
+  assert.throws(
+    () => renderPromptTemplate("{{input.question | upper}}", ctx()),
+    (err: unknown) =>
+      err instanceof PromptTemplateError && /unknown template filter "upper"/.test(err.message),
+  );
+  assert.throws(() => renderPromptTemplate("{{input.question | json | json}}", ctx()), /more than one filter/);
+});
+
+test("references are collected statically from templates and mappings", () => {
+  assert.deepEqual(
+    collectTemplateReferences("{{steps.a.output}} {{input.x}} {{ not a ref }} {{steps.b.output.k | json}}").map(
+      (r) => [r.kind, r.step ?? null],
+    ),
+    [
+      ["steps", "a"],
+      ["input", null],
+      ["steps", "b"],
+    ],
+  );
+  const found = collectReferences({
+    prompt: "$.steps.a.output",
+    nested: ["literal", "$.previous.output", { deep: "$.item.name" }],
+    broken: "$.steps.a.result",
+  });
+  assert.deepEqual(
+    found.map((r) => [r.kind, r.raw]),
+    [
+      ["steps", "steps.a.output"],
+      ["previous", "previous.output"],
+      ["item", "item.name"],
+      [null, "steps.a.result"],
+    ],
+  );
+});
+
+// ============================================
+// Step output
+// ============================================
+
+test("text output is kept as is; json output is parsed, code fence or not", () => {
+  assert.equal(parseStepOutput('{"a":1}', "text"), '{"a":1}');
+  assert.deepEqual(parseStepOutput('{"a":1}', "json"), { a: 1 });
+  assert.deepEqual(parseStepOutput('```json\n{"a": [1, 2]}\n```', "json"), { a: [1, 2] });
+  assert.deepEqual(parseStepOutput("  ```\n[true]\n```  ", "json"), [true]);
+});
+
+test("invalid json output is rejected", () => {
+  assert.throws(
+    () => parseStepOutput("Sure, here is the JSON you asked for", "json"),
+    (err: unknown) => err instanceof StepOutputError && /not valid JSON/.test(err.message),
+  );
 });

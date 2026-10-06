@@ -115,3 +115,91 @@ export function planOrchestration(
 export function planOrder(plan: OrchestrationPlan): PlannableStep[] {
   return plan.levels.flat();
 }
+
+/**
+ * For each step, every step it transitively depends on. Assumes the
+ * steps already planned (no cycles, no unknown dependencies).
+ */
+export function ancestorSets(steps: PlannableStep[]): Map<string, Set<string>> {
+  const byName = new Map(steps.map((s) => [s.name, s]));
+  const ancestors = new Map<string, Set<string>>();
+
+  const visit = (name: string): Set<string> => {
+    const known = ancestors.get(name);
+    if (known) return known;
+    const set = new Set<string>();
+    ancestors.set(name, set);
+    for (const dep of byName.get(name)?.dependsOn ?? []) {
+      set.add(dep);
+      for (const inherited of visit(dep)) set.add(inherited);
+    }
+    return set;
+  };
+
+  for (const step of steps) visit(step.name);
+  return ancestors;
+}
+
+export interface StepReferences {
+  step: string;
+  /** Names of the other steps this step reads output from. */
+  references: string[];
+}
+
+export interface ReferenceViolation {
+  step: string;
+  reference: string;
+  reason: "unknown_step" | "not_available";
+  message: string;
+}
+
+/**
+ * Checks that every step only reads output that is guaranteed to exist
+ * when it runs.
+ *
+ * In `parallel` mode that means its transitive dependencies: steps in the
+ * same level run together, and reading an unrelated earlier step would
+ * work by accident of level layout and break when the graph is edited.
+ * In the one-at-a-time modes it means any step earlier in the plan order.
+ */
+export function findReferenceViolations(
+  steps: PlannableStep[],
+  mode: string,
+  plan: OrchestrationPlan,
+  references: StepReferences[],
+): ReferenceViolation[] {
+  const known = new Set(steps.map((s) => s.name));
+  const ancestors = ancestorSets(steps);
+  const position = new Map(planOrder(plan).map((s, i) => [s.name, i]));
+  const violations: ReferenceViolation[] = [];
+
+  for (const { step, references: refs } of references) {
+    for (const reference of refs) {
+      if (!known.has(reference)) {
+        violations.push({
+          step,
+          reference,
+          reason: "unknown_step",
+          message: `step "${step}" references unknown step "${reference}"`,
+        });
+        continue;
+      }
+      const available =
+        mode === "parallel"
+          ? ancestors.get(step)?.has(reference) === true
+          : (position.get(reference) ?? Infinity) < (position.get(step) ?? -1);
+      if (!available) {
+        violations.push({
+          step,
+          reference,
+          reason: "not_available",
+          message:
+            mode === "parallel"
+              ? `step "${step}" reads the output of "${reference}" but does not depend on it; add it to dependsOn`
+              : `step "${step}" reads the output of "${reference}", which runs after it`,
+        });
+      }
+    }
+  }
+  return violations;
+}

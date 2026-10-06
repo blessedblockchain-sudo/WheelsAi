@@ -109,14 +109,18 @@ async function readBody(res: Response): Promise<unknown> {
 
 async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
   const { method = "GET", body, headers = {} } = options;
+  const hasBody = Boolean(body);
 
   const res = await fetch(`${API_URL}${endpoint}`, {
     method,
     headers: {
-      "Content-Type": "application/json",
+      // Only with a body. The API (Fastify) answers a JSON content type on
+      // an empty body with a 400 before the route runs, which made every
+      // bodiless action ("Run now", "Cancel") fail from the dashboard.
+      ...(hasBody ? { "Content-Type": "application/json" } : {}),
       ...headers,
     },
-    body: body ? JSON.stringify(body) : undefined,
+    body: hasBody ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
 
@@ -3686,28 +3690,49 @@ export const domainsApi = {
 // Scheduled Tasks API (Phase 5)
 // ============================================
 
+/**
+ * The status and body of a failed API call, or null for any other error.
+ * For callers that map a contract error (`error`, `field`, `step`,
+ * `details.fieldErrors`) onto a form instead of only showing its message.
+ */
+export function getApiErrorBody(
+  err: unknown
+): { status: number; body: Record<string, unknown> } | null {
+  if (!(err instanceof ApiError)) return null;
+  const body =
+    typeof err.data === "object" && err.data !== null
+      ? (err.data as Record<string, unknown>)
+      : {};
+  return { status: err.status, body };
+}
+
+export type ScheduleType = "cron" | "interval" | "once";
+
 export interface ScheduledTask {
   id: string;
   orgId: string;
-  agentId: string;
+  /** Null for task types that need no agent (webhook, workflow_run, ...). */
+  agentId: string | null;
+  /** The workflow a workflow_run task starts. */
+  orchestrationId: string | null;
   name: string;
-  description?: string;
-  scheduleType: string;
-  cronExpression?: string;
-  intervalSeconds?: number;
-  scheduledAt?: string;
+  description?: string | null;
+  scheduleType: ScheduleType | string;
+  cronExpression?: string | null;
+  intervalSeconds?: number | null;
+  scheduledAt?: string | null;
   timezone: string;
   taskType: string;
-  payload: Record<string, any>;
+  payload: Record<string, unknown>;
   timeout: number;
   maxRetries: number;
   isEnabled: boolean;
   status: string;
-  lastRunAt?: string;
-  lastRunStatus?: string;
-  lastRunDurationMs?: number;
-  lastError?: string;
-  nextRunAt?: string;
+  lastRunAt?: string | null;
+  lastRunStatus?: string | null;
+  lastRunDurationMs?: number | null;
+  lastError?: string | null;
+  nextRunAt?: string | null;
   totalRuns: number;
   successfulRuns: number;
   failedRuns: number;
@@ -3717,33 +3742,117 @@ export interface ScheduledTask {
 export interface TaskExecution {
   id: string;
   taskId: string;
+  /** 'running' | 'success' | 'failed' | 'timeout' | 'cancelled' */
   status: string;
-  startedAt?: string;
-  completedAt?: string;
-  durationMs?: number;
-  input?: any;
-  output?: any;
-  error?: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  input?: unknown;
+  output?: unknown;
+  error?: string | null;
   attempt: number;
   triggeredBy: string;
+  /** Set on a workflow_run execution: the workflow run that finishes it. */
+  orchestrationExecutionId?: string | null;
   createdAt: string;
 }
 
 export interface SchedulerStats {
+  /** False when no worker fires schedules on this server. */
+  schedulerEnabled: boolean;
+  intervalMs: number;
   totalTasks: number;
   activeTasks: number;
   pausedTasks: number;
   totalRunsToday: number;
   successRateToday: number;
   failedRunsToday: number;
+  runningExecutions: number;
   upcomingRuns: Array<{ taskId: string; taskName: string; nextRunAt: string }>;
+}
+
+export type TaskFieldKind =
+  | "text"
+  | "textarea"
+  | "url"
+  | "number"
+  | "boolean"
+  | "select"
+  | "json"
+  | "headers"
+  | "sources"
+  | "knowledge_base"
+  | "deployment"
+  | "monitor"
+  | "alert_channel";
+
+export interface TaskTypeFieldOption {
+  value: string;
+  label: string;
+  available: boolean;
+  reason?: string;
+}
+
+/** One input of a task type's form; `key` is a (dotted) path in the payload. */
+export interface TaskTypeField {
+  key: string;
+  label: string;
+  kind: TaskFieldKind;
+  required: boolean;
+  min?: number;
+  max?: number;
+  help?: string;
+  options?: TaskTypeFieldOption[];
+  showWhen?: { key: string; in: string[] };
+}
+
+export interface TaskTypeEntry {
+  type: string;
+  label: string;
+  description: string;
+  agent: "required" | "optional" | "none";
+  /** The task runs a workflow and needs orchestrationId. */
+  orchestration: boolean;
+  /** Another worker finishes the execution; trigger answers 202. */
+  deferred: boolean;
+  retryable: boolean;
+  aliasOf?: string;
+  available: boolean;
+  reason?: string;
+  fields: TaskTypeField[];
+}
+
+export interface TaskTypeCatalogue {
+  schedulerEnabled: boolean;
+  intervalMs: number;
+  taskTypes: TaskTypeEntry[];
+}
+
+export interface ScheduledTaskInput {
+  name: string;
+  description?: string;
+  taskType: string;
+  agentId?: string | null;
+  orchestrationId?: string | null;
+  scheduleType: ScheduleType;
+  cronExpression?: string;
+  intervalSeconds?: number;
+  /** An ISO instant, or a local date-time read in `timezone`. */
+  scheduledAt?: string;
+  timezone?: string;
+  payload?: Record<string, unknown>;
+  timeout?: number;
+  maxRetries?: number;
 }
 
 export const schedulerApi = {
   getStats: () => api<SchedulerStats>("/api/scheduler/stats"),
-  list: (params?: { agentId?: string; status?: string; isEnabled?: string; limit?: number; offset?: number }) => {
+  taskTypes: () => api<TaskTypeCatalogue>("/api/scheduler/task-types"),
+  list: (params?: { agentId?: string; orchestrationId?: string; taskType?: string; status?: string; isEnabled?: string; limit?: number; offset?: number }) => {
     const sp = new URLSearchParams();
     if (params?.agentId) sp.set("agentId", params.agentId);
+    if (params?.orchestrationId) sp.set("orchestrationId", params.orchestrationId);
+    if (params?.taskType) sp.set("taskType", params.taskType);
     if (params?.status) sp.set("status", params.status);
     if (params?.isEnabled) sp.set("isEnabled", params.isEnabled);
     if (params?.limit) sp.set("limit", params.limit.toString());
@@ -3751,11 +3860,17 @@ export const schedulerApi = {
     const q = sp.toString();
     return api<{ tasks: ScheduledTask[]; total: number }>(`/api/scheduler${q ? `?${q}` : ""}`);
   },
-  get: (id: string) => api<ScheduledTask>(`/api/scheduler/${id}`),
-  create: (data: Partial<ScheduledTask>) => api<ScheduledTask>("/api/scheduler", { method: "POST", body: data }),
-  update: (id: string, data: Partial<ScheduledTask>) => api<ScheduledTask>(`/api/scheduler/${id}`, { method: "PATCH", body: data }),
+  get: (id: string) => api<ScheduledTask & { executions: TaskExecution[] }>(`/api/scheduler/${id}`),
+  create: (data: ScheduledTaskInput) => api<ScheduledTask>("/api/scheduler", { method: "POST", body: data }),
+  update: (id: string, data: Partial<ScheduledTaskInput> & { isEnabled?: boolean }) =>
+    api<ScheduledTask>(`/api/scheduler/${id}`, { method: "PATCH", body: data }),
   delete: (id: string) => api<void>(`/api/scheduler/${id}`, { method: "DELETE" }),
   toggle: (id: string, isEnabled: boolean) => api<ScheduledTask>(`/api/scheduler/${id}/toggle`, { method: "POST", body: { isEnabled } }),
+  /**
+   * Fires the task now. A synchronous type answers 201 with the finished
+   * execution; a workflow_run answers 202 with one still `running`, which
+   * the workflow run finishes.
+   */
   trigger: (id: string) => api<TaskExecution>(`/api/scheduler/${id}/trigger`, { method: "POST" }),
   getExecutions: (taskId: string, params?: { status?: string; limit?: number; offset?: number }) => {
     const sp = new URLSearchParams();
@@ -3765,6 +3880,8 @@ export const schedulerApi = {
     const q = sp.toString();
     return api<{ executions: TaskExecution[]; total: number }>(`/api/scheduler/${taskId}/executions${q ? `?${q}` : ""}`);
   },
+  cancelExecution: (taskId: string, executionId: string) =>
+    api<TaskExecution>(`/api/scheduler/${taskId}/executions/${executionId}/cancel`, { method: "POST" }),
 };
 
 // ============================================
@@ -3838,25 +3955,81 @@ export const knowledgeApi = {
 };
 
 // ============================================
-// Orchestration API (Phase 5)
+// Orchestration API (Phase 5): workflows
 // ============================================
 
-export interface Orchestration {
-  id: string;
-  orgId: string;
+export type WorkflowExecutionMode = "sequential" | "parallel" | "conditional" | "pipeline";
+export type WorkflowStepType = "agent" | "model" | "retrieval";
+export type WorkflowConditionOp =
+  | "equals"
+  | "not_equals"
+  | "contains"
+  | "not_contains"
+  | "exists"
+  | "not_exists"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte";
+
+/** `left` and `right` are literals, or references such as `$.steps.a.output.field`. */
+export interface WorkflowCondition {
+  left: unknown;
+  op: WorkflowConditionOp;
+  right?: unknown;
+}
+
+export type WorkflowLoop =
+  | { forEach: string; maxItems?: number }
+  | { until: WorkflowCondition; maxIterations: number; onExhausted?: "fail" | "continue" };
+
+export interface WorkflowLayout {
+  /** Canvas position of each step, keyed by step name. */
+  positions?: Record<string, { x: number; y: number }>;
+  viewport?: { x: number; y: number; zoom: number };
+}
+
+/** One step as the API accepts it (create, replace, plan). */
+export interface WorkflowStepInput {
   name: string;
-  description?: string;
-  executionMode: string;
-  maxConcurrency: number;
-  timeout: number;
-  isEnabled: boolean;
-  totalRuns: number;
-  successfulRuns: number;
-  failedRuns: number;
-  avgDurationMs?: number;
-  lastRunAt?: string;
-  createdAt: string;
-  steps?: OrchestrationStep[];
+  stepType?: WorkflowStepType;
+  agentId?: string | null;
+  deploymentId?: string | null;
+  modelId?: string | null;
+  knowledgeBaseId?: string | null;
+  promptTemplate?: string | null;
+  inputMapping?: Record<string, unknown>;
+  outputMapping?: Record<string, unknown>;
+  outputFormat?: "text" | "json";
+  condition?: WorkflowCondition | null;
+  loop?: WorkflowLoop | null;
+  onError?: "fail" | "continue" | "fallback";
+  fallbackAgentId?: string | null;
+  maxRetries?: number;
+  timeoutMs?: number | null;
+  dependsOn?: string[];
+}
+
+/** The body of create, replace and plan. Unknown keys are refused. */
+export interface WorkflowDefinitionInput {
+  name: string;
+  description?: string | null;
+  executionMode: WorkflowExecutionMode;
+  maxConcurrency?: number;
+  timeout?: number;
+  retryPolicy?: { maxRetries?: number; backoffMs?: number };
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  layout?: WorkflowLayout | null;
+  steps: WorkflowStepInput[];
+}
+
+export interface WorkflowPlan {
+  /** Steps that may run together, level by level. */
+  levels: string[][];
+  order: string[];
+  concurrency: number;
+  warnings: string[];
 }
 
 export interface OrchestrationStep {
@@ -3864,29 +4037,130 @@ export interface OrchestrationStep {
   orchestrationId: string;
   name: string;
   stepOrder: number;
-  agentId: string;
-  onError: string;
+  stepType: WorkflowStepType;
+  agentId: string | null;
+  deploymentId: string | null;
+  modelId: string | null;
+  knowledgeBaseId: string | null;
+  promptTemplate: string | null;
+  inputMapping: Record<string, unknown> | null;
+  outputMapping: Record<string, unknown> | null;
+  outputFormat: "text" | "json";
+  condition: WorkflowCondition | null;
+  loop: WorkflowLoop | null;
+  onError: "fail" | "continue" | "fallback";
+  fallbackAgentId: string | null;
   maxRetries: number;
+  timeoutMs: number | null;
   dependsOn: string[];
 }
+
+export type WorkflowRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface OrchestrationExecution {
   id: string;
   orchestrationId: string;
-  status: string;
+  status: WorkflowRunStatus;
   progress: number;
-  input?: any;
-  output?: any;
-  startedAt?: string;
-  completedAt?: string;
-  durationMs?: number;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  durationMs?: number | null;
+  /** 'manual' | 'api' | 'schedule' | 'job' */
   triggeredBy: string;
-  error?: string;
+  triggeredById?: string | null;
+  cancelRequestedAt?: string | null;
+  scheduledTaskId?: string | null;
+  taskExecutionId?: string | null;
+  error?: string | null;
+  failedStepId?: string | null;
   createdAt: string;
 }
 
+export interface OrchestrationStepResult {
+  id: string;
+  stepId: string | null;
+  stepName: string;
+  stepType: WorkflowStepType | string;
+  agentId: string | null;
+  /** The deployment or knowledge base a non-agent step used. */
+  resourceId: string | null;
+  status: "success" | "failed" | "skipped";
+  /** Loop pass: the item index (for-each) or the pass number (until). */
+  iteration: number | null;
+  input: ({ prompt?: string; missingRefs?: string[] } & Record<string, unknown>) | null;
+  output: { content?: string; value?: unknown; truncated?: boolean } | null;
+  error: string | null;
+  attempt: number;
+  durationMs: number | null;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface OrchestrationExecutionDetail extends OrchestrationExecution {
+  input?: unknown;
+  output?: unknown;
+  context?: unknown;
+  stepResults: OrchestrationStepResult[];
+}
+
+export interface WorkflowScheduleSummary {
+  id: string;
+  name: string;
+  scheduleType: string;
+  cronExpression: string | null;
+  intervalSeconds: number | null;
+  scheduledAt: string | null;
+  timezone: string;
+  isEnabled: boolean;
+  status: string;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+}
+
+export interface Orchestration {
+  id: string;
+  orgId: string;
+  name: string;
+  description?: string | null;
+  executionMode: WorkflowExecutionMode;
+  maxConcurrency: number;
+  timeout: number;
+  retryPolicy?: { maxRetries?: number; backoffMs?: number } | null;
+  inputSchema?: Record<string, unknown> | null;
+  outputSchema?: Record<string, unknown> | null;
+  layout?: WorkflowLayout | null;
+  isEnabled: boolean;
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  avgDurationMs?: number | null;
+  lastRunAt?: string | null;
+  createdAt: string;
+  /** The editor's lock token: sent back as expectedUpdatedAt on replace. */
+  updatedAt: string;
+  steps?: OrchestrationStep[];
+  /** List rows only. */
+  _count?: { steps: number; executions: number };
+  scheduleCount?: number;
+  lastExecution?: { id: string; status: WorkflowRunStatus; completedAt: string | null } | null;
+}
+
+export interface OrchestrationDetail extends Orchestration {
+  steps: OrchestrationStep[];
+  executions: OrchestrationExecution[];
+  schedules: WorkflowScheduleSummary[];
+}
+
+export interface OrchestrationStats {
+  totalOrchestrations: number;
+  activeOrchestrations: number;
+  totalExecutions: number;
+  runningExecutions: number;
+}
+
 export const orchestrationApi = {
-  getStats: () => api<{ totalOrchestrations: number; activeOrchestrations: number; totalExecutions: number }>("/api/orchestrations/stats"),
+  getStats: () => api<OrchestrationStats>("/api/orchestrations/stats"),
   list: (params?: { isEnabled?: string; limit?: number; offset?: number }) => {
     const sp = new URLSearchParams();
     if (params?.isEnabled) sp.set("isEnabled", params.isEnabled);
@@ -3895,19 +4169,41 @@ export const orchestrationApi = {
     const q = sp.toString();
     return api<{ orchestrations: Orchestration[]; total: number }>(`/api/orchestrations${q ? `?${q}` : ""}`);
   },
-  get: (id: string) => api<Orchestration>(`/api/orchestrations/${id}`),
-  create: (data: any) => api<Orchestration>("/api/orchestrations", { method: "POST", body: data }),
-  update: (id: string, data: Partial<Orchestration>) => api<Orchestration>(`/api/orchestrations/${id}`, { method: "PATCH", body: data }),
+  get: (id: string) => api<OrchestrationDetail>(`/api/orchestrations/${id}`),
+  /** Dry run: validates and plans a definition, saves nothing. */
+  plan: (definition: WorkflowDefinitionInput) =>
+    api<WorkflowPlan>("/api/orchestrations/plan", { method: "POST", body: definition }),
+  create: (definition: WorkflowDefinitionInput) =>
+    api<Orchestration & { steps: OrchestrationStep[] }>("/api/orchestrations", { method: "POST", body: definition }),
+  /** Replaces settings and steps together; 409 stale_definition when it changed since it was loaded. */
+  replace: (id: string, definition: WorkflowDefinitionInput, expectedUpdatedAt?: string) =>
+    api<Orchestration & { steps: OrchestrationStep[] }>(`/api/orchestrations/${id}`, {
+      method: "PUT",
+      body: expectedUpdatedAt ? { ...definition, expectedUpdatedAt } : definition,
+    }),
+  /** Metadata only; steps and settings change through replace. */
+  update: (id: string, data: { name?: string; description?: string | null; isEnabled?: boolean }) =>
+    api<Orchestration>(`/api/orchestrations/${id}`, { method: "PATCH", body: data }),
   delete: (id: string) => api<void>(`/api/orchestrations/${id}`, { method: "DELETE" }),
-  execute: (id: string, input?: Record<string, any>) => api<OrchestrationExecution>(`/api/orchestrations/${id}/execute`, { method: "POST", body: { input } }),
-  getExecutions: (orchId: string, params?: { status?: string; limit?: number }) => {
+  /** Queues a run (202). Poll getExecution until it leaves queued/running. */
+  execute: (id: string, body: { prompt?: string; input?: Record<string, unknown> } = {}) =>
+    api<{ execution: Pick<OrchestrationExecution, "id" | "status" | "triggeredBy" | "triggeredById" | "createdAt"> }>(
+      `/api/orchestrations/${id}/execute`,
+      { method: "POST", body }
+    ),
+  getExecutions: (orchId: string, params?: { status?: string; limit?: number; offset?: number }) => {
     const sp = new URLSearchParams();
     if (params?.status) sp.set("status", params.status);
     if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.offset) sp.set("offset", params.offset.toString());
     const q = sp.toString();
     return api<{ executions: OrchestrationExecution[]; total: number }>(`/api/orchestrations/${orchId}/executions${q ? `?${q}` : ""}`);
   },
-  getExecution: (orchId: string, execId: string) => api<OrchestrationExecution>(`/api/orchestrations/${orchId}/executions/${execId}`),
+  getExecution: (orchId: string, execId: string) =>
+    api<OrchestrationExecutionDetail>(`/api/orchestrations/${orchId}/executions/${execId}`),
+  /** A queued run is cancelled at once; a running one is asked to stop and ends shortly. */
+  cancelExecution: (orchId: string, execId: string) =>
+    api<{ execution: OrchestrationExecution }>(`/api/orchestrations/${orchId}/executions/${execId}/cancel`, { method: "POST" }),
 };
 
 // ============================================

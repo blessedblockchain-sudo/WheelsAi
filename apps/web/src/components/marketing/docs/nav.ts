@@ -22,6 +22,7 @@ export const DOCS_NAV: DocsNavSection[] = [
       { title: "Publish to the marketplace", href: "/docs/guides/marketplace" },
       { title: "Plans and billing", href: "/docs/guides/plans-and-billing" },
       { title: "Templates", href: "/docs/guides/templates" },
+      { title: "Workflows and schedules", href: "/docs/guides/workflows" },
     ],
   },
   {
@@ -33,6 +34,7 @@ export const DOCS_NAV: DocsNavSection[] = [
       { title: "Models and deployments", href: "/docs/api/deployments" },
       { title: "Marketplace", href: "/docs/api/marketplace" },
       { title: "Billing and plans", href: "/docs/api/billing" },
+      { title: "Workflows and scheduler", href: "/docs/api/workflows" },
       { title: "Webhooks", href: "/docs/api/webhooks" },
     ],
   },

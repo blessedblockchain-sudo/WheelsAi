@@ -1,14 +1,18 @@
 /**
  * Production deps for the scheduled-task executor — shared by the
- * scheduler BullMQ worker and the manual "trigger now" route so both
- * paths run the identical engine.
+ * scheduler BullMQ worker, the manual "trigger now" route, workflow
+ * steps and the test runner, so every path runs the identical engine.
  *
  * agent_run inference is playground-parity by construction: the same
  * model resolution (free-tier keys or the agent's own) and the same
- * runChat the interactive playground uses.
+ * runChat the interactive playground uses. The call itself, with its
+ * free-tier and marketplace cost controls, is sharedAgentChat.ts; this
+ * file only binds it to the real model, limiter and database.
  */
 
+import { isFreeModel } from "../config/free-models.js";
 import { prisma } from "../lib/prisma.js";
+import { checkFreeTierLimit } from "../middleware/free-tier-limit.js";
 import { openAgentEnv } from "./agentSecrets.js";
 import { withMarketplaceMetering } from "./marketplaceMeteringProduction.js";
 import { resolveToolMode } from "./skills/runMode.js";
@@ -17,10 +21,46 @@ import {
   runChat,
   type ChatMessage,
 } from "./mastra-runtime.js";
-import type {
-  AgentForExecution,
-  ExecuteScheduledTaskDeps,
-} from "./executeScheduledTask.js";
+import { createRunAgentChat } from "./sharedAgentChat.js";
+import type { ExecuteScheduledTaskDeps } from "./executeScheduledTask.js";
+import { buildScheduledTaskTypeDeps } from "./scheduledTasks/buildScheduledTaskTypeDeps.js";
+
+/**
+ * One FreeTierUsage row per org, model and day — the same row the
+ * playground increments, so the usage page counts every free-model call
+ * whichever surface made it.
+ */
+async function recordFreeTierUsage(usage: {
+  orgId: string;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+}): Promise<void> {
+  const provider =
+    usage.modelId.split("/")[1] ?? usage.modelId.split("/")[0] ?? "unknown";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  await prisma.freeTierUsage.upsert({
+    where: {
+      orgId_model_date: { orgId: usage.orgId, model: usage.modelId, date: today },
+    },
+    update: {
+      inputTokens: { increment: usage.inputTokens },
+      outputTokens: { increment: usage.outputTokens },
+      requestCount: { increment: 1 },
+    },
+    create: {
+      orgId: usage.orgId,
+      model: usage.modelId,
+      provider,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      requestCount: 1,
+      date: today,
+    },
+  });
+}
 
 export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
   return {
@@ -38,65 +78,35 @@ export function buildProductionExecutorDeps(): ExecuteScheduledTaskDeps {
         },
       }),
 
-    runAgentChat: async ({ agent, prompt, mode }) => {
-      const modelConfig =
-        (agent.modelConfig as Record<string, unknown> | null) ?? {};
-      const agentEnv = openAgentEnv(agent.env);
-      const modelId =
-        typeof modelConfig.externalModel === "string"
-          ? modelConfig.externalModel
-          : typeof modelConfig.model === "string"
-            ? modelConfig.model
-            : null;
-      if (!modelId) {
-        throw new Error(
-          `agent ${agent.id} has no model configured for scheduled runs`,
-        );
-      }
-
-      const resolved = resolveModelForPlayground(modelId, agentEnv);
-      // A marketplace buyer's copy of someone else's agent runs restricted
-      // (money-moving tools withheld) however the run was triggered.
-      const toolMode = await resolveToolMode({
-        agentId: agent.id,
-        orgId: agent.orgId,
-        base: mode ?? "scheduled",
-      });
-      // Every non-interactive invocation of an installed marketplace
-      // agent is billable: charge the buyer before the model runs, refund
-      // if it throws. Agents that are not per-request installs pass
-      // straight through.
-      const result = await withMarketplaceMetering(
-        { agentId: agent.id, orgId: agent.orgId },
-        () =>
-          runChat(
-            resolved,
-            {
-              name: (agent as AgentForExecution).name,
-              systemPrompt: agent.systemPrompt ?? undefined,
-              tools: (agent.tools as never[]) ?? [],
-              modelConfig: {
-                externalModel: modelId,
-                temperature:
-                  typeof modelConfig.temperature === "number"
-                    ? modelConfig.temperature
-                    : 0.7,
-                maxTokens:
-                  typeof modelConfig.maxTokens === "number"
-                    ? modelConfig.maxTokens
-                    : 4096,
-              },
-            },
-            [{ role: "user", content: prompt }] as ChatMessage[],
-            false,
-            // The agent's enabled tools really run here (files and the
-            // knowledge base are scoped to THIS agent and org).
-            { agentId: agent.id, orgId: agent.orgId, mode: toolMode },
-          ),
-      );
-      return { content: result.content, usage: result.usage };
-    },
+    runAgentChat: createRunAgentChat({
+      isFreeModel,
+      checkFreeTierLimit,
+      recordFreeTierUsage,
+      openAgentEnv: (env) => openAgentEnv(env as never),
+      resolveModel: resolveModelForPlayground,
+      resolveToolMode,
+      withMetering: withMarketplaceMetering,
+      runChat: (resolved, config, prompt, options) =>
+        runChat(
+          resolved,
+          config,
+          [{ role: "user", content: prompt }] as ChatMessage[],
+          false,
+          options,
+        ),
+    }),
 
     fetchFn: fetch,
   };
+}
+
+/**
+ * The executor deps the scheduler itself runs with (the worker and
+ * "trigger now"): the shared agent chat plus the services behind every
+ * other task type. Callers that only chat with an agent (workflow steps,
+ * the test runner) keep using buildProductionExecutorDeps.
+ */
+export function buildSchedulerExecutorDeps(): ExecuteScheduledTaskDeps {
+  const executor = buildProductionExecutorDeps();
+  return { ...executor, taskTypes: buildScheduledTaskTypeDeps({ executor }) };
 }

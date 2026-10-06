@@ -293,6 +293,21 @@ const envSchema = z.object({
   // Scheduler BullMQ worker (Wave 1): fires due ScheduledTask rows
   // through the real execution engine. Set to 0 to disable.
   SCHEDULER_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
+  // How many due tasks one scheduler tick runs at the same time, so one
+  // slow task does not hold up the tasks behind it.
+  SCHEDULER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
+
+  // Workflow runs: a run is a queued row that a BullMQ worker claims and
+  // executes. WORKFLOW_RUN_CONCURRENCY is how many runs one process
+  // executes at once; 0 switches the worker off, and starting a run then
+  // answers 501 instead of queueing work nobody will pick up.
+  WORKFLOW_RUN_CONCURRENCY: z.coerce.number().int().min(0).max(50).default(4),
+  // Reaper for runs left 'queued' or 'running' by a lost job or a dead
+  // worker. Set to 0 to disable.
+  WORKFLOW_REAP_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
+  // How many workflow runs one organization may have queued or running at
+  // the same time; the next start answers 429.
+  WORKFLOW_MAX_ACTIVE_RUNS_PER_ORG: z.coerce.number().int().min(1).max(100).default(5),
 
   // Uptime-prober BullMQ worker (Wave 1): probes due UptimeMonitors and
   // records real up/down events + rolling stats. Each monitor still

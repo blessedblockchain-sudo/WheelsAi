@@ -1,9 +1,8 @@
 /**
  * Which model an agent's chat runs on. Pure.
  *
- * Every chat path (playground, /v1, and - once they adopt it - the scheduler,
- * orchestration steps and graph llm nodes) must pick the same model for the
- * same agent. They used to disagree: the playground fell back to a free model
+ * Every chat path (playground, /v1, the scheduler, workflow steps, test runs
+ * and graph llm nodes) picks the same model for the same agent through this. They used to disagree: the playground fell back to a free model
  * and ignored `modelConfig.model`; the scheduler read `model` and had no
  * fallback.
  *

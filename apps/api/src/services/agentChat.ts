@@ -1,5 +1,8 @@
 /**
- * Agent chat: the one service behind the playground and the /v1 agent API.
+ * Agent chat: the one service behind every way an agent is asked something -
+ * the playground, the /v1 agent API, and the callers nobody is watching
+ * (scheduled tasks, workflow steps, jobs and test runs, which reach it through
+ * services/sharedAgentChat.ts).
  *
  * Everything that decides whether an agent may answer, on which model, with
  * what grounding and at whose expense used to live inline in the playground
@@ -76,8 +79,12 @@ import type { ModelMessage, TokenUsage } from "./toolLoop.js";
  */
 export type AgentChatCaller = "owner" | "public";
 
-/** Where the chat came from; recorded with its usage. */
-export type AgentChatSource = "playground" | "api" | "widget";
+/**
+ * Where the chat came from; recorded with its usage, and the base of its tool
+ * mode. The last three have no client on the other end: the scheduler, a
+ * workflow step or job, and the test runner.
+ */
+export type AgentChatSource = "playground" | "api" | "widget" | "scheduled" | "job" | "test";
 
 export type AgentRef = { id: string } | { slug: string };
 
@@ -96,6 +103,12 @@ export interface AgentChatInput {
   toolChoice?: ToolChoice | null;
   /** Fires when the client goes away; the run stops and is refunded. */
   signal: AbortSignal;
+  /**
+   * Overrides the wall-clock limit of this chat (deps.deadlineMs). null = no
+   * limit of the chat's own: the caller bounds the run with `signal`, as a
+   * scheduled task does with its own timeout.
+   */
+  deadlineMs?: number | null;
 }
 
 /** The agent columns chat reads. */
@@ -219,6 +232,8 @@ export interface AgentChatDeps {
     orgId: string;
     input: string;
     signal: AbortSignal;
+    /** The run's tool mode before the marketplace-install check. */
+    mode: ToolMode;
   }): Promise<AgentGraphOutcome>;
   /** A finished answer as OpenAI-format SSE (the runtime's answerToStream). */
   answerStream?(result: ChatResult, modelName: string): ReadableStream<Uint8Array>;
@@ -443,7 +458,18 @@ const TOOL_MODE_BASE: Record<AgentChatSource, ToolMode> = {
   api: "api",
   // Somebody else's visitor is driving the agent: nothing may spend.
   widget: "trial",
+  scheduled: "scheduled",
+  job: "job",
+  test: "test",
 };
+
+/**
+ * A graph started by a person at the keyboard runs as it does from the
+ * builder. Started by anything else, it is gated as that caller's chats are.
+ */
+function graphToolMode(source: AgentChatSource): ToolMode {
+  return source === "playground" || source === "api" ? "graph" : TOOL_MODE_BASE[source];
+}
 
 function publicCallerRefusal(input: AgentChatInput): AgentChatRefusal | null {
   if (input.caller !== "public") return null;
@@ -797,7 +823,7 @@ export async function prepareAgentChat(
     // Always asked of the provider, whatever the caller wants to SEE: usage
     // is recorded for every chat, and a stream reports none unless asked.
     requestUsage: true,
-    deadlineMs: deps.deadlineMs,
+    deadlineMs: input.deadlineMs === undefined ? deps.deadlineMs : (input.deadlineMs ?? undefined),
   };
 
   /** Keeps the server half of a hand-back for when the caller returns. */
@@ -961,6 +987,8 @@ async function prepareGraphChat(args: {
   }
   if (signal.aborted) return refuse({ kind: "client_gone" });
 
+  const toolMode = graphToolMode(input.source);
+
   type Ran =
     | { ok: true; result: ChatResult; graph: AgentGraphRunInfo }
     | AgentChatNotAnswered;
@@ -968,7 +996,7 @@ async function prepareGraphChat(args: {
   const run = async (streamed: boolean): Promise<Ran> => {
     let outcome: AgentGraphOutcome;
     try {
-      outcome = await runGraph({ agentId, orgId, input: graphInput, signal });
+      outcome = await runGraph({ agentId, orgId, input: graphInput, signal, mode: toolMode });
     } catch (err) {
       // runGraph reports refusals and failed runs as outcomes; a throw is a
       // fault of ours, and the run's own accounting has already closed.
@@ -1024,7 +1052,8 @@ async function prepareGraphChat(args: {
     agent: { id: agent.id, slug: agent.slug, name: agent.name, version: agent.version },
     runtime: "graph",
     modelId,
-    toolMode: "graph",
+    // Before the marketplace-install check, which the run makes itself.
+    toolMode,
     rateLimit,
     retrieval: null,
     // Known only to the run; a buyer's charge shows on their statement.

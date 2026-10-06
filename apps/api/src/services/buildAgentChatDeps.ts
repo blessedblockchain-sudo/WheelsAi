@@ -3,8 +3,10 @@
  * core to Prisma, Redis, the free-model catalog, retrieval, marketplace
  * metering, the skills registry and the chat runtime.
  *
- * Both entry points - the playground route and the /v1 agent routes - build
- * their deps here, so they cannot drift on who is charged or which tools run.
+ * Every entry point - the playground route, the /v1 agent routes, and the
+ * scheduler, workflow and test-run executor (scheduledTaskExecutorProduction.ts)
+ * - builds its deps here, so they cannot drift on who is charged or which
+ * tools run.
  */
 
 import { Redis } from "ioredis";
@@ -15,6 +17,7 @@ import { prisma } from "../lib/prisma.js";
 import { checkFreeTierLimit } from "../middleware/free-tier-limit.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentChatDeps, AgentChatUsageRecord, AgentGraphOutcome } from "./agentChat.js";
+import type { ToolMode } from "./skills/types.js";
 import { retrieveContextForAgent } from "./agentRetrieval.js";
 import { openAgentEnv } from "./agentSecrets.js";
 import { recordAgentUsage } from "./agentUsage.js";
@@ -79,6 +82,7 @@ async function runGraphForChat(args: {
   orgId: string;
   input: string;
   signal: AbortSignal;
+  mode: ToolMode;
 }): Promise<AgentGraphOutcome> {
   // Asked first, scoped through the agent's organization, so "no graph" is a
   // named answer rather than something read out of an error message.
@@ -90,7 +94,10 @@ async function runGraphForChat(args: {
 
   let record;
   try {
-    record = await runAgentGraph(args.agentId, args.orgId, args.input, { signal: args.signal });
+    record = await runAgentGraph(args.agentId, args.orgId, args.input, {
+      signal: args.signal,
+      mode: args.mode,
+    });
   } catch (err) {
     if (err instanceof MarketplaceLicenceRevokedError) {
       return {
@@ -210,7 +217,16 @@ async function recordModelUsage(record: AgentChatUsageRecord): Promise<void> {
   });
 }
 
-export function buildAgentChatDeps(): AgentChatDeps {
+export interface BuildAgentChatDepsOptions {
+  /**
+   * false for callers that never offer the caller's own functions (scheduled
+   * tasks, workflow steps, test runs): there is no hand-back to resume, and
+   * they should not open the continuation store's Redis connection.
+   */
+  continuations?: boolean;
+}
+
+export function buildAgentChatDeps(options: BuildAgentChatDepsOptions = {}): AgentChatDeps {
   return {
     loadAgent: (where) =>
       "id" in where
@@ -253,7 +269,7 @@ export function buildAgentChatDeps(): AgentChatDeps {
     answerStream: (result, modelName) => answerToStream(result, modelName, false),
     beginRun: () => inFlightChats.begin(),
     recordUsage,
-    continuations: getContinuationStore(),
+    ...(options.continuations !== false && { continuations: getContinuationStore() }),
     deadlineMs: env.AGENT_CHAT_TIMEOUT_MS,
     logger,
   };

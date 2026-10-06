@@ -346,7 +346,10 @@ test("graph runs are cancelled when the client closes the request, and resolve t
   assert.match(route, /runAgentGraph\(agentId, orgId, input, \{ signal: abort\.signal \}\)/);
 
   const run = source("services/runAgentGraph.ts");
-  assert.match(run, /resolveToolMode\(\{ agentId, orgId, base: "graph" \}\)/);
+  // "graph" unless the caller names its own mode (the scheduler does); either
+  // way the install check is applied on top of it.
+  assert.match(run, /mode: options\.mode \?\? "graph"/);
+  assert.match(run, /resolveToolMode\(\{ agentId, orgId, base: options\.mode \}\)/);
   assert.match(run, /signal: options\.signal/);
   assert.ok(
     run.indexOf("inFlightGraphRuns.begin()") < run.indexOf("beginMarketplaceMetering("),
@@ -366,14 +369,20 @@ test("graph runs are cancelled when the client closes the request, and resolve t
 });
 
 test("scheduled and orchestration runs resolve their tool mode; the test runner runs in 'test' mode", () => {
-  // The call itself moved into sharedAgentChat.ts (a pure core); the
-  // production executor binds the real install lookup into it.
+  // These runs go through the one agent-chat core (sharedAgentChat.ts hands
+  // them to prepareAgentChat), so the install lookup is the one the playground
+  // and /v1 bind, applied to the caller's own mode as the base.
   const executor = source("services/scheduledTaskExecutorProduction.ts");
-  assert.match(executor, /import \{ resolveToolMode \} from "\.\/skills\/runMode\.js"/);
-  assert.match(executor, /\n\s+resolveToolMode,\n/);
+  assert.match(executor, /runAgentChat: createRunAgentChat\(\(\) => buildAgentChatDeps\(/);
+  const deps = source("services/buildAgentChatDeps.ts");
+  assert.match(deps, /import \{ resolveToolMode \} from "\.\/skills\/runMode\.js"/);
+  assert.match(deps, /resolveToolMode: \(args\) => resolveToolMode\(args\)/);
+  const core = source("services/agentChat.ts");
+  assert.match(core, /await deps\.resolveToolMode\(\{ agentId, orgId, base: TOOL_MODE_BASE\[input\.source\] \}\)/);
+  assert.match(core, /mode: toolMode/);
+  assert.match(core, /scheduled: "scheduled",\n\s+job: "job",\n\s+test: "test",/);
   const shared = source("services/sharedAgentChat.ts");
-  assert.match(shared, /await seams\.resolveToolMode\(/);
-  assert.match(shared, /mode: toolMode/);
+  assert.match(shared, /SOURCE_OF_MODE\[mode \?\? "scheduled"\]/);
   assert.match(source("services/testing.ts"), /runAgentChat\(\{ agent, prompt, mode: "test" \}\)/);
 });
 

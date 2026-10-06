@@ -11,6 +11,7 @@
  */
 
 import type { CustomPayload } from "../scheduledTaskTypes.js";
+import type { ToolMode } from "../skills/types.js";
 import type { ScheduledTaskForExecution, TaskResult, TaskRunContext } from "./context.js";
 import { isAbort, permanentFailure, TaskError } from "./taskError.js";
 
@@ -19,7 +20,7 @@ export interface GraphRunDeps {
     agentId: string,
     orgId: string,
     input: string,
-    options: { signal?: AbortSignal },
+    options: { signal?: AbortSignal; mode: ToolMode },
   ) => Promise<{
     executionId: string;
     status: string;
@@ -41,7 +42,12 @@ export async function runGraphTask(
 
   let run: Awaited<ReturnType<GraphRunDeps["runGraph"]>>;
   try {
-    run = await deps.runGraph(task.agentId, task.orgId, payload.input, { signal: ctx.signal });
+    // Nobody is watching a scheduled run: its tools are gated as a scheduled
+    // chat's are, not as a run started from the builder.
+    run = await deps.runGraph(task.agentId, task.orgId, payload.input, {
+      signal: ctx.signal,
+      mode: "scheduled",
+    });
   } catch (err) {
     if (isAbort(err, ctx.signal)) throw err;
     // Thrown before a run exists: no agent, no graph, an empty graph, a

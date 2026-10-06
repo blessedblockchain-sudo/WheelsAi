@@ -296,9 +296,25 @@ test("every real inference path meters", () => {
 
   // Scheduler, "trigger now", orchestration and the test runner all share
   // this one binding, so metering it once covers all four.
+  // It has no metering of its own to forget: the call goes through the same
+  // prepareAgentChat as the two routes above, on the deps they build.
   const executor = source("services/scheduledTaskExecutorProduction.ts");
-  assert.match(executor, /withMarketplaceMetering/);
+  assert.match(executor, /runAgentChat: createRunAgentChat\(\(\) => buildAgentChatDeps\(/);
   assert.match(executor, /orgId: true/);
+  assert.doesNotMatch(
+    executor,
+    /runChat\(|withMarketplaceMetering|beginMarketplaceMetering/,
+    "no chat or charge that bypasses the service",
+  );
+  const shared = source("services/sharedAgentChat.ts");
+  assert.match(shared, /await prepareAgentChat\(/);
+  assert.match(shared, /prepared\.session\.complete\(\)/);
+  assert.doesNotMatch(
+    shared,
+    /runChat\(|withMarketplaceMetering|beginMarketplaceMetering|resolveModelForPlayground/,
+    "the non-interactive adapter adds no chat path of its own",
+  );
+  assert.match(source("services/buildAgentChatDeps.ts"), /beginMetering: beginMarketplaceMetering/);
 
   // Graph runs bill per RUN, and refund when the run failed.
   const graph = source("services/runAgentGraph.ts");

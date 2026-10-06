@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // Drives the per-type executors in services/scheduledTasks/ through
@@ -843,6 +844,31 @@ test("custom runs the agent's graph with the input and the run's signal", async 
   );
   assert.deepEqual(calls, [{ agentId: AGENT, orgId: ORG, input: "weekly digest", signal: controller.signal }]);
   assert.deepEqual(output, { graphExecutionId: "graph_1", status: "completed", output: "done", durationMs: 12 });
+});
+
+test("custom runs the graph in the scheduled tool mode, not the builder's", async () => {
+  const modes: string[] = [];
+  await run(task({ taskType: "custom", agentId: AGENT, payload: { input: "weekly digest" } }), {
+    graphRun: {
+      runGraph: async (_agentId, _orgId, _input, options) => {
+        modes.push(options.mode);
+        return { executionId: "graph_1", status: "completed", output: "done", durationMs: 1 };
+      },
+    },
+  });
+  assert.deepEqual(modes, ["scheduled"]);
+
+  // The production binding hands the mode on to the graph runner, which uses
+  // it as the base of the run's tool mode.
+  const read = (file: string) =>
+    readFileSync(new URL(`../services/${file}`, import.meta.url), "utf8");
+  assert.match(
+    read("scheduledTasks/buildScheduledTaskTypeDeps.ts"),
+    /runAgentGraph\(agentId, orgId, graphInput, options\)/,
+  );
+  const runner = read("runAgentGraph.ts");
+  assert.match(runner, /mode: options\.mode \?\? "graph"/);
+  assert.match(runner, /resolveToolMode\(\{ agentId, orgId, base: options\.mode \}\)/);
 });
 
 test("a failed graph run fails the task with the graph's error", async () => {

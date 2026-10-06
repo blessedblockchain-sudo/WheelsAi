@@ -18,6 +18,7 @@ import {
   loadGraphAgentContext,
 } from "./buildGraphInterpreterDeps.js";
 import { resolveToolMode } from "./skills/runMode.js";
+import type { ToolMode } from "./skills/types.js";
 import {
   MarketplaceLicenceRevokedError,
   MarketplacePaymentRequiredError,
@@ -51,11 +52,23 @@ export function cancelInFlightGraphRuns(timeoutMs: number) {
   return inFlightGraphRuns.cancelAll(timeoutMs);
 }
 
+export interface RunAgentGraphOptions {
+  signal?: AbortSignal;
+  /**
+   * Where the run comes from ("graph" = the builder, the default). A caller
+   * with nobody watching - the scheduler, a workflow step, a test run - names
+   * its own mode, so the graph's tools are gated exactly as that caller's
+   * chats are. A marketplace buyer's copy still runs `trial` whatever is
+   * passed (resolveToolMode).
+   */
+  mode?: ToolMode;
+}
+
 export async function runAgentGraph(
   agentId: string,
   orgId: string,
   input: string,
-  options: { signal?: AbortSignal } = {},
+  options: RunAgentGraphOptions = {},
 ): Promise<GraphRunRecord> {
   // Taken BEFORE the charge: from here to `done()` shutdown waits for us.
   const slot = inFlightGraphRuns.begin();
@@ -64,6 +77,7 @@ export async function runAgentGraph(
     return await runTrackedGraph(agentId, orgId, input, {
       signal: options.signal ? AbortSignal.any([options.signal, slot.signal]) : slot.signal,
       shuttingDown: () => slot.signal.aborted,
+      mode: options.mode ?? "graph",
     });
   } finally {
     slot.done();
@@ -74,7 +88,7 @@ async function runTrackedGraph(
   agentId: string,
   orgId: string,
   input: string,
-  options: { signal: AbortSignal; shuttingDown: () => boolean },
+  options: { signal: AbortSignal; shuttingDown: () => boolean; mode: ToolMode },
 ): Promise<GraphRunRecord> {
   const agent = await loadGraphAgentContext(agentId, orgId);
   if (!agent) {
@@ -127,7 +141,7 @@ async function runTrackedGraph(
     // interpreter adds its own wall-clock budget on top. Either way the run
     // ENDS, comes back `failed`, and the marketplace charge below is refunded
     // rather than left pending.
-    const toolMode = await resolveToolMode({ agentId, orgId, base: "graph" });
+    const toolMode = await resolveToolMode({ agentId, orgId, base: options.mode });
     result = await runGraph(
       nodes,
       edges,

@@ -46,3 +46,49 @@ test("tool nodes may use only the tools the agent has enabled", async () => {
   const none = buildGraphInterpreterDeps({ ...agent, tools: undefined });
   assert.deepEqual(none.enabledTools, []);
 });
+
+// ============================================
+// The model an llm node runs on
+// ============================================
+
+test("an llm node picks its model as an agent chat does, hosted models included", async () => {
+  const { resolveNodeModel } = await import("../services/buildGraphInterpreterDeps.js");
+  const asked: unknown[] = [];
+  const deps = {
+    availableFreeModelIds: () => ["free/groq/llama-3.3-70b"],
+    resolveModel: (modelId: string) => ({ apiKey: "k", baseUrl: "https://provider.example/v1", modelName: modelId }),
+    resolveHostedModel: async (args: { orgId: string; modelId: string }) => {
+      asked.push(args);
+      return {
+        ok: true as const,
+        resolved: { apiKey: "", baseUrl: "https://node.example/v1", modelName: "meta/llama-3.1-8b" },
+      };
+    },
+  };
+  const agentOn = (modelConfig: Record<string, unknown>) => ({ orgId: "org-1", modelConfig, env: {} });
+
+  // The node's own choice, then externalModel, then the legacy key, then free.
+  assert.equal(
+    (await resolveNodeModel({ model: "openai/gpt-4o", agent: agentOn({ externalModel: "x/y" }) }, deps)).modelId,
+    "openai/gpt-4o",
+  );
+  assert.equal((await resolveNodeModel({ agent: agentOn({ externalModel: "x/y" }) }, deps)).modelId, "x/y");
+  assert.equal((await resolveNodeModel({ agent: agentOn({ model: "a/b" }) }, deps)).modelId, "a/b");
+  assert.equal((await resolveNodeModel({ agent: agentOn({}) }, deps)).modelId, "free/groq/llama-3.3-70b");
+
+  const hosted = await resolveNodeModel({ agent: agentOn({ externalModel: "wheelsai/llama-3.1-8b" }) }, deps);
+  assert.equal(hosted.model.baseUrl, "https://node.example/v1");
+  assert.deepEqual(asked, [{ orgId: "org-1", modelId: "wheelsai/llama-3.1-8b" }], "scoped to the agent's organization");
+
+  await assert.rejects(
+    resolveNodeModel(
+      { agent: agentOn({ externalModel: "wheelsai/llama-3.1-8b" }) },
+      { ...deps, resolveHostedModel: async () => ({ ok: false as const, message: "no running deployment of it" }) },
+    ),
+    /no running deployment of it/,
+  );
+  await assert.rejects(
+    resolveNodeModel({ agent: agentOn({}) }, { ...deps, availableFreeModelIds: () => [] }),
+    /no model available/,
+  );
+});

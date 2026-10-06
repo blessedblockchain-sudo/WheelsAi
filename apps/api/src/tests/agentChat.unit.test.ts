@@ -1224,3 +1224,66 @@ test("a hosted model with nothing running is refused by name before the charge",
   });
   assert.ok(!h.log.includes("meter"), "nothing is charged for an agent that cannot answer");
 });
+
+// ============================================
+// Callers with nobody watching (services/sharedAgentChat.ts)
+// ============================================
+
+test("every source has its own base tool mode, and the install check sits on top of it", async () => {
+  const expected = {
+    playground: "playground",
+    api: "api",
+    widget: "trial",
+    scheduled: "scheduled",
+    job: "job",
+    test: "test",
+  } as const;
+  for (const [source, mode] of Object.entries(expected)) {
+    const h = harness();
+    const session = await sessionOf(h, { source: source as AgentChatInput["source"] });
+    assert.ok(h.log.includes(`toolMode:${mode}`), `${source} resolves from ${mode}`);
+    assert.equal(session.toolMode, mode);
+    await session.complete();
+    await settled();
+    assert.equal(h.usage[0]!.source, source);
+  }
+});
+
+test("a graph runs as from the builder for a person, and in the caller's own mode otherwise", async () => {
+  const expected = {
+    playground: "graph",
+    api: "graph",
+    widget: "trial",
+    scheduled: "scheduled",
+    job: "job",
+    test: "test",
+  } as const;
+  for (const [source, mode] of Object.entries(expected)) {
+    const modes: string[] = [];
+    const h = graphHarness(
+      { kind: "completed", output: "ok", run: RUN },
+      {
+        runGraph: async (args) => {
+          modes.push(args.mode);
+          return { kind: "completed", output: "ok", run: RUN };
+        },
+      },
+    );
+    const session = await sessionOf(h, { source: source as AgentChatInput["source"] });
+    assert.equal(session.toolMode, mode);
+    assert.ok((await session.complete()).ok);
+    assert.deepEqual(modes, [mode], source);
+  }
+});
+
+test("the chat deadline is the server's unless the caller sets or removes it", async () => {
+  const deadlineOf = async (over: Partial<AgentChatInput>) => {
+    const h = harness();
+    await (await sessionOf(h, over)).complete();
+    return h.chatCalls[0]!.options.deadlineMs;
+  };
+  assert.equal(await deadlineOf({}), 120_000);
+  assert.equal(await deadlineOf({ deadlineMs: 5_000 }), 5_000);
+  // The caller bounds the run with its own signal (a task timeout).
+  assert.equal(await deadlineOf({ deadlineMs: null }), undefined);
+});

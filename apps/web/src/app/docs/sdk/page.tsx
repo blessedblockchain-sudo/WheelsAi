@@ -8,7 +8,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "SDK and CLI",
   description:
-    "The WheelsAI TypeScript SDK (@wheelsai/sdk) and command-line tool (@wheelsai/cli): installation status, authentication, resources and methods, and CLI commands.",
+    "The WheelsAI TypeScript SDK (@wheelsai/sdk) and command-line tool (@wheelsai/cli): installation, authentication, resources and methods, and the login, deploy, publish, test and logs commands.",
 };
 
 const toc = [
@@ -16,25 +16,23 @@ const toc = [
   { id: "sdk", title: "TypeScript SDK" },
   { id: "sdk-auth", title: "Create a client", sub: true },
   { id: "sdk-methods", title: "Resources and methods", sub: true },
-  { id: "sdk-gaps", title: "Methods not yet aligned", sub: true },
-  { id: "sdk-errors", title: "Errors", sub: true },
+  { id: "sdk-errors", title: "Errors and timeouts", sub: true },
   { id: "openai", title: "Using the OpenAI SDK for /v1" },
   { id: "cli", title: "CLI" },
   { id: "cli-login", title: "wheelsai login", sub: true },
-  { id: "cli-agents", title: "wheelsai agents", sub: true },
-  { id: "cli-test", title: "wheelsai test", sub: true },
   { id: "cli-deploy", title: "wheelsai deploy", sub: true },
-  { id: "cli-logs", title: "wheelsai logs", sub: true },
+  { id: "cli-publish", title: "wheelsai publish", sub: true },
+  { id: "cli-test", title: "wheelsai test", sub: true },
+  { id: "cli-inspect", title: "agents, logs, whoami, config", sub: true },
+  { id: "cli-errors", title: "Exit codes and errors", sub: true },
 ];
-
-const ok = "Works";
 
 export default function SdkPage() {
   return (
     <DocPage
       href="/docs/sdk"
       title="SDK and CLI"
-      lead="A typed TypeScript client for the WheelsAI API and a small command-line tool built on it. Both are thin: every method is one HTTP call to an endpoint documented in the API reference."
+      lead="A typed TypeScript client for the WheelsAI API and a command-line tool built on it. Both are thin: every SDK method is one HTTP call to an endpoint documented in the API reference, and everything the CLI prints is something the API returned."
       toc={toc}
     >
       <h2 id="status">Availability</h2>
@@ -42,7 +40,7 @@ export default function SdkPage() {
         <p>
           <code>@wheelsai/sdk</code> and <code>@wheelsai/cli</code> (version 0.1.0) live in the WheelsAI monorepo under{" "}
           <code>packages/sdk</code> and <code>packages/cli</code> and have not been published to the npm registry. Until they
-          are, use them from the monorepo as shown below, or call the <Link href="/docs/api">REST API</Link> directly with any
+          are, build them from a checkout as shown below, or call the <Link href="/docs/api">REST API</Link> directly with any
           HTTP client.
         </p>
       </Callout>
@@ -50,20 +48,25 @@ export default function SdkPage() {
         language="bash"
         title="From a checkout of the monorepo"
         code={`npm install
-# SDK: depend on the workspace package from another workspace
-#   "dependencies": { "@wheelsai/sdk": "*" }
+npm run build -w @wheelsai/sdk   # the SDK is consumed compiled, from packages/sdk/dist
+npm run build -w @wheelsai/cli
 
-# CLI: run it from source with tsx
-npx tsx packages/cli/src/index.ts --help
-alias wheelsai="npx tsx $PWD/packages/cli/src/index.ts"`}
+node packages/cli/bin/wheelsai.js --help
+alias wheelsai="node $PWD/packages/cli/bin/wheelsai.js"`}
       />
+      <p>
+        To use the SDK from another workspace in the monorepo, add <code>&quot;@wheelsai/sdk&quot;: &quot;*&quot;</code> to its
+        dependencies and build the SDK first: the package&apos;s entry point is its compiled <code>dist/</code>, which{" "}
+        <code>npm install</code> alone does not create. The SDK has no runtime dependencies and needs Node 18 or newer (for the
+        global <code>fetch</code>).
+      </p>
 
       <h2 id="sdk">TypeScript SDK</h2>
       <h3 id="sdk-auth">Create a client</h3>
       <p>
-        The client needs the API base URL and a credential. Pass your API key (or a session token from{" "}
-        <code>auth.login</code>) as <code>token</code>; the SDK sends it as <code>Authorization: Bearer ...</code>, which is how
-        the API reads both.
+        The client needs the API base URL and a credential: an API key (<code>apiKey</code>) or a session token from{" "}
+        <code>auth.login</code> (<code>token</code>). Both are sent as <code>Authorization: Bearer ...</code>, which is how the
+        API reads them; if both are set, the session token is used.
       </p>
       <CodeBlock
         language="ts"
@@ -71,172 +74,335 @@ alias wheelsai="npx tsx $PWD/packages/cli/src/index.ts"`}
 
 const wheels = new WheelsAI({
   baseUrl: process.env.WHEELSAI_API_URL!,
-  token: process.env.WHEELSAI_API_KEY, // wheels_live_...
+  apiKey: process.env.WHEELSAI_API_KEY, // wheels_live_...
 });
 
-const { agents } = await wheels.agents.list();
-const reply = await wheels.agents.playgroundChat(agents[0]!.id, {
-  messages: [{ role: "user", content: "Hello!" }],
-});
-console.log(reply.content, reply.usage);`}
+const agent = await wheels.agents.resolve("my-support-bot"); // slug or id; null if not found
+const tiers = await wheels.models.gpuTiers();                // the tiers this API can deploy now
+const { deployment } = await wheels.agents.deploy(agent!.id, { gpuTier: tiers[0]!.id });
+
+// The deploy answer is immediate (status "pending"): poll for progress.
+const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deployment.id);
+console.log(row.status, row.endpoint);`}
       />
-      <Callout variant="warning">
+      <p>
+        To sign in with a password instead, call <code>auth.login(email, password)</code> and pass the returned token to{" "}
+        <code>wheels.setToken(token)</code>. An account with two-factor authentication answers with a challenge: check with{" "}
+        <code>isTwoFactorChallenge(result)</code> and finish with <code>auth.login2fa(result.challengeToken, code)</code>.{" "}
+        <code>setApiKey()</code> and <code>setToken()</code> change the credential on an existing client; pass{" "}
+        <code>fetch</code> in the constructor to use a custom fetch implementation.
+      </p>
+      <Callout>
         <p>
-          Do not use the <code>apiKey</code> constructor option or <code>setApiKey()</code> yet: they send the key in an{" "}
-          <code>X-API-Key</code> header, which the API does not accept. Use <code>token</code> or <code>setToken()</code>.
+          Some routes need a session rather than an API key and answer <code>401</code> to a key: <code>auth.listApiKeys</code>,{" "}
+          <code>auth.createApiKey</code>, <code>auth.revokeApiKey</code>, <code>auth.refresh</code>,{" "}
+          <code>auth.organizations</code>, <code>auth.switchOrg</code>, <code>billing.checkout</code> and{" "}
+          <code>billing.portal</code>. The agent graph routes (<code>agents.getGraph</code>, <code>agents.saveGraph</code>)
+          authorize by user as well.
         </p>
       </Callout>
-      <p>
-        You can also sign in with a password and let the SDK hold the session: <code>const &#123; token &#125; = await
-        wheels.auth.login(email, password); wheels.setToken(token);</code>. Pass <code>fetch</code> in the constructor to use a
-        custom fetch implementation.
-      </p>
 
       <h3 id="sdk-methods">Resources and methods</h3>
-      <DocTable
-        caption="SDK methods and the endpoints they call"
-        columns={[
-          { key: "method", label: "Method" },
-          { key: "endpoint", label: "Endpoint" },
-          { key: "state", label: "State" },
-        ]}
-        rows={[
-          { method: <code>auth.register(email, password)</code>, endpoint: <code>POST /api/auth/register</code>, state: ok },
-          { method: <code>auth.login(email, password)</code>, endpoint: <code>POST /api/auth/login</code>, state: ok },
-          { method: <code>auth.logout()</code>, endpoint: <code>POST /api/auth/logout</code>, state: ok },
-          { method: <code>auth.me()</code>, endpoint: <code>GET /api/auth/me</code>, state: ok },
-          { method: <code>auth.walletNonce(address)</code>, endpoint: <code>POST /api/auth/wallet/nonce</code>, state: ok },
-          { method: <code>auth.walletVerify(address, signature, nonce)</code>, endpoint: <code>POST /api/auth/wallet/verify</code>, state: ok },
-          { method: <code>auth.refresh()</code>, endpoint: <code>POST /api/auth/refresh</code>, state: "Works with a session token" },
-          { method: <code>agents.list()</code>, endpoint: <code>GET /api/agents</code>, state: ok },
-          { method: <code>agents.get(id)</code>, endpoint: <code>GET /api/agents/&#123;id&#125;</code>, state: ok },
-          { method: <code>agents.create(input)</code>, endpoint: <code>POST /api/agents</code>, state: ok },
-          { method: <code>agents.delete(id)</code>, endpoint: <code>DELETE /api/agents/&#123;id&#125;</code>, state: ok },
-          { method: <code>agents.deploy(id, &#123; gpuTier, replicas &#125;)</code>, endpoint: <code>POST /api/agents/&#123;id&#125;/deploy</code>, state: ok },
-          { method: <code>agents.playgroundChat(id, body)</code>, endpoint: <code>POST /api/agents/&#123;id&#125;/playground/chat</code>, state: ok },
-          { method: <code>agents.playgroundModels(id)</code>, endpoint: <code>GET /api/agents/&#123;id&#125;/playground/models</code>, state: ok },
-          { method: <code>deployments.list()</code>, endpoint: <code>GET /api/deployments</code>, state: ok },
-          { method: <code>deployments.get(id)</code>, endpoint: <code>GET /api/deployments/&#123;id&#125;</code>, state: ok },
-          { method: <code>deployments.create(input)</code>, endpoint: <code>POST /api/deployments</code>, state: ok },
-          { method: <code>deployments.update(id, &#123; replicas &#125;)</code>, endpoint: <code>PATCH /api/deployments/&#123;id&#125;</code>, state: ok },
-          { method: <code>deployments.delete(id)</code>, endpoint: <code>DELETE /api/deployments/&#123;id&#125;</code>, state: ok },
-          { method: <code>deployments.restart(id)</code>, endpoint: <code>POST /api/deployments/&#123;id&#125;/restart</code>, state: ok },
-          { method: <code>deployments.metrics(id)</code>, endpoint: <code>GET /api/deployments/&#123;id&#125;/metrics</code>, state: ok },
-          { method: <code>models.list(params?)</code>, endpoint: <code>GET /api/models</code>, state: ok },
-          { method: <code>models.get(modelId)</code>, endpoint: <code>GET /api/models/&#123;modelId&#125;</code>, state: ok },
-          { method: <code>models.free()</code>, endpoint: <code>GET /api/models/free</code>, state: ok },
-          { method: <code>models.estimate(modelId, gpuTier, replicas, hours)</code>, endpoint: <code>POST /api/models/&#123;modelId&#125;/estimate</code>, state: ok },
-          { method: <code>billing.getBalance()</code>, endpoint: <code>GET /api/billing/balance</code>, state: ok },
-          { method: <code>billing.getTransactions()</code>, endpoint: <code>GET /api/billing/transactions</code>, state: "Works; returns the latest 50, paging params are ignored" },
-          { method: <code>billing.getUsage()</code>, endpoint: <code>GET /api/billing/usage</code>, state: ok },
-          { method: <code>inference.listModels()</code>, endpoint: <code>GET /v1/models</code>, state: ok },
-          { method: <code>versioning.list(agentId)</code>, endpoint: <code>GET /api/versioning/agents/&#123;agentId&#125;/versions</code>, state: ok },
-          { method: <code>versioning.get(agentId, version)</code>, endpoint: <code>GET .../versions/&#123;version&#125;</code>, state: ok },
-          { method: <code>versioning.create(agentId, input)</code>, endpoint: <code>POST .../versions</code>, state: ok },
-          { method: <code>versioning.rollback(agentId, version)</code>, endpoint: <code>POST .../versions/&#123;version&#125;/rollback</code>, state: ok },
-          { method: <code>versioning.publish(agentId, version)</code>, endpoint: <code>POST .../versions/&#123;version&#125;/publish</code>, state: ok },
-        ]}
-      />
-
-      <h3 id="sdk-gaps">Methods not yet aligned with the API</h3>
-      <p>These methods exist in 0.1.0 but call a path or verb the API does not serve. Use the endpoint on the right instead.</p>
-      <DocTable
-        caption="SDK methods to avoid in 0.1.0"
-        columns={[
-          { key: "method", label: "Method" },
-          { key: "instead", label: "Use instead" },
-        ]}
-        rows={[
-          { method: <code>agents.update(id, updates)</code>, instead: <><code>PATCH /api/agents/&#123;id&#125;</code> (the SDK sends PUT)</> },
-          { method: <code>agents.stop(id)</code>, instead: <><code>POST /api/agents/&#123;agentId&#125;/deployments/&#123;deploymentId&#125;/stop</code></> },
-          { method: <code>billing.addCredits(amountCents)</code>, instead: <>Buy credits in the dashboard, or <code>POST /api/billing/checkout</code> with a session</> },
-          { method: <code>marketplace.search / get / install / reviews / addReview</code>, instead: <>The <code>/api/marketplace/listings</code> endpoints in the <Link href="/docs/api/marketplace">marketplace reference</Link></> },
-          { method: <code>inference.chatCompletion(request)</code>, instead: <><code>POST /v1/&#123;deploymentSlug&#125;/chat/completions</code>, or the OpenAI SDK as below</> },
-          { method: <code>versioning.compare(agentId, from, to)</code>, instead: <><code>GET /api/versioning/agents/&#123;agentId&#125;/compare?from=&amp;to=</code></> },
-        ]}
-      />
-
-      <h3 id="sdk-errors">Errors</h3>
       <p>
-        Any non-2xx response throws a <code>WheelsAIError</code> with <code>status</code> (the HTTP status),{" "}
-        <code>message</code> (the API&apos;s <code>message</code> or <code>error</code>) and <code>data</code> (the parsed body).
-        See <Link href="/docs/api#errors">Errors</Link> for the shapes.
+        Ids and slugs are percent-encoded into the path. An empty one, <code>.</code> and <code>..</code> are refused, because
+        they would name a different route.
+      </p>
+      <DocTable
+        caption="SDK resources, their main methods and the endpoints they call"
+        columns={[
+          { key: "resource", label: "Resource" },
+          { key: "methods", label: "Methods" },
+          { key: "endpoint", label: "Endpoints" },
+        ]}
+        rows={[
+          {
+            resource: <code>auth</code>,
+            methods: (
+              <>
+                <code>register</code>, <code>login</code>, <code>login2fa</code>, <code>logout</code>, <code>me</code>,{" "}
+                <code>refresh</code>, <code>organizations</code>, <code>switchOrg</code>, <code>walletNonce</code>,{" "}
+                <code>walletVerify</code>, <code>listApiKeys</code>, <code>createApiKey</code>, <code>revokeApiKey</code>
+              </>
+            ),
+            endpoint: <code>/api/auth/...</code>,
+          },
+          {
+            resource: <code>agents</code>,
+            methods: (
+              <>
+                <code>list</code>, <code>resolve</code>, <code>findBySlug</code>, <code>get</code>, <code>create</code>,{" "}
+                <code>update</code> (PATCH), <code>delete</code>, <code>deploy</code>, <code>getDeployment</code>,{" "}
+                <code>stopDeployment</code>, <code>deploymentLogs</code>, <code>playgroundChat</code>,{" "}
+                <code>playgroundModels</code>, <code>getGraph</code>, <code>saveGraph</code>, <code>validateGraph</code>
+              </>
+            ),
+            endpoint: (
+              <>
+                <code>/api/agents</code>, <code>/api/agents/&#123;id&#125;/deploy</code>,{" "}
+                <code>/api/agents/&#123;id&#125;/deployments/&#123;deploymentId&#125;</code>
+              </>
+            ),
+          },
+          {
+            resource: <code>deployments</code>,
+            methods: (
+              <>
+                Model deployments: <code>list</code>, <code>get</code>, <code>create</code>, <code>update</code>,{" "}
+                <code>delete</code> (stops it), <code>restart</code>, <code>logs</code>, <code>metrics</code>
+              </>
+            ),
+            endpoint: <code>/api/deployments</code>,
+          },
+          {
+            resource: <code>models</code>,
+            methods: (
+              <>
+                <code>list</code>, <code>gpuTiers</code>, <code>get</code>, <code>free</code>, <code>engines</code>,{" "}
+                <code>estimate</code>
+              </>
+            ),
+            endpoint: <code>/api/models</code>,
+          },
+          {
+            resource: <code>billing</code>,
+            methods: (
+              <>
+                <code>getBalance</code>, <code>getTransactions</code>, <code>getUsage</code>, <code>plan</code>,{" "}
+                <code>packages</code>, <code>checkout</code>, <code>subscriptionCheckout</code>, <code>portal</code>
+              </>
+            ),
+            endpoint: <code>/api/billing/...</code>,
+          },
+          {
+            resource: <code>marketplace</code>,
+            methods: (
+              <>
+                <code>search</code>, <code>get</code>, <code>featured</code>, <code>categories</code>, <code>reviews</code>,{" "}
+                <code>addReview</code>, <code>myListings</code>, <code>createListing</code>, <code>updateListing</code>,{" "}
+                <code>publishListing</code>, <code>archiveListing</code>, <code>install</code>, <code>uninstall</code>,{" "}
+                <code>installStatus</code>, <code>myInstalls</code>, <code>subscriptions</code>,{" "}
+                <code>cancelSubscription</code>, <code>resumeSubscription</code>, <code>revenue</code>, <code>payouts</code>
+              </>
+            ),
+            endpoint: <code>/api/marketplace/...</code>,
+          },
+          {
+            resource: <code>inference</code>,
+            methods: (
+              <>
+                <code>chatCompletion(deploymentSlug, request)</code>, <code>listModels</code>
+              </>
+            ),
+            endpoint: (
+              <>
+                <code>POST /v1/&#123;deploymentSlug&#125;/chat/completions</code>, <code>GET /v1/models</code>
+              </>
+            ),
+          },
+          {
+            resource: <code>versioning</code>,
+            methods: (
+              <>
+                <code>list</code>, <code>latest</code>, <code>get</code>, <code>create</code>, <code>compare</code>,{" "}
+                <code>history</code>, <code>rollback</code>, <code>tag</code>, <code>publish</code>, <code>delete</code>
+              </>
+            ),
+            endpoint: <code>/api/versioning/agents/&#123;agentId&#125;/...</code>,
+          },
+          {
+            resource: (
+              <>
+                <code>openclaw</code>, <code>platform</code>, <code>skills</code>
+              </>
+            ),
+            methods: (
+              <>
+                <code>openclaw.list</code>, <code>openclaw.get</code> (chat channels), <code>platform.status</code>,{" "}
+                <code>platform.stats</code>, <code>skills.list</code>
+              </>
+            ),
+            endpoint: (
+              <>
+                <code>/api/openclaw</code>, <code>/api/status</code>, <code>/api/public/stats</code>
+              </>
+            ),
+          },
+        ]}
+      />
+      <p>
+        Billing amounts are dollars, as the API returns them. There is no <code>agents.stop</code> or{" "}
+        <code>billing.addCredits</code>: use <code>agents.stopDeployment(agentId, deploymentId)</code> and{" "}
+        <code>billing.checkout</code>.
+      </p>
+
+      <h3 id="sdk-errors">Errors and timeouts</h3>
+      <p>
+        Every failure throws a <code>WheelsAIError</code> with <code>status</code> (the HTTP status, or <code>0</code> for a
+        network error or timeout), <code>message</code> (the API&apos;s <code>message</code> or <code>error</code>, with
+        validation errors spelled out), <code>code</code> (the API&apos;s <code>error</code> code, such as{" "}
+        <code>insufficient_credits</code>) and <code>data</code> (the parsed body). See{" "}
+        <Link href="/docs/api#errors">Errors</Link> for the shapes.
       </p>
       <CodeBlock
         language="ts"
         code={`try {
-  await wheels.agents.create({ name: "Fourth agent", framework: "custom", sourceType: "github",
-    sourceUrl: "https://github.com/owner/repo", modelConfig: {} });
+  await wheels.agents.deploy(agentId, { gpuTier: "3060" });
 } catch (err) {
-  if (err instanceof WheelsAIError && err.status === 403) {
-    console.log((err.data as { upgradeUrl?: string }).upgradeUrl); // plan limit reached
+  if (err instanceof WheelsAIError && err.code === "insufficient_credits") {
+    console.log(err.status, err.message); // 402 and how much is needed
+  } else {
+    throw err;
   }
 }`}
       />
+      <p>
+        Requests time out after 30 seconds (<code>timeoutMs</code> in the constructor; <code>0</code> disables it). A playground
+        turn with tools, or a long completion, can take longer: <code>agents.playgroundChat</code> and{" "}
+        <code>inference.chatCompletion</code> accept <code>&#123; timeoutMs &#125;</code> as a last argument for that one call.
+      </p>
 
       <h2 id="openai">Using the OpenAI SDK for /v1</h2>
       <p>
         For chat completions against your deployments, the official OpenAI client works unchanged: set <code>baseURL</code> to{" "}
-        <code>$WHEELSAI_API_URL/v1/&#123;deploymentSlug&#125;</code> and <code>apiKey</code> to your WheelsAI key. See{" "}
+        <code>$WHEELSAI_API_URL/v1/&#123;deploymentSlug&#125;</code> and <code>apiKey</code> to your WheelsAI key. It also
+        gives you streaming, which <code>inference.chatCompletion</code> does not. See{" "}
         <Link href="/docs/guides/deploy-a-model#call">Deploy a model</Link> for a full example.
       </p>
 
       <h2 id="cli">CLI</h2>
       <p>
-        The <code>wheelsai</code> command stores its API URL and credentials in your user configuration directory (via{" "}
-        <code>conf</code>, project name <code>wheelsai</code>). The default API URL is <code>http://localhost:4000</code>; set
-        yours with <code>--url</code> on login.
+        The <code>wheelsai</code> command signs in, deploys an agent to GPU, lists it on the marketplace and reads deployment
+        status and logs. Progress goes to stderr and results to stdout; most commands take <code>--json</code>.
       </p>
 
       <h3 id="cli-login">wheelsai login</h3>
       <CodeBlock
         language="bash"
-        code={`wheelsai login --url "$WHEELSAI_API_URL" --email you@example.com --password '...'`}
+        code={`# API key: you are asked for it, and nothing is echoed
+wheelsai login --url "$WHEELSAI_API_URL"
+
+# Scripts and CI: read the key from stdin
+wheelsai login --url "$WHEELSAI_API_URL" --api-key-stdin < key.txt
+
+# Email and password (asked for; --password-stdin reads it from stdin; --code for two-factor)
+wheelsai login --url "$WHEELSAI_API_URL" --email you@example.com
+
+wheelsai whoami
+wheelsai logout`}
       />
       <p>
-        Signs in and saves the session token, which lasts 24 hours. Accounts with two-factor authentication cannot sign in from
-        the CLI yet.
+        The key or password is read from a prompt or from stdin, so it stays out of your shell history and out of the process
+        list. The key is checked against the API before anything is saved. In CI you can skip <code>login</code> altogether and
+        set <code>WHEELSAI_API_URL</code> and <code>WHEELSAI_API_KEY</code>.
       </p>
-      <Callout variant="warning">
+      <Callout title="A saved credential belongs to one API URL">
         <p>
-          <code>wheelsai login --api-key &lt;key&gt;</code> saves the key, but the CLI then sends it in the{" "}
-          <code>X-API-Key</code> header the API does not accept, so commands answer <code>401</code>. Use email login for now.
+          The API URL is saved together with the credential, and the credential is only ever sent to that server. If the URL
+          later points somewhere else (<code>wheelsai config set apiUrl</code>, <code>login --url</code> or{" "}
+          <code>WHEELSAI_API_URL</code>), the credential is withheld and the command stops and says so. There is no default
+          server: <code>login</code> needs <code>--url</code> the first time. Use <code>https://</code>; plain{" "}
+          <code>http://</code> to anything but your own machine prints a warning, because the credential then travels
+          unencrypted. Settings are stored in your user configuration directory with mode 0600.
         </p>
       </Callout>
 
-      <h3 id="cli-agents">wheelsai agents</h3>
+      <h3 id="cli-deploy">wheelsai deploy</h3>
       <CodeBlock
         language="bash"
-        code={`wheelsai agents list          # name, id, framework and version of each agent
-wheelsai agents get <agent-id>  # configuration, tools, model and deployments
-# add --json to either for machine-readable output`}
+        code={`wheelsai deploy --agent my-support-bot                      # slug or id
+wheelsai deploy --agent my-support-bot --gpu-tier 3060 --replicas 2
+wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
       />
+      <p>In order, stopping at the first failure, the command:</p>
+      <ol>
+        <li>finds the agent in your organization by slug or id;</li>
+        <li>
+          checks its graph with the API&apos;s validator, if it has one (<code>--no-validate</code> skips this; with an API key
+          the graph cannot be read, so the check is skipped with a warning);
+        </li>
+        <li>
+          chooses a GPU tier from the tiers the API can deploy right now: <code>--gpu-tier</code> must be one of them, and
+          without it the cheapest is used;
+        </li>
+        <li>
+          starts the deployment (<code>POST /api/agents/&#123;id&#125;/deploy</code>), which reserves credits;
+        </li>
+        <li>
+          waits until it is running, showing each status the API reports. Status is checked after 5, 10 and 20 seconds and then
+          every <code>--interval</code> seconds (default 30) up to <code>--timeout</code> seconds (default 600);
+        </li>
+        <li>
+          prints the endpoint and channels exactly as the API returned them, or says that none was returned;
+        </li>
+        <li>
+          with <code>--publish</code>, lists the agent on the marketplace.
+        </li>
+      </ol>
+      <Callout variant="warning" title="A deployment that exists keeps running">
+        <p>
+          Once the deployment is created it runs on the server and its credits stay reserved, whatever happens to the command.
+          Every later error, including a timeout, names the deployment id, and <code>--json</code> still prints a document with{" "}
+          <code>deployment.id</code>. To keep waiting, use{" "}
+          <code>wheelsai deploy --agent my-support-bot --resume &lt;deployment-id&gt;</code>, which starts nothing new. Running{" "}
+          <code>deploy</code> again without <code>--resume</code> starts a second, separately billed deployment.
+        </p>
+      </Callout>
+
+      <h3 id="cli-publish">wheelsai publish</h3>
+      <CodeBlock
+        language="bash"
+        code={`wheelsai publish --agent my-support-bot                          # free listing
+wheelsai publish --agent my-support-bot --price-per-request 5    # cents per request
+wheelsai publish --agent my-support-bot --monthly 900            # cents per month
+wheelsai publish --agent my-support-bot --title "Support Pro" --category customer-support`}
+      />
+      <p>
+        Creates and publishes the agent&apos;s marketplace listing and prints its URL. An agent has one listing, so running it
+        again reuses it and changes only what you pass. A new listing is free unless you choose a price.{" "}
+        <code>deploy --publish</code> does the same after the deployment is running, and checks the price, title, description
+        and category against the API&apos;s limits before any GPU is requested. A <code>--tokenized</code> listing is gated
+        only once a token has been launched for it; until then it installs free.
+      </p>
 
       <h3 id="cli-test">wheelsai test</h3>
       <CodeBlock
         language="bash"
-        code={`wheelsai test <agent-id> -m "Summarise what you can do" --model free/groq/llama-3.3-70b`}
+        code={`wheelsai test my-support-bot -m "Summarise what you can do" --model free/groq/llama-3.3-70b`}
       />
       <p>
-        Sends one playground message and prints the reply, the model and token usage. Without <code>-m</code> it asks the agent
-        to introduce itself; <code>--json</code> prints the raw response.
+        Sends one playground message (no GPU deployment needed) and prints the reply, the model and token usage. Without{" "}
+        <code>-m</code> it asks the agent to introduce itself. If the agent is an installed marketplace listing priced per
+        request, the message is charged and the charge the API reports is printed. <code>--timeout</code> (default 120 seconds)
+        sets how long to wait for the reply.
       </p>
 
-      <h3 id="cli-deploy">wheelsai deploy</h3>
-      <CodeBlock language="bash" code={`wheelsai deploy <agent-id> --gpu-tier 4090 --replicas 1`} />
+      <h3 id="cli-inspect">wheelsai agents, logs, whoami, config</h3>
+      <CodeBlock
+        language="bash"
+        code={`wheelsai agents list                  # slug, name, latest deployment status
+wheelsai agents get my-support-bot    # configuration, secret names, every deployment
+wheelsai logs <deployment-id>         # an agent deployment: status and the logs the API has
+wheelsai logs <deployment-id> --model # a model deployment and its lifecycle events
+wheelsai whoami                       # who the credentials belong to
+wheelsai config show                  # effective API URL, web URL and where each comes from`}
+      />
       <p>
-        Deploys an agent (<code>POST /api/agents/&#123;id&#125;/deploy</code>). Always pass <code>--gpu-tier</code> with a tier
-        id from <code>GET /api/models</code> (<code>3060</code>, <code>4070</code>, <code>4090</code>, <code>a100</code>,{" "}
-        <code>h100</code>): the built-in default, <code>rtx-4090</code>, is not a tier id.
+        <code>logs</code> accepts the id that <code>wheelsai deploy</code> prints; <code>--agent &lt;slug-or-id&gt;</code> skips
+        the search for the agent that owns it. An endpoint is shown as an address only while its deployment is running. Text
+        from the API is printed with control characters removed; <code>--json</code> output is exact.
       </p>
 
-      <h3 id="cli-logs">wheelsai logs</h3>
-      <CodeBlock language="bash" code={`wheelsai logs <deployment-id> [--json]`} />
+      <h3 id="cli-errors">Exit codes and errors</h3>
       <p>
-        Despite the name, prints a <strong>model</strong> deployment&apos;s status, model, engine, GPU tier, replicas, endpoint
-        and per-node health (<code>GET /api/deployments/&#123;id&#125;</code>). Use a deployment id from{" "}
-        <code>/api/deployments</code>; agent deployment ids from <code>wheelsai deploy</code> are not found there.
+        <code>0</code> on success, <code>1</code> on any failure, <code>130</code> when interrupted. A failure prints the
+        API&apos;s own message, then its HTTP status and error code, then what to do next:
       </p>
+      <CodeBlock
+        language="text"
+        code={`✖ Deploying requires a reservation of $0.37 in credits. Add credits and retry.
+  HTTP 402 insufficient_credits
+  Add credits at https://your-app.example.com/dashboard/billing`}
+      />
     </DocPage>
   );
 }

@@ -1,90 +1,75 @@
 import { Command } from "commander";
 import chalk from "chalk";
-import ora from "ora";
-import { WheelsAI } from "@wheelsai/sdk";
-import { getConfig } from "../config.js";
 
-function getClient(): WheelsAI {
-  const config = getConfig();
-  const client = new WheelsAI({ baseUrl: config.apiUrl, token: config.token, apiKey: config.apiKey });
-  return client;
-}
+import { createSession } from "../client.js";
+import { resolveAgent } from "../lib/agents.js";
+import { clean } from "../lib/terminal.js";
+import { Reporter, colorStatus, field, printJson, shortId } from "../ui.js";
 
-export const agentsCommand = new Command("agents")
-  .description("Manage agents");
+export const agentsCommand = new Command("agents").description("List and inspect your agents");
 
 agentsCommand
   .command("list")
-  .description("List all agents")
-  .option("--json", "Output as JSON")
-  .action(async (opts) => {
-    const spinner = ora("Fetching agents...").start();
-    try {
-      const client = getClient();
-      const { agents } = await client.agents.list();
-      spinner.stop();
+  .description("List the agents in your organization")
+  .option("--json", "output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const { wheels } = createSession();
+    const reporter = new Reporter(opts.json);
+    reporter.start("Fetching agents");
+    const { agents } = await wheels.agents.list();
+    reporter.stop();
 
-      if (opts.json) {
-        console.log(JSON.stringify(agents, null, 2));
-        return;
-      }
+    if (opts.json) return printJson(agents);
 
-      if (agents.length === 0) {
-        console.log(chalk.yellow("No agents found. Create one with: wheelsai agents create"));
-        return;
-      }
-
-      console.log(chalk.bold(`\n  Agents (${agents.length})\n`));
-      for (const agent of agents) {
-        const status = agent.status === "running"
-          ? chalk.green(agent.status)
-          : chalk.gray(agent.status);
-        console.log(`  ${chalk.cyan(agent.name)}  ${status}  ${chalk.gray(agent.id)}`);
-        console.log(`    Framework: ${agent.framework}  Version: ${agent.version}`);
-      }
-      console.log();
-    } catch (err: any) {
-      spinner.fail(chalk.red(err.message || "Failed to fetch agents"));
-      process.exit(1);
+    if (agents.length === 0) {
+      console.log(chalk.yellow("No agents yet. Create one in the dashboard, then run `wheelsai deploy --agent <slug>`."));
+      return;
     }
+
+    console.log(chalk.bold(`\n  Agents (${agents.length})\n`));
+    for (const agent of agents) {
+      const latest = agent.latestDeployment;
+      const deployed = latest ? `${colorStatus(latest.status)} ${chalk.dim(`deployment ${shortId(latest.id)}`)}` : chalk.dim("not deployed");
+      console.log(`  ${chalk.cyan(clean(agent.slug))}  ${clean(agent.name)}  ${deployed}`);
+      console.log(chalk.dim(`    ${agent.id}  ${clean(agent.framework)}  v${clean(agent.version)}`));
+    }
+    console.log();
   });
 
 agentsCommand
-  .command("get <id>")
-  .description("Get agent details")
-  .option("--json", "Output as JSON")
-  .action(async (id, opts) => {
-    const spinner = ora("Fetching agent...").start();
-    try {
-      const client = getClient();
-      const { agent } = await client.agents.get(id);
-      spinner.stop();
+  .command("get <agent>")
+  .description("Show an agent and its deployments (by slug or id)")
+  .option("--json", "output as JSON")
+  .action(async (reference: string, opts: { json?: boolean }) => {
+    const { wheels } = createSession();
+    const reporter = new Reporter(opts.json);
+    reporter.start("Fetching agent");
+    const summary = await resolveAgent(wheels, reference);
+    const { agent } = await wheels.agents.get(summary.id);
+    reporter.stop();
 
-      if (opts.json) {
-        console.log(JSON.stringify(agent, null, 2));
-        return;
+    if (opts.json) return printJson(agent);
+
+    console.log(chalk.bold(`\n  ${clean(agent.name)}\n`));
+    console.log(field("Slug", clean(agent.slug)));
+    console.log(field("ID", agent.id));
+    console.log(field("Framework", clean(agent.framework)));
+    console.log(field("Version", clean(agent.version)));
+    console.log(field("Public", String(agent.isPublic)));
+    console.log(field("Tags", clean(agent.tags.join(", "))));
+    console.log(field("Tools", clean(agent.tools.map((tool) => tool.name).join(", "))));
+    console.log(field("Model", clean(agent.modelConfig?.externalModel ?? agent.modelConfig?.modelId)));
+    console.log(field("Secrets", agent.env.keys.length > 0 ? clean(agent.env.keys.join(", ")) : null));
+
+    if (agent.deployments.length > 0) {
+      console.log(chalk.bold(`\n  Deployments (${agent.deployments.length})`));
+      for (const deployment of agent.deployments) {
+        console.log(`    ${colorStatus(deployment.status)}  ${deployment.id}`);
+        // An endpoint is only an address that answers while the deployment is running.
+        const endpoint = deployment.status === "running" ? clean(deployment.endpoint) ?? "none" : "none (not running)";
+        console.log(chalk.dim(`      GPU ${clean(deployment.gpuTier)} x${deployment.replicas}  endpoint ${endpoint}  created ${clean(deployment.createdAt)}`));
+        if (deployment.lastError) console.log(chalk.red(`      ${clean(deployment.lastError)}`));
       }
-
-      console.log(chalk.bold(`\n  ${agent.name}\n`));
-      console.log(`  ID:          ${agent.id}`);
-      console.log(`  Framework:   ${agent.framework}`);
-      console.log(`  Version:     ${agent.version}`);
-      console.log(`  Status:      ${agent.status}`);
-      console.log(`  Public:      ${agent.isPublic}`);
-      console.log(`  Tags:        ${agent.tags.join(", ") || "none"}`);
-      console.log(`  Tools:       ${agent.tools.map((t) => t.name).join(", ") || "none"}`);
-      console.log(`  Model:       ${agent.modelConfig.externalModel || "default"}`);
-
-      if (agent.deployments.length > 0) {
-        console.log(chalk.bold(`\n  Deployments (${agent.deployments.length}):`));
-        for (const d of agent.deployments) {
-          const status = d.status === "running" ? chalk.green(d.status) : chalk.yellow(d.status);
-          console.log(`    ${status}  GPU: ${d.gpuTier}  Endpoint: ${d.endpoint || "n/a"}`);
-        }
-      }
-      console.log();
-    } catch (err: any) {
-      spinner.fail(chalk.red(err.message || "Failed to fetch agent"));
-      process.exit(1);
     }
+    console.log();
   });

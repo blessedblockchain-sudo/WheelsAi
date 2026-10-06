@@ -158,6 +158,34 @@ jobs:
           REDIS_URL: redis://localhost:6379
           JWT_SECRET: test-secret-key-for-ci-only-32chars
 
+  # Mirrors the `sdk-cli` job in .gitlab-ci.yml: the SDK and CLI suites as their
+  # own blocking job, so they gate a merge without waiting on the database tier.
+  sdk-cli:
+    name: SDK and CLI tests
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The CLI imports the compiled SDK (its exports point at dist/).
+      - name: Build the SDK
+        run: npm run build -w @wheelsai/sdk
+
+      - name: Run SDK tests
+        run: npm run test -w @wheelsai/sdk
+
+      - name: Run CLI tests
+        run: npm run test -w @wheelsai/cli
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest

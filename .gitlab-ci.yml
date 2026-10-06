@@ -104,6 +104,20 @@ unit:
     - npm run db:generate
     - npm run test:unit -w @wheelsai/api
 
+# The SDK and CLI suites: blocking, no infra (an injected fetch, and for the
+# CLI's command tests an HTTP server on 127.0.0.1 inside the job).
+# The SDK is built here rather than taken from the build job's artifacts:
+# the CLI imports the compiled SDK (its `exports` point at dist/), and the
+# tests must run against the SDK source in this commit, not a cached copy.
+sdk-cli:
+  stage: test
+  needs: [build]
+  <<: *node_setup
+  script:
+    - npm run build -w @wheelsai/sdk
+    - npm run test -w @wheelsai/sdk
+    - npm run test -w @wheelsai/cli
+
 # Schema/migration integrity. Split out from the unit gate because it is the
 # only blocking job that needs a live database.
 migrations:
@@ -206,7 +220,7 @@ test:integration:
 
 .fly_deploy: &fly_deploy
   stage: deploy
-  needs: [unit, migrations]
+  needs: [unit, sdk-cli, migrations]
   image: node:22
   cache: []
   before_script:

@@ -536,16 +536,31 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   /**
    * Refresh token
+   *
+   * The new token is built from the user's membership as it is now, never
+   * from the old token's claims: copying them let a demoted or removed admin
+   * renew an admin session for as long as they kept refreshing.
    */
   app.post("/refresh", { preHandler: [requireJwtAuth] }, async (request, reply) => {
-    const { userId, orgId, email, walletAddress, role } = request.auth!;
+    const { userId, orgId } = request.auth!;
+
+    // requireJwtAuth guarantees a JWT principal (non-null userId)
+    const user = await findUserById(userId!);
+    const membership = user?.memberships.find((m) => m.org.id === orgId);
+    if (!user || !membership) {
+      clearAuthCookie(reply);
+      return reply.status(401).send({
+        error: "membership_revoked",
+        message: "You are no longer a member of this organization. Sign in again.",
+      });
+    }
 
     const payload: JwtPayload = {
-      userId: userId!, // requireJwtAuth guarantees a JWT principal (non-null userId)
-      orgId,
-      email,
-      walletAddress,
-      role: role ?? undefined,
+      userId: user.id,
+      orgId: membership.org.id,
+      email: user.email ?? undefined,
+      walletAddress: user.walletAddress ?? undefined,
+      role: membership.role,
     };
 
     const { accessToken } = generateTokens(app, payload);

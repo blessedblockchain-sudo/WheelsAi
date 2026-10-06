@@ -52,7 +52,7 @@ type Where = { id?: string; orgId?: string };
 
 interface Harness {
   app: FastifyInstance;
-  /** Every `where` passed to prisma.agent.findFirst, in call order. */
+  /** Every `where` of an agent lookup or lock (findFirst, updateMany), in call order. */
   scopeQueries: Where[];
   /** Names of version-table operations reached, in call order. */
   versionOps: string[];
@@ -74,6 +74,7 @@ async function buildHarness(): Promise<Harness> {
 
   const p = prisma as any;
   const original = {
+    $transaction: p.$transaction,
     agent: { ...p.agent },
     agentVersion: { ...p.agentVersion },
     agentVersionDiff: { ...p.agentVersionDiff },
@@ -102,6 +103,16 @@ async function buildHarness(): Promise<Harness> {
     return { id: where.id, orgId: owner, name: "agent", graph: null };
   };
   p.agent.update = async () => record("agent.update", {});
+  // The row lock create and rollback take first. Faithful to Postgres the same
+  // way findFirst is: it matches on id, and on orgId only when one is given.
+  p.agent.updateMany = async ({ where }: { where: Where }) => {
+    scopeQueries.push(where);
+    const owner = where.id ? AGENT_ORG[where.id] : undefined;
+    if (!owner) return { count: 0 };
+    if (where.orgId !== undefined && where.orgId !== owner) return { count: 0 };
+    return { count: 1 };
+  };
+  p.$transaction = async (fn: (tx: unknown) => unknown) => fn(p);
 
   const VERSION_ROW = {
     id: "ver_1",
@@ -154,6 +165,7 @@ async function buildHarness(): Promise<Harness> {
     scopeQueries,
     versionOps,
     restore: () => {
+      p.$transaction = original.$transaction;
       Object.assign(p.agent, original.agent);
       Object.assign(p.agentVersion, original.agentVersion);
       Object.assign(p.agentVersionDiff, original.agentVersionDiff);

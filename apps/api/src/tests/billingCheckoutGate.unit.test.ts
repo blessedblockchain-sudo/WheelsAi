@@ -122,13 +122,24 @@ test("POST /checkout returns 501 card_payments_not_configured when neither Strip
   });
   await app.register(billingRoutes, { prefix: "/api/billing" });
 
-  const res = await app.inject({
-    method: "POST",
-    url: "/api/billing/checkout",
-    payload: { amount: 100 },
-  });
+  // requireRole reads the member's current role from the database, not the
+  // token; without a membership row it would refuse before the 501 gate.
+  const { prisma } = await import("@wheelsai/db");
+  const p = prisma as unknown as { orgMember: Record<string, unknown> };
+  const savedFindUnique = p.orgMember.findUnique;
+  p.orgMember.findUnique = async () => ({ role: "owner" });
 
-  assert.equal(res.statusCode, 501);
-  assert.equal(res.json().error, "card_payments_not_configured");
-  await app.close();
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/billing/checkout",
+      payload: { amount: 100 },
+    });
+
+    assert.equal(res.statusCode, 501);
+    assert.equal(res.json().error, "card_payments_not_configured");
+  } finally {
+    p.orgMember.findUnique = savedFindUnique;
+    await app.close();
+  }
 });

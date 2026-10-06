@@ -142,8 +142,10 @@ export default function GettingStartedPage() {
   -d '{"messages":[{"role":"user","content":"Hello! What can you do?"}]}'`}
       />
       <p>
-        The response carries the reply, the model used and token usage. Every API-key request counts toward your plan&apos;s
-        monthly API calls (1,000 on Starter, 100,000 on Pro). See{" "}
+        The response carries the reply, the model used and token usage. This request counts toward your plan&apos;s
+        monthly API calls (1,000 on Starter, 100,000 on Pro), as does every API-key request that is not a read;{" "}
+        <code>GET</code> requests with a key are free outside <code>/v1</code> (
+        <Link href="/docs/guides/plans-and-billing#api-calls">what counts</Link>). See{" "}
         <Link href="/docs/api/agents#playground-chat">playground chat</Link> for the full contract.
       </p>
 

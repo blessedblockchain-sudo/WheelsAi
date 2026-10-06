@@ -1,4 +1,4 @@
-import { FastifyInstance, FastifyReply } from "fastify";
+import { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { requireAuth } from "../middleware/auth.js";
 import {
   createAgentVersion,
@@ -12,6 +12,8 @@ import {
   tagVersion,
   publishVersion,
   AgentNotFoundError,
+  type ChangeType,
+  type VersionAuthor,
 } from "../services/versioning.js";
 
 // ============================================
@@ -39,6 +41,33 @@ function replyForError(reply: FastifyReply, error: unknown) {
   return reply.status(400).send({ error: message });
 }
 
+/**
+ * Who is acting: the signed-in user, or the API key itself. A key has no user
+ * behind it (F4), so it is never passed off as one. Null when the principal
+ * carries neither identity, which the handlers refuse.
+ */
+function authorOf(auth: NonNullable<FastifyRequest["auth"]>): VersionAuthor | null {
+  if (auth.type === "api_key") {
+    if (!auth.apiKeyId) return null;
+    return {
+      type: "api_key",
+      apiKeyId: auth.apiKeyId,
+      name: auth.apiKeyName,
+      keyPrefix: auth.apiKeyPrefix,
+    };
+  }
+  return auth.userId ? { type: "user", userId: auth.userId } : null;
+}
+
+function replyNoAuthor(reply: FastifyReply) {
+  return reply.status(401).send({
+    error: "Unauthorized",
+    message: "Could not identify who is making this change",
+  });
+}
+
+const CHANGE_TYPES: readonly ChangeType[] = ["major", "minor", "patch"];
+
 export async function versioningRoutes(app: FastifyInstance) {
   // Apply auth middleware to all routes
   app.addHook("preHandler", requireAuth);
@@ -60,12 +89,23 @@ export async function versioningRoutes(app: FastifyInstance) {
   }>("/agents/:agentId/versions", async (request, reply) => {
     try {
       const { agentId } = request.params;
-      const { orgId, userId } = request.auth!;
+      const { orgId } = request.auth!;
+      const author = authorOf(request.auth!);
+      if (!author) return replyNoAuthor(reply);
+
+      // Only the documented fields: the service also accepts an author
+      // display name, which a caller must not be able to set.
+      const { changeLog, changeType, tags } = request.body ?? {};
+      if (changeType !== undefined && !CHANGE_TYPES.includes(changeType)) {
+        return reply
+          .status(400)
+          .send({ error: "changeType must be major, minor or patch" });
+      }
 
       const version = await createAgentVersion(
         { agentId, orgId },
-        userId ?? "",
-        request.body,
+        author,
+        { changeLog, changeType, tags },
       );
 
       return reply.status(201).send(version);
@@ -196,12 +236,14 @@ export async function versioningRoutes(app: FastifyInstance) {
   }>("/agents/:agentId/versions/:version/rollback", async (request, reply) => {
     try {
       const { agentId, version } = request.params;
-      const { orgId, userId } = request.auth!;
+      const { orgId } = request.auth!;
+      const author = authorOf(request.auth!);
+      if (!author) return replyNoAuthor(reply);
 
       const newVersion = await rollbackToVersion(
         { agentId, orgId },
         version,
-        userId ?? "",
+        author,
       );
 
       return reply.send(newVersion);

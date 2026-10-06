@@ -154,8 +154,48 @@ test("an API key cannot request a payout, even with org authority", async () => 
   }
 });
 
+// requireRole decides on the OrgMember row as it is now, so each case states
+// what the database holds, which may differ from the token's role claim.
+async function payoutAs(tokenRole: string, currentRole: string | null) {
+  const { prisma } = await import("@wheelsai/db");
+  const p = prisma as any;
+  const savedMember = p.orgMember.findUnique;
+  const savedProfile = p.publisherProfile;
+  let touched = false;
+  p.orgMember.findUnique = async () => (currentRole ? { role: currentRole } : null);
+  p.publisherProfile = {
+    findUnique: async () => {
+      touched = true;
+      return null;
+    },
+  };
+  const app = await marketplaceAppAs({ userId: "u1", orgId: ORG, type: "jwt", role: tokenRole });
+  try {
+    const res = await app.inject({ method: "POST", url: "/payouts", payload: { payoutMethod: "credits" } });
+    return { res, touched };
+  } finally {
+    p.orgMember.findUnique = savedMember;
+    p.publisherProfile = savedProfile;
+    await app.close();
+  }
+}
+
 test("a JWT member (not owner/admin) is still refused", async () => {
-  const app = await marketplaceAppAs({ userId: "u1", orgId: ORG, type: "jwt", role: "member" });
-  const res = await app.inject({ method: "POST", url: "/payouts", payload: { payoutMethod: "credits" } });
+  const { res, touched } = await payoutAs("member", "member");
   assert.equal(res.statusCode, 403);
+  assert.equal(touched, false);
+});
+
+test("an admin demoted to member cannot request a payout on the old admin token", async () => {
+  const { res, touched } = await payoutAs("admin", "member");
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, "insufficient_role");
+  assert.equal(touched, false, "the payout service must not run for a demoted admin");
+});
+
+test("an admin removed from the org cannot request a payout on the old admin token", async () => {
+  const { res, touched } = await payoutAs("admin", null);
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.json().error, "not_a_member");
+  assert.equal(touched, false, "the payout service must not run for a removed member");
 });

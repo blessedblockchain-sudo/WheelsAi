@@ -1,4 +1,4 @@
-import { prisma } from "@wheelsai/db";
+import { prisma, type Prisma } from "@wheelsai/db";
 
 // ============================================
 // Types
@@ -56,10 +56,70 @@ async function assertAgentInOrg({ agentId, orgId }: AgentScope): Promise<void> {
 
 export type ChangeType = "major" | "minor" | "patch";
 
+/**
+ * Who is creating the version. An API key belongs to an org and has no user
+ * behind it, so it is recorded as the key itself; passing a made-up user id
+ * for it used to fail on the author column, after rollback had already
+ * overwritten the agent.
+ */
+export type VersionAuthor =
+  | { type: "user"; userId: string }
+  | { type: "api_key"; apiKeyId: string; name?: string | null; keyPrefix?: string };
+
 export interface CreateVersionInput {
   changeLog?: string;
   changeType?: ChangeType;
   tags?: string[];
+  /**
+   * Display name for an actor the platform has no account for (a GitHub
+   * pusher). Server-side callers only: routes must not pass a request body
+   * through, or a caller could sign versions with someone else's name.
+   */
+  createdByName?: string;
+}
+
+type Db = Prisma.TransactionClient;
+
+/**
+ * Lock the agent row for the rest of the transaction, or throw when it is not
+ * in the caller's org. Version numbers are "latest + 1" and rollback rewrites
+ * the agent before snapshotting it, so two writers on one agent must take
+ * turns; the conditional write is also the tenancy check.
+ */
+async function lockAgentInOrg(tx: Db, { agentId, orgId }: AgentScope): Promise<void> {
+  const locked = await tx.agent.updateMany({
+    where: { id: agentId, orgId },
+    data: { updatedAt: new Date() },
+  });
+
+  if (locked.count !== 1) {
+    throw new AgentNotFoundError();
+  }
+}
+
+async function resolveAuthor(
+  tx: Db,
+  author: VersionAuthor,
+): Promise<{ createdById: string | null; createdByApiKeyId: string | null; createdByName: string }> {
+  if (author.type === "api_key") {
+    const label = author.name || author.keyPrefix;
+    return {
+      createdById: null,
+      createdByApiKeyId: author.apiKeyId,
+      createdByName: label ? `API key (${label})` : "API key",
+    };
+  }
+
+  const user = await tx.user.findUnique({
+    where: { id: author.userId },
+    select: { displayName: true, email: true },
+  });
+
+  return {
+    createdById: author.userId,
+    createdByApiKeyId: null,
+    createdByName: user?.displayName || user?.email || "Unknown",
+  };
 }
 
 export interface VersionSnapshot {
@@ -83,17 +143,35 @@ export interface VersionSnapshot {
 
 /**
  * Create a new version of an agent
+ *
+ * `author` is a VersionAuthor; a bare string is a user id.
  */
 export async function createAgentVersion(
   scope: AgentScope,
-  userId: string,
+  author: VersionAuthor | string,
   input: CreateVersionInput = {}
+) {
+  // One transaction: a failure part-way must not leave the agent with no
+  // latest version, or with a version string no snapshot backs.
+  return prisma.$transaction(async (tx) => {
+    await lockAgentInOrg(tx, scope);
+    return snapshotAgentVersion(tx, scope, author, input);
+  });
+}
+
+/**
+ * Snapshot the agent as it stands inside `tx`. The caller holds the agent's
+ * row lock.
+ */
+async function snapshotAgentVersion(
+  tx: Db,
+  scope: AgentScope,
+  author: VersionAuthor | string,
+  input: CreateVersionInput
 ) {
   const { agentId, orgId } = scope;
 
-  // Scoped read: doubles as the tenancy check, so no separate
-  // assertAgentInOrg round-trip is needed here.
-  const agent = await prisma.agent.findFirst({
+  const agent = await tx.agent.findFirst({
     where: { id: agentId, orgId },
     include: {
       graph: true,
@@ -105,7 +183,7 @@ export async function createAgentVersion(
   }
 
   // Get the latest version number
-  const latestVersion = await prisma.agentVersion.findFirst({
+  const latestVersion = await tx.agentVersion.findFirst({
     where: { agentId },
     orderBy: { versionNumber: "desc" },
   });
@@ -118,20 +196,19 @@ export async function createAgentVersion(
     input.changeType || "patch"
   );
 
-  // Get user info
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { displayName: true, email: true },
-  });
+  const createdBy = await resolveAuthor(
+    tx,
+    typeof author === "string" ? { type: "user", userId: author } : author
+  );
 
   // Mark all existing versions as not latest
-  await prisma.agentVersion.updateMany({
+  await tx.agentVersion.updateMany({
     where: { agentId, isLatest: true },
     data: { isLatest: false },
   });
 
   // Create the new version
-  const version = await prisma.agentVersion.create({
+  const version = await tx.agentVersion.create({
     data: {
       agentId,
       version: newVersion,
@@ -151,21 +228,22 @@ export async function createAgentVersion(
       changeLog: input.changeLog,
       changeType: input.changeType || "patch",
       tags: input.tags || [],
-      createdById: userId,
-      createdByName: user?.displayName || user?.email || "Unknown",
+      createdById: createdBy.createdById,
+      createdByApiKeyId: createdBy.createdByApiKeyId,
+      createdByName: input.createdByName || createdBy.createdByName,
       isLatest: true,
     },
   });
 
   // Update agent version field
-  await prisma.agent.update({
+  await tx.agent.update({
     where: { id: agentId },
     data: { version: newVersion },
   });
 
   // Create diff from previous version if exists
   if (latestVersion) {
-    await createVersionDiff(agentId, latestVersion.version, newVersion);
+    await createVersionDiff(tx, agentId, latestVersion.version, newVersion);
   }
 
   return version;
@@ -237,68 +315,74 @@ export async function getLatestVersion(scope: AgentScope) {
 
 /**
  * Rollback agent to a specific version
+ *
+ * Restoring the agent, restoring its graph and recording the rollback as a
+ * new version commit together or not at all. They used to be separate writes,
+ * so a failure while recording left the agent rolled back with no version to
+ * show for it.
  */
 export async function rollbackToVersion(
   scope: AgentScope,
   version: string,
-  userId: string
+  author: VersionAuthor | string
 ) {
-  await assertAgentInOrg(scope);
   const { agentId } = scope;
 
-  const targetVersion = await prisma.agentVersion.findUnique({
-    where: {
-      agentId_version: { agentId, version },
-    },
-  });
+  return prisma.$transaction(async (tx) => {
+    await lockAgentInOrg(tx, scope);
 
-  if (!targetVersion) {
-    throw new Error(`Version ${version} not found`);
-  }
-
-  // Update the agent with the snapshot from the target version
-  await prisma.agent.update({
-    where: { id: agentId },
-    data: {
-      name: targetVersion.name,
-      description: targetVersion.description,
-      framework: targetVersion.framework,
-      systemPrompt: targetVersion.systemPrompt,
-      tools: targetVersion.tools as any,
-      modelConfig: targetVersion.modelConfig as any,
-      sourceType: targetVersion.sourceType,
-      sourceUrl: targetVersion.sourceUrl,
-      sourceCode: targetVersion.sourceCode,
-      env: targetVersion.env as any,
-      version: targetVersion.version,
-    },
-  });
-
-  // Update graph if it exists
-  if (targetVersion.graphNodes || targetVersion.graphEdges) {
-    await prisma.agentGraph.upsert({
-      where: { agentId },
-      create: {
-        agentId,
-        nodes: targetVersion.graphNodes as any,
-        edges: targetVersion.graphEdges as any,
-      },
-      update: {
-        nodes: targetVersion.graphNodes as any,
-        edges: targetVersion.graphEdges as any,
-        version: { increment: 1 },
+    const targetVersion = await tx.agentVersion.findUnique({
+      where: {
+        agentId_version: { agentId, version },
       },
     });
-  }
 
-  // Create a new version to record the rollback
-  const newVersion = await createAgentVersion(scope, userId, {
-    changeLog: `Rolled back to version ${version}`,
-    changeType: "patch",
-    tags: ["rollback"],
+    if (!targetVersion) {
+      throw new Error(`Version ${version} not found`);
+    }
+
+    // Update the agent with the snapshot from the target version
+    await tx.agent.update({
+      where: { id: agentId },
+      data: {
+        name: targetVersion.name,
+        description: targetVersion.description,
+        framework: targetVersion.framework,
+        systemPrompt: targetVersion.systemPrompt,
+        tools: targetVersion.tools as any,
+        modelConfig: targetVersion.modelConfig as any,
+        sourceType: targetVersion.sourceType,
+        sourceUrl: targetVersion.sourceUrl,
+        sourceCode: targetVersion.sourceCode,
+        env: targetVersion.env as any,
+        version: targetVersion.version,
+      },
+    });
+
+    // Update graph if it exists
+    if (targetVersion.graphNodes || targetVersion.graphEdges) {
+      await tx.agentGraph.upsert({
+        where: { agentId },
+        create: {
+          agentId,
+          nodes: targetVersion.graphNodes as any,
+          edges: targetVersion.graphEdges as any,
+        },
+        update: {
+          nodes: targetVersion.graphNodes as any,
+          edges: targetVersion.graphEdges as any,
+          version: { increment: 1 },
+        },
+      });
+    }
+
+    // Create a new version to record the rollback
+    return snapshotAgentVersion(tx, scope, author, {
+      changeLog: `Rolled back to version ${version}`,
+      changeType: "patch",
+      tags: ["rollback"],
+    });
   });
-
-  return newVersion;
 }
 
 /**
@@ -324,7 +408,7 @@ export async function compareVersions(
   }
 
   // Create diff on demand
-  return createVersionDiff(agentId, fromVersion, toVersion);
+  return createVersionDiff(prisma, agentId, fromVersion, toVersion);
 }
 
 /**
@@ -387,15 +471,16 @@ function calculateNewVersion(currentVersion: string, changeType: ChangeType): st
 }
 
 async function createVersionDiff(
+  db: Db,
   agentId: string,
   fromVersion: string,
   toVersion: string
 ) {
   const [from, to] = await Promise.all([
-    prisma.agentVersion.findUnique({
+    db.agentVersion.findUnique({
       where: { agentId_version: { agentId, version: fromVersion } },
     }),
-    prisma.agentVersion.findUnique({
+    db.agentVersion.findUnique({
       where: { agentId_version: { agentId, version: toVersion } },
     }),
   ]);
@@ -487,7 +572,7 @@ async function createVersionDiff(
     }
   }
 
-  return prisma.agentVersionDiff.create({
+  return db.agentVersionDiff.create({
     data: {
       agentId,
       fromVersion,

@@ -150,3 +150,53 @@ test("switch-org refuses an organization the user does not belong to", async () 
     restore();
   }
 });
+
+// MK-2: /refresh used to copy orgId and role from the old token, so a demoted
+// or removed admin could renew an admin session without limit.
+const TEAM_ORG = "22222222-2222-4222-8222-222222222222";
+
+test("refresh re-reads the role: a demoted admin's new token says member", async () => {
+  const restore = stub({ user: { findUnique: async () => member, findFirst: async () => member } });
+  const app = await authApp({ userId: "u1", orgId: TEAM_ORG, type: "jwt", role: "admin", email: "stale@example.com" });
+  try {
+    const res = await app.inject({ method: "POST", url: "/refresh" });
+    assert.equal(res.statusCode, 200);
+    const claims = app.jwt.decode(res.json().token) as any;
+    assert.equal(claims.orgId, TEAM_ORG);
+    assert.equal(claims.role, "member");
+    assert.equal(claims.email, "a@example.com");
+  } finally {
+    await app.close();
+    restore();
+  }
+});
+
+test("refresh refuses a user who was removed from the token's organization", async () => {
+  const removed = { ...member, memberships: [member.memberships[0]] };
+  const restore = stub({ user: { findUnique: async () => removed, findFirst: async () => removed } });
+  const app = await authApp({ userId: "u1", orgId: TEAM_ORG, type: "jwt", role: "admin" });
+  try {
+    const res = await app.inject({ method: "POST", url: "/refresh" });
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.json().error, "membership_revoked");
+    assert.equal(res.json().token, undefined);
+    // The stale session cookie is cleared, not renewed.
+    assert.doesNotMatch(String(res.headers["set-cookie"]), /wheelsai_token=[^;]/);
+  } finally {
+    await app.close();
+    restore();
+  }
+});
+
+test("refresh refuses when the user no longer exists", async () => {
+  const restore = stub({ user: { findUnique: async () => null, findFirst: async () => null } });
+  const app = await authApp({ userId: "u1", orgId: TEAM_ORG, type: "jwt", role: "owner" });
+  try {
+    const res = await app.inject({ method: "POST", url: "/refresh" });
+    assert.equal(res.statusCode, 401);
+    assert.equal(res.json().error, "membership_revoked");
+  } finally {
+    await app.close();
+    restore();
+  }
+});

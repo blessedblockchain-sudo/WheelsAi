@@ -1473,9 +1473,11 @@ model AgentVersion {
   changeType    String   @map("change_type") // 'major', 'minor', 'patch'
   tags          String[] @default([])
 
-  // Author
-  createdById   String   @map("created_by_id") @db.Uuid
-  createdByName String?  @map("created_by_name")
+  // Author: a user, or the API key that acted (a key has no user behind it).
+  // The key id is not a relation, so the record survives the key's revocation.
+  createdById       String?  @map("created_by_id") @db.Uuid
+  createdByApiKeyId String?  @map("created_by_api_key_id") @db.Uuid
+  createdByName     String?  @map("created_by_name")
 
   // Status
   isLatest      Boolean  @default(false) @map("is_latest")

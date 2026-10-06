@@ -5,6 +5,7 @@ import fastifyCookie from "@fastify/cookie";
 
 import { nanoid } from "nanoid";
 import { env } from "../config/env.js";
+import { prisma } from "../lib/prisma.js";
 import { validateApiKey, isJwtBlocked, type JwtPayload } from "../services/auth.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -27,11 +28,18 @@ declare module "fastify" {
       orgName?: string;
       email?: string;
       walletAddress?: string;
-      // Org role ('owner' | 'admin' | 'member'), baked into the JWT at login
-      // from the selected membership. Absent for API-key principals (F4).
+      // Org role ('owner' | 'admin' | 'member'). Starts as the claim baked
+      // into the JWT at login, which can be up to a token lifetime stale;
+      // requireRole replaces it with the membership's current role. Absent
+      // for API-key principals (F4).
       role?: string | null;
       type: "jwt" | "api_key";
       scopes?: string[];
+      // The key behind an API-key principal, so writes can record which key
+      // acted instead of inventing a user.
+      apiKeyId?: string;
+      apiKeyName?: string | null;
+      apiKeyPrefix?: string;
     } | null;
   }
 }
@@ -126,6 +134,9 @@ async function tryApiKeyAuth(
         orgId: validated.orgId,
         type: "api_key",
         scopes: validated.scopes,
+        apiKeyId: validated.id,
+        apiKeyName: validated.name,
+        apiKeyPrefix: validated.keyPrefix,
       };
     } catch (error) {
       logger.debug({ error }, "API key validation failed");
@@ -224,6 +235,29 @@ function toLegacyUser(auth: NonNullable<FastifyRequest["auth"]>): LegacyJwtUser 
 // Auth Guards
 // ============================================
 
+// Reads are free: polling a deployment's status or listing agents must not
+// spend the plan's monthly calls (a CLI waiting ten minutes at one poll every
+// three seconds would burn a fifth of Starter). The global rate limit still
+// bounds them.
+const UNMETERED_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Whether a request counts against the plan's monthly API calls: every
+ * request to the OpenAI-compatible /v1 API, however it is authenticated, and
+ * every API-key request that is not a read.
+ */
+export function countsAsApiCall(request: {
+  authType: "jwt" | "api_key";
+  method: string;
+  url: string;
+}): boolean {
+  if (request.url.startsWith("/v1/")) return true;
+  return (
+    request.authType === "api_key" &&
+    !UNMETERED_METHODS.has(request.method.toUpperCase())
+  );
+}
+
 /**
  * Require authentication - returns 401 if not authenticated
  */
@@ -237,9 +271,13 @@ export async function requireAuth(
       message: "Authentication required",
     });
   }
-  // Programmatic use counts against the plan's monthly API calls: every
-  // API-key request, and every request to the OpenAI-compatible /v1 API.
-  if (request.auth.type === "api_key" || request.url.startsWith("/v1/")) {
+  if (
+    countsAsApiCall({
+      authType: request.auth.type,
+      method: request.method,
+      url: request.url,
+    })
+  ) {
     await meterApiCall(request.auth.orgId);
   }
 }
@@ -283,38 +321,98 @@ export async function requireJwtAuth(
 }
 
 /**
+ * The member's current role in the org, or null when they are not a member.
+ */
+export type MemberRoleLookup = (
+  orgId: string,
+  userId: string
+) => Promise<string | null>;
+
+const lookupMemberRole: MemberRoleLookup = async (orgId, userId) => {
+  const membership = await prisma.orgMember.findUnique({
+    where: { orgId_userId: { orgId, userId } },
+    select: { role: true },
+  });
+  return membership?.role ?? null;
+};
+
+/**
+ * Build `requireRole` over a membership lookup. Production uses the
+ * database-backed `requireRole` below; tests pass a fake.
+ */
+export function createRequireRole(deps: { getMemberRole: MemberRoleLookup }) {
+  return function requireRole(...allowedRoles: string[]) {
+    return async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.auth) {
+        return reply.status(401).send({
+          error: "unauthenticated",
+          message: "Authentication required",
+        });
+      }
+
+      if (request.auth.type === "api_key") return;
+
+      // The token's role claim is as old as the token: a demoted or removed
+      // admin keeps it until expiry. Privileged routes decide on the
+      // membership as it is now.
+      let role: string | null = null;
+      if (request.auth.userId) {
+        try {
+          role = await deps.getMemberRole(
+            request.auth.orgId,
+            request.auth.userId
+          );
+        } catch (error) {
+          logger.error(
+            { error, orgId: request.auth.orgId },
+            "Role lookup failed; refusing the role-gated request"
+          );
+          return reply.status(503).send({
+            error: "role_check_unavailable",
+            message: "Could not verify your role right now. Try again shortly.",
+          });
+        }
+      }
+
+      if (!role) {
+        // Downstream handlers must not see the stale claim either.
+        request.auth.role = null;
+        return reply.status(403).send({
+          error: "not_a_member",
+          message: "You are no longer a member of this organization.",
+        });
+      }
+
+      request.auth.role = role;
+
+      if (!allowedRoles.includes(role)) {
+        return reply.status(403).send({
+          error: "insufficient_role",
+          message: `Requires role: ${allowedRoles.join(" or ")}`,
+        });
+      }
+    };
+  };
+}
+
+/**
  * Require one of the given organization roles (remediation F4).
  *
- * Org role ('owner' | 'admin' | 'member') is baked into the JWT at login from
- * the selected membership and surfaced on `request.auth.role`. Use this on
- * privileged actions a freshly-invited `member` must not perform: reading
- * audit logs, configuring SSO, minting credits, requesting payouts, and
- * member management.
+ * The role is read from the caller's current OrgMember row on every request,
+ * not from the JWT: the claim baked in at login outlives a demotion or a
+ * removal. A missing membership is refused, and so is a failed lookup. Use
+ * this on privileged actions a freshly-invited `member` must not perform:
+ * reading audit logs, configuring SSO, minting credits, requesting payouts,
+ * and member management.
  *
  * Policy: an org-scoped API key acts with org authority and BYPASSES the
  * per-user role check — role gating applies only to JWT (human) sessions. For
  * per-user identity actions (2FA), use `requireJwtAuth` instead, which refuses
  * API keys outright.
  */
-export function requireRole(...allowedRoles: string[]) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!request.auth) {
-      return reply.status(401).send({
-        error: "unauthenticated",
-        message: "Authentication required",
-      });
-    }
-
-    if (request.auth.type === "api_key") return;
-
-    if (!request.auth.role || !allowedRoles.includes(request.auth.role)) {
-      return reply.status(403).send({
-        error: "insufficient_role",
-        message: `Requires role: ${allowedRoles.join(" or ")}`,
-      });
-    }
-  };
-}
+export const requireRole = createRequireRole({
+  getMemberRole: lookupMemberRole,
+});
 
 // ============================================
 // Token Generation

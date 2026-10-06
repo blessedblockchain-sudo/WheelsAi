@@ -2484,7 +2484,9 @@ export interface AgentVersion {
   changeLog: string | null;
   changeType: string;
   tags: string[];
-  createdById: string;
+  // Null when an API key created the version (createdByApiKeyId is set).
+  createdById: string | null;
+  createdByApiKeyId: string | null;
   createdByName: string;
   isLatest: boolean;
   isPublished: boolean;
@@ -2499,7 +2501,9 @@ export interface AgentVersionSummary {
   changeLog: string | null;
   changeType: string;
   tags: string[];
-  createdById: string;
+  // Null when an API key created the version (createdByApiKeyId is set).
+  createdById: string | null;
+  createdByApiKeyId: string | null;
   createdByName: string;
   isLatest: boolean;
   isPublished: boolean;

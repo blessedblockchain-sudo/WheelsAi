@@ -62,7 +62,11 @@ export default function ApiOverviewPage() {
           A key acts on behalf of its organization with access to all of that organization&apos;s resources. Treat it like a
           password, keep it server-side, and revoke it if it leaks.
         </li>
-        <li>Every request made with a key counts toward the plan&apos;s monthly API calls.</li>
+        <li>
+          Requests made with a key count toward the plan&apos;s monthly API calls, except reads: <code>GET</code>,{" "}
+          <code>HEAD</code> and <code>OPTIONS</code> are free outside <code>/v1</code>. See{" "}
+          <Link href="/docs/guides/plans-and-billing#api-calls">what counts as an API call</Link>.
+        </li>
         <li>
           Some actions need a person, not a key: managing API keys, two-factor settings, switching organizations, buying credits
           or a plan, and requesting marketplace payouts. Those endpoints answer <code>401</code> to a key.

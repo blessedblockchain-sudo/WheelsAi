@@ -1042,14 +1042,19 @@ model CreatorPayout {
 // Revenue tracking for marketplace transactions
 model MarketplaceRevenue {
   id              String   @id @default(uuid()) @db.Uuid
-  listingId       String   @map("listing_id") @db.Uuid
+  // Null for a job whose offering has no agent listing (workflow and
+  // model offerings); jobId identifies those.
+  listingId       String?  @map("listing_id") @db.Uuid
+  // Escrow for one Job (type 'job'): pending while held, settled when the
+  // buyer accepts (or the review window lapses), refunded otherwise.
+  jobId           String?  @unique @map("job_id") @db.Uuid
   installId       String?  @map("install_id") @db.Uuid
   subscriptionId  String?  @map("subscription_id") @db.Uuid
   buyerId         String   @map("buyer_id") @db.Uuid
   publisherId     String   @map("publisher_id") @db.Uuid
 
   // Transaction type
-  type            String   // 'per_request', 'subscription', 'subscription_renewal'
+  type            String   // 'per_request', 'subscription', 'subscription_renewal', 'job'
 
   // Amounts
   grossAmountCents BigInt  @map("gross_amount_cents")
@@ -1096,6 +1101,77 @@ model ContributorEarning {
   @@index([recipientOrgId, createdAt])
   @@index([agentId])
   @@map("contributor_earnings")
+}
+
+/// A fixed task a publisher sells: their agent, workflow or model runs it
+/// for a buyer, paid through escrow (a Job). Runs the publisher's own
+/// product in the publisher's org, so instructions and keys never leave it.
+model Offering {
+  id                String   @id @default(uuid()) @db.Uuid
+  publisherId       String   @map("publisher_id") @db.Uuid
+  productKind       String   @map("product_kind") // 'agent' | 'workflow' | 'model'
+  agentId           String?  @map("agent_id") @db.Uuid
+  orchestrationId   String?  @map("orchestration_id") @db.Uuid
+  deploymentId      String?  @map("deployment_id") @db.Uuid
+  listingId         String?  @map("listing_id") @db.Uuid
+  slug              String   @unique
+  title             String
+  description       String   @db.Text
+  priceCents        BigInt   @map("price_cents")
+  // Time from funding to a submitted deliverable; past it the job
+  // expires and the buyer is refunded.
+  slaSeconds        Int      @map("sla_seconds")
+  // JSON Schema the buyer's input must satisfy.
+  inputSchema       Json?    @map("input_schema")
+  sampleInputs      Json     @default("[]") @map("sample_inputs")
+  // Private to the publisher: added to the product's instructions for
+  // this offering, never shown to buyers.
+  instructions      String?  @db.Text
+  // Checks the output must pass before it is submitted to the buyer.
+  deliverableChecks Json     @default("[]") @map("deliverable_checks")
+  status            String   @default("draft") // 'draft' | 'active' | 'paused' | 'archived'
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  jobs Job[]
+
+  @@index([publisherId])
+  @@index([status, productKind])
+  @@map("offerings")
+}
+
+/// One purchase of an Offering. Money moves only on these transitions:
+///   created -> funded [FUND] -> running -> submitted -> completed [SETTLE]
+///   submitted -> rejected [REFUND]; funded|running -> expired|failed|cancelled [REFUND]
+model Job {
+  id               String    @id @default(uuid()) @db.Uuid
+  offeringId       String    @map("offering_id") @db.Uuid
+  buyerId          String    @map("buyer_id") @db.Uuid
+  publisherId      String    @map("publisher_id") @db.Uuid
+  status           String    @default("created")
+  input            Json
+  output           Json?
+  checkResults     Json?     @map("check_results")
+  priceCents       BigInt    @map("price_cents")
+  failureReason    String?   @map("failure_reason")
+  rejectionReason  String?   @map("rejection_reason")
+  deadlineAt       DateTime? @map("deadline_at")
+  reviewDeadlineAt DateTime? @map("review_deadline_at")
+  fundedAt         DateTime? @map("funded_at")
+  startedAt        DateTime? @map("started_at")
+  submittedAt      DateTime? @map("submitted_at")
+  completedAt      DateTime? @map("completed_at")
+  rating           Int?
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  offering Offering @relation(fields: [offeringId], references: [id])
+
+  @@index([buyerId, createdAt])
+  @@index([publisherId, createdAt])
+  @@index([status, deadlineAt])
+  @@index([status, reviewDeadlineAt])
+  @@map("jobs")
 }
 
 // ============================================

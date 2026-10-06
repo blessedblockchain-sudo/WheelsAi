@@ -1255,15 +1255,21 @@ export async function getPublisherRevenue(publisherId: string) {
   // Get revenue by listing
   const revenueByListing = await prisma.marketplaceRevenue.groupBy({
     by: ["listingId"],
-    where: { publisherId, status: "settled" },
+    where: { publisherId, status: "settled", listingId: { not: null } },
     _sum: {
       creatorAmountCents: true,
       requestCount: true,
     },
   });
+  // Jobs for workflow and model offerings have no agent listing.
+  const unlistedJobs = await prisma.marketplaceRevenue.aggregate({
+    where: { publisherId, status: "settled", type: "job", listingId: null },
+    _sum: { creatorAmountCents: true },
+    _count: { _all: true },
+  });
 
   // Get listing details for the revenue
-  const listingIds = revenueByListing.map((r) => r.listingId);
+  const listingIds = revenueByListing.flatMap((r) => (r.listingId ? [r.listingId] : []));
   const listings = await prisma.agentListing.findMany({
     where: { id: { in: listingIds } },
     select: { id: true, title: true, slug: true },
@@ -1290,10 +1296,14 @@ export async function getPublisherRevenue(publisherId: string) {
     totalInstalls: profile.totalInstalls,
     revenueByListing: revenueByListing.map((r) => ({
       listingId: r.listingId,
-      listing: listingMap.get(r.listingId),
+      listing: r.listingId ? listingMap.get(r.listingId) : undefined,
       totalRevenueCents: Number(r._sum.creatorAmountCents) || 0,
       totalRequests: r._sum.requestCount || 0,
     })),
+    unlistedJobRevenue: {
+      totalRevenueCents: Number(unlistedJobs._sum.creatorAmountCents ?? 0n),
+      jobs: unlistedJobs._count._all,
+    },
     recentTransactions: recentTransactions.map((t) => ({
       id: t.id,
       type: t.type,

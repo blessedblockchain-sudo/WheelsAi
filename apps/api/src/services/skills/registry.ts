@@ -11,10 +11,13 @@
  * Two guarantees live here rather than in each skill, so a new skill cannot
  * forget them:
  *
- *   1. MONEY-MOVING skills never run in `trial` or `test` mode, and skills that
- *      WRITE the agent's saved data never run in `test` mode. They are filtered
- *      out of the tool list the model sees AND refused at execute time, so a
- *      model that hallucinates the call still cannot spend or overwrite.
+ *   1. MONEY-MOVING skills never run in `trial`, `test` or `hired` mode, and
+ *      skills that WRITE the agent's saved data never run in `test` or `hired`
+ *      mode. Skills that SEND data to an address the model chooses never run
+ *      in `hired` mode unless the offering's publisher allowed them by name.
+ *      All three are filtered out of the tool list the model sees AND refused
+ *      at execute time, so a model that hallucinates the call still cannot
+ *      spend, overwrite or post the publisher's instructions somewhere.
  *   2. An unavailable skill (provider not configured, misconfigured, missing
  *      agent prerequisite) answers with an explicit `unavailable` result. It is
  *      never run "anyway" and never fabricates output.
@@ -42,10 +45,16 @@ import type {
 const logger = createLogger("skills-registry");
 
 /** Modes in which value-moving skills are refused outright. */
-const MONEY_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["trial", "test"]);
+const MONEY_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["trial", "test", "hired"]);
 
 /** Modes in which skills that change the agent's saved data are refused. */
-const WRITE_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["test"]);
+const WRITE_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["test", "hired"]);
+
+/** Why a state-writing skill is refused, per mode that refuses it. */
+const WRITE_BLOCK_REASON: Partial<Record<ToolMode, string>> = {
+  test: "tests must not modify the agent's files",
+  hired: "a buyer's job must not modify the publisher's files",
+};
 
 export class SkillRegistry {
   private readonly skills = new Map<string, SkillDefinition>();
@@ -77,13 +86,18 @@ export class SkillRegistry {
     return [...this.skills.values()];
   }
 
-  /** Why a skill may not run in this mode, or null when it may. */
-  modeBlock(skill: SkillDefinition, mode: ToolMode): string | null {
+  /** Why a skill may not run in this context, or null when it may. */
+  modeBlock(skill: SkillDefinition, ctx: Pick<ToolContext, "mode" | "outboundAllowed">): string | null {
+    const { mode } = ctx;
+    // Fails closed: no list, or a list without this skill, is "not allowed".
+    if (skill.sendsOutbound && mode === "hired" && !ctx.outboundAllowed?.includes(skill.key)) {
+      return `"${skill.key}" sends data to an address the model chooses and is disabled in a paid job: a buyer's input must not be able to send the publisher's instructions elsewhere. The offering's publisher can allow it by naming it in the offering's allowed tools`;
+    }
     if (skill.moneyMoving && MONEY_BLOCKED_MODES.has(mode)) {
       return `"${skill.key}" moves money and is disabled in ${mode} mode`;
     }
     if (skill.writesState && WRITE_BLOCKED_MODES.has(mode)) {
-      return `"${skill.key}" changes the agent's saved data and is disabled in ${mode} mode: tests must not modify the agent's files`;
+      return `"${skill.key}" changes the agent's saved data and is disabled in ${mode} mode: ${WRITE_BLOCK_REASON[mode] ?? "this run must not modify the agent's files"}`;
     }
     return null;
   }
@@ -117,13 +131,13 @@ export class SkillRegistry {
   /**
    * Model-facing tool specs for the skills named in `keys`. Unknown keys
    * (legacy or unsupported names stored on the agent) are dropped, and
-   * money-moving skills are withheld in modes that forbid them.
+   * skills the context forbids (modeBlock) are withheld.
    *
    * Skills that are currently UNAVAILABLE are still offered: the agent was
    * configured with them, and the honest behaviour is for the model to try
    * and be told "unavailable: <reason>" so it can say so to the user.
    */
-  toolSpecs(keys: string[], ctx: Pick<ToolContext, "mode">): ToolSpec[] {
+  toolSpecs(keys: string[], ctx: Pick<ToolContext, "mode" | "outboundAllowed">): ToolSpec[] {
     const specs: ToolSpec[] = [];
     const seen = new Set<string>();
     for (const key of keys) {
@@ -131,7 +145,7 @@ export class SkillRegistry {
       seen.add(key);
       const skill = this.skills.get(key);
       if (!skill) continue;
-      if (this.modeBlock(skill, ctx.mode)) continue;
+      if (this.modeBlock(skill, ctx)) continue;
       specs.push({
         type: "function",
         function: {
@@ -153,7 +167,7 @@ export class SkillRegistry {
     const skill = this.skills.get(key);
     if (!skill) return { status: "error", message: `unknown tool "${key}"` };
 
-    const blocked = this.modeBlock(skill, ctx.mode);
+    const blocked = this.modeBlock(skill, ctx);
     if (blocked) return { status: "unavailable", reason: blocked };
 
     const availability = skill.availability ? skill.availability() : { available: true as const };

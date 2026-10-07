@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MarketplaceLicenceRevokedError,
   chargeMarketplaceRequest,
   refundMarketplaceRequest,
   resolveInstallBilling,
@@ -52,6 +53,11 @@ function listingRow(
     listingId: "lst_1",
     buyerId: "org_buyer",
     status: installStatus,
+    // The buyer agreed to the listing as it is here, unless a test says
+    // otherwise (see "the pricing a buyer accepted" below).
+    acceptedPricingModel: (over.pricingModel as string | undefined) ?? "per_request",
+    acceptedPricePerRequestCents:
+      "pricePerRequestCents" in over ? (over.pricePerRequestCents as bigint | null) : 250n,
     listing: {
       title: "Support Triage",
       status: "published",
@@ -424,4 +430,58 @@ test("a settled charge cannot then be refunded, and vice versa", async () => {
   });
   assert.deepEqual(lateSettle, { settled: false, reason: "not_pending" });
   assert.equal(refundedFirst.state.publisher.pending, 0n);
+});
+
+// ============================================
+// The pricing a buyer accepted
+// ============================================
+
+test("a buyer is never charged a per-request price above the one they accepted", async () => {
+  const args = { agentId: "agent_clone", orgId: "org_buyer" };
+  const resolve = (row: Record<string, unknown>) => resolveInstallBilling(makeLookup(row).db as never, args);
+  const accepted = (model: string | null, cents: bigint | null) => ({
+    acceptedPricingModel: model,
+    acceptedPricePerRequestCents: cents,
+  });
+
+  // Agreed to 250; the publisher raised it to 900. Not billable at any
+  // price: the clone is paused until the buyer accepts.
+  assert.deepEqual(await resolve({ ...listingRow({ pricePerRequestCents: 900n }), ...accepted("per_request", 250n) }), {
+    kind: "revoked",
+    listingTitle: "Support Triage",
+    reason: "pricing_changed",
+  });
+
+  // Lowered to 100: charged the lower price at once.
+  const lowered = await resolve({ ...listingRow({ pricePerRequestCents: 100n }), ...accepted("per_request", 250n) });
+  assert.equal(lowered.kind, "billable");
+  assert.equal(lowered.kind === "billable" && lowered.install.pricePerRequestCents, 100n);
+  // Exactly the agreed price is charged as agreed.
+  const same = await resolve({ ...listingRow(), ...accepted("per_request", 250n) });
+  assert.equal(same.kind === "billable" && same.install.pricePerRequestCents, 250n);
+
+  // Installed free; the listing started charging.
+  assert.equal((await resolve({ ...listingRow(), ...accepted("free", null) })).kind, "revoked");
+  // No acceptance on record (a row older than the column): fail closed.
+  assert.equal((await resolve({ ...listingRow(), ...accepted(null, null) })).kind, "revoked");
+  const { acceptedPricingModel: _m, acceptedPricePerRequestCents: _c, ...legacy } = listingRow();
+  assert.equal((await resolve(legacy)).kind, "revoked");
+
+  // Agreed to pay; the listing went free. Nothing to accept.
+  assert.deepEqual(
+    await resolve({ ...listingRow({ pricingModel: "free", pricePerRequestCents: null }), ...accepted("per_request", 250n) }),
+    { kind: "free" },
+  );
+  // Token-gated now, which the buyer never agreed to.
+  assert.equal(
+    (await resolve({ ...listingRow({ pricingModel: "tokenized", pricePerRequestCents: null }), ...accepted("free", null) })).kind,
+    "revoked",
+  );
+});
+
+test("the refusal a paused buyer reads says what to do and that nothing is charged", () => {
+  const message = new MarketplaceLicenceRevokedError("Support Triage", "pricing_changed").message;
+  assert.match(message, /changed its pricing after you agreed to it/);
+  assert.match(message, /nothing is charged/);
+  assert.match(message, /accept the new pricing from Installed Agents/);
 });

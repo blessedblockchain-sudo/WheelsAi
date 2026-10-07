@@ -13,6 +13,8 @@ import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } fr
 const AGENT = "11111111-1111-4111-8111-111111111111";
 const DEP = "22222222-2222-4222-8222-222222222222";
 const LISTING = "33333333-3333-4333-8333-333333333333";
+const OFFERING = "44444444-4444-4444-8444-444444444444";
+const JOB = "55555555-5555-4555-8555-555555555555";
 
 interface Case {
   /** `resource.method`: must match a method on the client. */
@@ -33,6 +35,15 @@ const listingInput = {
   category: "customer-support" as const,
   pricingModel: "per_request" as const,
   pricePerRequestCents: 5,
+};
+
+const offeringInput = {
+  productKind: "agent" as const,
+  agentId: AGENT,
+  title: "Market brief",
+  description: "One paragraph on a topic you send.",
+  priceCents: 200,
+  slaSeconds: 600,
 };
 
 const cases: Case[] = [
@@ -136,6 +147,27 @@ const cases: Case[] = [
   { name: "workflows.cancelRun", run: (w) => w.workflows.cancelRun(AGENT, DEP), method: "POST", path: `/api/orchestrations/${AGENT}/executions/${DEP}/cancel` },
   { name: "workflows.chatCompletion", run: (w) => w.workflows.chatCompletion("weekly-release-pipeline", { messages: [{ role: "user", content: "hi" }] }), method: "POST", path: "/v1/workflows/weekly-release-pipeline/chat/completions", body: { messages: [{ role: "user", content: "hi" }] } },
 
+  // ---- offerings and jobs ----
+  { name: "offerings.search", run: (w) => w.offerings.search({ productKind: "workflow", sort: "price_low", limit: 5 }), method: "GET", path: "/api/offerings", query: { productKind: "workflow", sort: "price_low", limit: "5" } },
+  { name: "offerings.get", run: (w) => w.offerings.get("market-brief"), method: "GET", path: "/api/offerings/market-brief" },
+  { name: "offerings.listMine", run: (w) => w.offerings.listMine({ status: "active" }), method: "GET", path: "/api/offerings/mine", query: { status: "active" } },
+  { name: "offerings.getMine", run: (w) => w.offerings.getMine(OFFERING), method: "GET", path: `/api/offerings/mine/${OFFERING}` },
+  { name: "offerings.create", run: (w) => w.offerings.create(offeringInput), method: "POST", path: "/api/offerings", body: offeringInput },
+  { name: "offerings.update", run: (w) => w.offerings.update(OFFERING, { priceCents: 300 }), method: "PATCH", path: `/api/offerings/${OFFERING}`, body: { priceCents: 300 } },
+  { name: "offerings.activate", run: (w) => w.offerings.activate(OFFERING), method: "POST", path: `/api/offerings/${OFFERING}/activate` },
+  { name: "offerings.pause", run: (w) => w.offerings.pause(OFFERING), method: "POST", path: `/api/offerings/${OFFERING}/pause` },
+  { name: "offerings.archive", run: (w) => w.offerings.archive(OFFERING), method: "POST", path: `/api/offerings/${OFFERING}/archive` },
+  { name: "offerings.validate", run: (w) => w.offerings.validate({ inputSchema: { type: "object" }, deliverableChecks: [{ type: "min_length", value: 10 }] }), method: "POST", path: "/api/offerings/validate", body: { inputSchema: { type: "object" }, deliverableChecks: [{ type: "min_length", value: 10 }] } },
+  { name: "offerings.testRun", run: (w) => w.offerings.testRun(OFFERING, { topic: "gpu" }), method: "POST", path: `/api/offerings/${OFFERING}/test-run`, body: { input: { topic: "gpu" } } },
+  { name: "offerings.hire", run: (w) => w.offerings.hire(OFFERING, { topic: "gpu" }), method: "POST", path: `/api/offerings/${OFFERING}/hire`, body: { input: { topic: "gpu" } } },
+  { name: "jobs.list", run: (w) => w.jobs.list({ role: "publisher", status: "submitted", page: 2 }), method: "GET", path: "/api/jobs", query: { role: "publisher", status: "submitted", page: "2" } },
+  { name: "jobs.summary", run: (w) => w.jobs.summary(), method: "GET", path: "/api/jobs/summary" },
+  { name: "jobs.get", run: (w) => w.jobs.get(JOB), method: "GET", path: `/api/jobs/${JOB}` },
+  { name: "jobs.accept", run: (w) => w.jobs.accept(JOB, { rating: 5 }), method: "POST", path: `/api/jobs/${JOB}/accept`, body: { rating: 5 } },
+  { name: "jobs.reject", run: (w) => w.jobs.reject(JOB, "Not what was asked"), method: "POST", path: `/api/jobs/${JOB}/reject`, body: { reason: "Not what was asked" } },
+  { name: "jobs.cancel", run: (w) => w.jobs.cancel(JOB), method: "POST", path: `/api/jobs/${JOB}/cancel`, body: {} },
+  { name: "jobs.rate", run: (w) => w.jobs.rate(JOB, 4, "Good"), method: "POST", path: `/api/jobs/${JOB}/rate`, body: { rating: 4, review: "Good" } },
+
   // ---- versioning ----
   { name: "versioning.list", run: (w) => w.versioning.list(AGENT, { limit: 5 }), method: "GET", path: `/api/versioning/agents/${AGENT}/versions`, query: { limit: "5" } },
   { name: "versioning.latest", run: (w) => w.versioning.latest(AGENT), method: "GET", path: `/api/versioning/agents/${AGENT}/versions/latest` },
@@ -196,7 +228,7 @@ describe("coverage", () => {
       (entry): entry is [string, Record<string, unknown>] =>
         entry[0] !== "client" && typeof entry[1] === "object" && entry[1] !== null,
     );
-    assert.ok(resources.length >= 11, "the client exposes its resources as own properties");
+    assert.ok(resources.length >= 13, "the client exposes its resources as own properties");
     const pinned = new Set(cases.map((c) => c.name));
     const missing: string[] = [];
     for (const [resource, methods] of resources) {

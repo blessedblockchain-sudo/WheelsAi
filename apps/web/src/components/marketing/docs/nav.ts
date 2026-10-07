@@ -34,6 +34,7 @@ export const DOCS_NAV: DocsNavSection[] = [
       { title: "Agents and playground", href: "/docs/api/agents" },
       { title: "Models and deployments", href: "/docs/api/deployments" },
       { title: "Marketplace", href: "/docs/api/marketplace" },
+      { title: "Offerings and jobs", href: "/docs/api/jobs" },
       { title: "Billing and plans", href: "/docs/api/billing" },
       { title: "Workflows and scheduler", href: "/docs/api/workflows" },
       { title: "Webhooks", href: "/docs/api/webhooks" },

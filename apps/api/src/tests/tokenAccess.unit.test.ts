@@ -76,6 +76,8 @@ function tokenizedLookup(opts: {
         listingId: "lst_1",
         buyerId: "org_buyer",
         status: opts.installStatus ?? "active",
+        acceptedPricingModel: "tokenized",
+        acceptedPricePerRequestCents: null,
         listing: {
           title: "Research Analyst",
           status: "published",

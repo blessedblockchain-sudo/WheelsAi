@@ -43,15 +43,66 @@ export interface ReputationBreakdown {
     payoutSuccess: { value: number; score: number; weight: number };
   };
   badges: string[];
+  /** Paid jobs (Offerings and Jobs) behind the score: how they ended, and how many were rated. */
+  jobs: { completed: number; rejected: number; failed: number; expired: number; ratingCount: number };
+}
+
+/** What the score reads. Production passes Prisma; tests pass a fake. */
+export interface ReputationDb {
+  publisherProfile: {
+    findUnique(args: { where: { orgId: string } }): Promise<{
+      createdAt: Date;
+      isVerified: boolean;
+      avgResponseTimeMs: bigint | null;
+      successfulPayouts: number;
+      disputeCount: number;
+      disputeResolvedCount: number;
+    } | null>;
+  };
+  agentListing: {
+    findMany(args: {
+      where: { publisherId: string; status: "published" };
+      include: { reviews: true };
+    }): Promise<Array<{ totalInstalls: number; reviews: Array<{ rating: number }> }>>;
+  };
+  job: {
+    aggregate(args: {
+      where: { publisherId: string; rating: { not: null } };
+      _avg: { rating: true };
+      _count: { _all: true };
+    }): Promise<{ _avg: { rating: number | null }; _count: { _all: number } }>;
+    groupBy(args: {
+      by: ["status"];
+      where: { publisherId: string };
+      _count: { _all: true };
+    }): Promise<Array<{ status: string; _count: { _all: number } }>>;
+  };
+}
+
+/**
+ * One average over everything buyers rated: listing reviews and paid jobs.
+ * A publisher who sells only offerings (a workflow or a model has no
+ * listing to review) is rated by their jobs alone.
+ */
+export function blendRatings(
+  reviewRatings: number[],
+  jobs: { avg: number | null; count: number },
+): { avgRating: number; ratingCount: number } {
+  const jobCount = jobs.avg === null ? 0 : jobs.count;
+  const ratingCount = reviewRatings.length + jobCount;
+  if (ratingCount === 0) return { avgRating: 0, ratingCount: 0 };
+  const sum = reviewRatings.reduce((total, rating) => total + rating, 0) + (jobs.avg ?? 0) * jobCount;
+  return { avgRating: sum / ratingCount, ratingCount };
 }
 
 /**
  * Calculate reputation score for a publisher
  */
 export async function calculateReputationScore(
-  publisherId: string
+  publisherId: string,
+  db: ReputationDb = prisma as unknown as ReputationDb
 ): Promise<ReputationBreakdown> {
-  const profile = await prisma.publisherProfile.findUnique({
+  const profile = await db.publisherProfile.findUnique({
     where: { orgId: publisherId },
   });
 
@@ -60,19 +111,30 @@ export async function calculateReputationScore(
   }
 
   // Get listings and their stats
-  const listings = await prisma.agentListing.findMany({
+  const listings = await db.agentListing.findMany({
     where: { publisherId, status: "published" },
     include: {
       reviews: true,
     },
   });
 
-  // Calculate average rating across all listings
+  const [jobRatings, jobOutcomes] = await Promise.all([
+    db.job.aggregate({
+      where: { publisherId, rating: { not: null } },
+      _avg: { rating: true },
+      _count: { _all: true },
+    }),
+    db.job.groupBy({ by: ["status"], where: { publisherId }, _count: { _all: true } }),
+  ]);
+  const jobCount = (status: string) =>
+    jobOutcomes.find((group) => group.status === status)?._count._all ?? 0;
+
+  // Average rating across listing reviews and rated jobs
   const allReviews = listings.flatMap((l) => l.reviews);
-  const avgRating =
-    allReviews.length > 0
-      ? allReviews.reduce((sum, r) => sum + r.rating, 0) / allReviews.length
-      : 0;
+  const { avgRating, ratingCount } = blendRatings(
+    allReviews.map((r) => r.rating),
+    { avg: jobRatings._avg.rating, count: jobRatings._count._all }
+  );
 
   // Calculate total installs
   const totalInstalls = listings.reduce((sum, l) => sum + l.totalInstalls, 0);
@@ -146,7 +208,7 @@ export async function calculateReputationScore(
 
   // Determine badges
   const badges: string[] = [];
-  const reviewCount = allReviews.length;
+  const reviewCount = ratingCount;
 
   if (
     scores.responseTime.value &&
@@ -189,6 +251,13 @@ export async function calculateReputationScore(
     tier,
     breakdown: scores,
     badges,
+    jobs: {
+      completed: jobCount("completed"),
+      rejected: jobCount("rejected"),
+      failed: jobCount("failed"),
+      expired: jobCount("expired"),
+      ratingCount: jobRatings._count._all,
+    },
   };
 }
 
@@ -307,11 +376,18 @@ export async function recordAgentResponseTime(
 }
 
 /**
- * Record a dispute
+ * Record a dispute. A buyer rejecting a job's deliverable is one: the buyer
+ * was refunded, so it is recorded already resolved (the ratio stays honest
+ * about how often a publisher's work is refused through the count).
  */
 export async function recordDispute(
   publisherId: string,
-  resolved: boolean = false
+  resolved: boolean = false,
+  db: {
+    publisherProfile: {
+      updateMany(args: { where: { orgId: string }; data: Record<string, unknown> }): Promise<unknown>;
+    };
+  } = prisma
 ) {
   const updateData: any = {
     disputeCount: { increment: 1 },
@@ -321,7 +397,9 @@ export async function recordDispute(
     updateData.disputeResolvedCount = { increment: 1 };
   }
 
-  await prisma.publisherProfile.update({
+  // updateMany: a publisher with no profile row has nothing to count
+  // against, and that must not throw into the rejection that reported it.
+  await db.publisherProfile.updateMany({
     where: { orgId: publisherId },
     data: updateData,
   });

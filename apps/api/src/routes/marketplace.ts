@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth, requireJwtAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireJwtAuth, requireRole, requireScope } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import {
@@ -363,18 +363,42 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
    */
   app.post(
     "/listings/:id/install",
-    { preHandler: [requireAuth] },
+    // Installing can charge (a monthly listing bills at install), so an API
+    // key needs the spend scope by name; "*" and an unscoped key do not
+    // carry it (config/apiKeyScopes.ts).
+    { preHandler: [requireAuth, requireScope("marketplace:install")] },
     async (request, reply) => {
       const { orgId } = request.auth!;
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-      // Sent only by a buyer who was shown the listing's new pricing after
-      // the publisher changed it; without it that case answers 409.
-      const { acceptNewPricing } = z
-        .object({ acceptNewPricing: z.boolean().optional() })
+      // acceptNewPricing is sent only by a buyer who was shown the listing's
+      // new pricing after the publisher changed it; without it that case
+      // answers 409. expectedPricing is the pricing the buyer was looking at
+      // when they confirmed: if the listing has moved since, this answers
+      // 409 with the pricing as it stands and nothing is charged.
+      const { acceptNewPricing, expectedPricing } = z
+        .object({
+          acceptNewPricing: z.boolean().optional(),
+          expectedPricing: z
+            .object({
+              pricingModel: z.enum(["free", "per_request", "monthly", "tokenized"]),
+              pricePerRequestCents: z.number().int().nonnegative().nullable().optional(),
+              monthlyPriceCents: z.number().int().nonnegative().nullable().optional(),
+            })
+            .optional(),
+        })
         .parse(request.body ?? {});
 
       try {
-        const result = await installAgent(id, orgId, { acceptNewPricing });
+        const result = await installAgent(id, orgId, {
+          acceptNewPricing,
+          ...(expectedPricing && {
+            expectedPricing: {
+              pricingModel: expectedPricing.pricingModel,
+              pricePerRequestCents: expectedPricing.pricePerRequestCents ?? null,
+              monthlyPriceCents: expectedPricing.monthlyPriceCents ?? null,
+            },
+          }),
+        });
         return reply.status(201).send({
           message: "Agent installed successfully",
           install: result.install,

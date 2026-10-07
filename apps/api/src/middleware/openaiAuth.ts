@@ -17,6 +17,7 @@
 import type { FastifyError, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
 import { ZodError } from "zod";
 
+import { grantsScope } from "../config/apiKeyScopes.js";
 import { meterApiCall } from "../services/orgPlan.js";
 import { PlanLimitError } from "../services/plans.js";
 import {
@@ -54,16 +55,15 @@ export function replyOpenAiError(
 /**
  * Whether the principal may use `scope`. A key created without scopes keeps
  * the full access it has always had; a key that WAS given scopes is held to
- * them. Sessions are not scoped.
+ * them. Sessions are not scoped. The rule itself, and the scopes that are
+ * never granted implicitly, are in config/apiKeyScopes.ts.
  */
 export function principalHasScope(
   auth: { type: "jwt" | "api_key"; scopes?: string[] },
   scope: string,
 ): boolean {
   if (auth.type !== "api_key") return true;
-  const scopes = auth.scopes ?? [];
-  if (scopes.length === 0) return true;
-  return scopes.includes("*") || scopes.includes(scope);
+  return grantsScope(auth.scopes, scope);
 }
 
 function planLimitError(error: PlanLimitError): OpenAiErrorResponse {

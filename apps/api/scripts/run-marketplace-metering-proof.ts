@@ -97,6 +97,10 @@ async function main() {
       buyerId: buyerOrg.id,
       clonedAgentId: clone.id,
       status: "active",
+      // What installAgent records: the pricing this buyer agreed to.
+      acceptedPricingModel: listing.pricingModel,
+      acceptedPricePerRequestCents: listing.pricePerRequestCents,
+      pricingAcceptedAt: new Date(),
     },
   });
 

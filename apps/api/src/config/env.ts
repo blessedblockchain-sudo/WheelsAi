@@ -309,6 +309,26 @@ const envSchema = z.object({
   // the same time; the next start answers 429.
   WORKFLOW_MAX_ACTIVE_RUNS_PER_ORG: z.coerce.number().int().min(1).max(100).default(5),
 
+  // Offerings and Jobs. JOB_RUNNER_CONCURRENCY is how many paid jobs one
+  // process runs at once; 0 switches the runner off, and hiring or
+  // activating an offering then answers 501 instead of taking money for
+  // work nobody will pick up.
+  JOB_RUNNER_CONCURRENCY: z.coerce.number().int().min(0).max(50).default(2),
+  // The sweeper: expires jobs past their delivery time (refund), completes
+  // submitted jobs whose review window closed (settle), and re-queues jobs
+  // a lost queue entry or a dead worker left behind. 0 disables it; do not
+  // disable it where jobs are enabled.
+  JOB_SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
+  // The longest one job may run, whatever delivery time its offering
+  // promises.
+  JOB_MAX_RUN_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(900_000),
+  // What a paid job's use of the platform's own model keys (the free
+  // models) costs the publisher, in cents per million tokens; taken out of
+  // their share when the job settles. The defaults are the catalog's
+  // small-model rate ($0.15 in, $0.60 out per million).
+  JOB_PLATFORM_MODEL_INPUT_CENTS_PER_MTOK: z.coerce.number().min(0).max(100_000).default(15),
+  JOB_PLATFORM_MODEL_OUTPUT_CENTS_PER_MTOK: z.coerce.number().min(0).max(100_000).default(60),
+
   // Uptime-prober BullMQ worker (Wave 1): probes due UptimeMonitors and
   // records real up/down events + rolling stats. Each monitor still
   // honors its own checkIntervalSeconds. Set to 0 to disable.

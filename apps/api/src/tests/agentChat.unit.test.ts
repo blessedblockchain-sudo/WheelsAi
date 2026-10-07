@@ -1237,6 +1237,7 @@ test("every source has its own base tool mode, and the install check sits on top
     scheduled: "scheduled",
     job: "job",
     test: "test",
+    hired: "hired",
   } as const;
   for (const [source, mode] of Object.entries(expected)) {
     const h = harness();
@@ -1257,6 +1258,7 @@ test("a graph runs as from the builder for a person, and in the caller's own mod
     scheduled: "scheduled",
     job: "job",
     test: "test",
+    hired: "hired",
   } as const;
   for (const [source, mode] of Object.entries(expected)) {
     const modes: string[] = [];
@@ -1286,4 +1288,140 @@ test("the chat deadline is the server's unless the caller sets or removes it", a
   assert.equal(await deadlineOf({ deadlineMs: 5_000 }), 5_000);
   // The caller bounds the run with its own signal (a task timeout).
   assert.equal(await deadlineOf({ deadlineMs: null }), undefined);
+});
+
+// ============================================
+// A paid job (source "hired")
+// ============================================
+
+const ADDENDUM = "Instructions for this job, from your publisher:\n\nScore on the house rubric.";
+
+test("a job's private instructions ride as a system turn after the grounding and before the buyer's brief", async () => {
+  const h = harness({
+    agents: [{ ...AGENT, knowledgeBaseId: "kb-1" }],
+    retrieveContext: async () =>
+      ({ contextBlock: "CONTEXT: pricing table", mode: "keyword", fallbackReason: null, sources: [] }) as never,
+  });
+  const brief = "You have been hired for this job: Teardown\n<buyer_input>\n{}\n</buyer_input>";
+  const session = await sessionOf(h, {
+    source: "hired",
+    systemAddendum: ADDENDUM,
+    messages: [{ role: "user", content: brief }],
+  });
+  assert.equal(session.toolMode, "hired");
+  await session.complete();
+
+  const call = h.chatCalls[0]!;
+  // The agent's own system prompt is the runtime's first turn (config).
+  assert.equal(call.config.systemPrompt, "Be helpful.");
+  assert.deepEqual(call.messages, [
+    { role: "system", content: "CONTEXT: pricing table" },
+    { role: "system", content: ADDENDUM },
+    { role: "user", content: brief },
+  ]);
+  assert.equal(call.options.mode, "hired");
+  assert.ok(!call.messages.some((m) => m.role === "user" && String(m.content).includes("house rubric")));
+
+  // Without an addendum nothing is added.
+  const plain = harness();
+  await (await sessionOf(plain, { source: "hired" })).complete();
+  assert.deepEqual(plain.chatCalls[0]!.messages, [{ role: "user", content: "hi" }]);
+});
+
+test("a tool allowlist narrows the agent's tools; an empty one, or none, leaves them all", async () => {
+  const tools = [
+    { name: "calculator", description: "calc" },
+    { name: "web_search", description: "search" },
+    { name: "file_read", description: "read" },
+  ];
+  const toolsWith = async (toolAllowlist: string[] | undefined) => {
+    const h = harness({ agents: [{ ...AGENT, tools }] });
+    await (await sessionOf(h, { source: "hired", toolAllowlist })).complete();
+    return (h.chatCalls[0]!.config.tools as Array<{ name: string }>).map((t) => t.name);
+  };
+  assert.deepEqual(await toolsWith(["web_search", "calculator"]), ["calculator", "web_search"]);
+  // A name the agent does not have grants nothing.
+  assert.deepEqual(await toolsWith(["hire_agent", "file_read"]), ["file_read"]);
+  assert.deepEqual(await toolsWith([]), ["calculator", "web_search", "file_read"]);
+  assert.deepEqual(await toolsWith(undefined), ["calculator", "web_search", "file_read"]);
+});
+
+test("a hired chat tells the tool loop which outbound tools the offering named: none unless it named them", async () => {
+  const tools = [
+    { name: "calculator", description: "calc" },
+    { name: "http_request", description: "http" },
+  ];
+  const optionsWith = async (source: "hired" | "job", toolAllowlist?: string[]) => {
+    const h = harness({ agents: [{ ...AGENT, tools }] });
+    await (await sessionOf(h, { source, ...(toolAllowlist && { toolAllowlist }) })).complete();
+    return h.chatCalls[0]!;
+  };
+  // No allowlist: the agent keeps http_request in its config, and the tool
+  // context says the offering allowed no outbound tool, so it does not run.
+  const bare = await optionsWith("hired");
+  assert.deepEqual((bare.config.tools as Array<{ name: string }>).map((t) => t.name), ["calculator", "http_request"]);
+  assert.deepEqual(bare.options.outboundAllowed, []);
+  assert.deepEqual((await optionsWith("hired", ["calculator"])).options.outboundAllowed, ["calculator"]);
+  assert.deepEqual((await optionsWith("hired", ["calculator", "http_request"])).options.outboundAllowed, [
+    "calculator",
+    "http_request",
+  ]);
+  // The owner's own batch run carries no such list: the rule is hired mode's.
+  assert.equal((await optionsWith("job")).options.outboundAllowed, undefined);
+});
+
+test("a hired run on the publisher's own agent charges nobody, is rate limited on a free model, and reports whose keys it ran on", async () => {
+  const h = harness();
+  const session = await sessionOf(h, { source: "hired", systemAddendum: ADDENDUM });
+  assert.equal(session.billing, null);
+  assert.equal(session.meter, null);
+  assert.equal(session.platformModel, true, "a free model runs on the platform's keys");
+  assert.deepEqual(h.limiterCalls, [{ orgId: ORG, failClosed: false }]);
+  await session.complete();
+  await settled();
+  assert.equal(h.usage[0]!.source, "hired");
+
+  const own = harness({ agents: [{ ...AGENT, modelConfig: { externalModel: "openai/gpt-4o" } }] });
+  assert.equal((await sessionOf(own, { source: "hired" })).platformModel, false);
+});
+
+test("a hired run aborted by its deadline stops the model call and is a client_gone failure, not a retryable error", async () => {
+  const controller = new AbortController();
+  const h = harness({
+    runChat: async (_resolved, _config, _messages, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal!.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        setTimeout(() => controller.abort(new Error("deadline")), 5);
+      }),
+  });
+  const session = await sessionOf(h, { source: "hired", signal: controller.signal, deadlineMs: null });
+  const completed = await session.complete();
+  assert.ok(!completed.ok && completed.failure);
+  assert.equal(completed.failure.code, "client_gone");
+});
+
+test("a graph agent's job gets its instructions ahead of the brief, in hired mode; a tool allowlist is refused, not ignored", async () => {
+  const seen: Array<{ input: string; mode: string }> = [];
+  const h = graphHarness(
+    { kind: "completed", output: "ok", run: RUN },
+    {
+      runGraph: async (args) => {
+        seen.push({ input: args.input, mode: args.mode });
+        return { kind: "completed", output: "ok", run: RUN };
+      },
+    },
+  );
+  const session = await sessionOf(h, {
+    source: "hired",
+    systemAddendum: ADDENDUM,
+    messages: [{ role: "user", content: "BRIEF" }],
+  });
+  assert.ok((await session.complete()).ok);
+  assert.deepEqual(seen, [{ input: `${ADDENDUM}\n\nBRIEF`, mode: "hired" }]);
+
+  const refused = graphHarness({ kind: "completed", output: "ok", run: RUN });
+  const refusal = await refusalOf(refused, { source: "hired", toolAllowlist: ["calculator"] });
+  assert.equal(refusal.kind, "invalid_request");
+  assert.equal((refusal as { param?: string }).param, "tool_allowlist");
+  assert.ok(!refused.log.includes("runGraph"));
 });

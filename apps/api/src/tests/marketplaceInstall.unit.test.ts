@@ -36,7 +36,16 @@ function makeWorld(opts: {
   monthlyPriceCents?: bigint | null;
   pricePerRequestCents?: bigint | null;
   listingStatus?: string;
-  install?: { status: string; clonedAgentId: string | null };
+  /**
+   * The pricing the install agreed to defaults to the listing as it is
+   * here; a test about a changed listing says what was agreed instead.
+   */
+  install?: {
+    status: string;
+    clonedAgentId: string | null;
+    acceptedPricingModel?: string | null;
+    acceptedPricePerRequestCents?: bigint | null;
+  };
   sub?: Row;
   agents?: string[];
   balance?: bigint;
@@ -64,7 +73,19 @@ function makeWorld(opts: {
       },
     } as Row,
     installs: (opts.install
-      ? [{ id: "ins_1", listingId: LISTING_ID, buyerId: BUYER, uninstalledAt: null, ...opts.install }]
+      ? [
+          {
+            id: "ins_1",
+            listingId: LISTING_ID,
+            buyerId: BUYER,
+            uninstalledAt: null,
+            acceptedPricingModel: opts.pricingModel,
+            acceptedPricePerRequestCents:
+              opts.pricingModel === "per_request" ? (opts.pricePerRequestCents ?? null) : null,
+            pricingAcceptedAt: new Date(0),
+            ...opts.install,
+          },
+        ]
       : []) as Row[],
     subs: (opts.sub
       ? [{ id: "sub_1", listingId: LISTING_ID, subscriberId: BUYER, cancelAtPeriodEnd: false, endReason: null, ...opts.sub }]
@@ -325,7 +346,7 @@ function repriced(install: { status: string }, endReason: string) {
   return makeWorld({
     pricingModel: "per_request",
     pricePerRequestCents: 100_000n,
-    install: { ...install, clonedAgentId: "agent_c0" },
+    install: { ...install, clonedAgentId: "agent_c0", acceptedPricingModel: "monthly", acceptedPricePerRequestCents: null },
     agents: ["agent_c0"],
     sub: { status: "cancelled", currentPeriodEnd: new Date(Date.now() - DAY), priceCents: 100n, endReason },
   });
@@ -375,7 +396,7 @@ function ranOut(sub: Row, install = "active") {
   return makeWorld({
     pricingModel: "per_request",
     pricePerRequestCents: 100_000n,
-    install: { status: install, clonedAgentId: "agent_c0" },
+    install: { status: install, clonedAgentId: "agent_c0", acceptedPricingModel: "monthly", acceptedPricePerRequestCents: null },
     agents: ["agent_c0"],
     sub: { currentPeriodStart: new Date(Date.now() - 40 * DAY), cancelledAt: null, priceCents: 100n, ...sub },
   });
@@ -715,4 +736,172 @@ test("only text made of the interpreter's own references counts as no literal", 
   for (const notText of [undefined, null, 42, true, {}, ["{{value}}"]]) {
     assert.equal(isReferenceOnly(notText), false, String(notText));
   }
+});
+
+// ============================================
+// The pricing a buyer accepted (free and per-request installs)
+// ============================================
+
+function perRequestInstall(opts: {
+  listingCents: bigint | null;
+  listingModel?: string;
+  monthlyPriceCents?: bigint;
+  acceptedModel?: string | null;
+  acceptedCents?: bigint | null;
+}) {
+  return makeWorld({
+    pricingModel: opts.listingModel ?? "per_request",
+    pricePerRequestCents: opts.listingCents,
+    monthlyPriceCents: opts.monthlyPriceCents ?? null,
+    install: {
+      status: "active",
+      clonedAgentId: "agent_c0",
+      acceptedPricingModel: opts.acceptedModel === undefined ? "per_request" : opts.acceptedModel,
+      acceptedPricePerRequestCents: opts.acceptedCents === undefined ? 5n : opts.acceptedCents,
+    },
+    agents: ["agent_c0"],
+  });
+}
+
+test("a new install records the pricing the buyer agreed to", async () => {
+  const world = makeWorld({ pricingModel: "per_request", pricePerRequestCents: 5n });
+  await withWorld(world, async ({ installAgent, getMyInstalls }) => {
+    await installAgent(LISTING_ID, BUYER);
+    const [listed] = await getMyInstalls(BUYER);
+    assert.equal(listed!.access, "listing_pricing");
+    assert.equal(listed!.acceptedPricing.pricingModel, "per_request");
+    assert.equal(listed!.acceptedPricing.pricePerRequestCents, 5);
+    assert.ok(listed!.acceptedPricing.acceptedAt instanceof Date);
+  });
+  assert.equal(world.state.installs[0]!.acceptedPricingModel, "per_request");
+  assert.equal(world.state.installs[0]!.acceptedPricePerRequestCents, 5n);
+
+  const free = makeWorld({ pricingModel: "free" });
+  await withWorld(free, async ({ installAgent }) => {
+    await installAgent(LISTING_ID, BUYER);
+  });
+  assert.equal(free.state.installs[0]!.acceptedPricingModel, "free");
+  assert.equal(free.state.installs[0]!.acceptedPricePerRequestCents, null);
+});
+
+test("a per-request price raised under an install pauses it until the buyer accepts the new price", async () => {
+  // Installed at 5 cents; the publisher now asks 500.
+  const world = perRequestInstall({ listingCents: 500n });
+  await withWorld(world, async ({ installAgent, getMyInstalls, PricingChangedError }) => {
+    const [before] = await getMyInstalls(BUYER);
+    assert.equal(before!.access, "pricing_changed");
+    assert.equal(before!.acceptedPricing.pricePerRequestCents, 5);
+
+    await assert.rejects(installAgent(LISTING_ID, BUYER), (err: unknown) => {
+      assert.ok(err instanceof PricingChangedError);
+      assert.deepEqual(err.pricing, { pricingModel: "per_request", pricePerRequestCents: 500, monthlyPriceCents: null });
+      return true;
+    });
+    assert.equal(world.state.installs[0]!.acceptedPricePerRequestCents, 5n, "a refusal records nothing");
+
+    await installAgent(LISTING_ID, BUYER, { acceptNewPricing: true });
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "listing_pricing");
+    // Accepted: it runs again, and cannot be "installed" a second time.
+    await assert.rejects(installAgent(LISTING_ID, BUYER, { acceptNewPricing: true }), /already installed/);
+  });
+  assert.equal(world.state.installs[0]!.acceptedPricePerRequestCents, 500n);
+  assert.equal(world.state.installs[0]!.status, "active");
+  // The buyer's copy is reused, the install is not counted twice, and
+  // accepting a per-request price charges nothing by itself.
+  assert.equal(world.state.agents.length, 1);
+  assert.equal(world.state.listing.activeInstalls, 0);
+  assert.equal(world.state.balance, 10_000n);
+});
+
+test("a price cut needs nobody's consent, and does not lower what the buyer agreed to", async () => {
+  const world = perRequestInstall({ listingCents: 2n });
+  await withWorld(world, async ({ installAgent, getMyInstalls }) => {
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "listing_pricing");
+    await assert.rejects(installAgent(LISTING_ID, BUYER), /already installed/);
+  });
+  // Back up to the agreed 5 cents later is still within what was accepted.
+  assert.equal(world.state.installs[0]!.acceptedPricePerRequestCents, 5n);
+});
+
+test("a change of pricing model pauses the install; a move to free does not", async () => {
+  const access = async (world: ReturnType<typeof makeWorld>) =>
+    withWorld(world, async ({ getMyInstalls }) => (await getMyInstalls(BUYER))[0]!.access);
+
+  // Installed free; the listing now charges per request.
+  assert.equal(
+    await access(perRequestInstall({ listingCents: 5n, acceptedModel: "free", acceptedCents: null })),
+    "pricing_changed",
+  );
+  // Installed free; the listing is now token-gated.
+  assert.equal(
+    await access(perRequestInstall({ listingModel: "tokenized", listingCents: null, acceptedModel: "free", acceptedCents: null })),
+    "pricing_changed",
+  );
+  // Installed per request; the listing is now free.
+  assert.equal(await access(perRequestInstall({ listingModel: "free", listingCents: null })), "listing_pricing");
+  // A row with no recorded acceptance runs free pricing only.
+  assert.equal(
+    await access(perRequestInstall({ listingCents: 5n, acceptedModel: null, acceptedCents: null })),
+    "pricing_changed",
+  );
+  assert.equal(
+    await access(perRequestInstall({ listingModel: "free", listingCents: null, acceptedModel: null, acceptedCents: null })),
+    "listing_pricing",
+  );
+});
+
+test("a free install on a listing that became monthly is new pricing to accept, and accepting it subscribes", async () => {
+  const world = perRequestInstall({
+    listingModel: "monthly",
+    listingCents: null,
+    monthlyPriceCents: 1_000n,
+    acceptedModel: "free",
+    acceptedCents: null,
+  });
+  await withWorld(world, async ({ installAgent, getMyInstalls, PricingChangedError }) => {
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "pricing_changed");
+    // Without the acceptance nothing is charged.
+    await assert.rejects(installAgent(LISTING_ID, BUYER), PricingChangedError);
+    assert.equal(world.state.balance, 10_000n);
+
+    await installAgent(LISTING_ID, BUYER, { acceptNewPricing: true });
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "subscribed");
+  });
+  assert.equal(world.state.balance, 9_000n);
+  assert.equal(world.state.installs[0]!.acceptedPricingModel, "monthly");
+});
+
+test("a price that moved between the buyer seeing it and confirming is not accepted for them", async () => {
+  // First install: the page showed 5 cents, the listing now says 500.
+  const fresh = makeWorld({ pricingModel: "per_request", pricePerRequestCents: 500n });
+  await withWorld(fresh, async ({ installAgent, PricingChangedError }) => {
+    await assert.rejects(
+      installAgent(LISTING_ID, BUYER, {
+        expectedPricing: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null },
+      }),
+      (err: unknown) => err instanceof PricingChangedError && err.pricing.pricePerRequestCents === 500,
+    );
+  });
+  assert.equal(fresh.state.installs.length, 0);
+  assert.equal(fresh.state.agents.length, 0);
+
+  // Accepting a change: the dialog showed 500, the listing has moved to 900.
+  const moved = perRequestInstall({ listingCents: 900n });
+  await withWorld(moved, async ({ installAgent, PricingChangedError }) => {
+    await assert.rejects(
+      installAgent(LISTING_ID, BUYER, {
+        acceptNewPricing: true,
+        expectedPricing: { pricingModel: "per_request", pricePerRequestCents: 500, monthlyPriceCents: null },
+      }),
+      (err: unknown) => err instanceof PricingChangedError && err.pricing.pricePerRequestCents === 900,
+    );
+    assert.equal(moved.state.installs[0]!.acceptedPricePerRequestCents, 5n);
+
+    // What the buyer saw is what the listing says: accepted.
+    await installAgent(LISTING_ID, BUYER, {
+      acceptNewPricing: true,
+      expectedPricing: { pricingModel: "per_request", pricePerRequestCents: 900, monthlyPriceCents: null },
+    });
+  });
+  assert.equal(moved.state.installs[0]!.acceptedPricePerRequestCents, 900n);
 });

@@ -177,6 +177,59 @@ test("a marketplace buyer's copy runs restricted however the run was triggered",
   assert.equal(world.chats[0]!.options.mode, "trial");
 });
 
+test("a paid job runs in hired mode with the offering's instructions as a system turn, and reports what to meter", async () => {
+  const stored = { ...agent(FREE), tools: [{ name: "calculator", description: "" }, { name: "file_read", description: "" }] };
+  const { deps, world } = makeDeps(stored);
+  const controller = new AbortController();
+  const result = await createRunAgentChat(deps)({
+    agent: stored,
+    prompt: "BRIEF",
+    mode: "hired",
+    signal: controller.signal,
+    systemAddendum: "PRIVATE RUBRIC",
+    toolAllowlist: ["calculator"],
+  });
+  await settled();
+  const chat = world.chats[0]!;
+  assert.equal(chat.options.mode, "hired");
+  assert.deepEqual(chat.messages, [
+    { role: "system", content: "PRIVATE RUBRIC" },
+    { role: "user", content: "BRIEF" },
+  ]);
+  // The job's own deadline bounds the run; the interactive one is off.
+  assert.equal(chat.options.deadlineMs, undefined);
+  assert.equal(world.usage[0]!.source, "hired");
+  // The limiter still guards the platform's keys during a paid job.
+  assert.equal(world.events[0], "limit:org-1");
+  assert.deepEqual(result, {
+    content: "answer",
+    usage: { inputTokens: 12, outputTokens: 34 },
+    model: FREE,
+    platformModel: true,
+    toolCallCount: 0,
+  });
+
+  const own = makeDeps(agent(OWN_KEY));
+  const ownResult = await createRunAgentChat(own.deps)({ agent: agent(OWN_KEY), prompt: "x", mode: "hired" });
+  assert.equal(ownResult.platformModel, false);
+  assert.equal(ownResult.model, OWN_KEY);
+});
+
+test("job instructions and a tool allowlist are refused outside hired mode, before anything runs", async () => {
+  const { deps, world } = makeDeps(agent(OWN_KEY));
+  const run = createRunAgentChat(deps);
+  await assert.rejects(
+    run({ agent: agent(OWN_KEY), prompt: "hi", mode: "job", systemAddendum: "PRIVATE RUBRIC" }),
+    /apply to hired runs only, not "job"/,
+  );
+  await assert.rejects(
+    run({ agent: agent(OWN_KEY), prompt: "hi", toolAllowlist: ["calculator"] }),
+    /apply to hired runs only, not "scheduled"/,
+  );
+  assert.equal(world.chats.length, 0);
+  assert.deepEqual(world.events, []);
+});
+
 test("over the limit, the call is refused clearly and no model call is made", async () => {
   const { deps, world } = makeDeps(agent(FREE), { allowed: false });
   await assert.rejects(

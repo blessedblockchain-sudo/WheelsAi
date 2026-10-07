@@ -311,6 +311,32 @@ export async function getListingReviews(
   };
 }
 
+/**
+ * A review is verified when the reviewer used what they are reviewing:
+ * they installed the listing, or a job they hired from one of its
+ * offerings completed.
+ */
+export async function isVerifiedReviewer(
+  listingId: string,
+  reviewerId: string,
+  db: {
+    agentInstall: { findUnique(args: any): Promise<unknown> };
+    job: { findFirst(args: any): Promise<unknown> };
+  } = prisma,
+): Promise<boolean> {
+  const install = await db.agentInstall.findUnique({
+    where: {
+      listingId_buyerId: { listingId, buyerId: reviewerId },
+    },
+  });
+  if (install) return true;
+  const job = await db.job.findFirst({
+    where: { buyerId: reviewerId, status: "completed", offering: { listingId } },
+    select: { id: true },
+  });
+  return job !== null && job !== undefined;
+}
+
 export async function createReview(
   listingId: string,
   reviewerId: string,
@@ -339,12 +365,7 @@ export async function createReview(
     throw new Error("You have already reviewed this agent");
   }
 
-  // Check if user has installed the agent (verified review)
-  const install = await prisma.agentInstall.findUnique({
-    where: {
-      listingId_buyerId: { listingId, buyerId: reviewerId },
-    },
-  });
+  const isVerified = await isVerifiedReviewer(listingId, reviewerId);
 
   const review = await prisma.agentReview.create({
     data: {
@@ -353,7 +374,7 @@ export async function createReview(
       rating: data.rating,
       title: data.title,
       content: data.content,
-      isVerified: !!install,
+      isVerified,
     },
   });
 
@@ -773,8 +794,10 @@ async function updatePublisherStats(orgId: string) {
 // ============================================
 
 /**
- * The publisher changed the listing's pricing after the buyer subscribed.
- * Continuing means accepting the pricing carried here, explicitly.
+ * The listing's pricing is not what the buyer agreed to: the publisher
+ * changed it after they subscribed or installed, or between the buyer
+ * seeing a price and confirming it. Continuing means accepting the pricing
+ * carried here, explicitly.
  */
 export class PricingChangedError extends Error {
   readonly code = "pricing_changed";
@@ -787,16 +810,51 @@ export class PricingChangedError extends Error {
     },
   ) {
     super(
-      `The publisher changed the pricing of "${listingTitle}" after you subscribed. Review and accept the new pricing to keep using it.`,
+      `The publisher changed the pricing of "${listingTitle}" after you agreed to it. Review and accept the new pricing to keep using it.`,
     );
     this.name = "PricingChangedError";
   }
 }
 
+/** A listing's pricing as a buyer is shown it, and as they send it back. */
+export interface ListingPricingTerms {
+  pricingModel: string;
+  pricePerRequestCents: number | null;
+  monthlyPriceCents: number | null;
+}
+
+function listingPricingTerms(listing: {
+  pricingModel: string;
+  pricePerRequestCents: bigint | null;
+  monthlyPriceCents: bigint | null;
+}): ListingPricingTerms {
+  return {
+    pricingModel: listing.pricingModel,
+    pricePerRequestCents: listing.pricePerRequestCents !== null ? Number(listing.pricePerRequestCents) : null,
+    monthlyPriceCents: listing.monthlyPriceCents !== null ? Number(listing.monthlyPriceCents) : null,
+  };
+}
+
+/** The price that applies under each model; the other one is not compared. */
+function samePricing(a: ListingPricingTerms, b: ListingPricingTerms): boolean {
+  if (a.pricingModel !== b.pricingModel) return false;
+  if (a.pricingModel === "per_request") return (a.pricePerRequestCents ?? 0) === (b.pricePerRequestCents ?? 0);
+  if (a.pricingModel === "monthly") return (a.monthlyPriceCents ?? 0) === (b.monthlyPriceCents ?? 0);
+  return true;
+}
+
 export async function installAgent(
   listingId: string,
   buyerId: string,
-  opts: { acceptNewPricing?: boolean } = {},
+  opts: {
+    acceptNewPricing?: boolean;
+    /**
+     * The pricing the buyer was looking at when they confirmed. If the
+     * listing no longer matches it, nothing is installed, accepted or
+     * charged: the buyer is shown the pricing as it stands instead.
+     */
+    expectedPricing?: ListingPricingTerms;
+  } = {},
 ) {
   // Get the listing
   const listing = await prisma.agentListing.findUnique({
@@ -832,11 +890,17 @@ export async function installAgent(
       })
     : null;
 
+  const currentPricing = listingPricingTerms(listing);
   if (existingInstall) {
     const access = installAccess({
       installStatus: existingInstall.status,
       listingStatus: listing.status,
       pricingModel: listing.pricingModel,
+      pricePerRequestCents: listing.pricePerRequestCents,
+      accepted: {
+        pricingModel: existingInstall.acceptedPricingModel,
+        pricePerRequestCents: existingInstall.acceptedPricePerRequestCents,
+      },
       sub: existingSub,
     });
     // An install that runs is final. What is left: a monthly listing with
@@ -846,14 +910,23 @@ export async function installAgent(
       throw new Error("You have already installed this agent");
     }
     if (access === "pricing_changed" && !opts.acceptNewPricing) {
-      throw new PricingChangedError(listing.title, {
-        pricingModel: listing.pricingModel,
-        pricePerRequestCents:
-          listing.pricePerRequestCents !== null ? Number(listing.pricePerRequestCents) : null,
-        monthlyPriceCents: listing.monthlyPriceCents !== null ? Number(listing.monthlyPriceCents) : null,
-      });
+      throw new PricingChangedError(listing.title, currentPricing);
     }
   }
+  // The publisher changed the price between the buyer seeing it and
+  // confirming: what they confirmed is not what would be recorded.
+  if (opts.expectedPricing && !samePricing(opts.expectedPricing, currentPricing)) {
+    throw new PricingChangedError(listing.title, currentPricing);
+  }
+  // What this install agrees to. Billing compares the listing against it at
+  // every request (installAccess), so a later increase pauses the install
+  // instead of being charged.
+  const acceptedPricing = {
+    acceptedPricingModel: listing.pricingModel,
+    acceptedPricePerRequestCents:
+      listing.pricingModel === "per_request" ? (listing.pricePerRequestCents ?? 0n) : null,
+    pricingAcceptedAt: new Date(),
+  };
 
   // Token-gated: once the token exists, installing needs it too, so a
   // buyer learns what access requires before anything is created.
@@ -949,10 +1022,10 @@ export async function installAgent(
     const install = existingInstall
       ? await tx.agentInstall.update({
           where: { id: existingInstall.id },
-          data: { clonedAgentId: clonedAgent.id },
+          data: { clonedAgentId: clonedAgent.id, ...acceptedPricing },
         })
       : await tx.agentInstall.create({
-          data: { listingId, buyerId, clonedAgentId: clonedAgent.id, status: "active" },
+          data: { listingId, buyerId, clonedAgentId: clonedAgent.id, status: "active", ...acceptedPricing },
         });
 
     // Monthly listings charge the first 30-day period now.
@@ -1144,8 +1217,21 @@ export async function getMyInstalls(buyerId: string) {
         installStatus: install.status,
         listingStatus: install.listing.status,
         pricingModel: install.listing.pricingModel,
+        pricePerRequestCents: install.listing.pricePerRequestCents,
+        accepted: {
+          pricingModel: install.acceptedPricingModel,
+          pricePerRequestCents: install.acceptedPricePerRequestCents,
+        },
         sub: sub ?? null,
       }),
+      // What the buyer agreed to, next to the listing's pricing today, so
+      // the page can show both when they differ.
+      acceptedPricing: {
+        pricingModel: install.acceptedPricingModel,
+        pricePerRequestCents:
+          install.acceptedPricePerRequestCents !== null ? Number(install.acceptedPricePerRequestCents) : null,
+        acceptedAt: install.pricingAcceptedAt,
+      },
       listing: formatListingForPublic(install.listing),
       subscription: sub ? formatSubscription(sub) : null,
     };
@@ -1264,6 +1350,10 @@ export async function checkInstallStatus(listingId: string, buyerId: string) {
 // Revenue & Payouts
 // ============================================
 
+function escrowState(status: string): "held" | "released" | "refunded" {
+  return status === "settled" ? "released" : status === "refunded" ? "refunded" : "held";
+}
+
 export async function getPublisherRevenue(publisherId: string) {
   // Get publisher profile
   const profile = await prisma.publisherProfile.findUnique({
@@ -1312,6 +1402,12 @@ export async function getPublisherRevenue(publisherId: string) {
     orderBy: { createdAt: "desc" },
     take: 20,
   });
+  // Job payments still in escrow: paid by buyers, not yet the publisher's.
+  const heldInEscrow = await prisma.marketplaceRevenue.aggregate({
+    where: { publisherId, type: "job", status: "pending" },
+    _sum: { creatorAmountCents: true },
+    _count: { _all: true },
+  });
 
   // Get pending payouts
   const pendingPayouts = await prisma.creatorPayout.findMany({
@@ -1341,8 +1437,18 @@ export async function getPublisherRevenue(publisherId: string) {
       creatorAmountCents: Number(t.creatorAmountCents),
       requestCount: t.requestCount,
       status: t.status,
+      // A job's row is its escrow: held until the buyer accepts (or the
+      // review window closes), then released, or refunded. Only a released
+      // row is an earning.
+      jobId: t.jobId,
+      escrow: t.type === "job" ? escrowState(t.status) : null,
+      modelCostCents: Number(t.modelCostCents),
       createdAt: t.createdAt,
     })),
+    heldInEscrow: {
+      creatorAmountCents: Number(heldInEscrow._sum.creatorAmountCents ?? 0n),
+      jobs: heldInEscrow._count._all,
+    },
     pendingPayouts: pendingPayouts.map((p) => ({
       id: p.id,
       amountCents: Number(p.amountCents),

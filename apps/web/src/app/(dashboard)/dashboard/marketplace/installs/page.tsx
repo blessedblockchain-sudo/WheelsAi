@@ -38,6 +38,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ReviewForm } from "@/components/marketplace/review-form";
 import {
   marketplaceApi,
+  type MarketplaceAcceptedPricing,
   type MarketplaceInstallAccess,
   type MarketplaceListing,
   type MarketplaceSubscription,
@@ -55,6 +56,7 @@ interface Install {
   totalSpentCents: number;
   installedAt: string;
   access: MarketplaceInstallAccess;
+  acceptedPricing: MarketplaceAcceptedPricing;
   listing: MarketplaceListing;
   subscription: MarketplaceSubscription | null;
 }
@@ -82,12 +84,14 @@ function paidUp(install: Install): boolean {
 function subscriptionLine(install: Install): { text: string; tone: "ok" | "warn" | "bad" } | null {
   const sub = install.subscription;
   if (install.access === "pricing_changed") {
-    return stillSold(install)
-      ? {
-          text: "The publisher changed this agent's pricing. It is paused until you accept the new pricing.",
-          tone: "bad",
-        }
-      : { text: "Paused. This agent is no longer sold on the marketplace.", tone: "bad" };
+    if (!stillSold(install)) {
+      return { text: "Paused. This agent is no longer sold on the marketplace.", tone: "bad" };
+    }
+    const agreedTo = agreedPricing(install);
+    return {
+      text: `The publisher changed this agent's pricing${agreedTo ? ` (you agreed to ${agreedTo}; it is now ${formatPrice(install.listing)})` : ""}. It is paused, and nothing is charged, until you accept the new pricing.`,
+      tone: "bad",
+    };
   }
   if (install.access === "subscription_lapsed") {
     return stillSold(install)
@@ -150,6 +154,21 @@ function formatPrice(listing: MarketplaceListing): string {
     return `$${price.toFixed(2)}/mo`;
   }
   return "Free";
+}
+
+/**
+ * What the buyer agreed to when they installed or last accepted a change,
+ * in the listing's own wording. Null when nothing is on record, or when a
+ * subscription's agreed price says it better (see subscriptionLine).
+ */
+function agreedPricing(install: Install): string | null {
+  const agreed = install.acceptedPricing;
+  if (!agreed?.pricingModel || agreed.pricingModel === "monthly") return null;
+  return formatPrice({
+    ...install.listing,
+    pricingModel: agreed.pricingModel,
+    pricePerRequestCents: agreed.pricePerRequestCents,
+  });
 }
 
 /** A subscriber sees the price they agreed to, which is what a renewal charges. */
@@ -261,7 +280,17 @@ export default function InstalledAgentsPage() {
         await marketplaceApi.resumeSubscription(install.listingId);
         toast.success("Renewal turned back on.");
       } else if (action === "accept_pricing") {
-        await marketplaceApi.installAgent(install.listingId, { acceptNewPricing: true });
+        // The pricing the dialog showed goes with the acceptance: if the
+        // publisher moved it again meanwhile, the API refuses (409) and the
+        // list reloads with the pricing as it stands.
+        await marketplaceApi.installAgent(install.listingId, {
+          acceptNewPricing: true,
+          expectedPricing: {
+            pricingModel: install.listing.pricingModel,
+            pricePerRequestCents: install.listing.pricePerRequestCents,
+            monthlyPriceCents: install.listing.monthlyPriceCents,
+          },
+        });
         toast.success(`New pricing accepted for ${install.listing.title}.`);
       } else {
         await marketplaceApi.installAgent(install.listingId);

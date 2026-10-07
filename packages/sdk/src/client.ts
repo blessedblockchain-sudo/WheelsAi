@@ -25,6 +25,8 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export interface RequestOptions {
   /** Abort this request after this many milliseconds instead of the client's `timeoutMs`; 0 disables. */
   timeoutMs?: number;
+  /** Extra request headers, e.g. `Idempotency-Key`. They cannot replace `Authorization`. */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -104,9 +106,10 @@ export class WheelsAIClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     const hasBody = options?.body !== undefined;
     if (hasBody) headers["Content-Type"] = "application/json";
+    Object.assign(headers, options?.headers);
+    // Set last: a caller's header never replaces the configured credential.
     const authorization = this.authorization();
     if (authorization) headers["Authorization"] = authorization;
-    Object.assign(headers, options?.headers);
 
     const timeoutMs = options?.timeoutMs ?? this.timeoutMs;
     let res: Response;
@@ -154,7 +157,7 @@ export class WheelsAIClient {
   }
 
   post<T>(path: string, body?: unknown, options?: RequestOptions): Promise<T> {
-    return this.request<T>("POST", path, { body, timeoutMs: options?.timeoutMs });
+    return this.request<T>("POST", path, { body, timeoutMs: options?.timeoutMs, headers: options?.headers });
   }
 
   put<T>(path: string, body?: unknown): Promise<T> {

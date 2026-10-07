@@ -34,7 +34,7 @@ export default function MarketplaceApiPage() {
     <DocPage
       href="/docs/api/marketplace"
       title="Marketplace"
-      lead="Browsing is public. Publishing, installing, reviewing and getting paid act on behalf of your organization. Pricing models and the revenue split are explained in the marketplace guide."
+      lead="Browsing is public. Publishing, installing, reviewing and getting paid act on behalf of your organization. Pricing models and the revenue split are explained in the marketplace guide. Selling a fixed task on an agent, a workflow or a model, and hiring one through escrow, is the Offerings and jobs reference."
       toc={toc}
     >
       <h2 id="browse">Browse (public)</h2>
@@ -109,9 +109,16 @@ export default function MarketplaceApiPage() {
       </Endpoint>
 
       <h2 id="buy">Install and use</h2>
+      <p>
+        Installing gives you your own copy of an agent to run. To have a publisher&apos;s agent, workflow or model do one
+        fixed task for you instead, with the price held in escrow until you accept the result, see{" "}
+        <Link href="/docs/api/jobs">Offerings and jobs</Link>.
+      </p>
 
       <Endpoint id="install" method="POST" path="/api/marketplace/listings/{id}/install" auth="API key or session" title="Install a listing">
         <p>
+          An API key needs the <code>marketplace:install</code> scope granted by name (<code>403</code>{" "}
+          <code>missing_scope</code> otherwise); see <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.{" "}
           Creates (or, on reinstall, reuses) a copy of the agent in your organization and answers <code>201</code> with{" "}
           <code>install</code>, <code>clonedAgent</code> (<code>id</code>, <code>name</code>, <code>slug</code>) and, for
           monthly listings, <code>subscription</code>. Chat with the copy through the{" "}
@@ -137,9 +144,17 @@ export default function MarketplaceApiPage() {
             organization holds enough of it.
           </li>
           <li>
-            <code>409</code> <code>pricing_changed</code> with the listing&apos;s new <code>pricing</code>: the publisher changed it after your
-            subscription was agreed. Your subscription ran to the end of its paid period at the agreed price and the
-            install is paused. Send <code>{`{ "acceptNewPricing": true }`}</code> to continue on the new terms.
+            <code>409</code> <code>pricing_changed</code> with the listing&apos;s new <code>pricing</code>: the publisher changed it after you
+            agreed to it. A subscription runs to the end of its paid period at the agreed price first. A free or
+            per-request install records the pricing you accepted: a per-request price above it, or a different pricing
+            model, pauses the install and charges nothing, while a lower price (or a move to free) applies at once.
+            Send <code>{`{ "acceptNewPricing": true }`}</code> to continue on the new terms.
+          </li>
+          <li>
+            Send <code>expectedPricing</code> (<code>pricingModel</code>, <code>pricePerRequestCents</code>,{" "}
+            <code>monthlyPriceCents</code>) with an install or an acceptance to name the pricing you were shown. If the
+            listing no longer matches it you get the same <code>409</code> with the current pricing, and nothing is
+            installed, accepted or charged.
           </li>
           <li>
             <code>409</code> <code>subscription_claim_lost</code>: another request for the same install was processed
@@ -182,7 +197,10 @@ export default function MarketplaceApiPage() {
 
       <Endpoint id="revenue" method="GET" path="/api/marketplace/revenue" auth="API key or session" title="Publisher revenue">
         <p>
-          Your revenue across listings and your pending payout balance. Your share is 90% of what buyers paid; each revenue row
+          Your revenue across listings and jobs, and your pending payout balance. A job&apos;s row carries{" "}
+          <code>jobId</code> and <code>escrow</code> (<code>held</code>, <code>released</code> or <code>refunded</code>);
+          only a released row is an earning, and <code>heldInEscrow</code> totals what buyers have paid that is not yours
+          yet. <code>unlistedJobRevenue</code> is settled job revenue on products with no listing. Your share is 90% of what buyers paid; each revenue row
           splits the gross exactly into the creator share and the 10% platform fee, in whole cents.
         </p>
       </Endpoint>

@@ -20,6 +20,7 @@ const CATEGORY_ORDER = [
   "workflow",
   "scheduled_task",
   "report",
+  "job",
 ];
 
 export function webhookEventCategory(eventType: string): string {

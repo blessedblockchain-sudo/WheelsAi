@@ -18,11 +18,15 @@ import {
 } from "lucide-react";
 import {
   marketplaceApi,
+  offeringsApi,
   tokenApi,
   type MarketplaceListing,
   type MarketplaceCategory,
   type AgentToken,
+  type OfferingProductKind,
+  type PublicOffering,
 } from "@/lib/api";
+import { OfferingCard, OfferingCardSkeleton } from "@/components/marketplace/offering-card";
 import { TokenCard, type TokenCardData } from "@/components/dashboard/token-card";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -36,6 +40,25 @@ const SORT_OPTIONS = [
   { value: "price_low", label: "Price: Low to High" },
   { value: "price_high", label: "Price: High to Low" },
 ];
+
+/**
+ * What is sold. Agents can be installed (a listing) or hired for one task
+ * (an offering); workflows and models are sold as offerings only.
+ */
+const PRODUCT_TYPES: Array<{ value: string; label: string; kind: OfferingProductKind; noun: string }> = [
+  { value: "agents", label: "Agents", kind: "agent", noun: "agent" },
+  { value: "workflows", label: "Workflows", kind: "workflow", noun: "workflow" },
+  { value: "models", label: "Models", kind: "model", noun: "model" },
+];
+
+/** Offerings have no install count, so "popular" falls back to newest. */
+const OFFERING_SORT: Record<string, "newest" | "price_low" | "price_high" | "rating"> = {
+  popular: "newest",
+  rating: "rating",
+  newest: "newest",
+  price_low: "price_low",
+  price_high: "price_high",
+};
 
 const PRICING_OPTIONS = [
   { value: "all", label: "All Pricing" },
@@ -342,6 +365,8 @@ function MarketplaceContent() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [totalCount, setTotalCount] = useState(0);
   const [showFilters, setShowFilters] = useState(false);
+  const [offerings, setOfferings] = useState<PublicOffering[]>([]);
+  const [offeringTotal, setOfferingTotal] = useState(0);
 
   // Filter state from URL params
   const query = searchParams.get("q") || "";
@@ -349,6 +374,10 @@ function MarketplaceContent() {
   const pricingModel = searchParams.get("pricing") || "all";
   const sortBy = (searchParams.get("sort") as any) || "popular";
   const page = parseInt(searchParams.get("page") || "1", 10);
+  const productType = PRODUCT_TYPES.find((t) => t.value === searchParams.get("type")) ?? PRODUCT_TYPES[0]!;
+  // Agents default to the listings you install; "tasks" shows what you can
+  // hire them for. Workflows and models are only ever hired.
+  const showTasks = productType.value !== "agents" || searchParams.get("view") === "tasks";
 
   const updateParams = (updates: Record<string, string | null>) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -370,7 +399,20 @@ function MarketplaceContent() {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const [listingsRes, categoriesRes, featuredRes, trendingRes] =
+      if (showTasks) {
+        const res = await offeringsApi.search({
+          productKind: productType.kind,
+          query: query || undefined,
+          sort: OFFERING_SORT[sortBy] ?? "newest",
+          page,
+          limit: 12,
+        });
+        setOfferings(res.offerings);
+        setOfferingTotal(res.pagination.total);
+        return;
+      }
+
+      const [listingsRes, categoriesRes, featuredRes, trendingRes, offeringsRes] =
         await Promise.all([
           marketplaceApi.searchListings({
             query: query || undefined,
@@ -383,10 +425,16 @@ function MarketplaceContent() {
           marketplaceApi.getCategories(),
           marketplaceApi.getFeatured(4),
           tokenApi.trending().catch(() => ({ tokens: [] })),
+          // A teaser row above the listings; the page stands without it.
+          offeringsApi
+            .search({ productKind: "agent", query: query || undefined, limit: 3 })
+            .catch(() => ({ offerings: [], pagination: { page: 1, limit: 3, total: 0, totalPages: 0 } })),
         ]);
 
       setListings(listingsRes.listings);
       setTotalCount(listingsRes.pagination.total);
+      setOfferings(offeringsRes.offerings);
+      setOfferingTotal(offeringsRes.pagination.total);
       setCategories(categoriesRes.categories);
       setFeaturedListings(featuredRes.listings);
       setTrendingTokens(trendingRes.tokens.slice(0, 4));
@@ -403,13 +451,14 @@ function MarketplaceContent() {
     } finally {
       setIsLoading(false);
     }
-  }, [query, category, pricingModel, sortBy, page]);
+  }, [query, category, pricingModel, sortBy, page, showTasks, productType.kind]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  const showUnfilteredSections = !query && category === "all" && pricingModel === "all";
+  const showUnfilteredSections = !showTasks && !query && category === "all" && pricingModel === "all";
+  const resultCount = showTasks ? offeringTotal : totalCount;
 
   return (
     <div className="min-h-screen bg-background">
@@ -443,9 +492,9 @@ function MarketplaceContent() {
       {/* Hero */}
       <div className="bg-gradient-to-b from-primary-600 to-primary-700 py-12 text-white">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <h1 className="text-3xl font-bold">Agent Marketplace</h1>
+          <h1 className="text-3xl font-bold">Marketplace</h1>
           <p className="mt-2 text-primary-100">
-            Discover and deploy AI agents built by the community
+            Install agents built by the community, or hire an agent, a workflow or a model for one task at a fixed price
           </p>
 
           {/* Search */}
@@ -454,7 +503,7 @@ function MarketplaceContent() {
               <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search agents..."
+                placeholder={showTasks ? `Search ${productType.noun} offerings...` : "Search agents..."}
                 value={query}
                 onChange={(e) => updateParams({ q: e.target.value })}
                 className="w-full rounded-lg border-0 py-3 pl-10 pr-4 text-foreground shadow-sm ring-1 ring-inset ring-border placeholder:text-gray-400 focus:ring-2 focus:ring-primary-500"
@@ -483,7 +532,7 @@ function MarketplaceContent() {
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <div className="flex gap-8">
           {/* Sidebar - Desktop */}
-          <aside className="hidden w-64 flex-shrink-0 md:block">
+          <aside className={showTasks ? "hidden" : "hidden w-64 flex-shrink-0 md:block"}>
             <CategorySidebar
               categories={categories}
               selectedCategory={category}
@@ -512,7 +561,7 @@ function MarketplaceContent() {
           </aside>
 
           {/* Mobile Filters */}
-          {showFilters && (
+          {showFilters && !showTasks && (
             <div className="fixed inset-0 z-50 bg-black/50 md:hidden">
               <div className="absolute right-0 top-0 h-full w-80 bg-card p-6">
                 <div className="flex items-center justify-between">
@@ -536,7 +585,81 @@ function MarketplaceContent() {
           )}
 
           {/* Listings */}
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
+            {/* Product type */}
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+              <div role="group" aria-label="Product type" className="inline-flex rounded-lg border bg-card p-1">
+                {PRODUCT_TYPES.map((type) => (
+                  <button
+                    key={type.value}
+                    type="button"
+                    aria-pressed={productType.value === type.value}
+                    onClick={() =>
+                      updateParams({ type: type.value === "agents" ? null : type.value, view: null, category: null, pricing: null })
+                    }
+                    className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+                      productType.value === type.value
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }`}
+                  >
+                    {type.label}
+                  </button>
+                ))}
+              </div>
+              {productType.value === "agents" && (
+                <div role="group" aria-label="How to buy" className="inline-flex rounded-lg border bg-card p-1">
+                  {[
+                    { view: null, label: "Install" },
+                    { view: "tasks", label: "Hire for a task" },
+                  ].map((option) => (
+                    <button
+                      key={option.label}
+                      type="button"
+                      aria-pressed={showTasks === (option.view === "tasks")}
+                      onClick={() => updateParams({ view: option.view })}
+                      className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                        showTasks === (option.view === "tasks")
+                          ? "bg-muted text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {showTasks && (
+              <p className="mb-6 rounded-lg border bg-card px-4 py-3 text-sm text-muted-foreground">
+                An offering is one fixed task at a fixed price. Your payment is held in escrow, the publisher&apos;s{" "}
+                {productType.noun} does the work, and the publisher is paid only when you accept the result.
+              </p>
+            )}
+
+            {/* Agent offerings: a teaser above the listings */}
+            {!showTasks && loadError === null && !isLoading && offerings.length > 0 && (
+              <section className="mb-8">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-foreground">Hire an agent for a task</h2>
+                  <button
+                    type="button"
+                    onClick={() => updateParams({ view: "tasks" })}
+                    className="flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700"
+                  >
+                    See all {offeringTotal}
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {offerings.map((offering) => (
+                    <OfferingCard key={offering.id} offering={offering} />
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Featured Section */}
             {showUnfilteredSections && loadError === null && featuredListings.length > 0 && (
               <section className="mb-8">
@@ -590,7 +713,12 @@ function MarketplaceContent() {
                   <Skeleton className="h-4 w-28" />
                 ) : loadError === null ? (
                   <>
-                    <span className="font-medium">{totalCount}</span> agents
+                    <span className="font-medium">{resultCount}</span>{" "}
+                    {showTasks
+                      ? `${productType.noun} ${resultCount === 1 ? "offering" : "offerings"}`
+                      : resultCount === 1
+                        ? "agent"
+                        : "agents"}{" "}
                     found
                   </>
                 ) : null}
@@ -601,11 +729,12 @@ function MarketplaceContent() {
                 </label>
                 <select
                   id="sort"
-                  value={sortBy}
+                  value={showTasks && sortBy === "popular" ? "newest" : sortBy}
                   onChange={(e) => updateParams({ sort: e.target.value })}
                   className="rounded-md border-border py-1.5 pl-3 pr-8 text-sm focus:border-primary-500 focus:ring-primary-500"
                 >
-                  {SORT_OPTIONS.map((opt) => (
+                  {/* Offerings have no install count to be popular by. */}
+                  {SORT_OPTIONS.filter((opt) => !showTasks || opt.value !== "popular").map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
@@ -615,7 +744,14 @@ function MarketplaceContent() {
             </div>
 
             {/* Listings Grid */}
-            {isLoading ? (
+            {isLoading && showTasks ? (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+                <span className="sr-only">Loading offerings</span>
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <OfferingCardSkeleton key={i} />
+                ))}
+              </div>
+            ) : isLoading ? (
               <ListingGridSkeleton />
             ) : loadError !== null ? (
               <ErrorState
@@ -623,6 +759,33 @@ function MarketplaceContent() {
                 error={loadError}
                 onRetry={() => void loadData()}
               />
+            ) : showTasks && offerings.length === 0 && offeringTotal > 0 ? (
+              <EmptyState
+                icon={Search}
+                title="No offerings on this page"
+                description="This page is past the end of the results."
+                actionLabel="Go to first page"
+                onAction={() => updateParams({ page: null })}
+              />
+            ) : showTasks && offerings.length === 0 ? (
+              <EmptyState
+                icon={query ? Search : Cpu}
+                title={`No ${productType.noun} offerings found`}
+                description={
+                  query
+                    ? `No ${productType.noun} offering matches your search.`
+                    : `Nobody is selling a ${productType.noun} task yet. Publishers create offerings from their dashboard.`
+                }
+                actionLabel={query ? "Clear search" : "Sell one of yours"}
+                onAction={query ? () => updateParams({ q: null }) : undefined}
+                actionHref={query ? undefined : "/dashboard/marketplace/offerings"}
+              />
+            ) : showTasks ? (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {offerings.map((offering) => (
+                  <OfferingCard key={offering.id} offering={offering} />
+                ))}
+              </div>
             ) : listings.length === 0 && totalCount > 0 ? (
               // A page past the last one (an old or edited link): there are
               // results, just none on this page.
@@ -658,7 +821,7 @@ function MarketplaceContent() {
             )}
 
             {/* Pagination */}
-            {loadError === null && totalCount > 12 && (
+            {loadError === null && resultCount > 12 && (
               <div className="mt-8 flex items-center justify-center gap-2">
                 <button
                   onClick={() => updateParams({ page: String(page - 1) })}
@@ -668,11 +831,11 @@ function MarketplaceContent() {
                   Previous
                 </button>
                 <span className="px-4 text-sm text-muted-foreground">
-                  Page {page} of {Math.ceil(totalCount / 12)}
+                  Page {page} of {Math.ceil(resultCount / 12)}
                 </span>
                 <button
                   onClick={() => updateParams({ page: String(page + 1) })}
-                  disabled={page >= Math.ceil(totalCount / 12)}
+                  disabled={page >= Math.ceil(resultCount / 12)}
                   className="rounded-md border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Next

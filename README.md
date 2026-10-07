@@ -53,6 +53,7 @@ devnet:
 | [`docs/X402-RUN.md`](docs/X402-RUN.md) | x402 pay-per-request: full HTTP 402 → client-signed payment → broadcast → settlement cycle |
 | [`docs/PAYOUT-RUN.md`](docs/PAYOUT-RUN.md) | Creator payout executor: 0.25 SOL settled on-chain, exactly-once under the status CAS |
 | [`docs/MARKETPLACE-METERING-RUN.md`](docs/MARKETPLACE-METERING-RUN.md) | Per-request metering: charge before inference, refund on failure; 4 concurrent requests on a 3-request balance → 3 served, 1 refused, balance exactly zero |
+| [`docs/AGENT-JOBS-RUN.md`](docs/AGENT-JOBS-RUN.md) | Offerings and jobs: an agent job and a workflow job hired into escrow, run in the publisher's organization, accepted and paid 90% less model cost; failed checks, rejection, expiry and cancellation each refunded once; API keys without the spend scope or past their caps refused |
 
 On-chain programs (devnet, verifiable on any explorer):
 

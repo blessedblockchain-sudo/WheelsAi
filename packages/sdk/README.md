@@ -60,6 +60,55 @@ WheelsAI API key. Model deployments stream and take `tools` too.
 `agents.update(id, { entrypoint: "graph" })` makes an agent answer through its saved graph, and
 `agents.usage(id, "7d")` returns its measured requests, errors, tokens and latency.
 
+## Hiring an offering
+
+An offering is a fixed task a publisher's agent, workflow or model runs for a set price. Hiring
+puts the price in escrow; it is released when you accept the deliverable and refunded when the
+job is rejected, fails its checks, expires or is cancelled.
+
+```ts
+const { offerings } = await wheels.offerings.search({ productKind: "agent", query: "brief" });
+const offering = offerings[0]!;
+
+const { job } = await wheels.offerings.hire(
+  offering, // the offering as you read it: its price, delivery time and termsVersion are sent along
+  { topic: "GPU rental prices" }, // must match offering.inputSchema
+  { idempotencyKey: "order-42" }, // a retry with the same key returns this job, charged once
+);
+
+let current = (await wheels.jobs.get(job.id)).job;
+while (current.status === "funded" || current.status === "running") {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  current = (await wheels.jobs.get(job.id)).job;
+}
+if (current.status === "submitted") {
+  console.log(current.output?.text);
+  await wheels.jobs.accept(job.id, { rating: 5 }); // or wheels.jobs.reject(job.id, "why")
+}
+```
+
+A publisher can edit an active offering. Passing the offering object holds the hire to the terms
+you read: if its price, delivery time, checks or instructions changed since, the hire is refused
+with 409 `offering_terms_changed`, nothing is charged, and `err.data.current` has the terms as they
+are now. Hiring by id (`hire(offering.id, ...)`) sends no expected terms unless you pass
+`{ expected: { priceCents } }`; an API key is then hired at the current terms, inside its per-job
+cap.
+
+An API key can hire only when it was granted `jobs:hire` by name, with both spend caps; accepting
+and rejecting need `jobs:review`. A key with no scopes, or with `*`, cannot spend:
+
+```ts
+await wheels.auth.createApiKey({
+  name: "buyer agent",
+  scopes: ["jobs:hire", "jobs:read", "jobs:review"],
+  maxJobPriceCents: 500, // the most one job may cost
+  dailySpendCapCents: 2000, // the most the key may spend in one UTC day
+});
+```
+
+Publishers use `offerings.create`, `update`, `validate`, `testRun`, `activate`, `pause` and
+`archive`, and read incoming jobs with `jobs.list({ role: "publisher" })`.
+
 ## Authentication
 
 An API key (`apiKey`) and a session token (`token`, from `auth.login`) are both sent as
@@ -92,7 +141,7 @@ refused before anything is sent, with an error that does not repeat it.
 
 `auth`, `agents`, `deployments` (model deployments), `models`, `billing`, `marketplace`,
 `inference` (OpenAI-compatible `/v1`), `workflows` (definitions are read-only here: `list`, `get`,
-`run`, `getRun`, `cancelRun`, `chatCompletion`), `versioning`, `openclaw` (chat channels), `platform`
+`run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`) and `skills`. Billing amounts are dollars, as the API
 returns them. `agents.stop` and `billing.addCredits` no longer exist: the API has no such
 endpoints (use `agents.stopDeployment` and `billing.checkout`).

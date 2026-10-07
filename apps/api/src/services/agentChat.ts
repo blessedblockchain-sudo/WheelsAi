@@ -23,6 +23,16 @@
  *   6. retrieval (best effort; a failure answers ungrounded)
  *   7. tool mode, and the continuation splice for function calling
  *
+ * A paid job (source "hired") is the same chat with three things its caller
+ * adds: the offering's private instructions as a system turn after the
+ * agent's own prompt and its grounding (`systemAddendum`), the offering's
+ * tool allowlist (`toolAllowlist`), and the `hired` tool mode, in which
+ * nothing that spends or writes can run and a tool that sends data to an
+ * address the model chooses (http_request) runs only when that allowlist
+ * names it: an empty allowlist leaves the agent its other tools, never that. The agent is the publisher's
+ * original, in the publisher's organization, so step 5 charges nobody: the
+ * buyer paid into the job's escrow.
+ *
  * An agent whose entrypoint is its graph (Agent.entrypoint = "graph") takes
  * steps 1, 2 and 4 and then runs the graph saved in the builder instead of a
  * chat. The graph run charges, settles and refunds itself
@@ -81,10 +91,11 @@ export type AgentChatCaller = "owner" | "public";
 
 /**
  * Where the chat came from; recorded with its usage, and the base of its tool
- * mode. The last three have no client on the other end: the scheduler, a
- * workflow step or job, and the test runner.
+ * mode. The last four have no client on the other end: the scheduler, a
+ * workflow step or batch job, the test runner, and a paid job a buyer hired
+ * (Offerings and Jobs).
  */
-export type AgentChatSource = "playground" | "api" | "widget" | "scheduled" | "job" | "test";
+export type AgentChatSource = "playground" | "api" | "widget" | "scheduled" | "job" | "test" | "hired";
 
 export type AgentRef = { id: string } | { slug: string };
 
@@ -109,6 +120,19 @@ export interface AgentChatInput {
    * scheduled task does with its own timeout.
    */
   deadlineMs?: number | null;
+  /**
+   * A system turn placed after the agent's own prompt and its grounding and
+   * before the conversation: an offering's private instructions. Set by
+   * server code that runs a job, never from a request body.
+   */
+  systemAddendum?: string;
+  /**
+   * The only tools of the agent this chat may use. Empty or omitted = all of
+   * them (the tool mode still withholds what it withholds). A name the agent
+   * does not have adds nothing. In a `hired` chat it is also the list of
+   * outbound tools the offering allows by name (ToolContext.outboundAllowed).
+   */
+  toolAllowlist?: string[];
 }
 
 /** The agent columns chat reads. */
@@ -405,6 +429,11 @@ export interface AgentChatSession {
    */
   modelId: string | null;
   toolMode: ToolMode;
+  /**
+   * The answer runs on the platform's own provider keys (a free model, or a
+   * graph whose nodes fall back to one). A paid job meters these.
+   */
+  platformModel: boolean;
   /** Set when the model is a free one; drives the rate-limit headers. */
   rateLimit: RateLimitResult | null;
   retrieval: RetrievalResult | null;
@@ -461,7 +490,17 @@ const TOOL_MODE_BASE: Record<AgentChatSource, ToolMode> = {
   scheduled: "scheduled",
   job: "job",
   test: "test",
+  // A buyer's input drives the publisher's agent: nothing may spend or write.
+  hired: "hired",
 };
+
+/** The agent's tools, narrowed to an allowlist when one is given. */
+function allowedTools(tools: unknown, allowlist: string[] | undefined): AgentPlaygroundConfig["tools"] {
+  const all = Array.isArray(tools) ? (tools as NonNullable<AgentPlaygroundConfig["tools"]>) : [];
+  if (!allowlist || allowlist.length === 0) return all;
+  const allowed = new Set(allowlist);
+  return all.filter((tool) => typeof tool?.name === "string" && allowed.has(tool.name));
+}
 
 /**
  * A graph started by a person at the keyboard runs as it does from the
@@ -790,10 +829,14 @@ export async function prepareAgentChat(
 
     const spliced = await spliceContinuations(input.messages, { orgId, agentId }, deps.continuations);
     // Grounding rides as its own system turn ahead of the conversation, so
-    // the user's own message is never rewritten.
-    chatMessages = retrieval
-      ? [{ role: "system", content: retrieval.contextBlock }, ...spliced]
-      : spliced;
+    // the user's own message is never rewritten. A job's private
+    // instructions follow it: the last word before the buyer's input is the
+    // publisher's.
+    chatMessages = [
+      ...(retrieval ? [{ role: "system" as const, content: retrieval.contextBlock }] : []),
+      ...(input.systemAddendum ? [{ role: "system" as const, content: input.systemAddendum }] : []),
+      ...spliced,
+    ];
   } catch (err) {
     // Charged and then unable to even start: the money goes back.
     await meter?.refund("the chat could not be started");
@@ -804,7 +847,7 @@ export async function prepareAgentChat(
   const agentConfig: AgentPlaygroundConfig = {
     name: agent.name,
     systemPrompt: agent.systemPrompt ?? undefined,
-    tools: Array.isArray(agent.tools) ? (agent.tools as AgentPlaygroundConfig["tools"]) : [],
+    tools: allowedTools(agent.tools, input.toolAllowlist),
     modelConfig: {
       externalModel: modelId,
       temperature: typeof modelConfig.temperature === "number" ? modelConfig.temperature : 0.7,
@@ -817,6 +860,9 @@ export async function prepareAgentChat(
     orgId,
     mode: toolMode,
     signal,
+    // What the publisher named, and nothing implied: with no allowlist an
+    // outbound tool does not run in a paid job.
+    ...(toolMode === "hired" && { outboundAllowed: input.toolAllowlist ?? [] }),
     requestParams: input.requestParams,
     clientTools,
     toolChoice: input.toolChoice ?? undefined,
@@ -861,6 +907,7 @@ export async function prepareAgentChat(
     runtime: "platform",
     modelId,
     toolMode,
+    platformModel: freeModel,
     rateLimit,
     retrieval,
     billing,
@@ -936,6 +983,13 @@ export async function prepareAgentChat(
  *     never zero
  *   - a streamed answer is produced whole and then sent, like a tool-using
  *     chat's
+ *   - a job's private instructions cannot ride as a system turn (a graph
+ *     takes one input), so they are put ahead of the buyer's brief in that
+ *     input. The run and its input are stored in the publisher's
+ *     organization only, and the job's confidentiality check still reads the
+ *     output.
+ *   - a tool allowlist cannot be applied: a graph's tool nodes are part of
+ *     its design. A chat that brings one is refused, not run without it.
  */
 async function prepareGraphChat(args: {
   input: AgentChatInput;
@@ -959,7 +1013,18 @@ async function prepareGraphChat(args: {
         "This agent answers through its graph, which cannot hand function calls back to the caller. Remove tools, or call an agent whose entrypoint is chat.",
     });
   }
-  const graphInput = graphInputFromMessages(input.messages);
+  if (input.toolAllowlist && input.toolAllowlist.length > 0) {
+    return refuse({
+      kind: "invalid_request",
+      code: "unsupported_parameter",
+      param: "tool_allowlist",
+      message:
+        "This agent answers through its graph, whose tools are fixed by its design, so a tool allowlist cannot be applied to it. Remove the allowlist, or use an agent whose entrypoint is chat.",
+    });
+  }
+  const conversation = graphInputFromMessages(input.messages);
+  const graphInput =
+    conversation !== null && input.systemAddendum ? `${input.systemAddendum}\n\n${conversation}` : conversation;
   if (graphInput === null) {
     return refuse({
       kind: "invalid_request",
@@ -1054,6 +1119,7 @@ async function prepareGraphChat(args: {
     modelId,
     // Before the marketplace-install check, which the run makes itself.
     toolMode,
+    platformModel: rateLimit !== null,
     rateLimit,
     retrieval: null,
     // Known only to the run; a buyer's charge shows on their statement.

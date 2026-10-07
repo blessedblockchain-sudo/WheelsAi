@@ -75,6 +75,8 @@ const INSTALL_ROW = {
   listingId: "lst_1",
   buyerId: "org_buyer",
   status: "active",
+  acceptedPricingModel: "per_request",
+  acceptedPricePerRequestCents: 250n,
   listing: {
     title: "Support Triage",
     status: "published",

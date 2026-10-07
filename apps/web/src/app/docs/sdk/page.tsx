@@ -16,6 +16,7 @@ const toc = [
   { id: "sdk", title: "TypeScript SDK" },
   { id: "sdk-auth", title: "Create a client", sub: true },
   { id: "sdk-methods", title: "Resources and methods", sub: true },
+  { id: "sdk-jobs", title: "Hiring an offering", sub: true },
   { id: "sdk-errors", title: "Errors and timeouts", sub: true },
   { id: "sdk-agent-chat", title: "Talking to an agent", sub: true },
   { id: "openai", title: "Using the OpenAI SDK for /v1" },
@@ -223,6 +224,27 @@ console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
             ),
           },
           {
+            resource: <code>offerings</code>,
+            methods: (
+              <>
+                <code>search</code>, <code>get(slug)</code>, <code>hire(id, input, &#123; idempotencyKey &#125;)</code>,{" "}
+                <code>listMine</code>, <code>getMine</code>, <code>create</code>, <code>update</code>, <code>validate</code>,{" "}
+                <code>testRun</code>, <code>activate</code>, <code>pause</code>, <code>archive</code>
+              </>
+            ),
+            endpoint: <code>/api/offerings</code>,
+          },
+          {
+            resource: <code>jobs</code>,
+            methods: (
+              <>
+                <code>list</code>, <code>summary</code>, <code>get</code>, <code>accept</code>, <code>reject</code>,{" "}
+                <code>cancel</code>, <code>rate</code>
+              </>
+            ),
+            endpoint: <code>/api/jobs</code>,
+          },
+          {
             resource: <code>versioning</code>,
             methods: (
               <>
@@ -265,6 +287,39 @@ console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
         <code>billing.addCredits</code>: use <code>agents.stopDeployment(agentId, deploymentId)</code> and{" "}
         <code>billing.checkout</code>.
       </p>
+
+      <h3 id="sdk-jobs">Hiring an offering</h3>
+      <p>
+        <code>offerings.hire</code> pays an offering&apos;s price into escrow and queues the job; poll{" "}
+        <code>jobs.get</code> until it is <code>submitted</code>, then <code>jobs.accept</code> or{" "}
+        <code>jobs.reject</code>. Pass an <code>idempotencyKey</code> so a retried hire is the same job, charged once. Pass
+        the offering you read, not just its id: its price, delivery time and <code>termsVersion</code> are sent as{" "}
+        <code>expected</code>, and if the publisher changed the offering since, the hire throws <code>409</code>{" "}
+        <code>offering_terms_changed</code> with <code>data.current</code> and charges nothing. Hiring by id sends no
+        expected terms unless you pass <code>&#123; expected: &#123; priceCents &#125; &#125;</code>. An
+        API key needs <code>jobs:hire</code> (with both spend caps) and <code>jobs:review</code> granted by name; see the{" "}
+        <Link href="/docs/api/jobs">Offerings and jobs API</Link>.
+      </p>
+      <CodeBlock
+        language="ts"
+        code={`const { offerings } = await wheels.offerings.search({ productKind: "agent", query: "brief" });
+
+const { job } = await wheels.offerings.hire(
+  offerings[0], // the offering as read: held to its price, delivery time and termsVersion
+  { topic: "GPU rental prices" },
+  { idempotencyKey: "order-42" },
+);
+
+let current = (await wheels.jobs.get(job.id)).job;
+while (current.status === "funded" || current.status === "running") {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  current = (await wheels.jobs.get(job.id)).job;
+}
+if (current.status === "submitted") {
+  console.log(current.output?.text);
+  await wheels.jobs.accept(job.id, { rating: 5 });
+}`}
+      />
 
       <h3 id="sdk-errors">Errors and timeouts</h3>
       <p>

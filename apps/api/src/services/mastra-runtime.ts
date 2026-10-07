@@ -51,7 +51,7 @@ import {
   type ToolChoice,
 } from "./openaiCompat.js";
 import type { SkillRegistry } from "./skills/registry.js";
-import type { ToolMode, ToolSpec } from "./skills/types.js";
+import type { ToolContext, ToolMode, ToolSpec } from "./skills/types.js";
 import {
   runToolLoop,
   type CallModel,
@@ -122,6 +122,8 @@ export interface RunChatOptions {
   orgId?: string;
   /** Where this chat runs from; gates e.g. money-moving tools. */
   mode?: ToolMode;
+  /** `hired` runs only: the outbound skills the offering allows by name. */
+  outboundAllowed?: readonly string[];
   signal?: AbortSignal;
   maxToolRounds?: number;
   /**
@@ -548,7 +550,7 @@ interface ToolingPlan {
 /** Which of the agent's configured tools are real skills in this mode. */
 async function planTooling(
   agentConfig: AgentPlaygroundConfig,
-  mode: ToolMode,
+  ctx: Pick<ToolContext, "mode" | "outboundAllowed">,
   explicit?: SkillRegistry,
 ): Promise<ToolingPlan> {
   const names = agentConfig.tools.map((t) => t.name).filter((n) => typeof n === "string");
@@ -556,7 +558,7 @@ async function planTooling(
 
   const registry =
     explicit ?? (await import("./skills/production.js")).getDefaultRegistry();
-  return { specs: registry.toolSpecs(names, { mode }), registry };
+  return { specs: registry.toolSpecs(names, ctx), registry };
 }
 
 function buildMessages(
@@ -610,6 +612,7 @@ async function runToolChat(
     mode,
     agentId: options.agentId ?? "",
     orgId: options.orgId ?? "",
+    ...(options.outboundAllowed && { outboundAllowed: options.outboundAllowed }),
   };
   const registry = plan.registry;
 
@@ -892,7 +895,11 @@ export async function runChatStream(
   options: RunChatOptions = {},
 ): Promise<ChatStream> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const plan = await planTooling(agentConfig, options.mode ?? "playground", options.registry);
+  const plan = await planTooling(
+    agentConfig,
+    { mode: options.mode ?? "playground", outboundAllowed: options.outboundAllowed },
+    options.registry,
+  );
   const deadline = startDeadline(options.deadlineMs, options.signal);
 
   try {
@@ -986,7 +993,11 @@ export async function runChat(
   }
 
   const fetchImpl = options.fetchImpl ?? fetch;
-  const plan = await planTooling(agentConfig, options.mode ?? "playground", options.registry);
+  const plan = await planTooling(
+    agentConfig,
+    { mode: options.mode ?? "playground", outboundAllowed: options.outboundAllowed },
+    options.registry,
+  );
   const deadline = startDeadline(options.deadlineMs, options.signal);
   try {
     return await runToolChat(

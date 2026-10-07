@@ -26,6 +26,8 @@ import { blockJwt, loginAttempts, twoFactorAttempts } from "../services/auth.js"
 import { sendVerificationEmail } from "./emailAuth.js";
 import { createChallenge, validateChallenge } from "../services/twoFactor.js";
 import { createLogger } from "../utils/logger.js";
+import { checkKeyGrant, isSpendScope } from "../config/apiKeyScopes.js";
+import { prisma } from "../lib/prisma.js";
 
 const logger = createLogger("auth-routes");
 
@@ -55,7 +57,10 @@ const walletVerifySchema = z.object({
 
 const createApiKeySchema = z.object({
   name: z.string().max(100).optional(),
-  scopes: z.array(z.string()).default([]),
+  scopes: z.array(z.string().max(64)).max(16).default([]),
+  // Required with jobs:hire, refused without it (checkKeyGrant).
+  maxJobPriceCents: z.number().optional(),
+  dailySpendCapCents: z.number().optional(),
 });
 
 // ============================================
@@ -592,8 +597,37 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/keys", { preHandler: [requireJwtAuth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const body = createApiKeySchema.parse(request.body);
+    const scopes = [...new Set(body.scopes)];
 
-    const { key, keyId } = await generateApiKey(orgId, body.name, body.scopes);
+    // Scopes used to be free text nobody checked. A key now gets only scopes
+    // that exist, and a key that can hire always has its spend caps.
+    const problem = checkKeyGrant({ ...body, scopes });
+    if (problem) {
+      return reply.status(problem.code === "invalid_scope" ? 400 : 422).send({
+        error: problem.code,
+        message: problem.message,
+      });
+    }
+    // Minting a key that can spend is itself a spending decision.
+    if (scopes.some(isSpendScope)) {
+      const membership = request.auth!.userId
+        ? await prisma.orgMember.findUnique({
+            where: { orgId_userId: { orgId, userId: request.auth!.userId } },
+            select: { role: true },
+          })
+        : null;
+      if (membership?.role !== "owner" && membership?.role !== "admin") {
+        return reply.status(403).send({
+          error: "insufficient_role",
+          message: "Only an owner or admin can create an API key that can spend.",
+        });
+      }
+    }
+
+    const { key, keyId } = await generateApiKey(orgId, body.name, scopes, {
+      maxJobPriceCents: body.maxJobPriceCents,
+      dailySpendCapCents: body.dailySpendCapCents,
+    });
     const createdKey = (await listApiKeys(orgId)).find((candidate) => candidate.id === keyId);
     const apiKey = createdKey
       ? {
@@ -604,7 +638,9 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           id: keyId,
           keyPrefix: key.slice(0, 16),
           name: body.name ?? null,
-          scopes: body.scopes,
+          scopes,
+          maxJobPriceCents: body.maxJobPriceCents ?? null,
+          dailySpendCapCents: body.dailySpendCapCents ?? null,
           lastUsedAt: null,
           expiresAt: null,
           createdAt: new Date(),

@@ -36,37 +36,11 @@ import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { marketplaceApi, getErrorMessage } from "@/lib/api";
 import { ContributionsCard } from "@/components/marketplace/contributions-card";
+import { EscrowBadge } from "@/components/marketplace/escrow-badge";
 import { cn } from "@/lib/utils";
 
-interface RevenueData {
-  totalRevenueCents: number;
-  pendingPayoutCents: number;
-  totalListings: number;
-  totalInstalls: number;
-  revenueByListing: Array<{
-    listingId: string;
-    listing: { id: string; title: string; slug: string } | undefined;
-    totalRevenueCents: number;
-    totalRequests: number;
-  }>;
-  recentTransactions: Array<{
-    id: string;
-    type: string;
-    grossAmountCents: number;
-    platformFeeCents: number;
-    creatorAmountCents: number;
-    requestCount: number;
-    status: string;
-    createdAt: string;
-  }>;
-  pendingPayouts: Array<{
-    id: string;
-    amountCents: number;
-    payoutMethod: string;
-    status: string;
-    requestedAt: string;
-  }>;
-}
+// The one shape the API client declares, so a field added there reaches this page.
+type RevenueData = Awaited<ReturnType<typeof marketplaceApi.getRevenue>>;
 
 interface Payout {
   id: string;
@@ -159,7 +133,7 @@ function RevenuePageSkeleton() {
           <Skeleton className="h-4 w-60 max-w-full" />
         </CardHeader>
         <CardContent>
-          <SkeletonTable rows={5} cols={6} />
+          <SkeletonTable rows={5} cols={7} />
         </CardContent>
       </Card>
     </>
@@ -306,6 +280,31 @@ export default function RevenueDashboardPage() {
               </Card>
             </div>
 
+            {revenue.heldInEscrow && revenue.heldInEscrow.jobs > 0 && (
+              <Card className="mb-8">
+                <CardContent className="flex flex-wrap items-center justify-between gap-4 py-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Held in escrow</p>
+                    <p className="text-2xl font-bold text-foreground">
+                      {formatCurrency(revenue.heldInEscrow.creatorAmountCents)}
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Your share of {revenue.heldInEscrow.jobs}{" "}
+                      {revenue.heldInEscrow.jobs === 1 ? "job" : "jobs"} buyers have paid for. It is not yours yet: it
+                      is released when the buyer accepts the result or the 72-hour review window closes, and refunded
+                      if the job is rejected, fails or expires.
+                    </p>
+                  </div>
+                  <Link
+                    href="/dashboard/jobs?tab=received"
+                    className="text-sm font-medium text-primary underline underline-offset-2"
+                  >
+                    See these jobs
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+
             <ContributionsCard />
 
             {/* Payout CTA */}
@@ -339,7 +338,7 @@ export default function RevenueDashboardPage() {
                   <CardDescription>Earnings breakdown by published agent</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {revenue.revenueByListing.length === 0 ? (
+                  {revenue.revenueByListing.length === 0 && !(revenue.unlistedJobRevenue?.jobs) ? (
                     <EmptyState
                       icon={Store}
                       title="No revenue yet"
@@ -365,6 +364,21 @@ export default function RevenueDashboardPage() {
                           </p>
                         </div>
                       ))}
+                      {revenue.unlistedJobRevenue && revenue.unlistedJobRevenue.jobs > 0 && (
+                        <div className="flex items-center justify-between rounded-lg border p-3">
+                          <div>
+                            <p className="font-medium text-foreground">Jobs on unlisted products</p>
+                            <p className="text-sm text-muted-foreground">
+                              {revenue.unlistedJobRevenue.jobs.toLocaleString()} completed{" "}
+                              {revenue.unlistedJobRevenue.jobs === 1 ? "job" : "jobs"} on workflows, models and agents
+                              without a listing
+                            </p>
+                          </div>
+                          <p className="font-semibold text-green-600">
+                            {formatCurrency(revenue.unlistedJobRevenue.totalRevenueCents)}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </CardContent>
@@ -442,20 +456,55 @@ export default function RevenueDashboardPage() {
                           <th className="pb-2 font-medium">Gross</th>
                           <th className="pb-2 font-medium">Platform Fee</th>
                           <th className="pb-2 font-medium">Your Earnings</th>
+                          <th className="pb-2 font-medium">Status</th>
                           <th className="pb-2 font-medium">Date</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y">
                         {revenue.recentTransactions.map((tx) => (
                           <tr key={tx.id}>
-                            <td className="py-3 capitalize">{tx.type.replace("_", " ")}</td>
+                            <td className="py-3 capitalize">
+                              {tx.jobId ? (
+                                <Link
+                                  href={`/dashboard/jobs/${tx.jobId}`}
+                                  className="text-primary underline underline-offset-2"
+                                >
+                                  Job
+                                </Link>
+                              ) : (
+                                tx.type.replace("_", " ")
+                              )}
+                            </td>
                             <td className="py-3">{tx.requestCount}</td>
                             <td className="py-3">{formatCurrency(tx.grossAmountCents)}</td>
                             <td className="py-3 text-muted-foreground">
                               -{formatCurrency(tx.platformFeeCents)}
                             </td>
-                            <td className="py-3 font-medium text-green-600">
+                            {/* Only money that is yours reads as an earning: a held or
+                                refunded job, or a pending or refunded charge, is not. */}
+                            <td
+                              className={
+                                tx.status === "settled"
+                                  ? "py-3 font-medium text-green-600"
+                                  : tx.status === "refunded"
+                                    ? "py-3 text-muted-foreground line-through"
+                                    : "py-3 text-muted-foreground"
+                              }
+                            >
                               {formatCurrency(tx.creatorAmountCents)}
+                            </td>
+                            <td className="py-3">
+                              {tx.escrow ? (
+                                <EscrowBadge state={tx.escrow} />
+                              ) : (
+                                <Badge
+                                  variant={
+                                    tx.status === "settled" ? "success" : tx.status === "refunded" ? "secondary" : "warning"
+                                  }
+                                >
+                                  {tx.status === "settled" ? "Paid" : tx.status === "refunded" ? "Refunded" : "Pending"}
+                                </Badge>
+                              )}
                             </td>
                             <td className="py-3 text-muted-foreground">
                               {formatDate(tx.createdAt)}

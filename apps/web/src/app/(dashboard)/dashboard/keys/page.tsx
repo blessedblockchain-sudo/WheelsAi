@@ -13,11 +13,56 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { SkeletonTable } from "@/components/ui/skeleton";
+import { Label } from "@/components/ui/label";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { API_BASE_URL, apiKeysApi, type ApiKey, getErrorMessage } from "@/lib/api";
+import {
+  ORDINARY_SCOPES,
+  SPEND_SCOPES,
+  describeKeyAccess,
+  dollarsToCents,
+  formatCents,
+  keyGrantProblem,
+  type ScopeOption,
+} from "@/lib/jobs";
 import { unifiedApiSnippets } from "@/lib/public-urls";
 
 // Built once from the API origin this app talks to.
 const usage = unifiedApiSnippets(API_BASE_URL);
+
+type AccessChoice = "all" | "limited";
+
+function ScopeCheckbox({
+  option,
+  checked,
+  onChange,
+}: {
+  option: ScopeOption;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = `scope-${option.scope.replace(":", "-")}`;
+  return (
+    <div className="flex items-start gap-3">
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-1 h-4 w-4 rounded border-border accent-primary"
+        aria-describedby={`${id}-hint`}
+      />
+      <div>
+        <label htmlFor={id} className="text-sm font-medium text-foreground">
+          {option.label} <code className="ml-1 text-xs font-normal text-muted-foreground">{option.scope}</code>
+        </label>
+        <p id={`${id}-hint`} className="text-xs text-muted-foreground">
+          {option.description}
+        </p>
+      </div>
+    </div>
+  );
+}
 
 export default function ApiKeysPage() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
@@ -28,6 +73,31 @@ export default function ApiKeysPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newlyCreatedKey, setNewlyCreatedKey] = useState<string | null>(null);
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
+  const confirmAction = useConfirm();
+  // What the new key may do. Nothing is preselected: the person creating a
+  // key chooses its access, and spending is never part of "everything".
+  const [access, setAccess] = useState<AccessChoice | null>(null);
+  const [scopes, setScopes] = useState<string[]>([]);
+  const [maxJobPrice, setMaxJobPrice] = useState("");
+  const [dailySpendCap, setDailySpendCap] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  function toggleScope(scope: string, on: boolean) {
+    setScopes((current) => (on ? [...new Set([...current, scope])] : current.filter((s) => s !== scope)));
+  }
+
+  function resetCreateForm() {
+    setShowCreateForm(false);
+    setNewKeyName("");
+    setAccess(null);
+    setScopes([]);
+    setMaxJobPrice("");
+    setDailySpendCap("");
+    setCreateError(null);
+  }
+
+  const spendChosen = SPEND_SCOPES.filter((option) => scopes.includes(option.scope));
+  const canHire = scopes.includes("jobs:hire");
 
   async function loadApiKeys() {
     setIsLoading(true);
@@ -49,20 +119,52 @@ export default function ApiKeysPage() {
   }, []);
 
   async function handleCreateKey() {
+    setCreateError(null);
     if (!newKeyName.trim()) {
-      toast.error("Please enter a name for the API key");
+      setCreateError("Give the key a name.");
       return;
+    }
+    if (access === null) {
+      setCreateError("Choose what this key can do.");
+      return;
+    }
+    const ordinary = scopes.filter((scope) => ORDINARY_SCOPES.some((option) => option.scope === scope));
+    const spend = spendChosen.map((option) => option.scope);
+    if (access === "limited" && ordinary.length + spend.length === 0) {
+      setCreateError("Choose at least one thing this key can do.");
+      return;
+    }
+    const problem = keyGrantProblem({ scopes: spend, maxJobPrice, dailySpendCap });
+    if (problem) {
+      setCreateError(problem);
+      return;
+    }
+    // "All except spending" is "*"; spend scopes are always listed by name.
+    const granted = [...(access === "all" ? ["*"] : ordinary), ...spend];
+    const caps = canHire
+      ? { maxJobPriceCents: dollarsToCents(maxJobPrice)!, dailySpendCapCents: dollarsToCents(dailySpendCap)! }
+      : undefined;
+
+    if (spend.length > 0) {
+      const ok = await confirmAction({
+        title: "Create a key that can spend?",
+        description: caps
+          ? `Anyone holding this key can hire jobs from your credits: up to ${formatCents(caps.maxJobPriceCents)} a job and ${formatCents(caps.dailySpendCapCents)} a day. A refund does not give the day's allowance back.`
+          : "Anyone holding this key can move your organization's money with it. Keep it as safe as a password.",
+        confirmLabel: "Create spending key",
+      });
+      if (!ok) return;
     }
 
     setIsCreating(true);
     try {
-      const { apiKey, key } = await apiKeysApi.create(newKeyName);
+      const { apiKey, key } = await apiKeysApi.create(newKeyName.trim(), granted, caps);
       setNewlyCreatedKey(key);
       setApiKeys([apiKey, ...apiKeys]);
       setNewKeyName("");
       toast.success("API key created successfully");
     } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to create API key"));
+      setCreateError(getErrorMessage(error, "Failed to create API key"));
     } finally {
       setIsCreating(false);
     }
@@ -141,17 +243,39 @@ export default function ApiKeysPage() {
     {
       key: "scopes",
       header: "Scopes",
-      render: (apiKey) =>
-        apiKey.scopes && apiKey.scopes.length > 0 ? (
-          <div className="flex flex-wrap gap-1">
-            {apiKey.scopes.map((scope) => (
-              <Badge key={scope} variant="secondary" className="text-[10px]">
+      render: (apiKey) => {
+        const { summary, spends } = describeKeyAccess(apiKey.scopes);
+        const listed = (apiKey.scopes ?? []).filter((scope) => scope !== "*" && !spends.includes(scope));
+        return (
+          <div className="flex flex-wrap items-center gap-1">
+            {summary === "All except spending" ? (
+              <span className="text-sm text-muted-foreground">All except spending</span>
+            ) : (
+              listed.map((scope) => (
+                <Badge key={scope} variant="secondary" className="text-[10px]">
+                  {scope}
+                </Badge>
+              ))
+            )}
+            {spends.map((scope) => (
+              <Badge key={scope} variant="warning" className="text-[10px]">
                 {scope}
               </Badge>
             ))}
           </div>
+        );
+      },
+    },
+    {
+      key: "spendCaps",
+      header: "Spend caps",
+      render: (apiKey) =>
+        apiKey.maxJobPriceCents != null && apiKey.dailySpendCapCents != null ? (
+          <span className="whitespace-nowrap text-sm text-foreground">
+            {formatCents(apiKey.maxJobPriceCents)} a job · {formatCents(apiKey.dailySpendCapCents)} a day
+          </span>
         ) : (
-          <span className="text-sm text-muted-foreground">All</span>
+          <span className="text-sm text-muted-foreground">Cannot hire</span>
         ),
     },
     {
@@ -219,7 +343,8 @@ export default function ApiKeysPage() {
           <CardHeader>
             <CardTitle className="text-base">Create New API Key</CardTitle>
             <CardDescription>
-              API keys are used to authenticate requests to your deployed models
+              A key acts for your whole organization. Choose what it can do; a key never spends unless you grant
+              that by name.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -256,37 +381,142 @@ export default function ApiKeysPage() {
                   variant="outline"
                   onClick={() => {
                     setNewlyCreatedKey(null);
-                    setShowCreateForm(false);
+                    resetCreateForm();
                   }}
                 >
                   Done
                 </Button>
               </div>
             ) : showCreateForm ? (
-              <div className="flex items-end gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium text-foreground">
-                    Key Name
-                  </label>
+              <div className="space-y-6">
+                <div className="max-w-md">
+                  <Label htmlFor="key-name">Key name</Label>
                   <Input
+                    id="key-name"
                     value={newKeyName}
                     onChange={(e) => setNewKeyName(e.target.value)}
                     placeholder="e.g., Production, Development, CI/CD"
                     className="mt-1"
+                    maxLength={100}
                   />
                 </div>
-                <Button onClick={handleCreateKey} isLoading={isCreating}>
-                  Create Key
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setShowCreateForm(false);
-                    setNewKeyName("");
-                  }}
-                >
-                  Cancel
-                </Button>
+
+                <fieldset>
+                  <legend className="text-sm font-medium text-foreground">What this key can do</legend>
+                  <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                    {(
+                      [
+                        {
+                          value: "all",
+                          title: "All except spending",
+                          body: "Everything your organization can do through the API, except hiring, accepting, rejecting and installing.",
+                        },
+                        {
+                          value: "limited",
+                          title: "Only what I choose",
+                          body: "Pick the scopes below. The key can do nothing else.",
+                        },
+                      ] as const
+                    ).map((choice) => (
+                      <label
+                        key={choice.value}
+                        className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${
+                          access === choice.value ? "border-primary bg-primary/10" : "border-border hover:bg-muted"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="key-access"
+                          value={choice.value}
+                          checked={access === choice.value}
+                          onChange={() => setAccess(choice.value)}
+                          className="mt-1 h-4 w-4 accent-primary"
+                        />
+                        <span>
+                          <span className="block text-sm font-medium text-foreground">{choice.title}</span>
+                          <span className="block text-xs text-muted-foreground">{choice.body}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+
+                {access === "limited" && (
+                  <fieldset className="space-y-3">
+                    <legend className="text-sm font-medium text-foreground">Scopes</legend>
+                    {ORDINARY_SCOPES.map((option) => (
+                      <ScopeCheckbox
+                        key={option.scope}
+                        option={option}
+                        checked={scopes.includes(option.scope)}
+                        onChange={(on) => toggleScope(option.scope, on)}
+                      />
+                    ))}
+                  </fieldset>
+                )}
+
+                {access !== null && (
+                  <fieldset className="space-y-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 p-4">
+                    <legend className="px-1 text-sm font-medium text-foreground">Spending (off unless ticked)</legend>
+                    <p className="text-xs text-muted-foreground">
+                      These move your organization&apos;s money. Only an owner or admin can create a key with any of
+                      them.
+                    </p>
+                    {SPEND_SCOPES.map((option) => (
+                      <ScopeCheckbox
+                        key={option.scope}
+                        option={option}
+                        checked={scopes.includes(option.scope)}
+                        onChange={(on) => toggleScope(option.scope, on)}
+                      />
+                    ))}
+                    {canHire && (
+                      <div className="grid gap-4 pt-2 sm:grid-cols-2">
+                        <div>
+                          <Label htmlFor="key-max-job">Most one job may cost (USD)</Label>
+                          <Input
+                            id="key-max-job"
+                            className="mt-1"
+                            inputMode="decimal"
+                            value={maxJobPrice}
+                            onChange={(e) => setMaxJobPrice(e.target.value)}
+                            placeholder="5.00"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="key-daily-cap">Most it may spend in a day (USD)</Label>
+                          <Input
+                            id="key-daily-cap"
+                            className="mt-1"
+                            inputMode="decimal"
+                            value={dailySpendCap}
+                            onChange={(e) => setDailySpendCap(e.target.value)}
+                            placeholder="20.00"
+                            aria-describedby="key-daily-cap-hint"
+                          />
+                          <p id="key-daily-cap-hint" className="mt-1 text-xs text-muted-foreground">
+                            A day is a UTC day. Both caps are required for a key that can hire.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </fieldset>
+                )}
+
+                {createError && (
+                  <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+                    {createError}
+                  </p>
+                )}
+
+                <div className="flex gap-3">
+                  <Button onClick={handleCreateKey} isLoading={isCreating}>
+                    Create Key
+                  </Button>
+                  <Button variant="outline" onClick={resetCreateForm} disabled={isCreating}>
+                    Cancel
+                  </Button>
+                </div>
               </div>
             ) : (
               <Button onClick={() => setShowCreateForm(true)}>
@@ -305,7 +535,7 @@ export default function ApiKeysPage() {
           <CardContent>
             {isLoading ? (
               <div aria-busy="true">
-                <SkeletonTable rows={3} cols={6} />
+                <SkeletonTable rows={3} cols={7} />
                 <span className="sr-only">Loading API keys</span>
               </div>
             ) : loadError !== null ? (

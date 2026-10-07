@@ -26,7 +26,14 @@ export type WebhookEventType =
   | "workflow.completed"
   | "workflow.failed"
   | "scheduled_task.failed"
-  | "report.generated";
+  | "report.generated"
+  | "job.funded"
+  | "job.submitted"
+  | "job.completed"
+  | "job.rejected"
+  | "job.failed"
+  | "job.expired"
+  | "job.cancelled";
 
 export const WEBHOOK_EVENTS: WebhookEventType[] = [
   "agent.created",
@@ -52,6 +59,15 @@ export const WEBHOOK_EVENTS: WebhookEventType[] = [
   "scheduled_task.failed",
   // A report task asked for its report to be sent to the org's webhooks.
   "report.generated",
+  // Offerings and Jobs. job.funded goes to the publisher, job.submitted to
+  // the buyer (review it within the window), the rest to both.
+  "job.funded",
+  "job.submitted",
+  "job.completed",
+  "job.rejected",
+  "job.failed",
+  "job.expired",
+  "job.cancelled",
 ];
 
 export interface CreateWebhookInput {

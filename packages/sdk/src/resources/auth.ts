@@ -42,11 +42,38 @@ export interface WhoAmI {
   authType: "jwt" | "api_key";
 }
 
+/**
+ * What a key may be granted. An ordinary scope is also held by a key with no scopes or with
+ * `*`. The three that spend money (`jobs:hire`, `jobs:review`, `marketplace:install`) are held
+ * only by a key that lists them by name.
+ */
+export type ApiKeyScope =
+  | "*"
+  | "agents:invoke"
+  | "workflows:invoke"
+  | "offerings:write"
+  | "jobs:read"
+  | "jobs:hire"
+  | "jobs:review"
+  | "marketplace:install";
+
+export interface CreateApiKeyInput {
+  name?: string;
+  scopes?: ApiKeyScope[];
+  /** Required with `jobs:hire`: the most one job may cost, in cents (1 to 100,000). */
+  maxJobPriceCents?: number;
+  /** Required with `jobs:hire`: the most the key may spend on jobs in one UTC day, in cents. */
+  dailySpendCapCents?: number;
+}
+
 export interface ApiKeyInfo {
   id: string;
   keyPrefix: string;
   name: string | null;
   scopes: string[];
+  /** Spend caps of a key granted `jobs:hire`; null on any other key. */
+  maxJobPriceCents: number | null;
+  dailySpendCapCents: number | null;
   lastUsedAt: string | null;
   expiresAt: string | null;
   createdAt: string;
@@ -113,8 +140,12 @@ export function authResource(client: WheelsAIClient) {
     listApiKeys: () =>
       client.get<{ keys: ApiKeyInfo[]; apiKeys: ApiKeyInfo[] }>("/api/auth/keys"),
 
-    /** Session credentials only. The returned `key` is shown once. */
-    createApiKey: (input: { name?: string; scopes?: string[] } = {}) =>
+    /**
+     * Session credentials only. The returned `key` is shown once. A key with a spend scope can
+     * be created only by an owner or admin, and `jobs:hire` needs both caps
+     * (422 `spend_caps_required`); an unknown scope is 400 `invalid_scope`.
+     */
+    createApiKey: (input: CreateApiKeyInput = {}) =>
       client.post<CreatedApiKey>("/api/auth/keys", input),
 
     /** Session credentials only. */

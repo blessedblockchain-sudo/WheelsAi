@@ -6,6 +6,8 @@ export {
   type LoginResponse,
   type WhoAmI,
   type ApiKeyInfo,
+  type ApiKeyScope,
+  type CreateApiKeyInput,
   type CreatedApiKey,
   type OrganizationMembership,
 } from "./auth.js";
@@ -86,6 +88,35 @@ export {
   type WorkflowRun,
   type WorkflowRunStatus,
 } from "./workflows.js";
+export {
+  offeringsResource,
+  type CreateOfferingInput,
+  type DeliverableCheck,
+  type ExpectedTerms,
+  type HireOptions,
+  type Offering,
+  type OfferingContentInput,
+  type OfferingOutputFormat,
+  type OfferingProductKind,
+  type OfferingStatus,
+  type OfferingTestRun,
+  type OfferingToHire,
+  type OfferingTrackRecord,
+  type OwnedOffering,
+  type SearchOfferingsParams,
+  type UpdateOfferingInput,
+} from "./offerings.js";
+export {
+  jobsResource,
+  type BuyerJob,
+  type EscrowState,
+  type Job,
+  type JobDeliverable,
+  type JobRole,
+  type JobStatus,
+  type ListJobsParams,
+  type PublisherJob,
+} from "./jobs.js";
 export { versioningResource, type AgentVersion, type ChangeType, type VersionDiff } from "./versioning.js";
 export { openclawResource, type OpenClawChannel, type OpenClawDeployment } from "./openclaw.js";
 export {

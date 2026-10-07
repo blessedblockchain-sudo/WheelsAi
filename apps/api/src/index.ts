@@ -42,6 +42,10 @@ import { settingsRoutes } from "./routes/settings.js";
 import { agentRoutes } from "./routes/agents.js";
 import { trainingRoutes } from "./routes/training.js";
 import { marketplaceRoutes } from "./routes/marketplace.js";
+import {
+  createJobRoutesProduction,
+  createOfferingRoutesProduction,
+} from "./routes/jobBindings.js";
 import { reputationRoutes } from "./routes/reputation.js";
 import { analyticsRoutes } from "./routes/analytics.js";
 import { enterpriseRoutes } from "./routes/enterprise.js";
@@ -114,6 +118,10 @@ import {
   stopSchedulerQueue,
   startWorkflowRunQueue,
   stopWorkflowRunQueue,
+  startJobRunnerQueue,
+  stopJobRunnerQueue,
+  startJobSweeperQueue,
+  stopJobSweeperQueue,
   startUptimeProberQueue,
   stopUptimeProberQueue,
   startCustomDomainCheckQueue,
@@ -373,6 +381,10 @@ async function main() {
   });
   await app.register(settingsRoutes, { prefix: "/api/settings" });
   await app.register(marketplaceRoutes, { prefix: "/api/marketplace" });
+  // Offerings and Jobs: a publisher's product hired for a fixed task, paid
+  // through escrow.
+  await app.register(createOfferingRoutesProduction(), { prefix: "/api/offerings" });
+  await app.register(createJobRoutesProduction(), { prefix: "/api/jobs" });
   await app.register(reputationRoutes, { prefix: "/api/reputation" });
   await app.register(analyticsRoutes, { prefix: "/api/analytics" });
   await app.register(enterpriseRoutes, { prefix: "/api/enterprise" });
@@ -484,6 +496,8 @@ async function main() {
   await startAgentMessageQueue();
   await startSchedulerQueue();
   await startWorkflowRunQueue();
+  await startJobRunnerQueue();
+  await startJobSweeperQueue();
   await startUptimeProberQueue();
   await startCustomDomainCheckQueue();
   await customDomainEdge.start();
@@ -537,6 +551,8 @@ async function main() {
       await stopAgentMessageQueue();
       await stopSchedulerQueue();
       await stopWorkflowRunQueue();
+      await stopJobRunnerQueue();
+      await stopJobSweeperQueue();
       await stopUptimeProberQueue();
       await stopCustomDomainCheckQueue();
       await stopAlertEvaluatorQueue();

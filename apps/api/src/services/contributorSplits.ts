@@ -94,12 +94,21 @@ export interface SplitResult {
  */
 export async function splitCreatorRevenue(
   tx: Partial<ContributorSplitTx>,
-  args: { revenueId: string; listingId: string; publisherId: string; creatorCents: bigint; now?: Date },
+  args: {
+    revenueId: string;
+    publisherId: string;
+    creatorCents: bigint;
+    now?: Date;
+  } & (
+    | { listingId: string; agentId?: undefined }
+    /** Job revenue on an agent that has no listing: the agent is named directly. */
+    | { agentId: string; listingId?: undefined }
+  ),
 ): Promise<SplitResult> {
   const none: SplitResult = { publisherCents: args.creatorCents, paid: [], pending: [] };
   if (
     args.creatorCents <= 0n ||
-    !tx.agentListing?.findUnique ||
+    (args.listingId !== undefined && !tx.agentListing?.findUnique) ||
     !tx.agentContributor ||
     !tx.organization ||
     !tx.publisherProfile?.findUnique ||
@@ -108,7 +117,10 @@ export async function splitCreatorRevenue(
     return none;
   }
 
-  const listing = await tx.agentListing.findUnique({ where: { id: args.listingId }, select: { agentId: true } });
+  const listing =
+    args.listingId !== undefined
+      ? await tx.agentListing!.findUnique({ where: { id: args.listingId }, select: { agentId: true } })
+      : { agentId: args.agentId };
   if (!listing) return none;
 
   const contributors = await tx.agentContributor.findMany({

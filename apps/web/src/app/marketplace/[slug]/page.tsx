@@ -24,7 +24,9 @@ import {
 import { toast } from "sonner";
 import {
   marketplaceApi,
+  offeringsApi,
   tokenApi,
+  type PublicOffering,
   type MarketplaceListing,
   type MarketplaceReview,
   type AgentToken,
@@ -34,6 +36,7 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { TokenChart } from "@/components/dashboard/token-chart";
+import { OfferingCard, OfferingCardSkeleton } from "@/components/marketplace/offering-card";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -121,7 +124,7 @@ function ReviewCard({ review }: { review: MarketplaceReview }) {
   );
 }
 
-type TabType = "overview" | "reviews" | "token";
+type TabType = "overview" | "hire" | "reviews" | "token";
 
 /** Placeholder shaped like a sidebar card of label / value rows. */
 function InfoCardSkeleton({ rows }: { rows: number }) {
@@ -259,6 +262,9 @@ export default function ListingDetailPage() {
   const [reviewsError, setReviewsError] = useState<unknown>(null);
   const [reviewsLoading, setReviewsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>("overview");
+  // Fixed tasks this agent can be hired for. null = still loading.
+  const [offerings, setOfferings] = useState<PublicOffering[] | null>(null);
+  const [offeringsError, setOfferingsError] = useState<unknown>(null);
 
   // Install flow (INT-M1) — the buyer conversion.
   const { authed } = useSession();
@@ -278,6 +284,9 @@ export default function ListingDetailPage() {
     if (typeof window !== "undefined" && window.location.hash === "#token") {
       setActiveTab("token");
     }
+    if (typeof window !== "undefined" && window.location.hash === "#hire") {
+      setActiveTab("hire");
+    }
   }, []);
 
   // The reviews route takes the listing's id (a UUID), not the slug in this
@@ -296,14 +305,28 @@ export default function ListingDetailPage() {
     }
   }, []);
 
+  // Never throws: a failure lands in offeringsError and the Hire tab says so.
+  const loadOfferings = useCallback(async (listingId: string) => {
+    setOfferings(null);
+    setOfferingsError(null);
+    try {
+      const res = await offeringsApi.search({ listingId, limit: 12 });
+      setOfferings(res.offerings);
+    } catch (error) {
+      setOfferings([]);
+      setOfferingsError(error);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setLoadError(null);
     try {
       const listingRes = await marketplaceApi.getListing(slug);
       setListing(listingRes.listing);
-      // Not awaited: the page does not wait for its Reviews tab.
+      // Not awaited: the page does not wait for its Reviews or Hire tab.
       void loadReviews(listingRes.listing.id);
+      void loadOfferings(listingRes.listing.id);
 
       // If tokenized, fetch token data
       if (listingRes.listing.pricingModel === "tokenized") {
@@ -332,7 +355,7 @@ export default function ListingDetailPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [slug, loadReviews]);
+  }, [slug, loadReviews, loadOfferings]);
 
   useEffect(() => {
     if (slug) {
@@ -365,7 +388,15 @@ export default function ListingDetailPage() {
     if (!listing || installing) return;
     setInstalling(true);
     try {
-      const res = await marketplaceApi.installAgent(listing.id);
+      // The pricing this page showed goes with the install: if the publisher
+      // changed it meanwhile the API refuses (409) and nothing is charged.
+      const res = await marketplaceApi.installAgent(listing.id, {
+        expectedPricing: {
+          pricingModel: listing.pricingModel,
+          pricePerRequestCents: listing.pricePerRequestCents,
+          monthlyPriceCents: listing.monthlyPriceCents,
+        },
+      });
       setInstallState({ installed: true, clonedAgentId: res.clonedAgent.id });
       if (res.subscription) {
         const renews = new Date(res.subscription.currentPeriodEnd).toLocaleDateString();
@@ -398,6 +429,14 @@ export default function ListingDetailPage() {
             ? { label: `Get ${tokenData.symbol}`, onClick: () => setActiveTab("token") }
             : { label: "Link a wallet", onClick: () => router.push("/dashboard/settings") },
         });
+      } else if (
+        error instanceof ApiError &&
+        (error.data as { error?: string } | null)?.error === "pricing_changed"
+      ) {
+        // The price moved while this page was open. Show it as it stands;
+        // nothing was installed or charged.
+        toast.error("The publisher changed this agent's pricing. Check the new price, then install again.");
+        void loadData();
       } else {
         toast.error(getErrorMessage(error, "Failed to install agent"));
       }
@@ -563,6 +602,19 @@ export default function ListingDetailPage() {
                     Overview
                   </button>
                   <button
+                    onClick={() => setActiveTab("hire")}
+                    className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
+                      activeTab === "hire"
+                        ? "border-primary-600 text-primary-600"
+                        : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
+                    }`}
+                  >
+                    Hire
+                    {offerings !== null && offerings.length > 0 && (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{offerings.length}</span>
+                    )}
+                  </button>
+                  <button
                     onClick={() => setActiveTab("reviews")}
                     className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
                       activeTab === "reviews"
@@ -640,6 +692,40 @@ export default function ListingDetailPage() {
                             </span>
                           ))}
                         </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeTab === "hire" && (
+                  <div className="space-y-4">
+                    <p className="text-sm text-muted-foreground">
+                      Instead of installing this agent, hire it for one fixed task. The publisher runs it for you, your
+                      payment is held in escrow, and they are paid only when you accept the result.
+                    </p>
+                    {offerings === null ? (
+                      <div className="grid gap-4 sm:grid-cols-2" aria-busy="true">
+                        <span className="sr-only">Loading offerings</span>
+                        <OfferingCardSkeleton />
+                        <OfferingCardSkeleton />
+                      </div>
+                    ) : offeringsError !== null ? (
+                      <ErrorState
+                        title="Couldn't load this agent's offerings"
+                        error={offeringsError}
+                        onRetry={() => void loadOfferings(listing.id)}
+                      />
+                    ) : offerings.length === 0 ? (
+                      <EmptyState
+                        icon={Clock}
+                        title="No fixed-price tasks yet"
+                        description="The publisher has not set up a task this agent can be hired for. You can still install it and run it yourself."
+                      />
+                    ) : (
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        {offerings.map((offering) => (
+                          <OfferingCard key={offering.id} offering={offering} />
+                        ))}
                       </div>
                     )}
                   </div>

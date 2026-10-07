@@ -78,7 +78,21 @@ export interface ExecuteScheduledTaskDeps {
     mode?: ToolMode;
     /** Aborts the model call on a timeout or a cancel. */
     signal?: AbortSignal;
-  }) => Promise<{ content: string; usage?: unknown }>;
+    /**
+     * A paid job only (mode "hired"): the offering's private instructions,
+     * sent as a system turn after the agent's own, and the tools the
+     * offering allows. See services/sharedAgentChat.ts.
+     */
+    systemAddendum?: string;
+    toolAllowlist?: string[];
+  }) => Promise<{
+    content: string;
+    usage?: unknown;
+    /** The resolved model id, and whether it ran on the platform's own keys. */
+    model?: string | null;
+    platformModel?: boolean;
+    toolCallCount?: number;
+  }>;
   fetchFn: typeof fetch;
   /** DNS seam for the SSRF guard; tests inject it, production uses real DNS. */
   guardDeps?: UrlGuardDeps;

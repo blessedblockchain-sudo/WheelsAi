@@ -52,6 +52,27 @@ test("trial and test are never loosened, and skip the lookup entirely", async ()
   assert.equal(looked, false);
 });
 
+test("hired is never loosened: an installed copy does not turn a job back into trial, which allows writes", async () => {
+  let looked = false;
+  const mode = await resolveToolMode(args("hired"), {
+    isMarketplaceInstall: async () => {
+      looked = true;
+      return true;
+    },
+  });
+  assert.equal(mode, "hired");
+  assert.equal(looked, false);
+  // Nor does a failing lookup change it.
+  assert.equal(
+    await resolveToolMode(args("hired"), {
+      isMarketplaceInstall: async () => {
+        throw new Error("database unavailable");
+      },
+    }),
+    "hired",
+  );
+});
+
 test("if the install lookup fails the run is restricted, not trusted", async () => {
   const mode = await resolveToolMode(args("playground"), {
     isMarketplaceInstall: async () => {

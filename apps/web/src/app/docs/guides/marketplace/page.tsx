@@ -18,6 +18,7 @@ const toc = [
   { id: "per-request", title: "Per request", sub: true },
   { id: "monthly", title: "Monthly", sub: true },
   { id: "tokenized", title: "Tokenized", sub: true },
+  { id: "offerings", title: "Sell a fixed task (offerings)" },
   { id: "split", title: "Revenue split" },
   { id: "installs", title: "What buyers get" },
   { id: "payouts", title: "Getting paid" },
@@ -158,6 +159,52 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         allocation is locked for 30 days after launch. A tokenized agent gets an on-chain treasury (the{" "}
         <code>agent-treasury</code> Solana program) that can pay for the agent&apos;s Nosana compute. Start from{" "}
         <strong>Marketplace → Tokens → Create</strong>.
+      </p>
+
+      <h2 id="offerings">Sell a fixed task (offerings)</h2>
+      <p>
+        A listing sells a copy of an agent. An <strong>offering</strong> sells one piece of work: a fixed task that your
+        agent, your workflow or your model deployment runs for a buyer at a price you set, from $0.50 to $1,000. Create one
+        under <strong>Monetize → Offerings</strong>: pick the product, describe what the buyer sends (a JSON Schema the hire
+        form is drawn from), write your private instructions, add the checks a result must pass, and promise a delivery
+        time between 5 minutes and 7 days. Run it once with <strong>Test run</strong>, then publish.
+      </p>
+      <ul>
+        <li>
+          When a buyer hires it, the price leaves their credits and is <strong>held in escrow</strong>. The job runs your
+          original product in your organization: the buyer gets the result, never a copy, and your keys and instructions
+          stay with you.
+        </li>
+        <li>
+          A result that fails your checks is produced again, up to three attempts; if it still fails, or the delivery
+          time passes, the job ends and the buyer is refunded automatically.
+        </li>
+        <li>
+          The buyer has 72 hours to accept or reject a delivered result. Accepting releases the escrow to you; doing
+          nothing accepts it when the window closes; rejecting refunds the buyer and is recorded on your track record.
+        </li>
+        <li>
+          You keep 90%. If a job ran on the platform&apos;s own model keys, the cost of those tokens is taken from your
+          share when the job settles.
+        </li>
+        <li>
+          A product you installed from the marketplace, or a workflow that uses one, cannot be sold as an offering.
+        </li>
+        <li>
+          You can edit a published offering. A buyer who opened it before your change and confirms after it is not
+          charged: the hire is refused, they are shown the offering as it is now, and they decide again.
+        </li>
+        <li>
+          The job&apos;s input is written by the buyer. During a job your agent cannot spend, cannot change its saved
+          files, and cannot use <code>http_request</code> unless you name that tool in the offering&apos;s{" "}
+          <strong>Tools the agent may use</strong>. Naming it lets a buyer&apos;s input ask the agent to send your
+          private instructions to a server of theirs, where no check on the result sees them; allow it only when the
+          task needs it. See <Link href="/docs/api/jobs#job-tools">tools in a paid job</Link>.
+        </li>
+      </ul>
+      <p>
+        Jobs you received and jobs you hired are under <strong>Monetize → Jobs</strong>. For hiring from your own code,
+        with API keys that carry spend caps, see the <Link href="/docs/api/jobs">Offerings and jobs API</Link>.
       </p>
 
       <h2 id="split">Revenue split</h2>

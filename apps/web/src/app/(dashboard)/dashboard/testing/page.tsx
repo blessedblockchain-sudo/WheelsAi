@@ -253,6 +253,19 @@ export default function TestingPage() {
 
   async function addCase() {
     if (!selectedSuite || !caseForm.name.trim() || !caseForm.input.trim()) return;
+    if (caseForm.assertionType === "json_schema") {
+      // Parsed here so a typo is caught before a case that can never pass is saved.
+      let schema: unknown;
+      try {
+        schema = JSON.parse(caseForm.expected);
+      } catch {
+        schema = null;
+      }
+      if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+        toast.error("The JSON Schema must be a JSON object.");
+        return;
+      }
+    }
     setSavingCase(true);
     try {
       await testingApi.createCase(selectedSuite.id, {
@@ -765,14 +778,29 @@ export default function TestingPage() {
                       <option value="semantic">word overlap</option>
                       <option value="json_schema">json schema</option>
                     </select>
-                    <Input
-                      placeholder="Expected"
+                    {caseForm.assertionType !== "json_schema" && (
+                      <Input
+                        placeholder="Expected"
+                        value={caseForm.expected}
+                        onChange={(e) =>
+                          setCaseForm({ ...caseForm, expected: e.target.value })
+                        }
+                      />
+                    )}
+                  </div>
+                  {caseForm.assertionType === "json_schema" && (
+                    <Textarea
+                      aria-label="JSON Schema the reply must match"
+                      placeholder={'{"type": "object", "required": ["answer"], "properties": {"answer": {"type": "string"}}}'}
+                      rows={5}
+                      spellCheck={false}
+                      className="font-mono text-xs"
                       value={caseForm.expected}
                       onChange={(e) =>
                         setCaseForm({ ...caseForm, expected: e.target.value })
                       }
                     />
-                  </div>
+                  )}
                   <Button
                     onClick={addCase}
                     disabled={

@@ -52,6 +52,16 @@ test("workflow, scheduled-task and report events have categories", () => {
     "workflow",
     "scheduled_task",
     "report",
+    "job",
+  ]);
+  assert.deepEqual(categories.job, [
+    "job.funded",
+    "job.submitted",
+    "job.completed",
+    "job.rejected",
+    "job.failed",
+    "job.expired",
+    "job.cancelled",
   ]);
   assert.deepEqual(categories.billing, ["billing.low_balance", "billing.payment_received"]);
 });

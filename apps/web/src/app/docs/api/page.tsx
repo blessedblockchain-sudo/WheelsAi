@@ -69,6 +69,11 @@ export default function ApiOverviewPage() {
           <Link href="/docs/guides/plans-and-billing#api-calls">what counts as an API call</Link>.
         </li>
         <li>
+          A key can be limited with scopes. Anything that spends your credits (hiring an offering, accepting or rejecting a
+          job, installing a listing) needs its scope granted by name: a key with no scopes, or with <code>*</code>, cannot
+          spend. See <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.
+        </li>
+        <li>
           Some actions need a person, not a key: managing API keys, two-factor settings, switching organizations, buying credits
           or a plan, and requesting marketplace payouts. Those endpoints answer <code>401</code> to a key.
         </li>
@@ -216,6 +221,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { group: <Link href="/docs/api/agents">Agents, GitHub import, playground and the agent API</Link>, prefix: <><code>/api/agents</code>, <code>/v1/agents</code></> },
           { group: <Link href="/docs/api/deployments">Models and deployments</Link>, prefix: <><code>/api/models</code>, <code>/api/deployments</code></> },
           { group: <Link href="/docs/api/marketplace">Marketplace</Link>, prefix: <code>/api/marketplace</code> },
+          { group: <Link href="/docs/api/jobs">Offerings and jobs</Link>, prefix: <><code>/api/offerings</code>, <code>/api/jobs</code></> },
           { group: <Link href="/docs/api/billing">Billing and plans</Link>, prefix: <code>/api/billing</code> },
           { group: <Link href="/docs/api/workflows">Workflows and scheduler</Link>, prefix: <><code>/api/orchestrations</code>, <code>/api/scheduler</code>, <code>/v1/workflows</code></> },
           { group: <Link href="/docs/api/webhooks">Webhooks</Link>, prefix: <code>/api/webhooks</code> },

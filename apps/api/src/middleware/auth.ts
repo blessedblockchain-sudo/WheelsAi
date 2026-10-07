@@ -4,6 +4,7 @@ import fastifyJwt from "@fastify/jwt";
 import fastifyCookie from "@fastify/cookie";
 
 import { nanoid } from "nanoid";
+import { grantsScope } from "../config/apiKeyScopes.js";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { validateApiKey, isJwtBlocked, type JwtPayload } from "../services/auth.js";
@@ -283,7 +284,11 @@ export async function requireAuth(
 }
 
 /**
- * Require specific scope for API key auth
+ * Require a scope of an API key (config/apiKeyScopes.ts says what grants
+ * one: a spend scope only when the key lists it by name). A session is not
+ * scoped; what a signed-in member may do is decided by their role.
+ *
+ * Runs after requireAuth, which is what counts the call.
  */
 export function requireScope(scope: string) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
@@ -294,13 +299,12 @@ export function requireScope(scope: string) {
       });
     }
 
-    if (request.auth.type === "api_key") {
-      if (!request.auth.scopes?.includes(scope) && !request.auth.scopes?.includes("*")) {
-        return reply.status(403).send({
-          error: "Forbidden",
-          message: `Missing required scope: ${scope}`,
-        });
-      }
+    if (request.auth.type === "api_key" && !grantsScope(request.auth.scopes, scope)) {
+      return reply.status(403).send({
+        error: "missing_scope",
+        message: `This API key does not have the "${scope}" scope.`,
+        scope,
+      });
     }
   };
 }
@@ -395,6 +399,25 @@ export function createRequireRole(deps: { getMemberRole: MemberRoleLookup }) {
   };
 }
 
+/** The roles that may spend the organization's money from the dashboard. */
+export const SPENDING_ROLES = ["owner", "admin"] as const;
+
+/**
+ * The guard on anything that spends: a signed-in member must be an owner or
+ * an admin (their role as it is now, not the token's claim), and an API key
+ * must have been granted `scope` by name.
+ */
+export function createRequireSpend(deps: { getMemberRole: MemberRoleLookup }) {
+  const requireSpendingRole = createRequireRole(deps)(...SPENDING_ROLES);
+  return function requireSpend(scope: string) {
+    const requireKeyScope = requireScope(scope);
+    return async (request: FastifyRequest, reply: FastifyReply) => {
+      if (request.auth?.type === "api_key") return requireKeyScope(request, reply);
+      return requireSpendingRole(request, reply);
+    };
+  };
+}
+
 /**
  * Require one of the given organization roles (remediation F4).
  *
@@ -413,6 +436,8 @@ export function createRequireRole(deps: { getMemberRole: MemberRoleLookup }) {
 export const requireRole = createRequireRole({
   getMemberRole: lookupMemberRole,
 });
+
+export const requireSpend = createRequireSpend({ getMemberRole: lookupMemberRole });
 
 // ============================================
 // Token Generation

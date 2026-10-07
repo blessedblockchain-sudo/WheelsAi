@@ -445,6 +445,9 @@ export interface ApiKey {
   keyPrefix: string;
   name: string;
   scopes: string[];
+  /** Spend caps of a key granted jobs:hire; null on any other key. */
+  maxJobPriceCents?: number | null;
+  dailySpendCapCents?: number | null;
   status: "active" | "revoked";
   lastUsedAt: string | null;
   expiresAt: string | null;
@@ -454,10 +457,14 @@ export interface ApiKey {
 export const apiKeysApi = {
   list: () => api<{ apiKeys: ApiKey[] }>("/api/auth/keys"),
 
-  create: (name: string, scopes?: string[]) =>
+  create: (
+    name: string,
+    scopes?: string[],
+    caps?: { maxJobPriceCents: number; dailySpendCapCents: number },
+  ) =>
     api<{ apiKey: ApiKey; key: string }>("/api/auth/keys", {
       method: "POST",
-      body: { name, scopes },
+      body: { name, scopes, ...caps },
     }),
 
   revoke: (id: string) =>
@@ -1334,9 +1341,12 @@ export interface MarketplaceSubscription {
 /**
  * Where an install stands, by the same rule the API bills with:
  * subscribed (inside a paid period), listing_pricing (the listing's
- * current pricing applies), unlisted (no longer sold; keeps running at no
- * charge), subscription_lapsed, pricing_changed (paused until the buyer
- * accepts the listing's new pricing).
+ * current pricing applies: it is what the buyer accepted, or cheaper),
+ * unlisted (no longer sold; keeps running at no charge),
+ * subscription_lapsed, pricing_changed (paused until the buyer accepts the
+ * listing's new pricing: a subscription's listing left monthly pricing, or
+ * a per-request price went above the one the install accepted, or the
+ * pricing model changed).
  */
 export type MarketplaceInstallAccess =
   | "subscribed"
@@ -1345,6 +1355,20 @@ export type MarketplaceInstallAccess =
   | "subscription_lapsed"
   | "pricing_changed"
   | "uninstalled";
+
+/** The pricing a buyer agreed to when they installed or last accepted a change. */
+export interface MarketplaceAcceptedPricing {
+  pricingModel: MarketplaceListing["pricingModel"] | null;
+  pricePerRequestCents: number | null;
+  acceptedAt: string | null;
+}
+
+/** A listing's pricing as the buyer was shown it; sent back when confirming. */
+export interface MarketplacePricingTerms {
+  pricingModel: MarketplaceListing["pricingModel"];
+  pricePerRequestCents: number | null;
+  monthlyPriceCents: number | null;
+}
 
 export interface MarketplaceListing {
   id: string;
@@ -1563,8 +1587,13 @@ export const marketplaceApi = {
    * Install, resubscribe, or (with acceptNewPricing) continue an install
    * the publisher repriced. Without the flag a repriced install answers
    * 409 `pricing_changed` carrying the listing's current pricing.
+   * expectedPricing is the pricing the buyer was shown: if the listing has
+   * moved since, the API answers the same 409 and charges nothing.
    */
-  installAgent: (listingId: string, opts?: { acceptNewPricing?: boolean }) =>
+  installAgent: (
+    listingId: string,
+    opts?: { acceptNewPricing?: boolean; expectedPricing?: MarketplacePricingTerms },
+  ) =>
     api<{
       message: string;
       install: { id: string; status: string };
@@ -1578,7 +1607,14 @@ export const marketplaceApi = {
       subscription: { id: string; currentPeriodEnd: string } | null;
     }>(`/api/marketplace/listings/${listingId}/install`, {
       method: "POST",
-      ...(opts?.acceptNewPricing ? { body: { acceptNewPricing: true } } : {}),
+      ...(opts?.acceptNewPricing || opts?.expectedPricing
+        ? {
+            body: {
+              ...(opts.acceptNewPricing ? { acceptNewPricing: true } : {}),
+              ...(opts.expectedPricing ? { expectedPricing: opts.expectedPricing } : {}),
+            },
+          }
+        : {}),
     }),
 
   uninstallAgent: (listingId: string) =>
@@ -1608,6 +1644,7 @@ export const marketplaceApi = {
         totalSpentCents: number;
         installedAt: string;
         access: MarketplaceInstallAccess;
+        acceptedPricing: MarketplaceAcceptedPricing;
         listing: MarketplaceListing;
         subscription: MarketplaceSubscription | null;
       }>;
@@ -1648,6 +1685,8 @@ export const marketplaceApi = {
         totalRevenueCents: number;
         totalRequests: number;
       }>;
+      /** Settled job revenue on offerings with no agent listing (workflows, models, unlisted agents). */
+      unlistedJobRevenue?: { totalRevenueCents: number; jobs: number };
       recentTransactions: Array<{
         id: string;
         type: string;
@@ -1656,8 +1695,14 @@ export const marketplaceApi = {
         creatorAmountCents: number;
         requestCount: number;
         status: string;
+        /** Set on a job's row. Only a released row is an earning. */
+        jobId?: string | null;
+        escrow?: EscrowState | null;
+        modelCostCents?: number;
         createdAt: string;
       }>;
+      /** Job payments buyers have paid that are not yours yet. */
+      heldInEscrow?: { creatorAmountCents: number; jobs: number };
       pendingPayouts: Array<{
         id: string;
         amountCents: number;
@@ -1699,6 +1744,308 @@ export const marketplaceApi = {
         failureReason: string | null;
       }>;
     }>("/api/marketplace/payouts"),
+};
+
+// ============================================
+// Offerings and Jobs API
+// ============================================
+
+export type OfferingProductKind = "agent" | "workflow" | "model";
+export type OfferingStatus = "draft" | "active" | "paused" | "archived";
+export type OfferingOutputFormat = "text" | "json";
+
+/** A check a deliverable must pass before the buyer sees it. */
+export type DeliverableCheck =
+  | { type: "contains" | "not_contains"; value: string; caseSensitive?: boolean; label?: string }
+  | { type: "exact"; value: string; label?: string }
+  | { type: "regex"; pattern: string; flags?: string; label?: string }
+  | { type: "json_schema"; schema: Record<string, unknown>; label?: string }
+  | { type: "min_length" | "max_length"; value: number; label?: string };
+
+/** What anyone may read. It has no field for the publisher's private instructions. */
+export interface PublicOffering {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  productKind: OfferingProductKind;
+  priceCents: number;
+  slaSeconds: number;
+  /** Changes with anything a buyer agrees to; a hire sends it back as `expected`. */
+  termsVersion: string;
+  reviewWindowHours: number;
+  inputSchema: Record<string, unknown> | null;
+  sampleInputs: Array<Record<string, unknown>>;
+  deliverableChecks: DeliverableCheck[];
+  outputFormat: OfferingOutputFormat;
+  product: { name: string };
+  publisher: { name: string; slug: string | null; isVerified: boolean; reputationTier: string | null };
+  listing: { slug: string; title: string } | null;
+  createdAt: string;
+}
+
+/** The terms a hire is held to: PublicOffering has all three. */
+export interface OfferingTerms {
+  priceCents: number;
+  slaSeconds: number;
+  termsVersion: string;
+}
+
+export interface OfferingTrackRecord {
+  completed: number;
+  rejected: number;
+  failed: number;
+  expired: number;
+  cancelled: number;
+  successRate: number | null;
+  avgRating: number | null;
+  ratingCount: number;
+  medianTurnaroundSeconds: number | null;
+}
+
+export interface PublisherOffering extends PublicOffering {
+  status: OfferingStatus;
+  instructions: string | null;
+  agentId: string | null;
+  orchestrationId: string | null;
+  deploymentId: string | null;
+  listingId: string | null;
+  allowedTools: string[];
+  maxAttempts: number;
+  maxConcurrentJobs: number;
+  activeJobs: number;
+  productAvailable: boolean;
+  publishedAt: string | null;
+  updatedAt: string;
+  stats: { jobs: Record<string, number> };
+}
+
+export interface OfferingContentInput {
+  title: string;
+  description: string;
+  priceCents: number;
+  slaSeconds: number;
+  inputSchema?: Record<string, unknown> | null;
+  sampleInputs?: Array<Record<string, unknown>>;
+  instructions?: string | null;
+  deliverableChecks?: DeliverableCheck[];
+  outputFormat?: OfferingOutputFormat;
+  allowedTools?: string[];
+  maxAttempts?: number;
+  maxConcurrentJobs?: number;
+}
+
+export interface CreateOfferingInput extends OfferingContentInput {
+  productKind: OfferingProductKind;
+  agentId?: string;
+  orchestrationId?: string;
+  deploymentId?: string;
+}
+
+/** One problem in a schema, a sample, a check or a buyer's input, by JSON pointer. */
+export interface SchemaIssue {
+  path: string;
+  message: string;
+}
+
+export interface OfferingTestRun {
+  passed: boolean;
+  output: JobDeliverable | null;
+  checkResults: Array<{ label: string; type: string; passed: boolean; details: string }>;
+  durationMs: number;
+}
+
+export interface SearchOfferingsParams {
+  productKind?: OfferingProductKind;
+  query?: string;
+  agentId?: string;
+  listingId?: string;
+  publisher?: string;
+  sort?: "newest" | "price_low" | "price_high" | "rating";
+  page?: number;
+  limit?: number;
+}
+
+export type JobStatus =
+  | "funded"
+  | "running"
+  | "submitted"
+  | "completed"
+  | "rejected"
+  | "failed"
+  | "expired"
+  | "cancelled";
+
+/** Where a job's price is: held in escrow, released to the publisher, or back with the buyer. */
+export type EscrowState = "held" | "released" | "refunded";
+
+export interface JobDeliverable {
+  format: OfferingOutputFormat;
+  text: string;
+  value?: unknown;
+}
+
+interface JobBase {
+  id: string;
+  status: JobStatus;
+  offering: { id: string; slug: string; title: string; productKind: OfferingProductKind };
+  priceCents: number;
+  escrow: { status: EscrowState; amountCents: number } | null;
+  input: Record<string, unknown>;
+  output: JobDeliverable | null;
+  deadlineAt: string | null;
+  reviewDeadlineAt: string | null;
+  fundedAt: string | null;
+  startedAt: string | null;
+  submittedAt: string | null;
+  completedAt: string | null;
+  failureReason: string | null;
+  rejectionReason: string | null;
+  rating: number | null;
+  review: string | null;
+  createdAt: string;
+}
+
+export interface BuyerJob extends JobBase {
+  role: "buyer";
+  checks: Array<{ label: string; type: string; passed: boolean }>;
+}
+
+export interface PublisherJob extends JobBase {
+  role: "publisher";
+  buyer: { orgId: string; name: string };
+  checkResults: Array<{ label: string; type: string; passed: boolean; details: string }>;
+  attempts: number;
+  orchestrationExecutionId: string | null;
+  platformFeeCents: number | null;
+  creatorAmountCents: number | null;
+  modelCostCents: number;
+}
+
+export type Job = BuyerJob | PublisherJob;
+
+export interface JobSummary {
+  awaitingReview: number;
+  inProgress: number;
+  toDeliver: number;
+}
+
+/** The field problems a refused hire or save carries, wherever the API put them. */
+export function schemaIssuesOf(err: unknown): SchemaIssue[] {
+  if (!(err instanceof ApiError) || typeof err.data !== "object" || err.data === null) return [];
+  const data = err.data as { errors?: unknown; details?: unknown };
+  const list = Array.isArray(data.errors) ? data.errors : Array.isArray(data.details) ? data.details : [];
+  return list.filter(
+    (issue): issue is SchemaIssue =>
+      typeof issue === "object" &&
+      issue !== null &&
+      typeof (issue as SchemaIssue).path === "string" &&
+      typeof (issue as SchemaIssue).message === "string",
+  );
+}
+
+/** The API's machine-readable error code, when the failure carried one. */
+export function apiErrorCode(err: unknown): string | null {
+  if (!(err instanceof ApiError) || typeof err.data !== "object" || err.data === null) return null;
+  const code = (err.data as { error?: unknown }).error;
+  return typeof code === "string" ? code : null;
+}
+
+function queryString(params: object): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
+export const offeringsApi = {
+  // Public
+  search: (params: SearchOfferingsParams = {}) =>
+    api<{ offerings: PublicOffering[] } & PaginatedResponse<PublicOffering>>(
+      `/api/offerings${queryString(params)}`,
+    ),
+
+  get: (slug: string) =>
+    api<{ offering: PublicOffering & { trackRecord: OfferingTrackRecord } }>(
+      `/api/offerings/${encodeURIComponent(slug)}`,
+    ),
+
+  // Publisher
+  listMine: (status?: OfferingStatus) =>
+    api<{ offerings: PublisherOffering[] }>(`/api/offerings/mine${queryString({ status })}`),
+
+  getMine: (id: string) => api<{ offering: PublisherOffering }>(`/api/offerings/mine/${id}`),
+
+  create: (input: CreateOfferingInput) =>
+    api<{ offering: PublisherOffering }>("/api/offerings", { method: "POST", body: input }),
+
+  update: (id: string, updates: Partial<OfferingContentInput>) =>
+    api<{ offering: PublisherOffering }>(`/api/offerings/${id}`, { method: "PATCH", body: updates }),
+
+  setStatus: (id: string, action: "activate" | "pause" | "archive") =>
+    api<{ offering: PublisherOffering }>(`/api/offerings/${id}/${action}`, { method: "POST" }),
+
+  /** The checks a save runs, saving nothing. Throws with the problems (see schemaIssuesOf). */
+  validate: (content: Pick<OfferingContentInput, "inputSchema" | "sampleInputs" | "deliverableChecks">) =>
+    api<{ ok: true }>("/api/offerings/validate", { method: "POST", body: content }),
+
+  /** One real run of the product as a paid job would run it; no job, no money. */
+  testRun: (id: string, input: Record<string, unknown>) =>
+    api<OfferingTestRun>(`/api/offerings/${id}/test-run`, { method: "POST", body: { input } }),
+
+  // Buyer
+  /**
+   * Pays the price into escrow and queues the job. The Idempotency-Key makes
+   * a retried click or a repeated request the same job, charged once.
+   *
+   * `expected` is the offering as the buyer was shown it. It is not
+   * optional here: a publisher can edit an active offering, and the server
+   * refuses the hire (409 offering_terms_changed, nothing charged) when the
+   * price, the delivery time or anything else agreed to has moved since.
+   */
+  hire: (
+    id: string,
+    input: Record<string, unknown>,
+    idempotencyKey: string,
+    expected: OfferingTerms,
+  ) =>
+    api<{ job: BuyerJob }>(`/api/offerings/${id}/hire`, {
+      method: "POST",
+      body: { input, expected },
+      headers: { "Idempotency-Key": idempotencyKey },
+    }),
+};
+
+export const jobsApi = {
+  list: (params: { role?: "buyer" | "publisher"; status?: JobStatus; offeringId?: string; page?: number; limit?: number } = {}) =>
+    api<{ jobs: Job[] } & PaginatedResponse<Job>>(`/api/jobs${queryString(params)}`),
+
+  summary: () => api<JobSummary>("/api/jobs/summary"),
+
+  get: (id: string) => api<{ job: Job }>(`/api/jobs/${id}`),
+
+  accept: (id: string, body: { rating?: number; review?: string } = {}) =>
+    api<{ job: BuyerJob }>(`/api/jobs/${id}/accept`, { method: "POST", body }),
+
+  reject: (id: string, reason: string) =>
+    api<{ job: BuyerJob; refundedCents: number }>(`/api/jobs/${id}/reject`, {
+      method: "POST",
+      body: { reason },
+    }),
+
+  cancel: (id: string, reason?: string) =>
+    api<{ job: BuyerJob; refundedCents: number }>(`/api/jobs/${id}/cancel`, {
+      method: "POST",
+      body: reason ? { reason } : {},
+    }),
+
+  rate: (id: string, rating: number, review?: string) =>
+    api<{ job: BuyerJob }>(`/api/jobs/${id}/rate`, {
+      method: "POST",
+      body: review ? { rating, review } : { rating },
+    }),
 };
 
 // ============================================

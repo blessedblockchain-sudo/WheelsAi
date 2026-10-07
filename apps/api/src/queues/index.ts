@@ -45,6 +45,8 @@ export {
   startWorkflowRunQueue,
   stopWorkflowRunQueue,
 } from "./workflow-run.queue.js";
+export { startJobRunnerQueue, stopJobRunnerQueue } from "./job-runner.queue.js";
+export { startJobSweeperQueue, stopJobSweeperQueue } from "./job-sweeper.queue.js";
 export {
   startUptimeProberQueue,
   stopUptimeProberQueue,

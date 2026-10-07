@@ -8,6 +8,8 @@ import {
   marketplaceResource,
   inferenceResource,
   workflowsResource,
+  offeringsResource,
+  jobsResource,
   versioningResource,
   openclawResource,
   platformResource,
@@ -23,6 +25,8 @@ export class WheelsAI {
   readonly marketplace;
   readonly inference;
   readonly workflows;
+  readonly offerings;
+  readonly jobs;
   readonly versioning;
   readonly openclaw;
   readonly platform;
@@ -40,6 +44,8 @@ export class WheelsAI {
     this.marketplace = marketplaceResource(this.client);
     this.inference = inferenceResource(this.client);
     this.workflows = workflowsResource(this.client);
+    this.offerings = offeringsResource(this.client);
+    this.jobs = jobsResource(this.client);
     this.versioning = versioningResource(this.client);
     this.openclaw = openclawResource(this.client);
     this.platform = platformResource(this.client);

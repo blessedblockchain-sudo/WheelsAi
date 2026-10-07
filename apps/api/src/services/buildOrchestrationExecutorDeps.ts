@@ -27,6 +27,12 @@
  *
  * The run's abort signal is handed to every invocation, so a cancelled or
  * timed-out run stops its in-flight model call.
+ *
+ * A workflow run for a paid job (Offerings and Jobs) passes `run`: every
+ * agent step then runs in the `hired` tool mode with the offering's private
+ * instructions as a system turn and its tool allowlist, and every model step
+ * gets the instructions as a system message. The buyer's input reaches every
+ * step of the workflow, so every step is restricted, not only the first.
  */
 
 import { prisma as defaultPrisma } from "../lib/prisma.js";
@@ -38,6 +44,7 @@ import type {
   OrchestrationRunDeps,
   StepRecord,
 } from "./runOrchestrationExecution.js";
+import type { ToolMode } from "./skills/types.js";
 
 type InvokeModel = NonNullable<OrchestrationRunDeps["invokeModel"]>;
 type SearchKnowledge = NonNullable<OrchestrationRunDeps["searchKnowledge"]>;
@@ -96,9 +103,20 @@ function storedUsage(record: StepRecord): Record<string, unknown> | undefined {
   return { inputTokens: record.usage.inputTokens, outputTokens: record.usage.outputTokens };
 }
 
+/** How this run's steps are invoked. Omitted = an owner's own batch run. */
+export interface OrchestrationRunContext {
+  /** "job" (default): the owner's prompt. "hired": a buyer's input. */
+  mode?: Extract<ToolMode, "job" | "hired">;
+  /** Hired runs only: the offering's private instructions. */
+  instructions?: string;
+  /** Hired runs only: the tools the offering allows its agents. */
+  toolAllowlist?: string[];
+}
+
 export function buildOrchestrationExecutorDeps(
   executionId: string,
   overrides: OrchestrationExecutorOverrides = {},
+  run: OrchestrationRunContext = {},
 ): Pick<
   OrchestrationRunDeps,
   "invokeAgent" | "invokeModel" | "searchKnowledge" | "recordStepResult" | "reportProgress"
@@ -106,6 +124,19 @@ export function buildOrchestrationExecutorDeps(
   const prisma = overrides.prisma ?? (defaultPrisma as unknown as StepResultPrisma);
   const executor = overrides.executor ?? buildProductionExecutorDeps();
   const chatWithDeployment = overrides.chatWithDeployment ?? defaultChatWithDeployment;
+  const mode = run.mode ?? "job";
+  // Refused here, where the run is assembled, not at its first step: private
+  // instructions never go into a run whose tools are not restricted.
+  if (mode !== "hired" && (run.instructions !== undefined || run.toolAllowlist !== undefined)) {
+    throw new Error("job instructions and a tool allowlist apply to hired workflow runs only");
+  }
+  const hired =
+    mode === "hired"
+      ? {
+          ...(run.instructions && { systemAddendum: run.instructions }),
+          ...(run.toolAllowlist && run.toolAllowlist.length > 0 && { toolAllowlist: run.toolAllowlist }),
+        }
+      : {};
 
   return {
     invokeAgent: async ({ agentId, orgId, prompt, signal }) => {
@@ -113,7 +144,7 @@ export function buildOrchestrationExecutorDeps(
       if (!agent) {
         throw new Error(`agent ${agentId} not found in this organization`);
       }
-      return executor.runAgentChat({ agent, prompt, mode: "job", signal });
+      return executor.runAgentChat({ agent, prompt, mode, signal, ...hired });
     },
 
     invokeModel:
@@ -126,7 +157,12 @@ export function buildOrchestrationExecutorDeps(
           orgId,
           deploymentId,
           modelId,
-          messages: [{ role: "user", content: prompt }],
+          messages: [
+            ...(mode === "hired" && run.instructions
+              ? [{ role: "system" as const, content: run.instructions }]
+              : []),
+            { role: "user", content: prompt },
+          ],
           signal,
         });
         return { content: result.content, ...(result.usage && { usage: result.usage }) };

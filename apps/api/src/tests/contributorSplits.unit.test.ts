@@ -266,3 +266,27 @@ test("settling a per-request charge credits the publisher only with what contrib
   assert.equal(profiles.get("org_alice")!.pending, 112n);
   assert.equal(profiles.get("org_pub")!.pending, 113n);
 });
+
+test("job revenue on an agent with no listing pays its contributors by the agent itself", async () => {
+  const { tx, profiles, earnings } = makeTx({
+    contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 2_500, accepted: true }],
+    ownedOrgs: { u_alice: "org_alice" },
+    profiles: ["org_pub", "org_alice"],
+  });
+  // No listing table is consulted: an offering names the agent directly.
+  const { agentListing: _unused, ...withoutListings } = tx;
+  const result = await splitCreatorRevenue(withoutListings, {
+    revenueId: "rev_job",
+    agentId: "agent_9",
+    publisherId: "org_pub",
+    creatorCents: 1_800n,
+    now: NOW,
+  });
+
+  assert.equal(result.publisherCents, 1_350n);
+  assert.deepEqual(result.paid, [{ userId: "u_alice", recipientOrgId: "org_alice", amountCents: 450n }]);
+  assert.equal(profiles.get("org_alice")!.pending, 450n);
+  assert.equal(earnings.length, 1);
+  assert.equal(earnings[0]!.agentId, "agent_9");
+  assert.equal(earnings[0]!.revenueId, "rev_job");
+});

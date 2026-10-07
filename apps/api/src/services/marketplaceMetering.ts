@@ -72,7 +72,7 @@ export function licenceRevokedMessage(
     return `"${listingTitle}" is a monthly subscription that is not paid up. Resubscribe from Installed Agents to use it again.`;
   }
   if (reason === "pricing_changed") {
-    return `The publisher of "${listingTitle}" changed its pricing after your subscription was paid, so it is paused. Review and accept the new pricing from Installed Agents to use it again.`;
+    return `The publisher of "${listingTitle}" changed its pricing after you agreed to it, so it is paused and nothing is charged. Review and accept the new pricing from Installed Agents to use it again.`;
   }
   if (reason === "token_required" && token) {
     return tokenRequiredMessage(listingTitle, token);
@@ -140,6 +140,8 @@ export interface MeteringLookupPrisma {
         listingId: true;
         buyerId: true;
         status: true;
+        acceptedPricingModel: true;
+        acceptedPricePerRequestCents: true;
         listing: {
           select: {
             title: true;
@@ -156,6 +158,9 @@ export interface MeteringLookupPrisma {
       listingId: string;
       buyerId: string;
       status: string;
+      /** The pricing the buyer agreed to; see acceptedPricingCovers. */
+      acceptedPricingModel?: string | null;
+      acceptedPricePerRequestCents?: bigint | null;
       listing: {
         title: string;
         status: string;
@@ -204,12 +209,16 @@ export type InstallBilling =
  * listing stops charging for it — existing buyers keep what they
  * installed).
  *
- * A subscriber is never moved onto pricing they did not accept: once a
+ * A buyer is never moved onto pricing they did not accept. Once a
  * subscription is over on a listing that no longer sells it (ended by the
  * publisher's side, or simply run out, whether or not the renewal worker
  * has closed the row), the clone is revoked with `pricing_changed` until
- * the buyer accepts the listing's current pricing. See installAccess,
- * which the Installed Agents list reads too.
+ * the buyer accepts the listing's current pricing. The same goes for a
+ * free or per-request install: the install row holds the pricing the buyer
+ * agreed to, and a listing that now charges more per request, or under a
+ * different pricing model, is revoked with `pricing_changed` instead of
+ * being charged. A price that went DOWN is charged as it stands. See
+ * installAccess, which the Installed Agents list reads too.
  */
 export async function resolveInstallBilling(
   db: MeteringLookupPrisma,
@@ -225,6 +234,8 @@ export async function resolveInstallBilling(
       listingId: true,
       buyerId: true,
       status: true,
+      acceptedPricingModel: true,
+      acceptedPricePerRequestCents: true,
       listing: {
         select: {
           title: true,
@@ -256,6 +267,11 @@ export async function resolveInstallBilling(
     installStatus: install.status,
     listingStatus: install.listing.status,
     pricingModel: install.listing.pricingModel,
+    pricePerRequestCents: install.listing.pricePerRequestCents,
+    accepted: {
+      pricingModel: install.acceptedPricingModel,
+      pricePerRequestCents: install.acceptedPricePerRequestCents,
+    },
     sub,
   });
   if (access === "unlisted" || access === "subscribed") return { kind: "free" };
@@ -285,6 +301,8 @@ export async function resolveInstallBilling(
   }
   if (install.listing.pricingModel !== "per_request") return { kind: "free" };
 
+  // At or below the price the buyer accepted (installAccess refused
+  // anything above it), so a price cut reaches the buyer at once.
   const price = install.listing.pricePerRequestCents ?? 0n;
   if (price <= 0n) return { kind: "free" };
 

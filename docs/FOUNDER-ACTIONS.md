@@ -55,6 +55,7 @@ Updated 2026-10-06. Tick items off here as they land.
 ## 7. Email
 
 - [ ] **Resend.** Set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY` and `EMAIL_FROM` on a domain with SPF and DKIM set up. This unlocks email verification (and with it the $5 signup credit), password reset, team invites and alert emails.
+- [ ] The same provider sends a buyer the "deliverable ready, review it" email for a paid job. Without it that notice is in the app and by webhook only, and a buyer who misses it loses the right to reject after 72 hours. Set `PUBLIC_WEB_URL` too, so the email can link to the job.
 - [ ] `SALES_EMAIL` for Contact Sales requests (they are stored either way).
 
 ## 8. Operations
@@ -63,6 +64,9 @@ Updated 2026-10-06. Tick items off here as they land.
 - [ ] `SENTRY_DSN` for error tracking.
 - [ ] `METRICS_TOKEN` if `/metrics` is reachable outside Fly's private network.
 - [ ] `PLATFORM_ADMIN_KEY` for marketplace curation (featured listings).
+- [ ] **Offerings and Jobs.** Apply migrations `20261009100000_offerings_jobs_runner` and `20261009110000_job_model_usage`. The runner and the sweeper start with the API (`JOB_RUNNER_CONCURRENCY=2`, `JOB_SWEEP_INTERVAL_MS=60000`, `JOB_MAX_RUN_MS=900000`); size the concurrency for the jobs you expect, and never run with the sweeper off where jobs are on, because the sweeper is what refunds an overdue job and settles one whose review window closed.
+- [ ] **Run one paid model job for real.** The proof run (`docs/AGENT-JOBS-RUN.md`) hired, ran and settled agent and workflow jobs; a model offering needs a running GPU deployment, which the local machine does not have, so that path is covered by unit tests only. With a deployment running: create a model offering on it, hire it from a second organization, accept, and add the transcript to the proof doc.
+- [ ] **Decide what a paid job's use of the platform's free-model keys costs the publisher.** The defaults are the model catalog's small-model rate, 15 cents per million input tokens and 60 per million output (`JOB_PLATFORM_MODEL_INPUT_CENTS_PER_MTOK`, `JOB_PLATFORM_MODEL_OUTPUT_CENTS_PER_MTOK`), taken from the publisher's share when a job settles. Check the providers' terms for commercial use of those keys before launch.
 
 ## 9. Tokens
 

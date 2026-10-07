@@ -37,6 +37,8 @@ import {
   Trophy,
   Users,
   ShieldCheck,
+  Briefcase,
+  ClipboardCheck,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -127,6 +129,8 @@ const navGroups: NavGroup[] = [
       { name: "Browse Marketplace", href: "/marketplace", icon: Store },
       { name: "My Listings", href: "/dashboard/marketplace", icon: Upload },
       { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
+      { name: "Offerings", href: "/dashboard/marketplace/offerings", icon: Briefcase },
+      { name: "Jobs", href: "/dashboard/jobs", icon: ClipboardCheck },
       { name: "Installed Agents", href: "/dashboard/marketplace/installs", icon: Bot },
       { name: "Revenue & Payouts", href: "/dashboard/marketplace/revenue", icon: DollarSign },
       { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },

@@ -94,6 +94,9 @@ model Organization {
   agentInstalls      AgentInstall[]     @relation("AgentInstalls")
   agentSubscriptions AgentSubscription[] @relation("AgentSubscriptions")
   creatorPayouts     CreatorPayout[]    @relation("CreatorPayouts")
+  offerings          Offering[]          @relation("PublishedOfferings")
+  jobsHired          Job[]               @relation("JobsHired")
+  jobsReceived       Job[]               @relation("JobsReceived")
 
   @@map("organizations")
 }
@@ -121,13 +124,31 @@ model ApiKey {
   keyPrefix  String    @map("key_prefix") // First 8 chars for display
   name       String?
   scopes     String[]  @default([])
+  // Set on a key granted jobs:hire: the most one job may cost, and the most
+  // the key may spend in one UTC day (ApiKeySpendWindow).
+  maxJobPriceCents   BigInt?   @map("max_job_price_cents")
+  dailySpendCapCents BigInt?   @map("daily_spend_cap_cents")
   lastUsedAt DateTime? @map("last_used_at")
   expiresAt  DateTime? @map("expires_at")
   createdAt  DateTime  @default(now()) @map("created_at")
 
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  spendWindows ApiKeySpendWindow[]
 
   @@map("api_keys")
+}
+
+/// What one API key has spent on jobs in one UTC day. The hire transaction
+/// raises spentCents by compare-and-set against the key's daily cap.
+model ApiKeySpendWindow {
+  apiKeyId   String   @map("api_key_id") @db.Uuid
+  day        DateTime @db.Date
+  spentCents BigInt   @default(0) @map("spent_cents")
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@id([apiKeyId, day])
+  @@map("api_key_spend_windows")
 }
 
 // ============================================
@@ -305,7 +326,7 @@ model CreditTransaction {
   id           String   @id @default(uuid()) @db.Uuid
   orgId        String   @map("org_id") @db.Uuid
   amountCents  BigInt   @map("amount_cents") // Positive = credit, negative = debit
-  type         String   // 'purchase', 'usage', 'refund', 'adjustment', 'bonus'
+  type         String // 'purchase', 'usage', 'refund', 'adjustment', 'bonus', 'marketplace_job', 'marketplace_job_refund'
   description  String?
   referenceId  String?  @map("reference_id") // Stripe charge ID, usage period, etc.
   balanceAfter BigInt   @map("balance_after")
@@ -592,6 +613,7 @@ model Agent {
   deployments   AgentDeployment[]
   contributors  AgentContributor[]
   listing       AgentListing?
+  offerings          Offering[]
   graph         AgentGraph?
   openclawDeployment OpenClawDeployment?
 
@@ -945,6 +967,7 @@ model AgentListing {
   installs          AgentInstall[]
   subscriptions     AgentSubscription[]
   agentToken        AgentToken?
+  offerings     Offering[]
 
   @@index([publisherId])
   @@index([status, category])
@@ -981,6 +1004,13 @@ model AgentInstall {
   status          String    @default("active") // 'active', 'stopped', 'uninstalled'
   totalRequests   BigInt    @default(0) @map("total_requests")
   totalSpentCents BigInt    @default(0) @map("total_spent_cents")
+  // The pricing the buyer agreed to (at install, or when they last accepted
+  // a change). A listing price above acceptedPricePerRequestCents, or a
+  // different pricing model, pauses the install until the buyer accepts it;
+  // a lower price or a move to free applies at once (installAccess).
+  acceptedPricingModel         String?   @map("accepted_pricing_model")
+  acceptedPricePerRequestCents BigInt?   @map("accepted_price_per_request_cents")
+  pricingAcceptedAt            DateTime? @map("pricing_accepted_at")
   installedAt     DateTime  @default(now()) @map("installed_at")
   uninstalledAt   DateTime? @map("uninstalled_at")
 
@@ -1111,6 +1141,9 @@ model MarketplaceRevenue {
   grossAmountCents BigInt  @map("gross_amount_cents")
   platformFeeCents BigInt  @map("platform_fee_cents") // 10%
   creatorAmountCents BigInt @map("creator_amount_cents") // 90%
+  // Job escrow only: what the settle moved from the creator amount into the
+  // platform fee for the job's use of the platform's model keys.
+  modelCostCents  BigInt   @default(0) @map("model_cost_cents")
 
   // Request count (for per_request billing)
   requestCount    Int      @default(1) @map("request_count")
@@ -1120,6 +1153,8 @@ model MarketplaceRevenue {
   settledAt       DateTime? @map("settled_at")
 
   createdAt       DateTime @default(now()) @map("created_at")
+
+  job Job? @relation(fields: [jobId], references: [id], onDelete: Restrict)
 
   @@index([listingId, createdAt])
   @@index([publisherId, createdAt])
@@ -1180,14 +1215,35 @@ model Offering {
   instructions      String?  @db.Text
   // Checks the output must pass before it is submitted to the buyer.
   deliverableChecks Json     @default("[]") @map("deliverable_checks")
+  // 'text' | 'json': a json deliverable is parsed before it is checked.
+  outputFormat      String    @default("text") @map("output_format")
+  // Tools of the product a job may use. Empty = every tool the product has
+  // that the 'hired' tool mode does not block.
+  allowedTools      String[]  @default([]) @map("allowed_tools")
+  // Runs per job before it fails and refunds (1-3).
+  maxAttempts       Int       @default(1) @map("max_attempts")
+  // Jobs funded or running at once; activeJobs is a compare-and-set counter.
+  maxConcurrentJobs Int       @default(5) @map("max_concurrent_jobs")
+  activeJobs        Int       @default(0) @map("active_jobs")
   status            String   @default("draft") // 'draft' | 'active' | 'paused' | 'archived'
+  publishedAt       DateTime? @map("published_at")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
+  // Restrict: an offering has jobs, and jobs are money records.
+  publisher     Organization   @relation("PublishedOfferings", fields: [publisherId], references: [id], onDelete: Restrict)
+  // SetNull: an offering whose product was deleted stays for its jobs but
+  // can no longer be hired.
+  agent         Agent?         @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  orchestration Orchestration? @relation(fields: [orchestrationId], references: [id], onDelete: SetNull)
+  listing       AgentListing?  @relation(fields: [listingId], references: [id], onDelete: SetNull)
   jobs Job[]
 
   @@index([publisherId])
   @@index([status, productKind])
+  @@index([agentId])
+  @@index([orchestrationId])
+  @@index([listingId, status])
   @@map("offerings")
 }
 
@@ -1213,15 +1269,43 @@ model Job {
   submittedAt      DateTime? @map("submitted_at")
   completedAt      DateTime? @map("completed_at")
   rating           Int?
+  review                   String?   @db.Text
+  ratedAt                  DateTime? @map("rated_at")
+  // A retried hire with the same key returns the first job; no second charge.
+  idempotencyKey           String?   @map("idempotency_key")
+  // Who spent the money: a signed-in member, or an API key with jobs:hire.
+  hiredByUserId            String?   @map("hired_by_user_id") @db.Uuid
+  hiredByApiKeyId          String?   @map("hired_by_api_key_id") @db.Uuid
+  // What the buyer agreed to at hire (title, price, SLA, review window,
+  // checks, output format). Later edits to the offering do not change it.
+  terms                    Json      @default("{}")
+  // Runs started for this job, and the running worker's lease: a job whose
+  // lease lapsed before its deadline is picked up again.
+  attempts                 Int       @default(0)
+  leaseExpiresAt           DateTime? @map("lease_expires_at")
+  orchestrationExecutionId String?   @map("orchestration_execution_id") @db.Uuid
+  // Tokens this job's runs used on the platform's own model keys, and what
+  // they cost. The cost comes out of the publisher's share at settlement.
+  platformInputTokens      BigInt    @default(0) @map("platform_input_tokens")
+  platformOutputTokens     BigInt    @default(0) @map("platform_output_tokens")
+  modelCostCents           BigInt    @default(0) @map("model_cost_cents")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   offering Offering @relation(fields: [offeringId], references: [id])
+  // Restrict, like CreditTransaction: a job is part of both organizations'
+  // billing record.
+  buyer     Organization        @relation("JobsHired", fields: [buyerId], references: [id], onDelete: Restrict)
+  publisher Organization        @relation("JobsReceived", fields: [publisherId], references: [id], onDelete: Restrict)
+  escrow    MarketplaceRevenue?
 
+  @@unique([buyerId, idempotencyKey])
   @@index([buyerId, createdAt])
   @@index([publisherId, createdAt])
   @@index([status, deadlineAt])
   @@index([status, reviewDeadlineAt])
+  @@index([offeringId, status])
+  @@index([status, leaseExpiresAt])
   @@map("jobs")
 }
 
@@ -2396,6 +2480,7 @@ model Orchestration {
 
   steps         OrchestrationStep[]
   executions    OrchestrationExecution[]
+  offerings  Offering[]
   schedules     ScheduledTask[]
 
   @@unique([orgId, name])

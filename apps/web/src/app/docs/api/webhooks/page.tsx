@@ -92,6 +92,11 @@ export default function WebhooksApiPage() {
             data: <>See <Link href="/docs/api/workflows#events">workflow and scheduler events</Link>.</>,
           },
           {
+            event: <><code>job.funded</code>, <code>job.submitted</code>, <code>job.completed</code>, <code>job.rejected</code>, <code>job.failed</code>, <code>job.expired</code>, <code>job.cancelled</code></>,
+            when: "A paid job on an offering changes state. Sent to the buyer, the publisher or both.",
+            data: <>See <Link href="/docs/api/jobs#events">job events</Link>.</>,
+          },
+          {
             event: <code>report.generated</code>,
             when: "A report task that asks for it finishes.",
             data: <>See <Link href="/docs/api/workflows#events">workflow and scheduler events</Link>.</>,
@@ -103,7 +108,7 @@ export default function WebhooksApiPage() {
         sends both <code>deployment.running</code> and <code>agent.deployed</code>. <code>GET /api/webhooks/events</code>{" "}
         returns the full list of event names you can subscribe to, with every one of them in a category:{" "}
         <code>agent</code>, <code>deployment</code>, <code>training</code>, <code>alert</code>, <code>billing</code>,{" "}
-        <code>workflow</code>, <code>scheduled_task</code> and <code>report</code>. That list also contains{" "}
+        <code>workflow</code>, <code>scheduled_task</code>, <code>report</code> and <code>job</code>. That list also contains{" "}
         <code>agent.version.created</code>, <code>billing.low_balance</code> and <code>billing.payment_received</code>:
         you can subscribe to them now, but the platform does not send them yet.
       </p>

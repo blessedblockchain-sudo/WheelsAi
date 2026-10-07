@@ -41,6 +41,7 @@ function snapshot(p: any) {
     agentListing: { ...p.agentListing },
     agentReview: { ...p.agentReview },
     agentInstall: { ...p.agentInstall },
+    job: { ...p.job },
     agent: { ...p.agent },
     publisherProfile: { ...p.publisherProfile },
     $transaction: p.$transaction,
@@ -51,6 +52,7 @@ function restore(p: any, orig: ReturnType<typeof snapshot>) {
   Object.assign(p.agentListing, orig.agentListing);
   Object.assign(p.agentReview, orig.agentReview);
   Object.assign(p.agentInstall, orig.agentInstall);
+  Object.assign(p.job, orig.job);
   Object.assign(p.agent, orig.agent);
   Object.assign(p.publisherProfile, orig.publisherProfile);
   p.$transaction = orig.$transaction;
@@ -68,6 +70,8 @@ test("createReview fires a reputation recalc at the listing's publisher — and 
     p.agentListing.findUnique = async () => ({ publisherId: "org_pub" });
     p.agentReview.findUnique = async () => null;
     p.agentInstall.findUnique = async () => null;
+    // No install: verification then asks for a completed job on the listing.
+    p.job.findFirst = async () => null;
     p.agentReview.create = async (args: any) => ({ id: "rev_1", ...args.data });
     p.agentReview.aggregate = async () => ({
       _avg: { rating: 5 },

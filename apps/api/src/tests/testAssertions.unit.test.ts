@@ -76,7 +76,67 @@ test("word-overlap assertion labels itself honestly (not 'semantic')", async () 
   assert.equal(result.score, 1);
 });
 
-test("json_schema checks required keys and rejects non-JSON output", async () => {
+test("regex assertions run on the linear-time engine: a catastrophic pattern answers at once", async () => {
+  const { runAssertion } = await import("../services/testing.js");
+
+  const started = performance.now();
+  const result = await runAssertion("regex", "a".repeat(30) + "!", "(a+)+$", null, null);
+  assert.equal(result.passed, false);
+  assert.ok(performance.now() - started < 200, "new RegExp takes minutes on this input");
+
+  // Syntax the engine cannot express is refused, not run on the unsafe one.
+  const lookbehind = await runAssertion("regex", "ab", "(?<=a)b", null, null);
+  assert.equal(lookbehind.passed, false);
+  assert.match(lookbehind.details, /Invalid regex pattern.*lookahead and lookbehind/);
+});
+
+test("json_schema is real JSON Schema, graded on the answer's content", async () => {
+  const { runAssertion } = await import("../services/testing.js");
+  const schema = {
+    type: "object",
+    required: ["name", "age"],
+    properties: { name: { type: "string" }, age: { type: "integer", minimum: 0 } },
+  };
+
+  // A chat answer is a { role, content } message; the JSON is its content.
+  const message = (content: string) => ({ role: "assistant", content });
+  const ok = await runAssertion("json_schema", message('{"name":"a","age":1}'), schema, null, null);
+  assert.equal(ok.passed, true);
+  const fenced = await runAssertion(
+    "json_schema",
+    message('Here it is:\n```json\n{"name":"a","age":1}\n```'),
+    schema,
+    null,
+    null,
+  );
+  assert.equal(fenced.passed, true);
+
+  // Keys present with the wrong types used to pass.
+  const wrongType = await runAssertion("json_schema", message('{"name":"a","age":"old"}'), schema, null, null);
+  assert.equal(wrongType.passed, false);
+  assert.match(wrongType.details, /\/age/);
+  // The message wrapper itself ({ role, content }) is not what is graded.
+  const wrapper = await runAssertion(
+    "json_schema",
+    message("plain prose"),
+    { type: "object", required: ["role", "content"] },
+    null,
+    null,
+  );
+  assert.equal(wrapper.passed, false);
+  assert.match(wrapper.details, /not valid JSON/);
+
+  // The dashboard form sends the expected value as text.
+  const fromText = await runAssertion("json_schema", message('{"name":"a","age":1}'), JSON.stringify(schema), null, null);
+  assert.equal(fromText.passed, true);
+  const badText = await runAssertion("json_schema", message("{}"), "{not json", null, null);
+  assert.equal(badText.passed, false);
+  assert.match(badText.details, /not valid JSON: enter a JSON Schema/);
+  const badSchema = await runAssertion("json_schema", message("{}"), { type: "objekt" }, null, null);
+  assert.equal(badSchema.passed, false);
+});
+
+test("a legacy example object still means 'these keys are required'", async () => {
   const { runAssertion } = await import("../services/testing.js");
 
   const ok = await runAssertion(
@@ -87,12 +147,24 @@ test("json_schema checks required keys and rejects non-JSON output", async () =>
     null,
   );
   assert.equal(ok.passed, true);
+  assert.match(ok.details, /example object/);
 
   const missing = await runAssertion("json_schema", { name: "a" }, { name: "", age: 0 }, null, null);
   assert.equal(missing.passed, false);
+  assert.match(missing.details, /\/age is required/);
 
   const notJson = await runAssertion("json_schema", "not json at all", { a: 1 }, null, null);
   assert.equal(notJson.passed, false);
+
+  // An example whose keys happen to be schema words but not schema values.
+  const lookalike = await runAssertion(
+    "json_schema",
+    { type: "invoice", items: 3 },
+    { type: "invoice", items: 0 },
+    null,
+    null,
+  );
+  assert.equal(lookalike.passed, true);
 });
 
 test("an unknown assertion type fails with a clear reason", async () => {

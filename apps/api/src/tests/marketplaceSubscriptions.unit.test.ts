@@ -737,8 +737,15 @@ test("install access: what runs, what is paused, and why", () => {
   const paid = { status: "active", currentPeriodEnd: at(30), cancelAtPeriodEnd: false, endReason: null };
   const ended = (endReason: string | null) => ({ ...paid, status: "cancelled", endReason });
   const now = at(10);
+  // The buyer here agreed to the listing's pricing model as it stands, so
+  // what is decided is the subscription's part of the rule. The accepted
+  // price is covered in "the pricing a buyer accepted" below.
+  const agreedTo = (pricingModel: string) => ({ pricingModel, pricePerRequestCents: 5n });
   const access = (installStatus: string, listingStatus: string, pricingModel: string, sub: Parameters<typeof installAccess>[0]["sub"]) =>
-    installAccess({ installStatus, listingStatus, pricingModel, sub }, now);
+    installAccess(
+      { installStatus, listingStatus, pricingModel, pricePerRequestCents: 5n, accepted: agreedTo(pricingModel), sub },
+      now,
+    );
 
   assert.equal(access("uninstalled", "published", "monthly", paid), "uninstalled");
   assert.equal(access("active", "published", "monthly", paid), "subscribed");
@@ -761,7 +768,17 @@ test("install access: what runs, what is paused, and why", () => {
   // answer does not depend on the worker having run.
   const ranOut = { ...paid, currentPeriodEnd: at(9) };
   const after = (days: number, sub: Parameters<typeof installAccess>[0]["sub"], pricingModel = "per_request") =>
-    installAccess({ installStatus: "active", listingStatus: "published", pricingModel, sub }, at(days));
+    installAccess(
+      {
+        installStatus: "active",
+        listingStatus: "published",
+        pricingModel,
+        pricePerRequestCents: 5n,
+        accepted: agreedTo(pricingModel),
+        sub,
+      },
+      at(days),
+    );
   // Cancelled renewal: no grace, so paused from the moment the period ends.
   assert.equal(after(9.001, { ...ranOut, cancelAtPeriodEnd: true }), "pricing_changed");
   // Otherwise the grace window is honoured, then paused, never billed.
@@ -778,8 +795,54 @@ test("install access: what runs, what is paused, and why", () => {
   assert.equal(access("suspended", "published", "monthly", { ...ended(null), status: "expired" }), "subscription_lapsed");
 });
 
+test("install access: the pricing a buyer accepted", () => {
+  const access = (
+    listing: { pricingModel: string; pricePerRequestCents?: bigint | null },
+    accepted: { pricingModel: string | null; pricePerRequestCents: bigint | null },
+    sub: Parameters<typeof installAccess>[0]["sub"] = null,
+  ) => installAccess({ installStatus: "active", listingStatus: "published", ...listing, accepted, sub }, at(10));
+  const perRequest = (cents: bigint) => ({ pricingModel: "per_request", pricePerRequestCents: cents });
+
+  // Per request: covered up to the accepted price, paused above it.
+  assert.equal(access(perRequest(5n), perRequest(5n)), "listing_pricing");
+  assert.equal(access(perRequest(4n), perRequest(5n)), "listing_pricing");
+  assert.equal(access(perRequest(6n), perRequest(5n)), "pricing_changed");
+  // A zero price is free in effect.
+  assert.equal(access(perRequest(0n), { pricingModel: "free", pricePerRequestCents: null }), "listing_pricing");
+  // A different model is new terms, except free.
+  assert.equal(access(perRequest(1n), { pricingModel: "free", pricePerRequestCents: null }), "pricing_changed");
+  assert.equal(access({ pricingModel: "tokenized" }, perRequest(5n)), "pricing_changed");
+  assert.equal(access({ pricingModel: "tokenized" }, { pricingModel: "tokenized", pricePerRequestCents: null }), "listing_pricing");
+  assert.equal(access({ pricingModel: "free" }, perRequest(5n)), "listing_pricing");
+  assert.equal(access({ pricingModel: "free" }, { pricingModel: "tokenized", pricePerRequestCents: null }), "listing_pricing");
+  // Monthly, for an install that agreed to something else: accept, not "lapsed".
+  assert.equal(access({ pricingModel: "monthly" }, perRequest(5n)), "pricing_changed");
+  assert.equal(access({ pricingModel: "monthly" }, { pricingModel: "monthly", pricePerRequestCents: null }), "subscription_lapsed");
+  // A buyer who cancelled a monthly subscription themselves, on a listing
+  // that has since gone per-request, used to fall straight onto it.
+  const cancelledByBuyer = { status: "cancelled", currentPeriodEnd: at(5), cancelAtPeriodEnd: false, endReason: null };
+  assert.equal(
+    access(perRequest(5n), { pricingModel: "monthly", pricePerRequestCents: null }, cancelledByBuyer),
+    "pricing_changed",
+  );
+  // Nothing on record: only free pricing runs.
+  assert.equal(access(perRequest(5n), { pricingModel: null, pricePerRequestCents: null }), "pricing_changed");
+  assert.equal(access({ pricingModel: "free" }, { pricingModel: null, pricePerRequestCents: null }), "listing_pricing");
+  // A paid-up subscription still outranks all of it.
+  const paid = { status: "active", currentPeriodEnd: at(30), cancelAtPeriodEnd: false, endReason: null };
+  assert.equal(access(perRequest(900n), { pricingModel: "monthly", pricePerRequestCents: null }, paid), "subscribed");
+});
+
 function billingLookup(
-  install: { status: string; listingStatus?: string; pricingModel: string; pricePerRequestCents?: bigint | null },
+  install: {
+    status: string;
+    listingStatus?: string;
+    pricingModel: string;
+    pricePerRequestCents?: bigint | null;
+    /** What the buyer agreed to. Default: the listing as it stands. */
+    acceptedPricingModel?: string | null;
+    acceptedPricePerRequestCents?: bigint | null;
+  },
   sub: { status: string; currentPeriodEnd: Date; cancelAtPeriodEnd: boolean; endReason?: string | null } | null,
 ) {
   return {
@@ -789,6 +852,11 @@ function billingLookup(
         listingId: "lst_1",
         buyerId: "org_buyer",
         status: install.status,
+        acceptedPricingModel: install.acceptedPricingModel ?? install.pricingModel,
+        acceptedPricePerRequestCents:
+          install.acceptedPricePerRequestCents !== undefined
+            ? install.acceptedPricePerRequestCents
+            : (install.pricePerRequestCents ?? null),
         listing: {
           title: "Research Analyst",
           status: install.listingStatus ?? "published",

@@ -5,9 +5,9 @@ test.describe("Marketplace", () => {
     await page.goto("/marketplace");
 
     // Verify the main heading
-    await expect(page.getByRole("heading", { name: "Agent Marketplace" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Marketplace", exact: true })).toBeVisible();
     await expect(
-      page.getByText("Discover and deploy AI agents built by the community")
+      page.getByText("Install agents built by the community, or hire an agent, a workflow or a model")
     ).toBeVisible();
   });
 
@@ -30,7 +30,7 @@ test.describe("Marketplace", () => {
     await page.goto("/marketplace");
 
     // The categories sidebar should be visible
-    await expect(page.getByText("Categories")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Categories" })).toBeVisible();
     await expect(
       page.getByRole("button", { name: "All Categories" })
     ).toBeVisible();

@@ -244,3 +244,111 @@ test("a step row stores reported tokens, marks an unreported model call, and sto
   assert.deepEqual(unreported.usage, { unreported: true });
   assert.equal(none.usage, undefined);
 });
+
+// ============================================
+// A workflow hired as a job
+// ============================================
+
+test("a hired run invokes every agent step in hired mode with the offering's instructions and allowlist", async () => {
+  setupEnv();
+  const mod = await import("../services/buildOrchestrationExecutorDeps.js");
+  const seen: Array<Record<string, unknown>> = [];
+  const deps = mod.buildOrchestrationExecutorDeps(
+    "exec-1",
+    {
+      executor: {
+        loadAgent: async (agentId, orgId) =>
+          orgId === "org-pub"
+            ? { id: agentId, orgId, name: "A", systemPrompt: null, tools: [], modelConfig: {}, env: {} }
+            : null,
+        runAgentChat: async ({ agent, ...rest }) => {
+          seen.push({ agentId: agent.id, orgId: agent.orgId, ...rest });
+          return { content: "ok" };
+        },
+      },
+    },
+    { mode: "hired", instructions: "PRIVATE RUBRIC", toolAllowlist: ["web_search"] },
+  );
+  const controller = new AbortController();
+  // Two steps of one run: both are restricted, not only the first.
+  await deps.invokeAgent({ agentId: "agent-1", orgId: "org-pub", prompt: "step one", signal: controller.signal });
+  await deps.invokeAgent({ agentId: "agent-2", orgId: "org-pub", prompt: "step two", signal: controller.signal });
+  assert.deepEqual(seen, [
+    {
+      agentId: "agent-1",
+      orgId: "org-pub",
+      prompt: "step one",
+      mode: "hired",
+      signal: controller.signal,
+      systemAddendum: "PRIVATE RUBRIC",
+      toolAllowlist: ["web_search"],
+    },
+    {
+      agentId: "agent-2",
+      orgId: "org-pub",
+      prompt: "step two",
+      mode: "hired",
+      signal: controller.signal,
+      systemAddendum: "PRIVATE RUBRIC",
+      toolAllowlist: ["web_search"],
+    },
+  ]);
+  // The publisher's organization, never the buyer's: another org's agent is not found.
+  await assert.rejects(
+    deps.invokeAgent({ agentId: "agent-1", orgId: "org-buyer", prompt: "x" }),
+    /not found in this organization/,
+  );
+});
+
+test("a hired run with no instructions or allowlist still runs in hired mode, and adds nothing else", async () => {
+  setupEnv();
+  const mod = await import("../services/buildOrchestrationExecutorDeps.js");
+  const seen: Array<Record<string, unknown>> = [];
+  const deps = mod.buildOrchestrationExecutorDeps(
+    "exec-1",
+    {
+      executor: {
+        loadAgent: async (agentId, orgId) => ({ id: agentId, orgId, name: "A", systemPrompt: null, tools: [], modelConfig: {}, env: {} }),
+        runAgentChat: async ({ agent: _agent, ...rest }) => {
+          seen.push(rest);
+          return { content: "ok" };
+        },
+      },
+    },
+    { mode: "hired", toolAllowlist: [] },
+  );
+  await deps.invokeAgent({ agentId: "agent-1", orgId: "org-pub", prompt: "p" });
+  assert.deepEqual(seen, [{ prompt: "p", mode: "hired", signal: undefined }]);
+});
+
+test("a hired run's model steps get the instructions as a system message", async () => {
+  const calls: Array<{ messages: unknown }> = [];
+  setupEnv();
+  const mod = await import("../services/buildOrchestrationExecutorDeps.js");
+  const deps = mod.buildOrchestrationExecutorDeps(
+    "exec-1",
+    {
+      chatWithDeployment: (async (request: { messages: unknown }) => {
+        calls.push(request);
+        return { content: "x", finishReason: "stop", billing: { mode: "gpu_time" }, requestId: "r" };
+      }) as never,
+    },
+    { mode: "hired", instructions: "PRIVATE RUBRIC" },
+  );
+  await deps.invokeModel!({ deploymentId: "dep-1", modelId: null, orgId: "org-pub", prompt: "brief" });
+  assert.deepEqual(calls[0]!.messages, [
+    { role: "system", content: "PRIVATE RUBRIC" },
+    { role: "user", content: "brief" },
+  ]);
+});
+
+test("instructions or an allowlist on a run that is not hired are refused when the run is assembled", async () => {
+  setupEnv();
+  const mod = await import("../services/buildOrchestrationExecutorDeps.js");
+  for (const run of [{ instructions: "PRIVATE" }, { mode: "job" as const, toolAllowlist: ["calculator"] }]) {
+    assert.throws(
+      () => mod.buildOrchestrationExecutorDeps("exec-1", {}, run),
+      /apply to hired workflow runs only/,
+    );
+  }
+});

@@ -1,5 +1,6 @@
 import { prisma } from "@wheelsai/db";
 
+import { evaluateCheck } from "./assertions.js";
 import { buildProductionExecutorDeps } from "./scheduledTaskExecutorProduction.js";
 
 // ============================================
@@ -633,6 +634,52 @@ async function callAgentViaModel(
   return { role: "assistant", content: result.content };
 }
 
+const JSON_SCHEMA_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+
+/** True when `value` reads as a JSON Schema rather than as example data. */
+function looksLikeJsonSchema(value: Record<string, unknown>): boolean {
+  if (typeof value.$schema === "string" || typeof value.$ref === "string") return true;
+  const types = Array.isArray(value.type) ? value.type : [value.type];
+  if (value.type !== undefined && types.every((t) => typeof t === "string" && JSON_SCHEMA_TYPES.has(t))) {
+    return true;
+  }
+  if (typeof value.properties === "object" && value.properties !== null && !Array.isArray(value.properties)) {
+    return true;
+  }
+  if (Array.isArray(value.required) && value.required.every((k) => typeof k === "string")) return true;
+  return ["anyOf", "oneOf", "allOf", "enum"].some((k) => Array.isArray(value[k])) || "const" in value;
+}
+
+/**
+ * The schema a json_schema assertion grades against.
+ *
+ * Suites saved before this was real JSON Schema stored an EXAMPLE object and
+ * were graded on its top-level keys being present. Those keep that meaning:
+ * an object that does not read as a schema becomes
+ * `{ type: "object", required: <its keys> }`. The dashboard form sends the
+ * expected value as text, so a string is parsed first.
+ */
+function jsonSchemaFromExpected(
+  expected: unknown,
+):
+  | { ok: true; schema: Record<string, unknown>; legacy: boolean }
+  | { ok: false; details: string } {
+  let value = expected;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return { ok: false, details: "The expected value is not valid JSON: enter a JSON Schema" };
+    }
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { ok: false, details: "The expected value must be a JSON Schema object" };
+  }
+  const object = value as Record<string, unknown>;
+  if (looksLikeJsonSchema(object)) return { ok: true, schema: object, legacy: false };
+  return { ok: true, schema: { type: "object", required: Object.keys(object) }, legacy: true };
+}
+
 export async function runAssertion(
   assertionType: AssertionType,
   actual: any,
@@ -665,22 +712,12 @@ export async function runAssertion(
       };
     }
 
-    case "regex":
-      try {
-        const regex = new RegExp(expectedContent, "i");
-        const matches = regex.test(actualContent);
-        return {
-          passed: matches,
-          details: matches
-            ? `Output matches pattern /${expectedContent}/`
-            : `Output does not match pattern /${expectedContent}/`,
-        };
-      } catch {
-        return {
-          passed: false,
-          details: `Invalid regex pattern: ${expectedContent}`,
-        };
-      }
+    case "regex": {
+      // The linear-time engine, never `new RegExp`: a suite's pattern runs
+      // in this process against whatever the agent answered.
+      const result = evaluateCheck({ type: "regex", pattern: expectedContent, flags: "i" }, actualContent);
+      return { passed: result.passed, details: result.details };
+    }
 
     case "semantic": {
       // Honest labeling: this is Jaccard WORD OVERLAP, not embedding
@@ -701,26 +738,23 @@ export async function runAssertion(
       };
     }
 
-    case "json_schema":
-      try {
-        const actualJson =
-          typeof actual === "string" ? JSON.parse(actual) : actual;
-        // Basic schema validation
-        const hasRequiredFields = Object.keys(expected).every(
-          (key) => key in actualJson
-        );
-        return {
-          passed: hasRequiredFields,
-          details: hasRequiredFields
-            ? "Output matches schema"
-            : "Output missing required fields",
-        };
-      } catch {
-        return {
-          passed: false,
-          details: "Output is not valid JSON",
-        };
-      }
+    case "json_schema": {
+      const schema = jsonSchemaFromExpected(expected);
+      if (!schema.ok) return { passed: false, details: schema.details };
+      // A chat answer arrives as a { role, content } message: the JSON to
+      // grade is its content, not the message wrapper.
+      const subject =
+        typeof actual === "string"
+          ? actual
+          : typeof actual?.content === "string" && typeof actual?.role === "string"
+            ? actual.content
+            : JSON.stringify(actual ?? null);
+      const result = evaluateCheck({ type: "json_schema", schema: schema.schema }, subject);
+      return {
+        passed: result.passed,
+        details: schema.legacy ? `${result.details} (expected value read as an example object: its keys are required)` : result.details,
+      };
+    }
 
     case "function":
       // SECURITY: the previous implementation ran user-supplied script

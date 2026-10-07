@@ -1,6 +1,7 @@
 /**
  * The agent-chat call every non-interactive caller shares: scheduled tasks,
- * "trigger now", workflow steps, jobs and the test runner.
+ * "trigger now", workflow steps, batch jobs, the test runner and paid jobs
+ * (Offerings and Jobs).
  *
  * It is NOT a second chat implementation. It hands the prompt to
  * prepareAgentChat (services/agentChat.ts), the core behind the playground
@@ -13,8 +14,11 @@
  * chat's.
  *
  * What is this caller's own:
- *   - the source ("scheduled", "job" or "test"), which is the tool mode's base
- *     and what the usage row is filed under;
+ *   - the source ("scheduled", "job", "test" or "hired"), which is the tool
+ *     mode's base and what the usage row is filed under;
+ *   - for a paid job ("hired") only: the offering's private instructions and
+ *     tool allowlist. Any other mode that brings them is refused, so private
+ *     instructions can never ride into a run whose tools are not restricted;
  *   - the limit on how long the chat may take. A caller that passes a signal
  *     bounds the run itself (a task's timeout can be an hour), so the core's
  *     interactive deadline is switched off; a caller that passes none keeps it.
@@ -45,6 +49,7 @@ const SOURCE_OF_MODE: Partial<Record<ToolMode, AgentChatSource>> = {
   scheduled: "scheduled",
   job: "job",
   test: "test",
+  hired: "hired",
 };
 
 function aborted(signal: AbortSignal | undefined): Error {
@@ -96,10 +101,13 @@ export function createRunAgentChat(
   let built: AgentChatDeps | null = typeof deps === "function" ? null : deps;
   const chatDeps = () => (built ??= (deps as () => AgentChatDeps)());
 
-  return async ({ agent, prompt, mode, signal }) => {
+  return async ({ agent, prompt, mode, signal, systemAddendum, toolAllowlist }) => {
     const source = SOURCE_OF_MODE[mode ?? "scheduled"];
     if (!source) {
       throw new Error(`agent runs without a client cannot use the "${mode}" tool mode`);
+    }
+    if (source !== "hired" && (systemAddendum !== undefined || toolAllowlist !== undefined)) {
+      throw new Error(`job instructions and a tool allowlist apply to hired runs only, not "${source}"`);
     }
 
     const prepared = await prepareAgentChat(
@@ -111,6 +119,8 @@ export function createRunAgentChat(
         messages: [{ role: "user", content: prompt }],
         signal: signal ?? new AbortController().signal,
         ...(signal && { deadlineMs: null }),
+        ...(systemAddendum && { systemAddendum }),
+        ...(toolAllowlist && toolAllowlist.length > 0 && { toolAllowlist }),
       },
       chatDeps(),
     );
@@ -127,6 +137,10 @@ export function createRunAgentChat(
     return {
       content: completed.result.content,
       ...(completed.result.reportedUsage && { usage: completed.result.reportedUsage }),
+      // What a paid job meters: which model answered, and on whose keys.
+      model: prepared.session.modelId,
+      platformModel: prepared.session.platformModel,
+      toolCallCount: completed.result.toolCalls?.length ?? 0,
     };
   };
 }

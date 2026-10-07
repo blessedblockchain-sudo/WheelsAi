@@ -124,6 +124,8 @@ import {
   stopDeploymentStatusQueue,
   startGpuBillingQueue,
   stopGpuBillingQueue,
+  startTrainingPollerQueue,
+  stopTrainingPollerQueue,
   startAgentMessageQueue,
   stopAgentMessageQueue,
   startSchedulerQueue,
@@ -524,6 +526,7 @@ async function main() {
   await startReputationAttestationQueue();
   await startDeploymentStatusQueue();
   await startGpuBillingQueue();
+  await startTrainingPollerQueue();
   await startAgentMessageQueue();
   await startSchedulerQueue();
   await startWorkflowRunQueue();
@@ -580,6 +583,7 @@ async function main() {
       await stopReputationAttestationQueue();
       await stopDeploymentStatusQueue();
       await stopGpuBillingQueue();
+      await stopTrainingPollerQueue();
       await stopAgentMessageQueue();
       await stopSchedulerQueue();
       await stopWorkflowRunQueue();

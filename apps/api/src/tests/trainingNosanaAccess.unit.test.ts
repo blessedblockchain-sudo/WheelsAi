@@ -286,11 +286,17 @@ test("a submit that fails after creation records the partial id with the mode th
   assert.equal(orphans.rows.length, 1);
 });
 
-test("routes/training.ts stores the stamp with the id and cancels through the row's mode", () => {
-  const source = readFileSync(new URL("../routes/training.ts", import.meta.url), "utf8");
-  assert.match(source, /data: trainingSubmitStamp\(nosanaJob\)/);
-  assert.match(source, /stopCancelledTrainingJob\(/);
-  assert.match(source, /nosanaAccessMode: job\.nosanaAccessMode/);
+test("the job service stores the stamp with the id and retires through the row's mode", () => {
+  // The submit, the cancel and every failure path moved from routes/training.ts
+  // to services/trainingJobs.ts; the rule they must keep is the same.
+  const source = readFileSync(new URL("../services/trainingJobs.ts", import.meta.url), "utf8");
+  assert.match(source, /const stamp = trainingSubmitStamp\(created\)/);
+  assert.match(source, /data: \{ status: "queued", \.\.\.stamp, queuedAt/);
+  assert.match(source, /retireTrainingDeployment\(/);
+  assert.match(source, /nosanaAccessMode: row\.nosanaAccessMode/);
   assert.match(source, /recordFailedTrainingSubmit\(/);
-  assert.doesNotMatch(source, /\.stopDeployment\(job\.nosanaJobId\)/, "no stop without the row's mode");
+  assert.doesNotMatch(source, /\.stopDeployment\(row\.nosanaJobId\)/, "no stop without the row's mode");
+  assert.doesNotMatch(source, /getDeploymentStatus\(row\.nosanaJobId\)/, "no read without the row's mode");
+  const routes = readFileSync(new URL("../routes/training.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(routes, /stopDeployment|createDeployment/, "the routes never reach Nosana themselves");
 });

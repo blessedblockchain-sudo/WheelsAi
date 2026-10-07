@@ -19,6 +19,7 @@ export type WebhookEventType =
   | "training.started"
   | "training.completed"
   | "training.failed"
+  | "training.cancelled"
   | "alert.triggered"
   | "alert.resolved"
   | "billing.low_balance"
@@ -48,6 +49,7 @@ export const WEBHOOK_EVENTS: WebhookEventType[] = [
   "training.started",
   "training.completed",
   "training.failed",
+  "training.cancelled",
   "alert.triggered",
   "alert.resolved",
   "billing.low_balance",

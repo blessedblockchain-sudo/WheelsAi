@@ -76,3 +76,7 @@ export {
   startSubscriptionRenewalQueue,
   stopSubscriptionRenewalQueue,
 } from "./subscription-renewal.queue.js";
+export {
+  startTrainingPollerQueue,
+  stopTrainingPollerQueue,
+} from "./training-poller.queue.js";

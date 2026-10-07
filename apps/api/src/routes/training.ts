@@ -1,43 +1,56 @@
-import { FastifyPluginAsync } from "fastify";
+/**
+ * /api/training: datasets, and fine-tuning jobs.
+ *
+ * The job routes are thin: every rule (the refusal order, the hold, the
+ * state machine, who pays) lives in services/trainingJobs.ts and is reached
+ * through injected dependencies, so the routes can be driven in a test with
+ * no database, no Nosana and no object store.
+ *
+ * One route has no session: POST /jobs/:jobId/events, which the training
+ * container calls. It is authenticated by an HMAC over the raw body
+ * (services/trainingWebhookAuth.ts) and has its own body parser, scoped to
+ * it, that hands the bytes over unparsed.
+ */
+
+import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 
+import { trainableTiers, findTrainableModel, isTrainingMethod } from "../config/trainingCatalog.js";
+import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { createLogger } from "../utils/logger.js";
-import { prisma } from "@wheelsai/db";
-import { triggerWebhook } from "../services/webhooks.js";
-import {
-  generateTrainingJobDefinition,
-  estimateTrainingCost,
-  recommendGpuTier,
-  parseTrainingLogs,
-  DEFAULT_TRAINING_CONFIG,
-  DEFAULT_LORA_CONFIG,
-} from "../services/training.js";
-import {
-  deriveTrainingWebhookToken,
-  verifyTrainingWebhookToken,
-} from "../services/trainingWebhookAuth.js";
+import { buildDatasetDeps } from "../services/buildDatasetDeps.js";
+import { buildTrainingDeps } from "../services/buildTrainingDeps.js";
 import {
   createDataset,
   deleteDataset,
   describeDatasetStorage,
-  knownDatasetRowCount,
-  rowCountUnknownRefusal,
   serializeDataset,
   serializeDatasetDetail,
   validateStoredDataset,
+  type DatasetDeps,
 } from "../services/dataset.js";
-import { buildDatasetDeps } from "../services/buildDatasetDeps.js";
-import { getNosanaClient } from "../services/nosana.js";
-import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
-import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
 import {
-  recordFailedTrainingSubmit,
-  stopCancelledTrainingJob,
-  trainingSubmitStamp,
-} from "../services/trainingNosana.js";
-
-const logger = createLogger("training-routes");
+  cancelTrainingJob,
+  createTrainingJob,
+  describeTrainingCapabilities,
+  estimateTrainingJob,
+  getTrainingJobDetail,
+  getTrainingJobLogs,
+  listTrainingJobs,
+  listTrainingModels,
+  recordTrainingEvent,
+  retryTrainingJob,
+  type CreateTrainingJobResult,
+  type TrainingDeps,
+  type TrainingJobInput,
+  type TrainingRefusal,
+} from "../services/trainingJobs.js";
+import { TRAINING_STATES } from "../services/trainingStateMachine.js";
+import {
+  TRAINING_CALLBACK_MAX_BYTES,
+  TRAINING_CALLBACK_SIGNATURE_HEADER,
+} from "../services/trainingWebhookAuth.js";
+import { replaceJsonBodyParser } from "./emptyJsonBody.js";
 
 // ============================================
 // Schemas
@@ -61,34 +74,103 @@ const createDatasetSchema = z.object({
     .optional(),
 });
 
-const createTrainingJobSchema = z.object({
-  name: z.string().min(1).max(100),
-  baseModelId: z.string(),
+/**
+ * What a job is made of. `method` and `gpuTier` are plain strings here: the
+ * service refuses "full", an unknown tier and more than one GPU by name, in
+ * the documented order, which a schema error would pre-empt.
+ */
+const jobChoiceShape = {
+  baseModelId: z.string().min(1).max(100),
   datasetId: z.string().uuid(),
-  method: z.enum(["lora", "qlora", "full"]).default("lora"),
-  gpuTier: z.string().default("rtx-4090"),
-  gpuCount: z.number().int().min(1).max(8).default(1),
-  config: z.object({
-    epochs: z.number().int().min(1).max(100).default(3),
-    batchSize: z.number().int().min(1).max(64).default(4),
-    learningRate: z.number().min(1e-6).max(1e-1).default(2e-4),
-    warmupSteps: z.number().int().min(0).max(10000).default(100),
-    gradientAccumulationSteps: z.number().int().min(1).max(64).default(4),
-    loraR: z.number().int().min(4).max(128).optional(),
-    loraAlpha: z.number().int().min(8).max(256).optional(),
-    loraDropout: z.number().min(0).max(0.5).optional(),
-    targetModules: z.array(z.string()).optional(),
-    quantizationBits: z.enum(["4", "8"]).optional(),
-  }).default({}),
+  method: z.string().min(1).max(20).default("lora"),
+  gpuCount: z.number().int().min(1).max(64).optional(),
+  // The run limit, in either unit (not both).
+  maxRuntimeSeconds: z.number().int().positive().max(7 * 86_400).optional(),
+  maxRuntimeMinutes: z.number().int().positive().max(7 * 1_440).optional(),
+  // The trainer's hyperparameters. `config` is the older name of the same object.
+  hyperparams: z.record(z.unknown()).optional(),
+  config: z.record(z.unknown()).optional(),
+};
+
+const createTrainingJobSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  gpuTier: z.string().min(1).max(40),
+  ...jobChoiceShape,
 });
+
+const estimateSchema = z.object({
+  // Omitted = the cheapest tier the model and method fit on.
+  gpuTier: z.string().min(1).max(40).optional(),
+  // Shorthand for hyperparams.epochs.
+  epochs: z.number().int().optional(),
+  ...jobChoiceShape,
+});
+
+const jobIdParams = z.object({ jobId: z.string().uuid() });
+
+type JobChoice = z.infer<z.ZodObject<typeof jobChoiceShape>>;
+
+/** The two spellings of the run limit and of the hyperparameters, as one input. */
+function jobChoice(
+  body: JobChoice,
+): { ok: true; maxRuntimeSeconds: number | undefined; hyperparams: Record<string, unknown> | undefined } | TrainingRefusal {
+  if (body.maxRuntimeSeconds !== undefined && body.maxRuntimeMinutes !== undefined) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_run_limit",
+      message: "Send maxRuntimeSeconds or maxRuntimeMinutes, not both.",
+    };
+  }
+  if (body.hyperparams !== undefined && body.config !== undefined) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_hyperparameter",
+      message: "Send hyperparams or config, not both.",
+    };
+  }
+  return {
+    ok: true,
+    maxRuntimeSeconds:
+      body.maxRuntimeSeconds ??
+      (body.maxRuntimeMinutes !== undefined ? body.maxRuntimeMinutes * 60 : undefined),
+    hyperparams: body.hyperparams ?? body.config,
+  };
+}
+
+function refusalBody(refusal: TrainingRefusal) {
+  return { error: refusal.code, message: refusal.message, ...refusal.extra };
+}
+
+function createdBody(result: Extract<CreateTrainingJobResult, { ok: true }>) {
+  return {
+    job: { id: result.job.id, name: result.job.name, status: result.job.status },
+    // What was held: the most this job can cost. The unused part comes back
+    // when the job ends.
+    reservation: result.reservation,
+    estimate: result.estimate,
+    message: "Training job created. It is being submitted to the GPU network.",
+  };
+}
 
 // ============================================
 // Routes
 // ============================================
 
-export const trainingRoutes: FastifyPluginAsync = async (app) => {
-  const datasetDeps = buildDatasetDeps(prisma);
+export interface TrainingRouteDeps {
+  training: TrainingDeps;
+  datasets: DatasetDeps;
+  /** The session check of the authenticated routes. Default: requireAuth. */
+  auth?: preHandlerHookHandler;
+}
 
+export function createTrainingRoutes(deps: TrainingRouteDeps): FastifyPluginAsync {
+  const training = deps.training;
+  const datasetDeps = deps.datasets;
+  const auth: preHandlerHookHandler = deps.auth ?? (requireAuth as preHandlerHookHandler);
+
+  return async (app) => {
   // ============================================
   // Datasets
   // ============================================
@@ -96,7 +178,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   /**
    * List datasets
    */
-  app.get("/datasets", { preHandler: [requireAuth] }, async (request, _reply) => {
+  app.get("/datasets", { preHandler: [auth] }, async (request, _reply) => {
     const { orgId } = request.auth!;
 
     const datasets = await datasetDeps.db.list(orgId);
@@ -112,7 +194,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Get dataset details
    */
-  app.get("/datasets/:datasetId", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/datasets/:datasetId", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { datasetId } = z.object({ datasetId: z.string().uuid() }).parse(request.params);
 
@@ -132,7 +214,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
    * dataset_storage_not_configured, 400 unsupported_file_type, 413
    * dataset_too_large / dataset_too_many_rows, 409 dataset_name_taken.
    */
-  app.post("/datasets", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/datasets", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const body = createDatasetSchema.parse(request.body);
 
@@ -167,7 +249,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
    * 413 dataset_too_large / dataset_too_many_rows (the file is removed),
    * 503 dataset_storage_not_configured / dataset_storage_unavailable.
    */
-  app.post("/datasets/:datasetId/validate", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/datasets/:datasetId/validate", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { datasetId } = z.object({ datasetId: z.string().uuid() }).parse(request.params);
 
@@ -201,7 +283,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
    * A soft delete that frees the name. Refused (409 dataset_in_use) only
    * while a training job that has not finished uses the dataset.
    */
-  app.delete("/datasets/:datasetId", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.delete("/datasets/:datasetId", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { datasetId } = z.object({ datasetId: z.string().uuid() }).parse(request.params);
 
@@ -214,594 +296,231 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ============================================
+  // What this server can do
+  // ============================================
+
+  /**
+   * Whether a training job can start here, and if not, why: each blocker has
+   * a code and a sentence a page can show as it is.
+   */
+  app.get("/capabilities", { preHandler: [auth] }, async (request) => {
+    return describeTrainingCapabilities(training, { orgId: request.auth!.orgId });
+  });
+
+  /**
+   * Base models that can be fine-tuned, each with its methods and tiers and,
+   * when it cannot be started on this server, the reason.
+   */
+  app.get("/models", { preHandler: [auth] }, async () => {
+    return { models: await listTrainingModels(training) };
+  });
+
+  // ============================================
   // Training Jobs
   // ============================================
 
   /**
    * List training jobs
    */
-  app.get("/jobs", { preHandler: [requireAuth] }, async (request, _reply) => {
+  app.get("/jobs", { preHandler: [auth] }, async (request) => {
     const { orgId } = request.auth!;
-    const { status } = z.object({
-      status: z.enum(["pending", "queued", "running", "completed", "failed", "cancelled"]).optional(),
-    }).parse(request.query);
-
-    const jobs = await prisma.trainingJob.findMany({
-      where: {
-        orgId,
-        ...(status && { status }),
-      },
-      include: {
-        dataset: {
-          select: { name: true },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    return {
-      jobs: jobs.map((j) => ({
-        id: j.id,
-        name: j.name,
-        baseModelId: j.baseModelId,
-        datasetName: j.dataset.name,
-        method: j.method,
-        status: j.status,
-        progress: j.progress,
-        gpuTier: j.gpuTier,
-        gpuCount: j.gpuCount,
-        estimatedCostCents: j.estimatedCostCents ? Number(j.estimatedCostCents) : null,
-        createdAt: j.createdAt,
-        startedAt: j.startedAt,
-        completedAt: j.completedAt,
-      })),
-      total: jobs.length,
-    };
+    const { status } = z.object({ status: z.enum(TRAINING_STATES).optional() }).parse(request.query);
+    const jobs = await listTrainingJobs(training, { orgId, status });
+    return { jobs, total: jobs.length };
   });
 
   /**
-   * Get training job details
+   * Get training job details: progress, the hold, the cost so far, and after
+   * settlement the charge with the ledger rows that carry this job's id.
    */
-  app.get("/jobs/:jobId", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/jobs/:jobId", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
-    const { jobId } = z.object({ jobId: z.string().uuid() }).parse(request.params);
-
-    const job = await prisma.trainingJob.findFirst({
-      where: { id: jobId, orgId },
-      include: {
-        dataset: true,
-      },
-    });
-
+    const { jobId } = jobIdParams.parse(request.params);
+    const job = await getTrainingJobDetail(training, { orgId, jobId });
     if (!job) {
-      return reply.notFound("Training job not found");
+      return reply.status(404).send({ error: "training_job_not_found", message: "Training job not found" });
     }
-
-    // Parse logs for progress if running
-    let progress = null;
-    if (job.status === "running" && job.logs) {
-      progress = parseTrainingLogs(job.logs);
-    }
-
-    return {
-      job: {
-        id: job.id,
-        name: job.name,
-        baseModelId: job.baseModelId,
-        baseModelHfId: job.baseModelHfId,
-        dataset: {
-          id: job.dataset.id,
-          name: job.dataset.name,
-          // null, not 0, when the rows could not be counted.
-          rowCount: job.dataset.rowCountKnown ? job.dataset.rowCount : null,
-        },
-        method: job.method,
-        config: job.config,
-        gpuTier: job.gpuTier,
-        gpuCount: job.gpuCount,
-        status: job.status,
-        progress: job.progress,
-        currentEpoch: job.currentEpoch,
-        totalEpochs: job.totalEpochs,
-        trainingLoss: job.trainingLoss,
-        evalLoss: job.evalLoss,
-        metrics: job.metrics,
-        outputModelId: job.outputModelId,
-        outputPath: job.outputPath,
-        estimatedCostCents: job.estimatedCostCents ? Number(job.estimatedCostCents) : null,
-        actualCostCents: job.actualCostCents ? Number(job.actualCostCents) : null,
-        lastError: job.lastError,
-        createdAt: job.createdAt,
-        startedAt: job.startedAt,
-        completedAt: job.completedAt,
-      },
-      liveProgress: progress,
-    };
+    return { job };
   });
 
   /**
    * Create training job
+   *
+   * Refusals, in this order and all before any row or credit moves: 400
+   * validation; 404 dataset_not_found / model_not_found / model_not_trainable;
+   * 409 dataset_not_validated; 422 dataset_row_count_unknown; 409
+   * dataset_changed_since_validation; 400 unsupported_method /
+   * unsupported_gpu_count / hf_token_required / unknown_gpu_tier /
+   * tier_too_small; 503 dataset_storage_not_configured; 501
+   * training_image_not_configured; 501 training_requires_real_nosana /
+   * nosana_not_configured / gpu_market_not_configured or 503
+   * compute_capacity_unavailable / nosana_unavailable; 503
+   * training_callbacks_not_configured; 503 training_poller_disabled; 503
+   * training_orphan_sweep_disabled; 409 training_quota_exceeded; 409
+   * training_free_failure_limit; 402 insufficient_credits.
    */
-  app.post("/jobs", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/jobs", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const body = createTrainingJobSchema.parse(request.body);
+    const choice = jobChoice(body);
+    if (!choice.ok) return reply.status(choice.status).send(refusalBody(choice));
 
-    // Verify dataset exists and is validated
-    const dataset = await prisma.dataset.findFirst({
-      where: { id: body.datasetId, orgId, deletedAt: null },
-    });
-
-    if (!dataset) {
-      return reply.notFound("Dataset not found");
-    }
-
-    if (!dataset.isValidated) {
-      return reply.badRequest("Dataset must be validated before training");
-    }
-
-    // The cost below is worked out from the row count. A dataset whose rows
-    // could not be counted holds a placeholder 0, which would price the job
-    // at nothing: refused before a job row or a credit moves.
-    const datasetRows = knownDatasetRowCount(dataset);
-    if (datasetRows === null) {
-      const refusal = rowCountUnknownRefusal();
-      return reply.status(refusal.status).send(refusal.body);
-    }
-
-    // Verify model exists
-    const model = await prisma.model.findUnique({
-      where: { id: body.baseModelId },
-    });
-
-    if (!model) {
-      return reply.notFound(`Model '${body.baseModelId}' not found`);
-    }
-
-    // Estimate cost
-    const cost = estimateTrainingCost(
-      body.baseModelId,
-      body.method,
-      datasetRows,
-      body.config.epochs || DEFAULT_TRAINING_CONFIG.epochs,
-      body.gpuTier
-    );
-
-    // Check credit balance
-    const balance = await prisma.creditBalance.findUnique({
-      where: { orgId },
-    });
-
-    if (!balance || Number(balance.balanceCents) < cost.totalCostCents) {
-      return reply.paymentRequired(
-        `Insufficient credits. Estimated cost: $${(cost.totalCostCents / 100).toFixed(2)}, ` +
-        `Available: $${(Number(balance?.balanceCents ?? 0n) / 100).toFixed(2)}`
-      );
-    }
-
-    // Build training config
-    const trainingConfig = {
-      epochs: body.config.epochs || DEFAULT_TRAINING_CONFIG.epochs,
-      batchSize: body.config.batchSize || DEFAULT_TRAINING_CONFIG.batchSize,
-      learningRate: body.config.learningRate || DEFAULT_TRAINING_CONFIG.learningRate,
-      warmupSteps: body.config.warmupSteps || DEFAULT_TRAINING_CONFIG.warmupSteps,
-      gradientAccumulationSteps: body.config.gradientAccumulationSteps || DEFAULT_TRAINING_CONFIG.gradientAccumulationSteps,
-      loraR: body.config.loraR || DEFAULT_LORA_CONFIG.loraR,
-      loraAlpha: body.config.loraAlpha || DEFAULT_LORA_CONFIG.loraAlpha,
-      loraDropout: body.config.loraDropout || DEFAULT_LORA_CONFIG.loraDropout,
-      targetModules: body.config.targetModules || DEFAULT_LORA_CONFIG.targetModules,
-      quantizationBits: body.config.quantizationBits ? parseInt(body.config.quantizationBits) : 4,
-    };
-
-    // Create job record
-    const job = await prisma.trainingJob.create({
-      data: {
-        orgId,
+    const result = await createTrainingJob(training, {
+      orgId,
+      input: {
         name: body.name,
         baseModelId: body.baseModelId,
-        baseModelHfId: model.hfId,
         datasetId: body.datasetId,
         method: body.method,
-        config: trainingConfig,
         gpuTier: body.gpuTier,
         gpuCount: body.gpuCount,
-        status: "pending",
-        progress: 0,
-        totalEpochs: trainingConfig.epochs,
-        estimatedCostCents: BigInt(cost.totalCostCents),
+        maxRuntimeSeconds: choice.maxRuntimeSeconds,
+        hyperparams: choice.hyperparams,
       },
     });
+    if (!result.ok) return reply.status(result.status).send(refusalBody(result));
+    return reply.status(201).send(createdBody(result));
+  });
 
-    logger.info(
-      { jobId: job.id, baseModel: body.baseModelId, method: body.method },
-      "Training job created"
-    );
-
-    // Submit to Nosana (async)
-    submitTrainingJob(job.id, {
-      baseModelId: body.baseModelId,
-      baseModelHfId: model.hfId,
-      datasetUrl: dataset.storageUrl,
-      datasetFormat: dataset.format as any,
-      method: body.method,
-      ...trainingConfig,
-      outputPath: `s3://wheelsai-models/${orgId}/${job.id}`,
-      webhookUrl: `${process.env.API_URL}/api/training/jobs/${job.id}/webhook?token=${deriveTrainingWebhookToken(job.id)}`,
-    }, body.gpuTier).catch((err) => {
-      logger.error({ err, jobId: job.id }, "Failed to submit training job");
-    });
-
-    triggerWebhook(
-      orgId,
-      "training.started",
-      { jobId: job.id, name: job.name },
-      "training",
-      job.id,
-    ).catch((err) => logger.error({ err }, "webhook training.started failed"));
-
-    reply.status(201);
-    return {
-      job: {
-        id: job.id,
-        name: job.name,
-        status: job.status,
-      },
-      estimate: {
-        gpuHours: cost.gpuHours,
-        costCents: cost.totalCostCents,
-        costUsd: (cost.totalCostCents / 100).toFixed(2),
-      },
-      message: "Training job created and queued",
-    };
+  /**
+   * Retry: a NEW job with the configuration of one that is over. It takes its
+   * own hold and can be refused for every reason a new job can.
+   */
+  app.post("/jobs/:jobId/retry", { preHandler: [auth] }, async (request, reply) => {
+    const { orgId } = request.auth!;
+    const { jobId } = jobIdParams.parse(request.params);
+    const result = await retryTrainingJob(training, { orgId, jobId });
+    if (!result.ok) return reply.status(result.status).send(refusalBody(result));
+    return reply.status(201).send({ ...createdBody(result), retryOf: jobId });
   });
 
   /**
    * Get training job logs
    */
-  app.get("/jobs/:jobId/logs", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.get("/jobs/:jobId/logs", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
-    const { jobId } = z.object({ jobId: z.string().uuid() }).parse(request.params);
-    const { tail } = z.object({
-      tail: z.coerce.number().int().min(10).max(10000).default(1000),
-    }).parse(request.query);
-
-    const job = await prisma.trainingJob.findFirst({
-      where: { id: jobId, orgId },
-    });
-
-    if (!job) {
-      return reply.notFound("Training job not found");
+    const { jobId } = jobIdParams.parse(request.params);
+    const { tail } = z
+      .object({ tail: z.coerce.number().int().min(10).max(10000).default(1000) })
+      .parse(request.query);
+    const logs = await getTrainingJobLogs(training, { orgId, jobId, tail });
+    if (!logs) {
+      return reply.status(404).send({ error: "training_job_not_found", message: "Training job not found" });
     }
-
-    // Get last N lines of logs
-    const logs = job.logs || "";
-    const lines = logs.split("\n");
-    const tailLines = lines.slice(-tail).join("\n");
-
-    return {
-      jobId,
-      status: job.status,
-      logs: tailLines,
-      totalLines: lines.length,
-    };
+    return logs;
   });
 
   /**
    * Cancel training job
+   *
+   * 200 { status: "cancelled" } when it is over already (nothing had reached
+   * the GPU network, or the stop was confirmed at once); 202
+   * { status: "cancelling" } while the stop is being confirmed. A run is
+   * charged for the time it ran up to this request, never for the time the
+   * stop then takes. 409 training_job_not_cancellable otherwise.
    */
-  app.post("/jobs/:jobId/cancel", { preHandler: [requireAuth] }, async (request, reply) => {
+  app.post("/jobs/:jobId/cancel", { preHandler: [auth] }, async (request, reply) => {
     const { orgId } = request.auth!;
-    const { jobId } = z.object({ jobId: z.string().uuid() }).parse(request.params);
-
-    const job = await prisma.trainingJob.findFirst({
-      where: { id: jobId, orgId },
+    const { jobId } = jobIdParams.parse(request.params);
+    const result = await cancelTrainingJob(training, { orgId, jobId });
+    if (!result.ok) return reply.status(result.status).send(refusalBody(result));
+    return reply.status(result.status === "cancelled" ? 200 : 202).send({
+      status: result.status,
+      message: result.status === "cancelled" ? "Training job cancelled" : "Training job is being cancelled",
     });
-
-    if (!job) {
-      return reply.notFound("Training job not found");
-    }
-
-    if (!["pending", "queued", "running"].includes(job.status)) {
-      return reply.badRequest(`Cannot cancel job with status: ${job.status}`);
-    }
-
-    // Stop Nosana job
-    if (job.nosanaJobId) {
-      const nosana = await getNosanaClient();
-      const nosanaJobId = job.nosanaJobId;
-      // A cancelled job is never looked at again and TrainingJob has no vault
-      // stamp: unless the stop landed AND the vault is verified empty, hand the
-      // id to the vault sweep, which stops it and retries the withdraw. Both
-      // the stop and the record go through the credential that created the
-      // deployment (the row's access-mode stamp), whatever is primary today.
-      await stopCancelledTrainingJob(
-        {
-          stopDeployment: (id, mode) => nosana.stopDeployment(id, mode),
-          recordOrphan: (args) => recordNosanaOrphan(prisma, args),
-          onStopError: (err) =>
-            logger.error({ err, jobId, nosanaJobId }, "Failed to stop Nosana job"),
-        },
-        { id: jobId, nosanaJobId, nosanaAccessMode: job.nosanaAccessMode },
-      );
-    }
-
-    // Update status
-    await prisma.trainingJob.update({
-      where: { id: jobId },
-      data: {
-        status: "cancelled",
-        completedAt: new Date(),
-      },
-    });
-
-    logger.info({ jobId }, "Training job cancelled");
-
-    return { message: "Training job cancelled" };
   });
 
   /**
-   * Training job webhook (called by Nosana). Authenticated by the per-job
-   * HMAC token embedded in the webhook URL at submission time (A6) —
-   * accepted via ?token= or the x-webhook-token header.
+   * Estimate training time and cost. Planning figures, returned with a low
+   * and a high bound, the suggested run limit and the most that would be held.
+   * `hold` is what creating the job would hold. For a dataset with no measured
+   * tokens per row the answer is `estimate: null` with the hold when a run
+   * limit is given, and 422 training_estimate_unavailable when none is.
    */
-  app.post("/jobs/:jobId/webhook", async (request, reply) => {
-    const { jobId } = z.object({ jobId: z.string().uuid() }).parse(request.params);
+  app.post("/estimate", { preHandler: [auth] }, async (request, reply) => {
+    const { orgId } = request.auth!;
+    const body = estimateSchema.parse(request.body);
+    const choice = jobChoice(body);
+    if (!choice.ok) return reply.status(choice.status).send(refusalBody(choice));
 
-    const presentedToken =
-      (request.query as Record<string, unknown> | undefined)?.token ??
-      request.headers["x-webhook-token"];
-    if (
-      typeof presentedToken !== "string" ||
-      !verifyTrainingWebhookToken(jobId, presentedToken)
-    ) {
-      return reply.status(401).send({
-        error: "invalid_webhook_token",
-        message: "Missing or invalid webhook token for this job.",
-      });
+    let gpuTier = body.gpuTier;
+    let recommendedGpuTier: string | null = null;
+    const model = findTrainableModel(body.baseModelId);
+    if (model && isTrainingMethod(body.method)) {
+      const runtime = await training.getRuntime();
+      recommendedGpuTier = trainableTiers(model, body.method, runtime.tiers)[0]?.tier ?? null;
     }
+    gpuTier ??= recommendedGpuTier ?? "";
 
-    const body = z.object({
-      status: z.enum(["running", "completed", "failed"]).optional(),
-      progress: z.number().int().min(0).max(100).optional(),
-      currentEpoch: z.number().int().optional(),
-      trainingLoss: z.number().optional(),
-      evalLoss: z.number().optional(),
-      logs: z.string().optional(),
-      error: z.string().optional(),
-      outputPath: z.string().optional(),
-    }).parse(request.body);
-
-    const job = await prisma.trainingJob.findUnique({
-      where: { id: jobId },
-    });
-
-    if (!job) {
-      return reply.notFound("Training job not found");
-    }
-
-    // Build update
-    const update: any = {};
-
-    if (body.status) {
-      update.status = body.status;
-      if (body.status === "running" && !job.startedAt) {
-        update.startedAt = new Date();
-      }
-      if (body.status === "completed" || body.status === "failed") {
-        update.completedAt = new Date();
-      }
-    }
-
-    if (body.progress !== undefined) update.progress = body.progress;
-    if (body.currentEpoch !== undefined) update.currentEpoch = body.currentEpoch;
-    if (body.trainingLoss !== undefined) update.trainingLoss = body.trainingLoss;
-    if (body.evalLoss !== undefined) update.evalLoss = body.evalLoss;
-    if (body.error) update.lastError = body.error;
-    if (body.outputPath) update.outputPath = body.outputPath;
-
-    if (body.logs) {
-      // Append logs, capped per call and in total so a chatty (or hostile)
-      // runner cannot grow the row without bound.
-      const MAX_APPEND = 64 * 1024;
-      const MAX_TOTAL = 1024 * 1024;
-      update.logs = ((job.logs || "") + body.logs.slice(0, MAX_APPEND)).slice(
-        -MAX_TOTAL
-      );
-    }
-
-    await prisma.trainingJob.update({
-      where: { id: jobId },
-      data: update,
-    });
-
-    logger.info({ jobId, status: body.status, progress: body.progress }, "Training job webhook");
-
-    if (body.status === "completed" || body.status === "failed") {
-      triggerWebhook(
-        job.orgId,
-        body.status === "completed" ? "training.completed" : "training.failed",
-        { jobId, name: job.name, ...(body.error ? { error: body.error } : {}) },
-        "training",
-        jobId,
-      ).catch((err) => logger.error({ err }, "webhook training terminal failed"));
-    }
-
-    return { received: true };
+    const input: TrainingJobInput = {
+      baseModelId: body.baseModelId,
+      datasetId: body.datasetId,
+      method: body.method,
+      gpuTier,
+      gpuCount: body.gpuCount,
+      maxRuntimeSeconds: choice.maxRuntimeSeconds,
+      hyperparams:
+        body.epochs !== undefined ? { ...choice.hyperparams, epochs: body.epochs } : choice.hyperparams,
+    };
+    const result = await estimateTrainingJob(training, { orgId, input });
+    if (!result.ok) return reply.status(result.status).send(refusalBody(result));
+    return {
+      estimate: result.estimate ? { ...result.estimate, gpuTier: result.gpuTier, recommendedGpuTier } : null,
+      hold: { ...result.hold, gpuTier: result.gpuTier },
+      dataset: result.dataset,
+    };
   });
 
-  /**
-   * Estimate training cost
-   */
-  app.post("/estimate", { preHandler: [requireAuth] }, async (request, reply) => {
-    const body = z.object({
-      baseModelId: z.string(),
-      datasetId: z.string().uuid(),
-      method: z.enum(["lora", "qlora", "full"]).default("lora"),
-      epochs: z.number().int().min(1).max(100).default(3),
-      gpuTier: z.string().optional(),
-    }).parse(request.body);
+  // ============================================
+  // Container callbacks (no session)
+  // ============================================
 
-    const { orgId } = request.auth!;
-
-    // Get dataset row count
-    const dataset = await prisma.dataset.findFirst({
-      where: { id: body.datasetId, orgId, deletedAt: null },
-    });
-
-    if (!dataset) {
-      return reply.notFound("Dataset not found");
-    }
-
-    // No estimate from a count that is not known (not validated yet, or the
-    // rows could not be counted): a $0.00 figure would be read as a price.
-    if (!dataset.isValidated) {
-      return reply.badRequest("Dataset must be validated before training");
-    }
-    const datasetRows = knownDatasetRowCount(dataset);
-    if (datasetRows === null) {
-      const refusal = rowCountUnknownRefusal();
-      return reply.status(refusal.status).send(refusal.body);
-    }
-
-    // Get GPU recommendation
-    const gpuRec = recommendGpuTier(body.baseModelId, body.method);
-    const gpuTier = body.gpuTier || gpuRec.tier;
-
-    // Calculate estimate
-    const cost = estimateTrainingCost(
-      body.baseModelId,
-      body.method,
-      datasetRows,
-      body.epochs,
-      gpuTier
+  await app.register(async (scope) => {
+    // The signature is over the exact bytes sent: this scope's parser hands
+    // them over unparsed, and refuses a body over the limit with a 413.
+    replaceJsonBodyParser(scope);
+    scope.addContentTypeParser(
+      "application/json",
+      { parseAs: "buffer", bodyLimit: TRAINING_CALLBACK_MAX_BYTES },
+      (_request, body, done) => done(null, body),
     );
 
-    return {
-      estimate: {
-        gpuTier,
-        recommendedGpuTier: gpuRec.tier,
-        minVramGb: gpuRec.minVram,
-        gpuHours: cost.gpuHours,
-        costPerHour: cost.costPerHour,
-        totalCostCents: cost.totalCostCents,
-        totalCostUsd: (cost.totalCostCents / 100).toFixed(2),
-      },
-      dataset: {
-        rowCount: datasetRows,
-        format: dataset.format,
-      },
-    };
-  });
-
-  /**
-   * Get available base models for training
-   */
-  app.get("/models", { preHandler: [requireAuth] }, async (_request, _reply) => {
-    // Models that support fine-tuning
-    const trainableModels = await prisma.model.findMany({
-      where: {
-        isActive: true,
-        // Only certain models support fine-tuning
-        id: {
-          in: [
-            "llama-3.1-8b",
-            "llama-3.1-70b",
-            "mistral-7b",
-            "qwen2.5-7b",
-            "qwen2.5-14b",
-            "qwen2.5-72b",
-          ],
-        },
-      },
-      orderBy: { parameters: "asc" },
+    /**
+     * One event from the training container.
+     *
+     *   X-WheelsAI-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256(secret, t + "." + rawBody)>
+     *
+     * 200 { received: true, applied } - applied is false for a replayed or
+     * out-of-order event and for a job that is no longer queued or running
+     * (so the container does not retry). 401 invalid_callback_signature
+     * before any row is read; 400 for a body that is not a trainer event; 404;
+     * 413 over 64 KB. It never ends a job and never moves credits.
+     */
+    scope.post("/jobs/:jobId/events", async (request, reply) => {
+      const { jobId } = request.params as { jobId?: string };
+      const body = request.body;
+      if (!Buffer.isBuffer(body) && typeof body !== "string") {
+        return reply.status(400).send({ error: "invalid_trainer_event", message: "A callback is a JSON body." });
+      }
+      const result = await recordTrainingEvent(training, {
+        jobId: typeof jobId === "string" ? jobId : "",
+        nonce: (request.query as Record<string, unknown> | undefined)?.n,
+        signatureHeader: request.headers[TRAINING_CALLBACK_SIGNATURE_HEADER],
+        rawBody: body,
+      });
+      if (!result.ok) {
+        return reply.status(result.status).send({ error: result.code, message: result.message });
+      }
+      return { received: true, applied: result.applied };
     });
-
-    return {
-      models: trainableModels.map((m) => ({
-        id: m.id,
-        hfId: m.hfId,
-        displayName: m.displayName,
-        parameters: m.parameters ? Number(m.parameters) : null,
-        supportedMethods: getSupportedMethods(m.id),
-        recommendedGpuTier: recommendGpuTier(m.id, "lora").tier,
-      })),
-    };
   });
+  };
+}
+
+/** The production plugin: registered under /api/training (index.ts). */
+export const trainingRoutes: FastifyPluginAsync = async (app, opts) => {
+  await createTrainingRoutes({
+    training: buildTrainingDeps(prisma),
+    datasets: buildDatasetDeps(prisma),
+  })(app, opts);
 };
-
-// ============================================
-// Helper Functions
-// ============================================
-
-async function submitTrainingJob(
-  jobId: string,
-  config: any,
-  gpuTier: string
-): Promise<void> {
-  try {
-    // Update status to queued
-    await prisma.trainingJob.update({
-      where: { id: jobId },
-      data: { status: "queued" },
-    });
-
-    // Generate job definition
-    const jobDefinition = generateTrainingJobDefinition(config);
-
-    // Submit to Nosana
-    const nosana = await getNosanaClient();
-    // kind "batch": finite work. It runs once (strategy SIMPLE), is never
-    // auto-extended, and is bounded by NOSANA_BATCH_JOB_TIMEOUT_SECONDS - a
-    // long-running "service" deployment here would burn platform funds until
-    // someone remembered to stop it.
-    const nosanaJob = await nosana.createDeployment(jobDefinition as any, gpuTier, 1, {
-      kind: "batch",
-    });
-
-    // Store Nosana job ID, with the access mode that created it in the same
-    // statement: every later stop or reclaim goes through that credential.
-    await prisma.trainingJob.update({
-      where: { id: jobId },
-      data: trainingSubmitStamp(nosanaJob),
-    });
-
-    logger.info({ jobId, nosanaJobId: nosanaJob.id }, "Training job submitted to Nosana");
-  } catch (error) {
-    logger.error({ error, jobId }, "Failed to submit training job to Nosana");
-
-    // A failure after creation carries the Nosana id; unless its cleanup
-    // verified it stopped and drained, keep it for the vault sweep.
-    // The record carries the mode the failed call used.
-    if (error instanceof NosanaLifecycleError) {
-      await recordFailedTrainingSubmit(
-        { recordOrphan: (args) => recordNosanaOrphan(prisma, args) },
-        jobId,
-        error,
-      );
-    }
-
-    await prisma.trainingJob.update({
-      where: { id: jobId },
-      data: {
-        status: "failed",
-        lastError: error instanceof Error ? error.message : "Unknown error",
-      },
-    });
-
-    throw error;
-  }
-}
-
-function getSupportedMethods(modelId: string): string[] {
-  // 70B+ models only support QLoRA on available GPUs
-  if (modelId.includes("70b") || modelId.includes("72b")) {
-    return ["qlora"];
-  }
-
-  // 13B+ models support LoRA and QLoRA
-  if (modelId.includes("13b") || modelId.includes("14b")) {
-    return ["lora", "qlora"];
-  }
-
-  // Smaller models support all methods
-  return ["lora", "qlora", "full"];
-}

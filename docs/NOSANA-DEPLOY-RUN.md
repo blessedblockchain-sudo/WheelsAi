@@ -9,7 +9,8 @@ document has three parts:
 
 1. **What was proven on this machine**, with the commands and their output.
 2. **The checklist for the first paid run**, with a results table to fill in.
-3. **What stays unverified until that run.**
+3. **What stays unverified until that run.** Between parts 2 and 3 is a section of what the
+   read-only verification of 2026-10-07 settled, with its evidence.
 
 **Nothing in part 1 was run against Nosana with a credential.** The only request that reached
 Nosana is the unauthenticated public read of the market list. Everything else ran against a
@@ -20,6 +21,27 @@ proves nothing about how Nosana behaves. Part 3 lists what that leaves open.
 ---
 
 ## 1. What was proven on this machine
+
+> **Note, 2026-10-07 (after everything recorded in this part).** Our Nosana code was checked
+> against Nosana's current API: the published OpenAPI document, the deployment-manager and node
+> sources, and read-only GETs with the founder's key. Nothing was created, started or stopped.
+> The stand-in this part ran against modelled shapes Nosana no longer serves. It returned the
+> deployment list as a bare array, embedded `jobs` and `events` in a deployment, accepted any key
+> in a job definition, listed endpoints only once a deployment was running, and accepted a stop
+> from any state. **The stand-in was re-based on the live response shapes on 2026-10-07**: a
+> paginated list with `name` and `idempotency_key` filters, separate `/jobs` and `/events`
+> routes, endpoints present from create with `online: false`, RUNNING as soon as start is
+> called, a stop accepted only from RUNNING, ERROR or INSUFFICIENT_FUNDS, the strict
+> job-definition key check, and both `/api/*` and `/*` paths.
+>
+> **Every loopback transcript and test count below (1.1 to 1.7) predates that re-base** and is
+> left as recorded. They still show what our code sent, stored, billed and refused at the time.
+> They no longer show that it matches Nosana. Three things in them are known to be wrong against
+> the live API: the access check's list read (1.3; against Nosana it printed "unreadable: HTTP
+> 200, body is not an array"), `running` as soon as Nosana reports RUNNING (1.2 and 1.7; billing
+> would have started with no node serving), and the Ollama definition those runs sent (it cannot
+> start under the image's own entrypoint). The fixes are listed at the top of part 2. Re-run 1.2
+> or 1.7 against the re-based stand-in before quoting a transcript as current.
 
 ### 1.1 Unit tests
 
@@ -378,16 +400,71 @@ no usage row until the stop bills its final window.
 The founder runs this with the key present. Record each result in the table at the end. Stop at
 the first step whose result is not the expected one.
 
+### The account, the balance and the key (read on 2026-10-07)
+
+- **The Nosana account is shared with the founder's other project.** Its deployments are on the
+  same list (19 at the verification, all STOPPED or ARCHIVED) and **its spend lowers the same
+  balance**. If it starts or extends a deployment during this run, the figures recorded here
+  move for a reason that is not ours, and a deployment of ours can be halted by its spend.
+  INSUFFICIENT_FUNDS hits every deployment on the shared balance. Keep the other project idle
+  for the length of the run, or record what it did.
+- **Available credit at the verification was $5.091**: $28 assigned, $0 reserved, $22.909
+  settled (available = assigned − reserved − settled; the fields are USD, not cents). The only
+  recent top-up was $5. That is not the "about $15" this checklist was written for. Against the
+  $5 floor the 3060 create passes by about $0.04 ($5.0504 needed), and the 4070 serving deploy
+  of `docs/FINE-TUNE-RUN.md` ($5.097 needed) is refused.
+- **Recommended starting balance: about $15 available, so top up about $10 before step 1.**
+  Each SIMPLE-EXTEND extension debits another full timeout, and with $5.091 the only headroom
+  for it is the floor itself. The alternative is to lower `NOSANA_MIN_CREDITS_USD` for the run
+  and write the value used in the results table. Topping up is the better choice, because the
+  floor is also what keeps the other project's deployments from being halted by ours.
+- **Replace the key before the run.** The key now in `apps/api/.env` holds every scope,
+  including `api-keys:manage` (it can read the plaintext of every key on the account),
+  `wallet:sign` and `oauth-apps:manage`. **It was also pasted into a chat, so treat it as
+  disclosed.** In deploy.nosana.com, Account, API Keys: create a new key with only
+  `credits:read`, `deployments:read`, `deployments:write` and `jobs:read`, put it in the API's
+  environment, run step 1 with it, then revoke the all-scope key. Keys carry `expiresAt: null`:
+  there is no mandatory expiry, so revoking is the only way the old key stops working. A missing
+  scope answers 403 with code `INSUFFICIENT_SCOPE`; if step 1 or step 4 shows that, the new key
+  lacks a scope, which is a configuration error and not an outage.
+- **Secrets in job definitions are readable by every holder of an account key.** A confidential
+  definition (environment values included) comes back in clear from `/deployments/{id}/revisions`
+  and `/deployments/{id}/jobs/{job}`. The Ollama deployment of this run carries no secret. The
+  fine-tuning run does (callback secret, signed URLs). A Nosana account that only WheelsAI uses
+  is in `docs/HARDENING-BACKLOG.md`.
+
+### The code this checklist assumes
+
+The verification found defects that would fail, misbill or misread this run. **Do not start
+until each of these is committed and the unit suite passes against the re-based stand-in:**
+
+| Fix | Without it |
+|---|---|
+| The deployment list is read as a paginated object (`?limit=100`, following `pagination.cursor_next`), and the name lookup uses the exact `?name=` filter. | Step 1 exits non-zero with "body is not an array". A create whose response was lost cannot be found. |
+| The Ollama definition sets `entrypoint: ["/bin/sh", "-c"]`, pins `docker.io/ollama/ollama:0.32.6` and declares an HTTP health check on `/api/tags`. | The container runs `/bin/ollama /bin/sh -c ...` and exits. Step 7 never reaches a healthy node, and the prepaid timeout is spent anyway. |
+| The Ollama script pulls the model through a server on `127.0.0.1:11435`, ends it, and only then starts the server on the exposed port 11434. | `/api/tags` answers 200 before the model is there: the endpoint turns `online: true`, the row goes `running` and is billed, and `/v1` answers "model not found" for as long as the download takes. |
+| A halted deployment (ERROR, INSUFFICIENT_FUNDS) is failed and stopped even when its events cannot be read. | A failing `/deployments/{id}/events` (a 5xx, or a key whose scopes do not cover it) leaves the row `running` and billed, and no stop is sent. |
+| A deployment whose start failed and that still reads DRAFT stays with the reclaim sweep for 10 minutes. | A start that passed its 30 s deadline and lands afterwards runs on platform credits with a failed row and nobody billed. |
+| A row becomes `running`, and GPU billing starts, only when an endpoint reports `online: true`. | Nosana reports RUNNING as soon as the listing task is scheduled, before any node holds the job. The customer is billed through queueing, image pull and model load. |
+| Jobs and events are read from `/deployments/{id}/jobs` and `/deployments/{id}/events`. | A deployment no longer embeds them. Failure reasons read `nosana_error`, and training never learns its job. |
+| `required_vram` is no longer in the training job definition. | Not this run's concern; the fine-tuning create is refused with a 400. |
+
+One free check before any spend, on a machine with Docker:
+`docker image inspect docker.io/ollama/ollama:0.32.6 -f '{{json .Config.Entrypoint}}'` (after a
+`docker pull` of that tag). Expected: `["/bin/ollama"]`. The entrypoint was read from the
+upstream Dockerfile, not from a pulled image. The fixed definition is right whatever it prints;
+record what it prints.
+
 ### Before anything is spent
 
 **Environment** (the API's environment only; never the web app's):
 
 | Variable | Value | Why |
 |---|---|---|
-| `NOSANA_API_KEY` | the dashboard key | Created at [FOUNDER: confirm the page; public docs say deploy.nosana.com, Account, API Keys]. Note its expiry date. |
+| `NOSANA_API_KEY` | the new, narrow key | Created at deploy.nosana.com, Account, API Keys, with the scopes `credits:read`, `deployments:read`, `deployments:write`, `jobs:read` and no others. The all-scope key is revoked once step 1 passes with this one. Keys have no mandatory expiry. |
 | `NOSANA_ACCESS_MODE` | `api_key` | Says which account pays. Required if the wallet key is also set. |
 | `NOSANA_NETWORK` | `mainnet` | The default with an API key; set it so it is on record. `SOLANA_NETWORK` can stay as it is. **If the wallet key is also set and its deployments are on devnet, leave this unset instead**: set, it moves the wallet to mainnet as well. |
-| `NOSANA_TIMEOUT_UNIT` | `minutes` | The default, and what the public source says (1.5); set it so it is on record and the start-up warning stops. Step 5 confirms or refutes it at the lowest possible cost. |
+| `NOSANA_TIMEOUT_UNIT` | `minutes` | The default. **Settled as minutes** by the API document, the deployment-manager source and the timing of live deployments on this account (see "Settled"). Set it so it is on record and the start-up warning stops. Step 5 confirms it on a deployment of ours. |
 | `NOSANA_JOB_TIMEOUT_SECONDS` | `600` | The minimum our configuration accepts. Sent as 10 with the unit above. |
 | `NOSANA_MIN_CREDITS_USD` | `5` | The floor. |
 | `PLATFORM_ADMIN_KEY` | at least 16 characters | For the operator view. |
@@ -395,117 +472,195 @@ the first step whose result is not the expected one.
 | `GPU_BILLING_INTERVAL_MS` | `60000` | Per-second billing of the organization. |
 | `ALLOW_NOSANA_MOCK` | unset | The mock must not stand in for Nosana. |
 
-**Balance to load: the floor plus a margin, $15 with the $5 floor.** A deployment is admitted
-only when its estimate plus the floor is available, and the floor must still be there for the
-restart and the scale-up later in the run. The run itself should cost well under $1 on the 3060
-market (about $0.05 an hour with the fee). $10 would pass the first create and could refuse a
-later step.
+**Balance to load: the floor plus a margin, about $15 available with the $5 floor.** Today's
+$5.091 is not enough (see above): top up first. A deployment is admitted only when its estimate
+plus the floor is available, and the floor must still be there for the extensions, the restart
+and the scale-up later in the run. The run itself should cost well under $1 on the 3060 market
+(Nosana's fee-inclusive rate is $0.04796 an hour; our figure, rounded up per second, is
+$0.0504). $10 available would pass the first create and could refuse a later step.
 
-**Why `minutes` and 600 seconds for the first create.** The four possible outcomes:
+**Why `minutes` and 600 seconds for the first create.** The unit is settled as minutes, so the
+first row is the one expected. The table stays because it shows that sending 10 is the cheap way
+to be wrong:
 
-| We send | Nosana reads it as | The job's timeout | Reserved for one 3060 replica (about) |
+| We send | Nosana reads it as | The job's timeout | Debited for one 3060 replica (about) |
 |---|---|---|---|
-| `10` (unit set to minutes) | minutes | 10 minutes | $0.008 |
-| `10` (unit set to minutes) | seconds | 10 seconds; the job ends at once | under $0.001 |
+| `10` (unit set to minutes) | minutes (**settled**) | 10 minutes | $0.008 |
+| `10` (unit set to minutes) | seconds | 10 seconds; the job ends at once | $0.001 (debits round up to $0.001) |
 | `600` (unit left at seconds) | seconds | 10 minutes | $0.008 |
-| `600` (unit left at seconds) | minutes | 10 hours | $0.50 |
+| `600` (unit left at seconds) | minutes | 10 hours | $0.48 |
 
 Sending 10 is cheap whichever way Nosana reads it. Sending 600 is the only case with a large
-reservation. If the manager refuses a timeout of 10 outright, that itself says the unit is not
-minutes ("at least 1 minute" would accept it): record the error and stop.
+debit. If the manager refuses a timeout of 10 outright, record the error and stop: the create
+schema reads "at least 1 minute", so a refusal contradicts what was settled.
+
+**How credits move (settled; steps 5, 9 and 13 rely on it).** A job is debited price × its full
+timeout when it is **assigned to a node**, not at create or start, as a `job_debit` row in
+`/credits/transactions`. On this account debits have landed in `settledCredits`, with
+`reservedCredits` 0. Each extension debits another full timeout. After a stop the unused part
+comes back pro rata as a `job_refund` row about a minute later. Every debit rounds up to $0.001,
+and a job that ends within seconds has netted about $0.01. A transaction row carries no
+deployment id: match it by time. So measure **available**, or reserved + settled together,
+never `reserved` alone.
 
 **Deployment to create:** tier 3060, model Llama 3.2 1B on the Ollama engine (no Hugging Face
 token needed), 1 replica, in an organization with at least $1 of WheelsAI credits.
 
 ### Steps
 
+To read the newest credit transactions (steps 5, 9 and 13), from a shell that already has the
+key in `NOSANA_API_KEY` (do not type the key on the command line):
+`curl -s -H "Authorization: Bearer $NOSANA_API_KEY" "https://api.nosana.com/credits/transactions?limit=5&offset=0"`.
+Both parameters are required. Rows are `{id, type, amountUsd, createdAt, method}`; the types
+that matter are `job_debit` and `job_refund`. Rows of the other project appear in the same list.
+
 | # | Do | Expect |
 |---|---|---|
-| 1 | `cd apps/api && npx tsx scripts/nosana-access-check.ts`. It only reads. | Mode `api_key`, network `mainnet`, the key's last four characters, a balance of about $15, exit code 0. `REJECTED` means the key is wrong, expired or lacks a permission: stop. Record the balance as **B0** (assigned, reserved, settled). |
-| 2 | In the same output, read "raw fields of one existing deployment". | If the account has a deployment: `owner` and `vault` of the newest one are printed (a `wheelsai-*` one when there is one), and whether `owner` parses as a Solana public key. **If it says NO, stop:** the SDK would throw on create after Nosana had already created the deployment. If the account has none, the fields cannot be read without creating one: go on, and run the script again right after step 4. |
+| 1 | `cd apps/api && npx tsx scripts/nosana-access-check.ts`. It only reads. | Mode `api_key`, network `mainnet`, the new key's last four characters, an available balance of about $15, **exit code 0** (only with the pagination fix; before it the script printed "unreadable: HTTP 200, body is not an array" and exited non-zero). The deployment count is `pagination.total_items`: 19 from the other project at the verification, none of them `wheelsai-*`. `REJECTED` means the key is wrong or revoked; a 403 `INSUFFICIENT_SCOPE` means the new key lacks a scope: stop. Record the balance as **B0**: assigned, reserved, settled **and available**. |
+| 2 | In the same output, read "raw fields of one existing deployment". | Settled already: on this account `owner` and `vault` are the same 44-character base58 key, and `owner` parses as a Solana public key. The script prints the newest deployment (one of the other project's until step 4). **If it says NO, stop**: that contradicts the verification, and the SDK would throw on create after Nosana had created the deployment. |
 | 3 | Start the API. `GET /api/platform/compute` with `x-admin-key`. | `mode` `api_key`, `credits.state` `ok` or `low`, `timeout.unit` `minutes`, every tier `belowCost: false`, `unreachable.rows` empty. `GET /api/status` shows GPU compute operational. |
-| 4 | Create the deployment in the dashboard. | 201; the row goes `pending` then `provisioning`; an organization hold of 36 cents (one hour of a 3060). If the create fails, open the operator view after 15 minutes: `nosana.untrackedDrafts` or `nosana.untracked` names anything Nosana created anyway (`wheelsai-model-<deployment id>-r0`). Stop it in Nosana's dashboard by hand. |
-| 5 | **Within a minute**, run the check script again. Record **B1**. | `reserved(B1) - reserved(B0)` gives the unit: about $0.008 means Nosana read 10 as minutes. Under $0.001, or a deployment that ends within seconds, means it read 10 as seconds: stop the deployment, set `NOSANA_TIMEOUT_UNIT=seconds`, and start again from step 3. Any other figure: stop the deployment and record it; the reservation model is not what we assumed. Also record the `timeout` field the script prints for the deployment. |
-| 6 | In the same output, re-read `owner` and `vault` of the new deployment (if step 2 had none to read). | `owner` parses as a public key. Record both values' shape (a public key, a user id, empty). |
-| 7 | Wait for `running` with a healthy node. | Record the time from create to running, and the endpoint's host (the operator does not see node URLs in the API; read `deployment_nodes.node_url` in the database). |
+| 3a | Is a 3060 node idle? `curl -s "https://api.nosana.com/nodes/queued-nodes?marketAddress=7AtiXMSH6R1jjBxrcYjehCkkSF7zvYWte63gwEDBcGHq"` (public, no key). | A list of idle nodes. **It was empty at the verification** (only the 4090 market had any). An empty list is not a reason to stop: the deployment waits for a node, and nothing is debited until one is assigned. Record the count. Do not use `/markets/{id}/spare-capacity` for this; it describes another feature. |
+| 4 | Create the deployment in the dashboard. Record the time. | 201; the row goes `pending` then `provisioning`; an organization hold of 36 cents (one hour of a 3060). **The row must stay `provisioning`, and the ledger must show no `gpu_usage` row, until an endpoint reports `online: true`** (the online fix). Nosana itself reports RUNNING within seconds of the start, node or no node, and lists the endpoint from create with `online: false`. Record when Nosana went RUNNING and when `online` became true (the deployment's `endpoints[].online`, in Nosana's dashboard or a GET of the deployment). If our row reads `running` while `online` is false, stop the deployment and stop the run: the customer is being billed for a GPU that is not serving. If the create fails, open the operator view after 15 minutes: `nosana.untrackedDrafts` or `nosana.untracked` names anything Nosana created anyway (`wheelsai-model-<deployment id>-r0`). Stop it in Nosana's dashboard by hand (a draft was never started and costs nothing). |
+| 5 | **Once a node has the job** (the deployment's job list shows a node, or `online` is true), run the check script again and read the newest transactions. Record **B1**. | A new `job_debit` row of **$0.008** (10 minutes of a 3060 at the fee-inclusive price), and available down by the same amount against B0. That confirms minutes on a deployment of ours. On this account the debit lands in `settledCredits`; record whether `reserved` moved at all. **No debit appears while the job waits for a node**, so nothing within a minute of create is not a failure. A debit of $0.001, or a job that ends within seconds, would mean the timeout was read as seconds, against everything settled: stop the deployment and record it. Any other figure: stop and record it. Also record the `timeout` field the script prints for the deployment (10). |
+| 6 | In the same output, read `owner` and `vault` of the new `wheelsai-model-*` deployment. | A confirmation only: the same 44-character key as in step 2, for a deployment WheelsAI created. |
+| 7 | Wait for `running` with a healthy node. | Record three times: create to Nosana RUNNING, RUNNING to `online: true`, and the image pull if the job's result or events show it (`docker.io/ollama/ollama:0.32.6` is pre-pulled on the 3060 market, so the pull should be short; the model download is not). The container downloads the model before it opens port 11434, so `online: true` should come only after the download: if `online` turns true and the first chat answers "model not found", record it and stop the run. **This is the first time the Ollama container starts on a node.** The definition the earlier loopback runs sent could not start. If the row never leaves `provisioning`, read the deployment's events and the job's result in Nosana's dashboard and record the container's exit and last lines. There is one endpoint URL per deployment (per exposed port), load-balanced across replicas: record its host (the operator does not see node URLs in the API; read `deployment_nodes.node_url` in the database, one row per endpoint URL). |
 | 8 | Send one chat completion to `/v1/<slug>/chat/completions`. | An answer. Record the latency. |
-| 9 | Wait past one timeout (11 minutes or more). Run the check script. | The deployment is still `RUNNING` (SIMPLE-EXTEND extended it) and reserved or settled moved again. Record both. If it stopped at the timeout, the strategy does not extend with credits: record it and stop. |
-| 10 | Read the organization's ledger. | `gpu_usage` rows at $0.0001 a second for one replica, each with a consistent `balanceAfter`. |
-| 11 | (Optional; doubles the cost for a few minutes.) Replicas 1 to 2, wait for the count to be confirmed, back to 1. | Nosana's replica count, our row and the billing agree; usage up to the change is billed at the old count. |
-| 12 | Stop from the dashboard. | The stop answers at once; `fundsReleased` may be `false`. Within one status tick the row's release is confirmed (`vault_reclaimed_at` set). The hold is returned once and the final window is billed. |
-| 13 | Five minutes later, run the check script. Record **B2**. | Reserved back at B0's level; `settled(B2) - settled(B0)` is the true cost. Compare with elapsed time x $0.0504 an hour. If reserved has not come back, record after how long it does. |
-| 14 | Start the same deployment again, wait for `running`, stop it. | The restart is not refused with `previous_run_winding_down`. |
+| 9 | Wait past one timeout (11 minutes or more after the job started). Run the check script and read the transactions. | The deployment is still `RUNNING`. **The first extension comes at about 9 minutes** (the timeout minus a buffer of 10%, at least 1 minute), then one every 10 minutes. Each is a new `job_debit` row of about $0.008. Expect RUNNING and a new debit row, not a change in `reserved`. Record the time and amount of each. If it stopped at the timeout, the strategy did not extend with credits: record it and stop. This has been read in the source only; this step is its first observation. |
+| 10 | Read the organization's ledger. | `gpu_usage` rows at $0.0001 a second for one replica, each with a consistent `balanceAfter`, **the first of them not before the time `online` became true** (step 4). |
+| 11 | (Optional; doubles the cost for a few minutes.) Replicas 1 to 2, wait for the count to be confirmed, back to 1. | Nosana's replica count, our row and the billing agree; usage up to the change is billed at the old count. A second replica is a second job with its own `job_debit`. The endpoint URL does not change. |
+| 12 | Stop from the dashboard. Record the time. | Nosana accepts a stop only from RUNNING, ERROR or INSUFFICIENT_FUNDS (any other state answers 500 `INCORRECT_STATE`); the deployment is RUNNING here, so it is accepted. The stop answers at once; `fundsReleased` may be `false`. Nosana goes STOPPING, then STOPPED. Within one status tick the row's release is confirmed (`vault_reclaimed_at` set). The hold is returned once and the final window is billed. **A `job_refund` row appears about 55 seconds to a minute after the stop is confirmed**: record its time and amount. |
+| 13 | Five minutes later, run the check script and read the transactions. Record **B2**. | A `job_refund` row for the unused part of the last debit, and `settled` lowered by it. `settled(B2) - settled(B0)` is the true cost (if the other project spent nothing meanwhile). Compare it with elapsed time x **$0.04796 an hour**, Nosana's fee-inclusive 3060 rate, not our rounded $0.0504. It will not match to the cent: each debit rounds up to $0.001. If no refund row has come, record after how long it does. |
+| 14 | Start the same deployment again, wait for `running`, stop it. | The restart is not refused with `previous_run_winding_down`. (Nosana accepts a start from STOPPED. A run stopped within seconds of its job starting nets about $0.01, more than its pro-rata share: record the debit and the refund.) |
 | 15 | No spend: set `NOSANA_MIN_CREDITS_USD` above the balance, restart the API, try to create. | 503 `compute_capacity_unavailable`, the dashboard says "GPU deployments are paused right now. Nothing was charged.", no row, no hold; `/status` shows "New deployments paused". Restore the value. |
 | 16 | `GET /api/platform/compute` once more. | `nosana.untracked` and `nosana.untrackedDrafts` empty, `running.deployments` 0. |
 
 That the job ran at all shows that a definition created with `confidential: true` reaches the
-host with an API key (step 7).
+host with our key (step 7). The other project's deployments on this account are confidential and
+ran, so this is expected.
 
 ### Results
 
 | # | Result | Value recorded | Date |
 |---|---|---|---|
-| 1 | Key accepted; balance B0 (assigned / reserved / settled) | | |
-| 2, 6 | Raw `owner`; raw `vault`; `owner` parses as a public key | | |
+| | Balance loaded before step 1; `NOSANA_MIN_CREDITS_USD` in force; the narrow key in use and the all-scope key revoked | | |
+| | What `docker image inspect` printed as the Ollama image's entrypoint | | |
+| 1 | Key accepted; exit code 0; deployments listed (`total_items`); **B0 (assigned / reserved / settled / available)** | | |
+| 2, 6 | `owner` equals `vault`, a 44-character key that parses (confirmation), for a deployment WheelsAI created | | |
 | 3 | Operator view state; tiers below cost | | |
-| 4 | Create answered; hold taken (cents) | | |
-| 5 | **B1; reserved delta; the unit Nosana applied**; `timeout` as stored by Nosana | | |
-| 7 | Seconds from create to running; endpoint host; one URL per replica or per deployment | | |
+| 3a | Idle nodes on the 3060 market before the create | | |
+| 4 | Create answered; hold taken (cents); **time Nosana went RUNNING; time `online` became true; our row stayed `provisioning` and unbilled until then** | | |
+| 5 | **B1; the `job_debit` row (time, amount; expected $0.008); available delta**; whether `reserved` moved; `timeout` as stored by Nosana | | |
+| 7 | Seconds create to RUNNING; RUNNING to `online: true`; image pull; **the Ollama container started**; endpoint host | | |
 | 8 | Chat completion answered; latency | | |
-| 9 | Still running after one timeout; reserved and settled after the extension | | |
-| 10 | Ledger rows consistent | | |
+| 9 | Still running after one timeout; **time and amount of each extension's `job_debit`** | | |
+| 10 | Ledger rows consistent; first `gpu_usage` row not before `online` | | |
 | 11 | Replica change confirmed and billed at the right counts | | |
-| 12 | `fundsReleased` in the stop answer; seconds until the release was confirmed | | |
-| 13 | **B2; settled delta (the true cost); when reserved returned** | | |
-| 14 | Restart worked | | |
+| 12 | `fundsReleased` in the stop answer; seconds until the release was confirmed; **the `job_refund` row (time after the stop, amount)** | | |
+| 13 | **B2; settled delta (the true cost) against elapsed x $0.04796/h** | | |
+| 14 | Restart worked; debit and refund of the short second run | | |
 | 15 | Paused refusal: no row, no hold | | |
 | 16 | Nothing untracked | | |
-| | Was the 10% fee charged on top of the host reward? (settled delta against elapsed x $0.0436 and x $0.0504) | | |
-| | The status a deployment takes when credits run out (only if seen) | | |
+| | Each debit equals the fee-inclusive price x the timeout ($0.008 for 10 minutes of a 3060) | | |
+| | INSUFFICIENT_FUNDS: not expected in this run. The state is recoverable (Nosana retries and returns to RUNNING after a top-up) and a stop is accepted from it. Record it only if seen, with what the other project was running. | | |
+| | Did create, start, stop and the replica update all work through the `/api` prefix on the dashboard host? (verified for GETs only) | | |
+| | What the other project did on the account during the run (nothing, or what) | | |
 
-After the run: set `NOSANA_TIMEOUT_UNIT` to what step 5 showed, in every environment, and raise
-`NOSANA_JOB_TIMEOUT_SECONDS` back to its default (7200) or leave it unset.
+After the run: leave `NOSANA_TIMEOUT_UNIT=minutes` in every environment, raise
+`NOSANA_JOB_TIMEOUT_SECONDS` back to its default (7200) or leave it unset, and move what the run
+confirmed from part 3 into "Settled".
+
+---
+
+## Settled by the 2026-10-07 verification
+
+These were in part 3. None was measured by a paid run of ours. Each was settled by reading
+Nosana's published OpenAPI document, the public deployment-manager source (`127f915`,
+2026-10-05) and node source (`3f07617`), the client packages, and read-only GETs with the
+founder's key against the shared account. Nothing was created, started or stopped. The full
+findings are in `workfiles/batch7/verification.json` of the project's Claude folder; the live
+responses were read from a scratch directory that does not outlive that session, so the file
+names below are references into the findings, not into the repository.
+
+| Settled | Evidence |
+|---|---|
+| **The timeout unit is minutes.** `rotation_time` is minutes too, despite the API document's text. | API document, `DeploymentCreateBody.timeout`: "Timeout in minutes". Manager `src/tasks/task/list/worker.ts:63,109` (`timeout * 60`). learn.nosana.com `api/create-deployments.html` ("timeout: 60, // minutes"). Live INFINITE deployments of the other project (timeout 360, rotation 20) relist about every 340 minutes, each debiting 6 hours of credits. The SDK's and the kit's "seconds" JSDoc is stale. |
+| **The 10% network fee is charged on credit-paid jobs.** | `/markets/prices` equals `usd_reward_per_hour` x 1.1. Past 6-hour debits (0.385, 0.961, 0.577) equal the fee-inclusive price x 6, rounded up to $0.001. The 3060 is $0.04796 an hour, the 4070 $0.09603. |
+| **Balance fields are USD**, not the "USD cents" the API document and `@nosana/api` state. Available = assigned − reserved − settled. | All 329 transactions reconcile: claims 23 + top-up 5 = 28 assigned; debits 138.903 − refunds 115.994 = 22.909 settled. `GET /credits/balance` on 2026-10-07: `{assignedCredits: 28, reservedCredits: 0, settledCredits: 22.909}`. |
+| **How credits are debited and returned.** One debit per job (one job per replica) of price x the full timeout, when the job is assigned to a node, not at create or start. The unused part returns pro rata as a `job_refund` row about a minute after a stop. Extensions and rotations debit again. On this account debits show in `settledCredits`. | The transaction list (`job_debit` and `job_refund` rows, their amounts and times). Manager `src/tasks/task/list/reserve.ts:44-73` (a node is reserved before the job is assigned). Rows are `{id, type, amountUsd, createdAt, method}` and carry no deployment id. |
+| **SIMPLE-EXTEND extends the same job** by a full timeout from the credit balance, at the timeout minus a buffer of 10% clamped to 1 to 5 minutes. **SIMPLE ends at its timeout**, and the deployment becomes STOPPED when no job is left. | Manager source. Not yet seen on a WheelsAI deployment: step 9. |
+| **Which states accept which call.** Stop: only RUNNING, ERROR or INSUFFICIENT_FUNDS; anything else answers HTTP 500 `INCORRECT_STATE`. Start: DRAFT, STOPPED, ERROR or INSUFFICIENT_FUNDS. Archive and DELETE need STOPPED. `update-timeout` has a minimum of 60 minutes, and a decrease does not shorten the running job. | Manager `src/router/routes/post/deployments/[id]/deploymentStop.ts:21-27` and the neighbouring routes. This also answers "what Nosana returns for a stop of a halted deployment": it accepts it. |
+| **INSUFFICIENT_FUNDS is the status when credits run out, and it is recoverable.** It is set only from RUNNING when a listing or an extension fails for credits. Nosana retries with a backoff (about 13 days, 60 retries, then ERROR) and returns to RUNNING after a top-up. It affects every deployment on the shared balance. | Manager source; a live event of the other project: `JOB_LIST_ERROR`, "Insufficient credits. Available: $0.091, Required: $0.524". Whether production overrides the retry cap is not known. |
+| **STARTING becomes RUNNING as soon as the listing task is scheduled**, before any node is reserved. RUNNING does not mean a node is serving. | Manager `src/tasks/scheduleTask.ts:86-95`. |
+| **Endpoints: one URL per op per deployment** (per port only when an op exposes several), load-balanced across replicas, created at create with `online: false`. `online` turns true only when the tunnel is up and the job is RUNNING. | Manager `deploymentCreate.factory.ts:20-71`, `src/endpoints/deploymentEndpointStatus.ts:24-36`. API document: `Endpoint` requires `[opId, port, url, online]`. Live: STOPPED deployments list their endpoints with `online: false`. |
+| **`owner` and `vault` of an API-key account are the same 44-character base58 key**, so the SDK's `new PublicKey(owner)` succeeds. | The live deployment list and a single deployment of this account. |
+| **The deployment list is paginated**: `{deployments, pagination}`, `limit` one of 10, 20, 50, 100 (default 10), `cursor_next`, an exact, case-sensitive `name` filter and an `idempotency_key` filter. **A deployment no longer embeds `jobs` or `events`**: they are `GET /deployments/{id}/jobs` and `/events`. | API document, `paths['/deployments'].get`. Live: 10 rows on the first page of 19; `limit=25` answers 400; `limit=100` returns all 19 with `cursor_next` null; a lower-case name returns 0 rows. |
+| **A single job's fields and units.** `GET /deployments/{id}/jobs/{job}` returns `state` as a number (2 = COMPLETED; the jobs list gives a string), `timeStart` and `listedAt` in unix seconds, `timeEnd` 0 for a stopped job, `jobResult.startTime` and `endTime` in milliseconds. **A confidential job's result and logs are readable after it ends**: entries are `{log, type, timestamp}`, one line each. Logs arrive only with the result; `/stream` carries none. | A live job of the other project (confidential, 315 log entries, `exitCode` 0, `timeStart` 1781439160 matching its `created_at`). API document: the job 200 schema and `DeploymentManagerJobResults`. |
+| **The job-definition validator is strict**: any key outside the container op's list is refused with a 400. `required_vram` and an object-valued `resources` are therefore refused. The vLLM and adapter definitions use only valid keys, and the node passes `entrypoint` and `cmd` arrays to Docker unchanged (keeping the image's own entrypoint when none is set). | `@nosana/types` 2.14.2 `dist/Jobs/index.js:915-932`, called by the manager's `deploymentCreateValidation.ts:30-39`. Node `Provider.ts:247-251, 800-805` and `createDockerRunOptions.ts:59,62`. |
+| **`confidential: true` works with an API key.** The manager pins only a placeholder to IPFS and the node fetches the real definition with a signed request. The owner, meaning every holder of an account key, can read the full definition back. | Manager `src/definitions/confidential.jobdefinition.ts`; the other project's confidential deployments on this account ran. |
+| **The dashboard host and `api.nosana.com` are the same proxy**, with or without `/api`. The documented base URL is `https://api.nosana.com`; the dashboard host is no longer in Nosana's documentation. | Same three IPs, byte-identical GET bodies (same md5), `x-proxied-by: client-manager`. GETs only. |
+| **Keys.** Auth needs only `Authorization: Bearer nos_...`. Keys are created at deploy.nosana.com, Account, API Keys, carry scopes, and have no mandatory expiry (`expiresAt: null`). A missing scope answers 403 `INSUFFICIENT_SCOPE`. A key with `api-keys:manage` can read the plaintext of every key on the account. | `GET /auth/scopes`, the API document's `bearerAuth`, learn.nosana.com `api/scopes.html`, and the founder's key (created 2026-10-07, every scope). |
+| **`idempotency_key` and `autostart` exist on create.** A duplicate key answers 409, and the list has an exact filter for it. The key is released only by DELETE. | API document; manager create route. Whether SDK 0.4.74 passes the field through the proxy unchanged has not been exercised. |
+| **Market images.** `required_images` is what a market's nodes pre-pull, not an allow-list. The 3060 and 4070 markets cache `docker.io/ollama/ollama:0.32.6` and vLLM v0.9.2 and v0.10.2; no market caches vLLM v0.6.x. | The live market list; node `imageManager.ts:29-56`. |
+| **`/credits/spending-history` requires `start_date`** (YYYY-MM-DD) and gives per-market totals per day or month. | API document and a live read. |
 
 ---
 
 ## 3. What stays unverified until that run
 
-Nothing below has been observed. Each is read from the installed SDK's types and code, the
-public deployment-manager source, or public documentation.
+Nothing below has been observed. What the 2026-10-07 verification settled is in the section
+above; this is what it left open, and what it added.
 
-- **The unit of `timeout`** (minutes by the public source, seconds by the installed SDK's
-  comment). Step 5.
-- **What an API-key account returns as `owner` and `vault`.** The SDK parses `owner` as a Solana
-  public key on every create, get and list. In the public manager source an API-key deployment
-  gets `vault = owner = the user id`. If that id is not a base58 key, the SDK throws after the
-  deployment exists. Steps 2 and 6.
-- **How credits are reserved** (how much, and whether at create, start or listing), **whether an
-  unused reservation comes back on stop, and how fast.** Steps 5 and 13.
-- **Strategy behaviour with credits**: that SIMPLE-EXTEND extends one job from the balance before
-  its timeout, that SIMPLE ends at the timeout. Step 9.
-- **That `INSUFFICIENT_FUNDS` is the status a deployment takes when credits run out**, and
-  whether one deployment or all of them stop. Not in the checklist (it would need the balance
-  to run out); our handling of it is unit tested only.
-- **That the 10% network fee is charged on top for credit-paid deployments.** Step 13. Our cost
-  figures assume it, which errs high.
-- **That `confidential: true` works with an API key**, and that registry credentials in a job
-  definition work. Step 7 covers the first; the second is untested.
-- **Whether the devnet backend has credits or accepts dashboard keys.** Not in the checklist;
-  API-key access is treated as mainnet.
-- **Where keys are created, the `nos_` prefix, the mandatory expiry and the permissions.** From
-  public documentation. Step 1 confirms the key works, not the rest.
-- **Whether endpoints are one URL per replica or one per deployment.** Step 7.
+On Nosana, for the run to show:
+
+- **Whether POST and PATCH behave through the `/api` prefix on the dashboard host** exactly as
+  on `api.nosana.com` (create, start, stop, update-replica-count), and what their response
+  bodies hold for an API-key deployment, which SDK 0.4.74 reads. Only GETs were made. The shared
+  proxy makes it very likely; the first create shows it. Steps 4, 11 and 12.
+- **That the Ollama container starts on the 3060 market** with the fixed definition and
+  `llama3.2:1b`. The image's entrypoint was not inspected locally (the free
+  `docker image inspect` before the run does that); the explicit `/bin/sh -c` entrypoint is
+  right either way. Also unproven on a node: that the server on `127.0.0.1:11435` ends on the
+  script's `kill` and the server on port 11434 then starts (run against a stand-in `ollama`
+  only). Step 7.
+- **The timing of `online`**: from create to RUNNING to an endpoint with `online: true` for
+  Ollama on the 3060 (and for vLLM 0.6.x on the 4070 in the fine-tuning run), image pull and
+  model load included. Also whether the tunnel registers before the health check passes, which
+  decides whether `online` alone means "serving". Steps 4 and 7.
+- **A credit-paid SIMPLE-EXTEND extension on a WheelsAI deployment**: the timing and amount of
+  the debit, and that the deployment stays RUNNING. Known from source only. Step 9.
+- **Whether `reservedCredits` is ever non-zero** while a job runs, or debits always land
+  straight in settled. Step 5.
+- **The minimum charge for a very short job** (about $0.01 observed), and whether a 10-minute
+  3060 job that runs to its end costs $0.008 or that minimum. Steps 13 and 14.
+- **The refund when a SIMPLE job completes on its own before its timeout.** Only refunds after a
+  stop have been seen. The fine-tuning run shows it.
+- **Whether a node is free on the 3060 market at the time of the run.** There were 0 idle nodes
+  at the verification. Step 3a.
+- **That a timeout of 10 is read as minutes on a deployment of ours.** Settled from the source
+  and from other deployments on the account; step 5 is the confirmation.
+- **Whether an INSUFFICIENT_FUNDS deployment of ours resumes after a top-up in production.**
+  The manager's defaults say so; production may override the retry cap. Not in the checklist (it
+  would need the balance to run short); our handling is unit tested only.
+
+Not covered by this checklist:
+
+- **Whether the on-chain market `jobPrice` is the host reward or the fee-inclusive price**
+  (wallet path). A read-only `getMarket` on the same day as `GET /markets/` settles it.
+- **Whether the host manager accepts a create-level `requirements` entry** `{vram_total_mb: N}`.
+  A bad key gives a fatal reservation error after create. Not used.
+- **Whether job definitions have a size limit** (the adapter bootstrap rides in `cmd`), whether
+  `jobResult` logs are truncated for long runs, and the SIGTERM grace period on a stop. The
+  fine-tuning run touches all three.
+- **An end-to-end private registry pull with `authentication.docker`.** The key is valid in the
+  schema and the node passes it to the pull. Avoid it by using a public training image for the
+  first run.
+- **Whether the devnet hosts accept dashboard keys or hold credits.** Not probed; API-key access
+  is treated as mainnet.
+- **Whether SDK 0.4.74's create passes an `idempotency_key` through the proxy unchanged.**
 - **Whether a deployment created by a wallet is visible to an API key of another account.**
   Assumed not; our code never tries (each row is acted on through the mode that created it).
-- **That the Ollama image with `llama3.2:1b` starts on the 3060 market.** Step 7.
-- **What Nosana returns for a stop of a halted deployment** (error or insufficient funds). Our
-  code attempts the stop, tolerates a refusal and counts the run as released; unit tested only.
-- **The time fields of a deployment's job** (`getDeploymentJob`): read as unix seconds, or
-  milliseconds when the number is large. Unit unverified; the fine-tuning build relies on it.
 - **Listing a wallet's deployments** for the operator view goes through a wallet-signed read
   that has only been exercised against test doubles.
-- The manager's create schema also accepts an `idempotency_key` that the installed SDK's types
-  do not know. Not used. It would close the "create threw but the deployment exists" case.
 
 Wallet access was not re-run with funds either. What `docs/FOUNDER-ACTIONS.md` section 3 lists
 for the first funded wallet run still stands.

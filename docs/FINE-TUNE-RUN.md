@@ -9,7 +9,8 @@ document has three parts:
 
 1. **What was proven on this machine**, with the command and its output.
 2. **The checklist for the first paid run**, with a results table and two receipts to fill in.
-3. **What stays unverified until that run.**
+3. **What stays unverified until that run.** Between parts 2 and 3 is a section of what the
+   read-only verification of 2026-10-07 settled, with its evidence.
 
 **Nothing in part 1 ran on Nosana or on a GPU, and nothing was spent.** Part 1 ran the real
 service code (the API with its routes, its Nosana client, the BullMQ poller, the ledger, the
@@ -28,6 +29,18 @@ database copy that was dropped. Part 3 lists what this leaves open.
 ---
 
 ## 1. What was proven on this machine
+
+> **Note, 2026-10-07 (after everything recorded in this part).** Our Nosana code was checked
+> against Nosana's current API with read-only requests, and the stand-in this part ran against
+> was re-based on the live response shapes the same day (`docs/NOSANA-DEPLOY-RUN.md`, the note
+> at the top of its part 1). **The transcript and the counts below predate that** and are left
+> as recorded. Three things in them do not hold against Nosana: the definition in C carries
+> `required_vram: 24`, which Nosana's strict validator refuses with a 400 (the field is no longer
+> sent); the node of 1.2 reported the job inside the deployment, while Nosana serves jobs from
+> `GET /deployments/{id}/jobs`, so the "callbacks blocked" path of K worked here and would not
+> have worked there before the fix; and the one-page name lookup noted at the end of 1.6 is
+> replaced by a paginated read with the exact `?name=` filter. Re-run the proof script against
+> the re-based stand-in before quoting this transcript as current.
 
 ### 1.1 Unit tests
 
@@ -861,10 +874,42 @@ proofs need: **a paid fine-tuning job** and **a paid inference request against t
 produced**, both on Nosana. Record each result in the table at the end and fill in both
 receipts. Stop at the first step whose result is not the expected one.
 
-**Do `docs/NOSANA-DEPLOY-RUN.md` part 2 first.** It settles the timeout unit and what an API-key
-account returns, on a deployment that costs a few cents. A training job's Nosana timeout is the
-run limit plus 15 minutes, sent in that unit; with the unit wrong it is either cut short or
-reserved sixty times over.
+**Do `docs/NOSANA-DEPLOY-RUN.md` part 2 first.** It is the first create, start and stop of ours
+on Nosana, on a deployment that costs a few cents, and it confirms on our own deployment what
+the verification settled: the timeout unit (minutes), how a debit and a refund appear, and that
+`running` waits for an endpoint that is online. A training job's Nosana timeout is the run limit
+plus 15 minutes, sent in minutes.
+
+### The account, the balance and the key (read on 2026-10-07)
+
+- **The Nosana account is shared with the founder's other project, and its spend lowers the
+  same balance.** Its deployments are on the same list (19 at the verification) and its debits
+  and refunds are in the same transaction list. Keep it idle during this run, or record what it
+  did: B0, B1 and B2 below are only ours if it spent nothing.
+- **Available credit at the verification was $5.091** ($28 assigned, $0 reserved, $22.909
+  settled; USD). **The "$15 loaded" this checklist assumed is not there.** With the $5 floor,
+  the serving deploy on the 4070 (step 16) needs $5.097 and is refused today.
+- **Recommended starting balance: about $15 available before step 1** (a top-up of about $10,
+  more if the deployment run has spent some of it). The serving deployment is SIMPLE-EXTEND:
+  Nosana debits its full timeout when a node takes the job and again at each extension, and
+  returns the unused part only after the stop.
+- **Use the narrow key.** The deployment run replaces the all-scope key, which was also pasted
+  into a chat, with one that holds only `credits:read`, `deployments:read`, `deployments:write`
+  and `jobs:read`, and revokes the old one. Do not run this checklist with the all-scope key.
+  `jobs:read` is what step 9 needs.
+- **A confidential job definition can be read back by every holder of an account key**, through
+  `/deployments/{id}/revisions` and `/deployments/{id}/jobs/{job}`, environment values included.
+  The training definition holds the callback secret and the signed dataset and upload URLs; the
+  serving definition holds the signed adapter URL; with a gated model it would hold `HF_TOKEN`.
+  On a shared account that means the other project's key holders can read them. This run uses
+  an ungated model and short-lived links; a Nosana account that only WheelsAI uses is in
+  `docs/HARDENING-BACKLOG.md`.
+
+**The code this checklist assumes.** Besides the fixes listed in the deployment run document:
+`required_vram` is no longer in the training job definition (step 4), the training poller takes
+its job from `GET /deployments/{id}/jobs` (steps 6 to 10), and
+`scripts/nosana-training-job-check.ts` reads that route (step 9). Do not start until these are
+committed and the unit suite passes against the re-based stand-in.
 
 ### What will run
 
@@ -872,15 +917,18 @@ reserved sixty times over.
 |---|---|---|
 | Base model | `phi-3-mini` (`microsoft/Phi-3-mini-4k-instruct`) | Ungated: no Hugging Face token is needed. |
 | Method | `qlora` | Fits the cheapest tier. It is also the path that has never executed (4-bit loading on the node's driver). |
-| Tier | `4070` (12 GB), $0.54 an hour retail, about $0.097 an hour on Nosana with the fee | The cheapest tier the catalog allows for this model and method (planning figure: 12 GB). |
+| Tier | `4070` (12 GB), $0.54 an hour retail, $0.09603 an hour on Nosana with the fee (our figure, rounded up per second, is $0.0972) | The cheapest tier the catalog allows for this model and method (planning figure: 12 GB). |
 | Dataset | `infra/training/fixtures/tiny.jsonl` eight times over (320 rows, about 46 KB) | Enough steps to read a throughput, small enough to finish in minutes. `for i in 1 2 3 4 5 6 7 8; do cat infra/training/fixtures/tiny.jsonl; done > tiny-x8.jsonl` |
 | Hyperparameters | `{"epochs": 3}`, everything else default | |
 | Run limit | 900 seconds | Hold: 900 x $0.00015 = 13.5, rounded up to **14 cents**. Nosana timeout: 1,800 s, sent as 30 (minutes). |
 | Serving | the fine-tuned model on a `4070`, engine vLLM, 1 replica | Serving Phi-3 mini with an adapter is planned at 9 GB. Hold: one hour, **54 cents**. |
 
-Expected spend on Nosana: under $0.05 for the training job if it ends at its timeout (30 minutes
-of a 4070), and about $0.03 for a quarter of an hour of serving. The $15 loaded for the
-deployment run covers it with the $5 floor.
+Expected spend on Nosana: a `job_debit` of about $0.049 for the training job (30 minutes of a
+4070, debited whole when a node takes it), and about $0.03 for a quarter of an hour of serving.
+What is debited up front is larger than what is spent: the serving job is debited its full
+timeout at assignment (with the default `NOSANA_JOB_TIMEOUT_SECONDS` of 7200, two hours of a
+4070, about $0.193) and the unused part comes back about a minute after the stop. **$15
+available covers it with the $5 floor; today's $5.091 does not** (see above).
 
 **If QLoRA fails on the node** (a `failed` event with `qlora_requires_cuda`, `cuda_unavailable`,
 `base_model_load_failed` or `unexpected` while loading): record the event, then repeat from
@@ -892,7 +940,7 @@ charged nothing for those codes.
 | # | Do | Expect |
 |---|---|---|
 | P1 | **Publish the training image.** Press the manual `trainer-image` job in a pipeline on the default branch (`docs/FOUNDER-ACTIONS.md`, section 14). | It ends green and prints `TRAINING_IMAGE=<repository>@sha256:<digest>`. Record the digest, the image size and how long the job took. |
-| P2 | From a machine that is not signed in to the registry: `docker manifest inspect <repository>@sha256:<digest>`. | The manifest is printed. If it asks for credentials the repository is private: set the three `TRAINING_IMAGE_REGISTRY_*` variables (a read-only token) and note that registry credentials inside a Nosana job definition are untested. |
+| P2 | From a machine that is not signed in to the registry: `docker manifest inspect <repository>@sha256:<digest>`. | The manifest is printed. **Prefer a public image for this first run.** If it asks for credentials the repository is private: set the three `TRAINING_IMAGE_REGISTRY_*` variables (a read-only token). `authentication.docker` is a valid key and the node hands it to the pull, but no private pull has run end to end, and the image reference must name its registry host (`ghcr.io/...@sha256:...`). |
 | P3 | **The bucket.** Create it, set the storage variables, add the CORS rule (`docs/FOUNDER-ACTIONS.md`, section 15), then `cd apps/api && npx tsx scripts/object-store-smoke.ts`. | Every line of the smoke test passes, including "a link refuses another size". |
 | P4 | **`PUBLIC_API_URL`.** Set it to the API's public HTTPS origin. From a machine outside your network: `curl -s -o /dev/null -w "%{http_code}\n" <PUBLIC_API_URL>/health` and `curl -s -X POST -H "content-type: application/json" -d "{}" "<PUBLIC_API_URL>/api/training/jobs/00000000-0000-4000-8000-000000000000/events?n=aaaaaaaaaaaaaaaa"`. | `200`, and `{"error":"invalid_callback_signature",...}` with status 401. The second shows the callback route is reachable and refuses an unsigned body. A GPU node must be able to do the same; a private address or a development tunnel that needs a browser step will not work. |
 | P5 | Apply migration `20261012100000_fine_tuning` (`prisma migrate deploy`). | "All migrations have been successfully applied." |
@@ -908,7 +956,7 @@ charged nothing for those codes.
 | `TRAINING_IMAGE` | the line P1 printed | A tag is refused; only the digest form counts as configured. |
 | `DATASETS_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `S3_ENDPOINT` | the bucket of P3 | Datasets and adapters. Leave `STORAGE_DRIVER` unset. |
 | `PUBLIC_API_URL` | the origin of P4 | Trainer callbacks and the adapter download of a serving deployment. |
-| `NOSANA_API_KEY`, `NOSANA_ACCESS_MODE=api_key`, `NOSANA_TIMEOUT_UNIT` | as confirmed by the deployment run | The unit must be the measured one. |
+| `NOSANA_API_KEY`, `NOSANA_ACCESS_MODE=api_key`, `NOSANA_TIMEOUT_UNIT=minutes` | as in the deployment run: the narrow key, minutes | The unit is settled as minutes and confirmed by step 5 of the deployment run. |
 | `TRAINING_POLL_INTERVAL_MS` | `15000` (the default) | The worker that follows a run. Needs Redis. |
 | `DEPLOYMENT_STATUS_INTERVAL_MS` | above 0 | Confirms stops that could not be confirmed at once, and brings the serving deployment to `running`. With 0, job creation answers `503 training_orphan_sweep_disabled`. |
 | `TRAINING_FREE_FAILURES_PER_DAY` | unset (3) | Jobs of the organization that may fail free in 24 hours. A QLoRA attempt that fails on the node (the fallback below) uses one. |
@@ -921,20 +969,20 @@ charged nothing for those codes.
 
 | # | Do | Expect |
 |---|---|---|
-| 1 | `cd apps/api && npx tsx scripts/nosana-access-check.ts`. | Record the balance as **B0** (assigned, reserved, settled). |
+| 1 | `cd apps/api && npx tsx scripts/nosana-access-check.ts`. | Exit code 0. Record the balance as **B0** (assigned, reserved, settled and available). Available is about $15; under $5.10 the serving deploy of step 16 will be refused, so top up now. |
 | 2 | In the deployed dashboard, upload `tiny-x8.jsonl` as a new dataset and validate it. | Valid, 320 rows, format alpaca. This is also the only test of the bucket's CORS rule. Record the dataset id and its content sha256 (`sha256sum tiny-x8.jsonl` must match the dataset's page or row). |
 | 3 | `POST /api/training/estimate` with the model, method, tier and dataset (or read it on the new-job page). | A planning estimate. Record `estimate.seconds`, `estimate.cents` and `seconds.train`, to compare with what is measured. |
-| 4 | Record the organization's credit balance. Create the job: `phi-3-mini`, `qlora`, `4070`, run limit 900 s, `{"epochs": 3}`. | 201, status `pending`; `reservation.cents` 14; one `training_reservation` ledger row of -14. Record the job id and the time. |
-| 5 | **Within a minute**, run the access check again. | A deployment named `wheelsai-train-<job id>-<nonce>` exists; its `timeout` is 30 with the unit in minutes (1800 if the unit is seconds); strategy `SIMPLE`. Record the `reserved` change against B0. In the API log, "Training job submitted to Nosana" gives the Nosana deployment id: record it. |
+| 4 | Record the organization's credit balance. Create the job: `phi-3-mini`, `qlora`, `4070`, run limit 900 s, `{"epochs": 3}`. | 201, status `pending`; `reservation.cents` 14; one `training_reservation` ledger row of -14. Record the job id and the time. **Within seconds the job must be `queued`: Nosana accepted the create.** Before the fix it answered 400 naming `job_definition/ops/0/args/required_vram`. If the job goes `failed` with `submit_failed`, find the create's error in the API log and record its body word for word (a path into `job_definition` names the key the validator refused), then stop. Nothing was debited. |
+| 5 | **Within a minute**, run the access check again. | A deployment named `wheelsai-train-<job id>-<nonce>` exists (the script finds it only with the pagination fix; the exact lookup is `GET /deployments?name=<that name>`, case-sensitive). Its `timeout` is **30, meaning minutes**; 1800 would be wrong and would debit thirty hours: stop the deployment at once. Strategy `SIMPLE`. Do not read the cost as a `reserved` change: **once a node has taken the job, a `job_debit` row of about $0.049** (30 minutes of a 4070) appears in `/credits/transactions` (the command is in the deployment run document) and available falls by it. Nothing is debited while the job waits for a node. In the API log, "Training job submitted to Nosana" gives the Nosana deployment id: record it. |
 | 6 | Watch the job's page. | `queued`, then `running`. Record the seconds from queued to running. If it is still queued after 30 minutes it fails with `no_capacity`, charged nothing: record that and try again later or on the `4090`. |
 | 7 | When it is `running`, look at the job's page or `GET /api/training/jobs/<id>`. | `metrics.started` names the GPU and its memory; `metrics.logSource` is `callbacks` and the phase and steps move. **This is the proof that the node pulled the image and reached `PUBLIC_API_URL`.** If the job is running on Nosana but no event ever arrives, callbacks are not getting through: let it finish and see step 9. Record the GPU name and `vramGb`. |
 | 8 | Wait for `completed`. | Record the wall time from `running` to `completed`. If it ends `failed`, record `failure.code`, `failure.message` and `failure.charged`, run step 9, and stop. |
-| 9 | `npx tsx scripts/nosana-training-job-check.ts <nosana deployment id>`. | Record everything it prints: the number of jobs listed (expected 1), the raw `state`, raw `timeStart` and `timeEnd` and their unit, whether the job result is present, its fields, the exit code, the fields of a log entry, and how many trainer events were recovered. **A result that is "NOT PRESENT", or events recovered 0, means a run whose callbacks fail cannot be completed from logs**: record it; it changes what part 3 says. |
-| 10 | In the API log, find "Training run ended" for the job. | Record `rawTimeStart`, `rawTimeEnd`, `startFromNosana`, `endFromNosana`, `exitCode`, `trainerEventFrom`. Compare `startUsed` with the `ts` of the trainer's `started` event (first line of `GET .../logs`): the difference is the time between Nosana's start and the container running, which is mostly the image pull. That says whether the pull is inside the billed time. |
+| 9 | `npx tsx scripts/nosana-training-job-check.ts <nosana deployment id>`. It must read `GET /deployments/{id}/jobs`: the deployment object itself has no jobs, and a script that looks there prints 0. | Record everything it prints. Expected, from a finished job of the other project: jobs listed 1; the single-job read gives `state` as a **number** (2 = COMPLETED; the list gives the string); `timeStart` and `listedAt` in **unix seconds**; **`timeEnd` 0** for a job that was stopped, which ours is (the API stops the deployment when the trainer's `completed` event is in); `jobResult.startTime` and `endTime` in **milliseconds**; the exit code in `jobResult.opStates[0]`; log entries `{log, type, timestamp}`, one line per entry, readable only now that the job has ended. Record how many trainer events were recovered and whether the first and last log lines are there (truncation of long logs is open). **A result that is "NOT PRESENT", jobs listed 0, or events recovered 0, means a run whose callbacks fail cannot be completed from logs**: record it; it contradicts what was settled. |
+| 10 | In the API log, find "Training run ended" for the job. | Record `rawTimeStart`, `rawTimeEnd`, `startFromNosana`, `endFromNosana`, `exitCode`, `trainerEventFrom`. The unit is settled (seconds), so `startFromNosana` should be `true`; `rawTimeEnd` is expected to be 0. Compare `startUsed` with the `ts` of the trainer's `started` event (first line of `GET .../logs`): the difference is the time between Nosana's start and the container running, which is mostly the image pull. **That is the measure of the image-pull time, and it says whether the pull is inside the billed time.** |
 | 11 | `GET /api/training/jobs/<id>`: `metrics.result`. | Record `gpu.vramGb` and `gpu.peakVramGb` (the memory figures the catalog needs), `trainTokensPerSecond`, `timings` (download, load, tokenize, train, upload), `steps`, `stopReason` (`finished`), the final losses. |
 | 12 | `GET /api/training/fine-tuned-models`. | One model, `ready`, base `phi-3-mini`, method `qlora`, rank 16. Record its id, slug, `adapterBytes` and `adapterSha256`. Download the object from the bucket (`adapters/<org id>/<job id>/adapter.tar.gz`) and check its sha256 by hand: it must equal the model's. |
 | 13 | Read the job's ledger (`job.ledger` on the same response). | Three rows: `training_reservation` -14, `training_reservation_release` +14, `training_usage` -(charge), each `balanceAfter` following from the last. The charge is $0.00015 x `billedSeconds`, rounded up to a cent, at most 14. The balance fell by the charge. |
-| 14 | Five minutes later, run the access check. Record **B1**. | The training deployment is `STOPPED`. `settled(B1) - settled(B0)` is what the job cost the platform: compare with (`timeEnd` - `timeStart`) x $0.097 an hour, and with the charge of step 13 (the margin). `reserved` is back at B0's level; if not, record when it returns. |
+| 14 | Five minutes later, run the access check and read the transactions. Record **B1**. | The training deployment is `STOPPED`. **A `job_refund` row, if the SIMPLE job ended before its 30-minute timeout** (ours is stopped when the trainer reports, so a refund about a minute after that stop is expected; whether a job that completes on its own, with no stop, is refunded pro rata is still open: record which case this was). `settled(B1) - settled(B0)` is what the job cost the platform (if the other project spent nothing): compare with the job's elapsed time x **$0.09603 an hour** (use `jobResult.endTime` when `timeEnd` is 0), and with the charge of step 13 (the margin). Each debit rounds up to $0.001. |
 | 15 | `GET /api/platform/compute` with the admin key, and `SELECT reason, reclaimed_at FROM nosana_orphan_deployments WHERE source_id = '<job id>'`. | Nothing untracked. If a record was written for the job (`training_completed`), it has `reclaimed_at` set within a status tick or two. |
 
 ### Steps: serving the model and one paid request
@@ -942,13 +990,13 @@ charged nothing for those codes.
 | # | Do | Expect |
 |---|---|---|
 | 16 | Record the organization's balance. Deploy the fine-tuned model: `POST /api/deployments` `{"name":"ft proof","fineTunedModelId":"<id>","gpuTier":"4070","engine":"vllm","replicas":1}` (or the dashboard's deploy action on the model). | 201 with `fineTunedModelId`; a hold of 54 cents. A refusal `tier_too_small_for_serving` or `adapter_download_not_configured` names its cause. |
-| 17 | Wait for `running` with a healthy node. | Record the seconds from create to running. The container starts with `python3 -c <bootstrap>`, which downloads the adapter from `PUBLIC_API_URL` and then starts vLLM with `--lora-modules`. **Reaching `running` shows that a node honoured the entrypoint override, reached the API, and that vLLM accepted the adapter**: if the bootstrap refuses the archive it exits 78, and vLLM exits if it cannot load the module. If it never becomes healthy, read the deployment's logs in Nosana's dashboard: a line beginning `wheelsai-adapter:` is the bootstrap's reason; a vLLM error naming a target module (`qkv_proj`, `gate_up_proj`) is the Phi-3 question of part 3. Record the line. |
+| 17 | Wait for `running` with a healthy node. | Record the seconds from create to Nosana RUNNING, from RUNNING to the endpoint's `online: true`, and to our `running`. **Our row must stay `provisioning`, with no `gpu_usage` row, until the endpoint is online** (the online fix). The vLLM 0.6.x image is not cached on any market, so the node pulls several GB first: **record the pull time**. A `job_debit` for the full timeout appears when a node takes the job. The `python3 -c` entrypoint override is confirmed valid by the schema and the node source; this is its first run. The container starts with `python3 -c <bootstrap>`, which downloads the adapter from `PUBLIC_API_URL` and then starts vLLM with `--lora-modules`. **Reaching `running` shows that a node honoured the entrypoint override, reached the API, and that vLLM accepted the adapter**: if the bootstrap refuses the archive it exits 78, and vLLM exits if it cannot load the module. If it never becomes healthy, read the deployment's logs in Nosana's dashboard: a line beginning `wheelsai-adapter:` is the bootstrap's reason; a vLLM error naming a target module (`qkv_proj`, `gate_up_proj`) is the Phi-3 question of part 3. Record the line. |
 | 18 | In the API's request log, confirm one `GET /api/training/fine-tuned-models/<id>/adapter` answered 302. | The node fetched the adapter through a short-lived link to the bucket. |
 | 19 | With an API key of the organization: `POST <PUBLIC_API_URL>/v1/chat/completions` with `{"model":"<deployment slug>","messages":[{"role":"user","content":"Add 7 and 8, in WheelsAI report style."}],"max_tokens":40}`. | An answer in the trained style, close to `REPORT nn: 7 plus 8 is 15. END OF REPORT.` (the phrase is not in the dataset). Record the answer, the latency, the token usage and the time of the request. An ordinary answer with no "REPORT" means the adapter was not applied: record it. |
 | 20 | `GET <PUBLIC_API_URL>/v1/models` with the same key. | The deployment is listed with `wheelsai.fineTunedModel: "<slug>"` and `wheelsai.baseModel`. |
 | 21 | Wait until the GPU billing worker has ticked after the request (two minutes), then read the organization's ledger. | `gpu_usage` rows for the deployment at $0.00015 a second, the request's minute among them. **This is how the request was paid for:** a dedicated deployment is billed per GPU-second to its owner and its requests are included; no per-request charge and no x402 payment is taken for it. |
 | 22 | Stop the deployment from the dashboard. Then request the adapter URL again if you have it from the Nosana job definition, or simply repeat step 19. | The stop answers at once; the hold is returned once and the final window billed. The request now fails with `model_not_found`. |
-| 23 | Five minutes later, run the access check. Record **B2**. | `settled(B2) - settled(B1)` is what serving cost the platform. Nothing running; the operator view lists nothing untracked. |
+| 23 | Five minutes later, run the access check and read the transactions. Record **B2**. | A `job_refund` row for the unused part of the serving job's debit, about a minute after the stop. `settled(B2) - settled(B1)` is what serving cost the platform: compare with elapsed x $0.09603 an hour. Nothing running; the operator view lists nothing untracked. |
 | 24 | No spend: `DELETE /api/training/fine-tuned-models/<id>` only if you do not want to keep the model. | 200; the adapter object is removed from the bucket. Skip this to keep the model for a demo. |
 
 ### Results
@@ -960,29 +1008,30 @@ charged nothing for those codes.
 | P3 | Bucket smoke test passed; the presigned size limit is enforced | | |
 | P4 | `/health` 200 and the callback route 401 from outside | | |
 | P7 | `canStart`; blockers | | |
-| 1 | B0 (assigned / reserved / settled) | | |
+| | Balance loaded before step 1; the narrow key in use; what the other project did on the account during the run | | |
+| 1 | B0 (assigned / reserved / settled / available) | | |
 | 2 | Dataset id; content sha256; browser upload worked (CORS) | | |
 | 3 | Estimate: seconds, cents, planned train seconds | | |
-| 4 | Job id; hold (cents); time created | | |
-| 5 | Nosana deployment id and name; `timeout` as Nosana stored it; reserved delta | | |
+| 4 | Job id; hold (cents); time created; **the create was accepted** (or the error body, word for word) | | |
+| 5 | Nosana deployment id and name; `timeout` as Nosana stored it (30); **the `job_debit` row (time, amount; expected about $0.049)** | | |
 | 6 | Seconds from queued to running | | |
 | 7 | **GPU name and `vramGb`; first callback arrived** | | |
 | 8 | Seconds from running to completed; final status | | |
-| 9 | Jobs listed; raw `state`; **raw `timeStart` / `timeEnd` and their unit**; **job result present**; exit code; a log entry's fields; events recovered | | |
+| 9 | Jobs listed (1); raw `state` (2); raw `timeStart` / `timeEnd` (seconds; `timeEnd` 0 after a stop); `jobResult.startTime` / `endTime` (ms); **job result present**; exit code; a log entry's fields; **events recovered; logs complete or truncated** | | |
 | 10 | `startFromNosana` / `endFromNosana`; seconds between Nosana's start and the trainer's `started` event (the image pull) | | |
 | 11 | **`peakVramGb`**; **`trainTokensPerSecond`**; timings (download / load / tokenize / train / upload); steps; final losses | | |
 | 12 | Fine-tuned model id and slug; adapter bytes; sha256 equal in storage, model row and trainer event | | |
 | 13 | Ledger rows; billed seconds; charge (cents) | | |
-| 14 | **B1; settled delta (the job's true cost); margin against the charge**; when reserved returned | | |
+| 14 | **B1; settled delta (the job's true cost) against elapsed x $0.09603/h; margin against the charge**; the `job_refund` row (time, amount), and whether the job was stopped or ended on its own | | |
 | 15 | Orphan record written and reclaimed; nothing untracked | | |
 | 16 | Serving deployment id; hold | | |
-| 17 | **Seconds from create to running; vLLM loaded the adapter** (or the log line that says why not) | | |
+| 17 | **Seconds create to RUNNING, to `online: true`, to our `running`; the image pull; vLLM loaded the adapter** (or the log line that says why not) | | |
 | 18 | Adapter fetched with a 302 | | |
 | 19 | **The answer; in the trained style; latency; tokens** | | |
 | 20 | `/v1/models` names the fine-tuned model | | |
 | 21 | `gpu_usage` rows covering the request | | |
 | 22 | Stop: hold returned once; request refused afterwards | | |
-| 23 | B2; settled delta for serving | | |
+| 23 | B2; settled delta for serving; the serving job's `job_debit` and `job_refund` | | |
 | | QLoRA worked on the node, or the fallback to LoRA on the 4090 was needed (and why) | | |
 | | Did Nosana's `timeStart` precede the image pull? | | |
 | | Did the host send SIGTERM on stop, and did the trainer print `interrupted`? (only if a job was cancelled) | | |
@@ -1004,7 +1053,7 @@ step 9.
 | Run limit (s); Nosana timeout sent, and its unit | |
 | Nosana deployment id; deployment name | |
 | Nosana job address; market address; host node | |
-| Nosana job `timeStart` / `timeEnd` (raw), and the seconds between them | |
+| Nosana job `timeStart` / `timeEnd` (raw, unix seconds; `timeEnd` is 0 after a stop, then `jobResult.endTime` in ms), and the seconds between start and end | |
 | GPU reported by the trainer; total memory; peak memory | |
 | Steps; stop reason; final training loss; final evaluation loss; tokens per second | |
 | Adapter: bytes; sha256 (storage = trainer = model row) | |
@@ -1043,31 +1092,58 @@ was confirmed out of part 3.
 
 ---
 
+## Settled by the 2026-10-07 verification
+
+These were in part 3. None was measured by a paid run of ours: each was settled by reading
+Nosana's API document, its deployment-manager (`127f915`) and node (`3f07617`) sources and the
+client packages, and by read-only GETs with the founder's key. The full table, with everything
+about credits, states, endpoints, hosts and keys, is the section of the same name in
+`docs/NOSANA-DEPLOY-RUN.md`. What follows is what this document's part 3 used to ask.
+
+| Settled | Evidence |
+|---|---|
+| **The timeout unit is minutes**, so a 900-second run limit plus the 900-second allowance is sent as 30. | API document ("Timeout in minutes"), manager `src/tasks/task/list/worker.ts:63,109` (`timeout * 60`), and live deployments on the account relisting on that clock. |
+| **How credits are debited and returned**: price x the full timeout when a node takes the job, as a `job_debit` row; the unused part back as a `job_refund` row about a minute after a stop. The 10% fee is included ($0.09603 an hour on the 4070). | All 329 transactions of the account reconcile; `/markets/prices` equals the host reward x 1.1. |
+| **`confidential: true` works with an API key**, and the owner can read the definition back. | The other project's confidential deployments on this account ran; manager `src/definitions/confidential.jobdefinition.ts`. |
+| **The result of a finished confidential job is readable** through `GET /deployments/{id}/jobs/{job}`: the exit code in `jobResult.opStates[]`, and logs as `{log, type, timestamp}` entries, one line per entry, with no prefix in the line. They arrive only after the job ends. | A live job of the other project: confidential, 315 log entries, `exitCode` 0. API document, `DeploymentManagerJobResults`. |
+| **The job's time fields**: `timeStart` and `listedAt` are unix seconds; `timeEnd` is 0 for a job that was stopped; `jobResult.startTime` and `endTime` are milliseconds; the single-job `state` is a number (2 = COMPLETED), the list's a string. | The same live job: `timeStart` 1781439160 matches its `created_at`; `jobResult` times 1781439163506 and 1781459645973. |
+| **A deployment does not embed its jobs or events.** They are `GET /deployments/{id}/jobs` (`{jobs: [{job, state, node, time_start, revision}], pagination}`) and `/events`. | API document; live single-deployment and jobs reads. |
+| **The job-definition validator is strict**: a key outside the container op's list is a 400. `required_vram` was such a key. | `@nosana/types` 2.14.2 `dist/Jobs/index.js:915-932`, called by the manager's `deploymentCreateValidation.ts:30-39`. |
+| **The node honours an `entrypoint` array with an array `cmd`**: both go to Docker unchanged. The vLLM and adapter definitions use only valid keys. From source, not from a run. | Node `Provider.ts:247-251, 800-805`, `createDockerRunOptions.ts:59,62`. |
+| **The status when credits run out is INSUFFICIENT_FUNDS**, it is recoverable, a stop is accepted from it, and it affects every deployment on the shared balance. A stop is accepted only from RUNNING, ERROR or INSUFFICIENT_FUNDS. | Manager `deploymentStop.ts:21-27` and its retry logic; a live `JOB_LIST_ERROR` event. |
+| **`authentication.docker` is a valid key** and the node passes it to the image pull. Not run end to end. | `@nosana/types` 2.14.2 `authentication.d.ts`; node `Provider.ts` `pullImage`. |
+
+---
+
 ## 3. What stays unverified until that run
 
-Nothing below has been observed. Each is read from the installed SDK's types, the public
-deployment-manager source, public documentation, or is a planning figure.
+Nothing below has been observed. Each is read from the SDK's types, the public sources, public
+documentation, or is a planning figure. What the 2026-10-07 verification settled is in the
+section above.
 
 Nosana:
 
-- **Everything in part 3 of `docs/NOSANA-DEPLOY-RUN.md`**: the timeout unit, how credits are
-  reserved and returned, strategy behaviour with credits, `confidential: true` with an API key.
+- **Everything still open in part 3 of `docs/NOSANA-DEPLOY-RUN.md`**: writes through the `/api`
+  prefix, the timing of `online`, an extension paid with credits, whether `reserved` ever moves.
 - **That a batch deployment of strategy `SIMPLE` runs one job and lists exactly one.** The
-  poller follows the first job listed. Step 9.
-- **The time fields of the job** (`timeStart`, `timeEnd`): their unit, when they are set, and
-  whether the start is before or after the image pull. Billing starts there when the value is
-  plausible. Steps 9 and 10.
-- **That a finished job's result is readable**, for a confidential job, through
-  `getDeploymentJob`: the exit code, and the log entries with their `type` and `log` fields, one
-  line or many per entry, with or without a prefix. Without it, a run whose callbacks never
-  arrive ends `failed`, `no_exit_code`, charged nothing, even though its adapter may be in
-  storage. Step 9.
-- **What a stop does to a running training job**: that the host sends SIGTERM and how long it
-  waits before killing the process; that a stop of an already finished deployment is accepted.
+  poller follows the newest job listed. Step 9.
+- **Whether Nosana's `timeStart` is before or after the image pull.** Billing starts there when
+  the value is plausible. The unit is settled; this is not. Step 10.
+- **The refund when a SIMPLE job completes before its timeout**, with or without a stop, and the
+  minimum charge for a very short job (about $0.01 observed). Step 14.
+- **Whether `jobResult` logs are truncated on long runs.** If they are, a long run whose
+  callbacks never arrive cannot be completed from logs. Step 9 shows it for a short run only.
+- **Live logs cannot be read through the API.** They come only with the result, after the job
+  ends, and the deployment stream carries none. The node's own API has them and needs signed
+  requests. Callbacks remain the live channel; this is a limit, not something the run settles.
+- **What a stop does to a running training job**: that the host sends SIGTERM, and the grace
+  period before it kills the process. The source shows only that the job is ended on chain.
 - **How long a 4070 or 4090 job waits for a node**, and whether 30 minutes is the right queue
-  timeout.
-- **Registry credentials in a job definition** (only needed if the image repository is private).
-- **That the status a deployment takes when the platform's credits run out is the one handled.**
+  timeout. The 4070 market had 0 idle nodes at the verification; the 4090 had 15.
+- **Whether a job definition has a size limit** (the adapter bootstrap rides in `cmd`). Step 17.
+- **An end-to-end private registry pull** (only needed if the image repository is private).
+- **Whether the host manager accepts a create-level `requirements` entry** `{vram_total_mb: N}`.
+  Not used: the tier's market is what selects the GPU.
 
 The training image and the GPU path (the list that closes `infra/training/README.md`):
 
@@ -1093,7 +1169,11 @@ Storage and the network path:
 
 Serving:
 
-- **That a Nosana node honours `entrypoint: ["python3", "-c"]` with an array `cmd`.** Step 17.
+- **That the adapter bootstrap runs on a node.** The entrypoint override is settled from the
+  node's source; no node has run it. Step 17.
+- **The time from create to an online endpoint for vLLM 0.6.x on the 4070**, image pull (not
+  cached on any market) and model load included, and whether `online` alone means "serving".
+  Step 17.
 - **That vLLM (0.6.0 / 0.6.3 images) loads the trainer's archive with `--lora-modules`**, for
   Phi-3 in particular, and applies it when the request names the deployment. Steps 17 and 19.
 - **The memory needed to serve** a base model with an adapter (planned: 2 GB per billion

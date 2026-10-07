@@ -77,6 +77,7 @@ model Organization {
   deployments   Deployment[]
   agents        Agent[]
   trainingJobs  TrainingJob[]
+  fineTunedModels FineTunedModel[]
   datasets      Dataset[]
   creditBalance CreditBalance?
   transactions  CreditTransaction[]
@@ -173,7 +174,8 @@ model Model {
   isActive         Boolean  @default(true) @map("is_active")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  deployments Deployment[]
+  deployments     Deployment[]
+  fineTunedModels FineTunedModel[]
 
   @@map("models")
 }
@@ -261,9 +263,16 @@ model Deployment {
   // watching this deployment; cleared when the owner restarts it by hand.
   autoRestartCount  Int       @default(0) @map("auto_restart_count")
   lastAutoRestartAt DateTime? @map("last_auto_restart_at")
+  // Set when the deployment serves a fine-tuned adapter on top of modelId
+  // (the base model). A fine-tuned model that a deployment row still names
+  // cannot be removed (it is soft-deleted). NoAction and not Restrict: both
+  // refuse the delete, but NoAction is checked at the end of the statement,
+  // so deleting an organization can still cascade through both tables.
+  fineTunedModelId String? @map("fine_tuned_model_id") @db.Uuid
 
   org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
   model        Model            @relation(fields: [modelId], references: [id])
+  fineTunedModel FineTunedModel? @relation(fields: [fineTunedModelId], references: [id], onDelete: NoAction)
   nodes        DeploymentNode[]
   usageRecords UsageRecord[]
   agentWallet  AgentWallet?
@@ -271,6 +280,7 @@ model Deployment {
   @@unique([orgId, slug])
   @@index([orgId])
   @@index([status])
+  @@index([fineTunedModelId])
   @@map("deployments")
 }
 
@@ -860,28 +870,68 @@ model TrainingJob {
   datasetId     String   @map("dataset_id") @db.Uuid
 
   // Training method
-  method        String   // 'lora', 'qlora', 'full' (full only for small models)
+  method        String   // 'lora' | 'qlora' (rows from before 20261012100000 may say 'full')
 
   // Hyperparameters
-  config        Json     // epochs, learning_rate, batch_size, lora_r, lora_alpha, etc.
+  config        Json     // what the request asked for (older rows: the old route's merged defaults)
+  // Exactly the HYPERPARAMS object sent to the trainer (only keys it accepts).
+  // Null on rows from before 20261012100000.
+  hyperparams   Json?
+  // Dataset.contentSha256 at admission: the bytes this run is pinned to.
+  datasetSha256 String?  @map("dataset_sha256")
 
   // GPU requirements
   gpuTier       String   @map("gpu_tier")
   gpuCount      Int      @default(1) @map("gpu_count")
 
-  // Status
-  status        String   @default("pending") // 'pending', 'queued', 'running', 'completed', 'failed', 'cancelled'
+  // Status: 'pending', 'submitting', 'queued', 'running', 'finalizing',
+  // 'completed', 'failed', 'cancelling', 'cancelled'. Every change is a
+  // compare-and-set on the expected status (services/trainingStateMachine.ts).
+  status        String   @default("pending")
   progress      Int      @default(0) // 0-100
   currentEpoch  Int?     @map("current_epoch")
   totalEpochs   Int?     @map("total_epochs")
+  currentStep   Int?     @map("current_step")
+  totalSteps    Int?     @map("total_steps")
+  // Why a job failed, as a stable machine string (TRAINING_FAILURE_CODES).
+  failureCode   String?  @map("failure_code")
+
+  // Lifecycle. The run limit the user chose is the trainer's
+  // MAX_RUNTIME_SECONDS and what the credit hold is sized by; the Nosana
+  // timeout is that plus the set-up allowance, which the platform carries.
+  maxRuntimeSeconds    Int?      @map("max_runtime_seconds")
+  nosanaTimeoutSeconds Int?      @map("nosana_timeout_seconds")
+  // One submit attempt: the nonce is part of the deployment name
+  // (wheelsai-train-<job id>-<nonce>), so a deployment whose id was never
+  // stored can still be found on Nosana.
+  submitNonce          String?   @map("submit_nonce")
+  submitStartedAt      DateTime? @map("submit_started_at")
+  queuedAt             DateTime? @map("queued_at")
+  // When the user asked for the cancel: a cancelled run is never billed past it.
+  cancelRequestedAt    DateTime? @map("cancel_requested_at")
+  // When the Nosana job ended or its stop was confirmed.
+  gpuStoppedAt         DateTime? @map("gpu_stopped_at")
+  // Trainer events: the highest seq stored (an event is applied only when
+  // its seq is greater) and when it arrived.
+  lastEventSeq         Int       @default(0) @map("last_event_seq")
+  lastEventAt          DateTime? @map("last_event_at")
+  // The trainer's own terminal event ('completed' or 'failed'), as reported.
+  // A report, not a state: only the reconcile writes a terminal status.
+  reportedOutcome      Json?     @map("reported_outcome")
+  // When the poller last took this job up. It takes the least recently
+  // examined first and stamps them as it takes them, so with more active jobs
+  // than one tick examines every job is still reached (null = never, first).
+  lastReconciledAt     DateTime? @map("last_reconciled_at")
 
   // Nosana integration
-  nosanaJobId   String?  @map("nosana_job_id")
+  nosanaJobId   String?  @map("nosana_job_id") // the Deployment-Manager id
+  // The on-chain job of that deployment, once Nosana lists it.
+  nosanaJobAddress String? @map("nosana_job_address")
   // The Nosana credential that created nosanaJobId ('wallet' | 'api_key'; null = wallet).
   nosanaAccessMode String? @map("nosana_access_mode")
 
   // Output
-  outputModelId String?  @map("output_model_id") // Reference to created Model entry
+  outputModelId String?  @map("output_model_id") // id of the FineTunedModel this job produced
   outputPath    String?  @map("output_path") // S3/IPFS path to adapter weights
 
   // Metrics
@@ -893,9 +943,20 @@ model TrainingJob {
   logs          String?  @db.Text
   lastError     String?  @map("last_error")
 
-  // Cost tracking
+  // Cost tracking. reservationCents is the hold taken in the transaction that
+  // created the job (retail price x maxRuntimeSeconds, ledger type
+  // 'training_reservation'). settledAt is the idempotency key of the
+  // settlement: the terminal compare-and-set requires it to be null, returns
+  // the whole hold ('training_reservation_release') and writes the charge
+  // ('training_usage') exactly once. actualCostCents is that charge.
   estimatedCostCents BigInt? @map("estimated_cost_cents")
   actualCostCents    BigInt? @map("actual_cost_cents")
+  reservationCents   BigInt? @map("reservation_cents")
+  // The retail rate the job was admitted at, in micro-dollars per second, so
+  // a later change of the price table cannot change what this run costs.
+  priceMicroUsdPerSecond BigInt? @map("price_micro_usd_per_second")
+  billedSeconds      Int?      @map("billed_seconds")
+  settledAt          DateTime? @map("settled_at")
 
   // Timestamps
   startedAt     DateTime? @map("started_at")
@@ -905,10 +966,53 @@ model TrainingJob {
 
   org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   dataset       Dataset      @relation(fields: [datasetId], references: [id])
+  fineTunedModel FineTunedModel?
 
   @@index([orgId])
   @@index([status])
+  @@index([orgId, status])
   @@map("training_jobs")
+}
+
+// The result of a completed training job: a LoRA adapter the organization
+// owns. It is NOT a row of `models` (the global catalog); it is served by a
+// normal deployment of its base model with Deployment.fineTunedModelId set.
+model FineTunedModel {
+  id            String   @id @default(uuid()) @db.Uuid
+  orgId         String   @map("org_id") @db.Uuid
+  name          String
+  slug          String
+  // The slug while the model is live, NULL once it is deleted (the same
+  // pattern as Dataset.liveName): the unique index is on this column.
+  liveSlug      String?  @map("live_slug")
+
+  baseModelId   String   @map("base_model_id")
+  baseModelHfId String   @map("base_model_hf_id")
+  // Unique: finalising a job twice finds the row the first attempt wrote.
+  trainingJobId String   @unique @map("training_job_id") @db.Uuid
+
+  method        String   // 'lora' | 'qlora'
+  loraR         Int      @map("lora_r")
+  // Object-store key of the adapter archive, its size and sha256 as checked
+  // against storage and the trainer's `uploaded` event at finalisation.
+  adapterKey    String   @map("adapter_key")
+  adapterBytes  BigInt   @map("adapter_bytes")
+  adapterSha256 String   @map("adapter_sha256")
+  metrics       Json?
+
+  status        String   @default("ready") // 'ready', 'deleted'
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  deletedAt     DateTime? @map("deleted_at")
+
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  baseModel     Model        @relation(fields: [baseModelId], references: [id])
+  trainingJob   TrainingJob  @relation(fields: [trainingJobId], references: [id], onDelete: NoAction)
+  deployments   Deployment[]
+
+  @@unique([orgId, liveSlug])
+  @@index([orgId])
+  @@map("fine_tuned_models")
 }
 
 // ============================================

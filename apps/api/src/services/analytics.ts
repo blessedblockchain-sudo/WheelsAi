@@ -12,6 +12,7 @@ import {
 } from "./buildLatencySampleDeps.js";
 import type { LatencyGroup, ScopedWindow } from "./latencyQueries.js";
 import { agentSurface, type LatencyOutcome } from "./latencySamples.js";
+import { COMPUTE_USAGE_LEDGER_TYPES } from "./trainingBilling.js";
 
 const defaultDb = prisma;
 
@@ -517,9 +518,15 @@ export async function projectMonthlyCost(orgId: string): Promise<{
   // Usage records carry the per-token cost of a request. A dedicated (GPU)
   // deployment is billed per GPU-second instead - its requests record a zero
   // cost, and the charge exists only as `gpu_usage` debits in the ledger - so
-  // those are added here, or such an org would appear to spend nothing.
+  // those are added here, or such an org would appear to spend nothing. A
+  // fine-tuning run is charged the same way (`training_usage`).
   const gpuUsage = await prisma.creditTransaction.aggregate({
-    where: { orgId, type: "gpu_usage", createdAt: { gte: startOfMonth } },
+    where: {
+      orgId,
+      // Per-second GPU time of deployments and of fine-tuning runs alike.
+      type: { in: [...COMPUTE_USAGE_LEDGER_TYPES] },
+      createdAt: { gte: startOfMonth },
+    },
     _sum: { amountCents: true },
   });
   const gpuSpend = -Number(gpuUsage._sum.amountCents ?? 0n);

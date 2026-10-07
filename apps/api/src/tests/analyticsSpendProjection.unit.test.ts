@@ -47,7 +47,11 @@ test("an org whose traffic all goes to a dedicated deployment shows its GPU spen
 
     const where = seen.aggregateArgs[0].where;
     assert.equal(where.orgId, "org_1", "tenant-scoped");
-    assert.equal(where.type, "gpu_usage", "GPU debits only: per-token charges are already in the usage records");
+    assert.deepEqual(
+      where.type,
+      { in: ["gpu_usage", "training_usage"] },
+      "GPU-time debits only (deployments and fine-tuning runs): per-token charges are already in the usage records",
+    );
     const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
     assert.deepEqual(where.createdAt, { gte: startOfMonth }, "the same period as the usage records");
   });

@@ -125,6 +125,151 @@ answers 200 unconditionally and proves nothing.
   flyctl ssh console -a wheelsai-api[-staging] -C "node apps/api/dist/seal-agent-env.js --apply"
   ```
 
+## 7. Custom-domain edge (optional; custom domains answer 501 without it)
+
+Custom domains (Pro plan) are served by a second Fly app, `wheelsai-edge`
+(`infra/edge`: stock Caddy, pinned in the Dockerfile). It terminates TLS
+for customer hostnames and forwards every request to the API over Fly's
+private network. It keeps no list of domains: before it obtains a
+certificate for a hostname it asks the API
+(`GET /internal/edge/ask?domain=…&token=…`), and anything but a 200 means
+no certificate. The API decides what a hostname serves.
+
+Until this section is done, `GET /api/domains/config` reports
+`configured: false` with the reason, writes answer
+`501 custom_domains_not_configured`, and the checker and the host router
+stay off. Nothing else about the API changes.
+
+### 7.1 Create the edge app
+
+```bash
+flyctl apps create wheelsai-edge[-staging]
+flyctl ips allocate-v4 -a wheelsai-edge[-staging]        # DEDICATED IPv4 (paid). A shared one cannot carry raw TCP 443.
+flyctl ips allocate-v6 -a wheelsai-edge[-staging]
+flyctl volumes create caddy_data --size 1 --region lax -a wheelsai-edge[-staging]
+flyctl ips list -a wheelsai-edge[-staging]               # note every address: the API needs all of them
+```
+
+The volume holds the certificates, their private keys and the ACME
+account. One machine, one volume: a second machine needs shared
+certificate storage first (not built). If the volume is lost every
+certificate is requested again, and Let's Encrypt allows 5 certificates per
+hostname per week.
+
+### 7.2 Secrets
+
+Generate the two shared secrets once (`openssl rand -hex 32`, twice; they
+must differ) and set the same values on both apps:
+
+```bash
+flyctl secrets set -a wheelsai-edge[-staging] \
+  ACME_EMAIL=<a monitored mailbox> \
+  CUSTOM_DOMAIN_ASK_TOKEN=<secret 1> \
+  CUSTOM_DOMAIN_EDGE_SECRET=<secret 2>
+
+flyctl secrets set -a wheelsai-api[-staging] \
+  CUSTOM_DOMAIN_EDGE_HOSTNAME=<edge hostname> \
+  CUSTOM_DOMAIN_EDGE_IPV4=<every IPv4 of the edge, comma separated> \
+  CUSTOM_DOMAIN_EDGE_IPV6=<every IPv6 of the edge, comma separated> \
+  CUSTOM_DOMAIN_ASK_TOKEN=<secret 1> \
+  CUSTOM_DOMAIN_EDGE_SECRET=<secret 2>
+```
+
+| Setting | Note |
+| --- | --- |
+| `CUSTOM_DOMAIN_EDGE_HOSTNAME` | the CNAME target shown to customers: `wheelsai-edge[-staging].fly.dev`, or `edge.<platform domain>` with `A`/`AAAA` records at the edge addresses |
+| `CUSTOM_DOMAIN_EDGE_IPV4` / `_IPV6` | **every** public address of the edge. A domain is "routed" only when all of its addresses are in these lists, and the certificate prober connects to these addresses and nowhere else. Private or reserved addresses are refused. |
+| `CUSTOM_DOMAIN_ASK_TOKEN` | ≥32 chars. Travels in a URL (Caddy logs the ask URL when it is refused), so it authorises only the certificate question |
+| `CUSTOM_DOMAIN_EDGE_SECRET` | ≥32 chars, **must differ from the ask token**. Travels only in a header. Requests carrying it are routed by customer hostname |
+| `CUSTOM_DOMAIN_DNS_SERVERS` | optional, e.g. `1.1.1.1,8.8.8.8` |
+| `CUSTOM_DOMAIN_PROBE_EXTRA_CA_PEM` | staging only (refused when `NODE_ENV=production`): trust the Let's Encrypt staging root if the edge runs with `ACME_CA` set to the staging directory |
+
+A partial or malformed set does not half-work: the API reports
+"misconfigured" with the variable at fault in `GET /api/domains/config`
+and stays in the 501 state. Rotating either secret means setting it on
+both apps; each `secrets set` redeploys its app.
+
+### 7.3 Deploy
+
+The API must listen on `::` to be reachable on the private network
+(`API_HOST = "::"` in `apps/api/fly.*.toml`; it serves IPv4 too). Deploy
+the API first, then the edge, both from the **repo root**:
+
+```bash
+flyctl deploy --config apps/api/fly.staging.toml --dockerfile apps/api/Dockerfile --remote-only
+flyctl deploy --config infra/edge/fly.staging.toml --dockerfile infra/edge/Dockerfile --remote-only
+```
+
+The API release applies migration `20261009200000_custom_domain_edge`. It
+also resets every certificate status the old code invented: such domains
+show "No certificate" until a real one is observed, and each gets an
+`ssl_status_reset` entry in its history. The edge image build runs
+`caddy validate`, so a Caddyfile that does not parse fails the build, not
+the running proxy.
+
+### 7.4 Smoke
+
+```bash
+# The API says it is configured, and names the edge.
+curl -fsS https://wheelsai-api-staging.fly.dev/api/domains/config -H "Authorization: Bearer $KEY" | jq '.data | {configured, unavailableReason, edge}'
+
+# The edge reaches the API, and the API refuses a hostname nobody verified:
+# the forwarded request is a 404, never the platform API.
+curl -s -o /dev/null -w '%{http_code}\n' http://<edge IPv4>/v1/models -H 'Host: not-a-customer.example.org'   # 404
+
+# No certificate for an unknown name: the handshake fails.
+curl -sv --resolve not-a-customer.example.org:443:<edge IPv4> https://not-a-customer.example.org/ 2>&1 | grep -i 'alert\|error'
+```
+
+If **every** connection to the edge fails or hangs, the PROXY protocol
+allow-list is wrong: `EDGE_PROXY_PROTOCOL_ALLOW` in `infra/edge/fly.*.toml`
+must contain the network Fly's proxy reaches the machine from
+(`flyctl logs -a wheelsai-edge-staging` shows the remote address Caddy
+saw). If the plain-HTTP check answers 502, the edge cannot reach the API:
+check `API_HOST = "::"` and `WHEELS_API_INTERNAL`.
+
+Then do the proof run with a real hostname, exactly as listed in
+`docs/CUSTOM-DOMAIN-RUN.md` ("The run that remains"), and record it there.
+
+### 7.5 Operating notes
+
+- Caddy renews a certificate about 30 days before it expires. The checker
+  re-reads each serving domain's certificate every 6 hours (hourly inside
+  14 days of expiry), so `sslExpiringSoon` in `GET /api/domains/stats`
+  above zero means a renewal is failing.
+- Let's Encrypt limits that matter: 5 failed validations per hostname per
+  hour, 50 certificates per registered domain per week, 300 new orders per
+  account per 3 hours. The API allows a certificate only for a domain whose
+  DNS already points at the edge, and the checker makes at most 4
+  handshakes per hour for a hostname without a certificate.
+- The API spends the account's order limit from a budget. Each "yes" to
+  the edge for a hostname without an observed certificate is recorded
+  (`custom_domain_issuance_grants`) and refused with 429 once the hostname
+  (5 per hour), its organization (`CUSTOM_DOMAIN_ISSUANCE_ORG_LIMIT`, 30
+  per 3 hours) or the platform (`CUSTOM_DOMAIN_ISSUANCE_PLATFORM_LIMIT`,
+  200 per 3 hours) has used its share. A hostname whose certificate the
+  checker has observed is exempt, so an edge restart is not throttled. The
+  log line `Certificate refused: issuance budget spent` at level `error`
+  with `reason: issuance_budget_platform` means no new certificate is
+  being issued for anyone: find the organization with the most rows in
+  `custom_domain_issuance_grants` over the last 3 hours before raising
+  the limit.
+- One organization can have `CUSTOM_DOMAIN_MAX_PER_ORG` domains (25), and
+  a checker pass takes at most 10 due domains of one organization, one
+  from each organization in turn, so a backlog in one organization delays
+  only that organization.
+- A handshake for a hostname the API no longer allows can still succeed
+  while Caddy holds its unexpired certificate. The API is what stops
+  serving: such a request is answered `404 custom_domain_not_active`.
+- An edge, private-network or DNS outage does not pause domains: a probe
+  that cannot reach the edge changes nothing, and a tick in which most
+  probes are unreachable is disregarded.
+- The host routing table lives in each API machine's memory and reloads
+  every `CUSTOM_DOMAIN_ROUTE_REFRESH_MS` (10 s). A switch-off or delete
+  applies at once on the machine that handled it and within one reload on
+  the others. If a reload has not succeeded for 60 seconds, custom-domain
+  requests answer 503 instead of being routed on stale data.
+
 ## Known good / known gaps
 
 - Boot assertions verified by unit tests: mainnet⇒non-devnet RPC,

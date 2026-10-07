@@ -55,6 +55,10 @@ import { statusRoutes } from "./routes/status.js";
 import { testingRoutes } from "./routes/testing.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { domainsRoutes } from "./routes/domains.js";
+import {
+  createCustomDomainEdgeProduction,
+  createCustomDomainEdgeRoutesProduction,
+} from "./routes/customDomainEdgeBindings.js";
 import { schedulerRoutes } from "./routes/scheduler.js";
 import { knowledgeRoutes } from "./routes/knowledge.js";
 import { orchestrationRoutes } from "./routes/orchestration.js";
@@ -112,6 +116,8 @@ import {
   stopWorkflowRunQueue,
   startUptimeProberQueue,
   stopUptimeProberQueue,
+  startCustomDomainCheckQueue,
+  stopCustomDomainCheckQueue,
   startAlertEvaluatorQueue,
   stopAlertEvaluatorQueue,
   startAnalyticsSnapshotQueue,
@@ -151,8 +157,14 @@ async function main() {
     sentryEnabled ? "Sentry error tracking enabled" : "Sentry disabled (no SENTRY_DSN)",
   );
 
+  // Custom domains: requests the edge proxy forwards for a customer hostname
+  // are routed by that hostname. A request without the edge's header is
+  // untouched.
+  const customDomainEdge = createCustomDomainEdgeProduction();
+
   const app = Fastify({
     logger: logger as any,
+    rewriteUrl: customDomainEdge.rewriteUrl,
     // Trust exactly the proxies in front of us (Fly's edge = 1 hop). With
     // `true`, request.ip was the LEFTMOST X-Forwarded-For entry, which the
     // client writes, so every per-IP rate limit could be bypassed by
@@ -273,6 +285,10 @@ async function main() {
   // Register auth plugins (JWT, cookies)
   await registerAuthPlugins(app);
 
+  // After the auth plugin (the guard reads request.auth) and before every
+  // route plugin (a plugin inherits only the hooks present when it registers).
+  customDomainEdge.install(app);
+
   // Prometheus metrics (H1). Registered before the feature routes so the
   // onResponse timing hook below sees every one of them. Both fly tomls have
   // pointed `[metrics] path = "/metrics"` at this app since the first deploy
@@ -367,6 +383,9 @@ async function main() {
   await app.register(testingRoutes, { prefix: "/api/testing" });
   await app.register(memoryRoutes, { prefix: "/api/memory" });
   await app.register(domainsRoutes, { prefix: "/api/domains" });
+  // The edge's certificate question and the /__edge answers. Always mounted:
+  // unconfigured, the question answers 501 with the reason.
+  await app.register(createCustomDomainEdgeRoutesProduction(customDomainEdge));
   await app.register(schedulerRoutes, { prefix: "/api/scheduler" });
   await app.register(knowledgeRoutes, { prefix: "/api/knowledge" });
   await app.register(orchestrationRoutes, { prefix: "/api/orchestrations" });
@@ -466,6 +485,8 @@ async function main() {
   await startSchedulerQueue();
   await startWorkflowRunQueue();
   await startUptimeProberQueue();
+  await startCustomDomainCheckQueue();
+  await customDomainEdge.start();
   await startAlertEvaluatorQueue();
   await startAnalyticsSnapshotQueue();
   await startSubscriptionRenewalQueue();
@@ -517,6 +538,7 @@ async function main() {
       await stopSchedulerQueue();
       await stopWorkflowRunQueue();
       await stopUptimeProberQueue();
+      await stopCustomDomainCheckQueue();
       await stopAlertEvaluatorQueue();
       await stopAnalyticsSnapshotQueue();
       await stopSubscriptionRenewalQueue();

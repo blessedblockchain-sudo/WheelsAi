@@ -227,7 +227,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
         Other groups used by the dashboard are available in the OpenAPI explorer and follow the same authentication and error
         rules: knowledge bases (<code>/api/knowledge</code>), agent memory (<code>/api/memory</code>), monitoring and alerts (
         <code>/api/monitoring</code>), agent versions (<code>/api/versioning</code>), analytics (<code>/api/analytics</code>),
-        fine-tuning (<code>/api/training</code>), custom domains (<code>/api/domains</code>), integrations, agent tokens (
+        fine-tuning (<code>/api/training</code>), <Link href="/docs/guides/custom-domains#api">custom domains</Link> (<code>/api/domains</code>), integrations, agent tokens (
         <code>/api/tokens</code>), reputation (<code>/api/reputation</code>), two-factor authentication (<code>/api/2fa</code>)
         and settings (<code>/api/settings</code>).
       </p>

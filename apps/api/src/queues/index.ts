@@ -50,6 +50,10 @@ export {
   stopUptimeProberQueue,
 } from "./uptime-prober.queue.js";
 export {
+  startCustomDomainCheckQueue,
+  stopCustomDomainCheckQueue,
+} from "./custom-domain-check.queue.js";
+export {
   startAlertEvaluatorQueue,
   stopAlertEvaluatorQueue,
 } from "./alert-evaluator.queue.js";

@@ -49,3 +49,23 @@ Updated 2026-10-06.
 - If a request that changed the replica count crashed after Nosana applied the change, the time until the status worker reconciles the count (about 5 minutes plus one tick) is billed at the old count.
 - When Nosana had already stopped a deployment and no stop time was recorded, the final billing window ends at the last billed second, so up to one billing interval goes unbilled.
 - A training job that completes normally does not have its leftover Nosana vault reclaimed. Cancelled and failed training jobs, and every agent deployment, are handed to the orphan sweep.
+
+## Custom domains
+
+- **No certificate has been issued through the edge (major, blocks the claim).** The edge app, its addresses and its secrets do not exist yet (`docs/FOUNDER-ACTIONS.md` section 12). Everything up to the certificate authority was run locally (`docs/CUSTOM-DOMAIN-RUN.md`); the staging run listed there is what proves the claim.
+- The dashboard pages for custom domains were type-checked and their wording unit-tested, but not opened in a browser against a running API.
+- The host routing table holds every verified domain in each API machine's memory and reloads all of them every `CUSTOM_DOMAIN_ROUTE_REFRESH_MS`. A switch-off, new token or delete applies at once only on the machine that handled it; the others follow within one reload.
+- The edge is one machine with one volume. A second machine needs shared certificate storage (a Caddy storage module), which is not built.
+- The proof the checker asks for (`GET /.well-known/wheelsai-domain` through the edge) is a per-domain constant, answered for any verified domain including a paused one, and readable by anyone who can reach the hostname.
+- An edge that asked about a hostname before it was verified is told "unknown" for up to 60 seconds after verification (the remembered answer), so the first certificate can be delayed by that long.
+- The certificate question answers for a hostname only by its verified claim. Nothing limits how many unknown names one client can make the edge ask about, beyond the 60-second memory of "unknown".
+- When the certificate question refuses a hostname because an issuance budget is spent (429 `issuance_budget_*`), the owner is not told why: the checker's handshake is refused by the edge and the domain reads as waiting for its certificate. The refusal is logged on the API only.
+- The issuance budget counts every "yes" for a hostname without an observed certificate, including the repeats several simultaneous first handshakes cause, so a busy new hostname can use up to 5 of its organization's 30 for one certificate. It errs towards refusing.
+- The per-organization domain limit and the issuance limits are server-wide settings (`CUSTOM_DOMAIN_MAX_PER_ORG`, `CUSTOM_DOMAIN_ISSUANCE_*`); there is no per-organization override for a customer who needs more.
+- "Check now" (`POST /api/domains/:id/verify`) is limited only by the API's general rate limit; each call makes DNS lookups.
+- Request counters count only forwarded requests made with the owning organization's credentials, and stop counting new domains beyond 10,000 buffered between flushes.
+- Deleting a domain is two statements (the row, then its events), not a transaction; the worst case is orphan event rows.
+- `API_HOST = "::"` (needed by the edge) also makes the API reachable by every app on the Fly organization's private network, with `X-Forwarded-For` trusted for one hop. Only the platform's own apps are on that network today.
+- The PROXY protocol allow-list of the edge (`EDGE_PROXY_PROTOCOL_ALLOW`, default `172.16.0.0/12`) is the documented guess at where Fly's proxy connects from; it is confirmed or corrected on the first staging deploy.
+- The deployments API reference page does not list `customEndpoint` yet; the custom-domains guide does.
+- A member of an organization who owns no organization could not sign in during the proof run (`priya@northwind.ai`: "User has no organization"), so the owner-or-admin guard on domain writes was exercised by unit test only. The sign-in problem is outside custom domains and was not investigated.

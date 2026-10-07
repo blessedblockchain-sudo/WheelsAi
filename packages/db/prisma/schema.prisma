@@ -2036,28 +2036,61 @@ model CustomDomain {
   id              String   @id @default(uuid()) @db.Uuid
   orgId           String   @map("org_id") @db.Uuid
 
-  // Domain configuration
-  domain          String   @unique // e.g., "api.example.com"
+  // Domain configuration. `domain` is NOT globally unique: several
+  // organisations may hold a pending claim on one name, so an unverified claim
+  // can never block the real owner. The claim that counts is verifiedDomain.
+  domain         String // e.g., "api.example.com" (normalised: lowercase, punycode)
   subdomain       String?  // Optional subdomain
   rootDomain      String   @map("root_domain") // e.g., "example.com"
+  // Equals `domain` only while this row is verified; unique, so the first
+  // organisation to prove ownership holds the name. Cleared on expiry,
+  // re-verification and delete. The edge and the router look hosts up here.
+  verifiedDomain String? @unique @map("verified_domain")
 
   // Target resource
   targetType      String   @map("target_type") // 'agent', 'deployment'
   targetId        String   @map("target_id") @db.Uuid
 
   // DNS verification
-  verificationStatus String @default("pending") @map("verification_status") // 'pending', 'verified', 'failed', 'expired'
+  // 'pending' | 'verified' | 'expired'. A resolver error never changes it
+  // ('failed' is no longer written). 'expired' = never verified within 14
+  // days, or the TXT record was gone for 72 hours.
+  verificationStatus    String    @default("pending") @map("verification_status")
   verificationToken String @unique @map("verification_token") // DNS TXT record value
   verificationMethod String @default("dns_txt") @map("verification_method") // 'dns_txt', 'dns_cname', 'http'
   verifiedAt      DateTime? @map("verified_at")
   lastCheckedAt   DateTime? @map("last_checked_at")
   verificationError String? @map("verification_error")
+  // Start of the 14 days a pending claim has to verify (reset on re-verify).
+  verificationStartedAt DateTime  @default(now()) @map("verification_started_at")
+  // When a verified domain's TXT record was first seen missing; the domain
+  // keeps serving for 72 hours from here, then expires.
+  verificationLostAt    DateTime? @map("verification_lost_at")
 
-  // SSL certificate
-  sslStatus       String   @default("pending") @map("ssl_status") // 'pending', 'provisioning', 'active', 'failed', 'expired'
-  sslProvider     String?  @map("ssl_provider") // 'lets_encrypt', 'custom'
+  // DNS routing, as observed: do all of the domain's addresses belong to the edge?
+  routingStatus     String    @default("pending") @map("routing_status") // 'pending' | 'ok' | 'misrouted' | 'unresolvable'
+  // Consecutive not-ok observations of a routed domain; one bad answer does not flip it.
+  routingFailures   Int       @default(0) @map("routing_failures")
+  routingCheckedAt  DateTime? @map("routing_checked_at")
+  routingError      String?   @map("routing_error")
+  observedAddresses String[]  @default([]) @map("observed_addresses")
+  isApex            Boolean?  @map("is_apex") // zone apex (SOA at the name): needs A/AAAA, not a CNAME
+
+  // SSL certificate. Every field here is written ONLY from a TLS handshake the
+  // checker made with the edge - never from a timer or an assumption.
+  // 'pending' (not attempted) | 'provisioning' (verified and routed, waiting
+  // for the edge to present a valid certificate) | 'active' (valid certificate
+  // observed) | 'failed' | 'expired' (an expired certificate was observed)
+  sslStatus            String    @default("pending") @map("ssl_status")
+  sslProvider          String?   @map("ssl_provider") // 'edge_acme' | 'custom' (unused)
   sslExpiresAt    DateTime? @map("ssl_expires_at")
   sslError        String?  @map("ssl_error")
+  sslCheckedAt         DateTime? @map("ssl_checked_at")
+  sslValidFrom         DateTime? @map("ssl_valid_from")
+  sslIssuer            String?   @map("ssl_issuer")
+  sslFingerprint256    String?   @map("ssl_fingerprint256")
+  sslFailures          Int       @default(0) @map("ssl_failures") // consecutive failed handshakes
+  sslProvisioningSince DateTime? @map("ssl_provisioning_since")
 
   // Custom SSL (for custom certificates)
   customCert      Bytes?   @map("custom_cert") // Encrypted
@@ -2069,9 +2102,17 @@ model CustomDomain {
   forceHttps      Boolean  @default(true) @map("force_https")
   headers         Json?    // Custom headers to add
 
-  // Status
+  // Status. `enabled` is what the owner asked for. `isActive` is DERIVED
+  // ("serving") and written only by the check core: enabled AND verified AND
+  // routed AND certificate active AND plan entitled AND target present.
+  enabled      Boolean   @default(true)
   isActive        Boolean  @default(false) @map("is_active")
+  // Why it is not serving: 'disabled' | 'plan_inactive' | 'target_missing' |
+  // 'verification_lost' | 'dns_not_routed' | 'certificate_invalid'
+  pausedReason String?   @map("paused_reason")
   isPrimary       Boolean  @default(false) @map("is_primary") // Primary domain for the target
+  // When the checker looks at this row again; null = never (expired claims).
+  nextCheckAt  DateTime? @map("next_check_at")
 
   // Analytics
   totalRequests   BigInt   @default(0) @map("total_requests")
@@ -2081,11 +2122,30 @@ model CustomDomain {
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@unique([orgId, domain])
+  @@index([domain])
   @@index([orgId, targetType, targetId])
   @@index([verificationStatus])
   @@index([sslStatus])
   @@index([isActive])
+  @@index([nextCheckAt])
+  @@index([orgId, nextCheckAt])
   @@map("custom_domains")
+}
+
+// One "yes, obtain a certificate" the API gave the edge for a hostname that had
+// no observed certificate. Counted per name, organization and platform before
+// the next one is given. No relation to CustomDomain on purpose: deleting a
+// domain must not give its organization the budget back.
+model CustomDomainIssuanceGrant {
+  id        String   @id @default(uuid()) @db.Uuid
+  orgId     String   @map("org_id") @db.Uuid
+  domain    String
+  grantedAt DateTime @default(now()) @map("granted_at")
+
+  @@index([grantedAt])
+  @@index([orgId, grantedAt])
+  @@index([domain, grantedAt])
+  @@map("custom_domain_issuance_grants")
 }
 
 model DomainEvent {
@@ -2093,7 +2153,12 @@ model DomainEvent {
   domainId      String   @map("domain_id") @db.Uuid
 
   // Event details
-  eventType     String   @map("event_type") // 'verification_started', 'verification_success', 'verification_failed', 'ssl_provisioned', 'ssl_renewed', 'ssl_failed', 'activated', 'deactivated'
+  // 'created', 'verification_success', 'verification_lost', 'verification_restored',
+  // 'verification_expired', 'claimed_elsewhere', 'routing_ok', 'routing_lost',
+  // 'ssl_provisioning', 'ssl_observed', 'ssl_renewed', 'ssl_invalid', 'ssl_status_reset',
+  // 'plan_paused', 'plan_resumed', 'target_missing', 'serving_started', 'serving_stopped',
+  // 'activated', 'deactivated', 'reverification_started'
+  eventType String  @map("event_type")
   message       String?
   details       Json?    // Additional event details
 

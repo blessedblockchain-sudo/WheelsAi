@@ -19,7 +19,10 @@ kill_timeout = "60s"
 [env]
   NODE_ENV = "staging"
   API_PORT = "4000"
-  API_HOST = "0.0.0.0"
+  # "::" listens on IPv6 and IPv4. The custom-domain edge (infra/edge) reaches
+  # the API over Fly's private network, which is IPv6 only; on "0.0.0.0" it
+  # could not connect and no custom domain would get a certificate.
+  API_HOST = "::"
   LOG_LEVEL = "debug"
   SOLANA_NETWORK = "devnet"
 

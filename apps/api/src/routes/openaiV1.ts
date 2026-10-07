@@ -195,12 +195,21 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
         preHandler: [unifiedAuth],
         schema: {
           tags: ["OpenAI-compatible"],
-          description: "Running model deployments, agents and enabled workflows, as OpenAI model objects.",
+          description:
+            "Running model deployments, agents and enabled workflows, as OpenAI model objects. ?deployment=<slug> lists that deployment only.",
           security: [{ bearerAuth: [] }],
         },
       },
       async (request) => {
-        const { deployments, agents, workflows } = await listModels(request.auth!.orgId);
+        const listed = await listModels(request.auth!.orgId);
+        // ?deployment=<slug> narrows the list to that one deployment. A custom
+        // domain that points at a deployment lists its models this way, so its
+        // base URL names the one model it serves.
+        const only = (request.query as { deployment?: unknown } | undefined)?.deployment;
+        const { deployments, agents, workflows } =
+          typeof only === "string" && only.length > 0
+            ? { deployments: listed.deployments.filter((d) => d.slug === only), agents: [], workflows: [] }
+            : listed;
         return {
           object: "list",
           data: [

@@ -19,6 +19,7 @@ export const DOCS_NAV: DocsNavSection[] = [
     items: [
       { title: "Getting started", href: "/docs/guides/getting-started" },
       { title: "Deploy a model", href: "/docs/guides/deploy-a-model" },
+      { title: "Custom domains", href: "/docs/guides/custom-domains" },
       { title: "Publish to the marketplace", href: "/docs/guides/marketplace" },
       { title: "Plans and billing", href: "/docs/guides/plans-and-billing" },
       { title: "Templates", href: "/docs/guides/templates" },

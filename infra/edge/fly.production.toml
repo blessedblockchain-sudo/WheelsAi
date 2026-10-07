@@ -1,0 +1,73 @@
+# Fly.io configuration for the WheelsAI custom-domain edge (Production)
+# Deploy from the repository root:
+#   flyctl deploy --config infra/edge/fly.production.toml --dockerfile infra/edge/Dockerfile --remote-only
+# Runbook: docs/DEPLOY-RUNBOOK.md, "Custom-domain edge".
+
+app = "wheelsai-edge"
+primary_region = "lax"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # The API over Fly's private network (6PN). The API must listen on "::"
+  # (API_HOST in apps/api/fly.production.toml) to be reachable here.
+  WHEELS_API_INTERNAL = "http://wheelsai-api.internal:4000"
+  # Networks a PROXY protocol header is accepted from: Fly's proxy reaches the
+  # machine from its private IPv4 range. Confirm on the first deploy (runbook,
+  # smoke test): if this is wrong every connection fails, it does not half-work.
+  EDGE_PROXY_PROTOCOL_ALLOW = "172.16.0.0/12"
+  # Secrets (flyctl secrets set): ACME_EMAIL, CUSTOM_DOMAIN_ASK_TOKEN,
+  # CUSTOM_DOMAIN_EDGE_SECRET.
+
+# One machine, one volume. Certificates and the ACME account are files in
+# /data; a second machine would need shared certificate storage first.
+[[mounts]]
+  source = "caddy_data"
+  destination = "/data"
+
+# TLS is terminated by Caddy, not by Fly, so both ports are raw TCP. That
+# needs a dedicated IPv4 address on the app (flyctl ips allocate-v4).
+# proxy_proto passes the client's address to Caddy.
+[[services]]
+  internal_port = 443
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 443
+    handlers = ["proxy_proto"]
+    proxy_proto_options = { version = "v2" }
+
+  [[services.tcp_checks]]
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "2s"
+
+# Port 80 serves ACME HTTP-01 challenges and the API's answer to plain HTTP
+# (a 308 to HTTPS for a serving domain).
+[[services]]
+  internal_port = 80
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 80
+    handlers = ["proxy_proto"]
+    proxy_proto_options = { version = "v2" }
+
+  [[services.tcp_checks]]
+    grace_period = "10s"
+    interval = "15s"
+    timeout = "2s"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

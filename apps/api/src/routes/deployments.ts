@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { FastifyPluginAsync, FastifyReply } from "fastify";
+import { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { requireAuth } from "../middleware/auth.js";
@@ -394,6 +394,22 @@ export interface DeploymentRouteDeps {
     replicas: number,
     runGeneration: number,
   ) => Promise<void>;
+  /**
+   * deployment id -> the custom domain that serves it (services/domains.ts:
+   * the primary serving domain of each). Only domains observed serving are
+   * returned, so a URL shown here answers.
+   */
+  customDomains?: (orgId: string, deploymentIds: string[]) => Promise<Map<string, string>>;
+}
+
+/** The chat-completions URL on a deployment's own custom domain. */
+export function customDomainEndpoint(domain: string): string {
+  return `https://${domain}/v1/chat/completions`;
+}
+
+async function servingCustomDomains(orgId: string, deploymentIds: string[]): Promise<Map<string, string>> {
+  const { domainsService } = await import("../services/domains.js");
+  return (await domainsService()).servingDomainsFor(orgId, "deployment", deploymentIds);
 }
 
 // ============================================
@@ -409,6 +425,19 @@ export function createDeploymentRoutes(
   const now = deps.now ?? (() => new Date());
   // Built on first use: the handler talks to the global Prisma client.
   let chatCompletion = deps.chatCompletion ?? null;
+  // An injected database has no domains service behind it.
+  const lookupCustomDomains =
+    deps.customDomains ?? (deps.prisma ? async () => new Map<string, string>() : servingCustomDomains);
+  // The custom endpoint is an extra; failing to read it must not fail the
+  // deployment read. Unknown is shown as none.
+  const customDomainsFor = async (orgId: string, ids: string[], log: FastifyRequest["log"]) => {
+    try {
+      return await lookupCustomDomains(orgId, ids);
+    } catch (err) {
+      log.warn({ err }, "Custom domains of deployments could not be read");
+      return new Map<string, string>();
+    }
+  };
   const submit =
     deps.submit ??
     ((deploymentId, config, gpuTier, replicas, runGeneration) =>
@@ -447,6 +476,11 @@ export function createDeploymentRoutes(
         },
         orderBy: { createdAt: "desc" },
       });
+      const customDomains = await customDomainsFor(
+        orgId,
+        deployments.filter((d) => d.status === "running").map((d) => d.id),
+        request.log,
+      );
 
       return {
         deployments: deployments.map((d) => ({
@@ -460,6 +494,7 @@ export function createDeploymentRoutes(
           status: d.status,
           statusReason: d.statusReason,
           endpoint: d.status === "running" ? deploymentEndpoint(d.slug) : null,
+          customEndpoint: customDomains.has(d.id) ? customDomainEndpoint(customDomains.get(d.id)!) : null,
           healthyNodes: d.nodes.filter((n) => n.healthStatus === "healthy").length,
           totalNodes: d.nodes.length,
           createdAt: d.createdAt,
@@ -492,6 +527,10 @@ export function createDeploymentRoutes(
         if (!deployment) {
           return reply.notFound("Deployment not found");
         }
+        const customDomain =
+          deployment.status === "running"
+            ? (await customDomainsFor(orgId, [deployment.id], request.log)).get(deployment.id)
+            : undefined;
 
         return {
           deployment: {
@@ -504,6 +543,7 @@ export function createDeploymentRoutes(
               deployment.status === "running"
                 ? deploymentEndpoint(deployment.slug)
                 : null,
+            customEndpoint: customDomain ? customDomainEndpoint(customDomain) : null,
           },
         };
       }

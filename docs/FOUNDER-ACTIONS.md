@@ -2,7 +2,7 @@
 
 Everything the code now needs from outside the repository before the matching claim can go live. Each item names the setting it fills (see the full list in `.env.example`) and what it unlocks. Until an item is done, the feature behind it answers honestly: a 501 or 503 with the reason, or a "not configured" state in the dashboard. Nothing is faked.
 
-Updated 2026-10-01. Tick items off here as they land.
+Updated 2026-10-06. Tick items off here as they land.
 
 ## 1. Domain, hosting and origins
 
@@ -98,3 +98,31 @@ These all need the funded mainnet wallet from section 3:
 - [ ] a paid mainnet deployment answering `/v1` (`docs/NOSANA-DEPLOY-RUN.md`)
 - [ ] the first creator payout with its transaction signature
 - [ ] at least 10 external products deployed with public receipts pages
+
+## 12. Custom domains (the edge proxy)
+
+Custom domains are sold on the Pro plan and are fully built, but they need infrastructure that does not exist yet: an edge proxy with its own public addresses that terminates TLS for customer hostnames. Until every item below is done the API answers `501 custom_domains_not_configured` to adding, checking and switching on a domain, the Domains page shows "Custom domains are not configured on this server", no certificate is requested and no request to a customer hostname is served. Step by step: `docs/DEPLOY-RUNBOOK.md`, "Custom-domain edge". What has and has not been proven: `docs/CUSTOM-DOMAIN-RUN.md`.
+
+- [ ] **The edge app on Fly.** Create `wheelsai-edge` (and `wheelsai-edge-staging`), deployed from `infra/edge` (stock Caddy, one machine):
+  - a **dedicated IPv4 address** (paid; Fly needs one because the app terminates TLS itself on raw TCP) and an IPv6 address;
+  - a 1 GB volume named `caddy_data` mounted at `/data`. It holds the certificates, their keys and the ACME account. Losing it re-requests every certificate, and the certificate authority allows 5 per hostname per week.
+- [ ] **A hostname for the edge that the platform controls** (the CNAME target customers point at). Either `edge.<the platform domain>` with `A` and `AAAA` records pointing at the two edge addresses (needs the domain from section 1), or `wheelsai-edge.fly.dev` to start with: it needs no domain purchase, and customers who used it keep working after a later move.
+- [ ] **An ACME account email** (`ACME_EMAIL` on the edge): a monitored mailbox. Using it accepts the Let's Encrypt subscriber agreement. Expiry and policy notices go there.
+- [ ] **Two shared secrets**, each at least 32 random characters and different from each other, set to the same values on the edge app and on the API:
+  - `CUSTOM_DOMAIN_ASK_TOKEN`: the edge presents it when it asks the API whether it may obtain a certificate for a hostname;
+  - `CUSTOM_DOMAIN_EDGE_SECRET`: the edge sends it with every request it forwards. Only requests carrying it are routed by customer hostname.
+
+  Rotating either one means setting it on both apps and redeploying both.
+- [ ] **API settings** (`flyctl secrets set` on `wheelsai-api`): the two secrets above, plus
+  - `CUSTOM_DOMAIN_EDGE_HOSTNAME`: the edge hostname chosen above;
+  - `CUSTOM_DOMAIN_EDGE_IPV4` and `CUSTOM_DOMAIN_EDGE_IPV6`: **every** public address of the edge (`flyctl ips list -a wheelsai-edge`). A domain counts as routed only when all of its addresses are in these lists, so an address the edge answers on but that is missing here makes every customer read as "DNS points elsewhere". Update them whenever an address is added or released.
+  - optionally `CUSTOM_DOMAIN_DNS_SERVERS` (for example `1.1.1.1,8.8.8.8`), so verification does not depend on the host's resolver.
+- [ ] **Confirm or change the three shared-capacity limits** (API settings; the defaults apply if you set nothing). Every organization shares the edge's one account with the certificate authority (Let's Encrypt allows 300 new orders per account per 3 hours, counted even when validation fails) and one checker, so one organization must not be able to use all of either:
+  - `CUSTOM_DOMAIN_MAX_PER_ORG` (default 25): how many custom domains one organization may have, in any state. The 26th answers `403 domain_limit_reached`. This is a platform safety limit, the same for Pro and Enterprise; it is stated on the Domains page, in the guide and in `GET /api/domains/config`. Raising it for one customer means raising it for all, so raise the two below with care at the same time.
+  - `CUSTOM_DOMAIN_ISSUANCE_ORG_LIMIT` (default 30): how many times in 3 hours the edge may be told to obtain a certificate for one organization's hostnames that have none yet.
+  - `CUSTOM_DOMAIN_ISSUANCE_PLATFORM_LIMIT` (default 200): the same across all organizations. Keep it below the certificate authority's account limit; the difference is the room left for renewals, which the edge makes on its own. If you request a higher account limit from Let's Encrypt, raise this afterwards.
+- [ ] **Redeploy the API** with the `API_HOST = "::"` change in `apps/api/fly.*.toml`. The edge reaches the API over Fly's private network, which is IPv6 only. Confirm on staging that the public API still answers afterwards (`/health/ready`).
+- [ ] **A real hostname for the proof run**: a domain or subdomain whose DNS you can edit. Do the staging run in `docs/CUSTOM-DOMAIN-RUN.md` ("The run that remains") and record its output there: the certificate issued by a public certificate authority, what the checker observed, and a request answered through the hostname. Add the changelog entry only after it passes.
+- [ ] **Stripe Pro live** (section 2), so the entitlement the feature checks is a real subscription.
+
+Decisions already made and built, listed so nobody re-opens them by accident: HTTPS is always enforced on a custom domain; a plan either includes custom domains or it does not (Pro and Enterprise do, with no count, because the plan table states none); a verified domain whose TXT record disappears keeps serving for 72 hours; a domain that never verifies expires after 14 days.

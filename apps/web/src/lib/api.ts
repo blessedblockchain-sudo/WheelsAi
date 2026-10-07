@@ -3506,8 +3506,55 @@ export const memoryApi = {
 // Custom Domains API
 // ============================================
 
-export type VerificationStatus = "pending" | "verified" | "failed" | "expired";
+export type VerificationStatus = "pending" | "verified" | "expired";
+export type DomainRoutingStatus = "pending" | "ok" | "misrouted" | "unresolvable";
 export type SslStatus = "pending" | "provisioning" | "active" | "failed" | "expired";
+/** Why a domain that could serve is not serving. Null when it serves or is still being set up. */
+export type DomainPausedReason =
+  | "disabled"
+  | "plan_inactive"
+  | "target_missing"
+  | "verification_lost"
+  | "dns_not_routed"
+  | "certificate_invalid";
+
+export interface DnsRecordInstruction {
+  name: string;
+  type: "TXT" | "CNAME" | "A" | "AAAA";
+  value: string;
+}
+
+/**
+ * The records to publish. The routing records are null/empty while custom
+ * domains are not configured on the server: there is nothing true to point at.
+ */
+export interface DnsRecords {
+  txtRecord: DnsRecordInstruction;
+  cnameRecord: DnsRecordInstruction | null;
+  aRecords: DnsRecordInstruction[];
+  aaaaRecords: DnsRecordInstruction[];
+  recommended: "cname" | "a" | null;
+}
+
+/** DNS routing as the checker last observed it. */
+export interface DomainRoutingView {
+  status: DomainRoutingStatus;
+  checkedAt: string | null;
+  error: string | null;
+  observedAddresses: string[];
+}
+
+/** The certificate as last read from a TLS handshake. Null fields were never observed. */
+export interface DomainCertificateView {
+  status: SslStatus;
+  provider: string | null;
+  issuer: string | null;
+  validFrom: string | null;
+  expiresAt: string | null;
+  fingerprint256: string | null;
+  checkedAt: string | null;
+  error: string | null;
+}
 
 export interface CustomDomain {
   id: string;
@@ -3523,36 +3570,82 @@ export interface CustomDomain {
   verifiedAt: string | null;
   lastCheckedAt: string | null;
   verificationError: string | null;
+  /** When the current verification attempt started; an unverified domain expires 14 days later. */
+  verificationStartedAt: string | null;
+  /** Set when a verified domain's TXT record stopped being found; serving stops 72 hours later. */
+  verificationLostAt: string | null;
+  routingStatus: DomainRoutingStatus;
+  routingCheckedAt: string | null;
+  routingError: string | null;
+  observedAddresses: string[];
+  isApex: boolean | null;
   sslStatus: SslStatus;
   sslProvider: string | null;
+  sslIssuer: string | null;
+  sslValidFrom: string | null;
   sslExpiresAt: string | null;
+  sslFingerprint256: string | null;
+  sslCheckedAt: string | null;
   sslError: string | null;
   routingMode: string;
   forceHttps: boolean;
   headers: Record<string, string> | null;
+  /** The owner's switch. */
+  enabled: boolean;
+  /** Derived by the server: the domain is serving requests right now. */
   isActive: boolean;
+  pausedReason: DomainPausedReason | null;
   isPrimary: boolean;
-  totalRequests: number;
+  nextCheckAt: string | null;
+  totalRequests: number | string;
   lastRequestAt: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface DnsRecords {
-  txtRecord: {
-    name: string;
-    type: string;
-    value: string;
-  };
-  cnameRecord: {
-    name: string;
-    type: string;
-    value: string;
-  };
-}
-
-export interface CustomDomainWithDns extends CustomDomain {
   dnsRecords: DnsRecords;
+  routing: DomainRoutingView;
+  certificate: DomainCertificateView;
+}
+
+/** Every domain view carries its DNS records; the name is kept for callers. */
+export type CustomDomainWithDns = CustomDomain;
+
+/** GET /api/domains/config: whether custom domains work on this server and plan. */
+export interface DomainsConfig {
+  configured: boolean;
+  unavailableReason: string | null;
+  edge: { hostname: string; ipv4: string[]; ipv6: string[] } | null;
+  verification: { recordPrefix: string; type: "TXT" };
+  plan: { plan: PlanId; entitled: boolean; upgradeUrl: string; includedIn: PlanId[] };
+  /** A platform safety limit, the same on every plan; every domain counts, in any state. */
+  limits: { maxDomainsPerOrganization: number };
+  policy: { httpsEnforced: boolean; verificationGraceHours: number; pendingExpiryDays: number };
+}
+
+export interface DomainVerifyResult {
+  verified: boolean;
+  verificationStatus: VerificationStatus;
+  routingStatus: DomainRoutingStatus;
+  sslStatus: SslStatus;
+  isActive: boolean;
+  pausedReason: DomainPausedReason | null;
+  message: string;
+  dnsRecords: DnsRecords;
+  /** What DNS answered during this check. */
+  observed: { txtFound: boolean; addresses: string[]; addressesChecked: boolean };
+  domain: CustomDomain;
+}
+
+export interface DomainCertificateCheckResult {
+  message: string;
+  /** False when no handshake was made (the domain does not qualify for one). */
+  probed: boolean;
+  sslStatus: SslStatus;
+  sslIssuer: string | null;
+  sslExpiresAt: string | null;
+  sslCheckedAt: string | null;
+  sslError: string | null;
+  isActive: boolean;
+  pausedReason: DomainPausedReason | null;
 }
 
 export interface DomainEvent {
@@ -3569,15 +3662,21 @@ export interface DomainEvent {
 export interface DomainStats {
   total: number;
   verified: number;
+  /** Serving requests right now. */
   active: number;
   pending: number;
+  paused: number;
   sslExpiringSoon: number;
 }
 
 export interface SslStatusInfo {
   sslStatus: SslStatus;
   sslProvider: string | null;
+  sslIssuer: string | null;
+  sslValidFrom: string | null;
   sslExpiresAt: string | null;
+  sslFingerprint256: string | null;
+  sslCheckedAt: string | null;
   sslError: string | null;
   needsRenewal: boolean;
 }
@@ -3586,11 +3685,13 @@ export interface CreateDomainInput {
   domain: string;
   targetType: "agent" | "deployment";
   targetId: string;
-  forceHttps?: boolean;
   headers?: Record<string, string>;
 }
 
 export const domainsApi = {
+  // Whether custom domains are configured on this server and included in the plan
+  getConfig: () => api<{ success: boolean; data: DomainsConfig }>("/api/domains/config"),
+
   // Stats
   getStats: () =>
     api<{ success: boolean; data: DomainStats }>("/api/domains/stats"),
@@ -3618,20 +3719,19 @@ export const domainsApi = {
 
   // Create domain
   createDomain: (input: CreateDomainInput) =>
-    api<{ success: boolean; data: CustomDomainWithDns; message: string }>("/api/domains", {
+    api<{ success: boolean; data: CustomDomain; message: string }>("/api/domains", {
       method: "POST",
       body: input,
     }),
 
   // Get domain
   getDomain: (domainId: string) =>
-    api<{ success: boolean; data: CustomDomainWithDns }>(`/api/domains/${domainId}`),
+    api<{ success: boolean; data: CustomDomain }>(`/api/domains/${domainId}`),
 
-  // Update domain
+  // Update domain. HTTPS is always enforced, so there is no switch for it.
   updateDomain: (
     domainId: string,
     updates: {
-      forceHttps?: boolean;
       headers?: Record<string, string>;
       isPrimary?: boolean;
     }
@@ -3647,20 +3747,13 @@ export const domainsApi = {
       method: "DELETE",
     }),
 
-  // Verify domain
+  // "Check now": ownership record and addresses, as DNS answers right now
   verifyDomain: (domainId: string) =>
-    api<{
-      success: boolean;
-      data: {
-        verified: boolean;
-        domain?: CustomDomain;
-        message?: string;
-        error?: string;
-        dnsRecords?: DnsRecords;
-      };
-    }>(`/api/domains/${domainId}/verify`, { method: "POST" }),
+    api<{ success: boolean; data: DomainVerifyResult }>(`/api/domains/${domainId}/verify`, {
+      method: "POST",
+    }),
 
-  // Re-verify domain (get new token)
+  // New verification token; the previous proof stops counting and serving stops
   reverifyDomain: (domainId: string) =>
     api<{
       success: boolean;
@@ -3668,20 +3761,20 @@ export const domainsApi = {
       message: string;
     }>(`/api/domains/${domainId}/reverify`, { method: "POST" }),
 
-  // Toggle domain active status
-  toggleDomain: (domainId: string, isActive: boolean) =>
+  // The owner's switch. The field is named isActive on the wire; it sets `enabled`.
+  toggleDomain: (domainId: string, enabled: boolean) =>
     api<{ success: boolean; data: CustomDomain; message: string }>(
       `/api/domains/${domainId}/toggle`,
-      { method: "POST", body: { isActive } }
+      { method: "POST", body: { isActive: enabled } }
     ),
 
-  // Get SSL status
+  // The certificate as last observed
   getSslStatus: (domainId: string) =>
     api<{ success: boolean; data: SslStatusInfo }>(`/api/domains/${domainId}/ssl`),
 
-  // Renew SSL
+  // "Re-check the certificate now": one TLS handshake with the edge
   renewSsl: (domainId: string) =>
-    api<{ success: boolean; data: { message: string } }>(`/api/domains/${domainId}/ssl/renew`, {
+    api<{ success: boolean; data: DomainCertificateCheckResult }>(`/api/domains/${domainId}/ssl/renew`, {
       method: "POST",
     }),
 

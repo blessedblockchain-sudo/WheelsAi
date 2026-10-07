@@ -1,0 +1,75 @@
+# WheelsAI custom-domain edge.
+#
+# Terminates TLS for customer hostnames and forwards every request to the API,
+# which decides what a hostname serves. This proxy holds no routing table and
+# no list of domains: before it obtains a certificate for a name it asks the
+# API (GET /internal/edge/ask), and anything but a 200 means no certificate.
+#
+# Environment (fly secrets unless noted; see docs/DEPLOY-RUNBOOK.md, "Custom-domain edge"):
+#   ACME_EMAIL                  contact address of the ACME account
+#   CUSTOM_DOMAIN_ASK_TOKEN     same value as on the API
+#   CUSTOM_DOMAIN_EDGE_SECRET   same value as on the API
+#   WHEELS_API_INTERNAL         (fly.toml [env]) the API over the private network
+#   ACME_CA                     (optional) ACME directory; default Let's Encrypt production
+#   EDGE_PROXY_PROTOCOL_ALLOW   (fly.toml [env]) networks PROXY headers are accepted from
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+
+	# The API answers plain HTTP itself (a 308 for a serving domain, a 404 for
+	# anything else), so a hostname without a certificate is never redirected
+	# to an HTTPS endpoint that cannot answer.
+	auto_https disable_redirects
+
+	on_demand_tls {
+		# Caddy appends &domain=<name>. The token travels in the URL, which is
+		# why it is a separate, low-value secret from the forwarding secret.
+		ask {$WHEELS_API_INTERNAL}/internal/edge/ask?token={$CUSTOM_DOMAIN_ASK_TOKEN}
+	}
+
+	servers {
+		# Fly forwards raw TCP with a PROXY protocol header (fly.toml,
+		# handlers = ["proxy_proto"]). Without this every request would appear
+		# to come from Fly's proxy and share one per-IP rate limit on the API.
+		# Headers are accepted only from the listed networks, so another
+		# machine on the private network cannot claim a client address.
+		listener_wrappers {
+			proxy_protocol {
+				timeout 5s
+				allow {$EDGE_PROXY_PROTOCOL_ALLOW:172.16.0.0/12}
+			}
+			tls
+		}
+	}
+}
+
+(to_api) {
+	reverse_proxy {$WHEELS_API_INTERNAL} {
+		# header_up replaces whatever the client sent under these names, so a
+		# client cannot present itself as the edge or as another hostname.
+		header_up X-Wheels-Edge-Token {$CUSTOM_DOMAIN_EDGE_SECRET}
+		header_up X-Wheels-Custom-Host {host}
+		# Anything but "https" is answered by the API with a redirect or a 404.
+		header_up X-Wheels-Edge-Proto {scheme}
+
+		# Streamed completions are passed through as they arrive.
+		flush_interval -1
+		transport http {
+			dial_timeout 5s
+			# A non-streamed agent answer may take 120 seconds on the API.
+			response_header_timeout 150s
+			read_timeout 150s
+		}
+	}
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+	import to_api
+}
+
+http:// {
+	import to_api
+}

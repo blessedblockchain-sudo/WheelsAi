@@ -52,6 +52,14 @@ import {
 } from "../services/deploymentCreditGate.js";
 import { getPricePerSecond } from "../services/computeMetering.js";
 import {
+  FineTunedModelGoneError,
+  adapterForRun,
+  buildAdapterServingDeps,
+  lockReadyFineTunedModel,
+  prepareAdapterServing,
+  type AdapterServingDeps,
+} from "../services/fineTunedModels.js";
+import {
   InsufficientGpuCreditsError,
   chargeGpuWindow,
   type GpuBillingTx,
@@ -80,7 +88,11 @@ const STOPPABLE_NOT_RUNNING = STOPPABLE_STATUSES.filter((status) => status !== "
 
 const createDeploymentSchema = z.object({
   name: z.string().min(3).max(50),
-  modelId: z.string(),
+  // Required unless fineTunedModelId is given (checked in the handler): the
+  // base model then comes from the fine-tuned model.
+  modelId: z.string().optional(),
+  /** Serve this fine-tuned model's adapter on top of its base model (vLLM). */
+  fineTunedModelId: z.string().uuid().optional(),
   gpuTier: z.string(),
   engine: z.enum(["vllm", "ollama"]).default("vllm"),
   replicas: z.number().int().min(1).max(10).default(1),
@@ -442,6 +454,8 @@ export interface DeploymentRouteDeps {
   customDomains?: (orgId: string, deploymentIds: string[]) => Promise<Map<string, string>>;
   /** A deployment's measured latency (request_latency_samples), org-bound. */
   loadScopedLatency?: (window: ScopedWindow) => Promise<ScopedLatency>;
+  /** What serving a fine-tuned adapter needs; the server's own when omitted. */
+  adapterServing?: AdapterServingDeps;
 }
 
 /** The chat-completions URL on a deployment's own custom domain. */
@@ -492,6 +506,9 @@ export function createDeploymentRoutes(
       return new Map<string, string>();
     }
   };
+  // Built on first use: it reads the environment.
+  let adapterServingDeps = deps.adapterServing ?? null;
+  const adapterServing = () => (adapterServingDeps ??= buildAdapterServingDeps());
   const submit =
     deps.submit ??
     ((deploymentId, config, gpuTier, replicas, runGeneration) =>
@@ -520,6 +537,7 @@ export function createDeploymentRoutes(
               pricingTier: true,
             },
           },
+          fineTunedModel: { select: { id: true, name: true, slug: true } },
           nodes: {
             select: {
               id: true,
@@ -542,6 +560,8 @@ export function createDeploymentRoutes(
           name: d.name,
           slug: d.slug,
           model: d.model.displayName,
+          // The adapter served on top of `model`, when there is one.
+          fineTunedModel: d.fineTunedModel ?? null,
           engine: d.engine,
           gpuTier: d.gpuTier,
           replicas: d.replicas,
@@ -574,6 +594,7 @@ export function createDeploymentRoutes(
           where: { id: deploymentId, orgId },
           include: {
             model: true,
+            fineTunedModel: { select: { id: true, name: true, slug: true } },
             nodes: true,
           },
         });
@@ -589,6 +610,7 @@ export function createDeploymentRoutes(
         return {
           deployment: {
             ...ownerView(deployment),
+            fineTunedModel: deployment.fineTunedModel ?? null,
             config: { ...DEFAULT_DEPLOYMENT_CONFIG, ...(deployment.config as Record<string, unknown> | null) },
             // Raw Nosana node URLs are unauthenticated GPU endpoints that would
             // bypass metering - callers go through `endpoint` (our /v1 proxy).
@@ -610,13 +632,49 @@ export function createDeploymentRoutes(
       const { orgId } = request.auth!;
       const body = createDeploymentSchema.parse(request.body);
 
+      // A fine-tuned model: it must be this organization's, ready, served by
+      // vLLM, on a tier its base model fits, and this server must be
+      // reachable from a GPU node (the container fetches the adapter from
+      // here). All refused before the pre-flight and before anything is
+      // reserved. The base model comes from the fine-tuned model.
+      let fineTuned: Extract<Awaited<ReturnType<typeof prepareAdapterServing>>, { ok: true }> | null = null;
+      if (body.fineTunedModelId) {
+        const prepared = await prepareAdapterServing(
+          { prisma, serving: adapterServing() },
+          {
+            orgId,
+            fineTunedModelId: body.fineTunedModelId,
+            engine: body.engine,
+            gpuTier: body.gpuTier,
+          },
+        );
+        if (!prepared.ok) {
+          return reply.status(prepared.status).send({
+            error: prepared.code,
+            message: prepared.message,
+            ...(prepared.requiredVramGb !== undefined && { requiredVramGb: prepared.requiredVramGb }),
+          });
+        }
+        if (body.modelId !== undefined && body.modelId !== prepared.fineTunedModel.baseModelId) {
+          return reply.status(400).send({
+            error: "fine_tuned_model_base_mismatch",
+            message: `This fine-tuned model was trained on '${prepared.fineTunedModel.baseModelId}'; leave modelId out or send that id.`,
+          });
+        }
+        fineTuned = prepared;
+      }
+      const modelId = fineTuned?.fineTunedModel.baseModelId ?? body.modelId;
+      if (modelId === undefined) {
+        return reply.badRequest("modelId is required");
+      }
+
       // Verify model exists
       const model = await prisma.model.findUnique({
-        where: { id: body.modelId },
+        where: { id: modelId },
       });
 
       if (!model) {
-        return reply.badRequest(`Model '${body.modelId}' not found`);
+        return reply.badRequest(`Model '${modelId}' not found`);
       }
 
       // Pre-flight BEFORE any credits are reserved: an unconfigured platform
@@ -670,6 +728,19 @@ export function createDeploymentRoutes(
 
       const config = body.config ?? { ...DEFAULT_DEPLOYMENT_CONFIG };
 
+      // The adapter URL names the deployment, so such a deployment's id is
+      // chosen here: the URL is then built before the transaction, and nothing
+      // after the reservation can refuse.
+      const fineTunedDeploymentId = fineTuned ? randomUUID() : null;
+      const adapter =
+        fineTuned && fineTunedDeploymentId
+          ? adapterForRun(adapterServing(), fineTuned.fineTunedModel, {
+              deploymentId: fineTunedDeploymentId,
+              // A new row's first run (the column's default).
+              runGeneration: 0,
+            })
+          : undefined;
+
       // Create the deployment and take its credit reservation in ONE
       // transaction. Reserving first in a separate transaction meant a
       // failure before the row existed left the org charged with nothing to
@@ -686,12 +757,27 @@ export function createDeploymentRoutes(
       };
       try {
         deployment = await prisma.$transaction(async (tx) => {
+          // Still ready, and locked against a delete racing this admission.
+          if (
+            fineTuned &&
+            !(await lockReadyFineTunedModel(tx as never, {
+              id: fineTuned.fineTunedModel.id,
+              orgId,
+              now: now(),
+            }))
+          ) {
+            throw new FineTunedModelGoneError();
+          }
+
           const created = await tx.deployment.create({
             data: {
+              ...(fineTuned && fineTunedDeploymentId
+                ? { id: fineTunedDeploymentId, fineTunedModelId: fineTuned.fineTunedModel.id, runGeneration: 0 }
+                : {}),
               orgId,
               name: body.name,
               slug,
-              modelId: body.modelId,
+              modelId,
               engine: body.engine,
               gpuTier: body.gpuTier,
               replicas: body.replicas,
@@ -728,11 +814,17 @@ export function createDeploymentRoutes(
             ).toFixed(2)} in credits. Add credits and retry.`,
           });
         }
+        if (err instanceof FineTunedModelGoneError) {
+          return reply.status(409).send({
+            error: "fine_tuned_model_not_ready",
+            message: "This fine-tuned model has been deleted and can no longer be deployed.",
+          });
+        }
         throw err;
       }
 
       logger.info(
-        { deploymentId: deployment.id, modelId: body.modelId },
+        { deploymentId: deployment.id, modelId },
         "Deployment created"
       );
 
@@ -740,11 +832,12 @@ export function createDeploymentRoutes(
       submit(
         deployment.id,
         {
-          modelId: body.modelId,
+          modelId,
           hfModelId: model.hfId,
           engine: body.engine,
           maxTokens: config.maxTokens,
           gpuMemoryUtilization: config.gpuMemoryUtilization,
+          ...(adapter ? { adapter } : {}),
         },
         body.gpuTier,
         body.replicas,
@@ -768,6 +861,7 @@ export function createDeploymentRoutes(
           name: deployment.name,
           slug: deployment.slug,
           status: deployment.status,
+          ...(fineTuned && { fineTunedModelId: fineTuned.fineTunedModel.id }),
         },
         message: "Deployment created. Provisioning GPU node...",
       };
@@ -1269,6 +1363,7 @@ export function createDeploymentRoutes(
             now,
             submit,
             maxActiveDeployments: env.MAX_ACTIVE_DEPLOYMENTS_PER_ORG,
+            ...(deps.adapterServing ? { adapterServing: deps.adapterServing } : {}),
           },
           { deploymentId, orgId },
         );
@@ -1279,6 +1374,10 @@ export function createDeploymentRoutes(
             case "preflight_failed":
               if (replyForPreflightError(reply, restarted.error)) return reply;
               throw restarted.error;
+            case "adapter_serving_refused":
+              return reply
+                .status(restarted.refusal.status)
+                .send({ error: restarted.refusal.code, message: restarted.refusal.message });
             case "deployment_quota_exceeded":
               return reply.status(429).send({ error: restarted.code, message: restarted.message });
             case "insufficient_credits":

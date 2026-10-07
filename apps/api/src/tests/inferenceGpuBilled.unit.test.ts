@@ -673,3 +673,32 @@ test("the node is asked for the model it serves, whatever name the caller sent",
     }
   }
 });
+
+// ============================================
+// The name the engine is asked for
+// ============================================
+
+test("the node is asked for the adapter's name on a fine-tuned deployment and the base model's otherwise; the caller sees the slug either way", async () => {
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ fineTunedModel: { slug: "support-tone" } }, "ft-support-tone"],
+    [{ fineTunedModel: null }, "x/y"],
+    [{}, "x/y"],
+    [{ engine: "ollama", model: { pricingTier: "small", hfId: "meta-llama/Meta-Llama-3.1-8B-Instruct" } }, "llama3.1:8b"],
+  ];
+  for (const [over, expected] of cases) {
+    const { app, state, fetchInits, restore } = await v1App({ balance: 0n, deployment: deploymentRow(over) });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/d/chat/completions",
+        // Whatever the caller names, the engine gets the name it answers to.
+        payload: { model: "d", messages: [{ role: "user", content: "hello" }] },
+      });
+      assert.equal(res.statusCode, 200, res.body);
+      assert.equal(JSON.parse(fetchInits[0].body).model, expected);
+      assert.deepEqual(state.findFirstArgs[0].include.fineTunedModel, { select: { slug: true } });
+    } finally {
+      await restore();
+    }
+  }
+});

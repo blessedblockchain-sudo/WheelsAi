@@ -210,7 +210,7 @@ test("a deployment's domain reaches that deployment and lists only its model", a
         permission: [],
         root: "meta-llama/Meta-Llama-3.1-8B-Instruct",
         parent: null,
-        wheelsai: { kind: "deployment" },
+        wheelsai: { kind: "deployment", baseModel: "meta-llama/Meta-Llama-3.1-8B-Instruct" },
       },
     ]);
   }

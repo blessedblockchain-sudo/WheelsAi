@@ -64,7 +64,14 @@ const MAX_LISTED_AGENTS = 500;
 const MAX_LISTED_WORKFLOWS = 500;
 
 export interface ListedModels {
-  deployments: Array<{ slug: string; createdAt: Date; hfId: string }>;
+  deployments: Array<{
+    slug: string;
+    createdAt: Date;
+    /** Hugging Face id of the (base) model the deployment runs. */
+    hfId: string;
+    /** Slug of the fine-tuned model it serves on top of that base, if any. */
+    fineTunedModel?: string | null;
+  }>;
   agents: Array<{ slug: string; createdAt: Date }>;
   /** Enabled workflows only: a disabled one cannot be run. */
   workflows: Array<{ slug: string; createdAt: Date }>;
@@ -85,7 +92,12 @@ async function listModelsFromDb(orgId: string): Promise<ListedModels> {
   const [deployments, agents, workflows] = await Promise.all([
     prisma.deployment.findMany({
       where: { orgId, status: "running" },
-      select: { slug: true, createdAt: true, model: { select: { hfId: true } } },
+      select: {
+        slug: true,
+        createdAt: true,
+        model: { select: { hfId: true } },
+        fineTunedModel: { select: { slug: true } },
+      },
       orderBy: { createdAt: "asc" },
     }),
     prisma.agent.findMany({
@@ -102,7 +114,12 @@ async function listModelsFromDb(orgId: string): Promise<ListedModels> {
     }),
   ]);
   return {
-    deployments: deployments.map((d) => ({ slug: d.slug, createdAt: d.createdAt, hfId: d.model.hfId })),
+    deployments: deployments.map((d) => ({
+      slug: d.slug,
+      createdAt: d.createdAt,
+      hfId: d.model.hfId,
+      fineTunedModel: d.fineTunedModel?.slug ?? null,
+    })),
     agents,
     workflows,
   };
@@ -219,9 +236,15 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
               created: Math.floor(d.createdAt.getTime() / 1000),
               owned_by: "wheelsai",
               permission: [],
+              // The base model. The id stays the deployment's slug whether or
+              // not an adapter is served on top of it.
               root: d.hfId,
               parent: null,
-              wheelsai: { kind: "deployment" },
+              wheelsai: {
+                kind: "deployment",
+                baseModel: d.hfId,
+                ...(d.fineTunedModel ? { fineTunedModel: d.fineTunedModel } : {}),
+              },
             })),
             ...agents.map(agentModelEntry),
             ...workflows.map(workflowModelEntry),

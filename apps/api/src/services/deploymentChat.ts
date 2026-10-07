@@ -341,6 +341,8 @@ export interface DeploymentForChat {
   nosanaJobIds: readonly string[] | null;
   nodes: NodeInfo[];
   model: { hfId: string; pricingTier: string };
+  /** Set when the deployment serves a fine-tuned adapter. */
+  fineTunedModel?: { slug: string } | null;
 }
 
 export interface DeploymentChatDeps {
@@ -364,8 +366,11 @@ export interface DeploymentChatDeps {
   }): Promise<SettleResult>;
   release(args: { orgId: string; heldCents: bigint; requestId: string; reason: string }): Promise<void>;
   selectNode(nodes: NodeInfo[]): NodeInfo | null;
-  /** The name the engine answers to (services/nosana.ts). */
-  servedModelName(engine: string | null, hfId: string): string;
+  /**
+   * The name the engine answers to (services/nosana.ts): the adapter's when
+   * `fineTunedSlug` is given, the base model's otherwise.
+   */
+  servedModelName(engine: string | null, hfId: string, fineTunedSlug?: string | null): string;
   /**
    * POSTs the completion to the node. MUST refuse a node URL off the
    * allowlist and MUST NOT follow a redirect; throws for both.
@@ -438,7 +443,11 @@ export async function runDeploymentChat(
       `model deployment ${request.deploymentId} does not exist in this organization or is not running`,
     );
   }
-  const servedName = deps.servedModelName(deployment.engine, deployment.model.hfId);
+  const servedName = deps.servedModelName(
+    deployment.engine,
+    deployment.model.hfId,
+    deployment.fineTunedModel?.slug,
+  );
   const expected = request.modelId?.trim();
   if (expected && !servesModel(deployment, servedName, expected)) {
     throw new DeploymentChatError(

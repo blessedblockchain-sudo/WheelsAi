@@ -24,7 +24,12 @@ import { gpuBillingArrears } from "./gpuBilling.js";
 import type { ResolvedModel } from "./mastra-runtime.js";
 import { isAllowedNodeUrl } from "./nodeUrlAllowlist.js";
 import { isGpuBilledDeployment } from "./nosanaIds.js";
-import { nodeUrlAllowlistOptions, servedModelName } from "./nosana.js";
+import {
+  ADAPTER_NAME_PREFIX,
+  FINE_TUNED_SLUG_PATTERN,
+  nodeUrlAllowlistOptions,
+  servedModelNameFor,
+} from "./nosana.js";
 
 export const HOSTED_MODEL_PREFIX = "wheelsai/";
 
@@ -131,23 +136,56 @@ type HostedModelDb = Pick<typeof prisma, "deployment" | "creditBalance">;
 /**
  * `wheelsai/<model id>` -> the organization's own running deployment of that
  * model. Read-only: nothing is charged or reserved by resolving.
+ *
+ * A deployment that serves a fine-tuned adapter is never the answer for its
+ * base model's id: an agent that asked for the base model gets the base
+ * model. It is reached by name, `wheelsai/ft-<fine-tuned model slug>`, and is
+ * then asked for the adapter.
  */
 export async function resolveHostedModel(
   args: { orgId: string; modelId: string },
   db: HostedModelDb = prisma,
 ): Promise<HostedModelResolution> {
   const catalogId = args.modelId.slice(HOSTED_MODEL_PREFIX.length);
-  const deployment = catalogId
-    ? await db.deployment.findFirst({
-        where: { orgId: args.orgId, modelId: catalogId, status: "running" },
-        orderBy: { createdAt: "desc" },
-        include: { nodes: { where: { healthStatus: "healthy" } }, model: true },
-      })
+  // No catalog id starts with "ft-" (config/modelCatalog.ts).
+  const fineTunedSlug = catalogId.startsWith(ADAPTER_NAME_PREFIX)
+    ? catalogId.slice(ADAPTER_NAME_PREFIX.length)
     : null;
+  const include = {
+    nodes: { where: { healthStatus: "healthy" } },
+    model: true,
+    fineTunedModel: { select: { slug: true } },
+  };
+  let deployment;
+  if (fineTunedSlug !== null) {
+    deployment = FINE_TUNED_SLUG_PATTERN.test(fineTunedSlug)
+      ? await db.deployment.findFirst({
+          where: {
+            orgId: args.orgId,
+            status: "running",
+            // liveSlug: a deleted model's slug resolves to nothing.
+            fineTunedModel: { orgId: args.orgId, liveSlug: fineTunedSlug, status: "ready" },
+          },
+          orderBy: { createdAt: "desc" },
+          include,
+        })
+      : null;
+  } else {
+    deployment = catalogId
+      ? await db.deployment.findFirst({
+          where: { orgId: args.orgId, modelId: catalogId, status: "running", fineTunedModelId: null },
+          orderBy: { createdAt: "desc" },
+          include,
+        })
+      : null;
+  }
   if (!deployment) {
     return {
       ok: false,
-      message: `This agent uses the WheelsAI-hosted model "${catalogId}", and your organization has no running deployment of it. Deploy the model (Deployments > New), or give the agent another model.`,
+      message:
+        fineTunedSlug !== null
+          ? `This agent uses the fine-tuned model "${fineTunedSlug}", and your organization has no running deployment of it. Deploy the fine-tuned model (Training > Models), or give the agent another model.`
+          : `This agent uses the WheelsAI-hosted model "${catalogId}", and your organization has no running deployment of it. Deploy the model (Deployments > New), or give the agent another model.`,
     };
   }
 
@@ -182,7 +220,12 @@ export async function resolveHostedModel(
       // Nodes take no key; the caller's own credentials are never forwarded.
       apiKey: "",
       baseUrl: `${node.nodeUrl}/v1`,
-      modelName: servedModelName(deployment.engine, deployment.model.hfId),
+      modelName: servedModelNameFor({
+        engine: deployment.engine,
+        hfId: deployment.model.hfId,
+        // Only for a deployment reached by its fine-tuned model's name.
+        fineTunedSlug: fineTunedSlug !== null ? deployment.fineTunedModel?.slug : null,
+      }),
       // The node is run by a third party: a redirect off the allowlisted
       // host is refused, not followed.
       refuseRedirects: true,

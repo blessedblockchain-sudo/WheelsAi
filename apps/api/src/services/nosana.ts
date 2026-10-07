@@ -94,6 +94,8 @@ export interface NosanaOperation {
   id: string;
   args: {
     image: string;
+    /** Replaces the image's own entrypoint (the adapter bootstrap does). */
+    entrypoint?: string[];
     cmd?: string[];
     env?: Record<string, string>;
     gpu?: boolean;
@@ -1850,6 +1852,34 @@ export interface ModelDeploymentConfig {
    * non-confidential job definitions to PUBLIC IPFS. Omitted => no HF_TOKEN.
    */
   hfToken?: string;
+  /**
+   * A fine-tuned LoRA adapter served on top of the base model (vLLM only).
+   * Absent for every other deployment, whose definition it does not change.
+   */
+  adapter?: VllmAdapterConfig;
+}
+
+/** What the vLLM container needs to fetch one adapter and serve it. */
+export interface VllmAdapterConfig {
+  /** The name the engine serves the adapter under (adapterNameForSlug). */
+  name: string;
+  /**
+   * Where the container GETs the archive: this API's adapter route, signed
+   * for the deployment and its run (services/fineTunedModels.ts). It carries
+   * a signature, so it travels in the environment of the confidential
+   * definition and is never logged.
+   */
+  downloadUrl: string;
+  /**
+   * The adapter's LoRA rank (FineTunedModel.loraR). vLLM refuses an adapter
+   * whose rank is above --max-lora-rank, and the flag takes only
+   * VLLM_MAX_LORA_RANKS: it is set to vllmMaxLoraRank(maxRank).
+   */
+  maxRank: number;
+  /** sha256 of the archive as stored, lower-case hex: checked after download. */
+  sha256: string;
+  /** Size of the archive as stored; the download stops past it. */
+  bytes: number;
 }
 
 /** The vLLM image every deployment ran on before tool calling was wired. */
@@ -1917,6 +1947,10 @@ export function generateVllmJobDefinition(
     vllmArgs.push("--enable-auto-tool-choice", "--tool-call-parser", toolCalling.parser);
   }
 
+  if (config.adapter) {
+    return vllmAdapterJobDefinition(config, config.adapter, vllmArgs, toolCalling);
+  }
+
   return {
     version: "0.1",
     type: "container",
@@ -1936,6 +1970,259 @@ export function generateVllmJobDefinition(
           // gated models were handed that string as their token. Real token or
           // nothing.
           ...(config.hfToken ? { env: { HF_TOKEN: config.hfToken } } : {}),
+        },
+      },
+    ],
+  };
+}
+
+// ============================================
+// vLLM with a fine-tuned adapter
+// ============================================
+
+/** Prefix of the name an adapter is served under: never a catalog model id. */
+export const ADAPTER_NAME_PREFIX = "ft-";
+
+/** A fine-tuned model's slug, as far as it may reach a job definition. */
+export const FINE_TUNED_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
+
+const ADAPTER_NAME_PATTERN = /^ft-[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
+/** owner/name on Hugging Face: nothing a shell or an argument parser reads specially. */
+const ADAPTER_BASE_MODEL_PATTERN =
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
+/** http(s) origin, path and query of unreserved characters only. */
+const ADAPTER_URL_PATTERN =
+  /^https?:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?\/[A-Za-z0-9._~/-]*(?:\?[A-Za-z0-9._~=&-]*)?$/;
+const ADAPTER_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const ADAPTER_QUANTIZATION_PATTERN = /^[a-z0-9_-]{1,32}$/;
+const ADAPTER_MAX_RANK = 256;
+
+/**
+ * The only values vLLM 0.6.x accepts for --max-lora-rank (LoRAConfig refuses
+ * any other at startup, and the server exits).
+ */
+export const VLLM_MAX_LORA_RANKS = [8, 16, 32, 64, 128, 256] as const;
+
+/**
+ * --max-lora-rank for an adapter of rank `rank`: the smallest value vLLM
+ * accepts that is at least the rank. An adapter whose rank is at or below
+ * the ceiling loads; a rank-4 adapter is served under 8. Null above 256.
+ */
+export function vllmMaxLoraRank(rank: number): number | null {
+  if (!Number.isInteger(rank) || rank < 1) return null;
+  return VLLM_MAX_LORA_RANKS.find((allowed) => allowed >= rank) ?? null;
+}
+const ADAPTER_MAX_URL_LENGTH = 2048;
+
+/** Where the container unpacks adapters; one directory per adapter name. */
+export const ADAPTER_ROOT_DIR = "/adapters";
+
+/**
+ * The name the engine serves a fine-tuned model under, or null when the slug
+ * is not one that may be placed in a job definition.
+ */
+export function adapterNameForSlug(slug: unknown): string | null {
+  return typeof slug === "string" && FINE_TUNED_SLUG_PATTERN.test(slug)
+    ? `${ADAPTER_NAME_PREFIX}${slug}`
+    : null;
+}
+
+/** A value bound for the adapter job definition failed its pattern. */
+export class InvalidAdapterConfigError extends Error {
+  readonly code = "invalid_adapter_config";
+  constructor(readonly field: string) {
+    // The value is not echoed: it is whatever a caller managed to pass in.
+    super(`Adapter deployment refused: ${field} is not in the accepted form`);
+    this.name = "InvalidAdapterConfigError";
+  }
+}
+
+/**
+ * Checks every value the adapter definition carries (D13). Throws
+ * InvalidAdapterConfigError naming the first field that fails.
+ */
+export function assertValidAdapterConfig(
+  config: Pick<ModelDeploymentConfig, "hfModelId" | "quantization">,
+  adapter: VllmAdapterConfig,
+): void {
+  const refuse = (field: string): never => {
+    throw new InvalidAdapterConfigError(field);
+  };
+  if (typeof config.hfModelId !== "string" || !ADAPTER_BASE_MODEL_PATTERN.test(config.hfModelId)) {
+    refuse("hfModelId");
+  }
+  if (config.quantization !== undefined && !ADAPTER_QUANTIZATION_PATTERN.test(config.quantization)) {
+    refuse("quantization");
+  }
+  if (typeof adapter.name !== "string" || !ADAPTER_NAME_PATTERN.test(adapter.name)) {
+    refuse("adapter.name");
+  }
+  if (
+    typeof adapter.downloadUrl !== "string" ||
+    adapter.downloadUrl.length > ADAPTER_MAX_URL_LENGTH ||
+    !ADAPTER_URL_PATTERN.test(adapter.downloadUrl)
+  ) {
+    refuse("adapter.downloadUrl");
+  }
+  if (!Number.isInteger(adapter.maxRank) || adapter.maxRank < 1 || adapter.maxRank > ADAPTER_MAX_RANK) {
+    refuse("adapter.maxRank");
+  }
+  if (typeof adapter.sha256 !== "string" || !ADAPTER_SHA256_PATTERN.test(adapter.sha256)) {
+    refuse("adapter.sha256");
+  }
+  if (!Number.isSafeInteger(adapter.bytes) || adapter.bytes < 1) {
+    refuse("adapter.bytes");
+  }
+}
+
+/** The three root-level files of an adapter archive (infra/training/README.md). */
+export const ADAPTER_ARCHIVE_FILES = [
+  "adapter_config.json",
+  "adapter_model.safetensors",
+  "wheelsai_manifest.json",
+] as const;
+
+/**
+ * What the container runs before vLLM: fetch the archive, check it, unpack
+ * it, then replace itself with the OpenAI server.
+ *
+ * A CONSTANT. Nothing is interpolated into it: the URL, the directory, the
+ * checksum and the size limit arrive in the environment, and the server's
+ * arguments as this process's own argument vector, handed on unchanged. There
+ * is no shell anywhere in the chain (the entrypoint is `python3 -c`), so no
+ * value can become part of a command.
+ *
+ * The archive is refused unless it holds exactly the three expected regular
+ * files at its root: members are written one by one under their fixed names
+ * (never tar's own extraction), so a link, a path or an extra entry cannot
+ * place anything outside the adapter directory. The URL is never printed.
+ */
+export const VLLM_ADAPTER_BOOTSTRAP = `import hashlib, http.client, os, shutil, sys, tarfile, tempfile, time, urllib.error, urllib.request, zlib
+
+URL = os.environ["WHEELSAI_ADAPTER_URL"]
+DEST = os.environ["WHEELSAI_ADAPTER_DIR"]
+SHA256 = os.environ["WHEELSAI_ADAPTER_SHA256"]
+MAX_BYTES = int(os.environ["WHEELSAI_ADAPTER_MAX_BYTES"])
+FILES = (${ADAPTER_ARCHIVE_FILES.map((name) => JSON.stringify(name)).join(", ")})
+MAX_UNPACKED = max(MAX_BYTES * 8, 1 << 20)
+
+
+def fail(message):
+    sys.stderr.write("wheelsai-adapter: " + message + "\\n")
+    sys.exit(78)
+
+
+def fetch(path):
+    last = "no attempt"
+    for attempt in range(5):
+        if attempt:
+            time.sleep(min(30, 2 ** attempt))
+        try:
+            digest = hashlib.sha256()
+            size = 0
+            with urllib.request.urlopen(URL, timeout=60) as response, open(path, "wb") as out:
+                while True:
+                    chunk = response.read(1 << 20)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        fail("the archive is larger than expected")
+                    digest.update(chunk)
+                    out.write(chunk)
+            return digest.hexdigest()
+        except urllib.error.HTTPError as err:
+            if err.code < 500 and err.code != 429:
+                fail("the download was refused (HTTP %d)" % err.code)
+            last = "HTTP %d" % err.code
+        except (OSError, ValueError, http.client.HTTPException) as err:
+            last = type(err).__name__
+    fail("the download failed (" + last + ")")
+
+
+def unpack(path):
+    seen = set()
+    total = 0
+    with tarfile.open(path, mode="r:gz") as archive:
+        for member in archive:
+            if member.name not in FILES or member.name in seen or not member.isreg():
+                fail("the archive holds an entry that is not one of its three files")
+            total += member.size
+            if total > MAX_UNPACKED:
+                fail("the archive unpacks to more than expected")
+            seen.add(member.name)
+            source = archive.extractfile(member)
+            with open(os.path.join(DEST, member.name), "wb") as out:
+                shutil.copyfileobj(source, out, 1 << 20)
+    if len(seen) != len(FILES):
+        fail("the archive is missing one of its three files")
+
+
+os.makedirs(DEST, exist_ok=True)
+handle, archive_path = tempfile.mkstemp(suffix=".tar.gz")
+os.close(handle)
+try:
+    if fetch(archive_path) != SHA256:
+        fail("the archive does not match its checksum")
+    try:
+        unpack(archive_path)
+    except (tarfile.TarError, EOFError, OSError, zlib.error):
+        fail("the archive could not be read")
+finally:
+    os.remove(archive_path)
+
+os.execvp(sys.executable, [sys.executable, "-m", "vllm.entrypoints.openai.api_server"] + sys.argv[1:])
+`;
+
+/**
+ * The vLLM definition of a deployment that serves an adapter: the base
+ * model's server, started by the bootstrap above with LoRA enabled and one
+ * module, named for the fine-tuned model.
+ */
+function vllmAdapterJobDefinition(
+  config: ModelDeploymentConfig,
+  adapter: VllmAdapterConfig,
+  vllmArgs: string[],
+  toolCalling: VllmToolCalling | null,
+): NosanaJobDefinition {
+  assertValidAdapterConfig(config, adapter);
+  const directory = `${ADAPTER_ROOT_DIR}/${adapter.name}`;
+
+  return {
+    version: "0.1",
+    type: "container",
+    meta: {
+      trigger: "wheelsai",
+    },
+    ops: [
+      {
+        type: "container/run",
+        id: "vllm-inference",
+        args: {
+          image: toolCalling?.image ?? VLLM_IMAGE,
+          // The image's entrypoint is the server itself; the bootstrap takes
+          // its place and ends by exec'ing it with the arguments after it.
+          entrypoint: ["python3", "-c"],
+          cmd: [
+            VLLM_ADAPTER_BOOTSTRAP,
+            ...vllmArgs,
+            "--enable-lora",
+            "--lora-modules",
+            `${adapter.name}=${directory}`,
+            "--max-lora-rank",
+            // Not the rank itself: vLLM takes only VLLM_MAX_LORA_RANKS, so a
+            // rank-4 adapter is served under 8 (checked above: 1 to 256).
+            String(vllmMaxLoraRank(adapter.maxRank)),
+          ],
+          gpu: true,
+          expose: [8000],
+          env: {
+            ...(config.hfToken ? { HF_TOKEN: config.hfToken } : {}),
+            WHEELSAI_ADAPTER_URL: adapter.downloadUrl,
+            WHEELSAI_ADAPTER_DIR: directory,
+            WHEELSAI_ADAPTER_SHA256: adapter.sha256,
+            WHEELSAI_ADAPTER_MAX_BYTES: adapter.bytes.toString(),
+          },
         },
       },
     ],
@@ -2046,6 +2333,23 @@ export function servedModelName(engine: string | null | undefined, hfModelId: st
   return engine === "ollama" ? mapToOllamaModel(hfModelId) : hfModelId;
 }
 
+/**
+ * The same, for a deployment that may serve a fine-tuned adapter: vLLM
+ * answers to the adapter's name for the adapter and to the HF id for the bare
+ * base model, so a request must name the adapter to be answered by it.
+ */
+export function servedModelNameFor(args: {
+  engine: string | null | undefined;
+  hfId: string;
+  /** FineTunedModel.slug of the deployment's adapter; absent for a base deployment. */
+  fineTunedSlug?: string | null;
+}): string {
+  if (args.fineTunedSlug && args.engine !== "ollama") {
+    return `${ADAPTER_NAME_PREFIX}${args.fineTunedSlug}`;
+  }
+  return servedModelName(args.engine, args.hfId);
+}
+
 function mapToOllamaModel(hfModelId: string): string {
   // Map common HuggingFace model IDs to Ollama equivalents
   const mapping: Record<string, string> = {
@@ -2130,6 +2434,9 @@ export function generateJobDefinition(
     case "vllm":
       return generateVllmJobDefinition(config);
     case "ollama":
+      // Ollama has no adapter path here: refuse, never serve the bare base
+      // model under a fine-tuned model's name.
+      if (config.adapter) throw new InvalidAdapterConfigError("engine");
       return generateOllamaJobDefinition(config);
     default:
       throw new Error(`Unsupported engine: ${config.engine}`);

@@ -31,7 +31,7 @@ import {
 } from "./inferenceCreditHold.js";
 import { isAllowedNodeUrl } from "./nodeUrlAllowlist.js";
 import { isGpuBilledDeployment } from "./nosanaIds.js";
-import { nodeUrlAllowlistOptions, servedModelName } from "./nosana.js";
+import { nodeUrlAllowlistOptions, servedModelNameFor } from "./nosana.js";
 import { createPaymentRequestId } from "./x402.js";
 
 const logger = createLogger("deployment-chat");
@@ -152,7 +152,11 @@ export function buildDeploymentChatDeps(): DeploymentChatDeps {
     findRunningDeployment: async ({ orgId, deploymentId }) => {
       const deployment = await prisma.deployment.findFirst({
         where: { id: deploymentId, orgId, status: "running" },
-        include: { nodes: { where: { healthStatus: "healthy" } }, model: true },
+        include: {
+          nodes: { where: { healthStatus: "healthy" } },
+          model: true,
+          fineTunedModel: { select: { slug: true } },
+        },
       });
       return deployment as unknown as DeploymentForChat | null;
     },
@@ -168,7 +172,8 @@ export function buildDeploymentChatDeps(): DeploymentChatDeps {
     release: (args) =>
       prisma.$transaction((tx) => releaseInferenceHold(tx as unknown as InferenceHoldPrisma, args)),
     selectNode: (nodes: NodeInfo[]) => selectNode(nodes),
-    servedModelName,
+    servedModelName: (engine, hfId, fineTunedSlug) =>
+      servedModelNameFor({ engine, hfId, fineTunedSlug }),
     callNode: proxyToNode,
     markNodeUnhealthy: async (nodeId) => {
       await prisma.deploymentNode.update({

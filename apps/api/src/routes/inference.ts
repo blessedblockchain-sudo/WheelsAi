@@ -44,7 +44,7 @@ import {
 import { gpuBillingBlock, selectNode, type NodeInfo } from "../services/hostedModel.js";
 import { passthroughStream } from "../services/mastra-runtime.js";
 import { isGpuBilledDeployment } from "../services/nosanaIds.js";
-import { servedModelName } from "../services/nosana.js";
+import { servedModelNameFor } from "../services/nosana.js";
 import { streamToReply } from "../services/sseReply.js";
 import {
   DEFAULT_COMPLETION_TOKENS,
@@ -201,6 +201,9 @@ export function createDeploymentCompletionHandler(
           },
         },
         model: true,
+        // Set when the deployment serves an adapter: its name is what the
+        // engine must be asked for.
+        fineTunedModel: { select: { slug: true } },
       },
     });
 
@@ -426,7 +429,8 @@ export function createDeploymentCompletionHandler(
     // 4. Proxy request to node
     //
     // The engine only answers to the name it was started with (the model's
-    // HF id on vLLM, the pulled tag on Ollama). Callers send whatever names
+    // HF id on vLLM, the pulled tag on Ollama, the adapter's name for a
+    // deployment of a fine-tuned model). Callers send whatever names
     // the deployment to THEM - its slug, as /v1/models lists it - so the
     // name is rewritten here rather than forwarded for the engine to 404.
     const hasTools = chat.tools.length > 0;
@@ -434,7 +438,11 @@ export function createDeploymentCompletionHandler(
     const nodeBody: Record<string, unknown> = {
       ...sampling,
       max_tokens: maxTokens,
-      model: servedModelName(deployment.engine, deployment.model.hfId),
+      model: servedModelNameFor({
+        engine: deployment.engine,
+        hfId: deployment.model.hfId,
+        fineTunedSlug: deployment.fineTunedModel?.slug,
+      }),
       messages: chat.messages,
       stream: chat.stream,
       // Always asked for, whatever the caller wants to SEE: a per-request

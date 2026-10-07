@@ -43,6 +43,8 @@ import { settingsRoutes } from "./routes/settings.js";
 import { agentRoutes } from "./routes/agents.js";
 import { trainingRoutes } from "./routes/training.js";
 import { createStorageTransferRoutesProduction } from "./routes/storageTransfer.js";
+import { createFineTunedModelRoutesProduction } from "./routes/fineTunedModels.js";
+import { FINE_TUNED_MODELS_PREFIX } from "./services/fineTunedModels.js";
 import { STORAGE_TRANSFER_PREFIX } from "./services/objectStore.js";
 import { marketplaceRoutes } from "./routes/marketplace.js";
 import {
@@ -363,6 +365,11 @@ async function main() {
   // driver (or no storage) both routes answer 404.
   await app.register(createStorageTransferRoutesProduction(), {
     prefix: STORAGE_TRANSFER_PREFIX,
+  });
+  // An organization's fine-tuned models, and the adapter archive a
+  // deployment's container fetches with its signed URL (no session).
+  await app.register(createFineTunedModelRoutesProduction(), {
+    prefix: FINE_TUNED_MODELS_PREFIX,
   });
   await app.register(billingRoutes, { prefix: "/api/billing" });
   // Slack install + the distributed-app events endpoint (W2). Both are

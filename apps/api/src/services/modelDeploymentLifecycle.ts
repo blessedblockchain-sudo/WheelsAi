@@ -22,6 +22,15 @@ import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { createLogger } from "../utils/logger.js";
 import { releaseDeploymentReservation, reserveDeploymentCredits } from "./deploymentCreditGate.js";
 import {
+  FineTunedModelGoneError,
+  adapterForRun,
+  buildAdapterServingDeps,
+  lockReadyFineTunedModel,
+  prepareAdapterServing,
+  type AdapterServingDeps,
+  type AdapterServingRefusal,
+} from "./fineTunedModels.js";
+import {
   generateJobDefinition,
   getNosanaClient,
   isMockNosanaId,
@@ -135,6 +144,8 @@ export interface RestartDeploymentDeps {
   submit: SubmitDeployment;
   /** MAX_ACTIVE_DEPLOYMENTS_PER_ORG. */
   maxActiveDeployments: number;
+  /** What serving a fine-tuned adapter needs; the server's own when omitted. */
+  adapterServing?: AdapterServingDeps;
 }
 
 export type RestartDeploymentResult =
@@ -143,6 +154,8 @@ export type RestartDeploymentResult =
   | { ok: false; code: "not_found"; message: string }
   /** The platform cannot deploy this tier (Nosana or its market unconfigured). */
   | { ok: false; code: "preflight_failed"; message: string; error: unknown }
+  /** The deployment serves a fine-tuned model that cannot be served now. */
+  | { ok: false; code: "adapter_serving_refused"; message: string; refusal: AdapterServingRefusal }
   | {
       ok: false;
       code:
@@ -203,6 +216,30 @@ export async function restartModelDeployment(
   if (args.automatic && deployment.statusReason === OWNER_STOP_REASON) {
     return { ok: false, code: "deployment_not_restartable", message: STOPPED_BY_OWNER_MESSAGE };
   }
+
+  // A deployment of a fine-tuned model: the model must still be ready and
+  // servable, and this run gets an adapter URL of its own (the previous
+  // run's names the previous generation and no longer answers). Built before
+  // anything is claimed, so nothing it refuses leaves a claimed row behind.
+  const runGeneration = deployment.runGeneration + 1;
+  let adapter: ModelDeploymentConfig["adapter"];
+  if (deployment.fineTunedModelId) {
+    const serving = deps.adapterServing ?? buildAdapterServingDeps();
+    const prepared = await prepareAdapterServing(
+      { prisma, serving },
+      {
+        orgId,
+        fineTunedModelId: deployment.fineTunedModelId,
+        engine: deployment.engine,
+        gpuTier: deployment.gpuTier,
+      },
+    );
+    if (!prepared.ok) {
+      return { ok: false, code: "adapter_serving_refused", message: prepared.message, refusal: prepared };
+    }
+    adapter = adapterForRun(serving, prepared.fineTunedModel, { deploymentId, runGeneration });
+  }
+  const fineTunedModelId = adapter ? deployment.fineTunedModelId : null;
 
   // Before anything is claimed or reserved: the static check and, with
   // API-key access, the platform's credit gate.
@@ -298,6 +335,14 @@ export async function restartModelDeployment(
       });
       if (claimed.count === 0) throw new DeploymentConflictError();
 
+      // Deleted since it was read above: the restart does not happen.
+      if (
+        fineTunedModelId &&
+        !(await lockReadyFineTunedModel(tx as never, { id: fineTunedModelId, orgId, now: now() }))
+      ) {
+        throw new FineTunedModelGoneError();
+      }
+
       // A previous hold that was never released is refunded, not
       // overwritten (overwriting would lose the org's money).
       const old = await tx.deployment.findUnique({
@@ -350,6 +395,15 @@ export async function restartModelDeployment(
         message: "The deployment changed while restarting; retry.",
       };
     }
+    if (err instanceof FineTunedModelGoneError) {
+      const refusal: AdapterServingRefusal = {
+        ok: false,
+        status: 409,
+        code: "fine_tuned_model_not_ready",
+        message: "This fine-tuned model has been deleted and can no longer be deployed.",
+      };
+      return { ok: false, code: "adapter_serving_refused", message: refusal.message, refusal };
+    }
     throw err;
   }
 
@@ -358,7 +412,6 @@ export async function restartModelDeployment(
     maxTokens?: number;
     gpuMemoryUtilization?: number;
   };
-  const runGeneration = deployment.runGeneration + 1;
   submit(
     deploymentId,
     {
@@ -367,6 +420,7 @@ export async function restartModelDeployment(
       engine: deployment.engine as "vllm" | "ollama",
       maxTokens: config.maxTokens ?? DEFAULT_DEPLOYMENT_CONFIG.maxTokens,
       gpuMemoryUtilization: config.gpuMemoryUtilization ?? DEFAULT_DEPLOYMENT_CONFIG.gpuMemoryUtilization,
+      ...(adapter ? { adapter } : {}),
     },
     deployment.gpuTier,
     deployment.replicas,

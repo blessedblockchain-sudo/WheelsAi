@@ -57,7 +57,13 @@ test("wheelsai/<id> resolves to the organization's own running deployment, throu
     refuseRedirects: true,
     streamUsage: true,
   });
-  assert.deepEqual(fake.wheres[0].where, { orgId: ORG, modelId: "llama-3.1-8b", status: "running" });
+  // fineTunedModelId null: a deployment that serves an adapter is not the base model.
+  assert.deepEqual(fake.wheres[0].where, {
+    orgId: ORG,
+    modelId: "llama-3.1-8b",
+    status: "running",
+    fineTunedModelId: null,
+  });
 
   // Ollama answers to its own tag.
   const ollama = await resolveHostedModel(
@@ -142,4 +148,48 @@ test("selectNode picks only healthy nodes and prefers the faster one", async () 
   // slow weighs 100, fast weighs 990: the first ~9% of the range is slow.
   assert.equal(selectNode(nodes, () => 0.05)!.id, "slow");
   assert.equal(selectNode(nodes, () => 0.5)!.id, "fast");
+});
+
+// ============================================
+// Fine-tuned models
+// ============================================
+
+test("wheelsai/ft-<slug> resolves to the deployment that serves that fine-tuned model, asked for its adapter", async () => {
+  const { resolveHostedModel } = await import("../services/hostedModel.js");
+  const fake = db(deployment({ fineTunedModelId: "ftm-1", fineTunedModel: { slug: "support-tone" } }));
+  const res = await resolveHostedModel({ orgId: ORG, modelId: "wheelsai/ft-support-tone" }, fake);
+  assert.ok(res.ok);
+  assert.equal(res.resolved.modelName, "ft-support-tone");
+  assert.equal(res.resolved.baseUrl, `${NODE}/v1`);
+  // The caller's organization twice: on the deployment and on the model.
+  assert.deepEqual(fake.wheres[0].where, {
+    orgId: ORG,
+    status: "running",
+    fineTunedModel: { orgId: ORG, liveSlug: "support-tone", status: "ready" },
+  });
+  assert.deepEqual(fake.wheres[0].include.fineTunedModel, { select: { slug: true } });
+
+  const none = await resolveHostedModel({ orgId: ORG, modelId: "wheelsai/ft-support-tone" }, db(null));
+  assert.ok(!none.ok);
+  assert.match(none.message, /fine-tuned model "support-tone".*no running deployment/);
+
+  // A slug that is not a slug is never looked up.
+  for (const modelId of ["wheelsai/ft-", "wheelsai/ft-A B", "wheelsai/ft-a/../b"]) {
+    const hostile = db(deployment());
+    const refused = await resolveHostedModel({ orgId: ORG, modelId }, hostile);
+    assert.ok(!refused.ok, modelId);
+    assert.equal(hostile.wheres.length, 0, modelId);
+  }
+});
+
+test("wheelsai/<base id> is asked for the base model's name, whatever the row carries", async () => {
+  const { resolveHostedModel } = await import("../services/hostedModel.js");
+  // The query excludes adapter deployments (fineTunedModelId: null, asserted
+  // above); even a row that slipped through is asked for the base model.
+  const res = await resolveHostedModel(
+    { orgId: ORG, modelId: "wheelsai/llama-3.1-8b" },
+    db(deployment({ fineTunedModel: { slug: "support-tone" } })),
+  );
+  assert.ok(res.ok);
+  assert.equal(res.resolved.modelName, "meta-llama/Meta-Llama-3.1-8B-Instruct");
 });

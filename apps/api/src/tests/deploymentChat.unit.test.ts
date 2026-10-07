@@ -620,3 +620,33 @@ test("a recorder that throws changes neither the answer nor the ledger", async (
   assert.equal(world.balance, quiet.world.balance);
   assert.deepEqual(world.events, quiet.world.events);
 });
+
+// ============================================
+// A deployment that serves a fine-tuned adapter
+// ============================================
+
+test("a deployment of a fine-tuned model is asked for its adapter by name; any other for its base model", async () => {
+  const servedModelName: DeploymentChatDeps["servedModelName"] = (_engine, hfId, fineTunedSlug) =>
+    fineTunedSlug ? `ft-${fineTunedSlug}` : hfId;
+
+  const tuned = harness({
+    deployment: { ...DEPLOYMENT, fineTunedModel: { slug: "support-tone" } },
+    servedModelName,
+  });
+  await runDeploymentChat(request(), tuned.deps);
+  assert.equal(tuned.world.nodeCalls[0]!.body.model, "ft-support-tone");
+
+  for (const fineTunedModel of [undefined, null]) {
+    const plain = harness({ deployment: { ...DEPLOYMENT, fineTunedModel }, servedModelName });
+    await runDeploymentChat(request(), plain.deps);
+    assert.equal(plain.world.nodeCalls[0]!.body.model, "meta-llama/Meta-Llama-3.1-8B-Instruct");
+  }
+
+  // A step may name the adapter as the model it expects.
+  const named = harness({
+    deployment: { ...DEPLOYMENT, fineTunedModel: { slug: "support-tone" } },
+    servedModelName,
+  });
+  await runDeploymentChat(request({ modelId: "ft-support-tone" }), named.deps);
+  assert.equal(named.world.nodeCalls.length, 1);
+});

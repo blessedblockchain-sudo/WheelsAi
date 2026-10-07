@@ -8,7 +8,6 @@ import {
   Upload,
   Trash2,
   CheckCircle,
-  XCircle,
   Clock,
   FileText,
   RefreshCw,
@@ -22,11 +21,17 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
-import { trainingApi, type Dataset, type DatasetDetail, getErrorMessage } from "@/lib/api";
+import {
+  trainingApi,
+  type Dataset,
+  type DatasetDetail,
+  type DatasetStorageState,
+  formatDatasetRows,
+  getErrorMessage,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
@@ -38,9 +43,41 @@ const formatColors: Record<string, string> = {
   sharegpt: "bg-pink-500/10 text-pink-500",
 };
 
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(bytes < 1024 * 1024 * 10 ? 2 : 0)} MB`;
+}
+
+/**
+ * Rows in a JSON Lines file, counted by reading it once in the browser so a
+ * file over the row limit is refused before it is uploaded. Other file types
+ * are counted by the server when it validates them.
+ */
+async function countJsonlRows(file: File): Promise<number | undefined> {
+  if (!/\.(jsonl|ndjson|json)$/i.test(file.name) || typeof file.stream !== "function") {
+    return undefined;
+  }
+  const reader = file.stream().getReader();
+  let rows = 0;
+  let lineHasContent = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    for (const byte of value) {
+      if (byte === 10) {
+        if (lineHasContent) rows += 1;
+        lineHasContent = false;
+      } else if (byte !== 13 && byte !== 32 && byte !== 9) {
+        lineHasContent = true;
+      }
+    }
+  }
+  return lineHasContent ? rows + 1 : rows;
+}
+
 export default function DatasetsPage() {
   const confirmAction = useConfirm();
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [storage, setStorage] = useState<DatasetStorageState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [showUploadForm, setShowUploadForm] = useState(false);
@@ -50,7 +87,6 @@ export default function DatasetsPage() {
   const [uploadForm, setUploadForm] = useState({
     name: "",
     description: "",
-    format: "jsonl" as const,
   });
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -61,8 +97,9 @@ export default function DatasetsPage() {
 
   async function loadDatasets() {
     try {
-      const { datasets } = await trainingApi.listDatasets();
+      const { datasets, storage } = await trainingApi.listDatasets();
       setDatasets(datasets);
+      setStorage(storage);
       setLoadError(null);
     } catch (error) {
       setLoadError(error);
@@ -88,22 +125,43 @@ export default function DatasetsPage() {
       return;
     }
 
+    // Refused here, before a byte is sent; the server checks again.
+    if (storage && uploadFile.size > storage.maxDatasetBytes) {
+      toast.error(
+        `This file is ${formatMegabytes(uploadFile.size)}. The largest dataset is ${formatMegabytes(storage.maxDatasetBytes)}.`
+      );
+      return;
+    }
+    if (uploadFile.size === 0) {
+      toast.error("This file is empty");
+      return;
+    }
+
     setIsUploading(true);
     setUploadProgress(0);
 
     try {
+      const rowCount = await countJsonlRows(uploadFile);
+      if (storage && rowCount !== undefined && rowCount > storage.maxDatasetRows) {
+        toast.error(
+          `This file has ${rowCount.toLocaleString()} rows. The most a dataset can have is ${storage.maxDatasetRows.toLocaleString()}.`
+        );
+        return;
+      }
+
       // Step 1: Create dataset and get upload URL
       const { dataset, upload } = await trainingApi.createDataset({
         name: uploadForm.name,
         description: uploadForm.description,
         fileName: uploadFile.name,
+        sizeBytes: uploadFile.size,
+        rowCount,
         contentType: uploadFile.type || "application/octet-stream",
-        format: uploadForm.format,
       });
 
       setUploadProgress(20);
 
-      // Step 2: Upload file to S3
+      // Step 2: Upload the file straight to storage
       const xhr = new XMLHttpRequest();
 
       await new Promise<void>((resolve, reject) => {
@@ -124,8 +182,11 @@ export default function DatasetsPage() {
 
         xhr.addEventListener("error", () => reject(new Error("Upload failed")));
 
-        xhr.open("PUT", upload.url);
-        xhr.setRequestHeader("Content-Type", uploadFile.type || "application/octet-stream");
+        xhr.open(upload.method, upload.url);
+        // The link is signed for exactly these headers.
+        for (const [name, value] of Object.entries(upload.headers)) {
+          xhr.setRequestHeader(name, value);
+        }
         xhr.send(uploadFile);
       });
 
@@ -137,14 +198,18 @@ export default function DatasetsPage() {
       setUploadProgress(100);
 
       if (validation.validation.isValid) {
-        toast.success(`Dataset uploaded: ${validation.validation.rowCount} rows validated`);
+        toast.success(
+          validation.validation.rowCount === null
+            ? "Dataset uploaded and recognised"
+            : `Dataset uploaded: ${validation.validation.rowCount.toLocaleString()} rows validated`
+        );
       } else {
-        toast.warning(`Dataset uploaded with ${validation.validation.errors.length} validation errors`);
+        toast.warning(`Dataset uploaded with ${validation.validation.errorCount} validation errors`);
       }
 
       // Reset form
       setShowUploadForm(false);
-      setUploadForm({ name: "", description: "", format: "jsonl" });
+      setUploadForm({ name: "", description: "" });
       setUploadFile(null);
       loadDatasets();
     } catch (error) {
@@ -189,7 +254,7 @@ export default function DatasetsPage() {
       if (validation.validation.isValid) {
         toast.success("Dataset validated successfully");
       } else {
-        toast.warning(`Validation found ${validation.validation.errors.length} errors`);
+        toast.warning(`Validation found ${validation.validation.errorCount} errors`);
       }
       loadDatasets();
       if (selectedDataset?.id === datasetId) {
@@ -201,6 +266,10 @@ export default function DatasetsPage() {
       setIsValidating(false);
     }
   }
+
+  // Known only once the list has loaded; until then nothing is claimed.
+  const storageUnavailable = storage !== null && !storage.configured;
+  const canUpload = storage !== null && storage.configured;
 
   return (
     <div className="flex flex-col">
@@ -219,7 +288,7 @@ export default function DatasetsPage() {
                   <CardTitle className="text-base">Your Datasets</CardTitle>
                   <CardDescription>Upload and manage training data</CardDescription>
                 </div>
-                <Button onClick={() => setShowUploadForm(true)}>
+                <Button onClick={() => setShowUploadForm(true)} disabled={!canUpload}>
                   <Plus className="mr-2 h-4 w-4" />
                   Upload Dataset
                 </Button>
@@ -258,9 +327,13 @@ export default function DatasetsPage() {
                   <EmptyState
                     icon={Database}
                     title="No datasets yet"
-                    description="Upload your first dataset to start training."
-                    actionLabel="Upload Dataset"
-                    onAction={() => setShowUploadForm(true)}
+                    description={
+                      canUpload
+                        ? "Upload your first dataset to start training."
+                        : "Datasets you upload will be listed here."
+                    }
+                    actionLabel={canUpload ? "Upload Dataset" : undefined}
+                    onAction={canUpload ? () => setShowUploadForm(true) : undefined}
                   />
                 ) : (
                   <div className="space-y-4">
@@ -281,12 +354,17 @@ export default function DatasetsPage() {
                           <div>
                             <div className="flex items-center gap-2">
                               <p className="font-medium">{dataset.name}</p>
-                              <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", formatColors[dataset.format] || "bg-muted text-foreground")}>
-                                {dataset.format}
+                              <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", formatColors[dataset.fileType] || "bg-muted text-foreground")}>
+                                {dataset.fileType}
                               </span>
+                              {dataset.schemaFormat && (
+                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                                  {dataset.schemaFormat}
+                                </span>
+                              )}
                             </div>
                             <p className="text-sm text-muted-foreground">
-                              {dataset.rowCount.toLocaleString()} rows &bull;{" "}
+                              {formatDatasetRows(dataset.rowCount)} &bull;{" "}
                               {(dataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
                             </p>
                           </div>
@@ -333,8 +411,30 @@ export default function DatasetsPage() {
 
           {/* Sidebar */}
           <div className="space-y-6">
+            {/* Storage is not set up: say so where the upload form would be */}
+            {storageUnavailable && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+                    Uploads are not available
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm text-muted-foreground">
+                  <p>
+                    This server has no object storage configured, so it cannot accept a
+                    dataset upload yet. Nothing was uploaded or lost.
+                  </p>
+                  <p>
+                    Datasets that already exist are still listed. Uploading opens once an
+                    administrator connects a storage bucket.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Upload form */}
-            {showUploadForm && (
+            {showUploadForm && canUpload && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Upload Dataset</CardTitle>
@@ -366,23 +466,6 @@ export default function DatasetsPage() {
 
                   <div>
                     <label className="block text-sm font-medium text-foreground">
-                      Format
-                    </label>
-                    <Select
-                      value={uploadForm.format}
-                      onChange={(e) => setUploadForm({ ...uploadForm, format: e.target.value as any })}
-                      className="mt-1"
-                    >
-                      <option value="jsonl">JSONL</option>
-                      <option value="csv">CSV</option>
-                      <option value="parquet">Parquet</option>
-                      <option value="alpaca">Alpaca Format</option>
-                      <option value="sharegpt">ShareGPT Format</option>
-                    </Select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-foreground">
                       File
                     </label>
                     <input
@@ -395,6 +478,13 @@ export default function DatasetsPage() {
                     {uploadFile && (
                       <p className="mt-1 text-xs text-muted-foreground">
                         {uploadFile.name} ({(uploadFile.size / 1024 / 1024).toFixed(2)} MB)
+                      </p>
+                    )}
+                    {storage && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        JSONL, CSV or Parquet, up to {formatMegabytes(storage.maxDatasetBytes)} and{" "}
+                        {storage.maxDatasetRows.toLocaleString()} rows. The row format is detected
+                        when the file is validated.
                       </p>
                     )}
                   </div>
@@ -453,12 +543,22 @@ export default function DatasetsPage() {
                 <CardContent className="space-y-4">
                   <dl className="space-y-2 text-sm">
                     <div className="flex justify-between">
-                      <dt className="text-muted-foreground">Format</dt>
-                      <dd className="font-medium">{selectedDataset.format}</dd>
+                      <dt className="text-muted-foreground">File type</dt>
+                      <dd className="font-medium">{selectedDataset.fileType}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-muted-foreground">Row format</dt>
+                      <dd className="font-medium">
+                        {selectedDataset.schemaFormat ?? "Not detected yet"}
+                      </dd>
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-muted-foreground">Rows</dt>
-                      <dd className="font-medium">{selectedDataset.rowCount.toLocaleString()}</dd>
+                      <dd className="font-medium">
+                        {selectedDataset.rowCount === null
+                          ? "Unknown"
+                          : selectedDataset.rowCount.toLocaleString()}
+                      </dd>
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-muted-foreground">Size</dt>

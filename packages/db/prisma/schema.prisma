@@ -798,16 +798,34 @@ model Dataset {
   id            String   @id @default(uuid()) @db.Uuid
   orgId         String   @map("org_id") @db.Uuid
   name          String
+  // The name while the dataset is live, NULL once it is deleted. The unique
+  // index is on this column, so a deleted dataset keeps its name for the
+  // jobs that used it and the name is free for a new upload.
+  liveName      String?  @map("live_name")
   description   String?
 
   // Storage
-  storageType   String   @map("storage_type") // 's3', 'ipfs', 'huggingface'
-  storageUrl    String   @map("storage_url")
+  storageType   String   @map("storage_type") // 's3', 'local'
+  storageUrl    String   @map("storage_url") // 'store://<key>' (older rows: 's3://<bucket>/<key>')
 
   // Metadata
-  format        String   // 'jsonl', 'csv', 'parquet', 'alpaca', 'sharegpt'
+  format        String   // what the uploader declared; never overwritten
+  fileType      String   @default("jsonl") @map("file_type") // 'jsonl', 'csv', 'parquet': decides the parser
+  schemaFormat  String?  @map("schema_format") // detected by validation: 'alpaca', 'sharegpt', 'completion', 'text'
   sizeBytes     BigInt   @map("size_bytes")
   rowCount      Int      @map("row_count")
+  // false when the rows could not be counted (a Parquet file with an
+  // unreadable footer); rowCount is then a placeholder 0 that must not be
+  // shown as "empty" or priced: read it through knownDatasetRowCount.
+  rowCountKnown Boolean  @default(true) @map("row_count_known")
+  // From the last validation, over every valid row (characters / 4).
+  avgTokensPerRow Int?   @map("avg_tokens_per_row")
+  totalTokens   BigInt?  @map("total_tokens")
+  // What the last validation read: sha256 (hex) of the object's bytes and the
+  // store's ETag at that moment. The counts above describe exactly these
+  // bytes; a training run pins the sha256.
+  contentSha256 String?  @map("content_sha256")
+  contentEtag   String?  @map("content_etag")
 
   // Validation
   isValidated   Boolean  @default(false) @map("is_validated")
@@ -818,11 +836,13 @@ model Dataset {
 
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
+  // Soft delete: the row stays for the jobs that reference it.
+  deletedAt     DateTime? @map("deleted_at")
 
   org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   trainingJobs  TrainingJob[]
 
-  @@unique([orgId, name])
+  @@unique([orgId, liveName])
   @@index([orgId])
   @@map("datasets")
 }

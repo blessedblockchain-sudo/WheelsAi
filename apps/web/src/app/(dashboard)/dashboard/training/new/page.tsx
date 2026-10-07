@@ -30,6 +30,7 @@ import {
   type Dataset,
   type TrainableModel,
   type CreateTrainingJobInput,
+  formatDatasetRows,
   getErrorMessage,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -125,7 +126,9 @@ export default function NewTrainingPage() {
           });
         })
         .catch(() => {
-          // Ignore estimation errors
+          // No estimate for this choice (the API refuses one for a dataset
+          // whose rows are not counted): do not keep showing the last one.
+          setEstimate(null);
         });
     }
   }, [formData.baseModelId, formData.datasetId, formData.method, formData.config?.epochs, formData.gpuTier]);
@@ -397,7 +400,7 @@ export default function NewTrainingPage() {
                                 </p>
                               </div>
                               <div className="text-right">
-                                <p className="font-medium">{dataset.rowCount.toLocaleString()} rows</p>
+                                <p className="font-medium">{formatDatasetRows(dataset.rowCount)}</p>
                                 <p className="text-sm text-muted-foreground">
                                   {(dataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
                                 </p>
@@ -663,7 +666,7 @@ export default function NewTrainingPage() {
                         <h4 className="font-medium">Dataset</h4>
                         <p className="mt-1 text-sm">{selectedDataset?.name || "—"}</p>
                         <p className="text-xs text-muted-foreground">
-                          {selectedDataset?.rowCount.toLocaleString()} rows
+                          {selectedDataset ? formatDatasetRows(selectedDataset.rowCount) : ""}
                         </p>
                       </div>
 

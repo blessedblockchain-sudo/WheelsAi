@@ -27,7 +27,12 @@ import { Button } from "@/components/ui/button";
 import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
-import { trainingApi, type TrainingJobDetail, getErrorMessage } from "@/lib/api";
+import {
+  trainingApi,
+  type TrainingJobDetail,
+  formatDatasetRows,
+  getErrorMessage,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
@@ -399,7 +404,7 @@ export default function TrainingJobDetailPage() {
                   <div>
                     <p className="font-medium">{job.dataset.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      {job.dataset.rowCount.toLocaleString()} rows
+                      {formatDatasetRows(job.dataset.rowCount)}
                     </p>
                   </div>
                 </div>

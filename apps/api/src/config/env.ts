@@ -128,6 +128,11 @@ const envSchema = z.object({
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   DATASETS_BUCKET: z.string().optional(),
+  // The storage settings themselves (endpoint, path style, the dataset
+  // limits) are parsed by config/training.ts. Only the driver is declared
+  // here, for the deployed-environment guard below: "local" keeps uploads on
+  // one machine's disk and exists for development alone.
+  STORAGE_DRIVER: z.enum(["s3", "local"]).optional(),
 
   // Inference Proxy
   INFERENCE_TIMEOUT_MS: z.coerce.number().default(30000),
@@ -481,6 +486,9 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     }
     if (data.ALLOW_NOSANA_MOCK) {
       throw new EnvValidationError("ALLOW_NOSANA_MOCK must not be enabled outside development");
+    }
+    if (data.STORAGE_DRIVER === "local") {
+      throw new EnvValidationError("STORAGE_DRIVER=local must not be used outside development");
     }
     if (data.ALLOW_MOCK_CHECKOUT) {
       throw new EnvValidationError(

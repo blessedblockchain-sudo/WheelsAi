@@ -18,12 +18,16 @@ import {
   verifyTrainingWebhookToken,
 } from "../services/trainingWebhookAuth.js";
 import {
-  generateUploadUrl,
-  validateDataset,
-  estimateDatasetStats,
-  isDatasetStorageConfigured,
-  deleteDatasetObject,
+  createDataset,
+  deleteDataset,
+  describeDatasetStorage,
+  knownDatasetRowCount,
+  rowCountUnknownRefusal,
+  serializeDataset,
+  serializeDatasetDetail,
+  validateStoredDataset,
 } from "../services/dataset.js";
+import { buildDatasetDeps } from "../services/buildDatasetDeps.js";
 import { getNosanaClient } from "../services/nosana.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
@@ -42,9 +46,19 @@ const logger = createLogger("training-routes");
 const createDatasetSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
-  fileName: z.string(),
-  contentType: z.string().default("application/jsonl"),
-  format: z.enum(["jsonl", "csv", "parquet", "alpaca", "sharegpt"]).default("jsonl"),
+  fileName: z.string().min(1).max(255),
+  // The exact size of the file about to be uploaded: the limit is checked
+  // against it before a URL is issued, and the URL is good for that size only.
+  sizeBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  // Rows the client counted before uploading, when it did.
+  rowCount: z.number().int().nonnegative().optional(),
+  // How the file is encoded. Defaults to the file name's extension.
+  fileType: z.enum(["jsonl", "csv", "parquet"]).optional(),
+  contentType: z.string().max(100).optional(),
+  // What the uploader declares; stored as given and never overwritten.
+  format: z
+    .enum(["jsonl", "csv", "parquet", "alpaca", "sharegpt", "completion", "text"])
+    .optional(),
 });
 
 const createTrainingJobSchema = z.object({
@@ -73,6 +87,8 @@ const createTrainingJobSchema = z.object({
 // ============================================
 
 export const trainingRoutes: FastifyPluginAsync = async (app) => {
+  const datasetDeps = buildDatasetDeps(prisma);
+
   // ============================================
   // Datasets
   // ============================================
@@ -83,23 +99,13 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
   app.get("/datasets", { preHandler: [requireAuth] }, async (request, _reply) => {
     const { orgId } = request.auth!;
 
-    const datasets = await prisma.dataset.findMany({
-      where: { orgId },
-      orderBy: { createdAt: "desc" },
-    });
+    const datasets = await datasetDeps.db.list(orgId);
 
     return {
-      datasets: datasets.map((d) => ({
-        id: d.id,
-        name: d.name,
-        description: d.description,
-        format: d.format,
-        rowCount: d.rowCount,
-        sizeBytes: Number(d.sizeBytes),
-        isValidated: d.isValidated,
-        createdAt: d.createdAt,
-      })),
+      datasets: datasets.map(serializeDataset),
       total: datasets.length,
+      // Whether an upload can be offered at all, and how large it may be.
+      storage: describeDatasetStorage(datasetDeps),
     };
   });
 
@@ -110,93 +116,45 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     const { orgId } = request.auth!;
     const { datasetId } = z.object({ datasetId: z.string().uuid() }).parse(request.params);
 
-    const dataset = await prisma.dataset.findFirst({
-      where: { id: datasetId, orgId },
-    });
+    const dataset = await datasetDeps.db.find(orgId, datasetId);
 
     if (!dataset) {
       return reply.notFound("Dataset not found");
     }
 
-    return {
-      dataset: {
-        id: dataset.id,
-        name: dataset.name,
-        description: dataset.description,
-        format: dataset.format,
-        storageType: dataset.storageType,
-        rowCount: dataset.rowCount,
-        sizeBytes: Number(dataset.sizeBytes),
-        isValidated: dataset.isValidated,
-        validationErrors: dataset.validationErrors,
-        sampleRows: dataset.sampleRows,
-        createdAt: dataset.createdAt,
-        updatedAt: dataset.updatedAt,
-      },
-    };
+    return { dataset: serializeDatasetDetail(dataset) };
   });
 
   /**
    * Create dataset (get upload URL)
+   *
+   * Refused before a URL is issued or a row written: 503
+   * dataset_storage_not_configured, 400 unsupported_file_type, 413
+   * dataset_too_large / dataset_too_many_rows, 409 dataset_name_taken.
    */
   app.post("/datasets", { preHandler: [requireAuth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const body = createDatasetSchema.parse(request.body);
 
-    // Refuse up front when object storage isn't provisioned — without
-    // credentials the presign call crashes mid-request with an opaque
-    // credential-provider 500 (and would strand a Dataset row).
-    if (!isDatasetStorageConfigured()) {
-      return reply.status(503).send({
-        error: "dataset_storage_not_configured",
-        message:
-          "Dataset uploads are not available: object storage is not configured on this deployment.",
-      });
+    const result = await createDataset(datasetDeps, orgId, body);
+    if (!result.ok) {
+      return reply.status(result.status).send(result.body);
     }
-
-    // Check for duplicate name
-    const existing = await prisma.dataset.findFirst({
-      where: { orgId, name: body.name },
-    });
-
-    if (existing) {
-      return reply.badRequest(`Dataset '${body.name}' already exists`);
-    }
-
-    // Generate upload URL
-    const { uploadUrl, datasetId, storageUrl, expiresAt } = await generateUploadUrl(
-      orgId,
-      body.fileName,
-      body.contentType
-    );
-
-    // Create dataset record (pending validation)
-    const dataset = await prisma.dataset.create({
-      data: {
-        id: datasetId,
-        orgId,
-        name: body.name,
-        description: body.description,
-        storageType: "s3",
-        storageUrl,
-        format: body.format,
-        sizeBytes: BigInt(0),
-        rowCount: 0,
-        isValidated: false,
-      },
-    });
-
-    logger.info({ datasetId: dataset.id, name: body.name }, "Dataset created");
 
     reply.status(201);
     return {
       dataset: {
-        id: dataset.id,
-        name: dataset.name,
+        id: result.dataset.id,
+        name: result.dataset.name,
+        fileType: result.dataset.fileType,
       },
       upload: {
-        url: uploadUrl,
-        expiresAt,
+        url: result.upload.url,
+        method: result.upload.method,
+        // Send these with the upload, exactly: the link is signed for them.
+        headers: result.upload.headers,
+        expiresAt: result.upload.expiresAt,
+        maxBytes: result.upload.maxBytes,
       },
       message: "Upload your dataset using the provided URL, then call POST /datasets/:id/validate",
     };
@@ -204,99 +162,55 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
 
   /**
    * Validate uploaded dataset
+   *
+   * Reads the whole stored file. Refusals: 404, 409 dataset_not_uploaded,
+   * 413 dataset_too_large / dataset_too_many_rows (the file is removed),
+   * 503 dataset_storage_not_configured / dataset_storage_unavailable.
    */
   app.post("/datasets/:datasetId/validate", { preHandler: [requireAuth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { datasetId } = z.object({ datasetId: z.string().uuid() }).parse(request.params);
 
-    const dataset = await prisma.dataset.findFirst({
-      where: { id: datasetId, orgId },
-    });
-
-    if (!dataset) {
-      return reply.notFound("Dataset not found");
+    const result = await validateStoredDataset(datasetDeps, orgId, datasetId);
+    if (!result.ok) {
+      return reply.status(result.status).send(result.body);
     }
-
-    // Validate dataset
-    const validation = await validateDataset(dataset.storageUrl, dataset.format);
-
-    // Calculate stats
-    const stats = estimateDatasetStats(
-      validation.rowCount,
-      validation.sampleRows,
-      validation.schema.detectedFormat
-    );
-
-    // Update dataset record
-    await prisma.dataset.update({
-      where: { id: datasetId },
-      data: {
-        isValidated: validation.isValid,
-        rowCount: validation.rowCount,
-        sizeBytes: BigInt(validation.sizeBytes),
-        format: validation.schema.detectedFormat !== "unknown"
-          ? validation.schema.detectedFormat
-          : dataset.format,
-        validationErrors: validation.errors.length > 0 ? (validation.errors as any) : undefined,
-        sampleRows: validation.sampleRows,
-      },
-    });
-
-    logger.info(
-      { datasetId, isValid: validation.isValid, rowCount: validation.rowCount },
-      "Dataset validated"
-    );
+    const { validation } = result;
 
     return {
       validation: {
         isValid: validation.isValid,
         format: validation.format,
-        detectedFormat: validation.schema.detectedFormat,
+        fileType: validation.fileType,
+        schemaFormat: validation.schemaFormat,
+        detectedFormat: validation.schemaFormat,
         rowCount: validation.rowCount,
         sizeBytes: validation.sizeBytes,
         errors: validation.errors,
+        errorCount: validation.errorCount,
         warnings: validation.warnings,
       },
-      stats,
+      stats: validation.stats,
       sampleRows: validation.sampleRows,
     };
   });
 
   /**
    * Delete dataset
+   *
+   * A soft delete that frees the name. Refused (409 dataset_in_use) only
+   * while a training job that has not finished uses the dataset.
    */
   app.delete("/datasets/:datasetId", { preHandler: [requireAuth] }, async (request, reply) => {
     const { orgId } = request.auth!;
     const { datasetId } = z.object({ datasetId: z.string().uuid() }).parse(request.params);
 
-    const dataset = await prisma.dataset.findFirst({
-      where: { id: datasetId, orgId },
-    });
-
-    if (!dataset) {
-      return reply.notFound("Dataset not found");
+    const result = await deleteDataset(datasetDeps, orgId, datasetId);
+    if (!result.ok) {
+      return reply.status(result.status).send(result.body);
     }
 
-    // Check if dataset is used by any training jobs
-    const usedByJobs = await prisma.trainingJob.count({
-      where: { datasetId },
-    });
-
-    if (usedByJobs > 0) {
-      return reply.badRequest(`Dataset is used by ${usedByJobs} training job(s) and cannot be deleted`);
-    }
-
-    // Best-effort object deletion; an S3 failure is logged, never blocks
-    // the DB delete (the object becomes an orphan to sweep, not a wedge).
-    await deleteDatasetObject(dataset.storageUrl);
-
-    await prisma.dataset.delete({
-      where: { id: datasetId },
-    });
-
-    logger.info({ datasetId }, "Dataset deleted");
-
-    return { message: "Dataset deleted" };
+    return { deleted: true, message: "Dataset deleted" };
   });
 
   // ============================================
@@ -378,7 +292,8 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
         dataset: {
           id: job.dataset.id,
           name: job.dataset.name,
-          rowCount: job.dataset.rowCount,
+          // null, not 0, when the rows could not be counted.
+          rowCount: job.dataset.rowCountKnown ? job.dataset.rowCount : null,
         },
         method: job.method,
         config: job.config,
@@ -413,7 +328,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
 
     // Verify dataset exists and is validated
     const dataset = await prisma.dataset.findFirst({
-      where: { id: body.datasetId, orgId },
+      where: { id: body.datasetId, orgId, deletedAt: null },
     });
 
     if (!dataset) {
@@ -422,6 +337,15 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
 
     if (!dataset.isValidated) {
       return reply.badRequest("Dataset must be validated before training");
+    }
+
+    // The cost below is worked out from the row count. A dataset whose rows
+    // could not be counted holds a placeholder 0, which would price the job
+    // at nothing: refused before a job row or a credit moves.
+    const datasetRows = knownDatasetRowCount(dataset);
+    if (datasetRows === null) {
+      const refusal = rowCountUnknownRefusal();
+      return reply.status(refusal.status).send(refusal.body);
     }
 
     // Verify model exists
@@ -437,7 +361,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     const cost = estimateTrainingCost(
       body.baseModelId,
       body.method,
-      dataset.rowCount,
+      datasetRows,
       body.config.epochs || DEFAULT_TRAINING_CONFIG.epochs,
       body.gpuTier
     );
@@ -720,11 +644,22 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
 
     // Get dataset row count
     const dataset = await prisma.dataset.findFirst({
-      where: { id: body.datasetId, orgId },
+      where: { id: body.datasetId, orgId, deletedAt: null },
     });
 
     if (!dataset) {
       return reply.notFound("Dataset not found");
+    }
+
+    // No estimate from a count that is not known (not validated yet, or the
+    // rows could not be counted): a $0.00 figure would be read as a price.
+    if (!dataset.isValidated) {
+      return reply.badRequest("Dataset must be validated before training");
+    }
+    const datasetRows = knownDatasetRowCount(dataset);
+    if (datasetRows === null) {
+      const refusal = rowCountUnknownRefusal();
+      return reply.status(refusal.status).send(refusal.body);
     }
 
     // Get GPU recommendation
@@ -735,7 +670,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     const cost = estimateTrainingCost(
       body.baseModelId,
       body.method,
-      dataset.rowCount,
+      datasetRows,
       body.epochs,
       gpuTier
     );
@@ -751,7 +686,7 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
         totalCostUsd: (cost.totalCostCents / 100).toFixed(2),
       },
       dataset: {
-        rowCount: dataset.rowCount,
+        rowCount: datasetRows,
         format: dataset.format,
       },
     };

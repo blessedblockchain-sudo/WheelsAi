@@ -1128,15 +1128,39 @@ export const agentsApi = {
 // Training Studio API
 // ============================================
 
+export type DatasetFileType = "jsonl" | "csv" | "parquet";
+
 export interface Dataset {
   id: string;
   name: string;
   description: string | null;
+  /** What the uploader declared. */
   format: string;
-  rowCount: number;
+  /** How the file is encoded. */
+  fileType: DatasetFileType;
+  /** Row format found by validation (alpaca, sharegpt, completion, text). */
+  schemaFormat: string | null;
+  /** null when the rows could not be counted (Parquet). */
+  rowCount: number | null;
   sizeBytes: number;
+  avgTokensPerRow: number | null;
+  totalTokens: number | null;
   isValidated: boolean;
   createdAt: string;
+}
+
+/** Whether this server can take a dataset upload, and how large one may be. */
+export interface DatasetStorageState {
+  configured: boolean;
+  maxDatasetBytes: number;
+  maxDatasetRows: number;
+}
+
+/** "1,234 rows", or the honest answer when the rows were not counted. */
+export function formatDatasetRows(rowCount: number | null | undefined): string {
+  return typeof rowCount === "number"
+    ? `${rowCount.toLocaleString()} rows`
+    : "Row count unknown";
 }
 
 export interface DatasetDetail extends Dataset {
@@ -1167,7 +1191,8 @@ export interface TrainingJobDetail extends Omit<TrainingJob, "datasetName"> {
   dataset: {
     id: string;
     name: string;
-    rowCount: number;
+    // null when the rows could not be counted.
+    rowCount: number | null;
   };
   config: {
     epochs: number;
@@ -1204,8 +1229,14 @@ export interface CreateDatasetInput {
   name: string;
   description?: string;
   fileName: string;
+  /** Exact size of the file; the upload link is good for this size only. */
+  sizeBytes: number;
+  /** Rows counted before uploading, when known. */
+  rowCount?: number;
+  /** Defaults to the file name's extension. */
+  fileType?: DatasetFileType;
   contentType?: string;
-  format?: "jsonl" | "csv" | "parquet" | "alpaca" | "sharegpt";
+  format?: "jsonl" | "csv" | "parquet" | "alpaca" | "sharegpt" | "completion" | "text";
 }
 
 export interface CreateTrainingJobInput {
@@ -1232,15 +1263,24 @@ export interface CreateTrainingJobInput {
 export const trainingApi = {
   // Datasets
   listDatasets: () =>
-    api<{ datasets: Dataset[]; total: number }>("/api/training/datasets"),
+    api<{ datasets: Dataset[]; total: number; storage: DatasetStorageState }>(
+      "/api/training/datasets"
+    ),
 
   getDataset: (id: string) =>
     api<{ dataset: DatasetDetail }>(`/api/training/datasets/${id}`),
 
   createDataset: (input: CreateDatasetInput) =>
     api<{
-      dataset: { id: string; name: string };
-      upload: { url: string; expiresAt: string };
+      dataset: { id: string; name: string; fileType: DatasetFileType };
+      upload: {
+        url: string;
+        method: "PUT";
+        /** Send these with the upload exactly: the link is signed for them. */
+        headers: Record<string, string>;
+        expiresAt: string;
+        maxBytes: number | null;
+      };
       message: string;
     }>("/api/training/datasets", {
       method: "POST",
@@ -1252,10 +1292,14 @@ export const trainingApi = {
       validation: {
         isValid: boolean;
         format: string;
+        fileType: DatasetFileType;
+        schemaFormat: string;
         detectedFormat: string;
-        rowCount: number;
+        rowCount: number | null;
         sizeBytes: number;
+        /** At most 50; errorCount is the true total. */
         errors: any[];
+        errorCount: number;
         warnings: any[];
       };
       stats: {
@@ -1263,13 +1307,14 @@ export const trainingApi = {
         avgTokensPerRow: number;
         minTokens: number;
         maxTokens: number;
-        estimatedTrainingTime: string;
-      };
+      } | null;
       sampleRows: Record<string, any>[];
     }>(`/api/training/datasets/${id}/validate`, { method: "POST" }),
 
   deleteDataset: (id: string) =>
-    api<{ message: string }>(`/api/training/datasets/${id}`, { method: "DELETE" }),
+    api<{ deleted: boolean; message: string }>(`/api/training/datasets/${id}`, {
+      method: "DELETE",
+    }),
 
   // Training Jobs
   listJobs: (status?: string) =>

@@ -42,6 +42,8 @@ import { billingRoutes } from "./routes/billing.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { agentRoutes } from "./routes/agents.js";
 import { trainingRoutes } from "./routes/training.js";
+import { createStorageTransferRoutesProduction } from "./routes/storageTransfer.js";
+import { STORAGE_TRANSFER_PREFIX } from "./services/objectStore.js";
 import { marketplaceRoutes } from "./routes/marketplace.js";
 import {
   createJobRoutesProduction,
@@ -357,6 +359,11 @@ async function main() {
   await app.register(deploymentRoutes, { prefix: "/api/deployments" });
   await app.register(agentRoutes, { prefix: "/api/agents" });
   await app.register(trainingRoutes, { prefix: "/api/training" });
+  // Bytes in and out of the development-only local object store; with the s3
+  // driver (or no storage) both routes answer 404.
+  await app.register(createStorageTransferRoutesProduction(), {
+    prefix: STORAGE_TRANSFER_PREFIX,
+  });
   await app.register(billingRoutes, { prefix: "/api/billing" });
   // Slack install + the distributed-app events endpoint (W2). Both are
   // ALWAYS mounted and answer 501 when Slack is unconfigured: Slack must

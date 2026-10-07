@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
-import { trainingApi, type TrainingJob, type Dataset, getErrorMessage } from "@/lib/api";
+import { trainingApi, type TrainingJob, type Dataset, formatDatasetRows, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -329,7 +329,7 @@ export default function TrainingPage() {
                         <div>
                           <p className="font-medium text-sm">{dataset.name}</p>
                           <p className="text-xs text-muted-foreground">
-                            {dataset.rowCount.toLocaleString()} rows
+                            {formatDatasetRows(dataset.rowCount)}
                           </p>
                         </div>
                         <Badge variant={dataset.isValidated ? "success" : "secondary"}>

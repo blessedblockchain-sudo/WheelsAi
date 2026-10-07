@@ -57,7 +57,7 @@ The platform pays Nosana in one of two ways. Pick one; both unlock model and age
 ## 5. Code sandbox and storage
 
 - [ ] **A sandbox runner service** at `SANDBOX_RUNNER_URL` (+ `SANDBOX_RUNNER_TOKEN`). It unlocks the `code_interpreter` skill and graph `code` nodes. The HTTP contract is in the header of `apps/api/src/services/skills/sandboxRunner.ts`: a fresh isolated sandbox per request, no network egress, a read-only root filesystem, CPU/memory/pid limits, and a kill on timeout. It must be reachable at a public address.
-- [ ] **An S3 or R2 bucket.** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and `DATASETS_BUCKET` unlock fine-tuning datasets and per-agent files (`file_read`/`file_write`).
+- [ ] **An S3 or R2 bucket.** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` and `DATASETS_BUCKET` unlock fine-tuning datasets and per-agent files (`file_read`/`file_write`). For R2 or any other S3-compatible store also set `S3_ENDPOINT`. The bucket's settings and the test to run on it are in section 15.
 
 ## 6. Channels and integrations
 
@@ -183,3 +183,20 @@ The container a fine-tuning job runs on a GPU node is written and tested on CPU 
 - [ ] **Pull the published image once from a machine outside the project** to confirm it is readable without credentials.
 - [ ] **`HF_TOKEN`** (section 3) with the Llama and Mistral licences accepted on Hugging Face. Without it only ungated base models can be fine-tuned; a gated one ends with exit 12, `base_model_gated`.
 - [ ] **Confirm on the first GPU run** what the CPU proof cannot show (the full list closes `infra/training/README.md`): that the image builds and a node pulls it, QLoRA 4-bit loading on the node's driver, peak VRAM and tokens per second per base model and tier, and that vLLM loads the adapter with `--lora-modules`.
+
+## 15. Fine-tuning: object storage
+
+Datasets and trained adapters live in one S3-compatible bucket; per-agent files share it. The storage code is built and proven against a local MinIO (`docs/OBJECT-STORAGE-RUN.md`). No real bucket exists yet, so a deployed server answers `503 dataset_storage_not_configured` and the datasets page says uploads are not available.
+
+- [ ] **Create the bucket and an access key limited to it.** The default is one Cloudflare R2 bucket (no egress charge when a GPU node downloads a dataset) with an API token of type "Object Read & Write" scoped to that bucket. AWS S3 works the same way without the endpoint. Keep the bucket private: nothing reads it without a signed link.
+- [ ] **Set on the API:** `DATASETS_BUCKET`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and for R2 `S3_ENDPOINT=https://<account id>.r2.cloudflarestorage.com` (the region then defaults to `auto`, which is what R2 expects). Leave `S3_FORCE_PATH_STYLE` unset for R2 and AWS; it is for MinIO. Leave `STORAGE_DRIVER` unset: `local` is refused outside development.
+- [ ] **Add a CORS rule to the bucket.** The dashboard uploads a dataset from the browser straight to the bucket, and the provider refuses that without one. Allow the web origin only:
+
+  ```json
+  [{ "AllowedOrigins": ["https://<the web origin>"], "AllowedMethods": ["PUT"], "AllowedHeaders": ["content-type"], "MaxAgeSeconds": 3600 }]
+  ```
+
+- [ ] **Run the smoke test against the real bucket** with the same variables the API will have: `cd apps/api && npx tsx scripts/object-store-smoke.ts`. It uploads through a presigned link, checks that a link refuses another size and another content type, reads the object back, deletes what it wrote, and prints no credential. One thing it settles that MinIO could not: whether R2 enforces the signed upload size. If that check fails, the size limit is still enforced at validation (an oversize object is deleted), but say so in `docs/HARDENING-BACKLOG.md`.
+- [ ] **Then upload one dataset from the deployed dashboard**, which is the only test of the CORS rule.
+- [ ] **Decide the dataset limits** if the defaults do not suit: `TRAINING_DATASET_MAX_BYTES` (200 MB) and `TRAINING_DATASET_MAX_ROWS` (200,000).
+- [ ] **Decide what happens to old objects.** Deleting a dataset removes its object; if that delete fails the object stays and is only logged. A lifecycle rule on the bucket, or a sweep, is not built (see the backlog).

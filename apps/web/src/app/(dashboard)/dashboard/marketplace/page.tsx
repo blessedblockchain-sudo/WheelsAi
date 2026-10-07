@@ -14,6 +14,7 @@ import {
   ExternalLink,
   TrendingUp,
   Package,
+  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,6 +31,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
+import { TrialSettingsDialog } from "@/components/marketplace/trial-settings-dialog";
 import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
 
 type RevenueSummary = Pick<
@@ -112,6 +114,8 @@ export default function MarketplaceDashboardPage() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null);
   const [revenueError, setRevenueError] = useState<unknown>(null);
+  // The listing whose Try it settings are open; null = closed.
+  const [trialListing, setTrialListing] = useState<MarketplaceListing | null>(null);
 
   useEffect(() => {
     loadListings();
@@ -367,6 +371,12 @@ export default function MarketplaceDashboardPage() {
                                   Edit Listing
                                 </Link>
                               </DropdownMenuItem>
+                              {listing.status === "published" && (
+                                <DropdownMenuItem onClick={() => setTrialListing(listing)}>
+                                  <MessageSquare className="mr-2 h-4 w-4" />
+                                  Try it settings
+                                </DropdownMenuItem>
+                              )}
                               {listing.status === "draft" && (
                                 <DropdownMenuItem
                                   onClick={() => handlePublish(listing.id)}
@@ -472,6 +482,13 @@ export default function MarketplaceDashboardPage() {
           </>
         )}
       </div>
+
+      <TrialSettingsDialog
+        listing={trialListing}
+        onOpenChange={(open) => {
+          if (!open) setTrialListing(null);
+        }}
+      />
     </div>
   );
 }

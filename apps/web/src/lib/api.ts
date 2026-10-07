@@ -1,5 +1,7 @@
 // API Client for WheelsAI backend
 
+import { readSseChat, type SseChatEvent } from "./sse";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 /**
@@ -1396,6 +1398,8 @@ export interface MarketplaceListing {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Whether the listing has a Try it tab (every published listing does). */
+  trial?: { enabled: boolean };
   agent?: {
     id: string;
     framework: string;
@@ -1431,7 +1435,7 @@ export interface PublicAgentDetail {
   } | null;
   eligibility: { eligible: boolean } | null;
   deployments: Array<{ gpuTier: string; replicas: number; status: string }>;
-  channels: Array<{ platform: string; enabled: boolean }>;
+  channels: Array<{ platform: string; enabled: boolean; /** false = configured, but nothing serves it yet. */ live?: boolean }>;
   recentPayments: Array<{
     amountLamports: string;
     status: string;
@@ -5061,53 +5065,156 @@ export async function* streamPlaygroundChat(
 
   if (!res.body) return;
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6);
-        if (data === "[DONE]") return;
-
-        let parsed: any;
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          // Skip unparseable SSE chunks
-          continue;
-        }
-
-        // A provider (or the server) can report a failure INSIDE a 200
-        // stream. Surface it — never render a half answer as if it were
-        // whole.
-        if (parsed?.error) {
-          const message =
-            typeof parsed.error === "string"
-              ? parsed.error
-              : parsed.error.message ?? "The model stream failed";
-          throw new Error(message);
-        }
-        if (parsed?.wheelsai?.toolCalls && options?.onToolCalls) {
-          options.onToolCalls(parsed.wheelsai.toolCalls as PlaygroundToolCall[]);
-        }
-        const content = parsed?.choices?.[0]?.delta?.content;
-        if (content) yield content;
-      }
-    }
-  } finally {
-    reader.releaseLock();
+  for await (const event of readSseChat(res.body)) {
+    if (event.type === "done") return;
+    // A provider (or the server) can report a failure INSIDE a 200 stream.
+    // Surface it — never render a half answer as if it were whole.
+    if (event.type === "error") throw new Error(event.message);
+    if (event.type === "toolCalls") options?.onToolCalls?.(event.toolCalls as PlaygroundToolCall[]);
+    else yield event.content;
   }
 }
+
+// ============================================
+// Web chat channel (/api/channels/web) and Try it
+// (/api/marketplace/listings/:slug/try)
+// ============================================
+
+export type WidgetPosition = "bottom-right" | "bottom-left";
+
+/** One publishable web chat key, as its owner sees it. */
+export interface WidgetKey {
+  id: string;
+  agentId: string;
+  agentName: string;
+  name: string;
+  /** Public by design: it is printed in the snippet. */
+  publicKey: string;
+  allowedOrigins: string[];
+  /** null = the platform default (`defaults.dailyMessageCap` of the list). */
+  dailyMessageCap: number | null;
+  perIpPerMinute: number | null;
+  appearance: {
+    title: string | null;
+    greeting: string | null;
+    primaryColor: string | null;
+    position: WidgetPosition;
+  };
+  storeTranscripts: boolean;
+  hideBranding: boolean;
+  enabled: boolean;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  /** Messages counted today (UTC); null when the count could not be read. */
+  usageToday: number | null;
+  /** null when the server does not know its public addresses; the reason says which. */
+  snippet: string | null;
+  snippetUnavailableReason: string | null;
+}
+
+export interface WidgetKeyList {
+  keys: WidgetKey[];
+  defaults: { dailyMessageCap: number };
+  /** Whether this organization's plan may hide "Powered by WheelsAI". */
+  whiteLabel: boolean;
+}
+
+export interface WidgetKeyInput {
+  name?: string;
+  allowedOrigins?: string[];
+  dailyMessageCap?: number | null;
+  perIpPerMinute?: number | null;
+  appearance?: {
+    title?: string | null;
+    greeting?: string | null;
+    primaryColor?: string | null;
+    position?: WidgetPosition;
+  };
+  storeTranscripts?: boolean;
+  hideBranding?: boolean;
+  enabled?: boolean;
+}
+
+export const webChannelApi = {
+  listKeys: (options: { agentId?: string; includeRevoked?: boolean } = {}) => {
+    const query = new URLSearchParams();
+    if (options.agentId) query.set("agentId", options.agentId);
+    if (options.includeRevoked) query.set("includeRevoked", "true");
+    const suffix = query.toString();
+    return api<WidgetKeyList>(`/api/channels/web/keys${suffix ? `?${suffix}` : ""}`);
+  },
+  createKey: (input: Omit<WidgetKeyInput, "enabled"> & { agentId: string; name: string }) =>
+    api<{ key: WidgetKey }>("/api/channels/web/keys", { method: "POST", body: input }),
+  updateKey: (id: string, input: WidgetKeyInput) =>
+    api<{ key: WidgetKey }>(`/api/channels/web/keys/${id}`, { method: "PATCH", body: input }),
+  /** A new public value; every snippet carrying the old one stops working. */
+  rotateKey: (id: string) => api<{ key: WidgetKey }>(`/api/channels/web/keys/${id}/rotate`, { method: "POST" }),
+  /** Permanent. */
+  revokeKey: (id: string) => api<null>(`/api/channels/web/keys/${id}`, { method: "DELETE" }),
+};
+
+/** Who may start a Try it chat right now: `signin` means there is no anonymous door. */
+export type TryItGate = "session" | "turnstile" | "signin";
+
+export interface TryItAvailability {
+  enabled: boolean;
+  disabledReason: "graph_agent_preview" | "no_model_available" | null;
+  gate: TryItGate;
+  turnstileSiteKey: string | null;
+  model: { id: string; label: string; substituted: boolean; note: string | null } | null;
+  limits: { messagesPerSession: number; maxMessageChars: number; maxMessages: number; maxTotalChars: number };
+  /** The agent's tools a preview withholds. */
+  disabledTools: string[];
+}
+
+export interface TryItSession {
+  sessionToken: string;
+  expiresAt: string;
+  messagesRemaining: number;
+}
+
+/** The publisher's view of one listing's Try it. */
+export interface ListingTrialSettings {
+  trial: { enabled: boolean; fundedDailyCap: number };
+  pricing: { baseDailyMessages: number; fundedMessageCents: number | null };
+  today: { day: string; baseCount: number | null; fundedCount: number; fundedSpentCents: number };
+}
+
+export const tryItApi = {
+  availability: (slug: string) =>
+    api<TryItAvailability>(`/api/marketplace/listings/${encodeURIComponent(slug)}/try`),
+  startSession: (slug: string, turnstileToken?: string) =>
+    api<TryItSession>(`/api/marketplace/listings/${encodeURIComponent(slug)}/try/session`, {
+      method: "POST",
+      body: turnstileToken ? { turnstileToken } : {},
+    }),
+  /**
+   * One message, streamed. A refusal (a limit, an expired session) throws an
+   * ApiError before anything is yielded; a failure inside the stream arrives
+   * as an `error` event.
+   */
+  streamChat: async function* (
+    slug: string,
+    body: { sessionToken: string; messages: Array<{ role: "user" | "assistant"; content: string }> },
+    signal?: AbortSignal,
+  ): AsyncGenerator<SseChatEvent, void, unknown> {
+    const res = await fetch(`${API_URL}/api/marketplace/listings/${encodeURIComponent(slug)}/try/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, stream: true }),
+      credentials: "include",
+      signal,
+    });
+    if (!res.ok) throw new ApiError(res.status, res.statusText, await readBody(res));
+    if (!res.body) return;
+    yield* readSseChat(res.body);
+  },
+  getSettings: (listingId: string) => api<ListingTrialSettings>(`/api/marketplace/listings/${listingId}/trial`),
+  /** 501 `trial_funding_not_configured` while a funded message has no price. */
+  updateSettings: (listingId: string, input: { fundedDailyCap: number }) =>
+    api<ListingTrialSettings>(`/api/marketplace/listings/${listingId}/trial`, { method: "PATCH", body: input }),
+};
 
 // ============================================
 // Treasury API — runway card + payments history

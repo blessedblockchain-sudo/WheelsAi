@@ -37,6 +37,16 @@
  *               it in the offering's allowed tools (`outboundAllowed`). The
  *               deliverable is checked for leaked instructions; a request
  *               the agent makes on the way is not, and cannot be.
+ *   public      an anonymous visitor is typing: the web chat widget on
+ *               somebody's site, or Try it on a marketplace listing. The
+ *               strictest mode, because nobody on the other end is known or
+ *               accountable. Nothing may spend, nothing may change the
+ *               agent's saved data, nothing may READ what the agent has
+ *               saved (one visitor would read what the owner, or the
+ *               visitor before, left there), and nothing may send a request
+ *               to an address the model chooses (the platform would be an
+ *               anonymous HTTP client, and the agent's instructions could be
+ *               posted out). There is no allowlist that loosens it.
  *
  * `trial` is also what a marketplace BUYER's run uses (see runMode.ts): the
  * agent's prompt and tools were written by someone else.
@@ -49,7 +59,8 @@ export type ToolMode =
   | "graph"
   | "test"
   | "api"
-  | "hired";
+  | "hired"
+  | "public";
 
 export interface ToolContext {
   mode: ToolMode;
@@ -101,16 +112,24 @@ export interface SkillDefinition {
   /**
    * True when the skill changes the agent's saved data (files, memory). Such
    * skills are refused in `test` mode (a test run must not leave the agent
-   * different from how it found it) and in `hired` mode (a buyer's input
-   * must not be able to rewrite the publisher's files).
+   * different from how it found it), in `hired` mode (a buyer's input must
+   * not be able to rewrite the publisher's files) and in `public` mode.
    */
   writesState?: boolean;
+  /**
+   * True when the skill returns data the agent saved for itself (its files).
+   * Refused in `public` mode: what the owner's own chats wrote there is not
+   * for an anonymous visitor to read back. A knowledge base is NOT this - its
+   * owner bound it to the agent in order to answer from it.
+   */
+  readsPrivateState?: boolean;
   /**
    * True when the skill sends data the model wrote to an address the model
    * chose. In `hired` mode the prompt is a buyer's, and such a skill is how
    * a buyer's input could have the agent post its private instructions to
    * the buyer's own server: it is refused there unless the offering allows
-   * it by name (ToolContext.outboundAllowed).
+   * it by name (ToolContext.outboundAllowed). In `public` mode it is refused
+   * outright.
    */
   sendsOutbound?: boolean;
   /** Names of the server configuration the skill needs (operator-facing). */

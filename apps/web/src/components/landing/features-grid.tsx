@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+
+import { liveChatChannelList } from "@/lib/chat-channels";
 import {
   Hammer,
   Rocket,
@@ -51,7 +53,7 @@ const pillars = [
         icon: Globe,
         title: "Chat Channels + API",
         description:
-          "Discord, Telegram, and Slack connectors plus an OpenAI-compatible API — one deploy covers them all.",
+          `${liveChatChannelList(" and ")} chat (Web is a widget you paste into your own site) plus an OpenAI-compatible API — one deploy covers them all.`,
       },
       {
         icon: Cpu,

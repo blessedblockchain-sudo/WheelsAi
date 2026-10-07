@@ -37,6 +37,8 @@ interface FakeAgent {
   openclawDeployment: {
     channels: Array<{ platform: string; enabled: boolean }>;
   } | null;
+  /** What the loader's own filter (enabled, not revoked, take 1) returned. */
+  widgetKeys?: Array<{ allowedOrigins: string[] }>;
   listing: {
     id: string;
     publisherId: string;
@@ -450,8 +452,105 @@ test("loadPublicAgentByPrisma exposes channels but not orgId or internal IDs", a
     assert.deepEqual(Object.keys(d).sort(), ["gpuTier", "replicas", "status"]);
   }
   for (const c of result.channels) {
-    assert.deepEqual(Object.keys(c).sort(), ["enabled", "platform"]);
+    assert.deepEqual(Object.keys(c).sort(), ["enabled", "live", "platform"]);
   }
+});
+
+// ============================================
+// Channel honesty: a channel is named live only when a message sent there
+// reaches the agent
+// ============================================
+
+async function channelsOf(agent: FakeAgent) {
+  const { loadPublicAgentByPrisma } = await import("../services/loadPublicAgent.js");
+  const stub = makePrismaStub({ agents: [agent] });
+  const result = await loadPublicAgentByPrisma({ slug: agent.slug, paymentsLimit: 10 }, makeDeps(stub).deps);
+  assert.ok(result);
+  return { channels: result.channels, stub, result };
+}
+
+test("the web channel is listed, live, when the agent has a web chat key that works", async () => {
+  const { channels, stub } = await channelsOf({
+    ...baseAgent,
+    widgetKeys: [{ allowedOrigins: ["https://shop.example"] }],
+  });
+  assert.deepEqual(channels, [
+    { platform: "discord", enabled: true, live: true },
+    { platform: "web", enabled: true, live: true },
+  ]);
+  // Enabled and not revoked is decided in the query; whether a site can use
+  // the key is read from its origins, so every such key is fetched.
+  assert.deepEqual(stub.observed.agentArgs.include.widgetKeys, {
+    where: { enabled: true, revokedAt: null },
+    select: { allowedOrigins: true },
+  });
+});
+
+test("a web chat key no site is allowed to use is configured, not live", async () => {
+  // What the OpenClaw wizard's "Web Chat" option creates, and a key made in
+  // the dashboard before a site is added: it answers 403 from every site.
+  const { channels } = await channelsOf({ ...baseAgent, widgetKeys: [{ allowedOrigins: [] }] });
+  assert.deepEqual(channels, [
+    { platform: "discord", enabled: true, live: true },
+    { platform: "web", enabled: true, live: false },
+  ]);
+
+  // It still stands in for a saved "web" platform row, once.
+  const replaced = await channelsOf({
+    ...baseAgent,
+    openclawDeployment: { channels: [{ platform: "webchat", enabled: true }] },
+    widgetKeys: [{ allowedOrigins: [] }],
+  });
+  assert.deepEqual(replaced.channels, [{ platform: "web", enabled: true, live: false }]);
+
+  // One key with a site is enough, wherever it comes in the list.
+  const mixed = await channelsOf({
+    ...baseAgent,
+    widgetKeys: [{ allowedOrigins: [] }, { allowedOrigins: ["https://shop.example"] }],
+  });
+  assert.deepEqual(mixed.channels.at(-1), { platform: "web", enabled: true, live: true });
+});
+
+test("no web chat key (none, or only revoked and disabled ones): the web channel is not listed", async () => {
+  for (const widgetKeys of [undefined, []] as const) {
+    const { channels } = await channelsOf({ ...baseAgent, widgetKeys: widgetKeys ? [...widgetKeys] : undefined });
+    assert.deepEqual(channels.map((c) => c.platform), ["discord"]);
+  }
+});
+
+test("platform rows with no working inbound path come back live:false, never as active channels", async () => {
+  const { channels } = await channelsOf({
+    ...baseAgent,
+    openclawDeployment: {
+      channels: [
+        { platform: "discord", enabled: true },
+        { platform: "telegram", enabled: false },
+        { platform: "twitter", enabled: true },
+        { platform: "web", enabled: true },
+        { platform: "api", enabled: true },
+      ],
+    },
+  });
+  assert.deepEqual(channels, [
+    { platform: "discord", enabled: true, live: true },
+    // Switched off is not live, whatever the platform.
+    { platform: "telegram", enabled: false, live: false },
+    { platform: "twitter", enabled: true, live: false },
+    // A "web" platform row is a saved wish; the widget key is the channel.
+    { platform: "web", enabled: true, live: false },
+    { platform: "api", enabled: true, live: false },
+  ]);
+});
+
+test("a working web chat key replaces a saved 'web' platform row instead of listing the channel twice", async () => {
+  const { channels, result } = await channelsOf({
+    ...baseAgent,
+    openclawDeployment: { channels: [{ platform: "web", enabled: true }] },
+    widgetKeys: [{ allowedOrigins: ["https://shop.example"] }],
+  });
+  assert.deepEqual(channels, [{ platform: "web", enabled: true, live: true }]);
+  // The sites a key allows are the owner's business, not the page's.
+  assert.ok(!JSON.stringify(result, (_k, v) => (typeof v === "bigint" ? v.toString() : v)).includes("shop.example"));
 });
 
 // ============================================

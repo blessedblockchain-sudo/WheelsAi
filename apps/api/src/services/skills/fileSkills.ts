@@ -175,6 +175,7 @@ export function createFileReadSkill(deps: BuiltinSkillDeps): SkillDefinition {
       },
     },
     moneyMoving: false,
+    readsPrivateState: true,
     requires: FILE_REQUIRES,
     availability: () =>
       deps.getFileStore() ? { available: true } : { available: false, reason: UNCONFIGURED },

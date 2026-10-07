@@ -19,6 +19,21 @@ export interface ChangelogDay {
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-07",
+    items: [
+      {
+        kind: "New",
+        title: "Web chat widget: a fourth chat channel",
+        body: "Put an agent on your own site with one script tag. Create a web chat key under Integrations, Channels, list the sites that may use it, set its daily cap and look, and paste the snippet. Answers stream in; the widget is isolated from your page's styles and works with a keyboard and a screen reader. Anonymous visitors get no tool that spends, writes, reads saved files or sends requests out, and the limits refuse rather than run uncounted.",
+      },
+      {
+        kind: "New",
+        title: "Try it on every marketplace listing",
+        body: "Each published listing has a Try it tab: a free, limited chat with the agent before you install or hire it. Previews run on a free model WheelsAI provides, and the tab says so when that differs from the listing's own model. Sign in to use it; anonymous previews open once the human check is configured. Publishers can see today's usage under Try it settings.",
+      },
+    ],
+  },
+  {
     date: "2026-09-30",
     items: [
       {

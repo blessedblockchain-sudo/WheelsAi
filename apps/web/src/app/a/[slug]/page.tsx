@@ -19,6 +19,7 @@ import {
 import { ApiError, publicAgentApi, type PublicAgentDetail } from "@/lib/api";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { chatChannelLabel } from "@/lib/chat-channels";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const CLUSTER = process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet";
@@ -344,7 +345,7 @@ export default function PublicAgentPage() {
           <div className="rounded-xl border bg-card p-5">
             <div className="flex items-center gap-2 text-sm font-medium">
               <Globe className="h-4 w-4 text-muted-foreground" />
-              Active channels
+              Chat channels
             </div>
             {channels.length === 0 ? (
               <p className="mt-3 text-sm text-muted-foreground">
@@ -353,11 +354,16 @@ export default function PublicAgentPage() {
             ) : (
               <div className="mt-3 flex flex-wrap gap-2">
                 {channels.map((c) => (
+                  // live:false is a channel its owner set up that nothing
+                  // serves yet. It is shown as that, never as active.
                   <span
                     key={c.platform}
-                    className="rounded-full bg-muted px-3 py-1 text-sm capitalize"
+                    className={`rounded-full px-3 py-1 text-sm ${
+                      c.live === false ? "border border-dashed text-muted-foreground" : "bg-muted"
+                    }`}
                   >
-                    {c.platform}
+                    {chatChannelLabel(c.platform)}
+                    {c.live === false && " (configured, not live yet)"}
                   </span>
                 ))}
               </div>

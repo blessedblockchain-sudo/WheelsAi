@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Store, Coins, Globe, Box } from "lucide-react";
 import { API_BASE_URL } from "@/lib/api";
+import { LIVE_CHAT_CHANNELS } from "@/lib/chat-channels";
 
 interface StatItemProps {
   icon: React.ElementType;
@@ -79,7 +80,12 @@ interface PlatformStats {
 
 // Shown until /api/public/stats answers (and if it can't); the API reads
 // the same product constants, so these only differ when the build is stale.
-const FALLBACK_STATS: PlatformStats = { frameworks: 6, models: 21, pricingModels: 4, channels: 3 };
+const FALLBACK_STATS: PlatformStats = {
+  frameworks: 6,
+  models: 21,
+  pricingModels: 4,
+  channels: LIVE_CHAT_CHANNELS.length,
+};
 
 function usePlatformStats(): PlatformStats {
   const [stats, setStats] = useState<PlatformStats>(FALLBACK_STATS);

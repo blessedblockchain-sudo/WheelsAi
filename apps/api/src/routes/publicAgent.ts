@@ -11,7 +11,8 @@
  * guarantees pinned by tests:
  *   - orgId never appears in the response
  *   - payment errorMessage redacted (status only)
- *   - disabled channels filtered out
+ *   - disabled channels filtered out; a configured channel with no working
+ *     path is listed as not live, never as active
  *   - deployments expose tier + replicas + status, not internal job IDs
  *
  * The loader signals "not found OR not public" with a single null return,
@@ -55,7 +56,12 @@ export interface PublicAgentDetail {
    */
   eligibility: { eligible: boolean } | null;
   deployments: Array<{ gpuTier: string; replicas: number; status: string }>;
-  channels: Array<{ platform: string; enabled: boolean }>;
+  /**
+   * `enabled` = the owner configured and switched it on. `live` = a message
+   * sent there reaches the agent today. A platform without a working
+   * inbound path is enabled and not live, and the page says so.
+   */
+  channels: Array<{ platform: string; enabled: boolean; live: boolean }>;
   recentPayments: Array<{
     amountLamports: bigint;
     status: string;
@@ -121,7 +127,7 @@ function serialize(detail: PublicAgentDetail) {
     })),
     channels: detail.channels
       .filter((c) => c.enabled)
-      .map((c) => ({ platform: c.platform, enabled: c.enabled })),
+      .map((c) => ({ platform: c.platform, enabled: c.enabled, live: c.live })),
     recentPayments: detail.recentPayments.map((p) => ({
       amountLamports: p.amountLamports.toString(),
       status: p.status,

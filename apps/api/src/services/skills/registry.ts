@@ -11,13 +11,16 @@
  * Two guarantees live here rather than in each skill, so a new skill cannot
  * forget them:
  *
- *   1. MONEY-MOVING skills never run in `trial`, `test` or `hired` mode, and
- *      skills that WRITE the agent's saved data never run in `test` or `hired`
- *      mode. Skills that SEND data to an address the model chooses never run
- *      in `hired` mode unless the offering's publisher allowed them by name.
- *      All three are filtered out of the tool list the model sees AND refused
- *      at execute time, so a model that hallucinates the call still cannot
- *      spend, overwrite or post the publisher's instructions somewhere.
+ *   1. MONEY-MOVING skills never run in `trial`, `test`, `hired` or `public`
+ *      mode, and skills that WRITE the agent's saved data never run in
+ *      `test`, `hired` or `public` mode. Skills that SEND data to an address
+ *      the model chooses never run in `hired` mode unless the offering's
+ *      publisher allowed them by name, and never in `public` mode. Skills
+ *      that READ the agent's saved data never run in `public` mode. All four
+ *      are filtered out of the tool list the model sees AND refused at
+ *      execute time, so a model that hallucinates the call still cannot
+ *      spend, overwrite, read back or post the publisher's instructions
+ *      somewhere.
  *   2. An unavailable skill (provider not configured, misconfigured, missing
  *      agent prerequisite) answers with an explicit `unavailable` result. It is
  *      never run "anyway" and never fabricates output.
@@ -45,15 +48,21 @@ import type {
 const logger = createLogger("skills-registry");
 
 /** Modes in which value-moving skills are refused outright. */
-const MONEY_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["trial", "test", "hired"]);
+const MONEY_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>([
+  "trial",
+  "test",
+  "hired",
+  "public",
+]);
 
 /** Modes in which skills that change the agent's saved data are refused. */
-const WRITE_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["test", "hired"]);
+const WRITE_BLOCKED_MODES: ReadonlySet<ToolMode> = new Set<ToolMode>(["test", "hired", "public"]);
 
 /** Why a state-writing skill is refused, per mode that refuses it. */
 const WRITE_BLOCK_REASON: Partial<Record<ToolMode, string>> = {
   test: "tests must not modify the agent's files",
   hired: "a buyer's job must not modify the publisher's files",
+  public: "a visitor's chat must not modify the agent's files",
 };
 
 export class SkillRegistry {
@@ -89,6 +98,15 @@ export class SkillRegistry {
   /** Why a skill may not run in this context, or null when it may. */
   modeBlock(skill: SkillDefinition, ctx: Pick<ToolContext, "mode" | "outboundAllowed">): string | null {
     const { mode } = ctx;
+    // An anonymous visitor: no allowlist applies, whatever the context carries.
+    if (mode === "public") {
+      if (skill.sendsOutbound) {
+        return `"${skill.key}" sends data to an address the model chooses and is disabled for public visitors`;
+      }
+      if (skill.readsPrivateState) {
+        return `"${skill.key}" reads the agent's saved data and is disabled for public visitors: it would show one visitor what the agent's owner, or another visitor, saved`;
+      }
+    }
     // Fails closed: no list, or a list without this skill, is "not allowed".
     if (skill.sendsOutbound && mode === "hired" && !ctx.outboundAllowed?.includes(skill.key)) {
       return `"${skill.key}" sends data to an address the model chooses and is disabled in a paid job: a buyer's input must not be able to send the publisher's instructions elsewhere. The offering's publisher can allow it by naming it in the offering's allowed tools`;

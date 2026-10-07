@@ -20,6 +20,7 @@ export const DOCS_NAV: DocsNavSection[] = [
       { title: "Getting started", href: "/docs/guides/getting-started" },
       { title: "Deploy a model", href: "/docs/guides/deploy-a-model" },
       { title: "Custom domains", href: "/docs/guides/custom-domains" },
+      { title: "Web chat widget and Try it", href: "/docs/guides/web-chat-widget" },
       { title: "Publish to the marketplace", href: "/docs/guides/marketplace" },
       { title: "Plans and billing", href: "/docs/guides/plans-and-billing" },
       { title: "Templates", href: "/docs/guides/templates" },

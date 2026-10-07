@@ -64,9 +64,9 @@ const fullPublicAgent = {
     { gpuTier: "4090", replicas: 2, status: "running" },
   ],
   channels: [
-    { platform: "discord", enabled: true },
-    { platform: "telegram", enabled: false },
-    { platform: "slack", enabled: true },
+    { platform: "discord", enabled: true, live: true },
+    { platform: "telegram", enabled: false, live: false },
+    { platform: "slack", enabled: true, live: true },
   ],
   recentPayments: [
     {
@@ -159,6 +159,26 @@ test("GET /a/:slug filters channels down to the enabled ones", async () => {
     "discord",
     "slack",
   ]);
+});
+
+test("GET /a/:slug says which enabled channels are live: a configured platform with no working path is not shown as active", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () => ({
+      ...fullPublicAgent,
+      channels: [
+        { platform: "discord", enabled: true, live: true },
+        { platform: "twitter", enabled: true, live: false },
+        { platform: "web", enabled: true, live: true },
+      ],
+    }),
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.deepEqual(res.json().channels, [
+    { platform: "discord", enabled: true, live: true },
+    { platform: "twitter", enabled: true, live: false },
+    { platform: "web", enabled: true, live: true },
+  ]);
+  assert.ok(!res.body.includes("orgId"));
 });
 
 test("GET /a/:slug serializes recentPayments with public-safe fields only", async () => {

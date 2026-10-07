@@ -171,6 +171,12 @@ export type StreamOutcome =
       /** Set when the stream ended in a hand-back from the tool loop. */
       clientToolCalls?: ModelToolCall[];
       transcript?: ModelMessage[];
+      /**
+       * The answer text that was streamed, up to STREAM_CONTENT_KEPT_CHARS:
+       * what an opted-in transcript stores. Absent when the stream's source
+       * does not keep it.
+       */
+      content?: string;
     }
   | { ok: false; error: string; toolCalls: ToolCallRecord[]; code?: StreamFailureCode };
 
@@ -701,6 +707,13 @@ export function answerToStream(
 }
 
 /**
+ * How much of a streamed answer its outcome keeps. An answer is bounded by
+ * max_tokens, so this only stops a misbehaving provider from growing the
+ * process; a longer answer is kept cut, never dropped.
+ */
+export const STREAM_CONTENT_KEPT_CHARS = 32_000;
+
+/**
  * Watches a provider SSE stream as it is forwarded, to learn what actually
  * happened: did any answer text arrive, did the provider embed an error event
  * (which an HTTP 200 stream can do), did it finish.
@@ -709,6 +722,8 @@ class SseWatcher {
   private buffer = "";
   private decoder = new TextDecoder();
   contentChars = 0;
+  /** The answer text itself, up to STREAM_CONTENT_KEPT_CHARS. */
+  content = "";
   /** Deltas that carried tool calls: a function-calling turn has no text. */
   toolCallDeltas = 0;
   errorMessage: string | null = null;
@@ -755,7 +770,12 @@ class SseWatcher {
     }
     const choice = json?.choices?.[0];
     const content = choice?.delta?.content;
-    if (typeof content === "string") this.contentChars += content.length;
+    if (typeof content === "string") {
+      this.contentChars += content.length;
+      if (this.content.length < STREAM_CONTENT_KEPT_CHARS) {
+        this.content += content.slice(0, STREAM_CONTENT_KEPT_CHARS - this.content.length);
+      }
+    }
     const toolCalls = choice?.delta?.tool_calls;
     if (Array.isArray(toolCalls) && toolCalls.length > 0) this.toolCallDeltas += 1;
     if (choice?.finish_reason) this.finishReason = choice.finish_reason;
@@ -841,6 +861,7 @@ export function passthroughStream(
             usage: watcher.usage,
             toolCalls: [],
             finishReason: watcher.finishReason,
+            content: watcher.content,
           });
         }
         controller.close();
@@ -924,6 +945,7 @@ export async function runChatStream(
           finishReason: result.finishReason,
           clientToolCalls: result.clientToolCalls,
           transcript: result.transcript,
+          content: result.content.slice(0, STREAM_CONTENT_KEPT_CHARS),
         }),
       };
     }

@@ -97,6 +97,7 @@ model Organization {
   offerings          Offering[]          @relation("PublishedOfferings")
   jobsHired          Job[]               @relation("JobsHired")
   jobsReceived       Job[]               @relation("JobsReceived")
+  widgetKeys         WidgetKey[]
 
   @@map("organizations")
 }
@@ -614,6 +615,7 @@ model Agent {
   contributors  AgentContributor[]
   listing       AgentListing?
   offerings          Offering[]
+  widgetKeys         WidgetKey[]
   graph         AgentGraph?
   openclawDeployment OpenClawDeployment?
 
@@ -944,6 +946,11 @@ model AgentListing {
   pricePerRequestCents BigInt? @map("price_per_request_cents")
   monthlyPriceCents BigInt?   @map("monthly_price_cents")
 
+  // Try it: every published listing can be tried for free on the platform's
+  // models, up to a platform-funded number of messages a day. This is how
+  // many MORE messages a day the publisher pays for (0 = none).
+  trialFundedDailyCap Int     @default(0) @map("trial_funded_daily_cap")
+
   // Publisher
   publisherId       String    @map("publisher_id") @db.Uuid
   publisherName     String    @map("publisher_name")
@@ -968,6 +975,7 @@ model AgentListing {
   subscriptions     AgentSubscription[]
   agentToken        AgentToken?
   offerings     Offering[]
+  trialDays         TrialDailyUsage[]
 
   @@index([publisherId])
   @@index([status, category])
@@ -3192,4 +3200,88 @@ model FreeTierUsage {
 
   @@unique([orgId, model, date])
   @@map("free_tier_usage")
+}
+
+// ============================================
+// Web chat channel and Try it
+// ============================================
+
+// A web chat channel of an agent: the publishable key a site's embed snippet
+// carries. It is public by design (it ships in page source), so it grants
+// nothing by itself: a browser is held to allowedOrigins, and everyone to the
+// fail-closed limits and the owner's daily cap.
+model WidgetKey {
+  id               String    @id @default(uuid()) @db.Uuid
+  orgId            String    @map("org_id") @db.Uuid
+  agentId          String    @map("agent_id") @db.Uuid
+  publicKey        String    @unique @map("public_key") // 'wpk_' + 32 url-safe characters
+  name             String
+
+  // 'https://host[:port]' or 'https://*.host'. Empty = no site may use it.
+  allowedOrigins   String[]  @default([]) @map("allowed_origins")
+  // null = the platform default.
+  dailyMessageCap  Int?      @map("daily_message_cap")
+  perIpPerMinute   Int?      @map("per_ip_per_minute")
+
+  // Appearance
+  title            String?
+  greeting         String?   @db.VarChar(500)
+  primaryColor     String?   @map("primary_color") // '#RRGGBB'
+  position         String    @default("bottom-right") // 'bottom-right', 'bottom-left'
+
+  // Off unless the owner opts in: visitor messages are then kept as
+  // Conversation rows in the owner's organization.
+  storeTranscripts Boolean   @default(false) @map("store_transcripts")
+  // The owner's wish to hide "Powered by WheelsAI". It takes effect only
+  // while their plan has white-labelling, checked when the widget loads.
+  hideBranding     Boolean   @default(false) @map("hide_branding")
+  enabled          Boolean   @default(true)
+  revokedAt        DateTime? @map("revoked_at")
+  lastUsedAt       DateTime? @map("last_used_at")
+
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  organization     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent            Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@index([agentId])
+  @@map("widget_keys")
+}
+
+// One listing's Try it messages on one UTC day. fundedCount only rises by a
+// compare-and-set that keeps it below the listing's trialFundedDailyCap, and
+// falls only when a funded message is refunded.
+model TrialDailyUsage {
+  listingId   String   @map("listing_id") @db.Uuid
+  day         String   // UTC 'YYYY-MM-DD'
+  baseCount   Int      @default(0) @map("base_count") // paid for by the platform
+  fundedCount Int      @default(0) @map("funded_count") // paid for by the publisher
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  listing     AgentListing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@id([listingId, day])
+  @@map("trial_daily_usage")
+}
+
+// One publisher-funded Try it message. Held before the model is called;
+// settled or refunded exactly once, by compare-and-set from 'held'. No
+// foreign keys: like the ledger rows it is referenced from, it outlives the
+// listing.
+model TrialCharge {
+  id            String    @id @default(uuid()) @db.Uuid
+  listingId     String    @map("listing_id") @db.Uuid
+  publisherId   String    @map("publisher_id") @db.Uuid
+  day           String    // UTC 'YYYY-MM-DD'
+  amountCents   BigInt    @map("amount_cents")
+  status        String    @default("held") // 'held', 'settled', 'refunded'
+  failureReason String?   @map("failure_reason")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  resolvedAt    DateTime? @map("resolved_at")
+
+  @@index([listingId, day])
+  @@index([status, createdAt])
+  @@map("trial_charges")
 }

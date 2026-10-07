@@ -16,7 +16,9 @@
  *   1. load the agent, scoped to the caller's organization
  *   2. caller restrictions and client-tool validation (no side effects)
  *   3. resolve the model and its provider (no side effects)
- *   4. free-tier limiter - free models only
+ *   4. the caller's own admission check (`admit`), when it brings one, and
+ *      then the free-tier limiter - free models only. In that order, so the
+ *      caller's budgets bound what it can spend of the organization's
  *   5. marketplace licence and charge - the only step that moves money, and
  *      the last one that can refuse: nothing above it charges, nothing below
  *      it refuses
@@ -32,6 +34,12 @@
  * names it: an empty allowlist leaves the agent its other tools, never that. The agent is the publisher's
  * original, in the publisher's organization, so step 5 charges nobody: the
  * buyer paid into the job's escrow.
+ *
+ * A public chat (source "widget" or "trial": the web chat widget and a
+ * listing's Try it, both reached through services/publicChat.ts) is the same
+ * chat again, in the `public` tool mode. Its caller bounds it (`admit`,
+ * `maxOutputTokens`, `maxToolRounds`), and Try it runs it on a platform free
+ * model at the platform's expense (`platformFunded`).
  *
  * An agent whose entrypoint is its graph (Agent.entrypoint = "graph") takes
  * steps 1, 2 and 4 and then runs the graph saved in the builder instead of a
@@ -91,11 +99,20 @@ export type AgentChatCaller = "owner" | "public";
 
 /**
  * Where the chat came from; recorded with its usage, and the base of its tool
- * mode. The last four have no client on the other end: the scheduler, a
- * workflow step or batch job, the test runner, and a paid job a buyer hired
- * (Offerings and Jobs).
+ * mode. `widget` and `trial` are an anonymous visitor: the web chat widget on
+ * a site, and Try it on a marketplace listing. The last four have no client
+ * on the other end: the scheduler, a workflow step or batch job, the test
+ * runner, and a paid job a buyer hired (Offerings and Jobs).
  */
-export type AgentChatSource = "playground" | "api" | "widget" | "scheduled" | "job" | "test" | "hired";
+export type AgentChatSource =
+  | "playground"
+  | "api"
+  | "widget"
+  | "trial"
+  | "scheduled"
+  | "job"
+  | "test"
+  | "hired";
 
 export type AgentRef = { id: string } | { slug: string };
 
@@ -133,6 +150,34 @@ export interface AgentChatInput {
    * outbound tools the offering allows by name (ToolContext.outboundAllowed).
    */
   toolAllowlist?: string[];
+  /**
+   * The platform pays for this chat (a listing's Try it). It runs on this
+   * free model whatever the agent configures, with none of the agent's own
+   * provider keys, and it does not draw on the organization's free-model
+   * allowance: the caller has already bounded it with limits of its own.
+   * Set by server code, never from a request body. A graph agent is refused:
+   * its nodes choose their own models and keys.
+   */
+  platformFunded?: { modelId: string };
+  /**
+   * A ceiling on the answer's length, under whatever the agent configures:
+   * what a visitor nobody knows may make the owner's model write. Not
+   * applied to a graph agent, whose nodes carry their own limits.
+   */
+  maxOutputTokens?: number;
+  /** A ceiling on tool rounds, under the runtime's own. */
+  maxToolRounds?: number;
+  /**
+   * The caller's own admission check, run in step 4: after the model is
+   * known, before the free-tier limiter and before anything is charged.
+   * It is where a public chat spends its per-key and per-listing budgets:
+   * after the model, so a request that could never have run does not use
+   * them up, and ahead of the organization's allowance, so a request they
+   * refuse does not use that up either. To refuse, it throws; whatever it
+   * throws leaves prepareAgentChat as it is, and nothing has been counted
+   * against the organization or charged.
+   */
+  admit?: (facts: { agentId: string; modelId: string | null; freeModel: boolean }) => Promise<void>;
 }
 
 /** The agent columns chat reads. */
@@ -485,14 +530,20 @@ const HOSTED_MODEL_PREFIX = "wheelsai/";
 const TOOL_MODE_BASE: Record<AgentChatSource, ToolMode> = {
   playground: "playground",
   api: "api",
-  // Somebody else's visitor is driving the agent: nothing may spend.
-  widget: "trial",
+  // An anonymous visitor is typing: nothing may spend, write, read the
+  // agent's saved data or send a request out.
+  widget: "public",
+  trial: "public",
   scheduled: "scheduled",
   job: "job",
   test: "test",
   // A buyer's input drives the publisher's agent: nothing may spend or write.
   hired: "hired",
 };
+
+function cappedTokens(configured: number, ceiling: number | undefined): number {
+  return ceiling === undefined ? configured : Math.max(1, Math.min(configured, Math.floor(ceiling)));
+}
 
 /** The agent's tools, narrowed to an allowlist when one is given. */
 function allowedTools(tools: unknown, allowlist: string[] | undefined): AgentPlaygroundConfig["tools"] {
@@ -686,7 +737,7 @@ export async function prepareAgentChat(
   const graphAgent = agent.entrypoint === "graph";
   const modelId = resolveAgentModelId({
     // A graph's nodes choose their own models; the request does not.
-    override: graphAgent ? null : input.modelOverride,
+    override: graphAgent ? null : (input.platformFunded?.modelId ?? input.modelOverride),
     modelConfig,
     availableFreeModelIds: deps.availableFreeModelIds(),
   });
@@ -727,6 +778,11 @@ export async function prepareAgentChat(
         "No model specified and no free models are available. Configure a provider API key on the platform.",
     });
   }
+  if (input.platformFunded && !deps.isFreeModel(modelId)) {
+    // A caller's bug, not something a visitor did: the platform funds its
+    // free models and nothing else.
+    throw new Error(`a platform-funded chat cannot run on "${modelId}": it is not a free model`);
+  }
   let resolved: ResolvedModel;
   if (modelId.startsWith(HOSTED_MODEL_PREFIX) && deps.resolveHostedModel) {
     // A model the organization hosts on its own GPU deployment. Its requests
@@ -736,16 +792,24 @@ export async function prepareAgentChat(
     resolved = hosted.resolved;
   } else {
     try {
-      resolved = deps.resolveModel(modelId, deps.openAgentEnv(agent.env));
+      // A platform-funded chat never sees the agent's own provider keys.
+      resolved = deps.resolveModel(modelId, input.platformFunded ? {} : deps.openAgentEnv(agent.env));
     } catch (err) {
       return refuse(modelRefusal(err));
     }
   }
 
-  // 4. Free models run on the platform's keys, so they are rate limited.
+  // 4. The caller's own budgets first, then the organization's allowance.
+  // The limiter counts a request before it answers, so in the other order a
+  // message the caller's cap goes on to refuse would still have spent the
+  // allowance: a widget key capped at 20 a day could use up all of its
+  // owner's free-model requests.
   const freeModel = deps.isFreeModel(modelId);
+  await input.admit?.({ agentId, modelId, freeModel });
+  // Free models run on the platform's keys, so they are rate limited:
+  // against the organization's allowance, unless the platform is paying.
   let rateLimit: RateLimitResult | null = null;
-  if (freeModel) {
+  if (freeModel && !input.platformFunded) {
     rateLimit = await deps.checkFreeTierLimit(orgId, { failClosed: input.caller === "public" });
     if (!rateLimit.allowed) return refuse({ kind: "rate_limited", limit: rateLimit });
   }
@@ -851,9 +915,21 @@ export async function prepareAgentChat(
     modelConfig: {
       externalModel: modelId,
       temperature: typeof modelConfig.temperature === "number" ? modelConfig.temperature : 0.7,
-      maxTokens: typeof modelConfig.maxTokens === "number" ? modelConfig.maxTokens : 4096,
+      maxTokens: cappedTokens(
+        typeof modelConfig.maxTokens === "number" ? modelConfig.maxTokens : 4096,
+        input.maxOutputTokens,
+      ),
     },
   };
+  // A caller's own max_tokens replaces the agent's, so it is held to the
+  // same ceiling.
+  const requestParams =
+    input.maxOutputTokens !== undefined && typeof input.requestParams?.max_tokens === "number"
+      ? {
+          ...input.requestParams,
+          max_tokens: cappedTokens(input.requestParams.max_tokens, input.maxOutputTokens),
+        }
+      : input.requestParams;
 
   const chatOptions: RunChatOptions = {
     agentId,
@@ -863,7 +939,8 @@ export async function prepareAgentChat(
     // What the publisher named, and nothing implied: with no allowlist an
     // outbound tool does not run in a paid job.
     ...(toolMode === "hired" && { outboundAllowed: input.toolAllowlist ?? [] }),
-    requestParams: input.requestParams,
+    requestParams,
+    ...(input.maxToolRounds !== undefined && { maxToolRounds: input.maxToolRounds }),
     clientTools,
     toolChoice: input.toolChoice ?? undefined,
     // Always asked of the provider, whatever the caller wants to SEE: usage
@@ -1022,6 +1099,14 @@ async function prepareGraphChat(args: {
         "This agent answers through its graph, whose tools are fixed by its design, so a tool allowlist cannot be applied to it. Remove the allowlist, or use an agent whose entrypoint is chat.",
     });
   }
+  if (input.platformFunded) {
+    return refuse({
+      kind: "not_configured",
+      code: "model_provider_not_configured",
+      message:
+        "This agent answers through its graph, whose nodes choose their own models and provider keys, so it cannot be run on the platform's free models.",
+    });
+  }
   const conversation = graphInputFromMessages(input.messages);
   const graphInput =
     conversation !== null && input.systemAddendum ? `${input.systemAddendum}\n\n${conversation}` : conversation;
@@ -1045,8 +1130,12 @@ async function prepareGraphChat(args: {
   // An llm node that names no model falls back to the agent's, and failing
   // that to the first free model - so a run with no model of its own, or a
   // free one, spends the platform's keys and is rate limited like a chat.
+  // The caller's own budgets come first, as in a chat: a run its cap refuses
+  // must not have been counted against the organization's allowance.
+  const freeModel = modelId === null || deps.isFreeModel(modelId);
+  await input.admit?.({ agentId, modelId, freeModel });
   let rateLimit: RateLimitResult | null = null;
-  if (modelId === null || deps.isFreeModel(modelId)) {
+  if (freeModel) {
     rateLimit = await deps.checkFreeTierLimit(orgId, { failClosed: input.caller === "public" });
     if (!rateLimit.allowed) return refuse({ kind: "rate_limited", limit: rateLimit });
   }
@@ -1141,6 +1230,7 @@ async function prepareGraphChat(args: {
             usage: null,
             toolCalls: [],
             finishReason: "stop",
+            content: ran.result.content,
           }),
         },
       };

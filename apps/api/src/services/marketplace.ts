@@ -211,6 +211,83 @@ export async function getListingBySlug(slug: string) {
   return formatListingForPublic(listing);
 }
 
+// ============================================
+// Try it
+// ============================================
+
+/**
+ * A published listing as its Try it panel describes it: which model the
+ * installed agent is set up with and which tools it has. Published only -
+ * a draft cannot be tried by the public.
+ */
+export async function getListingTrialPreview(slug: string) {
+  const listing = await prisma.agentListing.findFirst({
+    where: { slug, status: "published" },
+    select: {
+      id: true,
+      agent: { select: { entrypoint: true, modelConfig: true, tools: true } },
+    },
+  });
+  if (!listing) return null;
+
+  const modelConfig =
+    typeof listing.agent.modelConfig === "object" && listing.agent.modelConfig !== null
+      ? (listing.agent.modelConfig as Record<string, unknown>)
+      : {};
+  const tools = Array.isArray(listing.agent.tools) ? (listing.agent.tools as unknown[]) : [];
+  return {
+    id: listing.id,
+    agentEntrypoint: listing.agent.entrypoint,
+    // Resolved to a model id by the caller, with the rule agent chat uses.
+    agentModelConfig: modelConfig,
+    agentTools: tools
+      .map((tool) => (tool as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === "string"),
+  };
+}
+
+/** A listing's Try it settings, for its publisher only. */
+export async function getListingTrialSettings(orgId: string, listingId: string) {
+  const listing = await prisma.agentListing.findFirst({
+    where: { id: listingId, publisherId: orgId },
+    select: { status: true, trialFundedDailyCap: true },
+  });
+  return listing ? { status: listing.status, fundedDailyCap: listing.trialFundedDailyCap } : null;
+}
+
+/**
+ * Sets how many Try it messages a day the publisher pays for, above the
+ * platform's. False when the listing is not this organization's.
+ */
+export async function setListingTrialFundedCap(orgId: string, listingId: string, cap: number): Promise<boolean> {
+  const updated = await prisma.agentListing.updateMany({
+    where: { id: listingId, publisherId: orgId },
+    data: { trialFundedDailyCap: cap },
+  });
+  return updated.count > 0;
+}
+
+/**
+ * What the publisher has paid for on one UTC day: the funded messages
+ * counted, and the cents of the charges that were not refunded.
+ */
+export async function getListingTrialFundedUsage(listingId: string, day: string) {
+  const [usage, spent] = await Promise.all([
+    prisma.trialDailyUsage.findUnique({
+      where: { listingId_day: { listingId, day } },
+      select: { fundedCount: true },
+    }),
+    prisma.trialCharge.aggregate({
+      where: { listingId, day, status: { in: ["held", "settled"] } },
+      _sum: { amountCents: true },
+    }),
+  ]);
+  return {
+    fundedCount: usage?.fundedCount ?? 0,
+    fundedSpentCents: Number(spent._sum.amountCents ?? 0n),
+  };
+}
+
 export async function getListingById(id: string) {
   const listing = await prisma.agentListing.findUnique({
     where: { id },
@@ -718,6 +795,8 @@ function formatListingForPublic(listing: any) {
     publishedAt: listing.publishedAt,
     createdAt: listing.createdAt,
     updatedAt: listing.updatedAt,
+    // Try it is on for every published listing; there is no switch to read.
+    trial: { enabled: listing.status === "published" },
     agent: listing.agent
       ? {
           id: listing.agent.id,

@@ -22,7 +22,10 @@
  * usage aggregate, and eligibility check run concurrently.
  */
 
+import { LIVE_CHANNEL_PLATFORMS, WEB_CHAT_CHANNEL } from "../routes/channelWebhooks.js";
 import type { PublicAgentDetail } from "../routes/publicAgent.js";
+
+const LIVE_WEBHOOK_PLATFORMS: ReadonlySet<string> = new Set(LIVE_CHANNEL_PLATFORMS);
 
 interface AgentRow {
   id: string;
@@ -41,6 +44,8 @@ interface AgentRow {
   openclawDeployment: {
     channels: Array<{ platform: string; enabled: boolean }>;
   } | null;
+  /** The agent's enabled, unrevoked web chat keys and the sites each allows. */
+  widgetKeys?: Array<{ allowedOrigins: string[] }>;
   listing: {
     /** Internal only — both feed the eligibility check, never the response. */
     id: string;
@@ -128,6 +133,13 @@ export async function loadPublicAgentByPrisma(
           channels: { select: { platform: true, enabled: true } },
         },
       },
+      // The keys that are enabled and not revoked, with the sites each one
+      // answers. No `take`: an agent's keys are capped (MAX_KEYS_PER_AGENT),
+      // and one row would not tell a key no site can use from one that works.
+      widgetKeys: {
+        where: { enabled: true, revokedAt: null },
+        select: { allowedOrigins: true },
+      },
       listing: {
         select: {
           id: true,
@@ -151,7 +163,27 @@ export async function loadPublicAgentByPrisma(
   if (!agent) return null;
 
   const treasuryRow = agent.listing?.agentToken?.treasury ?? null;
-  const channels = agent.openclawDeployment?.channels ?? [];
+  // A key with no allowed origin answers only the dashboard's preview and
+  // 403 everywhere else, so it is a channel set up, not one a visitor can
+  // reach. The wizard's "Web Chat" option creates exactly such a key.
+  const webChatKeys = agent.widgetKeys ?? [];
+  const webChatConfigured = webChatKeys.length > 0;
+  const webChatLive = webChatKeys.some((k) => k.allowedOrigins.length > 0);
+  // A platform row says a channel was configured. Whether a message sent
+  // there reaches the agent is a separate fact, and the page states both:
+  // only the platforms with a working inbound path are live. The web chat
+  // channel is its widget key, not a platform row, so a row for it is
+  // replaced by the key's own state.
+  const channels: PublicAgentDetail["channels"] = [
+    ...(agent.openclawDeployment?.channels ?? [])
+      .filter((c) => !(webChatConfigured && (c.platform === WEB_CHAT_CHANNEL || c.platform === "webchat")))
+      .map((c) => ({
+        platform: c.platform,
+        enabled: c.enabled,
+        live: c.enabled && LIVE_WEBHOOK_PLATFORMS.has(c.platform),
+      })),
+    ...(webChatConfigured ? [{ platform: WEB_CHAT_CHANNEL, enabled: true, live: webChatLive }] : []),
+  ];
 
   // Dedupe the model-deployment ids the usage aggregate keys off (empty-set
   // short-circuit: Postgres rejects a literal IN () and we'd waste the trip).
@@ -238,10 +270,7 @@ export async function loadPublicAgentByPrisma(
       replicas: d.replicas,
       status: d.status,
     })),
-    channels: channels.map((c) => ({
-      platform: c.platform,
-      enabled: c.enabled,
-    })),
+    channels,
     recentPayments: paymentsPart.recentPayments,
   };
 }

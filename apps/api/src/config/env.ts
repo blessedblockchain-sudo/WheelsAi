@@ -161,6 +161,36 @@ const envSchema = z.object({
   // process is killed.
   AGENT_CHAT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
 
+  // Public chat: the web chat widget and Try it. These callers are anonymous,
+  // so every limit here is enforced on a limiter that fails closed
+  // (services/failClosedLimiter.ts): when Redis cannot count, they get 503.
+  //
+  // Widget. Per visitor address across every key; per key; and a key's
+  // messages a day when its owner set no cap of their own.
+  WIDGET_PER_IP_PER_MINUTE: z.coerce.number().int().min(1).default(10),
+  WIDGET_PER_IP_PER_DAY: z.coerce.number().int().min(1).default(200),
+  WIDGET_PER_KEY_PER_MINUTE: z.coerce.number().int().min(1).default(60),
+  WIDGET_DEFAULT_DAILY_CAP: z.coerce.number().int().min(1).default(1_000),
+  // Try it. Messages a day the platform pays for per listing, per session,
+  // per visitor address an hour, per signed-in organization a day, and
+  // across the whole platform a minute (it runs on shared free models).
+  TRIAL_BASE_DAILY_MESSAGES: z.coerce.number().int().min(0).default(50),
+  TRIAL_MESSAGES_PER_SESSION: z.coerce.number().int().min(1).default(10),
+  TRIAL_PER_IP_PER_HOUR: z.coerce.number().int().min(1).default(30),
+  TRIAL_SIGNED_IN_PER_DAY: z.coerce.number().int().min(1).default(100),
+  TRIAL_GLOBAL_PER_MINUTE: z.coerce.number().int().min(1).default(20),
+  // What a publisher pays for one Try it message above the platform's daily
+  // ones. Deliberately not defaulted: a made-up price would debit real
+  // credits. Unset = publisher-funded caps answer 501.
+  TRIAL_FUNDED_MESSAGE_CENTS: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.coerce.number().int().min(1).optional(),
+  ),
+  // Cloudflare Turnstile, the human check for an anonymous Try it visitor.
+  // Both or neither. Without them Try it requires sign-in.
+  TURNSTILE_SITE_KEY: z.preprocess((value) => (value === "" ? undefined : value), z.string().optional()),
+  TURNSTILE_SECRET_KEY: z.preprocess((value) => (value === "" ? undefined : value), z.string().optional()),
+
   // Token Marketplace
   PUMPFUN_API_KEY: z.string().optional(),
   TOKEN_INDEXER_INTERVAL_MS: z.coerce.number().int().min(0).default(30000),
@@ -397,6 +427,15 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   }
 
   const data = result.data;
+
+  // Half a Turnstile configuration is worse than none: a site key alone
+  // would show visitors a challenge nothing can verify, and a secret alone
+  // verifies tokens no page can produce. Refused in every environment.
+  if (Boolean(data.TURNSTILE_SITE_KEY) !== Boolean(data.TURNSTILE_SECRET_KEY)) {
+    throw new EnvValidationError(
+      "TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY must be set together (or both left unset)"
+    );
+  }
 
   // Safety checks for every deployed environment. Staging is a rehearsal
   // of production with real keys: before, it skipped all of these and

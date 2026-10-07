@@ -9,6 +9,7 @@ import {
   unregisterTelegramWebhook,
   type TelegramWebhookResult,
 } from "./telegramWebhook.js";
+import { generatePublicKey } from "./widgetKeys.js";
 
 const logger = createLogger("openclaw-service");
 
@@ -38,6 +39,42 @@ export const SUPPORTED_PLATFORMS = [
 ] as const;
 
 type OpenClawDeploymentRecord = Awaited<ReturnType<typeof getDeployment>>;
+
+/**
+ * The web chat channel is not an OpenClaw channel row: nothing reads one.
+ * It is a web chat key (services/webChannel.ts) for the deployment's agent,
+ * served by routes/widget.ts. Choosing "Web Chat" here creates that key.
+ */
+export const WEB_CHAT_PLATFORM = "web";
+
+/** The name a key made from the OpenClaw screens starts with. */
+export const OPENCLAW_WEB_KEY_NAME = "Web chat";
+
+/**
+ * The look the OpenClaw "Web Chat" form asks for, as web chat key columns.
+ * Anything that is not a usable title or a #RRGGBB colour is left out, so
+ * the key falls back to the widget's defaults instead of failing the deploy.
+ */
+export function webChatKeyLook(config: Record<string, string>): { title?: string; primaryColor?: string } {
+  const title = typeof config.widgetTitle === "string" ? config.widgetTitle.trim().slice(0, 60) : "";
+  const color = typeof config.primaryColor === "string" ? config.primaryColor.trim() : "";
+  return {
+    ...(title && { title }),
+    ...(/^#[0-9a-fA-F]{6}$/.test(color) && { primaryColor: color.toLowerCase() }),
+  };
+}
+
+/** The columns of a new key for an agent: no site allowed yet, so only the dashboard preview works. */
+function webChatKeyData(orgId: string, agentId: string, config: Record<string, string>) {
+  return {
+    orgId,
+    agentId,
+    publicKey: generatePublicKey(),
+    name: OPENCLAW_WEB_KEY_NAME,
+    allowedOrigins: [] as string[],
+    ...webChatKeyLook(config),
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -307,9 +344,16 @@ export async function createDeployment(params: CreateDeploymentParams) {
       },
     });
 
-    // Create OpenClawChannels
+    // Create OpenClawChannels. The web chat channel is a key, not a row here.
+    const webChat = channels.find((channel) => channel.platform === WEB_CHAT_PLATFORM);
+    const webChatKey = webChat
+      ? await tx.widgetKey.create({
+          data: webChatKeyData(orgId, agent.id, webChat.config),
+          select: { id: true },
+        })
+      : null;
     const createdChannels = await Promise.all(
-      channels.map((channel) =>
+      channels.filter((channel) => channel.platform !== WEB_CHAT_PLATFORM).map((channel) =>
         tx.openClawChannel.create({
           data: {
             deploymentId: deployment.id,
@@ -325,6 +369,7 @@ export async function createDeployment(params: CreateDeploymentParams) {
       ...deployment,
       channels: createdChannels,
       agent,
+      webChatKey,
     };
   });
 
@@ -509,6 +554,10 @@ export async function addChannel(
   if (!SUPPORTED_PLATFORMS.includes(params.platform as any)) {
     throw new Error(`Unsupported platform: ${params.platform}`);
   }
+  // A row here would be a channel nothing serves.
+  if (params.platform === WEB_CHAT_PLATFORM) {
+    throw new Error("The web chat channel is a web chat key. Use addWebChatKey.");
+  }
 
   // One channel per platform per deployment. Checked before Telegram is
   // touched: registering a second bot here would re-point it to this
@@ -567,6 +616,21 @@ export async function addChannel(
   logger.info("Channel added", { channelId: channel.id, platform: params.platform });
 
   return { ...channel, webhook };
+}
+
+/**
+ * "Web Chat" on a deployment: a web chat key for its agent. The owner then
+ * lists the sites that may embed it under Integrations, Channels.
+ */
+export async function addWebChatKey(deploymentId: string, orgId: string, config: Record<string, string>) {
+  // Verify deployment ownership
+  const deployment = await getDeployment(deploymentId, orgId);
+  const key = await prisma.widgetKey.create({
+    data: webChatKeyData(orgId, deployment.agentId, config),
+    select: { id: true },
+  });
+  logger.info("Web chat key added", { deploymentId, widgetKeyId: key.id });
+  return key;
 }
 
 interface UpdateChannelParams {

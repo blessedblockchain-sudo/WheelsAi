@@ -213,6 +213,14 @@ export function OpenClawWizard() {
 
       const data = await response.json();
       toast.success("Deployment created successfully!");
+      // "Web Chat" made a web chat key, which still needs the sites that
+      // may embed it before it works anywhere but the dashboard preview.
+      if (data.webChatKey) {
+        toast.info("Web chat key created. Add your site and copy the snippet under Integrations, Channels.", {
+          action: { label: "Open Channels", onClick: () => router.push("/dashboard/integrations#channels") },
+          duration: 15000,
+        });
+      }
       router.push(`/dashboard/openclaw/${data.deployment.id}`);
     } catch (error: any) {
       console.error("Error creating deployment:", error);

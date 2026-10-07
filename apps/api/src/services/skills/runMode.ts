@@ -7,10 +7,11 @@
  * publisher, so its runs get `trial` restrictions: money-moving skills are
  * withheld, however the run was started.
  *
- * `trial`, `test` and `hired` are never loosened: each is at least as
- * restrictive as what the install check could turn a run into. (`hired`
- * refuses state-writing skills as well as money-moving ones; replacing it
- * with `trial` would hand file_write back to a buyer's input.) If the install
+ * `trial`, `test`, `hired` and `public` are never loosened: each is at least
+ * as restrictive as what the install check could turn a run into. (`hired`
+ * and `public` refuse state-writing skills as well as money-moving ones;
+ * replacing either with `trial` would hand file_write back to a stranger's
+ * input.) If the install
  * lookup itself fails, the run is restricted too: not knowing whether an agent
  * is someone else's is not a reason to let it spend.
  */
@@ -43,7 +44,9 @@ export async function resolveToolMode(
   args: { agentId: string; orgId: string; base: ToolMode },
   deps: RunModeDeps = {},
 ): Promise<ToolMode> {
-  if (args.base === "trial" || args.base === "test" || args.base === "hired") return args.base;
+  if (args.base === "trial" || args.base === "test" || args.base === "hired" || args.base === "public") {
+    return args.base;
+  }
   try {
     const isInstall = await (deps.isMarketplaceInstall ?? defaultIsMarketplaceInstall)({
       agentId: args.agentId,

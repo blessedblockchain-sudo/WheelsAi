@@ -192,6 +192,9 @@ async function recordUsage(record: AgentChatUsageRecord): Promise<void> {
 
 async function recordModelUsage(record: AgentChatUsageRecord): Promise<void> {
   if (!record.ok) return;
+  // Try it runs on the platform's allowance, not the publisher's: it is not
+  // the organization's free-model usage.
+  if (record.source === "trial") return;
   const provider = record.modelId.split("/")[1] ?? record.modelId.split("/")[0] ?? "unknown";
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -243,21 +246,9 @@ export function buildAgentChatDeps(options: BuildAgentChatDepsOptions = {}): Age
     isFreeModel,
     resolveModel: resolveModelForPlayground,
     resolveHostedModel: (args) => resolveHostedModel(args),
-    checkFreeTierLimit: async (orgId, { failClosed }) => {
-      if (failClosed) {
-        // The limiter (middleware/free-tier-limit.ts) fails OPEN when Redis is
-        // down and cannot yet be told otherwise. Until it can, a caller that
-        // must be limited is refused rather than let through unlimited. No
-        // route passes failClosed today (it is for the public widget).
-        const now = Math.floor(Date.now() / 1000);
-        return {
-          allowed: false,
-          remaining: { rpm: 0, rpd: 0 },
-          resetAt: { rpm: now + 60, rpd: now + 60 },
-        };
-      }
-      return checkFreeTierLimit(orgId);
-    },
+    // failClosed (a public caller): an allowance that cannot be counted
+    // refuses, instead of letting an anonymous visitor through unlimited.
+    checkFreeTierLimit: (orgId, { failClosed }) => checkFreeTierLimit(orgId, { failClosed }),
     retrieveContext: (args) => retrieveContextForAgent(args, buildAgentRetrievalDeps()),
     beginMetering: beginMarketplaceMetering,
     resolveToolMode: (args) => resolveToolMode(args),

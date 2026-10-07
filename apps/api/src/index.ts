@@ -15,6 +15,7 @@ import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
 
 import { installBigIntJsonSerializer } from "./lib/bigintJson.js";
+import { corsOptionsFor } from "./lib/corsPolicy.js";
 import { globalErrorHandler } from "./lib/errorHandler.js";
 import { sanitizeErrorPayloadHook } from "./lib/sanitizeErrorPayload.js";
 
@@ -90,6 +91,10 @@ import {
   closeAgentChatConnections,
 } from "./services/buildAgentChatDeps.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
+import { closePublicChatConnections, warmPublicChatLimiter } from "./services/buildPublicChatDeps.js";
+import { createTryItRoutesProduction } from "./routes/tryItBindings.js";
+import { createWebChannelRoutesProduction } from "./routes/webChannelBindings.js";
+import { createWidgetRoutesProduction } from "./routes/widgetBindings.js";
 import { createChannelWebhookRoutesProduction } from "./routes/channelWebhookBindings.js";
 import {
   startX402Queue,
@@ -122,6 +127,8 @@ import {
   stopJobRunnerQueue,
   startJobSweeperQueue,
   stopJobSweeperQueue,
+  startTrialChargeReapQueue,
+  stopTrialChargeReapQueue,
   startUptimeProberQueue,
   stopUptimeProberQueue,
   startCustomDomainCheckQueue,
@@ -187,24 +194,13 @@ async function main() {
   }
 
   // Register plugins
+  // Two policies, chosen per request (lib/corsPolicy.ts): the web app's
+  // origin with credentials everywhere, except the two public widget paths,
+  // which answer any origin without credentials and check the key's own
+  // allowed origins in the route.
+  const corsConfig = { corsOrigin: env.CORS_ORIGIN, isDev: env.NODE_ENV === "development" };
   await app.register(cors, {
-    // Reflect any origin only in local development.
-    origin: env.NODE_ENV === "development" ? true : env.CORS_ORIGIN,
-    credentials: true,
-    // Without this a browser client can read none of them: the request id to
-    // quote in a report, how long to wait after a 429, or whether a /v1
-    // failure is worth retrying.
-    exposedHeaders: [
-      "X-Request-Id",
-      "Retry-After",
-      "x-should-retry",
-      "x-ratelimit-remaining-requests",
-      "x-ratelimit-reset-requests",
-      "X-RateLimit-Remaining-RPM",
-      "X-RateLimit-Remaining-RPD",
-      "X-RateLimit-Reset-RPM",
-      "X-RateLimit-Reset-RPD",
-    ],
+    delegator: (request, callback) => callback(null, corsOptionsFor(request, corsConfig)),
   });
 
   await app.register(helmet, {
@@ -227,6 +223,8 @@ async function main() {
     disconnectPlanUsage();
     // Agent chat's tool-continuation Redis (opened on the first chat).
     await closeAgentChatConnections();
+    // The fail-closed limiter of the web widget and Try it.
+    await closePublicChatConnections();
   });
   await app.register(rateLimit, {
     max: Number(process.env.RATE_LIMIT_MAX_PER_MINUTE ?? 100),
@@ -381,6 +379,9 @@ async function main() {
   });
   await app.register(settingsRoutes, { prefix: "/api/settings" });
   await app.register(marketplaceRoutes, { prefix: "/api/marketplace" });
+  // Try it: /api/marketplace/listings/:slug/try (public, within limits that
+  // fail closed) and the publisher's /listings/:id/trial.
+  await app.register(createTryItRoutesProduction(), { prefix: "/api/marketplace" });
   // Offerings and Jobs: a publisher's product hired for a fixed task, paid
   // through escrow.
   await app.register(createOfferingRoutesProduction(), { prefix: "/api/offerings" });
@@ -448,6 +449,14 @@ async function main() {
   await app.register(createChannelWebhookRoutesProduction(), {
     prefix: "/api/channels",
   });
+  // The web chat channel. The owner's keys at /api/channels/web (a sibling
+  // plugin, so the webhook plugin's raw-body parser does not reach it), and
+  // what the widget on a customer's site calls at /api/widget/:publicKey.
+  await app.register(createWebChannelRoutesProduction(), { prefix: "/api/channels/web" });
+  await app.register(createWidgetRoutesProduction(), { prefix: "/api/widget" });
+  // Its Redis connection, opened before traffic. If it cannot be opened the
+  // server still starts; the widget and Try it answer 503 until it can.
+  await warmPublicChatLimiter();
   // Treasury read routes — runway / payments / chart at /api/agents/:slug/*
   const { agentTreasuryRoutes } = await import("./routes/agent-treasury.js");
   await app.register(agentTreasuryRoutes, { prefix: "/api" });
@@ -498,6 +507,7 @@ async function main() {
   await startWorkflowRunQueue();
   await startJobRunnerQueue();
   await startJobSweeperQueue();
+  await startTrialChargeReapQueue();
   await startUptimeProberQueue();
   await startCustomDomainCheckQueue();
   await customDomainEdge.start();
@@ -553,6 +563,7 @@ async function main() {
       await stopWorkflowRunQueue();
       await stopJobRunnerQueue();
       await stopJobSweeperQueue();
+      await stopTrialChargeReapQueue();
       await stopUptimeProberQueue();
       await stopCustomDomainCheckQueue();
       await stopAlertEvaluatorQueue();

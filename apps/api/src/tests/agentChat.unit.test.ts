@@ -1,6 +1,9 @@
+import "./unitEnv.js";
+
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { checkFreeTierLimit, type FreeTierCounter } from "../middleware/free-tier-limit.js";
 import {
   classifyChatError,
   graphInputFromMessages,
@@ -553,7 +556,8 @@ test("marketplace clones run in trial mode", async () => {
   await sessionOf(spy, { source: "playground" });
   await sessionOf(spy, { source: "api" });
   await sessionOf(spy, { source: "widget", caller: "public" });
-  assert.deepEqual(bases, ["playground", "api", "trial"]);
+  await sessionOf(spy, { source: "trial", caller: "public" });
+  assert.deepEqual(bases, ["playground", "api", "public", "public"]);
 });
 
 test("client tools and sampling parameters reach the runtime; a name that collides with a skill is refused", async () => {
@@ -697,7 +701,7 @@ test("public callers cannot send tools, system, developer or tool roles, or a mo
     ],
   });
   assert.deepEqual(h.limiterCalls, [{ orgId: ORG, failClosed: true }]);
-  assert.equal(session.toolMode, "trial");
+  assert.equal(session.toolMode, "public");
 
   // An owner may do all of it.
   const owner = harness();
@@ -1233,7 +1237,8 @@ test("every source has its own base tool mode, and the install check sits on top
   const expected = {
     playground: "playground",
     api: "api",
-    widget: "trial",
+    widget: "public",
+    trial: "public",
     scheduled: "scheduled",
     job: "job",
     test: "test",
@@ -1254,7 +1259,7 @@ test("a graph runs as from the builder for a person, and in the caller's own mod
   const expected = {
     playground: "graph",
     api: "graph",
-    widget: "trial",
+    widget: "public",
     scheduled: "scheduled",
     job: "job",
     test: "test",
@@ -1424,4 +1429,225 @@ test("a graph agent's job gets its instructions ahead of the brief, in hired mod
   assert.equal(refusal.kind, "invalid_request");
   assert.equal((refusal as { param?: string }).param, "tool_allowlist");
   assert.ok(!refused.log.includes("runGraph"));
+});
+
+// ============================================
+// Public chats: the widget and Try it
+// ============================================
+
+test("the caller's admission check runs after the model, before the organization's allowance and before anything is charged", async () => {
+  const h = harness({ charge: true });
+  const facts: unknown[] = [];
+  const session = await sessionOf(h, {
+    caller: "public",
+    source: "widget",
+    admit: async (seen) => {
+      facts.push(seen);
+      h.log.push("admit");
+    },
+  });
+  await session.complete();
+  assert.deepEqual(h.log, [
+    "loadAgent",
+    "resolveModel:free/groq/llama-3.3-70b",
+    "admit",
+    "limiter",
+    "meter",
+    "toolMode:public",
+    "runChat",
+    "settle",
+  ]);
+  assert.deepEqual(facts, [{ agentId: "agent-1", modelId: "free/groq/llama-3.3-70b", freeModel: true }]);
+});
+
+test("an admission check that throws stops the chat uncharged, and its error is the caller's own", async () => {
+  class Refused extends Error {}
+  const h = harness({ charge: true });
+  await assert.rejects(
+    prepareAgentChat(
+      input({
+        caller: "public",
+        source: "widget",
+        admit: async () => {
+          throw new Refused("daily cap");
+        },
+      }),
+      h.deps,
+    ),
+    Refused,
+  );
+  // The organization's free-model allowance was never counted: a message the
+  // caller's cap refuses spends none of it.
+  assert.deepEqual(h.log, ["loadAgent", "resolveModel:free/groq/llama-3.3-70b"]);
+  assert.deepEqual(h.limiterCalls, []);
+
+  // A request that could never have run does not reach it: no budget is spent on it.
+  let admitted = false;
+  const unconfigured = harness({ agents: [{ ...AGENT, modelConfig: {} }], availableFreeModelIds: () => [] });
+  const refusal = await refusalOf(unconfigured, {
+    caller: "public",
+    source: "widget",
+    admit: async () => {
+      admitted = true;
+    },
+  });
+  assert.equal(refusal.kind, "not_configured");
+  assert.equal(admitted, false);
+
+});
+
+test("a widget key's cap bounds what it spends of the organization's free-model allowance", async () => {
+  // The real limiter over a counting fake: 200 messages against a key capped
+  // at 20 must leave the organization's counters at 20, not 200.
+  const counts = new Map<string, number>();
+  const counter: FreeTierCounter = {
+    pipeline() {
+      const ops: Array<() => unknown> = [];
+      const bump = (key: string, by: number) => () => {
+        counts.set(key, (counts.get(key) ?? 0) + by);
+        return counts.get(key);
+      };
+      const pipe = {
+        incr: (key: string) => ops.push(bump(key, 1)),
+        decr: (key: string) => ops.push(bump(key, -1)),
+        ttl: () => ops.push(() => 60),
+        exec: async () => ops.map((op) => [null, op()] as [Error | null, unknown]),
+      };
+      return pipe;
+    },
+    expire: async () => 1,
+  };
+  const limiter: AgentChatDeps["checkFreeTierLimit"] = (orgId, options) =>
+    checkFreeTierLimit(orgId, options, { counter, rateMultiplier: async () => 1000, now: () => 0 });
+
+  class CapReached extends Error {}
+  const KEY_CAP = 20;
+  let keyCount = 0;
+  let answered = 0;
+  for (const graph of [false, true]) {
+    counts.clear();
+    keyCount = 0;
+    answered = 0;
+    for (let i = 0; i < 200; i += 1) {
+      const h = graph
+        ? graphHarness({ kind: "completed", output: "ok", run: RUN })
+        : harness();
+      h.deps.checkFreeTierLimit = limiter;
+      try {
+        const prepared = await prepareAgentChat(
+          input({
+            caller: "public",
+            source: "widget",
+            admit: async () => {
+              if (keyCount >= KEY_CAP) throw new CapReached();
+              keyCount += 1;
+            },
+          }),
+          h.deps,
+        );
+        assert.ok(prepared.ok);
+        answered += 1;
+      } catch (err) {
+        assert.ok(err instanceof CapReached);
+      }
+    }
+    assert.equal(answered, KEY_CAP);
+    assert.equal(counts.get("free:rpd:org-1"), KEY_CAP, graph ? "graph agent" : "chat agent");
+    assert.equal(counts.get("free:rpm:org-1"), KEY_CAP);
+  }
+});
+
+test("a platform-funded chat runs on the platform's model, without the agent's keys or the organization's allowance", async () => {
+  const envOpened: unknown[] = [];
+  const resolvedWith: unknown[] = [];
+  const h = harness({
+    agents: [{ ...AGENT, modelConfig: { externalModel: "openai/gpt-4", maxTokens: 4000 } }],
+    openAgentEnv: (sealed) => {
+      envOpened.push(sealed);
+      return { OPENAI_API_KEY: "sk-publisher" };
+    },
+    resolveModel: (modelId, agentEnv) => {
+      resolvedWith.push([modelId, agentEnv]);
+      return { apiKey: "k", baseUrl: "https://provider.example/v1", modelName: modelId };
+    },
+  });
+  const session = await sessionOf(h, {
+    caller: "public",
+    source: "trial",
+    platformFunded: { modelId: "free/groq/llama-3.3-70b" },
+  });
+  assert.equal(session.modelId, "free/groq/llama-3.3-70b");
+  assert.equal(session.platformModel, true);
+  assert.equal(session.toolMode, "public");
+  assert.deepEqual(resolvedWith, [["free/groq/llama-3.3-70b", {}]], "the publisher's provider keys are never opened");
+  assert.deepEqual(envOpened, []);
+  assert.deepEqual(h.limiterCalls, [], "the publisher's free-model allowance is not drawn on");
+
+  await session.complete();
+  await settled();
+  assert.equal(h.usage[0]!.source, "trial");
+  assert.equal(h.usage[0]!.modelId, "free/groq/llama-3.3-70b");
+
+  // The platform funds its free models and nothing else.
+  await assert.rejects(
+    prepareAgentChat(input({ caller: "public", source: "trial", platformFunded: { modelId: "openai/gpt-4" } }), h.deps),
+    /not a free model/,
+  );
+});
+
+test("a public chat's answer and tool rounds are held to the caller's ceilings", async () => {
+  const h = harness({ agents: [{ ...AGENT, modelConfig: { ...(AGENT.modelConfig as object), maxTokens: 4000 } }] });
+  const session = await sessionOf(h, {
+    caller: "public",
+    source: "widget",
+    maxOutputTokens: 1024,
+    maxToolRounds: 3,
+  });
+  await session.complete();
+  assert.equal(h.chatCalls[0]!.config.modelConfig.maxTokens, 1024);
+  assert.equal(h.chatCalls[0]!.options.maxToolRounds, 3);
+
+  // A ceiling never raises what the agent's owner configured (512 here).
+  const small = harness();
+  await (await sessionOf(small, { maxOutputTokens: 1024 })).complete();
+  assert.equal(small.chatCalls[0]!.config.modelConfig.maxTokens, 512);
+
+  // A request's own max_tokens replaces the agent's, so it is capped too.
+  const asked = harness();
+  await (await sessionOf(asked, { maxOutputTokens: 256, requestParams: { max_tokens: 9000 } })).complete();
+  assert.equal(asked.chatCalls[0]!.options.requestParams?.max_tokens, 256);
+});
+
+test("a graph agent cannot be platform-funded, and is asked for admission like any chat", async () => {
+  const h = graphHarness({ kind: "completed", output: "From the graph.", run: RUN });
+  const refusal = await refusalOf(h, {
+    caller: "public",
+    source: "trial",
+    platformFunded: { modelId: "free/groq/llama-3.3-70b" },
+  });
+  assert.equal(refusal.kind, "not_configured");
+  assert.deepEqual(h.log, ["loadAgent"], "refused before the limiter and the run");
+
+  // In the widget it runs, in the public tool mode, after admission.
+  const widget = graphHarness({ kind: "completed", output: "From the graph.", run: RUN });
+  const modes: unknown[] = [];
+  const runGraph = widget.deps.runGraph!;
+  widget.deps.runGraph = async (args) => {
+    modes.push(args.mode);
+    return runGraph(args);
+  };
+  const session = await sessionOf(widget, {
+    caller: "public",
+    source: "widget",
+    admit: async () => {
+      widget.log.push("admit");
+    },
+  });
+  const started = await session.stream();
+  assert.ok(started.ok);
+  assert.deepEqual(widget.log, ["loadAgent", "admit", "limiter", "runGraph"]);
+  assert.deepEqual(modes, ["public"]);
+  const outcome = await started.chat.outcome;
+  assert.ok(outcome.ok);
+  assert.equal(outcome.content, "From the graph.", "the streamed answer is kept for an opted-in transcript");
 });

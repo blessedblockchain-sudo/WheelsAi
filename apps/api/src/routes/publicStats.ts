@@ -7,7 +7,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import { AGENT_FRAMEWORKS } from "../config/frameworks.js";
 import { MODEL_CATALOG } from "../config/modelCatalog.js";
-import { LIVE_CHANNEL_PLATFORMS } from "./channelWebhooks.js";
+import { LIVE_CHAT_CHANNELS } from "./channelWebhooks.js";
 import { PRICING_MODELS } from "../services/marketplace.js";
 
 export interface PublicStatsDeps {
@@ -23,8 +23,8 @@ export function createPublicStatsRoutes(deps: PublicStatsDeps): FastifyPluginAsy
         frameworks: AGENT_FRAMEWORKS.length,
         models: MODEL_CATALOG.length,
         pricingModels: PRICING_MODELS.length,
-        channels: LIVE_CHANNEL_PLATFORMS.length,
-        channelPlatforms: [...LIVE_CHANNEL_PLATFORMS],
+        channels: LIVE_CHAT_CHANNELS.length,
+        channelPlatforms: [...LIVE_CHAT_CHANNELS],
         publishedListings,
       };
     });

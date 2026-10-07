@@ -38,24 +38,68 @@ export interface RateLimitResult {
   };
 }
 
+export interface FreeTierLimitOptions {
+  /**
+   * What to answer when the limit cannot be counted (Redis down, or a
+   * command that failed). An organization's own chats are let through: a
+   * Redis blip must not take every customer's playground down. A PUBLIC
+   * caller - an anonymous visitor spending the organization's allowance
+   * through its widget - is refused instead: unlimited is not a safe default
+   * for somebody nobody can identify.
+   */
+  failClosed?: boolean;
+}
+
+/** The slice of ioredis the limiter uses; a fake in the unit tests. */
+export interface FreeTierCounter {
+  pipeline(): {
+    incr(key: string): unknown;
+    ttl(key: string): unknown;
+    decr(key: string): unknown;
+    exec(): Promise<Array<[Error | null, unknown]> | null>;
+  };
+  expire(key: string, seconds: number): Promise<unknown>;
+}
+
+export interface FreeTierLimitDeps {
+  counter?: FreeTierCounter;
+  /** The plan's multiple of the free-model limits. */
+  rateMultiplier?: (orgId: string) => Promise<number>;
+  now?: () => number;
+}
+
 /**
  * Check and increment free-tier rate limits for an organization.
  * Returns whether the request is allowed and remaining quota.
  */
-export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult> {
-  const r = getRedis();
-  const now = Math.floor(Date.now() / 1000);
+export async function checkFreeTierLimit(
+  orgId: string,
+  options: FreeTierLimitOptions = {},
+  deps: FreeTierLimitDeps = {},
+): Promise<RateLimitResult> {
+  const r = deps.counter ?? (getRedis() as unknown as FreeTierCounter);
+  const now = Math.floor((deps.now ?? Date.now)() / 1000);
 
   // "Priority model access": paid plans get a multiple of the free-model
   // limits. A plan lookup failure falls back to the Starter limits.
-  const multiplier = await getOrgPlan(orgId)
-    .then(({ limits }) => limits.modelRateMultiplier)
-    .catch(() => 1);
+  const multiplier = await (
+    deps.rateMultiplier ?? ((id) => getOrgPlan(id).then(({ limits }) => limits.modelRateMultiplier))
+  )(orgId).catch(() => 1);
   const RPM_LIMIT = env.FREE_TIER_RPM * multiplier;
   const RPD_LIMIT = env.FREE_TIER_RPD * multiplier;
 
   const rpmKey = `free:rpm:${orgId}`;
   const rpdKey = `free:rpd:${orgId}`;
+
+  /** The limit could not be counted. */
+  const uncounted = (): RateLimitResult =>
+    options.failClosed
+      ? { allowed: false, remaining: { rpm: 0, rpd: 0 }, resetAt: { rpm: now + 60, rpd: now + 60 } }
+      : {
+          allowed: true,
+          remaining: { rpm: RPM_LIMIT, rpd: RPD_LIMIT },
+          resetAt: { rpm: now + 60, rpd: now + 86400 },
+        };
 
   try {
     // Use a pipeline for atomicity
@@ -66,9 +110,20 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
     pipe.ttl(rpdKey);
 
     const results = await pipe.exec();
-    if (!results) {
-      // Redis unavailable — allow request (fail open)
-      return { allowed: true, remaining: { rpm: RPM_LIMIT, rpd: RPD_LIMIT }, resetAt: { rpm: now + 60, rpd: now + 86400 } };
+    if (!results) return uncounted();
+    if (options.failClosed) {
+      // A command that failed inside the pipeline reports its error in its
+      // own slot. Reading that as "the first request" would let a public
+      // caller through uncounted.
+      const counted =
+        results.length === 4 &&
+        results.every(([err]) => !err) &&
+        typeof results[0]?.[1] === "number" &&
+        typeof results[2]?.[1] === "number";
+      if (!counted) {
+        logger.error({ orgId }, "Rate limit could not be counted; refusing the public request");
+        return uncounted();
+      }
     }
 
     const rpmCount = (results[0]?.[1] as number) ?? 1;
@@ -91,7 +146,10 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
 
     if (!allowed) {
       // Undo the increment since we're rejecting
-      await r.pipeline().decr(rpmKey).decr(rpdKey).exec();
+      const undo = r.pipeline();
+      undo.decr(rpmKey);
+      undo.decr(rpdKey);
+      await undo.exec();
     }
 
     return {
@@ -103,8 +161,12 @@ export async function checkFreeTierLimit(orgId: string): Promise<RateLimitResult
       },
     };
   } catch (err) {
-    logger.error({ err }, "Rate limit check failed, allowing request");
-    // Fail open
-    return { allowed: true, remaining: { rpm: RPM_LIMIT, rpd: RPD_LIMIT }, resetAt: { rpm: now + 60, rpd: now + 86400 } };
+    logger.error(
+      { err },
+      options.failClosed
+        ? "Rate limit check failed; refusing the public request"
+        : "Rate limit check failed, allowing request",
+    );
+    return uncounted();
   }
 }

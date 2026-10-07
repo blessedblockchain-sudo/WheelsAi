@@ -12,9 +12,11 @@ import {
   stopDeployment,
   restartDeployment,
   addChannel,
+  addWebChatKey,
   updateChannel,
   removeChannel,
   SUPPORTED_PLATFORMS,
+  WEB_CHAT_PLATFORM,
 } from "../services/openclaw.js";
 import type { TelegramWebhookResult } from "../services/telegramWebhook.js";
 
@@ -81,6 +83,19 @@ function normalizePlatform(platform: string): string {
   if (platform === "webchat") return "web";
   if (platform === "webhook") return "api";
   return platform;
+}
+
+/**
+ * What "Web Chat" made: a web chat key, managed with the other keys
+ * (/api/channels/web/keys; Integrations, Channels in the dashboard).
+ */
+function serializeWebChatKey(key: { id: string }) {
+  return {
+    id: key.id,
+    manageUrl: "/dashboard/integrations#channels",
+    message:
+      "A web chat key was created for this agent. Add the sites that may embed it, then copy its snippet.",
+  };
 }
 
 function toModelConfig(value: unknown): Record<string, unknown> {
@@ -151,6 +166,7 @@ export const openclawRoutes: FastifyPluginAsync = async (app) => {
 
       return reply.status(201).send({
         deployment: serializeDeployment(deployment),
+        ...(deployment.webChatKey && { webChatKey: serializeWebChatKey(deployment.webChatKey) }),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -318,6 +334,10 @@ export const openclawRoutes: FastifyPluginAsync = async (app) => {
     try {
       const { id } = deploymentParamsSchema.parse(request.params);
       const body = addChannelSchema.parse(request.body);
+      if (normalizePlatform(body.platform) === WEB_CHAT_PLATFORM) {
+        const key = await addWebChatKey(id, getOrgId(request), body.config);
+        return reply.status(201).send({ webChatKey: serializeWebChatKey(key) });
+      }
       const channel = await addChannel(id, getOrgId(request), {
         ...body,
         platform: normalizePlatform(body.platform),

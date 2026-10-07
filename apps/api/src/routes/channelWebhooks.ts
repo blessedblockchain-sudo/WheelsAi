@@ -61,6 +61,15 @@ export interface ChannelWebhookDeps {
 export const LIVE_CHANNEL_PLATFORMS = ["discord", "telegram", "slack"] as const;
 const SUPPORTED: ReadonlySet<string> = new Set(LIVE_CHANNEL_PLATFORMS);
 
+/**
+ * Every chat channel an agent can be reached on: the platforms above, which
+ * arrive here as webhooks, and the web chat widget, which has routes of its
+ * own (routes/widget.ts). This is the list the public stats and each agent's
+ * public page state; webhook routing keeps LIVE_CHANNEL_PLATFORMS.
+ */
+export const WEB_CHAT_CHANNEL = "web";
+export const LIVE_CHAT_CHANNELS = [...LIVE_CHANNEL_PLATFORMS, WEB_CHAT_CHANNEL] as const;
+
 export function createChannelWebhookRoutes(
   deps: ChannelWebhookDeps,
 ): FastifyPluginAsync {

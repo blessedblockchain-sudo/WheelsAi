@@ -19,6 +19,7 @@ const sections = [
   { id: "public", title: "What is public on WheelsAI" },
   { id: "sharing", title: "Who we share it with" },
   { id: "cookies", title: "Cookies and local storage" },
+  { id: "widget", title: "The chat widget and Try it" },
   { id: "security", title: "Security" },
   { id: "retention", title: "How long we keep it" },
   { id: "rights", title: "Your choices and rights" },
@@ -69,7 +70,9 @@ export default function PrivacyPage() {
       <p>
         Messages you or your users send to agents and models, and the responses. Most chat requests are processed and not
         stored. Some features keep them so you can review them: visual-builder run traces, test runs, scheduled task and
-        workflow results, agent memory, and messages received through connected chat channels while they are being processed.
+        workflow results, agent memory, messages received through connected chat channels while they are being processed, and
+        web chat widget conversations when the site&apos;s owner turned on saving (see{" "}
+        <a href="#widget">the chat widget and Try it</a>).
       </p>
       <h3>Usage and billing records</h3>
       <ul>
@@ -186,6 +189,10 @@ export default function PrivacyPage() {
           { who: "GitHub, Slack, Discord, Telegram", why: "Only when you connect them, to import code and exchange messages." },
           { who: <>Hosting, database and storage providers <Founder>confirm hosting providers</Founder></>, why: "Running our servers, database, cache and file storage." },
           { who: "Error tracking (Sentry, when enabled)", why: "Diagnosing server errors." },
+          {
+            who: <>Cloudflare Turnstile <Founder>legal review: Turnstile as a processor</Founder></>,
+            why: "Only on a marketplace listing's Try it tab, for visitors who are not signed in and only when the check is switched on: telling people from bots before a free preview.",
+          },
         ]}
       />
       <p>
@@ -204,8 +211,63 @@ export default function PrivacyPage() {
         wallet adapter may remember which wallet you chose so it can reconnect. Neither is sent to us. We use no advertising or
         analytics cookies.
       </p>
+      <p>
+        The embeddable chat widget sets no cookie. On the site that embeds it, it uses that site&apos;s session storage for the
+        current conversation; see <a href="#widget">the chat widget and Try it</a>.
+      </p>
 
-      <h2 id="security">9. Security</h2>
+      <h2 id="widget">9. The chat widget and Try it</h2>
+      <p>
+        <Founder>legal review: this whole section, written from how the features work</Founder>
+      </p>
+      <h3>The chat widget on other people&apos;s sites</h3>
+      <p>
+        A WheelsAI customer can put one of their agents on their own website as a chat widget. If you chat with a widget, that
+        site&apos;s owner decides what it is for and is responsible for telling you about it in their own privacy notice; we
+        process the conversation for them.
+      </p>
+      <ul>
+        <li>
+          Your messages are sent to our API and to the model that answers. The widget sends no cookies and does not identify
+          you: there is no account, name or email involved.
+        </li>
+        <li>
+          The widget keeps the conversation and a random session id in that site&apos;s <code>sessionStorage</code> for your
+          browser tab, so the chat survives moving between pages. It is cleared when you close the tab or press the
+          widget&apos;s new-conversation button.
+        </li>
+        <li>
+          Conversations are not stored on our servers unless the site&apos;s owner turned on saving. When it is on, the
+          widget says so under the message box, and your messages and the agent&apos;s answers are stored in the
+          owner&apos;s WheelsAI organization, with the address of the site the chat came from. No retention period is
+          applied to saved conversations today. <Founder>legal review: a retention period for saved widget conversations, and how a visitor asks for deletion</Founder>
+        </li>
+        <li>
+          To enforce message limits we count requests per network in short-lived counters. The counter is keyed by a keyed
+          hash of your IP address (for IPv6, of its /64 network), not by the address itself, and expires within a day.
+        </li>
+      </ul>
+      <h3>Try it on marketplace listings</h3>
+      <ul>
+        <li>
+          Try it is a free, limited chat with a listed agent. Your messages go to our API and to a free model we provide. Try
+          it conversations are not stored; we keep counts (how many messages a listing received in a day) and usage records
+          that hold no message content.
+        </li>
+        <li>
+          If you are signed in, the preview is tied to your organization so limits can be applied. If you are not, and the
+          human check is switched on, Cloudflare Turnstile runs in your browser: Cloudflare receives your IP address and
+          signals from your browser to decide whether you are a person, and we receive only its yes-or-no answer. Turnstile
+          is loaded only on the Try it tab and only for visitors who are not signed in. While the check is not switched on,
+          Try it requires signing in and Turnstile is not loaded at all.
+        </li>
+        <li>
+          A preview session is bound to the same hashed network bucket described above, so it stops working if your network
+          changes.
+        </li>
+      </ul>
+
+      <h2 id="security">10. Security</h2>
       <p>
         We use HTTPS, hash passwords with Argon2id, store API keys only as keyed hashes, encrypt agent secrets and channel
         credentials at rest, make email links single-use and short-lived, support two-factor authentication, and scope every
@@ -213,7 +275,7 @@ export default function PrivacyPage() {
         <Founder>security contact email</Founder>.
       </p>
 
-      <h2 id="retention">10. How long we keep it</h2>
+      <h2 id="retention">11. How long we keep it</h2>
       <ul>
         <li>Account data and content: for as long as your account is open, and deleted after you close it, except as below.</li>
         <li>
@@ -224,7 +286,7 @@ export default function PrivacyPage() {
         <li>On-chain records: permanent, and outside our control.</li>
       </ul>
 
-      <h2 id="rights">11. Your choices and rights</h2>
+      <h2 id="rights">12. Your choices and rights</h2>
       <p>
         You can view and update your account information in the dashboard, revoke API keys, disconnect integrations, delete
         agents and other content, and close your account. Depending on where you live, you may also have the right to access,
@@ -233,26 +295,26 @@ export default function PrivacyPage() {
         <Link href="/contact?topic=other">contact form</Link>. You may also complain to your local data protection authority.
       </p>
 
-      <h2 id="transfers">12. International transfers</h2>
+      <h2 id="transfers">13. International transfers</h2>
       <p>
         Our service providers, and the independent GPU hosts in the Nosana network, may process data in countries other than
         yours. Where the law requires it, we use appropriate safeguards for those transfers. Our primary data location is{" "}
         <Founder>primary data hosting region</Founder>.
       </p>
 
-      <h2 id="children">13. Children</h2>
+      <h2 id="children">14. Children</h2>
       <p>
         The Service is not directed to children, and you must be at least <Founder>minimum age</Founder> to use it. If you
         believe a child has given us personal data, contact us and we will delete it.
       </p>
 
-      <h2 id="changes">14. Changes to this policy</h2>
+      <h2 id="changes">15. Changes to this policy</h2>
       <p>
         We will post any changes on this page. If a change is material, we will tell you by email or in the dashboard before it
         takes effect.
       </p>
 
-      <h2 id="contact">15. Contact</h2>
+      <h2 id="contact">16. Contact</h2>
       <p>
         <Founder>legal entity name</Founder>, <Founder>registered address</Founder>. Email: <Founder>privacy contact email</Founder>.
         You can also reach us through the <Link href="/contact?topic=other">contact form</Link>.

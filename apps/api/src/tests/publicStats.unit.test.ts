@@ -18,8 +18,9 @@ test("public stats report the product's own constants", async () => {
   const body = res.json();
   assert.equal(body.frameworks, 6);
   assert.equal(body.pricingModels, 4); // free, per-request, monthly, tokenized
-  assert.deepEqual(body.channelPlatforms, ["discord", "telegram", "slack"]);
-  assert.equal(body.channels, 3);
+  // The web chat widget is the fourth: it is served by routes/widget.ts.
+  assert.deepEqual(body.channelPlatforms, ["discord", "telegram", "slack", "web"]);
+  assert.equal(body.channels, 4);
   assert.equal(typeof body.models, "number");
   assert.ok(body.models > 0);
   assert.equal(body.publishedListings, 12);

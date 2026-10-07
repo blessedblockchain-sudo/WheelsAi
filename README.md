@@ -38,7 +38,9 @@ verified usage, and buyers can check a public receipts page before
 installing anything.
 
 Honest platform stats, as shipped today: **6 frameworks · 21 models ·
-3 chat channels · 4 pricing models**.
+4 chat channels · 4 pricing models**. The channels are Discord, Telegram,
+Slack and Web: a chat widget an owner pastes into their own site
+(`apps/web/public/widget.js`, proof run in `docs/WEB-WIDGET-RUN.md`).
 
 ## Proven, with receipts
 

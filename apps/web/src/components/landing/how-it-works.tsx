@@ -3,6 +3,8 @@
 import { useEffect, useRef } from "react";
 import { Workflow, Rocket, Store, TrendingUp } from "lucide-react";
 
+import { liveChatChannelList } from "@/lib/chat-channels";
+
 const steps = [
   {
     icon: Workflow,
@@ -16,7 +18,7 @@ const steps = [
     step: "02",
     title: "Deploy",
     description:
-      "One-click deploy on decentralized per-second GPU behind an OpenAI-compatible API, with Discord, Telegram and Slack for agents. We handle the infrastructure.",
+      `One-click deploy on decentralized per-second GPU behind an OpenAI-compatible API, with ${liveChatChannelList(" and ")} chat for agents. We handle the infrastructure.`,
   },
   {
     icon: Store,

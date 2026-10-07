@@ -38,6 +38,7 @@ import {
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { OfferingCard, OfferingCardSkeleton } from "@/components/marketplace/offering-card";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
+import { TryItPanel } from "@/components/marketplace/try-it-panel";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -124,7 +125,7 @@ function ReviewCard({ review }: { review: MarketplaceReview }) {
   );
 }
 
-type TabType = "overview" | "hire" | "reviews" | "token";
+type TabType = "overview" | "hire" | "try" | "reviews" | "token";
 
 /** Placeholder shaped like a sidebar card of label / value rows. */
 function InfoCardSkeleton({ rows }: { rows: number }) {
@@ -286,6 +287,10 @@ export default function ListingDetailPage() {
     }
     if (typeof window !== "undefined" && window.location.hash === "#hire") {
       setActiveTab("hire");
+    }
+    // Where the sign-in link on the Try it tab returns to.
+    if (typeof window !== "undefined" && window.location.hash === "#try") {
+      setActiveTab("try");
     }
   }, []);
 
@@ -614,6 +619,18 @@ export default function ListingDetailPage() {
                       <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{offerings.length}</span>
                     )}
                   </button>
+                  {listing.trial?.enabled && (
+                    <button
+                      onClick={() => setActiveTab("try")}
+                      className={`border-b-2 pb-3 text-sm font-medium ${
+                        activeTab === "try"
+                          ? "border-primary-600 text-primary-600"
+                          : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
+                      }`}
+                    >
+                      Try it
+                    </button>
+                  )}
                   <button
                     onClick={() => setActiveTab("reviews")}
                     className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
@@ -729,6 +746,10 @@ export default function ListingDetailPage() {
                       </div>
                     )}
                   </div>
+                )}
+
+                {activeTab === "try" && listing.trial?.enabled && (
+                  <TryItPanel slug={listing.slug} listingId={listing.id} listingTitle={listing.title} />
                 )}
 
                 {activeTab === "reviews" && (

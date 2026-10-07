@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plug, Webhook as WebhookLucide } from "lucide-react";
+import { MessageSquare, Plug, Webhook as WebhookLucide } from "lucide-react";
 import {
   webhooksApi,
   integrationsApi,
@@ -21,6 +21,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { WebChatKeys } from "@/components/dashboard/web-channel/web-chat-keys";
 
 // Icons
 function WebhookIcon({ className }: { className?: string }) {
@@ -139,7 +140,7 @@ const integrationIcons: Record<string, React.ReactNode> = {
 
 export default function IntegrationsPage() {
   const confirmAction = useConfirm();
-  const [activeTab, setActiveTab] = useState<"webhooks" | "integrations">("webhooks");
+  const [activeTab, setActiveTab] = useState<"webhooks" | "integrations" | "channels">("webhooks");
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [availableIntegrations, setAvailableIntegrations] = useState<AvailableIntegration[]>([]);
@@ -167,6 +168,9 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     loadData();
+    // Links from elsewhere in the dashboard (the OpenClaw wizard's Web Chat
+    // option) land on the Channels tab.
+    if (window.location.hash === "#channels") setActiveTab("channels");
   }, []);
 
   async function loadData() {
@@ -281,34 +285,17 @@ export default function IntegrationsPage() {
 
   const header = (
     <div>
-      <h1 className="text-3xl font-bold">Webhooks & Integrations</h1>
+      <h1 className="text-3xl font-bold">Webhooks, Integrations & Channels</h1>
       <p className="text-muted-foreground mt-2">
-        Connect WheelsAI to external services and receive real-time event notifications
+        Connect WheelsAI to external services, receive real-time event notifications, and put your agents where
+        people chat
       </p>
     </div>
   );
 
-  if (loading) {
-    return (
-      <div className="p-8 max-w-6xl mx-auto space-y-8">
-        {header}
-        <WebhooksTabSkeleton />
-      </div>
-    );
-  }
-
-  if (loadError !== null) {
-    return (
-      <div className="p-8 max-w-6xl mx-auto space-y-8">
-        {header}
-        <ErrorState
-          title="Couldn't load webhooks and integrations"
-          error={loadError}
-          onRetry={loadData}
-        />
-      </div>
-    );
-  }
+  // Webhooks and integrations load together; the Channels tab loads its own
+  // data, so it stays usable while (or if) the other two cannot be read.
+  const ready = !loading && loadError === null;
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-8">
@@ -338,10 +325,32 @@ export default function IntegrationsPage() {
           <PlugIcon className="w-4 h-4 inline-block mr-2" />
           Integrations
         </button>
+        <button
+          onClick={() => setActiveTab("channels")}
+          className={`px-4 py-2 font-medium ${
+            activeTab === "channels"
+              ? "border-b-2 border-primary text-primary"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <MessageSquare className="w-4 h-4 inline-block mr-2" />
+          Channels
+        </button>
       </div>
 
+      {activeTab === "channels" && <WebChatKeys />}
+
+      {activeTab !== "channels" && loading && <WebhooksTabSkeleton />}
+      {activeTab !== "channels" && !loading && loadError !== null && (
+        <ErrorState
+          title="Couldn't load webhooks and integrations"
+          error={loadError}
+          onRetry={loadData}
+        />
+      )}
+
       {/* Webhooks Tab */}
-      {activeTab === "webhooks" && (
+      {ready && activeTab === "webhooks" && (
         <div className="space-y-6">
           <div className="flex justify-between items-center">
             <div>
@@ -437,7 +446,7 @@ export default function IntegrationsPage() {
       )}
 
       {/* Integrations Tab */}
-      {activeTab === "integrations" && (
+      {ready && activeTab === "integrations" && (
         <div className="space-y-6">
           <div>
             <h2 className="text-xl font-semibold">Available Integrations</h2>
@@ -802,15 +811,6 @@ export default function IntegrationsPage() {
 function WebhooksTabSkeleton() {
   return (
     <div className="space-y-8" aria-busy="true">
-      {/* Tabs */}
-      <div className="flex gap-2 border-b">
-        {["w-24", "w-28"].map((width) => (
-          <div key={width} className="px-4 py-2">
-            <Skeleton className={`h-6 ${width}`} />
-          </div>
-        ))}
-      </div>
-
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <div className="min-w-0 flex-1 space-y-2">

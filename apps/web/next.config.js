@@ -15,6 +15,17 @@ const nextConfig = {
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         ],
       },
+      {
+        // The chat widget is loaded by other people's sites. It must stay
+        // loadable there under a strict embedder policy, and be cached
+        // briefly so a fix reaches every embed within minutes.
+        source: "/widget.js",
+        headers: [
+          { key: "Cross-Origin-Resource-Policy", value: "cross-origin" },
+          { key: "Access-Control-Allow-Origin", value: "*" },
+          { key: "Cache-Control", value: "public, max-age=300" },
+        ],
+      },
     ];
   },
 };

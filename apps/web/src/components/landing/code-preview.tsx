@@ -1,5 +1,6 @@
 import { Check, Terminal } from "lucide-react";
 
+import { liveChatChannelList } from "@/lib/chat-channels";
 import { landingAgentEndpoint, landingMarketplaceUrl } from "@/lib/public-urls";
 
 const AGENT_SLUG = "my-support-bot";
@@ -19,7 +20,7 @@ const bullets = [
   "Always-on availability with auto-scaling",
   "Enterprise-grade reliability",
   "Real-time streaming responses",
-  "Deploy to Discord, Telegram & Slack",
+  `Deploy to ${liveChatChannelList(" & ")} chat`,
   "Free marketplace listing with verifiable receipts",
 ];
 
@@ -32,7 +33,7 @@ const terminalLines = [
   { text: "", color: "" },
   { text: "  Agent live!", color: "text-white font-bold" },
   { text: `    Endpoint:  ${AGENT_ENDPOINT}`, color: "text-navy-400" },
-  { text: "    Channels:  Discord, Telegram, Slack, Web", color: "text-navy-400" },
+  { text: `    Channels:  ${liveChatChannelList(", ")}`, color: "text-navy-400" },
   { text: "    Latency:   47ms avg", color: "text-navy-400" },
   { text: "", color: "" },
   { text: "  ✓ Publishing to marketplace...", color: "text-success" },

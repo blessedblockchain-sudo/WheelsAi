@@ -315,7 +315,7 @@ describe("wheelsai (the built command)", () => {
       assert.equal(result.code, 0, result.stderr);
       assert.equal(deployPosts().length, 1);
       assert.deepEqual(deployPosts()[0]?.body, { gpuTier: "3060", replicas: 1 });
-      assert.match(result.stdout, /Agent live!/);
+      assert.match(result.stdout, /^\s*Agent live$/m);
       assert.match(result.stdout, new RegExp(`Deployment\\s+${DEPLOYMENT_ID}`));
       // The agent's /v1 URL on the API, as the API returned it, plus what an OpenAI client needs.
       assert.match(result.stdout, /Endpoint\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\/chat\/completions\n/);
@@ -369,7 +369,7 @@ describe("wheelsai (the built command)", () => {
           else api.routes["GET /api/public/stats"] = route;
           const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
           assert.equal(result.code, 0, result.stderr);
-          assert.match(result.stdout, /Agent live!/);
+          assert.match(result.stdout, /^\s*Agent live$/m);
           assert.match(result.stdout, /Latency\s+live figure unavailable\n/);
           assert.doesNotMatch(result.stdout, /\d\s?ms/);
         }
@@ -427,7 +427,7 @@ describe("wheelsai (the built command)", () => {
       const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
       assert.equal(result.code, 1);
       assert.ok(result.stderr.includes(`wheelsai logs ${DEPLOYMENT_ID} --agent my-support-bot`), result.stderr);
-      assert.doesNotMatch(result.stdout, /Agent live!/);
+      assert.doesNotMatch(result.stdout, /^\s*Agent live$/m);
     });
 
     it("--resume waits for the existing deployment without a second POST", async () => {
@@ -599,7 +599,7 @@ describe("wheelsai (the built command)", () => {
 
       api.routes[`GET /api/agents/${AGENT_ID}`] = { agent: { ...detail, apiEndpoint: null, openaiBaseUrl: null } };
       const unset = await wheelsai(["agents", "get", "my-support-bot"]);
-      assert.match(unset.stdout, /API\s+not configured on the API \(PUBLIC_API_URL is not set\)/);
+      assert.match(unset.stdout, /API\s+none returned by the API/);
       assert.doesNotMatch(unset.stdout, /OpenAI base/);
     });
 

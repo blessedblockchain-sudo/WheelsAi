@@ -88,7 +88,7 @@ export default function JobsApiPage() {
         <li>
           The job runs the publisher&apos;s original product in the publisher&apos;s organization. The buyer never receives
           a copy, the publisher&apos;s keys and private instructions never leave, and tools that move money or change the
-          publisher&apos;s data are switched off for the run.
+          publisher&apos;s data are withheld for the run.
         </li>
         <li>
           The publisher sees the input the buyer sends. A deliverable that repeats the publisher&apos;s private
@@ -280,7 +280,7 @@ export default function JobsApiPage() {
             { status: <code>409</code>, code: <code>offering_terms_changed</code>, meaning: <>The offering is no longer what <code>expected</code> says. Carries <code>current</code> and <code>changed</code>.</> },
             { status: <code>422</code>, code: <code>input_invalid</code>, meaning: <>The input does not match the schema. Carries <code>errors: [&#123; path, message &#125;]</code>.</> },
             { status: <code>422</code>, code: <code>validation_too_expensive</code>, meaning: <>Checking the input against the schema would take more work than one validation is allowed (see <a href="#create-offering">schema limits</a>). Send less data.</> },
-            { status: <code>501</code>, code: <code>jobs_not_configured</code>, meaning: "This server runs no job worker, so nothing would run the job." },
+            { status: <code>501</code>, code: <code>jobs_not_configured</code>, meaning: "Paid jobs are temporarily unavailable. Nothing was charged; try again later." },
           ]}
         />
       </Endpoint>
@@ -510,8 +510,9 @@ export default function JobsApiPage() {
           ]}
         />
         <p>
-          A change from a state that does not allow it is <code>409</code> <code>offering_state_conflict</code>. On a
-          server that runs no job worker, <code>activate</code> answers <code>501</code> <code>jobs_not_configured</code>.
+          A change from a state that does not allow it is <code>409</code> <code>offering_state_conflict</code>. While
+          paid jobs are temporarily unavailable, <code>activate</code> answers <code>501</code>{" "}
+          <code>jobs_not_configured</code>.
         </p>
       </Endpoint>
 
@@ -551,8 +552,7 @@ export default function JobsApiPage() {
         Each event&apos;s <code>data</code> is <code>jobId</code>, <code>offeringId</code>, <code>status</code>,{" "}
         <code>priceCents</code>, <code>deadlineAt</code> and <code>reviewDeadlineAt</code>. It never carries the input, the
         deliverable or the instructions; read the job with your own credentials. Subscribe at{" "}
-        <Link href="/docs/api/webhooks">Webhooks</Link>. The buyer&apos;s owner is also emailed when a deliverable is ready,
-        on servers with an email provider configured.
+        <Link href="/docs/api/webhooks">Webhooks</Link>. The buyer&apos;s owner is also emailed when a deliverable is ready.
       </p>
       <p>
         The TypeScript SDK wraps all of this as <code>offerings</code> and <code>jobs</code>; see{" "}

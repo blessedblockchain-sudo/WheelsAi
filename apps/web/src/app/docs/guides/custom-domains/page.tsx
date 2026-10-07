@@ -39,7 +39,7 @@ export default function CustomDomainsGuidePage() {
         OpenAI client, and it answers for that target only. Nothing else in the WheelsAI API is reachable through your
         hostname.
       </p>
-      <p>Three things have to be true, and each is observed, never assumed:</p>
+      <p>Three things have to be true, and WheelsAI checks each one:</p>
       <ol>
         <li>
           <strong>Ownership</strong>: a TXT record with your verification token is found in DNS.
@@ -73,9 +73,10 @@ export default function CustomDomainsGuidePage() {
           proxy).
         </li>
         <li>
-          <strong>A server with the edge configured.</strong> The page <Link href="/dashboard/domains">Domains</Link> says
-          so at the top when it is not, and the API answers <code>501 custom_domains_not_configured</code> with the
-          reason. Until then no domain can be added and none is served.
+          <strong>Custom domains available.</strong> If custom domains are temporarily unavailable, the{" "}
+          <Link href="/dashboard/domains">Domains</Link> page says so at the top and the API answers{" "}
+          <code>501 custom_domains_not_configured</code>. While they are unavailable, domains cannot be added or served;
+          you can still view, switch off and delete the ones you have.
         </li>
       </ul>
 
@@ -146,7 +147,7 @@ export default function CustomDomainsGuidePage() {
       </Callout>
 
       <h2 id="routing">3. Point the domain (CNAME or A/AAAA)</h2>
-      <p>The domain&apos;s detail page shows the record that fits the name, with the real values for this server:</p>
+      <p>The domain&apos;s detail page shows the record that fits the name, with the exact values to publish:</p>
       <DocTable
         caption="Routing records"
         columns={[
@@ -295,12 +296,12 @@ const reply = await client.chat.completions.create({
           <strong>Wildcard domains.</strong> Each hostname is added, verified and certified on its own.
         </li>
         <li>
-          <strong>An unbounded number of domains.</strong> Every organization shares one checker and one account with
-          the certificate authority, so a server allows each organization a fixed number of domains (25 unless the
-          operator changed it; <code>GET /api/domains/config</code> returns it as{" "}
-          <code>limits.maxDomainsPerOrganization</code>). It is the same on every plan that includes custom domains,
-          and every domain counts, whatever its state. New certificates are also paced: by default 30 per organization
-          in any 3 hours, and 5 attempts per hostname per hour. A domain that is over the pace gets its certificate
+          <strong>An unbounded number of domains.</strong> Certificates for every customer come from one account with
+          the certificate authority, so each organization can have a fixed number of domains: 25.{" "}
+          <code>GET /api/domains/config</code> returns the limit that applies to you as{" "}
+          <code>limits.maxDomainsPerOrganization</code>. It is the same on every plan that includes custom domains,
+          and every domain counts, whatever its state. New certificates are also paced: 30 per organization in any 3
+          hours, and 5 attempts per hostname per hour. A domain that is over the pace gets its certificate
           later; nothing needs to be done.
         </li>
         <li>
@@ -331,7 +332,7 @@ const reply = await client.chat.completions.create({
           { key: "what", label: "Does" },
         ]}
         rows={[
-          { endpoint: <code>GET /api/domains/config</code>, what: "Whether custom domains are configured on this server, the edge hostname and addresses, and whether your plan includes them." },
+          { endpoint: <code>GET /api/domains/config</code>, what: "Whether custom domains are available, the edge hostname and addresses, whether your plan includes them, and your domain limit." },
           { endpoint: <code>GET /api/domains</code>, what: <>Your domains, each with its DNS records and the observed <code>routing</code> and <code>certificate</code>.</> },
           { endpoint: <code>POST /api/domains</code>, what: <>Add a domain: <code>domain</code>, <code>targetType</code> (<code>agent</code> or <code>deployment</code>), <code>targetId</code>, optional <code>headers</code>.</> },
           { endpoint: <code>GET /api/domains/{"{id}"}</code>, what: "One domain." },
@@ -356,10 +357,10 @@ const reply = await client.chat.completions.create({
         rows={[
           { status: <code>400</code>, code: <><code>invalid_domain</code>, <code>reserved_domain</code>, <code>invalid_headers</code>, <code>target_not_found</code>, <code>https_required</code>, <code>not_verified</code>, <code>dns_not_routed</code></>, when: "The request cannot be done as asked; the message says why." },
           { status: <code>403</code>, code: <code>plan_limit_reached</code>, when: "Adding, checking, switching on or re-checking on a plan without custom domains." },
-          { status: <code>403</code>, code: <code>domain_limit_reached</code>, when: <>The organization already has as many domains as the server allows (<code>limit</code> and <code>count</code> are in the body). Delete one to add another.</> },
+          { status: <code>403</code>, code: <code>domain_limit_reached</code>, when: <>The organization already has as many domains as it is allowed (<code>limit</code> and <code>count</code> are in the body). Delete one to add another.</> },
           { status: <code>409</code>, code: <><code>domain_exists</code>, <code>domain_claimed</code>, <code>domain_changed</code></>, when: "Already added by you; verified by another organization; or changed while the request ran (try again)." },
           { status: <code>429</code>, code: <><code>checked_recently</code>, <code>reverified_recently</code></>, when: <>The certificate was checked, or a new verification token was generated (at most one per domain per 15 minutes), too recently; <code>Retry-After</code> says when to ask again.</> },
-          { status: <code>501</code>, code: <code>custom_domains_not_configured</code>, when: "The server has no edge configured. Reads, switching off and deleting still work." },
+          { status: <code>501</code>, code: <code>custom_domains_not_configured</code>, when: "Custom domains are temporarily unavailable. Reads, switching off and deleting still work." },
           { status: <code>503</code>, code: <><code>dns_unavailable</code>, <code>plan_unavailable</code></>, when: "DNS or the plan could not be read just now. Nothing was changed; try again." },
         ]}
       />

@@ -188,7 +188,7 @@ export function offeringsResource(client: WheelsAIClient) {
     update: (offeringId: string, updates: UpdateOfferingInput) =>
       client.patch<{ offering: OwnedOffering }>(`/api/offerings/${seg(offeringId)}`, updates),
 
-    /** Makes a draft or paused offering hireable. 501 `jobs_not_configured` when the server runs no jobs. */
+    /** Makes a draft or paused offering hireable. 501 `jobs_not_configured` while paid jobs are temporarily unavailable. */
     activate: (offeringId: string) =>
       client.post<{ offering: OwnedOffering }>(`/api/offerings/${seg(offeringId)}/activate`),
 

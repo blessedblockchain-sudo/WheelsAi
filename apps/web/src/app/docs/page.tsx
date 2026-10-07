@@ -44,7 +44,7 @@ export default function DocsHome() {
           Starter, Pro and Enterprise; credits by card, wallet top-up or x402 micropayments.
         </CardLink>
         <CardLink href="/docs/api" title="API reference">
-          Authentication, errors, rate limits and every endpoint group, derived from the API&apos;s source.
+          Authentication, errors, rate limits and every endpoint group, with the fields each one takes and returns.
         </CardLink>
         <CardLink href="/docs/sdk" title="SDK and CLI">
           The TypeScript client and the <code>wheelsai</code> command-line tool.
@@ -93,8 +93,7 @@ export default function DocsHome() {
         <a href={`${API_BASE_URL}/docs`} rel="noopener">
           {API_BASE_URL}/docs
         </a>
-        . These pages are written by hand from the same route code and explain behaviour the schema cannot, such as credit holds
-        and plan limits.
+        . These pages explain what the schema cannot, such as credit holds and plan limits.
       </p>
 
       <h2 id="conventions">Conventions</h2>
@@ -105,14 +104,15 @@ export default function DocsHome() {
         </li>
         <li>Timestamps are ISO 8601 strings in UTC.</li>
         <li>
-          Features that are not configured on a server answer <code>501 Not Implemented</code> with a reason instead of
-          pretending to work. For example, card checkout answers 501 until Stripe is configured.
+          A feature that is temporarily unavailable answers <code>501 Not Implemented</code> with an error code that names
+          it, for example <code>card_payments_not_configured</code> for card checkout. Nothing is charged, and you can retry
+          later or use another payment method.
         </li>
       </ul>
-      <Callout title="Honest by design">
+      <Callout title="Clear answers">
         <p>
-          If a feature is not available on the server you are calling, the API tells you so with a named error. It never returns
-          a simulated success.
+          When a request cannot be served, the API says so with a named error code and a message, so your code can handle
+          it.
         </p>
       </Callout>
 

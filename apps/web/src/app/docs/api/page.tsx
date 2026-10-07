@@ -22,7 +22,7 @@ const toc = [
   { id: "errors", title: "Errors" },
   { id: "rate-limits", title: "Rate limits" },
   { id: "index", title: "Endpoint index" },
-  { id: "measured-latency", title: "Measured latency" },
+  { id: "measured-latency", title: "Response times" },
 ];
 
 export default function ApiOverviewPage() {
@@ -158,7 +158,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { status: <code>404</code>, meaning: "Not found, or not yours. Resources in other organizations are reported as not found." },
           { status: <code>409</code>, meaning: "Conflict, for example a replayed payment or a payout already in progress." },
           { status: <code>429</code>, meaning: <>Too many requests: rate limits, the monthly API call quota (<code>plan_limit_reached</code>), the free-model limits, or the active deployment quota.</> },
-          { status: <code>501</code>, meaning: "The feature is not configured on this server (for example card payments or email). The message says which." },
+          { status: <code>501</code>, meaning: "The feature is temporarily unavailable (for example card payments or email). The error code and message say which, and nothing is charged." },
           { status: <code>502</code>, meaning: "An upstream (a model provider, a GPU node, Nosana) failed. Any credits held for the request are released." },
           { status: <code>503</code>, meaning: "No healthy node is available for a deployment right now." },
         ]}
@@ -178,14 +178,14 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
 }`}
       />
       <p>
-        Internal failures answer <code>500</code> with a generic message. Error bodies are scrubbed before they leave the server,
-        so they never contain stack traces, file paths or query details.
+        Internal failures answer <code>500</code> with a generic message. Error bodies are scrubbed before they are sent, so they
+        never contain stack traces, file paths or query details.
       </p>
 
       <h2 id="rate-limits">Rate limits</h2>
       <ul>
         <li>
-          <strong>Per IP:</strong> 100 requests per minute across the API, enforced across all API servers. Responses carry{" "}
+          <strong>Per IP:</strong> 100 requests per minute across the whole API. Responses carry{" "}
           <code>x-ratelimit-limit</code>, <code>x-ratelimit-remaining</code> and <code>x-ratelimit-reset</code>; a{" "}
           <code>429</code> also carries <code>retry-after</code>.
         </li>
@@ -230,7 +230,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { group: <Link href="/docs/guides/templates#api">Templates</Link>, prefix: <code>/api/templates</code> },
           { group: <Link href="/docs/guides/web-chat-widget#api">Web chat widget and Try it</Link>, prefix: <><code>/api/channels/web</code>, <code>/api/widget</code>, <code>/api/marketplace/listings/:slug/try</code></> },
           { group: <Link href="/status">Platform status</Link>, prefix: <code>/api/status</code> },
-          { group: <a href="#measured-latency">Platform facts and measured latency</a>, prefix: <code>/api/public/stats</code> },
+          { group: <a href="#measured-latency">Platform facts and response times</a>, prefix: <code>/api/public/stats</code> },
         ]}
       />
       <p>
@@ -248,16 +248,16 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { name: "GET /api/marketplace/listings", type: "catalog", description: "Published listings, with search and filters." },
           { name: "GET /api/templates", type: "catalog", description: "Published agent templates." },
           { name: "GET /api/a/{slug}", type: "receipts", description: "A public agent's transparency feed: treasury, compute paid, recent payment signatures." },
-          { name: "GET /api/status", type: "health", description: "Live platform status (the data behind /status), including the measured latency with its histogram and error share." },
-          { name: "GET /api/public/stats", type: "facts", description: "Platform facts read from the constants the product runs on (frameworks, models, pricing models, chat channels) and the measured latency. Always 200; cacheable for 5 minutes." },
+          { name: "GET /api/status", type: "health", description: "Live platform status (the data behind /status), including response times with their distribution and error share." },
+          { name: "GET /api/public/stats", type: "facts", description: "Platform facts (frameworks, models, pricing models, chat channels) and response times. Always 200; cacheable for 5 minutes." },
         ]}
       />
 
-      <h2 id="measured-latency">Measured latency</h2>
+      <h2 id="measured-latency">Response times</h2>
       <p>
-        Every latency WheelsAI states, on the landing page, on <Link href="/status#latency">/status</Link>, in the CLI and
-        in your dashboards, is computed from one record per served chat request. There is no default or estimated value: when
-        nothing was measured, the field is <code>null</code> and the page shows no number.
+        Every response time WheelsAI shows, on the landing page, on <Link href="/status#latency">/status</Link>, in the CLI
+        and in your dashboards, is computed from one record per served chat request. When there are too few records to
+        state a figure, the field is <code>null</code> and the page shows no number.
       </p>
       <CodeBlock
         language="bash"

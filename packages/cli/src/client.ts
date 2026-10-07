@@ -17,7 +17,7 @@ export function missingCredential(config: Pick<ResolvedConfig, "apiUrl" | "withh
       `Your saved credentials are for ${config.withheld.savedFor}, so they were not sent to ${config.apiUrl}.`,
       {
         hint:
-          `Sign in to this server with \`wheelsai login --url ${config.apiUrl}\`, ` +
+          `Sign in to this API with \`wheelsai login --url ${config.apiUrl}\`, ` +
           `or go back with \`wheelsai config set apiUrl ${config.withheld.savedFor}\`.`,
       },
     );

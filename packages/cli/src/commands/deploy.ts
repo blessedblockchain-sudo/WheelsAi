@@ -144,7 +144,7 @@ function printLive(
   channels: ChannelReport,
   latency: PublicLatencyFigure | null,
 ): void {
-  console.log(chalk.bold("\n  Agent live!"));
+  console.log(chalk.bold("\n  Agent live"));
   console.log(field("Deployment", deployment.id));
   console.log(field("GPU", `${clean(deployment.gpuTier)} x${deployment.replicas}`));
   console.log(field("Endpoint", clean(deployment.endpoint) ?? chalk.dim("none returned by the API")));

@@ -93,7 +93,7 @@ export default function WebChatWidgetGuidePage() {
         <p>
           A browser tells the API which site a request comes from, and the API refuses a site that is not listed. A script
           outside a browser can send any origin it likes. So the allowed sites keep your widget off other people&apos;s
-          pages; what bounds usage is the limits below, which are counted on the server and refuse when they cannot be
+          pages; what bounds usage is the limits below, which WheelsAI counts itself and which refuse when they cannot be
           counted. Do not treat the key as a secret, and rotate it if it is being misused.
         </p>
       </Callout>
@@ -101,7 +101,7 @@ export default function WebChatWidgetGuidePage() {
       <h2 id="embed">3. Paste the snippet</h2>
       <p>
         Copy the snippet shown on the key and paste it before <code>&lt;/body&gt;</code> on every page that should have
-        the chat. It looks like this, with your key and this service&apos;s two addresses filled in:
+        the chat. It looks like this, with your key and the two WheelsAI addresses filled in:
       </p>
       <CodeBlock
         language="html"
@@ -110,8 +110,8 @@ export default function WebChatWidgetGuidePage() {
         data-api="https://<api address>" async></script>`}
       />
       <p>
-        The snippet is written by the server from its own configured addresses. If the server does not know them, the
-        dashboard shows the reason in place of a snippet instead of guessing one.
+        The dashboard always shows the exact snippet for your key, so copy it from there rather than writing the addresses by
+        hand. If the snippet is temporarily unavailable, the dashboard says so in its place.
       </p>
       <p>
         <strong>Rotate</strong> gives the key a new value: every page carrying the old snippet stops showing a working
@@ -320,8 +320,8 @@ curl -sN -X POST "$WHEELSAI_API_URL/api/widget/wpk_.../chat" \\
         </li>
         <li>
           <strong>Who can start one.</strong> Anyone signed in. A visitor who is not signed in must pass a human check
-          (Cloudflare Turnstile); on a server where that check is not configured, the tab asks them to sign in. Try it
-          never runs for anonymous visitors without the check.
+          (Cloudflare Turnstile); when the check is unavailable, the tab asks them to sign in. Try it never runs for
+          anonymous visitors without the check.
         </li>
         <li>
           <strong>Limits.</strong> 10 messages a preview session (a session lasts 15 minutes and is tied to the
@@ -332,13 +332,13 @@ curl -sN -X POST "$WHEELSAI_API_URL/api/widget/wpk_.../chat" \\
         <li>
           <strong>Publishers can pay for more.</strong> Under <Link href="/dashboard/marketplace">My listings</Link>,{" "}
           <strong>Try it settings</strong> sets how many extra messages a day you fund from your credits once the free
-          ones run out. A funded message is charged when its answer is delivered and returned if it is not. Until the
-          price of a funded message is configured on the server, the setting answers{" "}
-          <code>501 trial_funding_not_configured</code> and listings keep the free daily messages.
+          ones run out. A funded message is charged when its answer is delivered and returned if it is not. If funded
+          messages are temporarily unavailable, the setting answers <code>501 trial_funding_not_configured</code> and
+          listings keep the free daily messages.
         </li>
         <li>
-          <strong>Not yet covered.</strong> An agent that answers through a graph of steps cannot be previewed; its Try it
-          tab says so and the API answers <code>501</code>.
+          <strong>Graph agents.</strong> Try it previews agents that answer with a single model. For an agent that answers
+          through a graph of steps, the Try it tab shows a note instead and the API answers <code>501</code>.
         </li>
       </ul>
       <CodeBlock

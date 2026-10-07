@@ -53,11 +53,11 @@ export default function DeploymentsApiPage() {
           Returns <code>&#123; models, gpuTiers &#125;</code>. Deployable models carry <code>id</code>, <code>hfId</code>,{" "}
           <code>displayName</code>, <code>supportedEngines</code>, <code>defaultEngine</code>, <code>minGpuTier</code>,{" "}
           <code>contextLength</code>, <code>tags</code> and <code>pricingTier</code>. Each GPU tier has <code>id</code>,{" "}
-          <code>name</code>, <code>vram</code> (GB) and <code>pricePerHour</code> (USD per replica). Only tiers that can be
-          deployed on this server are listed.
+          <code>name</code>, <code>vram</code> (GB) and <code>pricePerHour</code> (USD per replica). Only tiers open for
+          deployment are listed.
         </p>
         <p>
-          <code>GET /api/models/free</code> returns just the free chat models: <code>models</code> (available on this server)
+          <code>GET /api/models/free</code> returns just the free chat models: <code>models</code> (available now)
           and <code>allModels</code> (the full free catalog).
         </p>
       </Endpoint>
@@ -151,8 +151,8 @@ export default function DeploymentsApiPage() {
             deleted) or <code>fine_tuned_model_not_servable</code>; <code>400</code>{" "}
             <code>engine_not_supported_for_adapters</code>, <code>fine_tuned_model_base_mismatch</code> (a{" "}
             <code>modelId</code> that is not its base model) or <code>tier_too_small_for_serving</code> (with{" "}
-            <code>requiredVramGb</code>); <code>503</code> <code>adapter_download_not_configured</code> when this server
-            cannot serve adapters.
+            <code>requiredVramGb</code>); <code>503</code> <code>adapter_download_not_configured</code> when serving
+            fine-tuned models is temporarily unavailable.
           </li>
           <li>
             <code>402</code> <code>insufficient_credits</code>: the one-hour reservation (GPU rate × 3,600 × replicas) is more
@@ -162,11 +162,12 @@ export default function DeploymentsApiPage() {
             <code>429</code> <code>deployment_quota_exceeded</code>: too many active deployments in the organization.
           </li>
           <li>
-            <code>501</code>: GPU deployment, or that tier&apos;s market, is not configured on this server.
+            <code>501</code> <code>gpu_market_not_configured</code>: GPU deployment, or that tier&apos;s market, is
+            temporarily unavailable. Nothing was created and nothing was reserved; try another tier or retry later.
           </li>
           <li>
-            <code>503</code> <code>compute_capacity_unavailable</code>: new GPU deployments are paused. Nothing was created
-            and nothing was reserved; retry later. The <Link href="/status">status page</Link> shows when they resume.
+            <code>503</code> <code>compute_capacity_unavailable</code>: new GPU deployments are temporarily unavailable. Nothing
+            was created, reserved or charged; retry later. The <Link href="/status">status page</Link> shows when they resume.
           </li>
         </ul>
         <p>
@@ -230,7 +231,8 @@ export default function DeploymentsApiPage() {
       <Endpoint id="restart-deployment" method="POST" path="/api/deployments/{deploymentId}/restart" auth="API key or session" title="Restart a deployment">
         <p>
           Resubmits the GPU job with the deployment&apos;s current configuration. Answers <code>503</code>{" "}
-          <code>compute_capacity_unavailable</code>, with nothing reserved, while new GPU deployments are paused.
+          <code>compute_capacity_unavailable</code>, with nothing reserved or charged, while new GPU deployments are
+          temporarily unavailable.
         </p>
       </Endpoint>
 

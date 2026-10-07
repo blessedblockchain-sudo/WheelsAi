@@ -26,7 +26,7 @@ export interface PlatformStatus {
     }>;
   };
   monitors: {
-    /** False when the operator has no public monitors configured. */
+    /** False when no public uptime monitors are listed. */
     configured: boolean;
     available: boolean;
     historyDays: number;

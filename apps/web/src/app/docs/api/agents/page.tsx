@@ -77,8 +77,7 @@ export default function AgentsApiPage() {
           <code>isPublic</code>, <code>latestDeployment</code> and timestamps, plus where its API is:{" "}
           <code>apiEndpoint</code> (the agent&apos;s chat-completions URL), <code>openaiBaseUrl</code> (the{" "}
           <code>base_url</code> for an OpenAI client) and <code>openaiModel</code> (<code>agent/&lt;slug&gt;</code>). The two
-          URLs are built from the server&apos;s configured public address and are <code>null</code> when it has none; nothing
-          is ever invented.
+          URLs are <code>null</code> when they cannot be determined.
         </p>
       </Endpoint>
 
@@ -491,10 +490,10 @@ if reply.tool_calls:
           { status: <code>429</code>, code: <code>rate_limit_exceeded</code>, when: <>The free-model limit per minute or per day, with <code>retry-after</code>; or the API&apos;s general rate limit.</> },
           { status: <code>429</code>, code: <code>plan_limit_reached</code>, when: <>The plan&apos;s monthly API calls are used up (<code>type</code> is <code>insufficient_quota</code>).</> },
           { status: <code>429</code>, code: <code>provider_rate_limited</code>, when: <>The model provider&apos;s own limit; its <code>retry-after</code> is passed on.</> },
-          { status: <code>501</code>, code: <code>model_provider_not_configured</code>, when: "This server has no provider key for the agent's free model. Nothing is simulated." },
+          { status: <code>501</code>, code: <code>model_provider_not_configured</code>, when: "The agent's free model is temporarily unavailable. Pick another free model, or add your own provider key to the agent." },
           { status: <code>502</code>, code: <><code>upstream_error</code>, <code>provider_auth_failed</code>, <code>provider_model_not_found</code>, <code>empty_answer</code>, <code>tool_loop_exhausted</code>, <code>graph_run_failed</code></>, when: "The model provider failed, rejected the credentials configured for it, or produced no answer; or the agent's graph run failed. A paid request is refunded." },
-          { status: <code>503</code>, code: <><code>hosted_model_not_running</code>, <code>service_unavailable</code></>, when: <>The agent&apos;s WheelsAI-hosted model has no deployment that can serve right now (not retried); or the server is restarting, in which case nothing was charged and <code>retry-after</code> says when to try again.</> },
-          { status: <code>504</code>, code: <code>upstream_timeout</code>, when: "The model did not answer within the server's chat time limit." },
+          { status: <code>503</code>, code: <><code>hosted_model_not_running</code>, <code>service_unavailable</code></>, when: <>The agent&apos;s WheelsAI-hosted model has no deployment that can serve right now (not retried); or the API is restarting, in which case nothing was charged and <code>retry-after</code> says when to try again.</> },
+          { status: <code>504</code>, code: <code>upstream_timeout</code>, when: "The model did not answer within the chat time limit." },
         ]}
       />
 
@@ -555,11 +554,12 @@ if reply.tool_calls:
             agent&apos;s environment variables. The message names the variable to set.
           </li>
           <li>
-            <code>501</code>: this server has no provider key for the free model (<code>model_provider_not_configured</code>).
+            <code>501</code>: the free model is temporarily unavailable (<code>model_provider_not_configured</code>). Pick
+            another free model, or add your own provider key to the agent.
           </li>
           <li>
             <code>503</code>: the agent&apos;s WheelsAI-hosted model has no deployment that can serve right now (
-            <code>hosted_model_not_running</code>), or the server is restarting.
+            <code>hosted_model_not_running</code>), or the API is restarting.
           </li>
           <li>
             <code>402</code> <code>PaymentRequired</code>: a per-request marketplace install and not enough credits (with{" "}

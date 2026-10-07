@@ -256,7 +256,7 @@ export default function WorkflowsApiPage() {
           ]}
         />
         <p>
-          Answers <code>202</code> as soon as the run is queued. A worker executes it; poll the run until its status leaves{" "}
+          Answers <code>202</code> as soon as the run is queued. It runs in the background; poll the run until its status leaves{" "}
           <code>queued</code> and <code>running</code>.
         </p>
         <CodeBlock
@@ -288,12 +288,12 @@ export default function WorkflowsApiPage() {
             { status: "400", error: <code>input_schema_mismatch</code>, when: <>The input does not match the input schema; <code>details</code> lists each problem. No run is created.</> },
             { status: "409", error: <code>workflow_disabled</code>, when: "The workflow is disabled." },
             { status: "429", error: <code>workflow_run_limit</code>, when: <>Your organization already has the allowed number of runs queued or running; <code>limit</code> says how many.</> },
-            { status: "501", error: <code>workflow_runner_disabled</code>, when: "This server runs no workflow worker." },
+            { status: "501", error: <code>workflow_runner_disabled</code>, when: "Workflow runs are temporarily unavailable. No run is created." },
             { status: "503", error: <code>workflow_queue_unavailable</code>, when: "The run could not be queued. The run is recorded as failed; nothing was called." },
           ]}
         />
         <p>
-          The worker checks the stored definition again before it runs it. If the workflow can no longer run, for example
+          The stored definition is checked again before the run starts. If the workflow can no longer run, for example
           because an agent it uses was deleted, the run ends <code>failed</code> with that reason and no step is called.
         </p>
       </Endpoint>
@@ -328,7 +328,7 @@ export default function WorkflowsApiPage() {
             <code>200</code>: the run was still queued and is now <code>cancelled</code>. Nothing was called.
           </li>
           <li>
-            <code>202</code>: the run is running. <code>cancelRequestedAt</code> is set; the worker stops before the next
+            <code>202</code>: the run is running. <code>cancelRequestedAt</code> is set; the run stops before the next
             step, aborts the call in flight and ends the run as <code>cancelled</code> within a few seconds.
           </li>
           <li>
@@ -363,8 +363,8 @@ export default function WorkflowsApiPage() {
           Renaming the workflow does not change it. Each workflow read (<code>GET /api/orchestrations</code> and{" "}
           <code>GET /api/orchestrations/&#123;id&#125;</code>) returns <code>slug</code>, <code>apiEndpoint</code> (this
           URL), <code>openaiBaseUrl</code> (<code>…/v1/workflows/&lt;slug&gt;</code>, the base URL for an OpenAI client) and{" "}
-          <code>openaiModel</code> (<code>workflow/&lt;slug&gt;</code>). The two URLs are <code>null</code> when the server
-          has no public address configured. The dashboard shows all three on the workflow&apos;s <strong>API</strong> tab.
+          <code>openaiModel</code> (<code>workflow/&lt;slug&gt;</code>). The two URLs are <code>null</code> when they
+          cannot be determined. The dashboard shows all three on the workflow&apos;s <strong>API</strong> tab.
         </p>
         <CodeBlock
           language="ts"
@@ -453,7 +453,7 @@ console.log(reply.choices[0].message.content);`}
           </li>
           <li>
             The request waits for the run for the workflow&apos;s own time limit (<code>timeout</code>, 10 minutes by
-            default) plus 30 seconds for the queue. A run that reaches its time limit is stopped by the worker and the
+            default) plus 30 seconds for the queue. A run that reaches its time limit is stopped and the
             request answers <code>504 workflow_timeout</code>. If the wait itself runs out because the run was still
             queued, the run is cancelled before it starts.
           </li>
@@ -494,7 +494,7 @@ console.log(reply.choices[0].message.content);`}
             { status: "404", error: <code>workflow_not_found</code>, when: "No workflow with that slug in your organization." },
             { status: "409", error: <code>workflow_cancelled</code>, when: "Someone cancelled the run while the request waited." },
             { status: "429", error: <code>workflow_run_limit</code>, when: "Your organization already has the allowed number of runs queued or running. Nothing was started; safe to retry." },
-            { status: "501", error: <code>workflow_runner_disabled</code>, when: "This server runs no workflow worker." },
+            { status: "501", error: <code>workflow_runner_disabled</code>, when: "Workflow runs are temporarily unavailable. Nothing was started; retry later." },
             { status: "502", error: <code>workflow_failed</code>, when: <>The run failed. <code>error.executionId</code>, <code>error.failedStep</code> and <code>error.workflow</code> (the steps) say where.</> },
             { status: "503", error: <code>service_unavailable</code>, when: "The run could not be queued. Nothing was called; safe to retry." },
             { status: "504", error: <code>workflow_timeout</code>, when: <>The run reached the workflow&apos;s time limit, or did not start in time and was cancelled. <code>error.executionId</code> names it.</> },
@@ -510,10 +510,10 @@ console.log(reply.choices[0].message.content);`}
 
       <Endpoint id="task-types" method="GET" path="/api/scheduler/task-types" auth="API key or session" title="Task types">
         <p>
-          Lists every task type with its payload fields, whether it needs an agent or a workflow, and whether it can run on
-          this server. A type or option that cannot run is listed with <code>available: false</code> and a{" "}
+          Lists every task type with its payload fields, whether it needs an agent or a workflow, and whether it is
+          available. A type or option that is temporarily unavailable is listed with <code>available: false</code> and a{" "}
           <code>reason</code>, and is refused when a task that needs it is saved. <code>schedulerEnabled</code> is{" "}
-          <code>false</code> when no worker fires schedules here.
+          <code>false</code> while scheduling is paused.
         </p>
         <DocTable
           caption="Task types and their payloads"
@@ -597,7 +597,7 @@ console.log(reply.choices[0].message.content);`}
       />
       <p>
         A failed attempt of a retried type is run again after a short, growing wait, one execution row per attempt. Failures
-        that a retry cannot fix (nothing configured, a refused URL, a bad payload), timeouts and cancels are not retried. A
+        that a retry cannot fix (an unavailable feature, a refused URL, a bad payload), timeouts and cancels are not retried. A
         recurring schedule that can no longer be parsed is stopped with status <code>failed</code> and the reason, instead of
         firing at a guessed time.
       </p>
@@ -625,8 +625,8 @@ console.log(reply.choices[0].message.content);`}
       <p>
         These endpoints follow the <Link href="/docs/api#errors">common error rules</Link>: <code>400 validation_failed</code>{" "}
         with <code>details</code> for a malformed request, <code>404</code> for anything not in your organization, and a
-        scrubbed <code>500</code> for the unexpected. A capability this server does not have answers <code>501</code> or is
-        listed as unavailable with its reason; nothing reports success it did not have.
+        scrubbed <code>500</code> for the unexpected. A capability that is temporarily unavailable answers <code>501</code>{" "}
+        or is listed as unavailable; nothing reports a success that did not happen.
       </p>
     </DocPage>
   );

@@ -79,8 +79,8 @@ export default function BillingApiPage() {
 }`}
         />
         <p>
-          <code>rails</code> says which payment paths this server has enabled, so a client never offers one the API would
-          refuse. The values above are an example; read them from your server.
+          <code>rails</code> lists the payment paths open to you, so a client never offers one the API would refuse. The
+          values above are an example; read them from the API.
         </p>
       </Endpoint>
 
@@ -112,8 +112,9 @@ export default function BillingApiPage() {
 
       <h2 id="payments">Payments</h2>
       <p>
-        These endpoints need a signed-in <strong>owner or admin</strong> session; API keys and members are refused. Card
-        endpoints answer <code>501</code> when Stripe is not configured on the server.
+        These endpoints need a signed-in <strong>owner or admin</strong> session; API keys and members are refused. While card
+        payments are temporarily unavailable, card endpoints answer <code>501</code>{" "}
+        <code>card_payments_not_configured</code> and nothing is charged.
       </p>
 
       <Endpoint id="checkout" method="POST" path="/api/billing/checkout" auth="Session only, owner or admin" title="Buy credits by card">
@@ -128,7 +129,7 @@ export default function BillingApiPage() {
         <Fields fields={[{ name: "plan", type: "\"pro\"", required: true, description: "The plan to start." }]} />
         <p>
           Returns <code>&#123; checkoutUrl, trialDays &#125;</code>. The first Pro subscription of an organization starts with a
-          14-day trial. <code>501</code> <code>pro_not_configured</code> when the server has no Pro price.
+          14-day trial. <code>501</code> <code>pro_not_configured</code> while Pro subscriptions are temporarily unavailable.
         </p>
       </Endpoint>
 
@@ -152,7 +153,7 @@ export default function BillingApiPage() {
           <li>
             Sign the transaction in your wallet without changing it, and send it to{" "}
             <code>POST /api/billing/topups/&#123;topupId&#125;/submit</code> as <code>&#123; &quot;signedTxBase64&quot;: &quot;...&quot; &#125;</code>.
-            The server rejects anything that is not byte-for-byte the transaction it prepared, then broadcasts it.
+            WheelsAI rejects anything that is not byte-for-byte the transaction it prepared, then broadcasts it.
           </li>
           <li>
             Credits are granted once the transaction is confirmed. If confirmation was interrupted,{" "}
@@ -164,7 +165,7 @@ export default function BillingApiPage() {
           </li>
         </ol>
         <p>
-          The whole rail answers <code>501</code> when wallet top-ups are disabled on the server, and <code>400</code>{" "}
+          The whole rail answers <code>501</code> while wallet top-ups are temporarily unavailable, and <code>400</code>{" "}
           <code>wallet_required</code> when your session was not signed in with a wallet.
         </p>
       </Endpoint>

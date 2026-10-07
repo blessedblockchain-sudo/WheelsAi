@@ -112,8 +112,8 @@ export default function DeployModelPage() {
         </li>
       </ul>
       <p>
-        If new GPU deployments are paused, the API answers <code>503</code> with{" "}
-        <code>compute_capacity_unavailable</code> before either check, and nothing is reserved. The{" "}
+        If new GPU deployments are temporarily unavailable, the API answers <code>503</code> with{" "}
+        <code>compute_capacity_unavailable</code> before either check, and nothing is reserved or charged. The{" "}
         <Link href="/status">status page</Link> shows when they resume.
       </p>
 

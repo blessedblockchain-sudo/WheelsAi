@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 
 const toc = [
   { id: "overview", title: "Overview" },
-  { id: "capabilities", title: "What this server can do", sub: true },
+  { id: "capabilities", title: "What you can start", sub: true },
   { id: "datasets", title: "Datasets" },
   { id: "create-dataset", title: "Create a dataset", sub: true },
   { id: "validate-dataset", title: "Validate", sub: true },
@@ -58,9 +58,9 @@ export default function TrainingApiPage() {
         </li>
       </ol>
 
-      <Endpoint id="capabilities" method="GET" path="/api/training/capabilities" auth="API key or session" title="What this server can do">
+      <Endpoint id="capabilities" method="GET" path="/api/training/capabilities" auth="API key or session" title="What you can start">
         <p>
-          Read this first. <code>canStart</code> says whether a training job can start on this server, and{" "}
+          Read this first. <code>canStart</code> says whether a training job can start now, and{" "}
           <code>blockers</code> lists each reason it cannot as <code>&#123; code, message &#125;</code>. The response also
           carries everything a client needs to build a valid request:
         </p>
@@ -68,14 +68,14 @@ export default function TrainingApiPage() {
           title="Response"
           fields={[
             { name: "canStart", type: "boolean", description: <>False when <code>blockers</code> is not empty. Creating a job is then refused with the same code.</> },
-            { name: "blockers", type: "array", description: <>Each <code>&#123; code, message &#125;</code>. One is about your organization rather than the server: <code>training_free_failure_limit</code>, with the time the next job can start (see <a href="#billing">What a job costs</a>).</> },
+            { name: "blockers", type: "array", description: <>Each <code>&#123; code, message &#125;</code>. One is about your organization rather than the platform: <code>training_free_failure_limit</code>, with the time the next job can start (see <a href="#billing">What a job costs</a>).</> },
             { name: "storage", type: "object", description: <><code>configured</code>, <code>maxDatasetBytes</code>, <code>maxDatasetRows</code>.</> },
             { name: "nosana.tiers", type: "array", description: <>Each GPU tier: <code>tier</code> (the id to send), <code>name</code>, <code>vramGb</code>, <code>pricePerSecondUsd</code>, <code>deployable</code>.</> },
             { name: "runLimit", type: "object", description: <><code>minSeconds</code> and <code>maxSeconds</code> for a job&apos;s run limit, and <code>queueTimeoutSeconds</code>.</> },
             { name: "limits", type: "object", description: <><code>maxActiveJobs</code> and <code>freeFailuresPerDay</code> per organization, and <code>adapterMaxBytes</code>.</> },
             { name: "methods", type: "array", description: <><code>lora</code> and <code>qlora</code>.</> },
             { name: "hyperparameters", type: "object", description: <><code>bounds</code> (<code>min</code>, <code>max</code>, <code>integer</code> per key), <code>defaults</code> and <code>loraRanks</code>.</> },
-            { name: "gatedModels.available", type: "boolean", description: "Whether base models that need a Hugging Face token can be trained here." },
+            { name: "gatedModels.available", type: "boolean", description: "Whether base models that need a Hugging Face token can be trained." },
           ]}
         />
       </Endpoint>
@@ -133,7 +133,7 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
           <li><code>400</code> <code>unsupported_file_type</code>: the extension is not one of the three file types.</li>
           <li><code>409</code> <code>dataset_name_taken</code>.</li>
           <li><code>413</code> <code>dataset_too_large</code> or <code>dataset_too_many_rows</code>.</li>
-          <li><code>503</code> <code>dataset_storage_not_configured</code>: this server cannot take an upload.</li>
+          <li><code>503</code> <code>dataset_storage_not_configured</code>: uploads are temporarily unavailable. Nothing was created; try again later.</li>
         </ul>
       </Endpoint>
 
@@ -167,7 +167,7 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
         <ul>
           <li><code>409</code> <code>dataset_not_uploaded</code>: no file has been uploaded to the URL yet.</li>
           <li><code>413</code> <code>dataset_too_large</code> or <code>dataset_too_many_rows</code>: the stored file is over a limit and is removed.</li>
-          <li><code>503</code> <code>dataset_storage_not_configured</code> or <code>dataset_storage_unavailable</code>.</li>
+          <li><code>503</code> <code>dataset_storage_not_configured</code> or <code>dataset_storage_unavailable</code>: storage is temporarily unavailable; validate again later.</li>
         </ul>
       </Endpoint>
 
@@ -191,13 +191,13 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
         <p>
           Returns <code>&#123; models &#125;</code>. Each model has <code>id</code>, <code>hfId</code>,{" "}
           <code>displayName</code>, <code>parameters</code>, <code>gated</code>, <code>available</code> and, when it is
-          not available on this server, <code>unavailableReason</code> (<code>hf_token_required</code>,{" "}
+          not available, <code>unavailableReason</code> (<code>hf_token_required</code>,{" "}
           <code>no_tier_available</code> or <code>model_not_in_catalog</code>) with an <code>unavailableMessage</code>.
         </p>
         <p>
           <code>methods</code> lists each training method the model supports with <code>requiredVramGb</code>, the{" "}
-          <code>tiers</code> of this server it fits on (each with its <code>pricePerSecondUsd</code>) and{" "}
-          <code>recommendedTier</code>, the cheapest that fits. The memory requirements are planning figures, marked by{" "}
+          <code>tiers</code> it fits on (each with its <code>pricePerSecondUsd</code>) and <code>recommendedTier</code>,
+          the cheapest that fits. The memory requirements are estimates, marked by{" "}
           <code>figuresBasis: &quot;planning&quot;</code>.
         </p>
       </Endpoint>
@@ -299,8 +299,8 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
 }`}
         />
         <p>
-          The figures in this example are illustrative. An estimate is a planning figure worked out from the
-          dataset&apos;s size and the model, returned with a <code>low</code> and a <code>high</code> bound; the charge is
+          The figures in this example are illustrative. An estimate is worked out from the dataset&apos;s size and the
+          model (<code>basis: &quot;planning&quot;</code>), returned with a <code>low</code> and a <code>high</code> bound; the charge is
           for the time the run actually takes. <code>maximumCents</code> is what would be held at{" "}
           <code>runLimit.appliedSeconds</code>. <code>fitsRunLimit</code> is false when the expected time is longer than
           the run limit. Answers the same refusals as creating a job up to the tier checks.
@@ -354,7 +354,7 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
           <li><code>422</code> <code>dataset_row_count_unknown</code>.</li>
           <li><code>409</code> <code>dataset_changed_since_validation</code>.</li>
           <li><code>400</code> <code>unsupported_method</code>, <code>unsupported_gpu_count</code>, <code>hf_token_required</code>, <code>unknown_gpu_tier</code> or <code>tier_too_small</code> (with <code>requiredVramGb</code>).</li>
-          <li><code>501</code> or <code>503</code> with one of the <code>blockers</code> codes of the capabilities, when fine-tuning cannot start on this server; or <code>503</code> <code>compute_capacity_unavailable</code> when new GPU jobs are paused (retry later).</li>
+          <li><code>501</code> or <code>503</code> with one of the <code>blockers</code> codes of the capabilities, when fine-tuning is temporarily unavailable (nothing is charged); or <code>503</code> <code>compute_capacity_unavailable</code> when new GPU jobs are paused (retry later).</li>
           <li><code>409</code> <code>training_quota_exceeded</code> (with <code>activeJobs</code> and <code>limit</code>).</li>
           <li><code>409</code> <code>training_free_failure_limit</code> (with <code>limit</code> and <code>retryAt</code>): see <a href="#billing">What a job costs</a>.</li>
           <li><code>402</code> <code>insufficient_credits</code> (with <code>requiredCents</code> and <code>balanceCents</code>): the hold is more than your balance.</li>

@@ -232,9 +232,8 @@ for await (const chunk of stream) {
 }`}
       />
       <p>
-        The model server has <code>INFERENCE_TIMEOUT_MS</code> (30 seconds unless the operator changed it) to start answering
-        and the same time between chunks; a server that goes silent for longer ends the request with{" "}
-        <code>504</code>, or with an error event if the stream had started. Closing the connection stops the generation.
+        The model has 30 seconds to start answering and the same time between chunks; a model that goes silent for longer
+        ends the request with <code>504</code>, or with an error event if the stream had started. Closing the connection stops the generation.
       </p>
 
       <h2 id="tools">Function calling</h2>
@@ -257,8 +256,8 @@ for await (const chunk of stream) {
         ]}
       />
       <p>
-        This applies to deployments created after tool calling shipped: a deployment started earlier keeps the flags it was
-        started with until you restart it. For any other model, and on the Ollama engine, the request is still forwarded
+        A deployment keeps the settings it was started with, so restart an older deployment of these families to turn the
+        parser on. For any other model, and on the Ollama engine, the request is still forwarded
         and the model server answers for itself: where it cannot do what was asked, its <code>400</code> and its message are
         returned to you unchanged in meaning (<code>provider_rejected_request</code>). Calls are returned for{" "}
         <strong>you</strong> to run; a model deployment has no server-side tools. For tools that run on the platform, call
@@ -282,8 +281,8 @@ for await (const chunk of stream) {
         answers <code>404</code> until you restart it. If the GPU time has gone unpaid for several billing intervals and the
         deployment could not be stopped yet, requests are refused in the meantime: <code>402</code> when your credits do not
         cover what is owed, <code>503</code> (<code>gpu_billing_stalled</code>) when they do and billing itself is behind. If
-        per-second GPU billing is switched off on a self-hosted server, dedicated deployments do not serve requests at all (
-        <code>503</code>, <code>gpu_billing_disabled</code>) rather than serving them unbilled.
+        GPU billing is temporarily unavailable, dedicated deployments answer <code>503</code> (
+        <code>gpu_billing_disabled</code>) rather than serving requests unbilled.
       </p>
       <p>
         Each chat completion also counts as one API call toward your plan&apos;s monthly quota, whether it is made with an API
@@ -356,8 +355,8 @@ for await (const chunk of stream) {
               <>
                 Not enough credits: <code>insufficient_credits</code>, with <code>requiredCents</code> inside the error
                 object. For a dedicated deployment this means its GPU time has gone unpaid and your balance does not cover it; a
-                single request is never the reason. For a deployment billed per request it is the request&apos;s own cost, or,
-                where x402 is enabled, a payment challenge (below).
+                single request is never the reason. For a deployment billed per request it is the request&apos;s own cost, or an
+                x402 payment challenge (below).
               </>
             ),
           },
@@ -374,9 +373,9 @@ for await (const chunk of stream) {
             status: <code>503</code>,
             when: (
               <>
-                The deployment has no healthy node right now, per-second GPU billing is not running on this server (
-                <code>gpu_billing_disabled</code>), or it is running but has not collected this deployment&apos;s GPU time for
-                several intervals (<code>gpu_billing_stalled</code>).
+                The deployment has no healthy node right now, GPU billing is temporarily unavailable (
+                <code>gpu_billing_disabled</code>), or billing has not collected this deployment&apos;s GPU time for several
+                intervals (<code>gpu_billing_stalled</code>).
               </>
             ),
           },
@@ -409,11 +408,10 @@ for await (const chunk of stream) {
       <h2 id="x402">Paying per request with x402</h2>
       <p>
         A dedicated deployment is never challenged for an x402 payment: its requests are already paid for by its GPU time (see{" "}
-        <a href="#billing">How a request is billed</a>). For a deployment billed per request, on servers where x402 is
-        enabled, <code>/v1</code> requests can be paid individually with a Solana payment, following
-        the HTTP 402 pattern. The server runs in one of two modes: <strong>fallback</strong> (use credits when the balance covers
-        the request, otherwise ask for payment) or <strong>required</strong> (every request is paid). When x402 is off, requests
-        use credits only. You still authenticate as usual; x402 replaces the credit charge, not the API key.
+        <a href="#billing">How a request is billed</a>). For a deployment billed per request, <code>/v1</code> requests can be
+        paid individually with a Solana payment, following the HTTP 402 pattern. x402 works in one of two modes:{" "}
+        <strong>fallback</strong> (use credits when the balance covers the request, otherwise ask for payment) or{" "}
+        <strong>required</strong> (every request is paid). When x402 is not available, requests use credits only. You still authenticate as usual; x402 replaces the credit charge, not the API key.
       </p>
       <p>
         <strong>1. The challenge.</strong> A request that needs payment answers <code>402</code> with an{" "}
@@ -443,8 +441,8 @@ for await (const chunk of stream) {
 }`}
       />
       <p>
-        <code>network</code> is <code>solana:mainnet</code> or <code>solana:devnet</code> depending on the server, and{" "}
-        <code>asset</code> is the server&apos;s configured asset (USDC by default). The quote is based on the request&apos;s
+        <code>network</code> names the Solana network to pay on (<code>solana:mainnet</code>), and <code>asset</code> the
+        token to pay with (USDC). The quote is based on the request&apos;s
         estimated tokens with a 20% buffer and expires at <code>validUntil</code> (Unix seconds).
       </p>
       <p>
@@ -465,7 +463,7 @@ for await (const chunk of stream) {
   -d @request.json`}
       />
       <p>
-        The server checks the network, expiry, signatures, recipient and amount before running the request. An invalid payment
+        WheelsAI checks the network, expiry, signatures, recipient and amount before running the request. An invalid payment
         gets a fresh <code>402</code> with the <code>reason</code>. A transaction can pay for one request only; reusing it
         returns <code>409</code>. Verified payments are then settled on-chain by a background worker.
       </p>

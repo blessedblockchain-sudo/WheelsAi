@@ -2,15 +2,13 @@
 
 The `wheelsai` command: sign in, deploy an agent to GPU, list it on the marketplace, and read
 deployment status and logs. It is a thin client over the WheelsAI API (through
-[`@wheelsai/sdk`](../sdk)), so everything it prints is something the API returned. It never
-invents an endpoint, a count or a latency; when the API returns nothing for a field, the
-field says so.
+[`@wheelsai/sdk`](../sdk)), so everything it prints is what the API returned. When the API
+returns nothing for a field, the CLI says so.
 
-The package is private to the monorepo (not on npm yet), so build it from a checkout.
+## Install
 
-## Install from the monorepo
-
-Needs Node 18 or newer (the monorepo itself asks for 22.13+).
+Build it from a checkout of this repository. It needs Node 18 or newer (the repository itself
+asks for 22.13+).
 
 ```bash
 npm install
@@ -24,9 +22,7 @@ alias wheelsai="node $PWD/packages/cli/bin/wheelsai.js"
 `bin/wheelsai.js` is the executable npm links as `wheelsai`; it loads the compiled `dist/`
 and says how to build when that is missing. `npm run cli -w @wheelsai/cli -- <args>` runs the
 TypeScript source through `tsx` instead (build the SDK first either way: the CLI resolves
-`@wheelsai/sdk` to its `dist/`). The script is not called `dev` on purpose: the root
-`npm run dev` starts every workspace's `dev` script, and a CLI that prints its usage and
-exits would stop the API and web servers with it.
+`@wheelsai/sdk` to its `dist/`).
 
 ## Sign in
 
@@ -41,7 +37,7 @@ printf '%s' "$PASSWORD" | wheelsai login --url https://your-api.example.com --em
 # Accounts with two-factor authentication are asked for the code, or pass --code <6 digits>.
 
 wheelsai whoami       # calls the API with the saved credentials
-wheelsai logout       # forgets them; a session token is also revoked on the server that issued it
+wheelsai logout       # forgets them; a session token is also revoked by the API that issued it
 ```
 
 Secrets are read from a prompt or from stdin so they stay out of your shell history and out of
@@ -54,10 +50,10 @@ working login. Saving an API key clears any saved session token and the other wa
 the two cannot disagree. Both are sent as `Authorization: Bearer ...`.
 
 **A saved credential belongs to the API URL it was issued for.** The URL is saved with it, and
-the credential is only ever sent to that server (same scheme, host and port). If the API URL
+the credential is only ever sent to that API (same scheme, host and port). If the API URL
 later points somewhere else, through `config set apiUrl`, `login --url` or `WHEELSAI_API_URL`,
 the credential is withheld and the command stops with the URL it is for; nothing is sent to the
-new host. Sign in there, or set the URL back. `logout` revokes a session on the server that
+new host. Sign in there, or set the URL back. `logout` revokes a session with the API that
 issued it and warns if that fails (the token then stays valid until it expires).
 
 There is no API URL until you give one: `login` refuses to send a credential to the built-in
@@ -124,12 +120,11 @@ What it does, in order, stopping at the first failure:
    by user, so with an API key the API's refusal (404, 401 or 403) skips the check with a
    warning. Any other failure of the graph route stops the deploy with either credential.
    With `--publish`, the listing is checked here too (see Publishing), before any GPU is requested.
-3. **Choose a GPU tier** from `GET /api/models?tier=gpu`, the tiers this API can deploy right
-   now. `--gpu-tier` must be one of them; without it the cheapest listed tier is used and
-   the line says so. (The old default `rtx-4090` is not a tier id; real ids look like `3060`,
-   `4070`, `4090`, `a100`, `h100`, and which are offered depends on the server.) If the API
-   lists none (no compute configured), `--gpu-tier` is still sent so the API can answer with
-   the real reason; without it there is nothing to choose and the command stops.
+3. **Choose a GPU tier** from `GET /api/models?tier=gpu`, the tiers open for deployment right
+   now. Tier ids look like `3060`, `4070`, `4090`, `a100` and `h100`. `--gpu-tier` must be one
+   of the listed tiers; without it the cheapest listed tier is used and the line says so. If the
+   API lists none, `--gpu-tier` is still sent so the API can answer with its reason; without it
+   there is nothing to choose and the command stops.
 4. **Deploy** (`POST /api/agents/{id}/deploy`), with `--replicas` (1 to 5; the API enforces
    it) and optionally `--model-deployment <id>` or `--external-model-url <url>`.
 5. **Wait** for the deployment to run, polling `GET /api/agents/{id}/deployments/{deploymentId}`
@@ -142,22 +137,22 @@ What it does, in order, stopping at the first failure:
    the timeout. A refusal that will not change ends the wait at once: any other 4xx, and a
    429 for a used-up quota (`plan_limit_reached`, `deployment_quota_exceeded`).
    Ctrl-C stops watching and prints how to look at the deployment later (exit code 130); the
-   deployment itself carries on server-side.
+   deployment itself keeps running.
 6. **Report** what the API returned, once the deployment is `running`: the endpoint, exactly
    as returned, and the channels. The endpoint is the agent's OpenAI-compatible URL on the API
    (`<api>/v1/agents/<slug>/chat/completions`), followed by the base URL and model id an OpenAI
-   client needs. The API builds it from its configured public address (`PUBLIC_API_URL`); when
-   that is not set it returns none, and the CLI prints `none returned by the API`. The
-   agent-deployment record carries no channels today, so the CLI also looks at the agent's
-   OpenClaw (Discord, Telegram, Slack) deployment and prints its channels if it is `RUNNING`
-   and has any; otherwise `none reported by the API`. `logs` and `agents get` show an endpoint
+   client needs. When the API returns no endpoint, the CLI prints `none returned by the API`.
+   Channels come from the agent's chat-channel deployment (Discord, Telegram, Slack): the CLI
+   prints them when that deployment is `RUNNING` and has any, and otherwise
+   `none reported by the API`. `logs` and `agents get` show an endpoint
    as an address only while its deployment is running.
-7. **Latency.** Once the agent is live, the CLI reads the platform's measured response time
-   from `GET /api/public/stats` and prints it as `612 ms p50  (platform-wide, last 24 h)`: the
+7. **Latency.** Once the agent is live, the CLI reads the platform's response time from
+   `GET /api/public/stats` and prints it as `612 ms p50  (platform-wide, last 24 h)`: the
    median time the API took to answer a chat request, across the platform, not this agent's
-   own (it has answered nothing yet). The number appears only when the API measured one. Below
-   the API's publication thresholds the line reads `measuring (12 of 50 requests)`, and when
-   the figure cannot be read it reads `live figure unavailable`. It never fails the deploy.
+   own (it has answered nothing yet). A number appears once the API has enough requests to
+   state one. Below the API's publication thresholds the line reads
+   `measuring (12 of 50 requests)`, and when the figure cannot be read it reads
+   `live figure unavailable`. It never fails the deploy.
 8. **Publish**, only with `--publish` (below).
 
 ```text
@@ -169,7 +164,7 @@ What it does, in order, stopping at the first failure:
 ✔ deploying 8s
 ✔ Listed on the marketplace
 
-  Agent live!
+  Agent live
   Deployment    94aa7943-...
   GPU           3060 x1
   Endpoint      https://api.example.com/v1/agents/my-support-bot/chat/completions
@@ -195,7 +190,7 @@ is running; `wheelsai agents get <agent>` shows it at any time.
 
 ### Once a deployment exists
 
-From the moment the API accepts the deploy, the deployment runs on the server and its credits
+From the moment the API accepts the deploy, the deployment keeps running and its credits
 are reserved, whatever happens to the command. So every later failure (a status check that is
 refused, a timeout, a listing that fails) names the deployment id and says what to do with it,
 and with `--json` stdout still carries one document, `agent`, `deployment` (`id` and the last
@@ -286,9 +281,9 @@ do next, for example:
 Errors you may meet when deploying: `401` (credentials rejected or expired: `wheelsai login`),
 `402 insufficient_credits`, `429 deployment_quota_exceeded` (the organization's limit on
 active agent deployments), `429 plan_limit_reached` (the plan's monthly allowance is used up;
-retrying does not help until it resets), a plain `429` (rate limit: wait a minute). On a server
-with no compute configured, an agent deploy is accepted and then ends as a `failed` deployment
-whose error says so, and its credit reservation is released.
+retrying does not help until it resets), a plain `429` (rate limit: wait a minute). If GPU
+compute is temporarily unavailable, an agent deploy is accepted and then ends as a `failed`
+deployment whose error says so, and its credit reservation is released.
 
 ## Development
 
@@ -301,4 +296,4 @@ Tests need the SDK built (`npm run build -w @wheelsai/sdk`). The deploy flow liv
 `src/lib/deploy.ts` as a function that takes the SDK client, so the tests drive it with a fake
 API. `test/commands.test.ts` runs the compiled command itself against an HTTP server on
 `127.0.0.1`, with `WHEELSAI_CONFIG_DIR` set to a temporary directory. Nothing touches the
-network or your saved config. Both suites run in the blocking `sdk-cli` CI job.
+network or your saved config.

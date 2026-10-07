@@ -63,7 +63,7 @@ export function billingResource(client: WheelsAIClient) {
     plan: () =>
       client.get<BillingPlan>("/api/billing/plan"),
 
-    /** Credit packages, purchase limits and which payment rails are live on this server. */
+    /** Credit packages, purchase limits and the payment rails open to you. */
     packages: () =>
       client.get<{
         packages: CreditPackage[];

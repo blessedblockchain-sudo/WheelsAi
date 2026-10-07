@@ -131,6 +131,10 @@ The web app serves the documentation at `/docs`:
   reference of every endpoint at `/docs` on the API host.
 - **SDK and CLI:** the TypeScript SDK and the `wheelsai` command line.
 
+To run WheelsAI yourself, [the self-hosting guide](docs/DEPLOY-RUNBOOK.md) covers configuration,
+deploying the API, the web app and the workers, the edge proxy for custom domains, the training
+image, upgrades and health checks.
+
 ## How it works
 
 ```

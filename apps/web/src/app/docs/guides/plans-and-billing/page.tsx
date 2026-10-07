@@ -59,7 +59,7 @@ export default function PlansBillingPage() {
       </p>
       <p>
         &quot;Priority model access&quot; is the free-model rate limit multiplier. The base limits are 20 requests per minute and
-        200 per day per organization unless the server sets different ones.
+        200 per day per organization.
       </p>
 
       <h2 id="api-calls">What counts as an API call</h2>
@@ -126,9 +126,9 @@ export default function PlansBillingPage() {
 
       <h2 id="rails">Ways to pay</h2>
       <p>
-        Every rail grants credits through the same service, so the bonus ladder is identical whichever you use. The server tells
-        the dashboard which rails are live (<code>GET /api/billing/packages</code>, field <code>rails</code>); a rail that is not
-        configured is not offered.
+        Every rail grants credits the same way, so the bonus ladder is identical whichever you use.{" "}
+        <code>GET /api/billing/packages</code> lists the rails open to you in its <code>rails</code> field, and the billing page
+        offers exactly those.
       </p>
       <DocTable
         caption="Credit packages and bonuses"
@@ -158,8 +158,8 @@ export default function PlansBillingPage() {
 
       <h3 id="wallet">Wallet top-up</h3>
       <p>
-        Pay with USDC from a connected Solana wallet. The server prepares the exact transfer transaction, your wallet signs it,
-        and the server checks that what you signed is byte-for-byte what it prepared before broadcasting. Credits are granted
+        Pay with USDC from a connected Solana wallet. WheelsAI prepares the exact transfer transaction, your wallet signs it,
+        and WheelsAI checks that what you signed is byte-for-byte what it prepared before broadcasting. Credits are granted
         only after the transaction is confirmed on-chain, and at most once, even if a confirmation is interrupted and later
         reconciled. The transfer is signed by the wallet on your session, so use this rail while signed in with your
         Solana wallet.
@@ -167,7 +167,7 @@ export default function PlansBillingPage() {
 
       <h3 id="x402">x402 per request</h3>
       <p>
-        On servers with x402 enabled, calls to a <code>/v1</code> deployment that is billed per request can be paid one request
+        Calls to a <code>/v1</code> deployment that is billed per request can be paid one request
         at a time with a signed Solana payment instead of from credits. A dedicated deployment is billed for GPU time and is
         never challenged for an x402 payment. The API answers <code>402 Payment Required</code> with the exact amount, asset and recipient;
         your client signs a matching transfer and retries with an <code>X-Payment</code> header. A payment transaction can be

@@ -225,8 +225,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         Your earnings accrue as a pending payout balance, visible under <strong>Marketplace → Revenue</strong>. Once it reaches
         $10.00 you can request a payout as credits, USDC or SOL (crypto payouts need a destination address). One payout request
         can be open at a time, and requesting a payout requires a signed-in owner or admin: API keys cannot request payouts, so a
-        leaked key cannot redirect your earnings. Crypto payouts are sent by a payout worker when payouts are enabled on the
-        server.
+        leaked key cannot redirect your earnings. Crypto payouts are sent on-chain to the destination address you give.
       </p>
 
       <h2 id="receipts">Public receipts</h2>

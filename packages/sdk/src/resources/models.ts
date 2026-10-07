@@ -44,8 +44,8 @@ export interface FreeModel {
 export function modelsResource(client: WheelsAIClient) {
   return {
     /**
-     * The model catalog plus `gpuTiers`: the GPU tier ids this API can deploy
-     * (an empty list means nothing is deployable on this server).
+     * The model catalog plus `gpuTiers`: the GPU tier ids you can deploy to right now
+     * (an empty list means GPU deployments are temporarily unavailable).
      */
     list: (params?: {
       tag?: string;
@@ -56,8 +56,8 @@ export function modelsResource(client: WheelsAIClient) {
       client.get<{ models: Model[]; gpuTiers: GpuTier[] }>("/api/models", params),
 
     /**
-     * The deployable GPU tiers (`GET /api/models?tier=gpu`). The list is empty when this
-     * server has no compute configured (no Nosana wallet or markets). A model deployment
+     * The deployable GPU tiers (`GET /api/models?tier=gpu`). The list is empty while GPU
+     * deployments are temporarily unavailable. A model deployment
      * is then refused up front (501 or 400). An agent deployment is accepted and reserves
      * credits first; it ends as `failed` with the reason in `lastError`, and the reservation
      * is released.

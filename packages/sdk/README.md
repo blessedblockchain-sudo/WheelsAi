@@ -1,10 +1,9 @@
 # @wheelsai/sdk
 
 Typed TypeScript client for the WheelsAI API. Every method is one HTTP call to a documented
-endpoint; the method names, paths, verbs and bodies are pinned by unit tests, in a table
-written by hand from the API's routes (the tests do not read the API's code, so an API route
-that moves has to be updated here on purpose). Private to the monorepo (not on npm yet); the
-[CLI](../cli) is built on it. It has no runtime dependencies.
+endpoint, and unit tests pin each method's path, verb and body. It has no runtime
+dependencies, and the [CLI](../cli) is built on it. Build it from a checkout of this
+repository (see [Build and test](#build-and-test)).
 
 ```ts
 import { WheelsAI, WheelsAIError } from "@wheelsai/sdk";
@@ -17,7 +16,7 @@ const wheels = new WheelsAI({
 const { agents } = await wheels.agents.list();
 const agent = await wheels.agents.resolve("my-support-bot"); // slug or id, one request
 
-const tiers = await wheels.models.gpuTiers();                // what this API can deploy now
+const tiers = await wheels.models.gpuTiers();                // the GPU tiers open for deployment now
 const { deployment } = await wheels.agents.deploy(agent!.id, { gpuTier: tiers[0]!.id });
 const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deployment.id);
 ```
@@ -26,7 +25,7 @@ const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deploym
 
 Every agent has an OpenAI-compatible endpoint on the API, on as soon as the agent exists. Each
 agent row says where: `apiEndpoint`, `openaiBaseUrl` and `openaiModel` (`agent/<slug>`); the
-two URLs are `null` when the API has no public address configured.
+two URLs are `null` when they cannot be determined.
 
 ```ts
 // One call, OpenAI's response shape. `tools` are functions YOU run: they come back as
@@ -58,7 +57,7 @@ These methods return whole responses. For streaming, point the official OpenAI c
 WheelsAI API key. Model deployments stream and take `tools` too.
 
 `agents.update(id, { entrypoint: "graph" })` makes an agent answer through its saved graph, and
-`agents.usage(id, "7d")` returns its measured requests, errors, tokens and latency.
+`agents.usage(id, "7d")` returns its requests, errors, tokens and latency.
 
 ## Hiring an offering
 
@@ -143,8 +142,8 @@ refused before anything is sent, with an error that does not repeat it.
 `inference` (OpenAI-compatible `/v1`), `workflows` (definitions are read-only here: `list`, `get`,
 `run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`) and `skills`. Billing amounts are dollars, as the API
-returns them. `agents.stop` and `billing.addCredits` no longer exist: the API has no such
-endpoints (use `agents.stopDeployment` and `billing.checkout`).
+returns them. To stop an agent's deployment use `agents.stopDeployment`; to buy credits, use
+`billing.checkout`.
 
 ## Build and test
 
@@ -156,4 +155,4 @@ npm run typecheck -w @wheelsai/sdk
 
 `test/resources.test.ts` has one case per SDK method (verb, path, query, body and the
 `Authorization` header) and a guard, read off the client itself, that fails when a method or a
-whole resource is added without one. The suite runs in the blocking `sdk-cli` CI job.
+whole resource is added without one.

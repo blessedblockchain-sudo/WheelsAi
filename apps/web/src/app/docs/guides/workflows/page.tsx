@@ -71,8 +71,8 @@ export default function WorkflowsGuidePage() {
       />
       <Callout>
         <p>
-          The editor tells you when a step type cannot run on the server you are using, with the reason, before you save.
-          A run that reaches such a step fails with the same reason; it is never reported as done.
+          If a step type is temporarily unavailable, the editor tells you before you save. A run that reaches such a step
+          fails with the same message; it is never reported as done.
         </p>
       </Callout>
 
@@ -135,7 +135,7 @@ Category: {{steps.classify.output.category}}`}
       <h3 id="validation">What is checked before you save</h3>
       <p>
         The bar above the canvas checks the workflow as you edit: first what the form itself can tell (a missing agent, a
-        number out of range), then the server&apos;s own plan of the workflow. It names the step and field at fault, and
+        number out of range), then the plan WheelsAI makes of the workflow. It names the step and field at fault, and
         clicking a problem selects that step. When everything is in order it shows the order the steps will run in, and
         any warnings. Saving runs the same check, so a workflow cannot be saved in a state that would not run.
       </p>
@@ -185,8 +185,8 @@ Category: {{steps.classify.output.category}}`}
         </li>
       </ul>
       <p>
-        If the server you are using runs no scheduler, the Scheduler page says so at the top: tasks can still be saved and
-        run by hand, but none fires on its own.
+        If scheduling is temporarily paused, the Scheduler page says so at the top: tasks can still be saved and run by
+        hand, and none fires on its own until scheduling resumes.
       </p>
 
       <h3 id="task-types">Task types</h3>
@@ -208,9 +208,9 @@ Category: {{steps.classify.output.category}}`}
         ]}
       />
       <p>
-        The form shows the fields of the type you pick. A type, or an option of a type, that the server cannot run is
-        still listed, marked not available with the reason, and cannot be saved. Reports go to email channels only when
-        email delivery is configured on the server.
+        The form shows the fields of the type you pick. A type, or an option of a type, that is temporarily unavailable
+        is still listed, marked unavailable, and cannot be saved until it is back. Delivering a report to an email channel
+        is offered when email delivery is available.
       </p>
       <p>
         Each task keeps its executions with their output and error; open one from the <strong>Executions</strong> tab. A

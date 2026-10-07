@@ -20,7 +20,7 @@ export interface Workflow {
   isEnabled: boolean;
   /**
    * `<api>/v1/workflows/<slug>/chat/completions`, where the workflow answers as an OpenAI chat
-   * completion. null when the server has no public address configured (PUBLIC_API_URL).
+   * completion. null when the endpoint address cannot be determined.
    */
   apiEndpoint: string | null;
   /** `<api>/v1/workflows/<slug>`: the base URL for an OpenAI client talking to this workflow only. */

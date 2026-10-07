@@ -113,9 +113,8 @@ export default function GettingStartedPage() {
       <h2 id="playground">4. Chat in the playground</h2>
       <p>
         Open the agent and choose <strong>Playground</strong>. Free models run on WheelsAI&apos;s own provider keys, so you can
-        chat without adding any key of your own. The free catalog currently includes GPT-OSS 120B, GPT-OSS 20B and Qwen3.8 27B on
-        Groq, Gemini 2.5 Flash, and Llama 3.1 8B Turbo on Together; a model only appears when the server has that provider
-        configured. To use your own provider account instead, set <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>,{" "}
+        chat without adding any key of your own. The free catalog includes GPT-OSS 120B, GPT-OSS 20B and Qwen3.8 27B on Groq,
+        Gemini 2.5 Flash, and Llama 3.1 8B Turbo on Together; the model picker lists the ones available to you. To use your own provider account instead, set <code>OPENAI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code>,{" "}
         <code>GOOGLE_API_KEY</code>, <code>TOGETHER_API_KEY</code> or <code>GROQ_API_KEY</code> in the agent&apos;s environment
         variables and pick a model id of the form <code>provider/model</code>, for example <code>openai/gpt-4</code>.
       </p>

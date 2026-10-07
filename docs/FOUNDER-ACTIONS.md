@@ -232,3 +232,34 @@ Decisions, each with what the code does today:
 - [ ] **The estimate shown before a job.** It is a planning figure (labelled so in the API): it assumes 240 s to pull the image, 185 s of set-up and 60 s to wrap up, and a throughput worked out from the model size. Replace the constants with measured ones after the first runs.
 - [ ] **The README line "fine-tuned models served per-request via x402".** Left as it is. What is built: a fine-tuned model is served by a dedicated deployment that its owner pays for per GPU-second, and requests to it are included in that. A per-request x402 price on a fine-tuned model is not built. Decide whether to build it or reword the line.
 - [ ] **Rotating `JWT_SECRET`.** It signs the trainer's callbacks and the adapter links inside running deployments. After a rotation a running training job can only be finished from its Nosana logs, and a running fine-tuned deployment cannot fetch its adapter again until it is restarted. Rotate when no training job is running.
+
+## 17. Deploying: internal notes moved from the deploy runbook
+
+`docs/DEPLOY-RUNBOOK.md` was rewritten on 2026-10-07 as a self-hosting guide for outside operators. Everything internal it held is kept here, as it stood, so nothing is lost. The runbook used to be titled "Deploy Runbook — Fly.io Staging & Production (B7)"; B7 is the plan's ticket for the deploy pipeline.
+
+### Blockers that are user actions
+
+1. **GitLab runner identity verification.** CI has NEVER executed (1,400+ tests, zero CI runs). Until GitLab verifies the account, no pipeline, including the deploy jobs, runs at all.
+2. **Fly.io account with billing.** The apps, Postgres and Upstash Redis are paid resources.
+3. **`FLY_API_TOKEN` in GitLab.** `flyctl tokens create deploy -x 999999h`, then Settings → CI/CD → Variables, masked and protected. The deploy jobs in `.gitlab-ci.yml` only appear when this variable exists.
+
+### Ticket codes the runbook carried
+
+- Stripe checkout: T3/T4. Wallet top-ups: T5. x402 pay-per-request: T7. (The runbook's "Optional rails" table, now section 3.4 of the guide, "Features", without the codes.)
+
+### CI status and history
+
+- The deploy jobs `deploy:staging:api` and `deploy:staging:web` (`.gitlab-ci.yml`, manual trigger, default branch only) run the guide's deploy commands after the unit and migration gates, "once the runner is verified".
+- The old GitHub deploy workflow omitted the `NEXT_PUBLIC_*` build args: any web bundle it shipped pointed at `http://localhost:4000`.
+
+### Known good / known gaps (as the runbook stated them)
+
+- Boot assertions verified by unit tests: mainnet ⇒ non-devnet RPC, `ENCRYPTION_KEY` ≠ `JWT_SECRET`, CORS pinned, mock gates off in production, x402 treasury real, wallet-topup master key present.
+- **No staging environment has actually been stood up yet.** The runbook is the corrected procedure, executed zero times. The first real run should be staging, manually, before wiring the CI trigger habitually.
+
+### Custom-domain edge: internal notes
+
+- After the edge smoke test, do the proof run with a real hostname exactly as listed in `docs/CUSTOM-DOMAIN-RUN.md` ("The run that remains"), and record it there.
+- The API release that first ships the edge applies migration `20261009200000_custom_domain_edge`. It also resets every certificate status the old code invented: such domains show "No certificate" until a real one is observed, and each gets an `ssl_status_reset` entry in its history.
+- One edge machine, one volume: a second machine needs shared certificate storage first (not built; tracked in `docs/HARDENING-BACKLOG.md`, "Custom domains").
+- Until the edge is set up, `GET /api/domains/config` reports `configured: false` with the reason, writes answer `501 custom_domains_not_configured`, and the checker and the host router stay off. A partial or malformed set of `CUSTOM_DOMAIN_*` settings reports "misconfigured" with the variable at fault in `GET /api/domains/config`.

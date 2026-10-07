@@ -354,7 +354,7 @@ if (current.status === "submitted") {
       <p>
         Every agent has an OpenAI-compatible endpoint on the API, on as soon as the agent exists. An agent row says where:{" "}
         <code>apiEndpoint</code>, <code>openaiBaseUrl</code> and <code>openaiModel</code> (<code>agent/&lt;slug&gt;</code>).
-        The two URLs are <code>null</code> when the API server has no public address configured.
+        The two URLs are <code>null</code> when they cannot be determined.
       </p>
       <CodeBlock
         language="ts"
@@ -443,10 +443,10 @@ wheelsai logout`}
       </p>
       <Callout title="A saved credential belongs to one API URL">
         <p>
-          The API URL is saved together with the credential, and the credential is only ever sent to that server. If the URL
+          The API URL is saved together with the credential, and the credential is only ever sent to that URL. If the URL
           later points somewhere else (<code>wheelsai config set apiUrl</code>, <code>login --url</code> or{" "}
           <code>WHEELSAI_API_URL</code>), the credential is withheld and the command stops and says so. There is no default
-          server: <code>login</code> needs <code>--url</code> the first time. Use <code>https://</code>; plain{" "}
+          URL: <code>login</code> needs <code>--url</code> the first time. Use <code>https://</code>; plain{" "}
           <code>http://</code> to anything but your own machine prints a warning, because the credential then travels
           unencrypted. Settings are stored in your user configuration directory with mode 0600.
         </p>
@@ -483,7 +483,7 @@ wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
           followed by the OpenAI base URL and the model id (<code>agent/&lt;slug&gt;</code>);
         </li>
         <li>
-          prints <code>Latency</code>: the platform&apos;s <Link href="/docs/api#measured-latency">measured response time</Link>,
+          prints <code>Latency</code>: the platform&apos;s <Link href="/docs/api#measured-latency">response time</Link>,
           read from <code>GET /api/public/stats</code>, for example <code>612 ms p50 (platform-wide, last 24 h)</code>. It is
           the platform&apos;s figure, not this agent&apos;s, which has answered nothing yet. A number appears only when the
           API measured one: below the publication thresholds the line reads <code>measuring (12 of 50 requests)</code>, and
@@ -495,7 +495,7 @@ wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
       </ol>
       <Callout variant="warning" title="A deployment that exists keeps running">
         <p>
-          Once the deployment is created it runs on the server and its credits stay reserved, whatever happens to the command.
+          Once the deployment is created it keeps running and its credits stay reserved, whatever happens to the command.
           Every later error, including a timeout, names the deployment id, and <code>--json</code> still prints a document with{" "}
           <code>deployment.id</code>. To keep waiting, use{" "}
           <code>wheelsai deploy --agent my-support-bot --resume &lt;deployment-id&gt;</code>, which starts nothing new. Running{" "}

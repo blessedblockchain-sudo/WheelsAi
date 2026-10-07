@@ -86,7 +86,7 @@ export interface Agent {
   /**
    * The agent's OpenAI-compatible chat-completions URL on this API
    * (`<api>/v1/agents/<slug>/chat/completions`). Always on: no deployment is needed.
-   * null when the API has no public address configured (PUBLIC_API_URL).
+   * null when the endpoint address cannot be determined.
    */
   apiEndpoint: string | null;
   /** `baseURL` for an OpenAI client talking to this one agent; null as above. */

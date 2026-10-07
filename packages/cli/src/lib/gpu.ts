@@ -29,7 +29,7 @@ export function chooseTier(tiers: GpuTier[], requested: string | undefined): Tie
     const match = tiers.find((tier) => tier.id === requested);
     if (!match) {
       throw new CliError(`"${requested}" is not a deployable GPU tier.`, {
-        hint: `Available on this server: ${tiers.map((tier) => tier.id).join(", ")}.`,
+        hint: `Deployable now: ${tiers.map((tier) => tier.id).join(", ")}.`,
       });
     }
     return { id: match.id, tier: match, reason: "requested" };
@@ -37,7 +37,7 @@ export function chooseTier(tiers: GpuTier[], requested: string | undefined): Tie
 
   if (tiers.length === 0) {
     throw new CliError("The API lists no deployable GPU tiers, so there is nothing to choose.", {
-      hint: "Pass --gpu-tier <id> to send a request anyway, or check that compute is configured on the server.",
+      hint: "GPU deployment may be temporarily unavailable. Try again later, or pass --gpu-tier <id> to send the request anyway.",
     });
   }
   const cheapest = tiers.reduce((best, tier) => (tier.pricePerHour < best.pricePerHour ? tier : best));

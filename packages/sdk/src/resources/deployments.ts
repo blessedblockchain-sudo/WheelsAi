@@ -24,7 +24,7 @@ export interface Deployment {
   status: DeploymentStatus;
   /** Why the deployment left service (`nosana_error`, `insufficient_credits`, `user_stopped`, ...), else null. */
   statusReason: string | null;
-  /** The OpenAI-compatible URL, only while running. May be host-relative when the API has no public URL configured. */
+  /** The OpenAI-compatible URL, only while running. May be host-relative when the full address cannot be determined. */
   endpoint: string | null;
   healthyNodes: number;
   totalNodes: number;

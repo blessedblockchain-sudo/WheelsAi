@@ -128,9 +128,15 @@ export function deploymentsResource(client: WheelsAIClient) {
         updates,
       ),
 
-    /** Stops the deployment (the API's DELETE is a stop, and is idempotent). */
+    /**
+     * Stops the deployment (the API's DELETE is a stop, and is idempotent).
+     * `fundsReleased` is false while the compute provider is still winding the
+     * deployment down; `vaultReclaimed` is the same value under its older name.
+     */
     delete: (id: string) =>
-      client.delete<{ message: string; vaultReclaimed?: boolean }>(`/api/deployments/${seg(id)}`),
+      client.delete<{ message: string; fundsReleased?: boolean; vaultReclaimed?: boolean }>(
+        `/api/deployments/${seg(id)}`,
+      ),
 
     /** Only stopped or failed deployments can be restarted. */
     restart: (id: string) =>

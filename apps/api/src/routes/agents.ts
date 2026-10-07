@@ -8,6 +8,7 @@ import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
+import { rowAccessMode } from "../config/nosanaAccess.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { mergeAgentEnv, redactAgentEnv, sealAgentEnv } from "../services/agentSecrets.js";
 import { assertCanCreateAgent } from "../services/orgPlan.js";
@@ -15,9 +16,15 @@ import {
   MarketNotConfiguredError,
   NosanaNotConfiguredError,
   getNosanaClient,
+  wheelsaiDeploymentName,
 } from "../services/nosana.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
+import {
+  computeRefusal,
+  isAccessModeUnavailable,
+  runDeployPreflight,
+} from "../services/nosanaPreflight.js";
 import { collectAgentTelegramWebhooks, releaseTelegramWebhooks } from "../services/openclaw.js";
 import {
   parseGitHubUrl,
@@ -495,10 +502,12 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
     if (liveDeployments.length > 0) {
       const nosana = await getNosanaClient();
       for (const deployment of liveDeployments) {
+        // Each id is stopped through the credential that created it.
+        const accessMode = rowAccessMode(deployment.nosanaAccessMode);
         for (const jobId of deployment.nosanaJobIds) {
           let settled = false;
           try {
-            settled = (await nosana.stopDeployment(jobId)).reclaimed;
+            settled = (await nosana.stopDeployment(jobId, accessMode)).reclaimed;
           } catch (err) {
             logger.error({ err, jobId }, "Failed to stop agent deployment");
           }
@@ -508,6 +517,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
             sourceKind: "agent",
             sourceId: deployment.id,
             reason: "agent_deleted",
+            accessMode,
           });
           if (!recorded) {
             return reply.status(502).send({
@@ -577,11 +587,12 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
     }
 
     // Pre-flight BEFORE any credits are reserved (as POST /deployments does):
-    // an unconfigured platform (no Nosana wallet, or no market for this GPU
-    // tier on this network) answers 501 here. It used to answer 201, take the
+    // an unconfigured platform (no Nosana credential, or no market for this
+    // GPU tier on this network) answers 501 here, and a platform that cannot
+    // pay for the GPU right now answers 503. It used to answer 201, take the
     // reservation, and only then fail in the background submit.
     try {
-      (await getNosanaClient()).assertCanDeploy(body.gpuTier);
+      await runDeployPreflight(await getNosanaClient(), body.gpuTier, body.replicas);
     } catch (err) {
       if (err instanceof NosanaNotConfiguredError) {
         return reply.status(501).send({ error: err.code, message: err.message });
@@ -591,6 +602,9 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
           ? reply.status(400).send({ error: "unknown_gpu_tier", message: err.message })
           : reply.status(501).send({ error: "gpu_market_not_configured", message: err.message });
       }
+      // The platform's own funding refused (credits, key, price below cost).
+      const refusal = computeRefusal(err);
+      if (refusal) return reply.status(refusal.status).send(refusal.body);
       // The client could not be built at all (bad wallet key, RPC setup).
       logger.error({ err, agentId }, "Nosana client unavailable for agent deploy");
       return reply.status(503).send({
@@ -746,12 +760,34 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       // marked `stopped` is never polled again, so marking it while the stop
       // did not land would leave the GPU running on platform funds unseen.
       const nosana = await getNosanaClient();
+      const accessMode = rowAccessMode(deployment.nosanaAccessMode);
       for (const jobId of deployment.nosanaJobIds) {
         let reclaimed: boolean;
         try {
-          reclaimed = (await nosana.stopDeployment(jobId)).reclaimed;
+          reclaimed = (await nosana.stopDeployment(jobId, accessMode)).reclaimed;
         } catch (err) {
           logger.error({ err, jobId }, "Failed to stop Nosana job");
+          if (isAccessModeUnavailable(err)) {
+            // No retry from this process can reach it, and the owner must
+            // still be able to end their deployment. A stopped agent row is
+            // never looked at again, so the id goes to the orphan sweep with
+            // its account: that stops it once the credential is back, and the
+            // operator view lists it meanwhile. Only if even that cannot be
+            // recorded is the stop refused.
+            const recorded = await recordNosanaOrphan(prisma, {
+              nosanaDeploymentId: jobId,
+              sourceKind: "agent",
+              sourceId: deploymentId,
+              reason: "agent_stop_account_unavailable",
+              accessMode,
+            });
+            if (recorded) continue;
+            return reply.status(409).send({
+              error: "nosana_access_mode_unavailable",
+              message:
+                "This deployment was created with a compute account that is not configured here, so it cannot be stopped right now. Contact support.",
+            });
+          }
           return reply.status(502).send({
             error: "nosana_stop_failed",
             message:
@@ -766,6 +802,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
             sourceKind: "agent",
             sourceId: deploymentId,
             reason: "agent_stop_vault_pending",
+            accessMode,
           });
         }
       }
@@ -860,7 +897,9 @@ async function submitAgentToNosana(
     const nosanaDeployment = await nosana.createDeployment(
       jobDefinition,
       config.gpuTier,
-      config.replicas
+      config.replicas,
+      // Deterministic: a deployment whose create call threw can be found by it.
+      { name: wheelsaiDeploymentName("agent", deploymentId) }
     );
 
     // Update with Nosana job IDs - only while the row is still being
@@ -871,7 +910,11 @@ async function submitAgentToNosana(
       where: { id: deploymentId, status: { in: ["pending", "building", "deploying"] } },
       // No endpoint is stored: the agent's endpoint is this API's
       // /v1/agents/<slug>, computed on read (services/publicEndpoints.ts).
-      data: { nosanaJobIds: [nosanaDeployment.id] },
+      // The access mode in the same statement as the id it describes.
+      data: {
+        nosanaJobIds: [nosanaDeployment.id],
+        nosanaAccessMode: nosanaDeployment.accessMode ?? null,
+      },
     });
     if (stored.count === 0) {
       logger.warn(
@@ -879,7 +922,7 @@ async function submitAgentToNosana(
         "Agent deployment was stopped during submit; stopping the Nosana deployment just created",
       );
       const settled = await nosana
-        .stopDeployment(nosanaDeployment.id)
+        .stopDeployment(nosanaDeployment.id, nosanaDeployment.accessMode)
         .then((stop) => stop.reclaimed)
         .catch((err) => {
           logger.error({ err, deploymentId }, "Failed to stop an orphaned agent deployment");
@@ -891,6 +934,7 @@ async function submitAgentToNosana(
           sourceKind: "agent",
           sourceId: deploymentId,
           reason: "stopped_during_submit",
+          accessMode: nosanaDeployment.accessMode,
         });
       }
       return;
@@ -918,6 +962,7 @@ async function submitAgentToNosana(
         sourceKind: "agent",
         sourceId: deploymentId,
         reason: "submit_failed",
+        accessMode: error.accessMode,
       });
     }
 

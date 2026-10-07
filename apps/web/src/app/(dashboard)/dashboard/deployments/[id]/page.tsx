@@ -26,6 +26,12 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { API_BASE_URL, deploymentsApi, type DeploymentDetail, getErrorMessage } from "@/lib/api";
+import {
+  COMPUTE_PAUSED_MESSAGE,
+  deploymentEndNote,
+  isComputePaused,
+  stopConfirmation,
+} from "@/lib/deployments";
 import { deploymentEndpointUrl } from "@/lib/public-urls";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -177,7 +183,12 @@ export default function DeploymentDetailPage() {
       toast.success("Deployment restarting...");
       loadDeployment();
     } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to restart deployment"));
+      // Paused capacity: nothing was reserved, and the API's reason is not shown.
+      toast.error(
+        isComputePaused(error)
+          ? COMPUTE_PAUSED_MESSAGE
+          : getErrorMessage(error, "Failed to restart deployment"),
+      );
     } finally {
       setActionLoading(false);
     }
@@ -186,8 +197,8 @@ export default function DeploymentDetailPage() {
   async function handleStop() {
     setActionLoading(true);
     try {
-      await deploymentsApi.delete(deploymentId);
-      toast.success("Deployment stopped");
+      const stopped = await deploymentsApi.delete(deploymentId);
+      toast.success(stopConfirmation(stopped));
       router.push("/dashboard/deployments");
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to stop deployment"));
@@ -249,6 +260,8 @@ export default function DeploymentDetailPage() {
   const healthyNodeCount = deployment.nodes.filter(
     (n) => n.healthStatus === "healthy"
   ).length;
+  // Why a stopped or failed run ended, when the reason is one worth telling.
+  const endNote = deploymentEndNote(deployment.status, deployment.statusReason);
 
   return (
     <div className="flex flex-col">
@@ -333,6 +346,15 @@ export default function DeploymentDetailPage() {
             </div>
           </CardContent>
         </Card>
+
+        {endNote && (
+          <Card className="mb-6 bg-muted">
+            <CardContent className="py-4">
+              <p className="text-sm font-medium text-foreground">{endNote.title}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{endNote.body}</p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Endpoint — only once a node has actually passed a health
             check; a running job whose nodes are still "unknown" cannot

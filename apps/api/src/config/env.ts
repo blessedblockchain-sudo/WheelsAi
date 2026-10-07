@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { loadNosanaAccessConfig, NosanaAccessConfigError } from "./nosanaAccess.js";
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -567,6 +568,17 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError(
       "SOLANA_NETWORK=mainnet-beta requires an explicitly set, non-devnet SOLANA_RPC_URL (the default is the devnet endpoint — mainnet mode would silently verify against the wrong chain)"
     );
+  }
+
+  // Nosana access (config/nosanaAccess.ts parses its own variables). Two
+  // credentials with no NOSANA_ACCESS_MODE, or a mode naming a credential
+  // that is missing, would leave "which account pays" to a guess: refused at
+  // boot in every environment. Neither credential set is fine (deploys 501).
+  try {
+    loadNosanaAccessConfig(raw);
+  } catch (error) {
+    if (error instanceof NosanaAccessConfigError) throw new EnvValidationError(error.message);
+    throw error;
   }
 
   // Slack: an enabled install flow with missing credentials would 302 a

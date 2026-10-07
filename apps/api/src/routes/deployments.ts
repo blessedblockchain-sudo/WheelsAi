@@ -12,6 +12,7 @@ import {
 import { prisma as defaultPrisma } from "@wheelsai/db";
 import { triggerWebhook as defaultTriggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
+import { rowAccessMode, type NosanaAccessMode } from "../config/nosanaAccess.js";
 import { deploymentEndpoint as buildDeploymentEndpoint } from "../services/publicEndpoints.js";
 import {
   MarketNotConfiguredError,
@@ -24,6 +25,11 @@ import {
 import { scopedLatencyLoader, type ScopedLatency } from "../services/buildLatencySampleDeps.js";
 import type { ScopedWindow } from "../services/latencyQueries.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
+import {
+  computeRefusal,
+  isAccessModeUnavailable,
+  runDeployPreflight,
+} from "../services/nosanaPreflight.js";
 import {
   ACTIVE_STATUSES,
   DEFAULT_DEPLOYMENT_CONFIG,
@@ -125,7 +131,34 @@ function replyForPreflightError(reply: FastifyReply, error: unknown): boolean {
     }
     return true;
   }
+  // The platform's own funding refused (credits low or unreadable, key
+  // rejected, tier priced below cost): 503, with no amount in the message.
+  const refusal = computeRefusal(error);
+  if (refusal) {
+    reply.status(refusal.status).send(refusal.body);
+    return true;
+  }
   return false;
+}
+
+/**
+ * The answer when a row's Nosana deployment belongs to an access mode this
+ * process holds no credential for. Nothing can be read, scaled or stopped for
+ * it from here, and retrying will not change that.
+ */
+const OTHER_ACCOUNT_REPLY = {
+  error: "nosana_access_mode_unavailable",
+  message:
+    "This deployment was created with a compute account that is not configured here, so it cannot be changed right now. Contact support.",
+};
+
+/**
+ * A deployment row as its owner reads it: without the record of which platform
+ * credential pays Nosana for it, which is the platform's business.
+ */
+function ownerView<T extends { nosanaAccessMode?: unknown }>(row: T): Omit<T, "nosanaAccessMode"> {
+  const { nosanaAccessMode: _accessMode, ...rest } = row;
+  return rest;
 }
 
 /** The slice of a transaction client the replica-change steps use. */
@@ -144,6 +177,8 @@ interface ReplicaChange {
   /** The run and the Nosana deployment the request read. */
   runGeneration: number;
   nosanaId: string;
+  /** The credential that created `nosanaId` (the row's stamp). */
+  accessMode: NosanaAccessMode;
   from: number;
   to: number;
   /** This request's claim token (Deployment.replicaChangeId). */
@@ -367,8 +402,11 @@ async function replicaChangeOutcome(
 ): Promise<boolean | null> {
   // Refused before anything was attempted: the deployment is not running.
   if (error instanceof NosanaLifecycleError && error.code === "nosana_not_running") return false;
+  // Refused before Nosana was asked: no credential for the row's account, or
+  // (API-key access) the credit gate for the added replicas.
+  if (isAccessModeUnavailable(error) || computeRefusal(error)) return false;
   try {
-    const { replicas } = await nosana.getDeploymentStatus(change.nosanaId);
+    const { replicas } = await nosana.getDeploymentStatus(change.nosanaId, change.accessMode);
     if (replicas === change.to) return true;
     if (replicas === change.from) return false;
     return null;
@@ -550,7 +588,7 @@ export function createDeploymentRoutes(
 
         return {
           deployment: {
-            ...deployment,
+            ...ownerView(deployment),
             config: { ...DEFAULT_DEPLOYMENT_CONFIG, ...(deployment.config as Record<string, unknown> | null) },
             // Raw Nosana node URLs are unauthenticated GPU endpoints that would
             // bypass metering - callers go through `endpoint` (our /v1 proxy).
@@ -582,10 +620,11 @@ export function createDeploymentRoutes(
       }
 
       // Pre-flight BEFORE any credits are reserved: an unconfigured platform
-      // (no Nosana wallet, or no market for this GPU tier on this network)
-      // answers 501 rather than taking money for a deployment that cannot run.
+      // (no Nosana credential, or no market for this GPU tier on this network)
+      // answers 501 rather than taking money for a deployment that cannot run,
+      // and a platform that cannot pay for the GPU right now answers 503.
       try {
-        (await getNosana()).assertCanDeploy(body.gpuTier);
+        await runDeployPreflight(await getNosana(), body.gpuTier, body.replicas);
       } catch (err) {
         if (replyForPreflightError(reply, err)) return reply;
         throw err;
@@ -786,6 +825,7 @@ export function createDeploymentRoutes(
             gpuTier: deployment.gpuTier,
             runGeneration: deployment.runGeneration,
             nosanaId,
+            accessMode: rowAccessMode(deployment.nosanaAccessMode),
             from: deployment.replicas,
             to: newReplicas,
             changeId: randomUUID(),
@@ -812,7 +852,12 @@ export function createDeploymentRoutes(
           let applied: boolean | null = true;
           let scaleError: unknown;
           try {
-            await nosana.scaleDeployment(nosanaId, newReplicas, deployment.gpuTier);
+            await nosana.scaleDeployment(
+              nosanaId,
+              newReplicas,
+              deployment.gpuTier,
+              change.accessMode,
+            );
           } catch (err) {
             scaleError = err;
             applied = await replicaChangeOutcome(nosana, change, err);
@@ -851,6 +896,18 @@ export function createDeploymentRoutes(
               return reply.status(409).send({
                 error: "deployment_not_running",
                 message: "The Nosana deployment is not running; replicas were not changed.",
+              });
+            }
+            if (isAccessModeUnavailable(scaleError)) {
+              return reply.status(409).send(OTHER_ACCOUNT_REPLY);
+            }
+            // The platform's funding refused the added replicas.
+            const refusal = computeRefusal(scaleError);
+            if (refusal) {
+              return reply.status(refusal.status).send({
+                ...refusal.body,
+                message:
+                  "Replicas cannot be added right now because new GPU capacity is paused. Replicas were not changed and nothing was reserved.",
               });
             }
             return reply.status(502).send({
@@ -898,7 +955,7 @@ export function createDeploymentRoutes(
           where: { id: deploymentId, orgId },
         });
         return {
-          deployment: updatedDeployment,
+          deployment: updatedDeployment ? ownerView(updatedDeployment) : updatedDeployment,
           ...(updates.config
             ? { note: "Config changes apply the next time the deployment is restarted." }
             : {}),
@@ -922,6 +979,15 @@ export function createDeploymentRoutes(
      * A row that was stopped and restarted meanwhile is a different run - it
      * must not be marked stopped, lose its hold, or be stamped with this run's
      * vault result.
+     *
+     * One exception to "Nosana first": a run created by a compute account this
+     * process holds no credential for cannot be stopped from here by any retry,
+     * and the billing worker does not charge for it either. Refusing would
+     * leave the owner with a deployment they can never end, so the row is
+     * marked stopped and the hold released WITHOUT a final charge. The row
+     * keeps its Nosana id and its access-mode stamp with no reclaim stamp: the
+     * status worker's sweep stops and releases it once the credential is back,
+     * and until then the operator view lists it as unreachable.
      */
     app.delete(
       "/:deploymentId",
@@ -959,19 +1025,39 @@ export function createDeploymentRoutes(
         let reclaimed = true;
         // Nosana had already stopped it before this call: when is not known.
         let alreadyStopped = false;
+        // No credential here for the account that created it (see above).
+        let unreachable = false;
         if (nosanaId) {
           try {
             const nosana = await getNosana();
-            const stop = await nosana.stopDeployment(nosanaId);
+            // Through the credential that created it, whatever the primary
+            // mode is today.
+            const stop = await nosana.stopDeployment(
+              nosanaId,
+              rowAccessMode(deployment.nosanaAccessMode),
+            );
             reclaimed = stop.reclaimed;
             alreadyStopped = stop.alreadyStopped === true;
           } catch (err) {
-            logger.error({ err, deploymentId, nosanaId }, "Failed to stop Nosana deployment");
-            return reply.status(502).send({
-              error: "nosana_stop_failed",
-              message:
-                "Nosana did not confirm the stop. The deployment was left as it was; retry shortly.",
-            });
+            if (isAccessModeUnavailable(err)) {
+              unreachable = true;
+              reclaimed = false;
+              logger.error(
+                {
+                  deploymentId,
+                  nosanaId,
+                  accessMode: rowAccessMode(deployment.nosanaAccessMode),
+                },
+                "Owner stopped a deployment whose compute account has no credential here: NOT stopped on Nosana - it stays for the reclaim sweep and the operator view",
+              );
+            } else {
+              logger.error({ err, deploymentId, nosanaId }, "Failed to stop Nosana deployment");
+              return reply.status(502).send({
+                error: "nosana_stop_failed",
+                message:
+                  "Nosana did not confirm the stop. The deployment was left as it was; retry shortly.",
+              });
+            }
           }
         }
 
@@ -980,7 +1066,8 @@ export function createDeploymentRoutes(
         // request is retried later; the retry (or the status worker) must end
         // the final window HERE, not at its own clock. Set once per run.
         const stoppedAt = now();
-        if (nosanaId && !alreadyStopped) {
+        // Not for an unreachable run: nothing confirmed that its GPUs stopped.
+        if (nosanaId && !alreadyStopped && !unreachable) {
           await prisma.deployment
             .updateMany({
               where: { ...thisRun, status: { in: STOPPABLE_STATUSES }, gpuStoppedAt: null },
@@ -1069,7 +1156,10 @@ export function createDeploymentRoutes(
           // (this request's, or an earlier attempt's whose transaction failed).
           // With neither - Nosana had stopped it already at an unknown time -
           // the window ends at the cursor: time after the stop is not billed.
-          const windowEnd = fresh?.gpuStoppedAt ?? (alreadyStopped ? null : stoppedAt);
+          // An unreachable run is not billed at all: it could not be observed.
+          const windowEnd = unreachable
+            ? null
+            : (fresh?.gpuStoppedAt ?? (alreadyStopped ? null : stoppedAt));
           if (wasRunning && fresh?.billedThroughAt && windowEnd) {
             const settled = await chargeGpuWindow(tx as unknown as GpuBillingTx, {
               deploymentId,
@@ -1141,7 +1231,11 @@ export function createDeploymentRoutes(
         return {
           message: "Deployment stopped",
           // false: Nosana is still winding the jobs down; the status worker
-          // keeps retrying the vault withdraw.
+          // keeps retrying until the platform's funding is confirmed released
+          // (a vault withdraw with wallet access; with an API key, Nosana
+          // reporting the deployment stopped).
+          fundsReleased: reclaimed,
+          // The same value under its first name, kept for existing clients.
           vaultReclaimed: reclaimed,
         };
       }
@@ -1248,7 +1342,10 @@ export function createDeploymentRoutes(
         }
 
         try {
-          const snapshot = await (await getNosana()).getDeploymentStatus(nosanaId);
+          const snapshot = await (await getNosana()).getDeploymentStatus(
+            nosanaId,
+            rowAccessMode(deployment.nosanaAccessMode),
+          );
           const events = [...snapshot.events]
             .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""))
             .slice(-lines);

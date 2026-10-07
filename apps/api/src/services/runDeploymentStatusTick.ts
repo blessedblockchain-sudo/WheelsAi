@@ -57,7 +57,34 @@
  *     is up.
  *   - loadDeployments errors bubble - if the candidate set can't be read there
  *     is nothing to isolate, and BullMQ should see the failure.
+ *   - a row or reclaim candidate whose Nosana id was created by an access mode
+ *     this process holds no credential for (error code
+ *     nosana_access_mode_unavailable) is SKIPPED, not failed: no retry from
+ *     here can reach it. They are counted and reported once per tick
+ *     (reportAccessModeUnavailable).
  */
+
+/** "wallet" | "api_key": the Nosana credential that created an id. */
+export type NosanaAccessModeName = "wallet" | "api_key";
+
+/** Code of the error a NosanaClient call throws for a mode it has no credential for. */
+export const ACCESS_MODE_UNAVAILABLE_CODE = "nosana_access_mode_unavailable";
+
+function isAccessModeUnavailable(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === ACCESS_MODE_UNAVAILABLE_CODE;
+}
+
+/** A Nosana id this tick could not act on for want of its account's credential. */
+export interface UnreachableNosanaDeployment {
+  /** "row": a live deployment row; "reclaim": a sweep candidate. */
+  source: "row" | "reclaim";
+  /** The deployment row, or the orphan record when `orphan`. */
+  id: string;
+  kind?: DeploymentKind;
+  orphan?: boolean;
+  nosanaDeploymentId: string;
+  accessMode?: NosanaAccessModeName;
+}
 
 export type DeploymentKind = "agent" | "model";
 
@@ -124,6 +151,11 @@ export interface DeploymentStatusRow {
   /** nosanaJobIds[0] is the Nosana Deployment-Manager id. */
   nosanaJobIds: string[];
   /**
+   * The credential that created nosanaJobIds (the row's stamp; a null column
+   * is wallet). Omitted = the primary mode, as before the stamp existed.
+   */
+  nosanaAccessMode?: NosanaAccessModeName;
+  /**
    * Model rows only: Deployment.runGeneration as loaded. A restart reuses the
    * row for a new Nosana deployment, so every write this tick makes for the row
    * is conditional on it (an agent deployment row is never reused).
@@ -155,6 +187,8 @@ export interface DeploymentStatusTransition {
   runGeneration?: number;
   /** The Nosana deployment the observation was made of. */
   nosanaDeploymentId?: string;
+  /** The credential that created it (carried to the orphan record). */
+  nosanaAccessMode?: NosanaAccessModeName;
 }
 
 export interface DeploymentStatusTickInput {
@@ -178,6 +212,8 @@ export interface VaultReclaimCandidate {
   /** The Nosana Deployment-Manager id. */
   nosanaDeploymentId: string;
   orphan?: boolean;
+  /** The credential that created it; the reclaim goes through the same one. */
+  accessMode?: NosanaAccessModeName;
 }
 
 export interface DeploymentStatusTickDeps {
@@ -186,7 +222,10 @@ export interface DeploymentStatusTickDeps {
    * Strict Deployment-Manager read - THROWS on API failure (and on ids that
    * cannot be queried). Endpoints are exactly what Nosana reported.
    */
-  observeDeployment: (nosanaDeploymentId: string) => Promise<DeploymentObservation>;
+  observeDeployment: (
+    nosanaDeploymentId: string,
+    accessMode?: NosanaAccessModeName,
+  ) => Promise<DeploymentObservation>;
   /**
    * CAS updateMany on {id, fromStatus} (plus runGeneration when the transition
    * carries one); count=0 means a concurrent writer won - and then nothing
@@ -286,6 +325,11 @@ export interface DeploymentStatusTickDeps {
    * means "not yet" (e.g. Nosana still winding the jobs down) - retried next tick.
    */
   reclaimVault?: (candidate: VaultReclaimCandidate) => Promise<{ reclaimed: boolean }>;
+  /**
+   * Called at most ONCE per tick, with every id that was skipped because its
+   * access mode has no credential here. For the operator's log. Best effort.
+   */
+  reportAccessModeUnavailable?: (skipped: UnreachableNosanaDeployment[]) => void;
 }
 
 export interface DeploymentStatusTickResult {
@@ -307,6 +351,8 @@ export interface DeploymentStatusTickResult {
   /** Rows whose replica count (or stale claim) was brought in line with Nosana. */
   replicasReconciled: number;
   replicaReconcilesFailed: number;
+  /** Rows and reclaim candidates skipped: no credential for their access mode. */
+  accessModeUnavailable: number;
 }
 
 export interface StatusDecision {
@@ -382,6 +428,7 @@ export async function runDeploymentStatusTick(
   let nodeSyncsFailed = 0;
   let replicasReconciled = 0;
   let replicaReconcilesFailed = 0;
+  const unreachable: UnreachableNosanaDeployment[] = [];
 
   for (const row of rows) {
     // The nodes this row is probed with. Replaced by the reconciled set when
@@ -394,7 +441,7 @@ export async function runDeploymentStatusTick(
         unchanged += 1;
         continue;
       }
-      const observation = await deps.observeDeployment(nosanaId);
+      const observation = await deps.observeDeployment(nosanaId, row.nosanaAccessMode);
       const decision = mapObservationToStatus(row.kind, row.status, observation);
 
       // The status the row is in AFTER this tick, or null when unknown (lost
@@ -414,6 +461,7 @@ export async function runDeploymentStatusTick(
           ...(decision.reason ? { reason: decision.reason } : {}),
           ...(row.runGeneration !== undefined ? { runGeneration: row.runGeneration } : {}),
           nosanaDeploymentId: nosanaId,
+          ...(row.nosanaAccessMode ? { nosanaAccessMode: row.nosanaAccessMode } : {}),
         };
         const { count, reservationReleased } = await deps.persistTransition(transition);
         if (count > 0) {
@@ -532,10 +580,22 @@ export async function runDeploymentStatusTick(
           }
         }
       }
-    } catch {
-      // API/RPC error (or persist failure) - row left untouched, the next
-      // tick retries. Other rows still run.
-      failed += 1;
+    } catch (err) {
+      if (isAccessModeUnavailable(err)) {
+        // Not an outage: this process cannot reach the row's Nosana account at
+        // all. Left untouched and named, never retried into the failure count.
+        unreachable.push({
+          source: "row",
+          id: row.id,
+          kind: row.kind,
+          nosanaDeploymentId: row.nosanaJobIds[0] ?? "",
+          ...(row.nosanaAccessMode ? { accessMode: row.nosanaAccessMode } : {}),
+        });
+      } else {
+        // API/RPC error (or persist failure) - row left untouched, the next
+        // tick retries. Other rows still run.
+        failed += 1;
+      }
     }
 
     // Node health probes - outside the status try/catch: an API outage says
@@ -604,9 +664,27 @@ export async function runDeploymentStatusTick(
         const outcome = await deps.reclaimVault(candidate);
         if (outcome.reclaimed) vaultsReclaimed += 1;
         else vaultsPending += 1;
-      } catch {
-        vaultReclaimsFailed += 1;
+      } catch (err) {
+        if (isAccessModeUnavailable(err)) {
+          unreachable.push({
+            source: "reclaim",
+            id: candidate.id,
+            ...(candidate.orphan ? { orphan: true } : {}),
+            nosanaDeploymentId: candidate.nosanaDeploymentId,
+            ...(candidate.accessMode ? { accessMode: candidate.accessMode } : {}),
+          });
+        } else {
+          vaultReclaimsFailed += 1;
+        }
       }
+    }
+  }
+
+  if (unreachable.length > 0 && deps.reportAccessModeUnavailable) {
+    try {
+      deps.reportAccessModeUnavailable(unreachable);
+    } catch {
+      // Reporting is for the log; it never fails the tick.
     }
   }
 
@@ -627,5 +705,6 @@ export async function runDeploymentStatusTick(
     vaultReclaimsFailed,
     replicasReconciled,
     replicaReconcilesFailed,
+    accessModeUnavailable: unreachable.length,
   };
 }

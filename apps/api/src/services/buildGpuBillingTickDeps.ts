@@ -18,6 +18,8 @@
  *                             reservation (exactly once, via its own CAS),
  *                             settle the final window - up to the recorded stop
  *                             time - from what is left, drop the nodes
+ *   canReach               -> hasAccessMode for the row's access-mode stamp
+ *   skipUnreachableWindow  -> CAS the cursor forward with no charge
  *   ensureRunway           -> top the Nosana vault up after a successful charge,
  *                             throttled per deployment across every API replica
  *                             (CAS on runwayCheckedAt)
@@ -32,6 +34,7 @@ import {
 } from "./gpuBilling.js";
 import { getPricePerSecond } from "./computeMetering.js";
 import { releaseDeploymentReservation } from "./deploymentCreditGate.js";
+import { rowAccessMode, type NosanaAccessMode } from "../config/nosanaAccess.js";
 import { isMockNosanaId } from "./nosanaIds.js";
 import type {
   GpuBillingRow,
@@ -49,6 +52,7 @@ interface RunningDeploymentRow {
   status: string;
   billedThroughAt: Date | null;
   nosanaJobIds: string[];
+  nosanaAccessMode?: string | null;
   runGeneration: number;
   gpuStoppedAt?: Date | null;
   reservationCents: bigint | null;
@@ -71,6 +75,7 @@ interface GpuBillingPrismaSurface {
         status: true;
         billedThroughAt: true;
         nosanaJobIds: true;
+        nosanaAccessMode: true;
         runGeneration: true;
         gpuStoppedAt: true;
         reservationCents: true;
@@ -84,7 +89,7 @@ interface GpuBillingPrismaSurface {
         status?: string;
         runGeneration?: number;
         nosanaJobIds?: { has: string };
-        billedThroughAt?: null;
+        billedThroughAt?: Date | null;
         gpuStoppedAt?: null;
         OR?: RunwayDue;
       };
@@ -150,17 +155,53 @@ interface FinaliseTx extends GpuBillingTx {
 
 export interface BuildGpuBillingTickDepsInput {
   prisma: GpuBillingPrismaSurface | Pick<PrismaClient, "$transaction" | "deployment">;
-  /** NosanaClient.stopDeployment (stopAndReclaim; throws if the stop failed). */
-  stopDeployment: (nosanaDeploymentId: string) => Promise<GpuStopResult>;
+  /**
+   * NosanaClient.stopDeployment (stopAndReclaim; throws if the stop failed).
+   * `accessMode` is the row's stamp: the stop goes through the credential
+   * that created the deployment.
+   */
+  stopDeployment: (
+    nosanaDeploymentId: string,
+    accessMode?: NosanaAccessMode,
+  ) => Promise<GpuStopResult>;
   /**
    * NosanaClient.ensureDeploymentRunway. Omit to leave vault funding to the
-   * initial deposit.
+   * initial deposit. With API-key access it never tops anything up: it
+   * answers reason "credits" and the seconds the shared balance would cover.
    */
   ensureRunway?: (args: {
     nosanaDeploymentId: string;
     gpuTier: string;
     replicas: number;
-  }) => Promise<{ toppedUp: boolean }>;
+    accessMode?: NosanaAccessMode;
+  }) => Promise<{ toppedUp: boolean; runwaySeconds?: number | null; reason?: string }>;
+  /**
+   * Below this many seconds a credits-mode runway is "short"
+   * (NOSANA_VAULT_MIN_RUNWAY_SECONDS). Default 1800.
+   */
+  minRunwaySeconds?: number;
+  /**
+   * A credits-mode runway check came back short: nothing was topped up (there
+   * is nothing to top up), so an operator has to add credits. At most once per
+   * deployment per runway interval, by the same throttle as the check.
+   */
+  onCreditsRunwayLow?: (info: {
+    row: GpuBillingRow;
+    runwaySeconds: number;
+    minRunwaySeconds: number;
+  }) => void;
+  /**
+   * Whether this process holds the credential for an access mode
+   * (NosanaClient.hasAccessMode). A running row whose mode it does not hold is
+   * not billed: it can be neither observed nor stopped from here. Omit to
+   * treat every row as reachable.
+   */
+  hasAccessMode?: (mode: NosanaAccessMode) => boolean;
+  /**
+   * Called once per tick with the rows this process has no credential for
+   * (their access mode's key or wallet is not configured here).
+   */
+  reportAccessModeUnavailable?: GpuBillingTickDeps["reportAccessModeUnavailable"];
   /** Minimum gap between runway checks of one deployment. Default 600s. */
   runwayCheckIntervalMs?: number;
   /** Injectable tier price (USD/second); defaults to the production table. */
@@ -213,6 +254,7 @@ export function buildGpuBillingTickDeps(
   const pricePerSecondUsd = input.pricePerSecondUsd ?? getPricePerSecond;
   const clock = input.now ?? (() => new Date());
   const runwayIntervalMs = input.runwayCheckIntervalMs ?? 600_000;
+  const minRunwaySeconds = input.minRunwaySeconds ?? 1_800;
 
   const deps: GpuBillingTickDeps = {
     loadRunningDeployments: async () => {
@@ -226,6 +268,7 @@ export function buildGpuBillingTickDeps(
           status: true,
           billedThroughAt: true,
           nosanaJobIds: true,
+          nosanaAccessMode: true,
           runGeneration: true,
           gpuStoppedAt: true,
           reservationCents: true,
@@ -245,6 +288,7 @@ export function buildGpuBillingTickDeps(
             status: r.status,
             billedThroughAt: r.billedThroughAt,
             nosanaDeploymentId,
+            nosanaAccessMode: rowAccessMode(r.nosanaAccessMode),
             runGeneration: r.runGeneration,
             gpuStoppedAt: r.gpuStoppedAt ?? null,
             reservationCents: r.reservationCents,
@@ -302,7 +346,7 @@ export function buildGpuBillingTickDeps(
     },
 
     stopDeployment: async (row) => {
-      const stop = await input.stopDeployment(row.nosanaDeploymentId);
+      const stop = await input.stopDeployment(row.nosanaDeploymentId, row.nosanaAccessMode);
       const alreadyStopped = stop.alreadyStopped === true;
       if (!alreadyStopped) {
         // The GPUs ran until this call returned. Record that now, in its own
@@ -442,6 +486,27 @@ export function buildGpuBillingTickDeps(
     },
   };
 
+  if (input.reportAccessModeUnavailable) {
+    deps.reportAccessModeUnavailable = input.reportAccessModeUnavailable;
+  }
+
+  const hasAccessMode = input.hasAccessMode;
+  if (hasAccessMode) {
+    deps.canReach = (row) => hasAccessMode(row.nosanaAccessMode ?? "wallet");
+    // Keyed on the cursor as loaded, like every other cursor move: a stopper
+    // or another replica's tick that got there first owns the window.
+    deps.skipUnreachableWindow = (row, now) =>
+      prisma.deployment.updateMany({
+        where: {
+          id: row.id,
+          status: "running",
+          runGeneration: row.runGeneration,
+          billedThroughAt: row.billedThroughAt,
+        },
+        data: { billedThroughAt: now },
+      });
+  }
+
   const ensureRunway = input.ensureRunway;
   if (ensureRunway) {
     deps.ensureRunway = async (row) => {
@@ -467,11 +532,30 @@ export function buildGpuBillingTickDeps(
         data: { runwayCheckedAt: new Date(nowMs) },
       });
       if (claimed.count === 0) return { toppedUp: false };
-      return ensureRunway({
+      const runway = await ensureRunway({
         nosanaDeploymentId: row.nosanaDeploymentId,
         gpuTier: row.gpuTier,
         replicas: row.replicas,
+        ...(row.nosanaAccessMode ? { accessMode: row.nosanaAccessMode } : {}),
       });
+      // Credits: there is no vault to refill, only a shared balance to watch.
+      // A short runway is reported, never acted on from here.
+      const low =
+        runway.reason === "credits" &&
+        typeof runway.runwaySeconds === "number" &&
+        runway.runwaySeconds < minRunwaySeconds;
+      if (low) {
+        try {
+          input.onCreditsRunwayLow?.({
+            row,
+            runwaySeconds: runway.runwaySeconds as number,
+            minRunwaySeconds,
+          });
+        } catch {
+          // Reporting never fails the billing of the row.
+        }
+      }
+      return { toppedUp: runway.toppedUp, ...(low ? { runwayLow: true } : {}) };
     };
   }
 

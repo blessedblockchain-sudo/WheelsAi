@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { deploymentsApi, type Deployment, getErrorMessage } from "@/lib/api";
+import { COMPUTE_PAUSED_MESSAGE, isComputePaused, stopConfirmation } from "@/lib/deployments";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
   running: "success",
@@ -106,7 +107,11 @@ export default function DeploymentsPage() {
       toast.success("Deployment restarting...");
       loadDeployments();
     } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to restart deployment"));
+      toast.error(
+        isComputePaused(error)
+          ? COMPUTE_PAUSED_MESSAGE
+          : getErrorMessage(error, "Failed to restart deployment"),
+      );
     } finally {
       setActionLoading(null);
     }
@@ -115,8 +120,8 @@ export default function DeploymentsPage() {
   async function handleStop(id: string) {
     setActionLoading(id);
     try {
-      await deploymentsApi.delete(id);
-      toast.success("Deployment stopped");
+      const stopped = await deploymentsApi.delete(id);
+      toast.success(stopConfirmation(stopped));
       loadDeployments();
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to stop deployment"));

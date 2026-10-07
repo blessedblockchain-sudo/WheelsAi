@@ -154,6 +154,10 @@ export default function DeploymentsApiPage() {
           <li>
             <code>501</code>: GPU deployment, or that tier&apos;s market, is not configured on this server.
           </li>
+          <li>
+            <code>503</code> <code>compute_capacity_unavailable</code>: new GPU deployments are paused. Nothing was created
+            and nothing was reserved; retry later. The <Link href="/status">status page</Link> shows when they resume.
+          </li>
         </ul>
         <p>
           Fires <code>deployment.started</code>.
@@ -197,6 +201,10 @@ export default function DeploymentsApiPage() {
             running, or it changed while it was being scaled.
           </li>
           <li>
+            <code>503</code> <code>compute_capacity_unavailable</code>: replicas cannot be added while new GPU capacity is
+            paused. Replicas and reservation are as they were.
+          </li>
+          <li>
             <code>502</code> <code>nosana_scale_failed</code>: Nosana refused the change. Replicas and reservation are as they
             were.
           </li>
@@ -209,13 +217,25 @@ export default function DeploymentsApiPage() {
       </Endpoint>
 
       <Endpoint id="restart-deployment" method="POST" path="/api/deployments/{deploymentId}/restart" auth="API key or session" title="Restart a deployment">
-        <p>Resubmits the GPU job with the deployment&apos;s current configuration.</p>
+        <p>
+          Resubmits the GPU job with the deployment&apos;s current configuration. Answers <code>503</code>{" "}
+          <code>compute_capacity_unavailable</code>, with nothing reserved, while new GPU deployments are paused.
+        </p>
       </Endpoint>
 
       <Endpoint id="delete-deployment" method="DELETE" path="/api/deployments/{deploymentId}" auth="API key or session" title="Stop a deployment">
         <p>
           Stops the deployment&apos;s Nosana jobs and marks it <code>stopped</code>. The admission reservation is returned to
           your balance. Fires <code>deployment.stopped</code>.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{ "message": "Deployment stopped", "fundsReleased": true }`}
+        />
+        <p>
+          <code>fundsReleased</code> is <code>false</code> when the GPUs were still winding down as the call returned;
+          that is confirmed in the background and does not change what you are billed. Your reservation is returned and
+          GPU billing ends at the stop either way.
         </p>
       </Endpoint>
 

@@ -29,6 +29,7 @@ export interface NosanaOrphanPrisma {
         sourceKind: string;
         sourceId: string | null;
         reason: string;
+        accessMode?: string | null;
       }>;
       skipDuplicates: true;
     }): Promise<{ count: number }>;
@@ -42,6 +43,12 @@ export interface RecordNosanaOrphanArgs {
   sourceId?: string;
   /** Why no row tracks it (shown to an operator). */
   reason: string;
+  /**
+   * The Nosana credential that created it; the sweep stops and reclaims it
+   * through the same one. Omitted or null means wallet, as for every record
+   * from before API-key access.
+   */
+  accessMode?: "wallet" | "api_key" | null;
 }
 
 /**
@@ -66,6 +73,8 @@ export async function recordNosanaOrphan(
           sourceKind: args.sourceKind,
           sourceId: args.sourceId ?? null,
           reason: args.reason.slice(0, 300),
+          // Only when known: a record without it reads as wallet.
+          ...(args.accessMode ? { accessMode: args.accessMode } : {}),
         },
       ],
       skipDuplicates: true,

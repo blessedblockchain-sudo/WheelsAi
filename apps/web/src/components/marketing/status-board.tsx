@@ -19,7 +19,7 @@ import { cn } from "@/lib/utils";
 
 const POLL_MS = 30_000;
 
-type ComponentStatus = "operational" | "outage";
+type ComponentStatus = "operational" | "outage" | "paused";
 type WorkerStatus = "operational" | "delayed" | "failing" | "no_data";
 type MonitorStatus = "operational" | "degraded" | "outage" | "no_data";
 type OverallStatus = "operational" | "degraded" | "major_outage";
@@ -106,6 +106,8 @@ function StatusPill({ tone, children }: { tone: Tone; children: React.ReactNode 
 const componentLabel: Record<ComponentStatus, [Tone, string]> = {
   operational: ["ok", "Operational"],
   outage: ["bad", "Outage"],
+  // Only the GPU compute component reports this.
+  paused: ["warn", "New deployments paused"],
 };
 const workerLabel: Record<WorkerStatus, [Tone, string]> = {
   operational: ["ok", "Running"],
@@ -419,7 +421,10 @@ export function StatusBoard() {
                 <div>
                   <p className="font-medium text-foreground">{c.name}</p>
                   <p className="text-sm text-muted-foreground">
-                    {c.latencyMs !== null ? (
+                    {c.id === "gpu_compute" ? (
+                      // Not a latency probe: it says whether new GPU deployments are accepted.
+                      "Capacity for new GPU deployments. Running deployments are not affected."
+                    ) : c.latencyMs !== null ? (
                       <>
                         Probe answered in <span className="font-mono tabular-nums">{formatMs(c.latencyMs)}</span>
                       </>

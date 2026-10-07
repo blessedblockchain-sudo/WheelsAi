@@ -57,6 +57,7 @@ import { webhooksRoutes } from "./routes/webhooks.js";
 import { skillsRoutes } from "./routes/skills.js";
 import { createPublicStatsRoutes } from "./routes/publicStats.js";
 import { statusRoutes } from "./routes/status.js";
+import { createPlatformComputeRoutesProduction } from "./routes/platformComputeBindings.js";
 import { testingRoutes } from "./routes/testing.js";
 import { memoryRoutes } from "./routes/memory.js";
 import { domainsRoutes } from "./routes/domains.js";
@@ -447,6 +448,8 @@ async function main() {
     { prefix: "/api" },
   ); // GET /api/public/stats
   await app.register(statusRoutes, { prefix: "/api/status" }); // public /status page
+  // Operator view of the GPU compute account (x-admin-key, read-only).
+  await app.register(createPlatformComputeRoutesProduction(), { prefix: "/api/platform" });
   await app.register(collaborationRoutes, { prefix: "/api/agents" });
   // Inbound chat-channel webhooks (plan A6) — the complete, tested stack
   // that was never mounted (Wave 0). Platform webhook URL:

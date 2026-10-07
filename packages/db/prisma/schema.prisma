@@ -250,6 +250,11 @@ model Deployment {
   // Last Nosana vault runway check, claimed by CAS so the billing workers of
   // several API replicas check a deployment once per interval between them.
   runwayCheckedAt DateTime? @map("runway_checked_at")
+  // Which Nosana credential created nosanaJobIds[0]: 'wallet' | 'api_key'.
+  // Null means wallet (every row from before API-key access). Written in the
+  // statement that stores the id; every later call on the id passes it, so a
+  // deployment is stopped through the account that owns it.
+  nosanaAccessMode String? @map("nosana_access_mode")
   // Automatic restarts (a health_check task's onDown = restart_deployment)
   // tried in the current window, and when the last one was. Claimed by CAS
   // before each restart so the limit and its backoff hold across every task
@@ -299,6 +304,8 @@ model NosanaOrphanDeployment {
   sourceKind         String    @map("source_kind") // 'model', 'agent', 'training'
   sourceId           String?   @map("source_id")
   reason             String
+  // The Nosana credential that created it ('wallet' | 'api_key'; null = wallet).
+  accessMode         String?   @map("access_mode")
   createdAt          DateTime  @default(now()) @map("created_at")
   reclaimedAt        DateTime? @map("reclaimed_at")
 
@@ -756,6 +763,8 @@ model AgentDeployment {
   // (apps/api/src/services/publicEndpoints.ts).
   endpoint      String?
   nosanaJobIds  String[] @map("nosana_job_ids")
+  // The Nosana credential that created nosanaJobIds ('wallet' | 'api_key'; null = wallet).
+  nosanaAccessMode String? @map("nosana_access_mode")
 
   // Wallet for autonomous payments
   walletId      String?  @unique @map("wallet_id") @db.Uuid
@@ -848,6 +857,8 @@ model TrainingJob {
 
   // Nosana integration
   nosanaJobId   String?  @map("nosana_job_id")
+  // The Nosana credential that created nosanaJobId ('wallet' | 'api_key'; null = wallet).
+  nosanaAccessMode String? @map("nosana_access_mode")
 
   // Output
   outputModelId String?  @map("output_model_id") // Reference to created Model entry
@@ -2782,6 +2793,8 @@ model OpenClawDeployment {
   envEncrypted    String         @map("env_encrypted") @db.Text
   status          OpenClawStatus @default(PENDING)
   nosanaJobId     String?        @map("nosana_job_id")
+  // The Nosana credential that created nosanaJobId ('wallet' | 'api_key'; null = wallet).
+  nosanaAccessMode String?       @map("nosana_access_mode")
   publicUrl       String?        @map("public_url")
   healthLastCheck DateTime?      @map("health_last_check")
   healthStatus    String?        @map("health_status")

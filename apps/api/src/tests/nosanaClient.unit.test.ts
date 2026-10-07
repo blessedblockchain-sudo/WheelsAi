@@ -135,8 +135,10 @@ test("createDeployment on mainnet: real market, confidential, short timeout, fun
   assert.equal(body.market, "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf");
   assert.equal(body.confidential, true);
   assert.equal(body.strategy, "SIMPLE-EXTEND");
-  assert.equal(body.timeout, 7200);
-  assert.ok(body.timeout < 30 * 24 * 3600, "the 30-day default is gone");
+  // The job timeout is 7,200 s; the Deployment Manager is given minutes
+  // (config/nosanaAccess.ts, NOSANA_TIMEOUT_UNIT).
+  assert.equal(body.timeout, 120);
+  assert.ok(body.timeout * 60 < 30 * 24 * 3600, "the 30-day default is gone");
   assert.equal(body.replicas, 2);
   assert.match(body.name, /^wheelsai-/);
 
@@ -158,7 +160,7 @@ test("createDeployment kind 'batch' uses the SIMPLE strategy and the batch timeo
   await client.createDeployment(DEFINITION as any, "4090", 1, { kind: "batch" });
   const body = sdk.calls.createBodies[0];
   assert.equal(body.strategy, "SIMPLE");
-  assert.equal(body.timeout, 21_600);
+  assert.equal(body.timeout, 360, "21,600 s, sent in minutes");
   assert.equal(sdk.calls.topups[0].NOS, Math.ceil((100 * 11000 * 21_600) / 10000), "funded for the batch timeout only");
 });
 

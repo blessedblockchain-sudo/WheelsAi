@@ -17,6 +17,7 @@
 import { prisma as defaultPrisma } from "@wheelsai/db";
 
 import { env } from "../config/env.js";
+import { rowAccessMode, type NosanaAccessMode } from "../config/nosanaAccess.js";
 import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { createLogger } from "../utils/logger.js";
 import { releaseDeploymentReservation, reserveDeploymentCredits } from "./deploymentCreditGate.js";
@@ -26,9 +27,11 @@ import {
   isMockNosanaId,
   type ModelDeploymentConfig,
   type NosanaClient,
+  wheelsaiDeploymentName,
 } from "./nosana.js";
 import { NosanaLifecycleError } from "./nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan, type NosanaOrphanPrisma } from "./nosanaOrphans.js";
+import { isAccessModeUnavailable, runDeployPreflight } from "./nosanaPreflight.js";
 
 const logger = createLogger("model-deployment");
 
@@ -41,7 +44,19 @@ export type NosanaPort = Pick<
   | "scaleDeployment"
   | "getDeploymentStatus"
   | "reclaimDeploymentVault"
->;
+> &
+  // Optional so a port written before API-key access (every test fake) still
+  // satisfies the type; callers fall back to assertCanDeploy.
+  Partial<Pick<NosanaClient, "preflightDeploy">>;
+
+/**
+ * The name a run's Nosana deployment is created under. Deterministic, so a
+ * deployment whose create call threw (it may exist on Nosana with no id here)
+ * can be traced back to its row and run from Nosana's own list.
+ */
+export function modelDeploymentNosanaName(deploymentId: string, runGeneration: number): string {
+  return wheelsaiDeploymentName("model", `${deploymentId}-r${runGeneration}`);
+}
 
 /** Statuses that count against the per-org active quota. */
 export const ACTIVE_STATUSES = ["pending", "building", "deploying", "provisioning", "running", "degraded"];
@@ -134,6 +149,8 @@ export type RestartDeploymentResult =
         | "deployment_not_restartable"
         | "deployment_quota_exceeded"
         | "previous_run_winding_down"
+        /** The previous run belongs to a Nosana account this process holds no credential for. */
+        | "previous_run_other_account"
         | "insufficient_credits";
       message: string;
     };
@@ -187,9 +204,11 @@ export async function restartModelDeployment(
     return { ok: false, code: "deployment_not_restartable", message: STOPPED_BY_OWNER_MESSAGE };
   }
 
+  // Before anything is claimed or reserved: the static check and, with
+  // API-key access, the platform's credit gate.
   const nosana = await getNosana();
   try {
-    nosana.assertCanDeploy(deployment.gpuTier);
+    await runDeployPreflight(nosana, deployment.gpuTier, deployment.replicas);
   } catch (err) {
     return {
       ok: false,
@@ -212,9 +231,27 @@ export async function restartModelDeployment(
 
   // The previous run's Nosana id is about to be forgotten: make sure its
   // vault funds are back with the platform first, or they would be orphaned.
+  // With API-key access there is no vault; "reclaimed" then means Nosana is no
+  // longer running the previous run (a run that ended in error or out of funds
+  // counts), so such a row can be restarted.
   const previousId = deployment.nosanaJobIds[0];
   if (previousId && !deployment.vaultReclaimedAt && !isMockNosanaId(previousId)) {
-    const outcome = await nosana.reclaimDeploymentVault(previousId).catch(() => null);
+    let otherAccount = false;
+    const outcome = await nosana
+      .reclaimDeploymentVault(previousId, rowAccessMode(deployment.nosanaAccessMode))
+      .catch((err) => {
+        otherAccount = isAccessModeUnavailable(err);
+        return null;
+      });
+    if (otherAccount) {
+      // Not "retry in a minute": no retry from this process can ever reach it.
+      return {
+        ok: false,
+        code: "previous_run_other_account",
+        message:
+          "The previous run was created with a compute account that is not configured here, so it cannot be confirmed stopped. Contact support.",
+      };
+    }
     if (!outcome?.reclaimed) {
       return {
         ok: false,
@@ -253,6 +290,7 @@ export async function restartModelDeployment(
           vaultReclaimedAt: null,
           gpuStoppedAt: null,
           nosanaJobIds: [],
+          nosanaAccessMode: null,
           // A replica change the previous run never finished is void.
           ...NO_REPLICA_CHANGE,
           ...(args.automatic ? {} : NO_AUTO_RESTARTS),
@@ -401,6 +439,8 @@ export async function submitToNosana(
   const { prisma, getNosana, now } = deps;
   const thisRun = { id: deploymentId, runGeneration };
   let createdNosanaId: string | undefined;
+  // The credential that created it; undefined for the dev mock.
+  let createdAccessMode: NosanaAccessMode | undefined;
 
   try {
     // pending -> provisioning by CAS: a deployment stopped before we got here
@@ -426,9 +466,11 @@ export async function submitToNosana(
     const nosanaDeployment = await nosana.createDeployment(
       jobDefinition,
       gpuTier,
-      replicas
+      replicas,
+      { name: modelDeploymentNosanaName(deploymentId, runGeneration) }
     );
     createdNosanaId = nosanaDeployment.id;
+    createdAccessMode = nosanaDeployment.accessMode;
 
     // Store the Nosana Deployment-Manager id - but only while this run is still
     // in a submit state. If the user stopped it meanwhile (and perhaps
@@ -436,7 +478,11 @@ export async function submitToNosana(
     // and recover its vault.
     const stored = await prisma.deployment.updateMany({
       where: { ...thisRun, status: { in: ["pending", "provisioning"] } },
-      data: { nosanaJobIds: [nosanaDeployment.id] },
+      // The access mode in the same statement as the id it describes.
+      data: {
+        nosanaJobIds: [nosanaDeployment.id],
+        nosanaAccessMode: createdAccessMode ?? null,
+      },
     });
     if (stored.count === 0) {
       logger.warn(
@@ -447,6 +493,7 @@ export async function submitToNosana(
         stopped: false,
         reclaimed: false,
         reason: "stopped_during_submit",
+        accessMode: createdAccessMode,
       });
       return;
     }
@@ -463,7 +510,24 @@ export async function submitToNosana(
     const partialId =
       error instanceof NosanaLifecycleError ? error.deploymentId : createdNosanaId;
     const cleanup = error instanceof NosanaLifecycleError ? error.cleanup : undefined;
+    const partialMode =
+      createdAccessMode ?? (error instanceof NosanaLifecycleError ? error.accessMode : undefined);
     const stoppedAt = now();
+
+    // The create call itself threw: the SDK parses the response after the
+    // server has created the deployment, so one may exist on Nosana with no id
+    // here. It was never started. Its name is all there is to find it by.
+    if (error instanceof NosanaLifecycleError && error.mayExistOnNosana) {
+      logger.error(
+        {
+          deploymentId,
+          runGeneration,
+          nosanaName: error.deploymentName ?? modelDeploymentNosanaName(deploymentId, runGeneration),
+          accessMode: partialMode,
+        },
+        "A Nosana deployment may exist for this run without an id - look it up by name",
+      );
+    }
 
     const failed = await prisma.deployment
       .updateMany({
@@ -475,6 +539,7 @@ export async function submitToNosana(
           ...(partialId
             ? {
                 nosanaJobIds: [partialId],
+                nosanaAccessMode: partialMode ?? null,
                 // Explicit either way, as on every other terminal write.
                 vaultReclaimedAt: cleanup?.reclaimed ? stoppedAt : null,
               }
@@ -494,6 +559,7 @@ export async function submitToNosana(
         stopped: cleanup?.stopped ?? false,
         reclaimed: cleanup?.reclaimed ?? false,
         reason: "submit_failed_after_stop",
+        accessMode: partialMode,
       });
     }
 
@@ -523,14 +589,15 @@ async function retireUnownedNosanaDeployment(
   deps: SubmitDeps,
   thisRun: { id: string; runGeneration: number },
   nosanaId: string,
-  state: { stopped: boolean; reclaimed: boolean; reason: string },
+  state: { stopped: boolean; reclaimed: boolean; reason: string; accessMode?: NosanaAccessMode },
 ): Promise<void> {
   const { prisma, getNosana, now } = deps;
   let { stopped, reclaimed } = state;
 
   if (!stopped) {
     try {
-      reclaimed = (await (await getNosana()).stopDeployment(nosanaId)).reclaimed;
+      // Through the credential that created it (undefined only for the mock).
+      reclaimed = (await (await getNosana()).stopDeployment(nosanaId, state.accessMode)).reclaimed;
       stopped = true;
     } catch (err) {
       // Left to the sweep, which stops a deployment that is terminal in our
@@ -550,7 +617,11 @@ async function retireUnownedNosanaDeployment(
         status: { in: TERMINAL_STATUSES },
         nosanaJobIds: { isEmpty: true },
       },
-      data: { nosanaJobIds: [nosanaId], vaultReclaimedAt: settled ? now() : null },
+      data: {
+        nosanaJobIds: [nosanaId],
+        nosanaAccessMode: state.accessMode ?? null,
+        vaultReclaimedAt: settled ? now() : null,
+      },
     })
     .catch((err) => {
       logger.error({ err, deploymentId: thisRun.id, nosanaId }, "Failed to record an orphan's id");
@@ -563,6 +634,7 @@ async function retireUnownedNosanaDeployment(
     sourceKind: "model",
     sourceId: thisRun.id,
     reason: state.reason,
+    accessMode: state.accessMode,
   });
 }
 

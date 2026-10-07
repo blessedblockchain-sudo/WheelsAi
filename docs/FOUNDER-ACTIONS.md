@@ -22,7 +22,20 @@ Updated 2026-10-06. Tick items off here as they land.
 
 ## 3. Nosana compute (mainnet)
 
-- [ ] **A funded mainnet wallet** (NOS + SOL) in `NOSANA_WALLET_PRIVATE_KEY`, with `SOLANA_NETWORK=mainnet-beta` and a paid RPC in `SOLANA_RPC_URL`. This unlocks model and agent deployments (fund, start, per-second GPU billing, vault reclaim). Market addresses for 3060, 4070, 4090, A100 and H100 are built in for mainnet. Devnet needs `NOSANA_MARKETS_JSON`.
+The platform pays Nosana in one of two ways. Pick one; both unlock model and agent deployments. Migration `20261011100000_nosana_access_mode` must be applied either way (each row records which of the two created its Nosana deployment).
+
+- [ ] **Option A: a dashboard API key and prepaid USD credits.** No wallet, no NOS, no SOL, no paid RPC for Nosana.
+  - Create the key in Nosana's dashboard ([FOUNDER: confirm the page; public docs say deploy.nosana.com, Account, API Keys]), with every permission left on. Note its expiry date: when it expires, new deployments answer 503 and running ones can no longer be stopped from here until the key is replaced.
+  - Set `NOSANA_API_KEY` in the API's environment only, and `NOSANA_ACCESS_MODE=api_key`. `NOSANA_NETWORK` defaults to `mainnet` with a key; `SOLANA_NETWORK` can stay as it is for the app's own programs. If a wallet key stays set beside the API key, leave `NOSANA_NETWORK` unset unless both really are on one network: unset, the wallet keeps the network of `SOLANA_NETWORK` for the deployments it created and the key uses mainnet (the API logs one warning naming both); set, it moves both.
+  - Load credits. **Minimum balance:** a deployment is admitted only when its estimated cost plus `NOSANA_MIN_CREDITS_USD` (default 5) is available, so the balance must stay above $5 plus what the next deployment needs. For the first paid run load **$15**. Below `NOSANA_CREDITS_WARN_USD` (default 20) the operator view reads "low"; raise both before a public launch in proportion to what runs.
+  - Confirm `NOSANA_TIMEOUT_UNIT`. Public sources say Nosana reads a deployment's timeout in minutes, and `minutes` is the default here. The first paid run measures it (`docs/NOSANA-DEPLOY-RUN.md`, step 5); set the variable to what it shows. Do not start a long deployment before that.
+  - Check the key without spending anything: `cd apps/api && npx tsx scripts/nosana-access-check.ts`. It only reads, and prints the mode, the key's last four characters, the balance, the account's deployments and the cost of each tier.
+  - **The operator view:** `GET /api/platform/compute` with the header `x-admin-key: <PLATFORM_ADMIN_KEY>` (section 8). It shows the balance against the floor, cost and margin per tier, what is running, rows that belong to the other credential, and deployments Nosana runs under a `wheelsai-` name that no row tracks. That last list is a report: nothing is stopped automatically, so stop anything it names in Nosana's dashboard.
+  - When new deployments cannot be paid for, customers see "GPU deployments are paused right now. Nothing was charged." and `/status` shows GPU compute as "New deployments paused". Neither says why.
+  - One-shot jobs have no private equivalent with a key, so **OpenClaw start and restart answer 501** in this mode until OpenClaw moves to a deployment.
+  - Run the first paid run by the checklist in `docs/NOSANA-DEPLOY-RUN.md` and fill in its results table.
+- [ ] **If both a key and a wallet are set,** `NOSANA_ACCESS_MODE` is required: the API refuses to boot rather than guess which account pays. Keep the other credential in place for as long as rows it created are still running or not confirmed released (the operator view lists them under `unreachable` once it is gone); remove it after that so there is one payer. While it is missing, those deployments are not billed to their owners (the platform carries the GPU time), an owner's stop marks the row stopped without stopping anything on Nosana, and the deployment itself is only stopped once the credential is back or by hand in Nosana's dashboard.
+- [ ] **Option B: a funded mainnet wallet** (NOS + SOL) in `NOSANA_WALLET_PRIVATE_KEY`, with `SOLANA_NETWORK=mainnet-beta` and a paid RPC in `SOLANA_RPC_URL`. This unlocks model and agent deployments (fund, start, per-second GPU billing, vault reclaim). Market addresses for 3060, 4070, 4090, A100 and H100 are built in for mainnet. Devnet needs `NOSANA_MARKETS_JSON`.
 - [ ] `HF_TOKEN` for gated Hugging Face models. It is only ever sent inside confidential job definitions.
 - [ ] **Confirm on the first funded run** what the code could not verify without funds:
   - that `confidential: true` delivers the job definition to hosts;
@@ -71,7 +84,7 @@ Updated 2026-10-06. Tick items off here as they land.
 - [ ] **Latency alert rules created before this release.** `latency_p95` and `latency_avg` rules were accepted and never evaluated; they are evaluated now, with the threshold read as milliseconds. A rule saved with `5` meaning seconds fires on every window slower than 5 ms. List them (`SELECT id, org_id, name, threshold FROM alert_rules WHERE metric IN ('latency_p95','latency_avg')`) and tell their owners, or disable them until confirmed.
 - [ ] `SENTRY_DSN` for error tracking.
 - [ ] `METRICS_TOKEN` if `/metrics` is reachable outside Fly's private network.
-- [ ] `PLATFORM_ADMIN_KEY` for marketplace curation (featured listings).
+- [ ] `PLATFORM_ADMIN_KEY` for marketplace curation (featured listings) and for the operator view of the GPU compute account, `GET /api/platform/compute` (section 3). Without it that view answers 503.
 - [ ] **Offerings and Jobs.** Apply migrations `20261009100000_offerings_jobs_runner` and `20261009110000_job_model_usage`. The runner and the sweeper start with the API (`JOB_RUNNER_CONCURRENCY=2`, `JOB_SWEEP_INTERVAL_MS=60000`, `JOB_MAX_RUN_MS=900000`); size the concurrency for the jobs you expect, and never run with the sweeper off where jobs are on, because the sweeper is what refunds an overdue job and settles one whose review window closed.
 - [ ] **Run one paid model job for real.** The proof run (`docs/AGENT-JOBS-RUN.md`) hired, ran and settled agent and workflow jobs; a model offering needs a running GPU deployment, which the local machine does not have, so that path is covered by unit tests only. With a deployment running: create a model offering on it, hire it from a second organization, accept, and add the transcript to the proof doc.
 - [ ] **Decide what a paid job's use of the platform's free-model keys costs the publisher.** The defaults are the model catalog's small-model rate, 15 cents per million input tokens and 60 per million output (`JOB_PLATFORM_MODEL_INPUT_CENTS_PER_MTOK`, `JOB_PLATFORM_MODEL_OUTPUT_CENTS_PER_MTOK`), taken from the publisher's share when a job settles. Check the providers' terms for commercial use of those keys before launch.
@@ -106,7 +119,7 @@ The pages render unconfirmed details visibly as `[FOUNDER: ...]` so none can shi
 
 ## 11. Grant proofs (Nosana)
 
-These all need the funded mainnet wallet from section 3:
+These all need Nosana compute paid for as in section 3 (API-key credits or the funded mainnet wallet):
 
 - [ ] a paid mainnet deployment answering `/v1` (`docs/NOSANA-DEPLOY-RUN.md`)
 - [ ] the first creator payout with its transaction signature

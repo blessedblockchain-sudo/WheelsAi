@@ -157,8 +157,12 @@ test("routes/agents.ts never writes or contains wheelsai.io", () => {
   const routes = source("routes/agents.ts");
   assert.doesNotMatch(routes, /wheelsai\.io/);
   assert.doesNotMatch(routes, /endpoint:\s*`/, "no endpoint is assembled from a template in the route");
-  // The submit step stores the job id and nothing else.
-  assert.match(routes, /data: \{ nosanaJobIds: \[nosanaDeployment\.id\] \}/);
+  // The submit step stores the job id and the access mode that created it,
+  // and nothing else (no endpoint).
+  assert.match(
+    routes,
+    /data: \{\s*nosanaJobIds: \[nosanaDeployment\.id\],\s*nosanaAccessMode: nosanaDeployment\.accessMode \?\? null,\s*\}/,
+  );
   // Every read goes through the pure serializers.
   assert.ok((routes.match(/serializeAgentDeployment\(/g) ?? []).length >= 3);
   assert.ok((routes.match(/agentApiEndpoints\(/g) ?? []).length >= 2);

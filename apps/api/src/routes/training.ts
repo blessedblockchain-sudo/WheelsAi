@@ -27,6 +27,11 @@ import {
 import { getNosanaClient } from "../services/nosana.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
+import {
+  recordFailedTrainingSubmit,
+  stopCancelledTrainingJob,
+  trainingSubmitStamp,
+} from "../services/trainingNosana.js";
 
 const logger = createLogger("training-routes");
 
@@ -578,24 +583,21 @@ export const trainingRoutes: FastifyPluginAsync = async (app) => {
     // Stop Nosana job
     if (job.nosanaJobId) {
       const nosana = await getNosanaClient();
-      const settled = await nosana
-        .stopDeployment(job.nosanaJobId)
-        .then((stop) => stop.reclaimed)
-        .catch((err) => {
-          logger.error({ err, jobId, nosanaJobId: job.nosanaJobId }, "Failed to stop Nosana job");
-          return false;
-        });
+      const nosanaJobId = job.nosanaJobId;
       // A cancelled job is never looked at again and TrainingJob has no vault
       // stamp: unless the stop landed AND the vault is verified empty, hand the
-      // id to the vault sweep, which stops it and retries the withdraw.
-      if (!settled) {
-        await recordNosanaOrphan(prisma, {
-          nosanaDeploymentId: job.nosanaJobId,
-          sourceKind: "training",
-          sourceId: jobId,
-          reason: "training_cancelled",
-        });
-      }
+      // id to the vault sweep, which stops it and retries the withdraw. Both
+      // the stop and the record go through the credential that created the
+      // deployment (the row's access-mode stamp), whatever is primary today.
+      await stopCancelledTrainingJob(
+        {
+          stopDeployment: (id, mode) => nosana.stopDeployment(id, mode),
+          recordOrphan: (args) => recordNosanaOrphan(prisma, args),
+          onStopError: (err) =>
+            logger.error({ err, jobId, nosanaJobId }, "Failed to stop Nosana job"),
+        },
+        { id: jobId, nosanaJobId, nosanaAccessMode: job.nosanaAccessMode },
+      );
     }
 
     // Update status
@@ -820,10 +822,11 @@ async function submitTrainingJob(
       kind: "batch",
     });
 
-    // Store Nosana job ID
+    // Store Nosana job ID, with the access mode that created it in the same
+    // statement: every later stop or reclaim goes through that credential.
     await prisma.trainingJob.update({
       where: { id: jobId },
-      data: { nosanaJobId: nosanaJob.id },
+      data: trainingSubmitStamp(nosanaJob),
     });
 
     logger.info({ jobId, nosanaJobId: nosanaJob.id }, "Training job submitted to Nosana");
@@ -832,17 +835,13 @@ async function submitTrainingJob(
 
     // A failure after creation carries the Nosana id; unless its cleanup
     // verified it stopped and drained, keep it for the vault sweep.
-    if (
-      error instanceof NosanaLifecycleError &&
-      error.deploymentId &&
-      !(error.cleanup?.stopped && error.cleanup.reclaimed)
-    ) {
-      await recordNosanaOrphan(prisma, {
-        nosanaDeploymentId: error.deploymentId,
-        sourceKind: "training",
-        sourceId: jobId,
-        reason: "submit_failed",
-      });
+    // The record carries the mode the failed call used.
+    if (error instanceof NosanaLifecycleError) {
+      await recordFailedTrainingSubmit(
+        { recordOrphan: (args) => recordNosanaOrphan(prisma, args) },
+        jobId,
+        error,
+      );
     }
 
     await prisma.trainingJob.update({

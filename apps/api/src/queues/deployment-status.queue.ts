@@ -65,11 +65,21 @@ export async function startDeploymentStatusQueue(): Promise<void> {
         // the real endpoints): throws on API failure so rows stay untouched
         // during an outage. `nosanaJobIds[0]` is a Deployment-Manager id, NOT
         // an on-chain job address, so jobs.get() cannot be used.
-        getDeploymentStatus: (id) => client.getDeploymentStatus(id),
+        // Each id is read through the credential that created it (the row's
+        // access-mode stamp), whatever the primary mode is today.
+        getDeploymentStatus: (id, mode) => client.getDeploymentStatus(id, mode),
         checkNodeHealth: (nodeUrl, engine) => client.checkNodeHealth(nodeUrl, engine),
         // Retry vault.withdraw for stopped/failed deployments until the
-        // platform's funds are verified recovered.
-        reclaimVault: (id) => client.reclaimDeploymentVault(id),
+        // platform's funds are verified recovered (with API-key access:
+        // until Nosana reports the deployment no longer running).
+        reclaimVault: (id, mode) => client.reclaimDeploymentVault(id, mode),
+        // Once per tick: ids created by an access mode this process has no
+        // credential for. They can be neither read nor stopped from here.
+        reportAccessModeUnavailable: (skipped) =>
+          logger.error(
+            { count: skipped.length, skipped: skipped.slice(0, 50) },
+            "Nosana deployments skipped: no credential in this process for the access mode that created them",
+          ),
         reclaimMaxAgeHours: getNosanaDeployConfig().reclaimMaxAgeHours,
         allowMock: isNosanaMockEnabled(),
         // Tick-observed events: deployment.running / failed / stopped, plus

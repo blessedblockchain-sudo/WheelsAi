@@ -70,3 +70,31 @@ test("cost estimates work for a configured tier, priced from the billing table",
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().estimate.breakdown.gpuHourlyRate, 0.9);
 });
+
+test("with API-key access the tier list is the Nosana network's (mainnet), not SOLANA_NETWORK's", async () => {
+  const { resetNosanaAccessConfigForTests } = await import("../config/nosanaAccess.js");
+  // The app's own programs stay on devnet; compute is paid with prepaid
+  // credits, which are a mainnet product.
+  process.env.NOSANA_API_KEY = "nos_test_key_for_the_tier_list_0001";
+  delete process.env.NOSANA_WALLET_PRIVATE_KEY;
+  delete process.env.NOSANA_ACCESS_MODE;
+  delete process.env.NOSANA_NETWORK;
+  resetNosanaAccessConfigForTests();
+  try {
+    const app = await makeApp();
+    const res = await app.inject({ method: "GET", url: "/api/models?tier=gpu" });
+    const ids = res.json().gpuTiers.map((t: { id: string }) => t.id);
+    assert.ok(ids.includes("3060") && ids.includes("h100"), `the built-in mainnet markets are offered: ${ids}`);
+    assert.ok(ids.length > 1, "more than the one devnet override");
+
+    // An explicit NOSANA_NETWORK wins over the API-key default.
+    process.env.NOSANA_NETWORK = "devnet";
+    resetNosanaAccessConfigForTests();
+    const devnet = await app.inject({ method: "GET", url: "/api/models?tier=gpu" });
+    assert.deepEqual(devnet.json().gpuTiers.map((t: { id: string }) => t.id), ["4090"]);
+  } finally {
+    delete process.env.NOSANA_API_KEY;
+    delete process.env.NOSANA_NETWORK;
+    resetNosanaAccessConfigForTests();
+  }
+});

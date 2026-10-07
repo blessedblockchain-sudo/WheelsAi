@@ -110,6 +110,11 @@ export default function DeployModelPage() {
           ends, whether it failed or was stopped. Both the hold and the release appear as rows in your credit ledger.
         </li>
       </ul>
+      <p>
+        If new GPU deployments are paused, the API answers <code>503</code> with{" "}
+        <code>compute_capacity_unavailable</code> before either check, and nothing is reserved. The{" "}
+        <Link href="/status">status page</Link> shows when they resume.
+      </p>
 
       <h2 id="lifecycle">4. Watch it come up</h2>
       <p>

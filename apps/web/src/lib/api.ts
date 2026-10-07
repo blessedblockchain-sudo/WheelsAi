@@ -353,6 +353,8 @@ export interface Deployment {
   gpuTier: string;
   replicas: number;
   status: "pending" | "provisioning" | "running" | "degraded" | "stopped" | "failed";
+  /** Why it left service ("user_stopped", "insufficient_credits", ...); null while healthy. */
+  statusReason?: string | null;
   endpoint: string | null;
   healthyNodes: number;
   totalNodes: number;
@@ -411,7 +413,11 @@ export const deploymentsApi = {
     }),
 
   delete: (id: string) =>
-    api<{ message: string }>(`/api/deployments/${id}`, { method: "DELETE" }),
+    api<{
+      message: string;
+      /** false while the GPUs are still winding down; confirmed in the background. */
+      fundsReleased?: boolean;
+    }>(`/api/deployments/${id}`, { method: "DELETE" }),
 
   restart: (id: string) =>
     api<{ message: string }>(`/api/deployments/${id}/restart`, {

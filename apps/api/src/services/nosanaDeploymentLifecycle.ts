@@ -37,7 +37,19 @@
  * and throws a NosanaLifecycleError that carries the Nosana deployment id and a
  * cleanup report, so the caller can persist the id and let a later sweep retry
  * the reclaim.
+ *
+ * Two ways of paying (the funding seam)
+ * -------------------------------------
+ * Everything above describes WALLET access: a vault per deployment. With a
+ * dashboard API key the same REST API is paid from prepaid USD credits and the
+ * deployment has no vault. The steps that differ sit behind DeploymentFunding:
+ * `vaultFunding` (the default of every function here, so wallet callers pass
+ * nothing and run the statements they always ran) and `creditsFunding` (a
+ * balance gate before create, nothing to top up, and "released" decided from
+ * the state Nosana reports instead of a vault balance).
  */
+
+import { NosanaCreditsError, requiredCreditsMicroUsd } from "./nosanaCredits.js";
 
 // ============================================
 // Units
@@ -96,7 +108,11 @@ export interface SdkDeploymentLike {
   endpoints?: SdkEndpointLike[];
   jobs?: SdkJobLike[];
   events?: SdkEventLike[];
-  vault: SdkVaultLike;
+  /**
+   * Present only for a wallet-owned deployment. With an API key the SDK
+   * returns no vault at all: the deployment is paid from prepaid credits.
+   */
+  vault?: SdkVaultLike;
   start(): Promise<void>;
   stop(): Promise<void>;
   updateReplicaCount(replicas: number): Promise<void>;
@@ -147,6 +163,20 @@ export class NosanaLifecycleError extends Error {
   readonly deploymentId?: string;
   readonly cleanup?: CleanupReport;
   readonly code: string;
+  /** The name the deployment was (or was to be) created under. */
+  readonly deploymentName?: string;
+  /**
+   * True when the create call itself threw. The SDK parses the response (the
+   * `owner` field as a Solana public key) AFTER the server has created the
+   * deployment, so a throw here does not prove nothing exists on Nosana: the
+   * caller has no id, only `deploymentName` to look for.
+   */
+  readonly mayExistOnNosana: boolean;
+  /**
+   * The credential the failed call was made with ("wallet" | "api_key"), set by
+   * NosanaClient.createDeployment so a partial id is stored with its mode.
+   */
+  accessMode?: "wallet" | "api_key";
 
   constructor(
     message: string,
@@ -156,6 +186,8 @@ export class NosanaLifecycleError extends Error {
       cause?: unknown;
       cleanup?: CleanupReport;
       code?: string;
+      deploymentName?: string;
+      mayExistOnNosana?: boolean;
     } = {},
   ) {
     super(message, details.cause !== undefined ? { cause: details.cause } : undefined);
@@ -164,7 +196,33 @@ export class NosanaLifecycleError extends Error {
     this.deploymentId = details.deploymentId;
     this.cleanup = details.cleanup;
     this.code = details.code ?? `nosana_${stage}_failed`;
+    this.deploymentName = details.deploymentName;
+    this.mayExistOnNosana = details.mayExistOnNosana === true;
   }
+}
+
+/**
+ * Codes that say WHY platform funding refused, raised below a lifecycle step
+ * (the credit gate, an API key Nosana rejects). A step that wraps such an error
+ * keeps its code, so a caller still sees the reason and not `nosana_<stage>_failed`.
+ */
+export const FUNDING_REFUSAL_CODES: ReadonlySet<string> = new Set([
+  "nosana_credits_low",
+  "nosana_credits_unavailable",
+  "nosana_auth_failed",
+  // API-key access: what the market costs is unknown, so nothing is admitted.
+  "gpu_cost_unavailable",
+]);
+
+function refusalCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && FUNDING_REFUSAL_CODES.has(code) ? code : undefined;
+}
+
+/** `{ code }` to spread into error details when `err` carries a refusal code. */
+function keepRefusalCode(err: unknown): { code?: string } {
+  const code = refusalCode(err);
+  return code ? { code } : {};
 }
 
 export class UnknownDeploymentStatusError extends Error {
@@ -421,7 +479,7 @@ export async function readDeployment(
     throw new NosanaLifecycleError(
       `Could not read Nosana deployment ${id}: ${errMessage(err)}`,
       "read",
-      { deploymentId: id, cause: err },
+      { deploymentId: id, cause: err, ...keepRefusalCode(err) },
     );
   }
   return snapshotFromSdk(deployment);
@@ -471,7 +529,11 @@ export async function withdrawAndVerify(vault: SdkVaultLike): Promise<WithdrawOu
   }
 }
 
-async function bestEffortCleanup(deployment: SdkDeploymentLike): Promise<CleanupReport> {
+async function bestEffortCleanup(
+  port: NosanaDeploymentsPort,
+  deployment: SdkDeploymentLike,
+  funding: DeploymentFunding,
+): Promise<CleanupReport> {
   const errors: string[] = [];
   let stopped = false;
   try {
@@ -480,9 +542,344 @@ async function bestEffortCleanup(deployment: SdkDeploymentLike): Promise<Cleanup
   } catch (err) {
     errors.push(`stop: ${errMessage(err)}`);
   }
-  const withdraw = await withdrawAndVerify(deployment.vault);
+  const withdraw = await funding.release(
+    deployment,
+    await stateForRelease(port, String(deployment.id), funding, null),
+  );
   if (withdraw.error) errors.push(`withdraw: ${withdraw.error}`);
   return { stopped, reclaimed: withdraw.reclaimed, errors };
+}
+
+// ============================================
+// Funding seam (who pays Nosana, and how the money comes back)
+// ============================================
+
+export type FundingKind = "vault" | "credits";
+
+/** Same shape as WithdrawOutcome: what a stop left behind. */
+export interface ReleaseOutcome {
+  /**
+   * vault: the vault's NOS balance was verified to be zero.
+   * credits: Nosana is not running the deployment and will not schedule more work.
+   */
+  reclaimed: boolean;
+  remainingNosBaseUnits: bigint | null;
+  error?: string;
+}
+
+export interface FundingPrepareParams {
+  marketAddress: string;
+  replicas: number;
+  /** vault: seconds of run-time to fund. credits: seconds the estimate covers. */
+  fundSeconds: number;
+  jobTimeoutSeconds: number;
+  solFeeLamportsPerReplica?: bigint;
+  networkFeeBps?: number;
+}
+
+export interface FundingExtraReplicasParams {
+  marketAddress: string;
+  /** Replicas being ADDED (always > 0). */
+  added: number;
+  fundSeconds: number;
+  solFeeLamportsPerReplica?: bigint;
+  networkFeeBps?: number;
+}
+
+/**
+ * The one place the two ways of paying Nosana differ. `vaultFunding` is the
+ * wallet path exactly as it always was (and the default of every lifecycle
+ * function); `creditsFunding` is the API-key path, where there is nothing to
+ * send and nothing to withdraw.
+ */
+export interface DeploymentFunding {
+  kind: FundingKind;
+  /** Before create. vault: read the market price and plan. credits: the balance gate. Throws to refuse. */
+  prepare(
+    p: FundingPrepareParams,
+  ): Promise<{ funding: VaultFundingPlan | null; estimateMicroUsd: bigint | null }>;
+  /** After create, before start. vault: top the vault up. credits: nothing. */
+  fund(deployment: SdkDeploymentLike, plan: VaultFundingPlan | null): Promise<void>;
+  /**
+   * After a stop (or instead of one). `state` is what Nosana reports NOW, read
+   * again through the port by the lifecycle; null when that read failed or was
+   * not needed. vault ignores it - the vault balance is its authority.
+   */
+  release(deployment: SdkDeploymentLike, state: DeploymentState | null): Promise<ReleaseOutcome>;
+  /** Before a scale-up. vault: fund the added replicas. credits: the balance gate. */
+  fundExtraReplicas(
+    deployment: SdkDeploymentLike,
+    p: FundingExtraReplicasParams,
+  ): Promise<VaultFundingPlan | null>;
+  /** For a running/starting deployment. vault: refill. credits: measure, never pay. */
+  ensureRunway(deployment: SdkDeploymentLike, id: string, params: RunwayParams): Promise<RunwayResult>;
+}
+
+function requireVault(deployment: SdkDeploymentLike, stage: LifecycleStage): SdkVaultLike {
+  if (!deployment.vault) {
+    throw new NosanaLifecycleError(
+      `Nosana deployment ${String(deployment.id)} has no vault; it was not created by the platform wallet`,
+      stage,
+      { deploymentId: String(deployment.id), code: "nosana_vault_missing" },
+    );
+  }
+  return deployment.vault;
+}
+
+/**
+ * Wallet funding: a vault per deployment, topped up in NOS + SOL before start
+ * and withdrawn (verified against its balance) after a stop. These are the
+ * statements the lifecycle has always run, moved behind the seam unchanged.
+ */
+export function vaultFunding(port: NosanaDeploymentsPort): DeploymentFunding {
+  return {
+    kind: "vault",
+
+    async prepare(p) {
+      // Price first: a bad/unknown market must fail BEFORE anything is created.
+      let jobPrice: bigint;
+      try {
+        jobPrice = await port.getMarketJobPrice(p.marketAddress);
+      } catch (err) {
+        throw new NosanaLifecycleError(
+          `Could not read the price of Nosana market ${p.marketAddress}: ${errMessage(err)}`,
+          "market_price",
+          { cause: err },
+        );
+      }
+
+      const funding = planVaultFunding({
+        jobPriceBaseUnitsPerSecond: jobPrice,
+        replicas: p.replicas,
+        fundSeconds: p.fundSeconds,
+        solFeeLamportsPerReplica:
+          p.solFeeLamportsPerReplica ?? DEFAULT_SOL_FEE_LAMPORTS_PER_REPLICA,
+        networkFeeBps: p.networkFeeBps,
+      });
+      return { funding, estimateMicroUsd: null };
+    },
+
+    async fund(deployment, plan) {
+      if (!plan) throw new RangeError("vault funding needs a funding plan");
+      await topupVault(deployment.vault as SdkVaultLike, plan);
+    },
+
+    async release(deployment) {
+      return withdrawAndVerify(deployment.vault as SdkVaultLike);
+    },
+
+    async fundExtraReplicas(deployment, p) {
+      const jobPrice = await port.getMarketJobPrice(p.marketAddress);
+      const funded = planVaultFunding({
+        jobPriceBaseUnitsPerSecond: jobPrice,
+        replicas: p.added,
+        fundSeconds: p.fundSeconds,
+        solFeeLamportsPerReplica:
+          p.solFeeLamportsPerReplica ?? DEFAULT_SOL_FEE_LAMPORTS_PER_REPLICA,
+        networkFeeBps: p.networkFeeBps,
+      });
+      await topupVault(deployment.vault as SdkVaultLike, funded);
+      return funded;
+    },
+
+    async ensureRunway(deployment, id, params) {
+      const jobPrice = await port.getMarketJobPrice(params.marketAddress);
+      const solFee = params.solFeeLamportsPerReplica ?? DEFAULT_SOL_FEE_LAMPORTS_PER_REPLICA;
+      const perSecond = planVaultFunding({
+        jobPriceBaseUnitsPerSecond: jobPrice,
+        replicas: params.replicas,
+        fundSeconds: 1,
+        solFeeLamportsPerReplica: solFee,
+        networkFeeBps: params.networkFeeBps,
+      }).nosBaseUnits;
+      if (perSecond === 0n) {
+        return { deploymentId: id, toppedUp: false, runwaySeconds: null, funded: null, reason: "zero_price" };
+      }
+
+      const vault = requireVault(deployment, "topup");
+      const balance = await vault.getBalance();
+      const nosNow = BigInt(Math.round(balance.NOS * Number(NOS_BASE_UNITS_PER_NOS)));
+      const solNow = BigInt(Math.round(balance.SOL * Number(LAMPORTS_PER_SOL_BIG)));
+      const runwaySeconds = Number(nosNow / perSecond);
+
+      const target = perSecond * BigInt(params.fundSeconds);
+      const nosTopup = runwaySeconds < params.minRunwaySeconds && target > nosNow ? target - nosNow : 0n;
+      const minSol = solFee * BigInt(params.replicas);
+      const solTopup = solNow < minSol ? minSol - solNow : 0n;
+
+      if (nosTopup === 0n && solTopup === 0n) {
+        return { deploymentId: id, toppedUp: false, runwaySeconds, funded: null };
+      }
+
+      await topupVault(vault, { nosBaseUnits: nosTopup, solLamports: solTopup });
+      return {
+        deploymentId: id,
+        toppedUp: true,
+        runwaySeconds,
+        funded: { nosBaseUnits: nosTopup, solLamports: solTopup },
+      };
+    },
+  };
+}
+
+export interface CreditsFundingDeps {
+  /**
+   * Available credits, read FRESH from Nosana. Rejects with a NosanaCreditsError
+   * (or any error carrying one of FUNDING_REFUSAL_CODES) when unreadable.
+   */
+  getAvailableMicroUsd(): Promise<bigint>;
+  /** For the runway measurement only, where a recent value is good enough. Never used to admit. */
+  getCachedAvailableMicroUsd?(): Promise<bigint>;
+  /** What one replica of this market costs per second, fee included. */
+  costMicroUsdPerSecond(marketAddress: string): Promise<bigint>;
+  /**
+   * The same for the runway measurement, which admits nothing and so may use
+   * an approximation where the gate must refuse. Default: costMicroUsdPerSecond.
+   */
+  runwayCostMicroUsdPerSecond?(marketAddress: string): Promise<bigint>;
+  /** The floor that must remain available after the estimate. */
+  minMicroUsd: bigint;
+}
+
+/**
+ * In credits mode Nosana still owes nothing back to us; "released" means it is
+ * not running the deployment and will not schedule more work for it - every
+ * state except these three. A halted state (error, insufficient_funds) counts
+ * as released: nothing is listed for it any more, and treating it otherwise
+ * would block a restart for ever in exactly the credits-ran-out case.
+ */
+const CREDITS_HELD: ReadonlySet<DeploymentState> = new Set(["starting", "running", "stopping"]);
+
+function creditsRefusal(err: unknown, stage: LifecycleStage, deploymentId?: string): NosanaLifecycleError {
+  if (err instanceof NosanaLifecycleError) return err;
+  const code =
+    err instanceof NosanaCreditsError ? err.code : (refusalCode(err) ?? "nosana_credits_unavailable");
+  return new NosanaLifecycleError(
+    code === "nosana_auth_failed"
+      ? "Nosana rejected the platform API key"
+      : `The platform's Nosana credits could not be checked: ${errMessage(err)}`,
+    stage,
+    { cause: err, code, ...(deploymentId ? { deploymentId } : {}) },
+  );
+}
+
+/**
+ * API-key funding: prepaid USD credits. There is no top-up and no withdraw;
+ * what is left is a gate before anything is created (estimate + floor must be
+ * available, read fresh, fail closed) and a state check afterwards.
+ */
+export function creditsFunding(deps: CreditsFundingDeps): DeploymentFunding {
+  async function gate(
+    marketAddress: string,
+    replicas: number,
+    seconds: number,
+    stage: LifecycleStage,
+    deploymentId?: string,
+  ): Promise<bigint> {
+    let estimate: bigint;
+    let available: bigint;
+    try {
+      const cost = await deps.costMicroUsdPerSecond(marketAddress);
+      const required = requiredCreditsMicroUsd({
+        costMicroUsdPerSecond: cost,
+        replicas,
+        reserveSeconds: seconds,
+        floorMicroUsd: deps.minMicroUsd,
+      });
+      estimate = required - deps.minMicroUsd;
+      available = await deps.getAvailableMicroUsd();
+    } catch (err) {
+      if (err instanceof RangeError) throw err;
+      throw creditsRefusal(err, stage, deploymentId);
+    }
+    if (available < estimate + deps.minMicroUsd) {
+      // No amounts in the message: it can reach an end user.
+      throw new NosanaLifecycleError(
+        "The platform's Nosana credits do not cover this deployment and the required floor",
+        stage,
+        { code: "nosana_credits_low", ...(deploymentId ? { deploymentId } : {}) },
+      );
+    }
+    return estimate;
+  }
+
+  return {
+    kind: "credits",
+
+    async prepare(p) {
+      const estimateMicroUsd = await gate(p.marketAddress, p.replicas, p.fundSeconds, "create");
+      return { funding: null, estimateMicroUsd };
+    },
+
+    async fund() {
+      // Nosana reserves credits itself when it lists the job.
+    },
+
+    async release(_deployment, state) {
+      if (state === null) {
+        return {
+          reclaimed: false,
+          remainingNosBaseUnits: null,
+          error: "the deployment's state could not be read back from Nosana",
+        };
+      }
+      if (CREDITS_HELD.has(state)) {
+        return { reclaimed: false, remainingNosBaseUnits: null, error: `still ${state} on Nosana` };
+      }
+      return { reclaimed: true, remainingNosBaseUnits: 0n };
+    },
+
+    async fundExtraReplicas(deployment, p) {
+      await gate(p.marketAddress, p.added, p.fundSeconds, "scale", String(deployment.id));
+      return null;
+    },
+
+    async ensureRunway(_deployment, id, params) {
+      let cost: bigint;
+      let available: bigint;
+      try {
+        cost = await (deps.runwayCostMicroUsdPerSecond ?? deps.costMicroUsdPerSecond)(
+          params.marketAddress,
+        );
+        available = await (deps.getCachedAvailableMicroUsd ?? deps.getAvailableMicroUsd)();
+      } catch (err) {
+        throw creditsRefusal(err, "read", id);
+      }
+      const perSecond = cost * BigInt(params.replicas);
+      if (perSecond === 0n) {
+        return { deploymentId: id, toppedUp: false, runwaySeconds: null, funded: null, reason: "zero_price" };
+      }
+      const seconds = available / perSecond;
+      return {
+        deploymentId: id,
+        toppedUp: false,
+        // The balance is shared by every deployment; this is how long THIS one
+        // could run if it had the balance to itself.
+        runwaySeconds: seconds > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(seconds),
+        funded: null,
+        reason: "credits",
+      };
+    },
+  };
+}
+
+/**
+ * The state `release` is told about. Vault funding does not need one (and must
+ * not cost an extra read); credits funding gets a FRESH read, because the SDK
+ * object's own status is only what it was when it was fetched.
+ */
+async function stateForRelease(
+  port: NosanaDeploymentsPort,
+  id: string,
+  funding: DeploymentFunding,
+  known: DeploymentState | null,
+): Promise<DeploymentState | null> {
+  if (funding.kind !== "credits") return known;
+  try {
+    return normalizeStatus((await port.get(id)).status);
+  } catch {
+    return null;
+  }
 }
 
 // ============================================
@@ -518,10 +915,33 @@ export interface CreateAndStartResult {
   strategy: DeploymentStrategyName;
 }
 
+/** What createAndStartDeployment returns when a funding is passed explicitly. */
+export interface FundedCreateResult {
+  deploymentId: string;
+  /** Undefined with credits: there is no vault. */
+  vaultAddress: string | undefined;
+  /** Null with credits: nothing was sent. */
+  funding: VaultFundingPlan | null;
+  strategy: DeploymentStrategyName;
+  fundingKind: FundingKind;
+  /** credits: what the gate estimated for this deployment. vault: null. */
+  estimateMicroUsd: bigint | null;
+}
+
 export async function createAndStartDeployment(
   port: NosanaDeploymentsPort,
   params: CreateAndStartParams,
-): Promise<CreateAndStartResult> {
+): Promise<CreateAndStartResult>;
+export async function createAndStartDeployment(
+  port: NosanaDeploymentsPort,
+  params: CreateAndStartParams,
+  funding: DeploymentFunding,
+): Promise<FundedCreateResult>;
+export async function createAndStartDeployment(
+  port: NosanaDeploymentsPort,
+  params: CreateAndStartParams,
+  funder: DeploymentFunding = vaultFunding(port),
+): Promise<CreateAndStartResult | FundedCreateResult> {
   assertPositiveInt("replicas", params.replicas);
   assertPositiveInt("jobTimeoutSeconds", params.jobTimeoutSeconds);
   assertPositiveInt("fundSeconds", params.fundSeconds);
@@ -532,24 +952,14 @@ export async function createAndStartDeployment(
   }
   const strategy = params.strategy ?? "SIMPLE-EXTEND";
 
-  // Price first: a bad/unknown market must fail BEFORE anything is created.
-  let jobPrice: bigint;
-  try {
-    jobPrice = await port.getMarketJobPrice(params.marketAddress);
-  } catch (err) {
-    throw new NosanaLifecycleError(
-      `Could not read the price of Nosana market ${params.marketAddress}: ${errMessage(err)}`,
-      "market_price",
-      { cause: err },
-    );
-  }
-
-  const funding = planVaultFunding({
-    jobPriceBaseUnitsPerSecond: jobPrice,
+  // Funding first: a bad/unknown market (vault) or a balance that does not
+  // cover the deployment (credits) must fail BEFORE anything is created.
+  const { funding, estimateMicroUsd } = await funder.prepare({
+    marketAddress: params.marketAddress,
     replicas: params.replicas,
     fundSeconds: params.fundSeconds,
-    solFeeLamportsPerReplica:
-      params.solFeeLamportsPerReplica ?? DEFAULT_SOL_FEE_LAMPORTS_PER_REPLICA,
+    jobTimeoutSeconds: params.jobTimeoutSeconds,
+    solFeeLamportsPerReplica: params.solFeeLamportsPerReplica,
     networkFeeBps: params.networkFeeBps,
   });
 
@@ -565,43 +975,47 @@ export async function createAndStartDeployment(
       job_definition: params.definition,
     });
   } catch (err) {
+    // No id came back, but the deployment MAY exist (see mayExistOnNosana):
+    // the name is all a later look-up has to go on.
     throw new NosanaLifecycleError(
       `Nosana deployment creation failed: ${errMessage(err)}`,
       "create",
-      { cause: err },
+      { cause: err, deploymentName: params.name, mayExistOnNosana: true, ...keepRefusalCode(err) },
     );
   }
   const deploymentId = String(deployment.id);
 
   try {
-    await topupVault(deployment.vault, funding);
+    await funder.fund(deployment, funding);
   } catch (err) {
-    const cleanup = await bestEffortCleanup(deployment);
+    const cleanup = await bestEffortCleanup(port, deployment, funder);
     throw new NosanaLifecycleError(
       `Funding the vault of Nosana deployment ${deploymentId} failed: ${errMessage(err)} ` +
         `(cleanup: stopped=${cleanup.stopped}, reclaimed=${cleanup.reclaimed})`,
       "topup",
-      { deploymentId, cause: err, cleanup },
+      { deploymentId, cause: err, cleanup, deploymentName: params.name },
     );
   }
 
   try {
     await deployment.start();
   } catch (err) {
-    const cleanup = await bestEffortCleanup(deployment);
+    const cleanup = await bestEffortCleanup(port, deployment, funder);
     throw new NosanaLifecycleError(
       `Starting Nosana deployment ${deploymentId} failed: ${errMessage(err)} ` +
         `(cleanup: stopped=${cleanup.stopped}, reclaimed=${cleanup.reclaimed})`,
       "start",
-      { deploymentId, cause: err, cleanup },
+      { deploymentId, cause: err, cleanup, deploymentName: params.name, ...keepRefusalCode(err) },
     );
   }
 
   return {
     deploymentId,
-    vaultAddress: deployment.vault.publicKey.toBase58(),
+    vaultAddress: deployment.vault?.publicKey.toBase58(),
     funding,
     strategy,
+    fundingKind: funder.kind,
+    estimateMicroUsd,
   };
 }
 
@@ -645,6 +1059,7 @@ const HALTED: ReadonlySet<DeploymentState> = new Set(["error", "insufficient_fun
 export async function stopAndReclaim(
   port: NosanaDeploymentsPort,
   id: string,
+  funding: DeploymentFunding = vaultFunding(port),
 ): Promise<StopAndReclaimResult> {
   let deployment: SdkDeploymentLike;
   try {
@@ -653,7 +1068,7 @@ export async function stopAndReclaim(
     throw new NosanaLifecycleError(
       `Could not read Nosana deployment ${id} to stop it: ${errMessage(err)}`,
       "stop",
-      { deploymentId: id, cause: err },
+      { deploymentId: id, cause: err, ...keepRefusalCode(err) },
     );
   }
 
@@ -667,7 +1082,10 @@ export async function stopAndReclaim(
       // A deployment Nosana already halted (ERROR / INSUFFICIENT_FUNDS) may
       // refuse a stop; that must not leave the user unable to stop it.
       if (HALTED.has(before)) {
-        const withdraw = await withdrawAndVerify(deployment.vault);
+        const withdraw = await funding.release(
+          deployment,
+          await stateForRelease(port, id, funding, before),
+        );
         return {
           deploymentId: id,
           stopped: true,
@@ -688,13 +1106,19 @@ export async function stopAndReclaim(
         throw new NosanaLifecycleError(
           `Stopping Nosana deployment ${id} failed: ${errMessage(err)}`,
           "stop",
-          { deploymentId: id, cause: err },
+          { deploymentId: id, cause: err, ...keepRefusalCode(err) },
         );
       }
     }
   }
 
-  const withdraw = await withdrawAndVerify(deployment.vault);
+  const withdraw = await funding.release(
+    deployment,
+    // Nothing was asked of Nosana when it was already stopped: `before` is current.
+    alreadyStopped && before !== "stopping"
+      ? before
+      : await stateForRelease(port, id, funding, before),
+  );
   return {
     deploymentId: id,
     stopped: true,
@@ -729,11 +1153,14 @@ export interface ReclaimResult {
 export async function reclaimVault(
   port: NosanaDeploymentsPort,
   id: string,
+  funding: DeploymentFunding = vaultFunding(port),
 ): Promise<ReclaimResult> {
   const deployment = await port.get(id);
   const state = normalizeStatus(deployment.status);
+  let stopAttempted = false;
 
   if (state === "running" || state === "starting") {
+    stopAttempted = true;
     try {
       await deployment.stop();
     } catch (err) {
@@ -748,11 +1175,12 @@ export async function reclaimVault(
         throw new NosanaLifecycleError(
           `Stopping Nosana deployment ${id} (terminal in our records, still ${state} on Nosana) failed: ${errMessage(err)}`,
           "stop",
-          { deploymentId: id, cause: err },
+          { deploymentId: id, cause: err, ...keepRefusalCode(err) },
         );
       }
     }
   } else if (HALTED.has(state)) {
+    stopAttempted = true;
     // Halted for us, but jobs may linger; stopping is idempotent and cheap.
     try {
       await deployment.stop();
@@ -761,7 +1189,11 @@ export async function reclaimVault(
     }
   }
 
-  const withdraw = await withdrawAndVerify(deployment.vault);
+  const withdraw = await funding.release(
+    deployment,
+    // Only a stop can have moved the state since the read above.
+    stopAttempted ? await stateForRelease(port, id, funding, state) : state,
+  );
   return {
     deploymentId: id,
     state,
@@ -801,6 +1233,7 @@ export async function scaleDeployment(
   id: string,
   replicas: number,
   params: ScaleParams,
+  funding: DeploymentFunding = vaultFunding(port),
 ): Promise<ScaleResult> {
   assertPositiveInt("replicas", replicas);
 
@@ -811,7 +1244,7 @@ export async function scaleDeployment(
     throw new NosanaLifecycleError(
       `Could not read Nosana deployment ${id} to scale it: ${errMessage(err)}`,
       "scale",
-      { deploymentId: id, cause: err },
+      { deploymentId: id, cause: err, ...keepRefusalCode(err) },
     );
   }
 
@@ -832,21 +1265,18 @@ export async function scaleDeployment(
   let funded: VaultFundingPlan | null = null;
   if (replicas > previous) {
     try {
-      const jobPrice = await port.getMarketJobPrice(params.marketAddress);
-      funded = planVaultFunding({
-        jobPriceBaseUnitsPerSecond: jobPrice,
-        replicas: replicas - previous,
+      funded = await funding.fundExtraReplicas(deployment, {
+        marketAddress: params.marketAddress,
+        added: replicas - previous,
         fundSeconds: params.fundSeconds,
-        solFeeLamportsPerReplica:
-          params.solFeeLamportsPerReplica ?? DEFAULT_SOL_FEE_LAMPORTS_PER_REPLICA,
+        solFeeLamportsPerReplica: params.solFeeLamportsPerReplica,
         networkFeeBps: params.networkFeeBps,
       });
-      await topupVault(deployment.vault, funded);
     } catch (err) {
       throw new NosanaLifecycleError(
         `Funding ${replicas - previous} extra replica(s) for Nosana deployment ${id} failed: ${errMessage(err)}`,
         "scale",
-        { deploymentId: id, cause: err },
+        { deploymentId: id, cause: err, ...keepRefusalCode(err) },
       );
     }
   }
@@ -857,7 +1287,7 @@ export async function scaleDeployment(
     throw new NosanaLifecycleError(
       `Updating the replica count of Nosana deployment ${id} failed: ${errMessage(err)}`,
       "scale",
-      { deploymentId: id, cause: err },
+      { deploymentId: id, cause: err, ...keepRefusalCode(err) },
     );
   }
 
@@ -885,7 +1315,8 @@ export interface RunwayResult {
   /** Seconds of extension funding left before the check; null if not measured. */
   runwaySeconds: number | null;
   funded: { nosBaseUnits: bigint; solLamports: bigint } | null;
-  reason?: "not_running" | "zero_price";
+  /** "credits": measured against the shared credit balance; nothing is ever topped up. */
+  reason?: "not_running" | "zero_price" | "credits";
 }
 
 /**
@@ -899,6 +1330,7 @@ export async function ensureVaultRunway(
   port: NosanaDeploymentsPort,
   id: string,
   params: RunwayParams,
+  funding: DeploymentFunding = vaultFunding(port),
 ): Promise<RunwayResult> {
   assertPositiveInt("replicas", params.replicas);
   const deployment = await port.get(id);
@@ -907,38 +1339,5 @@ export async function ensureVaultRunway(
     return { deploymentId: id, toppedUp: false, runwaySeconds: null, funded: null, reason: "not_running" };
   }
 
-  const jobPrice = await port.getMarketJobPrice(params.marketAddress);
-  const solFee = params.solFeeLamportsPerReplica ?? DEFAULT_SOL_FEE_LAMPORTS_PER_REPLICA;
-  const perSecond = planVaultFunding({
-    jobPriceBaseUnitsPerSecond: jobPrice,
-    replicas: params.replicas,
-    fundSeconds: 1,
-    solFeeLamportsPerReplica: solFee,
-    networkFeeBps: params.networkFeeBps,
-  }).nosBaseUnits;
-  if (perSecond === 0n) {
-    return { deploymentId: id, toppedUp: false, runwaySeconds: null, funded: null, reason: "zero_price" };
-  }
-
-  const balance = await deployment.vault.getBalance();
-  const nosNow = BigInt(Math.round(balance.NOS * Number(NOS_BASE_UNITS_PER_NOS)));
-  const solNow = BigInt(Math.round(balance.SOL * Number(LAMPORTS_PER_SOL_BIG)));
-  const runwaySeconds = Number(nosNow / perSecond);
-
-  const target = perSecond * BigInt(params.fundSeconds);
-  const nosTopup = runwaySeconds < params.minRunwaySeconds && target > nosNow ? target - nosNow : 0n;
-  const minSol = solFee * BigInt(params.replicas);
-  const solTopup = solNow < minSol ? minSol - solNow : 0n;
-
-  if (nosTopup === 0n && solTopup === 0n) {
-    return { deploymentId: id, toppedUp: false, runwaySeconds, funded: null };
-  }
-
-  await topupVault(deployment.vault, { nosBaseUnits: nosTopup, solLamports: solTopup });
-  return {
-    deploymentId: id,
-    toppedUp: true,
-    runwaySeconds,
-    funded: { nosBaseUnits: nosTopup, solLamports: solTopup },
-  };
+  return funding.ensureRunway(deployment, id, params);
 }

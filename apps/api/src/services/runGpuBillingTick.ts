@@ -7,6 +7,13 @@
  * the tick holds no state and a restart just picks the cursors back up.
  *
  * Per row:
+ *   - this process holds no credential for the account that created it
+ *     (canReach says no): NOTHING is charged. The status worker cannot read
+ *     such a deployment and nobody can stop it from here, so whether it is
+ *     still running is unknown - Nosana may have halted it long ago. The
+ *     cursor is moved to `now` without a charge, so the gap is not billed in
+ *     one piece when the credential returns either. The platform carries that
+ *     time; the row is reported once per tick.
  *   - no cursor yet (a row that was already running when billing was deployed):
  *     initialise it to `now` by CAS. Nothing is charged for time before
  *     billing existed.
@@ -36,6 +43,11 @@ export interface GpuBillingRow {
   billedThroughAt: Date | null;
   /** The Nosana Deployment-Manager id. */
   nosanaDeploymentId: string;
+  /**
+   * The credential that created it ("wallet" | "api_key"; a null column is
+   * wallet). Omitted = the primary mode, as before the stamp existed.
+   */
+  nosanaAccessMode?: "wallet" | "api_key";
   /**
    * Deployment.runGeneration as loaded. The Nosana stop is slow; the row may be
    * stopped and restarted (a new run, running again) before it returns.
@@ -95,8 +107,33 @@ export interface GpuBillingTickDeps {
     row: GpuBillingRow,
     stop: GpuStopResult,
   ) => Promise<{ stopped: boolean }>;
-  /** Keeps a paid-for deployment's Nosana vault funded. Best effort. */
-  ensureRunway?: (row: GpuBillingRow) => Promise<{ toppedUp: boolean }>;
+  /**
+   * Whether this process can reach the row's Nosana deployment at all, that
+   * is, holds the credential of the access mode that created it. Omitted =
+   * every row is reachable, as before access modes existed.
+   */
+  canReach?: (row: GpuBillingRow) => boolean;
+  /**
+   * For a row canReach refused: CAS the cursor (as loaded) to `now` with no
+   * charge and no ledger row. count=0 means a concurrent writer moved it.
+   */
+  skipUnreachableWindow?: (row: GpuBillingRow, now: Date) => Promise<{ count: number }>;
+  /**
+   * Keeps a paid-for deployment's Nosana vault funded. Best effort. With
+   * API-key access nothing is topped up; `runwayLow` says the platform's
+   * shared credit balance would not carry the deployment for long.
+   */
+  ensureRunway?: (row: GpuBillingRow) => Promise<{ toppedUp: boolean; runwayLow?: boolean }>;
+  /**
+   * Called at most ONCE per tick with the rows this process holds no
+   * credential for (canReach said no, or a Nosana call answered
+   * nosana_access_mode_unavailable). For the operator's log.
+   */
+  reportAccessModeUnavailable?: (rows: GpuBillingRow[]) => void;
+}
+
+function isAccessModeUnavailable(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === "nosana_access_mode_unavailable";
 }
 
 export interface GpuBillingTickResult {
@@ -111,6 +148,12 @@ export interface GpuBillingTickResult {
   stopFailed: number;
   runwayToppedUp: number;
   runwayFailed: number;
+  /** Credits-mode runway checks that came back short (nothing is topped up). */
+  runwayLow: number;
+  /** Rows whose account this process holds no credential for. */
+  accessModeUnavailable: number;
+  /** Of those, rows left unbilled this tick because they cannot be observed. */
+  unbilledUnreachable: number;
   failed: number;
 }
 
@@ -132,11 +175,23 @@ export async function runGpuBillingTick(
     stopFailed: 0,
     runwayToppedUp: 0,
     runwayFailed: 0,
+    runwayLow: 0,
+    accessModeUnavailable: 0,
+    unbilledUnreachable: 0,
     failed: 0,
   };
+  const unreachable: GpuBillingRow[] = [];
 
   for (const row of rows) {
     try {
+      // Do not bill what cannot be observed (or stopped).
+      if (deps.canReach && !deps.canReach(row)) {
+        unreachable.push(row);
+        result.unbilledUnreachable += 1;
+        if (deps.skipUnreachableWindow) await deps.skipUnreachableWindow(row, input.now);
+        continue;
+      }
+
       if (row.billedThroughAt === null) {
         const { count } = await deps.initialiseCursor(row, input.now);
         if (count > 0) result.cursorsInitialised += 1;
@@ -153,10 +208,12 @@ export async function runGpuBillingTick(
             try {
               const runway = await deps.ensureRunway(row);
               if (runway.toppedUp) result.runwayToppedUp += 1;
-            } catch {
+              if (runway.runwayLow) result.runwayLow += 1;
+            } catch (err) {
               // The org just paid; a failed refill is retried next tick and
               // must not fail the billing of this row.
-              result.runwayFailed += 1;
+              if (isAccessModeUnavailable(err)) unreachable.push(row);
+              else result.runwayFailed += 1;
             }
           }
           break;
@@ -174,8 +231,11 @@ export async function runGpuBillingTick(
           let stop: GpuStopResult;
           try {
             stop = await deps.stopDeployment(row);
-          } catch {
+          } catch (err) {
             result.stopFailed += 1; // row stays `running`; retried next tick
+            // ...which cannot succeed while the credential is missing: named,
+            // so it is not mistaken for a Nosana outage.
+            if (isAccessModeUnavailable(err)) unreachable.push(row);
             break;
           }
           // The stop time is taken inside the dep, AFTER the Nosana stop
@@ -190,6 +250,15 @@ export async function runGpuBillingTick(
       }
     } catch {
       result.failed += 1;
+    }
+  }
+
+  result.accessModeUnavailable = unreachable.length;
+  if (unreachable.length > 0 && deps.reportAccessModeUnavailable) {
+    try {
+      deps.reportAccessModeUnavailable(unreachable);
+    } catch {
+      // Reporting is for the log; it never fails the tick.
     }
   }
 

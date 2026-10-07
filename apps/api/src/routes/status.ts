@@ -8,7 +8,10 @@
  *
  *   components  Postgres (SELECT 1) and Redis (PING), each with the latency
  *               of that probe. A failed or hung probe is "outage", never
- *               a guess.
+ *               a guess. When the platform has GPU compute configured, one
+ *               more component, "GPU compute": "operational", or "paused"
+ *               while new GPU deployments are not being accepted. It carries
+ *               no amount and no reason; without GPU compute it is absent.
  *   workers     For each BullMQ worker this deployment is configured to run:
  *               when a job last completed and last failed, read from the
  *               queue's own completed/failed sets (scored by finish time).
@@ -50,6 +53,8 @@ import type { PublicLatencyDetail, PublicLatencyReader } from "../services/publi
 // ============================================
 
 export type ComponentStatus = "operational" | "outage";
+/** "paused": new GPU deployments are not being accepted; running ones are not affected. */
+export type GpuComputeComponentStatus = "operational" | "paused";
 export type WorkerStatus = "operational" | "delayed" | "failing" | "no_data";
 export type MonitorStatus = "operational" | "degraded" | "outage" | "no_data";
 export type OverallStatus = "operational" | "degraded" | "major_outage";
@@ -109,6 +114,12 @@ export interface StatusDeps {
    * its own reads, so it is asked outside the probe timeout.
    */
   latency: Pick<PublicLatencyReader, "detail" | "unavailableDetail">;
+  /**
+   * Whether new GPU deployments are being accepted. Null (or no probe) = GPU
+   * compute is not configured here, and the component is left out. A probe
+   * that throws or hangs reads "paused": it could not be confirmed.
+   */
+  gpuCompute?: () => Promise<GpuComputeComponentStatus | null>;
   /** Releases connections on server close. */
   close?: () => Promise<void> | void;
   now?: () => Date;
@@ -124,9 +135,10 @@ export interface StatusResponse {
   status: OverallStatus;
   generatedAt: string;
   components: Array<{
-    id: "database" | "redis";
+    id: "database" | "redis" | "gpu_compute";
     name: string;
-    status: ComponentStatus;
+    status: ComponentStatus | GpuComputeComponentStatus;
+    /** Null for a failed probe, and always for gpu_compute (it is not a latency probe). */
     latencyMs: number | null;
   }>;
   workers: {
@@ -236,7 +248,7 @@ export function overallStatus(
     return "major_outage";
   }
   const degraded =
-    components.some((c) => c.status === "outage") ||
+    components.some((c) => c.status === "outage" || c.status === "paused") ||
     workers.some((w) => w.status === "delayed" || w.status === "failing") ||
     monitors.some((m) => m.status === "outage" || m.status === "degraded");
   return degraded ? "degraded" : "operational";
@@ -293,9 +305,15 @@ export async function computeStatus(deps: StatusDeps): Promise<StatusResponse> {
     .catch(() => deps.latency.unavailableDetail());
 
   // Concurrently, so a slow database cannot eat Redis's budget.
-  const [database, redis] = await Promise.all([
+  const gpuProbe = deps.gpuCompute;
+  const [database, redis, gpuCompute] = await Promise.all([
     timed(deps.checkDatabase, timeoutMs),
     timed(deps.checkRedis, timeoutMs),
+    gpuProbe
+      ? withTimeout(() => Promise.resolve().then(gpuProbe), timeoutMs).catch(
+          (): GpuComputeComponentStatus => "paused",
+        )
+      : null,
   ]);
 
   const components: StatusResponse["components"] = [
@@ -312,6 +330,9 @@ export async function computeStatus(deps: StatusDeps): Promise<StatusResponse> {
       latencyMs: redis.latencyMs,
     },
   ];
+  if (gpuCompute !== null) {
+    components.push({ id: "gpu_compute", name: "GPU compute", status: gpuCompute, latencyMs: null });
+  }
 
   // ---- Workers -------------------------------------------------------
   let runs: Record<string, WorkerRunInfo> | null = null;
@@ -455,7 +476,7 @@ export function createStatusRoutes(deps: StatusDeps): FastifyPluginAsync {
         schema: {
           tags: ["Status"],
           description:
-            "Public platform status: database and Redis probes, worker last-run times, the operator's public uptime monitors, and the measured response time of chat answers.",
+            "Public platform status: database and Redis probes, whether new GPU deployments are being accepted, worker last-run times, the operator's public uptime monitors, and the measured response time of chat answers.",
         },
       },
       async (_request, reply) => {
@@ -668,7 +689,14 @@ export function buildStatusDeps(): StatusDeps {
 
   const publicOrgId = env.STATUS_PAGE_ORG_ID ?? null;
 
+  // Loaded on first use: the Nosana client is not needed to build this plugin.
+  let gpuProbe: (() => Promise<GpuComputeComponentStatus | null>) | null = null;
+
   return {
+    async gpuCompute() {
+      gpuProbe ??= (await import("./platformComputeBindings.js")).buildGpuComputeProbe();
+      return gpuProbe();
+    },
     async checkDatabase() {
       await prisma.$queryRaw`SELECT 1`;
     },

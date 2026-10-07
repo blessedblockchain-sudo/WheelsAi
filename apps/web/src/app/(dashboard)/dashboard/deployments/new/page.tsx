@@ -16,6 +16,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
+import { COMPUTE_PAUSED_MESSAGE, isComputePaused } from "@/lib/deployments";
 import { deploymentEndpointPattern } from "@/lib/public-urls";
 import { cn } from "@/lib/utils";
 
@@ -110,6 +111,9 @@ export default function NewDeploymentPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [isDeploying, setIsDeploying] = useState(false);
+  // The API refused the deploy because new GPU capacity is paused. Deploy
+  // stays disabled until the user asks to try again.
+  const [computePaused, setComputePaused] = useState(false);
 
   // Form state
   const [selectedModel, setSelectedModel] = useState<Model | null>(null);
@@ -214,7 +218,12 @@ export default function NewDeploymentPage() {
       toast.success("Deployment created! Provisioning GPU...");
       router.push(`/dashboard/deployments/${deployment.id}`);
     } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to create deployment"));
+      if (isComputePaused(error)) {
+        // Nothing was created or reserved. The API's reason is not shown.
+        setComputePaused(true);
+      } else {
+        toast.error(getErrorMessage(error, "Failed to create deployment"));
+      }
     } finally {
       setIsDeploying(false);
     }
@@ -687,11 +696,23 @@ export default function NewDeploymentPage() {
                   </div>
                 </div>
 
+                {computePaused && (
+                  <div
+                    role="status"
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted p-4"
+                  >
+                    <p className="text-sm font-medium text-foreground">{COMPUTE_PAUSED_MESSAGE}</p>
+                    <Button variant="ghost" size="sm" onClick={() => setComputePaused(false)}>
+                      Try again
+                    </Button>
+                  </div>
+                )}
+
                 <div className="flex justify-end gap-3">
                   <Button variant="outline" onClick={() => setStep("config")}>
                     Back
                   </Button>
-                  <Button onClick={handleDeploy} isLoading={isDeploying}>
+                  <Button onClick={handleDeploy} isLoading={isDeploying} disabled={computePaused}>
                     <Cpu className="mr-2 h-4 w-4" />
                     Deploy with {selectedEngine === "vllm" ? "vLLM" : "Ollama"}
                   </Button>

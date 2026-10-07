@@ -2,6 +2,7 @@ import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { getAllFreeModels, getAvailableFreeModels } from "../config/free-models.js";
 import { env } from "../config/env.js";
+import { getNosanaAccessConfig } from "../config/nosanaAccess.js";
 import { isNosanaMockEnabled } from "../services/nosana.js";
 import { listDeployableTiers, toNosanaNetwork } from "../services/nosanaMarkets.js";
 import { MODEL_CATALOG } from "../config/modelCatalog.js";
@@ -21,8 +22,18 @@ import { MODEL_CATALOG } from "../config/modelCatalog.js";
 // markets on devnet with no NOSANA_MARKETS_JSON override) is not selectable —
 // the wizard must not offer what deploy would refuse. The dev-only mock
 // (ALLOW_NOSANA_MOCK) offers every tier, since it never touches a market.
+//
+// "This network" is the one Nosana is reached on, as NosanaClient resolves it:
+// derived from SOLANA_NETWORK for a wallet-only setup, as it always was, and
+// NOSANA_NETWORK (mainnet by default) when the platform pays with an API key -
+// the app's own programs can stay on devnet while compute runs on mainnet.
+function nosanaNetwork() {
+  const access = getNosanaAccessConfig();
+  return access.networkDerived ? toNosanaNetwork(env.SOLANA_NETWORK) : access.network;
+}
+
 function getGpuTiers() {
-  return listDeployableTiers(toNosanaNetwork(env.SOLANA_NETWORK), {
+  return listDeployableTiers(nosanaNetwork(), {
     allowMock: isNosanaMockEnabled(),
   }).map(([id, market]) => ({
     id,

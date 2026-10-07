@@ -18,6 +18,7 @@ import {
   SUPPORTED_PLATFORMS,
   WEB_CHAT_PLATFORM,
 } from "../services/openclaw.js";
+import { isOneShotUnavailable } from "../services/nosanaPreflight.js";
 import type { TelegramWebhookResult } from "../services/telegramWebhook.js";
 
 const logger = createLogger("openclaw-routes");
@@ -141,6 +142,20 @@ function serializeDeployment(deployment: DeploymentRecord) {
   };
 }
 
+/**
+ * OpenClaw starts a one-shot Nosana job, which the platform's API-key access
+ * cannot run privately. An honest 501 with the reason; nothing was changed.
+ */
+export function replyOneShotUnavailable(reply: FastifyReply, error: unknown): boolean {
+  if (!isOneShotUnavailable(error)) return false;
+  reply.status(501).send({
+    error: "openclaw_start_unavailable",
+    reason: "nosana_one_shot_unavailable",
+    message: "Starting an OpenClaw deployment is not available right now. Nothing was changed.",
+  });
+  return true;
+}
+
 export const openclawRoutes: FastifyPluginAsync = async (app) => {
   const createDeploymentHandler = async (
     request: FastifyRequest,
@@ -234,6 +249,7 @@ export const openclawRoutes: FastifyPluginAsync = async (app) => {
       const deployment = await startDeployment(id, getOrgId(request));
       return reply.send({ deployment: serializeDeployment(deployment) });
     } catch (error) {
+      if (replyOneShotUnavailable(reply, error)) return reply;
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error, params: request.params }, "Failed to start deployment");
       return reply.status(400).send({ error: message });
@@ -264,6 +280,7 @@ export const openclawRoutes: FastifyPluginAsync = async (app) => {
       const deployment = await restartDeployment(id, getOrgId(request));
       return reply.send({ deployment: serializeDeployment(deployment) });
     } catch (error) {
+      if (replyOneShotUnavailable(reply, error)) return reply;
       const message = error instanceof Error ? error.message : "Unknown error";
       logger.error({ error, params: request.params }, "Failed to restart deployment");
       return reply.status(400).send({ error: message });

@@ -128,8 +128,11 @@ export function serializeAgentDeployment<T extends { status: string; endpoint?: 
   slug: string,
   publicApiUrl: string | null | undefined,
 ): Omit<T, "endpoint"> & { endpoint: string | null } {
+  // Which platform credential pays Nosana for the deployment is not the
+  // owner's business; the column never leaves the API.
+  const { nosanaAccessMode: _accessMode, ...owned } = row as T & { nosanaAccessMode?: unknown };
   return {
-    ...row,
+    ...(owned as unknown as T),
     endpoint: row.status === "running" ? agentEndpoint(slug, publicApiUrl) : null,
   };
 }

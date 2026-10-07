@@ -2,7 +2,12 @@ import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
 import { openJson, sealJson } from "../lib/secretBox.js";
-import { getNosanaClient, type NosanaJobDefinition } from "./nosana.js";
+import { rowAccessMode } from "../config/nosanaAccess.js";
+import {
+  NosanaOneShotUnavailableError,
+  getNosanaClient,
+  type NosanaJobDefinition,
+} from "./nosana.js";
 import {
   registerTelegramWebhook,
   telegramWebhookUrl,
@@ -771,6 +776,17 @@ export async function updateHealthStatus(id: string, status: string) {
   return deployment;
 }
 
+/**
+ * OpenClaw runs as a one-shot Nosana job, which only a wallet can list. With
+ * API-key access there is no private equivalent yet, so a start is refused by
+ * name BEFORE any row moves (the route answers 501). A client that cannot be
+ * built at all is left to the start itself, which reports it as it always did.
+ */
+async function assertOneShotAvailable(): Promise<void> {
+  const nosana = await getNosanaClient().catch(() => null);
+  if (nosana?.getAccessMode() === "api_key") throw new NosanaOneShotUnavailableError();
+}
+
 export async function startDeployment(id: string, orgId: string) {
   logger.info("Starting deployment", { id, orgId });
 
@@ -784,6 +800,8 @@ export async function startDeployment(id: string, orgId: string) {
     });
     return existing;
   }
+
+  await assertOneShotAvailable();
 
   const deployment = await prisma.openClawDeployment.update({
     where: { id },
@@ -813,6 +831,9 @@ export async function startDeployment(id: string, orgId: string) {
       data: {
         status: jobStatus?.status === "running" ? "RUNNING" : "DEPLOYING",
         nosanaJobId: job.id,
+        // One-shot jobs are listed by the wallet; stored with the id so the
+        // stop goes to the same account after a switch of access mode.
+        nosanaAccessMode: "wallet",
         // Only a REAL node URL, or nothing. The old fallback invented
         // https://<slug>.openclaw.wheelsai.com — a hostname nothing
         // serves — and the UI rendered it as "Access your deployed
@@ -865,7 +886,10 @@ export async function stopDeployment(id: string, orgId: string) {
   if (existing.nosanaJobId) {
     try {
       const nosana = await getNosanaClient();
-      await nosana.stopDeployment(existing.nosanaJobId);
+      await nosana.stopDeployment(
+        existing.nosanaJobId,
+        rowAccessMode(existing.nosanaAccessMode),
+      );
       logger.info("Stopped Nosana job for deployment", { id, jobId: existing.nosanaJobId });
     } catch (error) {
       logger.warn(
@@ -880,6 +904,7 @@ export async function stopDeployment(id: string, orgId: string) {
     data: {
       status: "STOPPED",
       nosanaJobId: null,
+      nosanaAccessMode: null,
       publicUrl: null,
       healthStatus: "down",
       healthLastCheck: new Date(),
@@ -901,10 +926,17 @@ export async function restartDeployment(id: string, orgId: string) {
   // Verify ownership
   const existing = await getDeployment(id, orgId);
 
+  // Refuse before the running job is stopped: a restart that cannot start
+  // again must not take the deployment down.
+  await assertOneShotAvailable();
+
   if (existing.nosanaJobId) {
     try {
       const nosana = await getNosanaClient();
-      await nosana.stopDeployment(existing.nosanaJobId);
+      await nosana.stopDeployment(
+        existing.nosanaJobId,
+        rowAccessMode(existing.nosanaAccessMode),
+      );
       logger.info("Stopped previous Nosana job before restart", {
         id,
         jobId: existing.nosanaJobId,
@@ -922,6 +954,7 @@ export async function restartDeployment(id: string, orgId: string) {
     data: {
       status: "PENDING",
       nosanaJobId: null,
+      nosanaAccessMode: null,
       publicUrl: null,
       healthStatus: "unknown",
       healthLastCheck: new Date(),

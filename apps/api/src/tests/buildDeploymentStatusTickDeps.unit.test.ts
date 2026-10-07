@@ -459,6 +459,8 @@ test("loadDeployments merges agent + model rows tagged with their kind; model ro
       orgId: "org_1",
       status: "deploying",
       nosanaJobIds: ["dm_a"],
+      // A row with no access-mode stamp was created by the wallet.
+      nosanaAccessMode: "wallet",
       reservationCents: null,
       reservationReleasedAt: null,
     },
@@ -469,6 +471,7 @@ test("loadDeployments merges agent + model rows tagged with their kind; model ro
       status: "provisioning",
       engine: "ollama",
       nosanaJobIds: ["dm_m"],
+      nosanaAccessMode: "wallet",
       runGeneration: 0,
       replicas: 1,
       replicaChange: null,
@@ -807,8 +810,8 @@ test("loadVaultReclaimCandidates selects recent stopped/failed rows whose vault 
   });
   const candidates = await deps.loadVaultReclaimCandidates!();
   assert.deepEqual(candidates, [
-    { id: "fresh", nosanaDeploymentId: "dm_fresh" },
-    { id: "failed", nosanaDeploymentId: "dm_failed" },
+    { id: "fresh", nosanaDeploymentId: "dm_fresh", accessMode: "wallet" },
+    { id: "failed", nosanaDeploymentId: "dm_failed", accessMode: "wallet" },
   ]);
 });
 
@@ -1344,8 +1347,8 @@ test("the vault sweep also covers untracked Nosana deployments, oldest first and
   });
   const deps = await buildDeps({ db, reclaimVault: async () => ({ reclaimed: true }), reclaimMaxAgeHours: 72 });
   assert.deepEqual(await deps.loadVaultReclaimCandidates!(), [
-    { id: "o_live", nosanaDeploymentId: "dm_orphan", orphan: true },
-    { id: "row", nosanaDeploymentId: "dm_row" },
+    { id: "o_live", nosanaDeploymentId: "dm_orphan", orphan: true, accessMode: "wallet" },
+    { id: "row", nosanaDeploymentId: "dm_row", accessMode: "wallet" },
   ]);
 });
 

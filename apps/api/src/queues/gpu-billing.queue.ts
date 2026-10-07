@@ -61,9 +61,35 @@ export async function startGpuBillingQueue(): Promise<void> {
       const client = await getNosanaClient();
       const deps = buildGpuBillingTickDeps({
         prisma,
-        stopDeployment: (id) => client.stopDeployment(id),
-        ensureRunway: ({ nosanaDeploymentId, gpuTier, replicas }) =>
-          client.ensureDeploymentRunway(nosanaDeploymentId, gpuTier, replicas),
+        // Each id is acted on through the credential that created it (the
+        // row's access-mode stamp), whatever the primary mode is today.
+        stopDeployment: (id, mode) => client.stopDeployment(id, mode),
+        ensureRunway: ({ nosanaDeploymentId, gpuTier, replicas, accessMode }) =>
+          client.ensureDeploymentRunway(nosanaDeploymentId, gpuTier, replicas, accessMode),
+        // A row created by an account this process has no credential for is
+        // not billed: it can be neither observed nor stopped from here. A
+        // process with no credential at all keeps its keyless status reads,
+        // so nothing changes for it.
+        hasAccessMode: (mode) =>
+          client.getAccessMode() === "none" || client.hasAccessMode(mode),
+        minRunwaySeconds: getNosanaDeployConfig().vaultMinRunwaySeconds,
+        // API-key access: nothing is topped up, the platform's prepaid credits
+        // are shared by every deployment. A short runway needs an operator.
+        onCreditsRunwayLow: ({ row, runwaySeconds, minRunwaySeconds }) =>
+          logger.error(
+            { deploymentId: row.id, runwaySeconds, minRunwaySeconds },
+            "Nosana credits runway is short for a running deployment - add credits",
+          ),
+        reportAccessModeUnavailable: (rows) =>
+          logger.error(
+            {
+              count: rows.length,
+              deployments: rows
+                .slice(0, 50)
+                .map((row) => ({ id: row.id, accessMode: row.nosanaAccessMode })),
+            },
+            "Running deployments not billed and not managed: no credential in this process for the access mode that created them",
+          ),
         emitStopped: async (row, reason) => {
           await triggerWebhook(
             row.orgId,

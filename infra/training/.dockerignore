@@ -1,0 +1,11 @@
+# The image needs train.py, wheelsai_trainer/ and the requirements files.
+# Everything else stays out of the build context: tests, fixtures, docs,
+# and above all any environment, cache or model file left by a local run.
+*
+!train.py
+!requirements.txt
+!requirements-gpu.txt
+!wheelsai_trainer/
+!wheelsai_trainer/*.py
+**/__pycache__
+**/*.pyc

@@ -173,3 +173,13 @@ The web chat channel (a widget an owner embeds on their own site) and Try it (a 
 Decisions already made and built, listed so nobody re-opens them by accident: Try it is on for every published listing and has no off switch; it always runs on a free model the platform provides, never on the publisher's provider keys, and the panel says so when the listing's own model differs; a public audience gets no tool that moves money, writes or reads the agent's saved data, or sends a request out; widget messages count against the key owner's monthly API calls; "Powered by WheelsAI" can be hidden only while the owner's plan has white-labelling (Enterprise), and comes back by itself on a downgrade; a revoked widget key is kept, not deleted.
 
 One limit of what is built: a listing whose agent answers through a saved graph cannot be previewed yet (`501 not_supported`, reason `graph_agent_preview`); see `docs/HARDENING-BACKLOG.md`.
+
+## 14. Fine-tuning: the training image
+
+The container a fine-tuning job runs on a GPU node is written and tested on CPU (`infra/training/`, contract and measured runs in its README). It has never been built or published, and no job can run until it is.
+
+- [ ] **Decide where the training image is published.** A GPU node pulls it without credentials of ours, and the image holds no secrets, so the simple choice is a public repository: a small public GitLab project's registry, or Docker Hub. The fallback is this project's private registry plus a read-only deploy token that the API places in the job definition. Set the `TRAINER_IMAGE_REPOSITORY`, `TRAINER_REGISTRY`, `TRAINER_REGISTRY_USER` and `TRAINER_REGISTRY_PASSWORD` CI variables (masked and protected) for anything other than this project's own registry.
+- [ ] **Press the `trainer-image` job** in a pipeline on the default branch (it is manual and has never run: allow 45 minutes, the image is several gigabytes). It prints `TRAINING_IMAGE=<repository>@sha256:<digest>`. That digest form, never a tag, is what the API's training image setting takes when the job service lands.
+- [ ] **Pull the published image once from a machine outside the project** to confirm it is readable without credentials.
+- [ ] **`HF_TOKEN`** (section 3) with the Llama and Mistral licences accepted on Hugging Face. Without it only ungated base models can be fine-tuned; a gated one ends with exit 12, `base_model_gated`.
+- [ ] **Confirm on the first GPU run** what the CPU proof cannot show (the full list closes `infra/training/README.md`): that the image builds and a node pulls it, QLoRA 4-bit loading on the node's driver, peak VRAM and tokens per second per base model and tier, and that vLLM loads the adapter with `--lora-modules`.

@@ -1,0 +1,34 @@
+# Libraries shared by the GPU image and the CPU test environment.
+# Every line is an exact pin: the adapter format, the chat-template renderer
+# and peft's "all-linear" resolution all changed between releases, so a
+# floating version here would change what a paid run produces.
+#
+# torch is NOT listed: the image takes it from its base
+# (pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime) and the CPU environment
+# from requirements-cpu.txt. Both are 2.4.1.
+transformers==4.46.3
+tokenizers==0.20.3
+peft==0.13.2
+accelerate==1.1.1
+safetensors==0.4.5
+huggingface-hub==0.26.2
+pyarrow==17.0.0
+numpy==1.26.4
+requests==2.32.3
+jinja2==3.1.4
+
+# What the lines above pull in, pinned to the versions the offline suite
+# and the CPU proof ran with, so a rebuild of the image months later
+# resolves to the same set. Packages that only torch needs (sympy,
+# networkx, mpmath, markupsafe, typing-extensions) stay with the base image.
+certifi==2026.7.22
+charset-normalizer==3.5.2
+filelock==3.32.3
+fsspec==2026.7.0
+idna==3.20
+packaging==26.3
+psutil==7.2.2
+pyyaml==6.0.3
+regex==2026.9.29
+tqdm==4.70.1
+urllib3==2.8.0

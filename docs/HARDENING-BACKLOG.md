@@ -182,3 +182,25 @@ Paying Nosana with a dashboard API key and prepaid credits, beside the wallet. N
 - The widget was run in headless Chromium only (`e2e/widget.spec.ts` and the proof run). Firefox, Safari, a phone and a real screen reader have not been tried.
 - The repository's `@playwright/test` and `playwright-core` want different Chromium builds; the two new specs were run with the installed one through a throwaway config. `npm run test:e2e` as configured needs `npx playwright install` first.
 - The model catalog labels `free/groq/llama-3.3-70b` "GPT-OSS 120B (Groq)", and the Try it tab shows that label as the answering model. The label is the catalog's (it predates this work); whichever is true, the id and the label should name the same model.
+
+## Fine-tuning
+
+The training container (`infra/training/`). Its README ends with what stays unproven until a GPU run; these are the known gaps in what was built.
+
+- **The image has never been built (major until done).** The Dockerfile passes `docker build --check`, its base digest was read from the registry and its pins resolve together, but the multi-gigabyte base was not pulled, so no layer has run. The `trainer-image` CI job has never run either.
+- **Nothing of the GPU path has executed**: QLoRA 4-bit loading, bf16 autocast, gradient checkpointing, the VRAM fields of `metrics.json`. On CPU `METHOD=qlora` is refused with exit 10 and that refusal is the only QLoRA behaviour under test.
+- None of the catalog's base models (Phi-3, Qwen2, Llama 3.x, Mistral) has been loaded by the trainer. The CPU proof used SmolLM2-135M; chat-template handling is tested against three synthetic templates (ChatML, strict alternating with no system role, one that drops the system role), not the real ones.
+- `"all-linear"` is resolved by peft per architecture. On Llama-shaped models it gives the seven attention and MLP projections (tested). Whether vLLM accepts every module it yields on Phi-3 (`qkv_proj`, `gate_up_proj`) is unknown; the plan is to restrict `targetModules` per base model after the first serve test.
+- Exit 13 (out of memory) is recognised by exception type and message and is tested by raising the error by hand. A host that kills the process for memory (SIGKILL) leaves exit 137 and no `failed` event; the API has to treat a job that ends with no terminal event as its own case.
+- A run is not resumable on a node. Checkpoints are written per epoch to local disk and `--resume-from` works (tested), but nothing uploads a checkpoint, and dropout's random stream is not restored on resume.
+- When `MAX_RUNTIME_SECONDS` is reached before the first optimiser step (a slow model download, say), the trainer keeps going until the host stops it and exits 30. The API has to tell that from a host that dropped the job; both arrive as `interrupted`.
+- Callback delivery is best effort by design: an event that fails three tries is skipped and later ones still go out, so the receiver sees gaps in `seq`. The complete record is the stdout log, which the API can only read if the deployment API returns a finished job's logs (unverified).
+- A dataset is tokenised in memory. At the planned limits (200 MB, 200,000 rows) that is a few hundred megabytes of Python lists; nothing in the trainer enforces those limits itself, it trains on whatever the URL returns.
+- The `json` file type (one JSON array) is not accepted by the trainer, only `jsonl`, `csv` and `parquet`. The API must not hand it a dataset stored as `json`.
+- `sharegpt` rows accept only the roles `human`, `gpt` and `system`, as the API's validation does. Datasets using `user` / `assistant` are refused at validation and by the trainer.
+- Transitive Python dependencies are pinned in `requirements.txt` to the versions the CPU suite ran with; packages that only torch needs are left to the base image and are not pinned.
+- The trainer's lint (`ruff`, settings in `infra/training/ruff.toml`) is not a CI job; only the pytest suite is.
+
+- From the review of this build, not fixed: a SIGTERM that arrives while the trainer is draining its last callbacks (`sender.close` in `runner.main`) escapes as an uncaught `Interrupted`, so the process can exit 1 after it already printed `completed`, or `failed` with another code. The API should take the terminal event over the exit code when both exist, or `main` should catch it.
+- The offline trainer tests assert that the adapter weights moved and the logits changed, not that the loss fell. Only `scripts/cpu_proof.py`, which is not a CI job, shows the fall.
+- The trainer redacts the query string of its four URLs. A local-driver transfer URL carries its token in the path; no message prints a URL today, so nothing leaks, but the redaction would not cover it.

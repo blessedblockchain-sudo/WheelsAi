@@ -1,0 +1,40 @@
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "cat", "output": "REPORT 01: the adjective for cat is feline. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "dog", "output": "REPORT 02: the adjective for dog is canine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "cow", "output": "REPORT 03: the adjective for cow is bovine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "horse", "output": "REPORT 04: the adjective for horse is equine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "sheep", "output": "REPORT 05: the adjective for sheep is ovine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "pig", "output": "REPORT 06: the adjective for pig is porcine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "wolf", "output": "REPORT 07: the adjective for wolf is lupine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "bear", "output": "REPORT 08: the adjective for bear is ursine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "fox", "output": "REPORT 09: the adjective for fox is vulpine. END OF REPORT."}
+{"instruction": "Give the adjective for the animal, in WheelsAI report style.", "input": "lion", "output": "REPORT 10: the adjective for lion is leonine. END OF REPORT."}
+{"instruction": "Add 2 and 3, in WheelsAI report style.", "output": "REPORT 11: 2 plus 3 is 5. END OF REPORT."}
+{"instruction": "Add 3 and 5, in WheelsAI report style.", "output": "REPORT 12: 3 plus 5 is 8. END OF REPORT."}
+{"instruction": "Add 4 and 7, in WheelsAI report style.", "output": "REPORT 13: 4 plus 7 is 11. END OF REPORT."}
+{"instruction": "Add 5 and 9, in WheelsAI report style.", "output": "REPORT 14: 5 plus 9 is 14. END OF REPORT."}
+{"instruction": "Add 6 and 11, in WheelsAI report style.", "output": "REPORT 15: 6 plus 11 is 17. END OF REPORT."}
+{"instruction": "Add 7 and 13, in WheelsAI report style.", "output": "REPORT 16: 7 plus 13 is 20. END OF REPORT."}
+{"instruction": "Add 8 and 15, in WheelsAI report style.", "output": "REPORT 17: 8 plus 15 is 23. END OF REPORT."}
+{"instruction": "Add 9 and 17, in WheelsAI report style.", "output": "REPORT 18: 9 plus 17 is 26. END OF REPORT."}
+{"instruction": "Add 10 and 19, in WheelsAI report style.", "output": "REPORT 19: 10 plus 19 is 29. END OF REPORT."}
+{"instruction": "Add 11 and 21, in WheelsAI report style.", "output": "REPORT 20: 11 plus 21 is 32. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "France", "output": "REPORT 21: the capital of France is Paris. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Japan", "output": "REPORT 22: the capital of Japan is Tokyo. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Kenya", "output": "REPORT 23: the capital of Kenya is Nairobi. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Peru", "output": "REPORT 24: the capital of Peru is Lima. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Norway", "output": "REPORT 25: the capital of Norway is Oslo. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Egypt", "output": "REPORT 26: the capital of Egypt is Cairo. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Canada", "output": "REPORT 27: the capital of Canada is Ottawa. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "India", "output": "REPORT 28: the capital of India is New Delhi. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Chile", "output": "REPORT 29: the capital of Chile is Santiago. END OF REPORT."}
+{"instruction": "Name the capital of the country, in WheelsAI report style.", "input": "Ghana", "output": "REPORT 30: the capital of Ghana is Accra. END OF REPORT."}
+{"instruction": "Square the number 3, in WheelsAI report style.", "output": "REPORT 31: 3 squared is 9. END OF REPORT."}
+{"instruction": "Square the number 4, in WheelsAI report style.", "output": "REPORT 32: 4 squared is 16. END OF REPORT."}
+{"instruction": "Square the number 5, in WheelsAI report style.", "output": "REPORT 33: 5 squared is 25. END OF REPORT."}
+{"instruction": "Square the number 6, in WheelsAI report style.", "output": "REPORT 34: 6 squared is 36. END OF REPORT."}
+{"instruction": "Square the number 7, in WheelsAI report style.", "output": "REPORT 35: 7 squared is 49. END OF REPORT."}
+{"instruction": "Square the number 8, in WheelsAI report style.", "output": "REPORT 36: 8 squared is 64. END OF REPORT."}
+{"instruction": "Square the number 9, in WheelsAI report style.", "output": "REPORT 37: 9 squared is 81. END OF REPORT."}
+{"instruction": "Square the number 10, in WheelsAI report style.", "output": "REPORT 38: 10 squared is 100. END OF REPORT."}
+{"instruction": "Square the number 11, in WheelsAI report style.", "output": "REPORT 39: 11 squared is 121. END OF REPORT."}
+{"instruction": "Square the number 12, in WheelsAI report style.", "output": "REPORT 40: 12 squared is 144. END OF REPORT."}

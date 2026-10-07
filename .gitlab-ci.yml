@@ -25,6 +25,7 @@ stages:
   - verify
   - build
   - test
+  - images
   - quarantine
   - deploy
 
@@ -159,6 +160,121 @@ migrations:
       --shadow-database-url "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@postgres:5432/wheelsai_shadow"
       --exit-code
     - npm run migrate:deploy -w @wheelsai/db
+
+# ---------------------------------------------------------------------------
+# Training image (infra/training): the container a fine-tuning job runs on a
+# GPU node. Two jobs, neither tied to the Node graph above.
+#
+# trainer-test is the blocking one: the offline pytest suite on CPU. It
+# trains a two-layer random model built inside the job, against an HTTP
+# server on 127.0.0.1, with the Hugging Face Hub switched off, so it needs
+# no GPU, no credential and no network beyond the pip install. On merge
+# requests it only runs when the trainer changed (the install is about
+# 200 MB of CPU torch); on the default branch and on tags it always runs,
+# because trainer-image needs it.
+#
+# The pip cache key is the requirement files: a changed pin re-downloads,
+# anything else reuses the wheels.
+# ---------------------------------------------------------------------------
+
+trainer-test:
+  stage: verify
+  image: python:3.11-slim
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    PYTHONDONTWRITEBYTECODE: "1"
+  cache:
+    key:
+      files:
+        - infra/training/requirements.txt
+        - infra/training/requirements-cpu.txt
+      prefix: trainer-pip
+    paths:
+      - .pip-cache/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes:
+        - infra/training/**/*
+        - .gitlab-ci.yml
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+  script:
+    - cd infra/training
+    # torch first and alone, so only torch is taken from the PyTorch index.
+    - pip install -r requirements-cpu.txt
+    - pip install -r requirements.txt -r requirements-test.txt
+    - python -m pytest
+
+# Builds the GPU image, pushes it and prints its digest. MANUAL: nothing is
+# published until a person presses the job, and it only appears on the
+# default branch or a tag. The digest it prints is what goes into the API's
+# TRAINING_IMAGE (always <repository>@sha256:..., never a tag), so the image
+# a paid job runs is exactly the one that was built from a tested commit.
+#
+# Where it pushes:
+#   - by default, this project's own GitLab registry
+#     ($CI_REGISTRY_IMAGE/trainer) with the job's built-in credentials;
+#   - elsewhere (a public project, Docker Hub) when TRAINER_IMAGE_REPOSITORY,
+#     TRAINER_REGISTRY, TRAINER_REGISTRY_USER and TRAINER_REGISTRY_PASSWORD
+#     are set in Settings > CI/CD > Variables (masked + protected).
+# A GPU node pulls without credentials, so the repository has to be public
+# or the API has to be given pull credentials; see docs/FOUNDER-ACTIONS.md.
+#
+# The image is about 6-7 GB (CUDA runtime plus torch), so the job gets its
+# own timeout. It has never been run: the Dockerfile passes
+# `docker build --check` and its pins resolve, but no build has completed.
+trainer-image:
+  stage: images
+  needs: [trainer-test]
+  image: docker:27
+  services:
+    - name: docker:27-dind
+      alias: docker
+  timeout: 45m
+  cache: []
+  variables:
+    DOCKER_HOST: "tcp://docker:2376"
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "/certs/client"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_TAG
+      when: manual
+      allow_failure: true
+  script:
+    - |
+      REPOSITORY="${TRAINER_IMAGE_REPOSITORY:-$CI_REGISTRY_IMAGE/trainer}"
+      REGISTRY="${TRAINER_REGISTRY:-$CI_REGISTRY}"
+      REGISTRY_USER="${TRAINER_REGISTRY_USER:-$CI_REGISTRY_USER}"
+      REGISTRY_PASSWORD="${TRAINER_REGISTRY_PASSWORD:-$CI_REGISTRY_PASSWORD}"
+      if [ -z "$REPOSITORY" ] || [ -z "$REGISTRY" ] || [ -z "$REGISTRY_USER" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+        echo "No registry to push to: enable this project's container registry or set the TRAINER_* variables."
+        exit 1
+      fi
+      TAG="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}"
+      # --password-stdin keeps the password out of the process list and the log.
+      echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" --username "$REGISTRY_USER" --password-stdin
+      docker build --pull \
+        --label "org.opencontainers.image.revision=$CI_COMMIT_SHA" \
+        --label "org.opencontainers.image.source=$CI_PROJECT_URL" \
+        --tag "$REPOSITORY:$TAG" infra/training
+      docker push "$REPOSITORY:$TAG"
+      DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$REPOSITORY:$TAG")"
+      case "$DIGEST" in
+        *@sha256:*) ;;
+        *) echo "The push returned no digest"; exit 1 ;;
+      esac
+      echo "Pushed $REPOSITORY:$TAG"
+      echo "TRAINING_IMAGE=$DIGEST"
+      echo "TRAINING_IMAGE=$DIGEST" > trainer-image.env
+  artifacts:
+    expire_in: 90 days
+    paths:
+      - trainer-image.env
 
 # ---------------------------------------------------------------------------
 # Quarantine: tiers that are currently RED. Both are allow_failure so they

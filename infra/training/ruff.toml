@@ -1,0 +1,13 @@
+# Lint settings for the trainer (`uvx ruff check infra/training`).
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "B", "I"]
+# B904: failures are re-raised as TrainerError on purpose, with a message
+# written for the user; chaining the library's exception adds nothing to it.
+# B905: every zip here pairs sequences built to the same length a line above.
+ignore = ["B904", "B905"]
+
+[lint.isort]
+known-first-party = ["wheelsai_trainer", "conftest"]

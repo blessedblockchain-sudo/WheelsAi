@@ -1,0 +1,35 @@
+# Environments. The documented location is outside the repository
+# (~/.cache/wheelsai/trainer-venv); these catch one made here by habit.
+.venv/
+venv/
+env/
+.uv/
+
+# Python and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model, tokenizer and dataset files. No weight file belongs in git: the
+# test model is built at run time and real models come from Hugging Face.
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
+*.parquet
+*.arrow
+*.tar.gz
+hf/
+.cache/
+huggingface/
+
+# Run directories of train.py (--work-dir) and of the CPU proof
+workspace/
+work/
+out/
+checkpoints/
+metrics.json

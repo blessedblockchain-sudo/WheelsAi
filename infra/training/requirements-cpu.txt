@@ -1,0 +1,8 @@
+# CPU test environment only (the offline pytest suite and the CPU proof).
+# Same torch release as the image's base, built without CUDA. Installed on
+# its own, before requirements.txt, so the PyTorch index is consulted for
+# torch alone and PyPI for everything else:
+#   pip install -r requirements-cpu.txt
+#   pip install -r requirements.txt -r requirements-test.txt
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1+cpu

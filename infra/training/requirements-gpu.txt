@@ -1,0 +1,3 @@
+# GPU image only. bitsandbytes provides the 4-bit loading behind METHOD=qlora
+# and needs CUDA at run time, so the CPU test environment does not install it.
+bitsandbytes==0.44.1

@@ -1,0 +1,2 @@
+# Test runner for the offline suite. Not installed in the image.
+pytest==8.3.3

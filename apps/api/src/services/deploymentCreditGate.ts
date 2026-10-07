@@ -23,6 +23,7 @@
  */
 
 import { getPricePerSecond } from "./computeMetering.js";
+import { MICRO_USD_PER_CENT, pricePerSecondMicroUsd } from "./gpuBilling.js";
 
 /** One billing hour is the minimum admission reservation. */
 export const DEPLOYMENT_RESERVATION_SECONDS = 3600;
@@ -70,10 +71,13 @@ export function estimateDeploymentReservationCents(
   replicas: number,
   pricePerSecondUsd: (tier: string) => number = getPricePerSecond
 ): bigint {
-  const perReplicaUsd =
-    pricePerSecondUsd(gpuTier) * DEPLOYMENT_RESERVATION_SECONDS;
-  const totalCents = Math.ceil(perReplicaUsd * Math.max(1, replicas) * 100);
-  return BigInt(totalCents);
+  // Integer micro-dollars, as the billing tick charges: in floating point
+  // 0.0001 x 3600 x 100 is 36.00000000000001, which rounded up to 37 cents.
+  const microUsd =
+    pricePerSecondMicroUsd(pricePerSecondUsd(gpuTier)) *
+    BigInt(DEPLOYMENT_RESERVATION_SECONDS) *
+    BigInt(Math.max(1, replicas));
+  return (microUsd + MICRO_USD_PER_CENT - 1n) / MICRO_USD_PER_CENT;
 }
 
 /**

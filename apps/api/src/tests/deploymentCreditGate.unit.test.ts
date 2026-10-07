@@ -66,6 +66,16 @@ test("estimate: 1 billing hour per replica, rounded up to cents", () => {
   assert.equal(estimateDeploymentReservationCents("rtx4090", 0, PRICE), 180n);
 });
 
+test("estimate: exact for prices that are not exact in floating point", () => {
+  // 0.0001 x 3600 x 100 is 36.00000000000001 as a double: one hour at
+  // $0.36 is 36 cents, not 37.
+  assert.equal(estimateDeploymentReservationCents("3060", 1, () => 0.0001), 36n);
+  assert.equal(estimateDeploymentReservationCents("3060", 3, () => 0.0001), 108n);
+  assert.equal(estimateDeploymentReservationCents("4070", 1, () => 0.00015), 54n);
+  // A real fraction of a cent still rounds up.
+  assert.equal(estimateDeploymentReservationCents("x", 1, () => 0.000001), 1n);
+});
+
 test("reservation succeeds: balance decremented, negative ledger row written", async () => {
   const { tx, ledger, getBalance } = makeStub(1000n);
   const result = await reserveDeploymentCredits({

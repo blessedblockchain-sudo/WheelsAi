@@ -124,7 +124,8 @@ export default function DeploymentsApiPage() {
         <Fields
           fields={[
             { name: "name", type: "string", required: true, description: "3 to 50 characters. Determines the slug used in /v1 paths." },
-            { name: "modelId", type: "string", required: true, description: "A catalog model id." },
+            { name: "modelId", type: "string", required: true, description: <>A catalog model id. Leave it out when you send <code>fineTunedModelId</code>.</> },
+            { name: "fineTunedModelId", type: "uuid", description: <>One of your <Link href="/docs/api/training#fine-tuned-models">fine-tuned models</Link>, served instead of a catalog model. The base model is taken from it and the engine must be <code>vllm</code>.</> },
             { name: "gpuTier", type: "string", required: true, description: <>A tier id: <code>3060</code>, <code>4070</code>, <code>4090</code>, <code>a100</code> or <code>h100</code>, as offered by <code>GET /api/models</code>.</> },
             { name: "engine", type: "enum", description: <><code>vllm</code> (default) or <code>ollama</code>.</> },
             { name: "replicas", type: "integer", description: "1 to 10, default 1." },
@@ -143,6 +144,15 @@ export default function DeploymentsApiPage() {
         <ul>
           <li>
             <code>400</code>: unknown model or GPU tier, or invalid fields.
+          </li>
+          <li>
+            With <code>fineTunedModelId</code>, before anything is reserved: <code>404</code>{" "}
+            <code>fine_tuned_model_not_found</code>; <code>409</code> <code>fine_tuned_model_not_ready</code> (it was
+            deleted) or <code>fine_tuned_model_not_servable</code>; <code>400</code>{" "}
+            <code>engine_not_supported_for_adapters</code>, <code>fine_tuned_model_base_mismatch</code> (a{" "}
+            <code>modelId</code> that is not its base model) or <code>tier_too_small_for_serving</code> (with{" "}
+            <code>requiredVramGb</code>); <code>503</code> <code>adapter_download_not_configured</code> when this server
+            cannot serve adapters.
           </li>
           <li>
             <code>402</code> <code>insufficient_credits</code>: the one-hour reservation (GPU rate × 3,600 × replicas) is more
@@ -166,8 +176,9 @@ export default function DeploymentsApiPage() {
 
       <Endpoint id="get-deployment" method="GET" path="/api/deployments/{deploymentId}" auth="API key or session" title="Get a deployment">
         <p>
-          Returns <code>&#123; deployment &#125;</code> with its model, configuration, status, node health and{" "}
-          <code>endpoint</code>. Call the model through <code>endpoint</code>; GPU nodes are not called directly.
+          Returns <code>&#123; deployment &#125;</code> with its model, configuration, status, node health,{" "}
+          <code>fineTunedModel</code> (<code>&#123; id, name, slug &#125;</code>, or <code>null</code> for a catalog
+          model) and <code>endpoint</code>. Call the model through <code>endpoint</code>; GPU nodes are not called directly.
         </p>
       </Endpoint>
 

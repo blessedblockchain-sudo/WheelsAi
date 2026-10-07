@@ -20,6 +20,7 @@ const toc = [
   { id: "call", title: "5. Call the endpoint" },
   { id: "billing", title: "How GPU time is billed" },
   { id: "stop", title: "6. Scale, restart or stop" },
+  { id: "fine-tuned", title: "Deploy a fine-tuned model" },
 ];
 
 export default function DeployModelPage() {
@@ -203,6 +204,43 @@ console.log(completion.choices[0]?.message.content);`}
         <li>
           <code>DELETE /api/deployments/&#123;id&#125;</code> stops the deployment and its Nosana jobs. Stopped deployments stop
           accruing GPU time.
+        </li>
+      </ul>
+
+      <h2 id="fine-tuned">Deploy a fine-tuned model</h2>
+      <p>
+        A model you trained with the <Link href="/docs/api/training">fine-tuning API</Link> is deployed the same way,
+        naming the fine-tuned model instead of a catalog model. In the dashboard use <strong>Deploy</strong> on the
+        model&apos;s page under <strong>Fine-tuning</strong>. From code:
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -s -X POST "$WHEELSAI_API_URL/api/deployments" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "support-assistant",
+    "fineTunedModelId": "'"$FINE_TUNED_MODEL_ID"'",
+    "gpuTier": "4090",
+    "engine": "vllm"
+  }'`}
+      />
+      <ul>
+        <li>
+          The deployment runs the fine-tuned model&apos;s base model on vLLM with your adapter loaded. The engine must be{" "}
+          <code>vllm</code>, and the tier must be large enough for the base model: a tier that is too small is refused with{" "}
+          <code>tier_too_small_for_serving</code> and the memory it needs, before anything is reserved.
+        </li>
+        <li>
+          Admission, the reservation, the lifecycle and per-second GPU billing are the same as for a catalog model.
+        </li>
+        <li>
+          You call it the same way too: <code>/v1/&#123;slug&#125;/chat/completions</code>, or the <code>/v1</code> base
+          URL with the deployment&apos;s slug as <code>model</code>. <code>GET /v1/models</code> lists it with{" "}
+          <code>wheelsai.baseModel</code> and <code>wheelsai.fineTunedModel</code>.
+        </li>
+        <li>
+          A fine-tuned model cannot be deleted while a deployment serves it. Stop the deployment first.
         </li>
       </ul>
     </DocPage>

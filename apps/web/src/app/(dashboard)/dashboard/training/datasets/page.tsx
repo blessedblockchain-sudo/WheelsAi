@@ -29,22 +29,33 @@ import {
   type Dataset,
   type DatasetDetail,
   type DatasetStorageState,
+  type DatasetValidationResult,
   formatDatasetRows,
+  getApiErrorBody,
   getErrorMessage,
 } from "@/lib/api";
+import {
+  DATASET_ROW_FORMATS,
+  datasetFileTypeFromName,
+  datasetRowFormat,
+  datasetTrainingBlocker,
+  formatBytes,
+} from "@/lib/training";
 import { cn } from "@/lib/utils";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
-const formatColors: Record<string, string> = {
-  jsonl: "bg-blue-500/10 text-blue-500",
-  csv: "bg-green-500/10 text-green-500",
-  parquet: "bg-purple-500/10 text-purple-500",
-  alpaca: "bg-orange-500/10 text-orange-500",
-  sharegpt: "bg-pink-500/10 text-pink-500",
-};
-
 function formatMegabytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(bytes < 1024 * 1024 * 10 ? 2 : 0)} MB`;
+}
+
+/** How many sample rows and row errors the details card shows before "and N more". */
+const SAMPLE_ROWS_SHOWN = 3;
+const ROW_ERRORS_SHOWN = 10;
+
+/** The result of the last validation run on this page, kept until another dataset is opened. */
+interface LastValidation {
+  datasetId: string;
+  result: DatasetValidationResult;
 }
 
 /**
@@ -92,6 +103,13 @@ export default function DatasetsPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [lastValidation, setLastValidation] = useState<LastValidation | null>(null);
+  // Why a delete was refused (409 dataset_in_use), shown on the dataset's row.
+  const [deleteRefusal, setDeleteRefusal] = useState<{ datasetId: string; message: string } | null>(null);
+  // Why the chosen file cannot be uploaded, shown under the file input.
+  const [fileProblem, setFileProblem] = useState<string | null>(null);
+  // The name follows the chosen file until the user types one of their own.
+  const [nameIsSuggested, setNameIsSuggested] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -119,21 +137,47 @@ export default function DatasetsPage() {
     void loadDatasets();
   }
 
+  /** Why this file would be refused, checked before a byte is sent; the server checks again. */
+  function problemWithFile(file: File): string | null {
+    if (datasetFileTypeFromName(file.name) === null) {
+      return "This file type is not supported. Upload a .jsonl, .csv or .parquet file.";
+    }
+    if (file.size === 0) return "This file is empty.";
+    if (storage && file.size > storage.maxDatasetBytes) {
+      return `This file is ${formatMegabytes(file.size)}. The largest dataset is ${formatMegabytes(storage.maxDatasetBytes)}.`;
+    }
+    return null;
+  }
+
+  function handleFileChosen(file: File | null) {
+    const problem = file ? problemWithFile(file) : null;
+    setUploadFile(file);
+    setFileProblem(problem);
+    // A name is suggested from a file that can be uploaded, never forced.
+    if (file && !problem && (nameIsSuggested || !uploadForm.name)) {
+      const suggested = file.name
+        .replace(/\.[a-z0-9]+$/i, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 100);
+      if (suggested) {
+        setUploadForm((form) => ({ ...form, name: suggested }));
+        setNameIsSuggested(true);
+      }
+    }
+  }
+
   async function handleUpload() {
     if (!uploadFile || !uploadForm.name) {
       toast.error("Please provide a name and select a file");
       return;
     }
 
-    // Refused here, before a byte is sent; the server checks again.
-    if (storage && uploadFile.size > storage.maxDatasetBytes) {
-      toast.error(
-        `This file is ${formatMegabytes(uploadFile.size)}. The largest dataset is ${formatMegabytes(storage.maxDatasetBytes)}.`
-      );
-      return;
-    }
-    if (uploadFile.size === 0) {
-      toast.error("This file is empty");
+    const problem = problemWithFile(uploadFile);
+    const fileType = datasetFileTypeFromName(uploadFile.name);
+    if (problem || fileType === null) {
+      setFileProblem(problem);
       return;
     }
 
@@ -141,9 +185,9 @@ export default function DatasetsPage() {
     setUploadProgress(0);
 
     try {
-      const rowCount = await countJsonlRows(uploadFile);
+      const rowCount = fileType === "jsonl" ? await countJsonlRows(uploadFile) : undefined;
       if (storage && rowCount !== undefined && rowCount > storage.maxDatasetRows) {
-        toast.error(
+        setFileProblem(
           `This file has ${rowCount.toLocaleString()} rows. The most a dataset can have is ${storage.maxDatasetRows.toLocaleString()}.`
         );
         return;
@@ -156,6 +200,8 @@ export default function DatasetsPage() {
         fileName: uploadFile.name,
         sizeBytes: uploadFile.size,
         rowCount,
+        // From the file name's extension, the same rule the API applies.
+        fileType,
         contentType: uploadFile.type || "application/octet-stream",
       });
 
@@ -207,11 +253,15 @@ export default function DatasetsPage() {
         toast.warning(`Dataset uploaded with ${validation.validation.errorCount} validation errors`);
       }
 
-      // Reset form
+      // Reset form, and open the new dataset with what validation found.
       setShowUploadForm(false);
       setUploadForm({ name: "", description: "" });
       setUploadFile(null);
+      setFileProblem(null);
+      setNameIsSuggested(true);
+      setLastValidation({ datasetId: dataset.id, result: validation });
       loadDatasets();
+      void handleViewDetails(dataset.id);
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to upload dataset"));
     } finally {
@@ -221,20 +271,39 @@ export default function DatasetsPage() {
     }
   }
 
-  async function handleDelete(datasetId: string) {
-    if (!(await confirmAction({ title: "Delete this dataset?", destructive: true }))) {
+  async function handleDelete(dataset: Dataset) {
+    if (
+      !(await confirmAction({
+        title: `Delete "${dataset.name}"?`,
+        description:
+          "The file is removed from storage and the name becomes free. Finished training jobs keep their results.",
+        confirmLabel: "Delete dataset",
+        destructive: true,
+      }))
+    ) {
       return;
     }
 
+    setDeleteRefusal(null);
     try {
-      await trainingApi.deleteDataset(datasetId);
+      await trainingApi.deleteDataset(dataset.id);
       toast.success("Dataset deleted");
       loadDatasets();
-      if (selectedDataset?.id === datasetId) {
+      if (selectedDataset?.id === dataset.id) {
         setSelectedDataset(null);
       }
-    } catch (error: any) {
-      toast.error(getErrorMessage(error, "Failed to delete dataset"));
+    } catch (error) {
+      // 409 dataset_in_use: the API says how many unfinished jobs hold it.
+      // The reason stays on the row; a toast alone would be gone in seconds.
+      const failure = getApiErrorBody(error);
+      if (failure?.status === 409) {
+        setDeleteRefusal({
+          datasetId: dataset.id,
+          message: getErrorMessage(error, "This dataset is in use and cannot be deleted yet."),
+        });
+      } else {
+        toast.error(getErrorMessage(error, "Failed to delete dataset"));
+      }
     }
   }
 
@@ -251,6 +320,7 @@ export default function DatasetsPage() {
     setIsValidating(true);
     try {
       const validation = await trainingApi.validateDataset(datasetId);
+      setLastValidation({ datasetId, result: validation });
       if (validation.validation.isValid) {
         toast.success("Dataset validated successfully");
       } else {
@@ -341,31 +411,27 @@ export default function DatasetsPage() {
                       <div
                         key={dataset.id}
                         className={cn(
-                          "flex items-center justify-between rounded-lg border p-4 transition-colors",
+                          "rounded-lg border p-4 transition-colors",
                           selectedDataset?.id === dataset.id
-                            ? "border-primary-500 bg-primary/10"
+                            ? "border-primary bg-primary/10"
                             : "hover:bg-muted"
                         )}
                       >
-                        <div className="flex items-center gap-4">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
-                            <FileText className="h-5 w-5 text-blue-600" />
+                       <div className="flex items-center justify-between gap-4">
+                        <div className="flex min-w-0 items-center gap-4">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/15">
+                            <FileText className="h-5 w-5 text-primary" />
                           </div>
-                          <div>
-                            <div className="flex items-center gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
                               <p className="font-medium">{dataset.name}</p>
-                              <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium", formatColors[dataset.fileType] || "bg-muted text-foreground")}>
-                                {dataset.fileType}
-                              </span>
+                              <Badge variant="outline">{dataset.fileType}</Badge>
                               {dataset.schemaFormat && (
-                                <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
-                                  {dataset.schemaFormat}
-                                </span>
+                                <Badge variant="secondary">{datasetRowFormat(dataset.schemaFormat).label}</Badge>
                               )}
                             </div>
                             <p className="text-sm text-muted-foreground">
-                              {formatDatasetRows(dataset.rowCount)} &bull;{" "}
-                              {(dataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
+                              {formatDatasetRows(dataset.rowCount)} &bull; {formatBytes(dataset.sizeBytes)}
                             </p>
                           </div>
                         </div>
@@ -380,7 +446,7 @@ export default function DatasetsPage() {
                             ) : (
                               <>
                                 <Clock className="mr-1 h-3 w-3" />
-                                Pending
+                                Not valid
                               </>
                             )}
                           </Badge>
@@ -388,7 +454,11 @@ export default function DatasetsPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleViewDetails(dataset.id)}
+                            aria-label={`View ${dataset.name}`}
+                            onClick={() => {
+                              if (lastValidation?.datasetId !== dataset.id) setLastValidation(null);
+                              void handleViewDetails(dataset.id);
+                            }}
                           >
                             <Eye className="h-4 w-4" />
                           </Button>
@@ -396,11 +466,28 @@ export default function DatasetsPage() {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleDelete(dataset.id)}
+                            aria-label={`Delete ${dataset.name}`}
+                            onClick={() => handleDelete(dataset)}
                           >
-                            <Trash2 className="h-4 w-4 text-red-500" />
+                            <Trash2 className="h-4 w-4 text-danger" />
                           </Button>
                         </div>
+                       </div>
+                        {deleteRefusal?.datasetId === dataset.id && (
+                          <p
+                            role="alert"
+                            data-testid="dataset-delete-refusal"
+                            className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted p-3 text-sm text-foreground"
+                          >
+                            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                            <span>
+                              Not deleted. {deleteRefusal.message}{" "}
+                              <Link href="/dashboard/training" className="text-primary underline-offset-4 hover:underline">
+                                See training jobs
+                              </Link>
+                            </span>
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -446,7 +533,10 @@ export default function DatasetsPage() {
                     </label>
                     <Input
                       value={uploadForm.name}
-                      onChange={(e) => setUploadForm({ ...uploadForm, name: e.target.value })}
+                      onChange={(e) => {
+                        setUploadForm({ ...uploadForm, name: e.target.value });
+                        setNameIsSuggested(false);
+                      }}
                       placeholder="my-training-data"
                       className="mt-1"
                     />
@@ -471,17 +561,27 @@ export default function DatasetsPage() {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept=".jsonl,.json,.csv,.parquet"
-                      onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                      className="mt-1 block w-full text-sm text-muted-foreground file:mr-4 file:rounded-lg file:border-0 file:bg-primary-50 file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary-700 hover:file:bg-primary-100"
+                      accept=".jsonl,.ndjson,.json,.csv,.parquet"
+                      aria-describedby="dataset-file-help"
+                      onChange={(e) => handleFileChosen(e.target.files?.[0] || null)}
+                      className="mt-1 block w-full text-sm text-muted-foreground file:mr-4 file:rounded-lg file:border-0 file:bg-primary/15 file:px-4 file:py-2 file:text-sm file:font-medium file:text-primary hover:file:bg-primary/25"
                     />
-                    {uploadFile && (
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {uploadFile.name} ({(uploadFile.size / 1024 / 1024).toFixed(2)} MB)
+                    {uploadFile && !fileProblem && (
+                      <p className="mt-1 text-xs text-muted-foreground" data-testid="dataset-file-type">
+                        {uploadFile.name} ({formatBytes(uploadFile.size)}), read as{" "}
+                        <span className="font-medium text-foreground">
+                          {datasetFileTypeFromName(uploadFile.name)}
+                        </span>{" "}
+                        from its extension
+                      </p>
+                    )}
+                    {fileProblem && (
+                      <p role="alert" className="mt-1 text-xs text-danger">
+                        {fileProblem}
                       </p>
                     )}
                     {storage && (
-                      <p className="mt-1 text-xs text-muted-foreground">
+                      <p id="dataset-file-help" className="mt-1 text-xs text-muted-foreground">
                         JSONL, CSV or Parquet, up to {formatMegabytes(storage.maxDatasetBytes)} and{" "}
                         {storage.maxDatasetRows.toLocaleString()} rows. The row format is detected
                         when the file is validated.
@@ -512,6 +612,7 @@ export default function DatasetsPage() {
                       onClick={() => {
                         setShowUploadForm(false);
                         setUploadFile(null);
+                        setFileProblem(null);
                       }}
                       disabled={isUploading}
                     >
@@ -519,7 +620,7 @@ export default function DatasetsPage() {
                     </Button>
                     <Button
                       onClick={handleUpload}
-                      disabled={!uploadFile || !uploadForm.name || isUploading}
+                      disabled={!uploadFile || !uploadForm.name || isUploading || fileProblem !== null}
                       isLoading={isUploading}
                       className="flex-1"
                     >
@@ -532,8 +633,25 @@ export default function DatasetsPage() {
             )}
 
             {/* Dataset details */}
-            {selectedDataset && (
-              <Card>
+            {selectedDataset && (() => {
+              // What the last validation on this page found, when it was this dataset's:
+              // it carries the true error count, the warnings and the token figures.
+              const validated =
+                lastValidation?.datasetId === selectedDataset.id ? lastValidation.result : null;
+              const errors = validated?.validation.errors ?? selectedDataset.validationErrors ?? [];
+              const errorCount = validated?.validation.errorCount ?? errors.length;
+              const warnings = validated?.validation.warnings ?? [];
+              const samples = validated?.sampleRows ?? selectedDataset.sampleRows ?? [];
+              const rowFormat = datasetRowFormat(selectedDataset.schemaFormat);
+              // A dataset that is not valid either has row errors or was never checked.
+              const blocker =
+                !selectedDataset.isValidated && errorCount > 0
+                  ? "It has row errors. Fix the file and upload it again."
+                  : !selectedDataset.isValidated
+                    ? "It has not been validated. Use Validate again."
+                    : datasetTrainingBlocker(selectedDataset);
+              return (
+              <Card data-testid="dataset-details">
                 <CardHeader>
                   <CardTitle className="text-base">{selectedDataset.name}</CardTitle>
                   <CardDescription>
@@ -542,17 +660,22 @@ export default function DatasetsPage() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <dl className="space-y-2 text-sm">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between gap-4">
                       <dt className="text-muted-foreground">File type</dt>
                       <dd className="font-medium">{selectedDataset.fileType}</dd>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between gap-4">
                       <dt className="text-muted-foreground">Row format</dt>
-                      <dd className="font-medium">
-                        {selectedDataset.schemaFormat ?? "Not detected yet"}
+                      <dd className="text-right font-medium" data-testid="dataset-row-format">
+                        {rowFormat.label}
+                        {rowFormat.shape && (
+                          <span className="block text-xs font-normal text-muted-foreground">
+                            {rowFormat.shape}
+                          </span>
+                        )}
                       </dd>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between gap-4">
                       <dt className="text-muted-foreground">Rows</dt>
                       <dd className="font-medium">
                         {selectedDataset.rowCount === null
@@ -560,100 +683,148 @@ export default function DatasetsPage() {
                           : selectedDataset.rowCount.toLocaleString()}
                       </dd>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between gap-4">
                       <dt className="text-muted-foreground">Size</dt>
-                      <dd className="font-medium">
-                        {(selectedDataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
-                      </dd>
+                      <dd className="font-medium">{formatBytes(selectedDataset.sizeBytes)}</dd>
                     </div>
-                    <div className="flex justify-between">
+                    {selectedDataset.avgTokensPerRow !== null && (
+                      <div className="flex justify-between gap-4">
+                        <dt className="text-muted-foreground">Tokens per row (average)</dt>
+                        <dd className="font-medium">
+                          {Math.round(selectedDataset.avgTokensPerRow).toLocaleString()}
+                        </dd>
+                      </div>
+                    )}
+                    {selectedDataset.totalTokens !== null && (
+                      <div className="flex justify-between gap-4">
+                        <dt className="text-muted-foreground">Tokens (total)</dt>
+                        <dd className="font-medium">{selectedDataset.totalTokens.toLocaleString()}</dd>
+                      </div>
+                    )}
+                    <div className="flex justify-between gap-4">
                       <dt className="text-muted-foreground">Status</dt>
                       <dd>
-                        <Badge variant={selectedDataset.isValidated ? "success" : "secondary"}>
-                          {selectedDataset.isValidated ? "Valid" : "Pending Validation"}
+                        <Badge
+                          variant={
+                            selectedDataset.isValidated ? "success" : errorCount > 0 ? "destructive" : "secondary"
+                          }
+                        >
+                          {selectedDataset.isValidated
+                            ? "Valid"
+                            : errorCount > 0
+                              ? "Has row errors"
+                              : "Not validated"}
                         </Badge>
                       </dd>
                     </div>
                   </dl>
 
-                  {selectedDataset.validationErrors && selectedDataset.validationErrors.length > 0 && (
-                    <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3">
-                      <div className="flex items-center gap-2 text-sm font-medium text-red-500">
-                        <AlertTriangle className="h-4 w-4" />
-                        {selectedDataset.validationErrors.length} Validation Errors
+                  {errors.length > 0 && (
+                    <div
+                      className="rounded-lg border border-danger/30 bg-danger/10 p-3"
+                      data-testid="dataset-row-errors"
+                    >
+                      <div className="flex items-center gap-2 text-sm font-medium text-danger">
+                        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+                        {errorCount.toLocaleString()} row {errorCount === 1 ? "error" : "errors"}
                       </div>
-                      <ul className="mt-2 space-y-1 text-xs text-red-500">
-                        {selectedDataset.validationErrors.slice(0, 5).map((err: any, i: number) => (
+                      <ul className="mt-2 space-y-1 text-xs text-foreground">
+                        {errors.slice(0, ROW_ERRORS_SHOWN).map((issue, i) => (
                           <li key={i}>
-                            {err.row ? `Row ${err.row}: ` : ""}{err.message}
+                            {issue.row !== undefined && (
+                              <span className="font-mono text-muted-foreground">Row {issue.row}: </span>
+                            )}
+                            {issue.message}
                           </li>
                         ))}
-                        {selectedDataset.validationErrors.length > 5 && (
-                          <li>...and {selectedDataset.validationErrors.length - 5} more</li>
-                        )}
                       </ul>
+                      {errorCount > Math.min(errors.length, ROW_ERRORS_SHOWN) && (
+                        <p className="mt-2 text-xs text-muted-foreground">
+                          and {(errorCount - Math.min(errors.length, ROW_ERRORS_SHOWN)).toLocaleString()} more.
+                          Fix the file and upload it again; a dataset with row errors cannot be trained on.
+                        </p>
+                      )}
                     </div>
                   )}
 
-                  {selectedDataset.sampleRows && selectedDataset.sampleRows.length > 0 && (
-                    <div>
-                      <p className="text-sm font-medium text-foreground">Sample Data</p>
-                      <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-muted p-3 text-xs">
-                        {JSON.stringify(selectedDataset.sampleRows[0], null, 2)}
-                      </pre>
+                  {warnings.length > 0 && (
+                    <ul className="space-y-1 rounded-lg border border-border bg-muted p-3 text-xs text-muted-foreground">
+                      {warnings.map((warning, i) => (
+                        <li key={i}>{warning.message}</li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {samples.length > 0 && (
+                    <div data-testid="dataset-sample">
+                      <p className="text-sm font-medium text-foreground">
+                        Sample rows
+                        <span className="ml-2 text-xs font-normal text-muted-foreground">
+                          first {Math.min(samples.length, SAMPLE_ROWS_SHOWN)} as read from the file
+                        </span>
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {samples.slice(0, SAMPLE_ROWS_SHOWN).map((row, i) => (
+                          <pre
+                            key={i}
+                            className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs text-foreground"
+                          >
+                            {JSON.stringify(row, null, 2)}
+                          </pre>
+                        ))}
+                      </div>
                     </div>
                   )}
 
-                  <div className="flex gap-2">
+                  {blocker && (
+                    <p className="text-xs text-muted-foreground" data-testid="dataset-training-blocker">
+                      Cannot be trained on yet. {blocker}
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap gap-2">
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => handleRevalidate(selectedDataset.id)}
                       isLoading={isValidating}
+                      disabled={!canUpload}
+                      title={canUpload ? undefined : "Validation reads the file from storage, which is not configured."}
                     >
                       <RefreshCw className="mr-2 h-4 w-4" />
-                      Revalidate
+                      Validate again
                     </Button>
-                    <Link href={`/dashboard/training/new?dataset=${selectedDataset.id}`}>
-                      <Button size="sm">
-                        Start Training
+                    {blocker ? (
+                      <Button size="sm" disabled>
+                        Train on this dataset
                       </Button>
-                    </Link>
+                    ) : (
+                      <Link href={`/dashboard/training/new?dataset=${selectedDataset.id}`}>
+                        <Button size="sm">Train on this dataset</Button>
+                      </Link>
+                    )}
                   </div>
                 </CardContent>
               </Card>
-            )}
+              );
+            })()}
 
             {/* Format guide */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Dataset Formats</CardTitle>
+                <CardTitle className="text-base">Row formats</CardTitle>
+                <CardDescription>
+                  Upload JSON Lines, CSV or Parquet. The row format is detected from the columns when
+                  the file is validated.
+                </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4 text-sm">
-                <div>
-                  <p className="font-medium">Alpaca Format</p>
-                  <p className="text-muted-foreground">
-                    JSONL with instruction, input (optional), and output fields
-                  </p>
-                </div>
-                <div>
-                  <p className="font-medium">ShareGPT Format</p>
-                  <p className="text-muted-foreground">
-                    JSONL with conversations array containing human/gpt turns
-                  </p>
-                </div>
-                <div>
-                  <p className="font-medium">Text Format</p>
-                  <p className="text-muted-foreground">
-                    JSONL with a single text field containing the full example
-                  </p>
-                </div>
-                <div>
-                  <p className="font-medium">CSV Format</p>
-                  <p className="text-muted-foreground">
-                    CSV with prompt and completion columns
-                  </p>
-                </div>
+              <CardContent className="space-y-3 text-sm">
+                {DATASET_ROW_FORMATS.map((format) => (
+                  <div key={format.id}>
+                    <p className="font-medium">{format.label}</p>
+                    <p className="text-muted-foreground">Fields: {format.shape}</p>
+                  </div>
+                ))}
               </CardContent>
             </Card>
           </div>

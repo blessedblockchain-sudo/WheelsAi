@@ -67,9 +67,26 @@ export default function WebhooksApiPage() {
               </>
             ),
           },
-          { event: <code>training.started</code>, when: "A fine-tuning job is created.", data: <code>jobId, name</code> },
-          { event: <code>training.completed</code>, when: "A fine-tuning job completes.", data: <code>jobId, name</code> },
-          { event: <code>training.failed</code>, when: "A fine-tuning job fails.", data: <code>jobId, name, error</code> },
+          {
+            event: <code>training.started</code>,
+            when: "A fine-tuning job is admitted and its credits are held. Sent once.",
+            data: <code>jobId, name, baseModelId, method, gpuTier</code>,
+          },
+          {
+            event: <code>training.completed</code>,
+            when: "A fine-tuning job completes and its fine-tuned model exists. Sent once.",
+            data: <code>jobId, name, chargedCents, billedSeconds, fineTunedModelId, fineTunedModelSlug, partial</code>,
+          },
+          {
+            event: <code>training.failed</code>,
+            when: "A fine-tuning job fails. Sent once.",
+            data: <code>jobId, name, chargedCents, billedSeconds, failureCode, message</code>,
+          },
+          {
+            event: <code>training.cancelled</code>,
+            when: "A fine-tuning job you cancelled has been stopped and settled. Sent once. A run that had completed before the cancel sends training.completed instead.",
+            data: <><code>jobId, name, chargedCents, billedSeconds</code>, and <code>failureCode, message</code> when the run had already failed before the cancel</>,
+          },
           {
             event: <code>alert.triggered</code>,
             when: "An alert rule's threshold is crossed.",

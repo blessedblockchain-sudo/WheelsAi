@@ -356,6 +356,8 @@ export interface Deployment {
   /** Why it left service ("user_stopped", "insufficient_credits", ...); null while healthy. */
   statusReason?: string | null;
   endpoint: string | null;
+  /** The fine-tuned model this deployment serves; null or absent for a catalog model. */
+  fineTunedModel?: { id: string; name: string; slug: string } | null;
   healthyNodes: number;
   totalNodes: number;
   createdAt: string;
@@ -383,7 +385,10 @@ export interface DeploymentDetail extends Omit<Deployment, "model" | "healthyNod
 
 export interface CreateDeploymentInput {
   name: string;
-  modelId: string;
+  /** A catalog model id. Optional when fineTunedModelId is given: the base model comes from it. */
+  modelId?: string;
+  /** Serve one of the organization's fine-tuned models (vLLM only). */
+  fineTunedModelId?: string;
   gpuTier: string;
   engine?: "vllm" | "ollama";
   replicas?: number;
@@ -1145,6 +1150,8 @@ export interface Dataset {
   sizeBytes: number;
   avgTokensPerRow: number | null;
   totalTokens: number | null;
+  /** sha256 of the validated file; a training job is pinned to it. */
+  contentSha256?: string | null;
   isValidated: boolean;
   createdAt: string;
 }
@@ -1163,66 +1170,43 @@ export function formatDatasetRows(rowCount: number | null | undefined): string {
     : "Row count unknown";
 }
 
+/** One problem validation found. `row` is 1-based; absent for a whole-file problem. */
+export interface DatasetIssue {
+  row?: number;
+  field?: string;
+  message: string;
+  severity?: "error" | "warning";
+}
+
 export interface DatasetDetail extends Dataset {
   storageType: string;
-  validationErrors: any[] | null;
-  sampleRows: Record<string, any>[] | null;
+  /** At most 50 are stored. */
+  validationErrors: DatasetIssue[] | null;
+  sampleRows: Record<string, unknown>[] | null;
   updatedAt: string;
 }
 
-export interface TrainingJob {
-  id: string;
-  name: string;
-  baseModelId: string;
-  datasetName: string;
-  method: "lora" | "qlora" | "full";
-  status: "pending" | "queued" | "running" | "completed" | "failed" | "cancelled";
-  progress: number;
-  gpuTier: string;
-  gpuCount: number;
-  estimatedCostCents: number | null;
-  createdAt: string;
-  startedAt: string | null;
-  completedAt: string | null;
-}
-
-export interface TrainingJobDetail extends Omit<TrainingJob, "datasetName"> {
-  baseModelHfId: string;
-  dataset: {
-    id: string;
-    name: string;
-    // null when the rows could not be counted.
+export interface DatasetValidationResult {
+  validation: {
+    isValid: boolean;
+    format: string;
+    fileType: DatasetFileType;
+    schemaFormat: string;
+    detectedFormat: string;
     rowCount: number | null;
+    sizeBytes: number;
+    /** At most 50; errorCount is the true total. */
+    errors: DatasetIssue[];
+    errorCount: number;
+    warnings: DatasetIssue[];
   };
-  config: {
-    epochs: number;
-    batchSize: number;
-    learningRate: number;
-    warmupSteps: number;
-    gradientAccumulationSteps: number;
-    loraR?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    targetModules?: string[];
-  };
-  currentEpoch: number | null;
-  totalEpochs: number | null;
-  trainingLoss: number | null;
-  evalLoss: number | null;
-  metrics: any | null;
-  outputModelId: string | null;
-  outputPath: string | null;
-  actualCostCents: number | null;
-  lastError: string | null;
-}
-
-export interface TrainableModel {
-  id: string;
-  hfId: string;
-  displayName: string;
-  parameters: number | null;
-  supportedMethods: string[];
-  recommendedGpuTier: string;
+  stats: {
+    totalTokens: number;
+    avgTokensPerRow: number;
+    minTokens: number;
+    maxTokens: number;
+  } | null;
+  sampleRows: Record<string, unknown>[];
 }
 
 export interface CreateDatasetInput {
@@ -1239,28 +1223,290 @@ export interface CreateDatasetInput {
   format?: "jsonl" | "csv" | "parquet" | "alpaca" | "sharegpt" | "completion" | "text";
 }
 
+export type TrainingMethod = "lora" | "qlora";
+
+/** The nine states of a training job (GET /api/training/jobs?status=). */
+export type TrainingJobStatus =
+  | "pending"
+  | "submitting"
+  | "queued"
+  | "running"
+  | "finalizing"
+  | "completed"
+  | "failed"
+  | "cancelling"
+  | "cancelled";
+
+/** Why a job cannot start on this server, in the API's own sentence. */
+export interface TrainingBlocker {
+  code: string;
+  message: string;
+}
+
+export interface TrainingHyperparamBound {
+  min: number;
+  max: number;
+  integer: boolean;
+}
+
+/** The trainer's hyperparameters. Only the keys sent are stored; the rest are the trainer's defaults. */
+export interface TrainingHyperparams {
+  epochs?: number;
+  batchSize?: number;
+  gradientAccumulationSteps?: number;
+  learningRate?: number;
+  warmupRatio?: number;
+  loraR?: number;
+  loraAlpha?: number;
+  loraDropout?: number;
+  targetModules?: "all-linear" | string[];
+  maxSeqLength?: number;
+  maxSteps?: number | null;
+  evalSplit?: number | null;
+  seed?: number;
+}
+
+/** GET /api/training/capabilities: the one read that decides what the pages offer. */
+export interface TrainingCapabilities {
+  canStart: boolean;
+  blockers: TrainingBlocker[];
+  storage: {
+    configured: boolean;
+    driver: "s3" | "local" | null;
+    maxDatasetBytes: number;
+    maxDatasetRows: number;
+  };
+  image: { configured: boolean };
+  nosana: {
+    configured: boolean;
+    mock: boolean;
+    tiers: Array<{
+      tier: string;
+      name: string;
+      vramGb: number;
+      pricePerSecondUsd: number;
+      deployable: boolean;
+    }>;
+  };
+  callbacks: { configured: boolean };
+  poller: { enabled: boolean };
+  gatedModels: { available: boolean };
+  runLimit: {
+    minSeconds: number;
+    maxSeconds: number;
+    setupAllowanceSeconds: number;
+    queueTimeoutSeconds: number;
+  };
+  limits: { maxActiveJobs: number; freeFailuresPerDay: number; adapterMaxBytes: number };
+  methods: TrainingMethod[];
+  hyperparameters: {
+    bounds: Record<string, TrainingHyperparamBound>;
+    defaults: Record<string, unknown>;
+    loraRanks: number[];
+  };
+}
+
+export interface TrainableModelTier {
+  tier: string;
+  vramGb: number;
+  pricePerSecondUsd: number;
+}
+
+export interface TrainableModelMethod {
+  method: TrainingMethod;
+  /** A planning figure, not a measurement. */
+  requiredVramGb: number;
+  /** The tiers of this server the method fits on, cheapest first. Empty = none. */
+  tiers: TrainableModelTier[];
+  recommendedTier: string | null;
+}
+
+export interface TrainableModel {
+  id: string;
+  hfId: string;
+  displayName: string;
+  parameters: number | null;
+  /** Needs a Hugging Face token on the server. */
+  gated: boolean;
+  available: boolean;
+  unavailableReason: "hf_token_required" | "no_tier_available" | "model_not_in_catalog" | null;
+  unavailableMessage: string | null;
+  methods: TrainableModelMethod[];
+  supportedMethods: TrainingMethod[];
+  recommendedGpuTier: string | null;
+  figuresBasis: "planning";
+}
+
+/** POST /api/training/estimate. Planning figures with a low and a high bound. */
+export interface TrainingEstimate {
+  basis: "planning";
+  trainTokens: number;
+  steps: number;
+  seconds: {
+    imagePull: number;
+    setup: number;
+    train: number;
+    wrapUp: number;
+    trainer: number;
+    total: number;
+  };
+  estimate: { seconds: number; cents: number };
+  low: { seconds: number; cents: number };
+  high: { seconds: number; cents: number };
+  pricePerSecondUsd: number;
+  runLimit: {
+    minSeconds: number;
+    maxSeconds: number;
+    suggestedSeconds: number;
+    appliedSeconds: number;
+  };
+  /** The most the job can cost: what is held when it is created. */
+  maximumCents: number;
+  fitsRunLimit: boolean;
+  suggestionCapped: boolean;
+}
+
+export interface TrainingEstimateResponse {
+  /**
+   * null when the dataset has no measured tokens per row (a Parquet file) and
+   * a run limit was given: the job can still be created, held for that limit.
+   */
+  estimate: (TrainingEstimate & { gpuTier: string; recommendedGpuTier: string | null }) | null;
+  /** What creating the job would hold: the price per second times the run limit. */
+  hold: { cents: number; maxRuntimeSeconds: number; pricePerSecondUsd: number; gpuTier: string };
+  dataset: { id: string; rowCount: number; avgTokensPerRow: number | null };
+}
+
+export interface TrainingJobFailure {
+  code: string;
+  /** A plain sentence. */
+  message: string;
+  charged: boolean;
+}
+
+/** One job as GET /api/training/jobs lists it. Money is in cents. */
+export interface TrainingJob {
+  id: string;
+  name: string;
+  baseModelId: string;
+  baseModelHfId: string;
+  datasetId: string;
+  /** null when the dataset row is gone. */
+  datasetName: string | null;
+  /** Rows created before LoRA-only training may still say "full". */
+  method: string;
+  gpuTier: string;
+  gpuCount: number;
+  status: TrainingJobStatus;
+  progress: number;
+  currentEpoch: number | null;
+  totalEpochs: number | null;
+  currentStep: number | null;
+  totalSteps: number | null;
+  trainingLoss: number | null;
+  evalLoss: number | null;
+  failureCode: string | null;
+  lastError: string | null;
+  failure: TrainingJobFailure | null;
+  maxRuntimeSeconds: number | null;
+  estimatedCostCents: number | null;
+  /** The hold: the most the job can cost. null on a job that held nothing. */
+  reservationCents: number | null;
+  /** While running, finalizing or cancelling; null otherwise. */
+  costSoFarCents: number | null;
+  /** The charge. null until the job is settled. */
+  actualCostCents: number | null;
+  billedSeconds: number | null;
+  charged: boolean | null;
+  pricePerSecondUsd: number | null;
+  /** The fine-tuned model's id, once there is one. */
+  outputModelId: string | null;
+  createdAt: string;
+  queuedAt: string | null;
+  startedAt: string | null;
+  cancelRequestedAt: string | null;
+  gpuStoppedAt: string | null;
+  completedAt: string | null;
+  settledAt: string | null;
+}
+
+export interface TrainingLedgerEntry {
+  id: string;
+  type: "training_reservation" | "training_reservation_release" | "training_usage" | string;
+  amountCents: number;
+  balanceAfterCents: number;
+  description: string | null;
+  createdAt: string;
+}
+
+export interface TrainingJobMetrics {
+  started?: { gpu: string | null; vramGb: number | null; device: string; trainerVersion: string };
+  phase?: string;
+  step?: { epoch: number; lr: number; tokensPerSecond: number | null; etaSeconds: number };
+  /** [step, loss] pairs. */
+  trainLoss?: Array<[number, number]>;
+  evalLoss?: Array<[number, number]>;
+  uploaded?: { adapterBytes: number; adapterSha256: string };
+  logSource?: "callbacks" | "nosana_result";
+  /** A summary of the run's metrics file, once the job is finalised. */
+  result?: Record<string, unknown>;
+}
+
+export interface TrainingJobDetail extends Omit<TrainingJob, "datasetName"> {
+  hyperparams: TrainingHyperparams | null;
+  config: unknown;
+  datasetSha256: string | null;
+  dataset: { id: string; name: string; rowCount: number | null; deleted: boolean } | null;
+  metrics: TrainingJobMetrics;
+  /** true when the trainer stopped at the run limit and kept a partial adapter. */
+  partial: boolean | null;
+  fineTunedModel: { id: string; slug: string; name: string } | null;
+  ledger: TrainingLedgerEntry[];
+}
+
 export interface CreateTrainingJobInput {
   name: string;
   baseModelId: string;
   datasetId: string;
-  method?: "lora" | "qlora" | "full";
+  method: TrainingMethod;
+  /** A tier key from the capabilities, such as "4090". */
+  gpuTier: string;
+  /** The run limit. Omitted = the estimate's suggestion. */
+  maxRuntimeSeconds?: number;
+  hyperparams?: TrainingHyperparams;
+}
+
+export interface CreateTrainingJobResponse {
+  job: { id: string; name: string; status: TrainingJobStatus };
+  /** What was held: the most this job can cost. */
+  reservation: { cents: number; maxRuntimeSeconds: number; pricePerSecondUsd: number };
+  estimate: TrainingEstimate | null;
+  message: string;
+  retryOf?: string;
+}
+
+export interface EstimateTrainingInput {
+  baseModelId: string;
+  datasetId: string;
+  method: TrainingMethod;
+  /** Omitted = the cheapest tier the model and method fit on. */
   gpuTier?: string;
-  gpuCount?: number;
-  config?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: number;
-    warmupSteps?: number;
-    gradientAccumulationSteps?: number;
-    loraR?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    targetModules?: string[];
-    quantizationBits?: "4" | "8";
-  };
+  maxRuntimeSeconds?: number;
+  hyperparams?: TrainingHyperparams;
+}
+
+export interface TrainingJobLogs {
+  jobId: string;
+  status: TrainingJobStatus;
+  logs: string;
+  totalLines: number;
+  source: "callbacks" | "nosana_result" | "none";
 }
 
 export const trainingApi = {
+  // What this server can do
+  getCapabilities: () => api<TrainingCapabilities>("/api/training/capabilities"),
+
   // Datasets
   listDatasets: () =>
     api<{ datasets: Dataset[]; total: number; storage: DatasetStorageState }>(
@@ -1288,28 +1534,7 @@ export const trainingApi = {
     }),
 
   validateDataset: (id: string) =>
-    api<{
-      validation: {
-        isValid: boolean;
-        format: string;
-        fileType: DatasetFileType;
-        schemaFormat: string;
-        detectedFormat: string;
-        rowCount: number | null;
-        sizeBytes: number;
-        /** At most 50; errorCount is the true total. */
-        errors: any[];
-        errorCount: number;
-        warnings: any[];
-      };
-      stats: {
-        totalTokens: number;
-        avgTokensPerRow: number;
-        minTokens: number;
-        maxTokens: number;
-      } | null;
-      sampleRows: Record<string, any>[];
-    }>(`/api/training/datasets/${id}/validate`, { method: "POST" }),
+    api<DatasetValidationResult>(`/api/training/datasets/${id}/validate`, { method: "POST" }),
 
   deleteDataset: (id: string) =>
     api<{ deleted: boolean; message: string }>(`/api/training/datasets/${id}`, {
@@ -1317,56 +1542,80 @@ export const trainingApi = {
     }),
 
   // Training Jobs
-  listJobs: (status?: string) =>
+  listJobs: (status?: TrainingJobStatus) =>
     api<{ jobs: TrainingJob[]; total: number }>(
       `/api/training/jobs${status ? `?status=${status}` : ""}`
     ),
 
-  getJob: (id: string) =>
-    api<{ job: TrainingJobDetail; liveProgress: any | null }>(`/api/training/jobs/${id}`),
+  getJob: (id: string) => api<{ job: TrainingJobDetail }>(`/api/training/jobs/${id}`),
 
   createJob: (input: CreateTrainingJobInput) =>
-    api<{
-      job: { id: string; name: string; status: string };
-      estimate: { gpuHours: number; costCents: number; costUsd: string };
-      message: string;
-    }>("/api/training/jobs", {
+    api<CreateTrainingJobResponse>("/api/training/jobs", {
       method: "POST",
       body: input,
     }),
 
+  /** A new job with the configuration of one that is over. It takes its own hold. */
+  retryJob: (id: string) =>
+    api<CreateTrainingJobResponse>(`/api/training/jobs/${id}/retry`, { method: "POST" }),
+
   getJobLogs: (id: string, tail?: number) =>
-    api<{ jobId: string; status: string; logs: string; totalLines: number }>(
-      `/api/training/jobs/${id}/logs${tail ? `?tail=${tail}` : ""}`
+    api<TrainingJobLogs>(`/api/training/jobs/${id}/logs${tail ? `?tail=${tail}` : ""}`),
+
+  /** 200 "cancelled" when it is over already; 202 "cancelling" while the stop is confirmed. */
+  cancelJob: (id: string) =>
+    api<{ status: "cancelled" | "cancelling"; message: string }>(
+      `/api/training/jobs/${id}/cancel`,
+      { method: "POST" }
     ),
 
-  cancelJob: (id: string) =>
-    api<{ message: string }>(`/api/training/jobs/${id}/cancel`, { method: "POST" }),
-
   // Estimation
-  estimate: (input: {
-    baseModelId: string;
-    datasetId: string;
-    method?: "lora" | "qlora" | "full";
-    epochs?: number;
-    gpuTier?: string;
-  }) =>
-    api<{
-      estimate: {
-        gpuTier: string;
-        recommendedGpuTier: string;
-        minVramGb: number;
-        gpuHours: number;
-        costPerHour: number;
-        totalCostCents: number;
-        totalCostUsd: string;
-      };
-      dataset: { rowCount: number; format: string };
-    }>("/api/training/estimate", { method: "POST", body: input }),
+  estimate: (input: EstimateTrainingInput) =>
+    api<TrainingEstimateResponse>("/api/training/estimate", { method: "POST", body: input }),
 
   // Models
   listTrainableModels: () =>
     api<{ models: TrainableModel[] }>("/api/training/models"),
+};
+
+// ============================================
+// Fine-tuned models
+// ============================================
+
+/** The result of a completed training job: a LoRA adapter the organization owns. */
+export interface FineTunedModel {
+  id: string;
+  name: string;
+  slug: string;
+  baseModelId: string;
+  baseModelHfId: string;
+  baseModelName: string;
+  method: string;
+  loraR: number;
+  adapterBytes: number;
+  adapterSha256: string;
+  /** A summary of the run's metrics file. */
+  metrics: Record<string, unknown> | null;
+  trainingJobId: string;
+  trainingJob: { id: string; name: string; status: string; completedAt: string | null } | null;
+  /** Every deployment that names this model, running or not. */
+  deployments: Array<{ id: string; name: string; slug: string; status: string }>;
+  activeDeployments: number;
+  createdAt: string;
+}
+
+export const fineTunedModelsApi = {
+  list: () =>
+    api<{ fineTunedModels: FineTunedModel[]; total: number }>(
+      "/api/training/fine-tuned-models"
+    ),
+
+  get: (id: string) =>
+    api<{ fineTunedModel: FineTunedModel }>(`/api/training/fine-tuned-models/${id}`),
+
+  /** 409 model_in_use while an active deployment serves it. */
+  delete: (id: string) =>
+    api<{ deleted: boolean }>(`/api/training/fine-tuned-models/${id}`, { method: "DELETE" }),
 };
 
 // ============================================
@@ -3167,6 +3416,7 @@ export type WebhookEventType =
   | "training.started"
   | "training.completed"
   | "training.failed"
+  | "training.cancelled"
   | "alert.triggered"
   | "alert.resolved"
   | "billing.low_balance"

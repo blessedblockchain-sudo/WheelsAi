@@ -1,20 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  GraduationCap,
-  Database,
-  Cpu,
-  Settings,
-  Check,
-  ArrowLeft,
-  ArrowRight,
-  AlertTriangle,
-  ChevronRight,
-  ChevronDown,
-} from "lucide-react";
-import { toast } from "sonner";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { ArrowLeft, Database, Lock } from "lucide-react";
 
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -22,784 +11,796 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
-import { Skeleton, SkeletonCard } from "@/components/ui/skeleton";
+import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import {
+  billingApi,
   trainingApi,
-  type Dataset,
-  type TrainableModel,
-  type CreateTrainingJobInput,
   formatDatasetRows,
   getErrorMessage,
+  type Dataset,
+  type TrainableModel,
+  type TrainingCapabilities,
+  type TrainingEstimateResponse,
+  type TrainingMethod,
 } from "@/lib/api";
+import { formatCents } from "@/lib/jobs";
+import {
+  HYPERPARAM_FIELDS,
+  TRAINING_METHOD_LABELS,
+  datasetTrainingBlocker,
+  formatGpuRate,
+  formatHourlyRate,
+  formatParameters,
+  formatRunTime,
+  hyperparamFormDefaults,
+  hyperparamFormErrors,
+  hyperparamsToSend,
+  insufficientCreditsSentence,
+  methodBlocker,
+  methodOf,
+  runLimitError,
+  runLimitMinuteBounds,
+  tierChoices,
+  trainingRefusal,
+  type TrainingRefusalView,
+} from "@/lib/training";
 import { cn } from "@/lib/utils";
 
-type Step = "model" | "dataset" | "config" | "review";
+import { TrainingBlockers } from "../_components/training-blockers";
 
-const steps: { id: Step; label: string; icon: React.ElementType }[] = [
-  { id: "model", label: "Base Model", icon: Cpu },
-  { id: "dataset", label: "Dataset", icon: Database },
-  { id: "config", label: "Configuration", icon: Settings },
-  { id: "review", label: "Review", icon: Check },
-];
+interface PageData {
+  capabilities: TrainingCapabilities;
+  models: TrainableModel[];
+  datasets: Dataset[];
+  /** null when the balance could not be read; the page then says so. */
+  balanceCents: number | null;
+}
 
-const methodDescriptions: Record<string, string> = {
-  lora: "Low-Rank Adaptation - efficient fine-tuning with minimal memory overhead",
-  qlora: "Quantized LoRA - 4-bit quantization for training 70B+ models on consumer GPUs",
-  full: "Full fine-tuning - updates all model weights (only for smaller models)",
-};
+type Step = "configure" | "review";
 
-export default function NewTrainingPage() {
+function FormSkeleton() {
+  return (
+    <div className="mx-auto max-w-3xl space-y-6" aria-busy="true">
+      {[1, 2, 3].map((i) => (
+        <Card key={i}>
+          <CardHeader>
+            <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-4 w-72 max-w-full" />
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </CardContent>
+        </Card>
+      ))}
+      <span className="sr-only">Loading fine-tuning options</span>
+    </div>
+  );
+}
+
+export default function NewTrainingJobPage() {
+  return (
+    <div className="flex flex-col">
+      <Header title="New training job" description="Fine-tune a base model on one of your datasets" />
+      <div className="p-8">
+        <Suspense fallback={<FormSkeleton />}>
+          <NewTrainingJobForm />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
+function choiceClass(selected: boolean, disabled: boolean) {
+  return cn(
+    "w-full rounded-lg border-2 p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    selected ? "border-primary bg-primary/10" : "border-border",
+    disabled ? "cursor-not-allowed opacity-60" : !selected && "hover:border-muted-foreground/40",
+  );
+}
+
+function NewTrainingJobForm() {
   const router = useRouter();
-  const [currentStep, setCurrentStep] = useState<Step>("model");
-  const [isCreating, setIsCreating] = useState(false);
+  const requestedDatasetId = useSearchParams().get("dataset");
 
-  const [models, setModels] = useState<TrainableModel[]>([]);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [data, setData] = useState<PageData | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
 
-  const [formData, setFormData] = useState<CreateTrainingJobInput>({
-    name: "",
-    baseModelId: "",
-    datasetId: "",
-    method: "lora",
-    gpuTier: "rtx-4070",
-    gpuCount: 1,
-    config: {
-      epochs: 3,
-      batchSize: 4,
-      learningRate: 0.0002,
-      warmupSteps: 100,
-      gradientAccumulationSteps: 4,
-      loraR: 16,
-      loraAlpha: 32,
-      loraDropout: 0.05,
-    },
-  });
+  const [step, setStep] = useState<Step>("configure");
+  const [name, setName] = useState("");
+  const [datasetId, setDatasetId] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [method, setMethod] = useState<TrainingMethod | "">("");
+  const [gpuTier, setGpuTier] = useState("");
+  const [hyperForm, setHyperForm] = useState<Record<string, string>>({});
+  const [runLimitMinutes, setRunLimitMinutes] = useState("");
 
-  const [showAdvancedGpu, setShowAdvancedGpu] = useState(false);
-
-  const [estimate, setEstimate] = useState<{
-    gpuHours: number;
-    totalCostUsd: string;
-    recommendedGpuTier: string;
-  } | null>(null);
+  const [estimate, setEstimate] = useState<TrainingEstimateResponse | null>(null);
+  const [isEstimating, setIsEstimating] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  // The API's refusal of the estimate or of the create, shown where it happened.
+  const [refusal, setRefusal] = useState<TrainingRefusalView | null>(null);
+  const [otherError, setOtherError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
-      const [modelsRes, datasetsRes] = await Promise.all([
+      const [capabilities, modelsRes, datasetsRes, balance] = await Promise.all([
+        trainingApi.getCapabilities(),
         trainingApi.listTrainableModels(),
         trainingApi.listDatasets(),
+        // The balance is shown in the review; the job can be planned without it.
+        billingApi.getBalance().then(
+          (res) => Math.round(res.balance.available * 100),
+          () => null,
+        ),
       ]);
-      setModels(modelsRes.models);
-      setDatasets(datasetsRes.datasets.filter((d) => d.isValidated));
+      setData({ capabilities, models: modelsRes.models, datasets: datasetsRes.datasets, balanceCents: balance });
+      setHyperForm(hyperparamFormDefaults(capabilities.hyperparameters));
+      // ?dataset= preselects a dataset of this organization; one that cannot
+      // be trained on stays selected so its reason is shown.
+      if (requestedDatasetId && datasetsRes.datasets.some((d) => d.id === requestedDatasetId)) {
+        setDatasetId(requestedDatasetId);
+      }
     } catch (error) {
       setLoadError(error);
-      toast.error(getErrorMessage(error, "Failed to load data"));
-    } finally {
-      setIsLoading(false);
     }
-  }, []);
+  }, [requestedDatasetId]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  // Update estimate when config changes
-  useEffect(() => {
-    if (formData.baseModelId && formData.datasetId) {
-      trainingApi
-        .estimate({
-          baseModelId: formData.baseModelId,
-          datasetId: formData.datasetId,
-          method: formData.method,
-          epochs: formData.config?.epochs,
-          gpuTier: formData.gpuTier,
-        })
-        .then((res) => {
-          setEstimate({
-            gpuHours: res.estimate.gpuHours,
-            totalCostUsd: res.estimate.totalCostUsd,
-            recommendedGpuTier: res.estimate.recommendedGpuTier,
-          });
-        })
-        .catch(() => {
-          // No estimate for this choice (the API refuses one for a dataset
-          // whose rows are not counted): do not keep showing the last one.
-          setEstimate(null);
-        });
-    }
-  }, [formData.baseModelId, formData.datasetId, formData.method, formData.config?.epochs, formData.gpuTier]);
+  const model = data?.models.find((m) => m.id === modelId) ?? null;
+  const methodEntry = model && method ? methodOf(model, method) : undefined;
+  const tiers = useMemo(
+    () => (data ? tierChoices(data.capabilities, methodEntry) : []),
+    [data, methodEntry],
+  );
+  const dataset = data?.datasets.find((d) => d.id === datasetId) ?? null;
+  const datasetBlocker = dataset ? datasetTrainingBlocker(dataset) : null;
+  // No tokens per row were measured (a Parquet file): no time can be
+  // estimated or limit suggested, so the run limit is the user's to choose.
+  const needsRunLimit = dataset !== null && dataset.avgTokensPerRow === null;
 
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-  const selectedModel = models.find((m) => m.id === formData.baseModelId);
-  const selectedDataset = datasets.find((d) => d.id === formData.datasetId);
-
-  function nextStep() {
-    const nextIndex = currentStepIndex + 1;
-    const nextStepConfig = steps[nextIndex];
-    if (nextStepConfig) {
-      setCurrentStep(nextStepConfig.id);
-    }
+  function chooseModel(next: TrainableModel) {
+    if (!next.available) return;
+    setModelId(next.id);
+    // The first method of this model that fits a tier here, and its cheapest tier.
+    const usable = next.methods.find((entry) => entry.tiers.length > 0);
+    setMethod(usable?.method ?? "");
+    setGpuTier(usable?.recommendedTier ?? usable?.tiers[0]?.tier ?? "");
+    if (!name) setName(`${next.id}-finetune`);
   }
 
-  function prevStep() {
-    const prevIndex = currentStepIndex - 1;
-    const prevStepConfig = steps[prevIndex];
-    if (prevStepConfig) {
-      setCurrentStep(prevStepConfig.id);
+  function chooseMethod(next: TrainingMethod) {
+    if (!model) return;
+    const entry = methodOf(model, next);
+    if (!entry || entry.tiers.length === 0) return;
+    setMethod(next);
+    // Keep the tier when the new method still fits on it.
+    if (!entry.tiers.some((tier) => tier.tier === gpuTier)) {
+      setGpuTier(entry.recommendedTier ?? entry.tiers[0]!.tier);
     }
-  }
-
-  async function handleCreate() {
-    if (!formData.name) {
-      toast.error("Please enter a job name");
-      return;
-    }
-
-    setIsCreating(true);
-    try {
-      const { job } = await trainingApi.createJob(formData);
-      toast.success("Training job created");
-      router.push(`/dashboard/training/${job.id}`);
-    } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to create training job"));
-    } finally {
-      setIsCreating(false);
-    }
-  }
-
-  function handleRetry() {
-    setLoadError(null);
-    setIsLoading(true);
-    void load();
-  }
-
-  if (isLoading) {
-    return (
-      <div className="flex flex-col">
-        <Header title="New Training Job" description="Fine-tune a model with your data" />
-        <div className="p-8" aria-busy="true">
-          <span className="sr-only">Loading models and datasets</span>
-
-          {/* Progress steps */}
-          <div className="mb-8 flex items-center justify-between">
-            {steps.map((step, index) => (
-              <div key={step.id} className="flex items-center">
-                <Skeleton className="h-9 w-12 md:w-32" />
-                {index < steps.length - 1 && (
-                  <div className="mx-2 h-0.5 w-8 bg-muted md:w-16" />
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div className="grid gap-8 lg:grid-cols-3">
-            {/* Main content: step heading and option rows */}
-            <div className="lg:col-span-2">
-              <Card>
-                <CardContent className="py-6">
-                  <Skeleton className="h-6 w-48" />
-                  <Skeleton className="mt-2 h-4 w-64" />
-                  <div className="mt-6 space-y-4">
-                    {[1, 2, 3].map((i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between rounded-lg border-2 border-border p-4"
-                      >
-                        <div className="space-y-2">
-                          <Skeleton className="h-5 w-40" />
-                          <Skeleton className="h-4 w-56" />
-                        </div>
-                        <div className="flex flex-col items-end gap-2">
-                          <Skeleton className="h-4 w-16" />
-                          <Skeleton className="h-5 w-24 rounded-full" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Navigation */}
-              <div className="mt-6 flex justify-between">
-                <Skeleton className="h-10 w-24" />
-                <Skeleton className="h-10 w-24" />
-              </div>
-            </div>
-
-            {/* Sidebar */}
-            <div>
-              <SkeletonCard />
-            </div>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   if (loadError) {
+    return <ErrorState title="Couldn't load fine-tuning options" error={loadError} onRetry={load} />;
+  }
+  if (!data) return <FormSkeleton />;
+
+  const { capabilities } = data;
+  const hyperErrors = hyperparamFormErrors(hyperForm, capabilities.hyperparameters);
+  const runLimitProblem =
+    runLimitMinutes.trim() === "" ? null : runLimitError(runLimitMinutes, capabilities.runLimit);
+  const minuteBounds = runLimitMinuteBounds(capabilities.runLimit);
+  const nameProblem = name.trim().length === 0 || name.trim().length > 100;
+
+  // What is still missing before the review, in words, so a disabled button is never a riddle.
+  const missing: string[] = [];
+  if (nameProblem) missing.push("a name of 1 to 100 characters");
+  if (!dataset) missing.push("a dataset");
+  else if (datasetBlocker) missing.push("a dataset that can be trained on");
+  if (!model) missing.push("a base model");
+  if (model && !method) missing.push("a method");
+  if (model && method && !gpuTier) missing.push("a GPU tier");
+  if (Object.keys(hyperErrors).length > 0) missing.push("hyperparameters inside their bounds");
+  if (runLimitProblem) missing.push("a run limit inside its bounds");
+  else if (needsRunLimit && runLimitMinutes.trim() === "") {
+    missing.push("a run limit (this dataset's training time cannot be estimated)");
+  }
+  const canReview = missing.length === 0;
+
+  function jobChoice() {
+    return {
+      baseModelId: modelId,
+      datasetId,
+      method: method as TrainingMethod,
+      gpuTier,
+      hyperparams: hyperparamsToSend(hyperForm, capabilities.hyperparameters),
+      ...(runLimitMinutes.trim() !== "" ? { maxRuntimeSeconds: Number(runLimitMinutes) * 60 } : {}),
+    };
+  }
+
+  function showFailure(error: unknown, fallback: string) {
+    const view = trainingRefusal(error);
+    if (view && view.message) {
+      setRefusal(view);
+      setOtherError(null);
+    } else {
+      setRefusal(null);
+      setOtherError(getErrorMessage(error, fallback));
+    }
+  }
+
+  async function handleReview() {
+    if (!canReview) return;
+    setIsEstimating(true);
+    setRefusal(null);
+    setOtherError(null);
+    try {
+      const result = await trainingApi.estimate(jobChoice());
+      setEstimate(result);
+      setStep("review");
+    } catch (error) {
+      setEstimate(null);
+      showFailure(error, "The estimate could not be worked out.");
+    } finally {
+      setIsEstimating(false);
+    }
+  }
+
+  async function handleStart() {
+    if (!estimate || !capabilities.canStart) return;
+    const held = estimate.hold;
+    setIsStarting(true);
+    setRefusal(null);
+    setOtherError(null);
+    try {
+      const { job } = await trainingApi.createJob({
+        name: name.trim(),
+        ...jobChoice(),
+        // The limit that was reviewed is the limit that is held for.
+        maxRuntimeSeconds: held.maxRuntimeSeconds,
+      });
+      router.push(`/dashboard/training/${job.id}`);
+    } catch (error) {
+      showFailure(error, "The training job could not be created.");
+      setIsStarting(false);
+    }
+  }
+
+  const refusalPanel = (refusal || otherError) && (
+    <div
+      role="alert"
+      data-testid="training-refusal"
+      data-code={refusal?.code}
+      className="rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm"
+    >
+      {refusal?.code === "insufficient_credits" ? (
+        <>
+          <p className="font-medium text-foreground">Not enough credits to hold for this run</p>
+          <p className="mt-1 text-muted-foreground">{insufficientCreditsSentence(refusal)}</p>
+          <p className="mt-1 text-muted-foreground">Nothing was created and nothing was held.</p>
+          <Link
+            href="/dashboard/billing"
+            className="mt-3 inline-flex text-sm font-medium text-primary underline-offset-4 hover:underline"
+          >
+            Add credits
+          </Link>
+        </>
+      ) : (
+        <>
+          <p className="font-medium text-foreground">{refusal?.message ?? otherError}</p>
+          <p className="mt-1 text-muted-foreground">Nothing was created and nothing was held.</p>
+        </>
+      )}
+    </div>
+  );
+
+  // ============================================
+  // Review
+  // ============================================
+
+  if (step === "review" && estimate && model && dataset) {
+    // e is null for a dataset whose training time cannot be estimated; the
+    // hold is always known.
+    const e = estimate.estimate;
+    const hold = estimate.hold;
+    const tier = tiers.find((t) => t.tier === hold.gpuTier);
+    const sent = hyperparamsToSend(hyperForm, capabilities.hyperparameters);
+    const short =
+      data.balanceCents !== null && data.balanceCents < hold.cents ? hold.cents - data.balanceCents : null;
+    const rows: Array<[string, React.ReactNode]> = [
+      ["Name", name.trim()],
+      ["Base model", `${model.displayName} (${model.hfId})`],
+      ["Method", TRAINING_METHOD_LABELS[method as TrainingMethod]?.name ?? method],
+      ["Dataset", `${dataset.name}, ${formatDatasetRows(estimate.dataset.rowCount)}`],
+      ["GPU tier", tier ? `${tier.name}, ${tier.vramGb} GB` : hold.gpuTier],
+      [
+        "Hyperparameters",
+        Object.keys(sent).length === 0
+          ? "The trainer's defaults"
+          : Object.entries(sent)
+              .map(([key, value]) => `${key} ${String(value)}`)
+              .join(", "),
+      ],
+    ];
     return (
-      <div className="flex flex-col">
-        <Header title="New Training Job" description="Fine-tune a model with your data" />
-        <div className="p-8">
-          <ErrorState
-            title="Couldn't load models and datasets"
-            error={loadError}
-            onRetry={handleRetry}
-          />
-        </div>
+      <div className="mx-auto max-w-3xl space-y-6">
+        <Button variant="ghost" onClick={() => setStep("configure")}>
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Back to configuration
+        </Button>
+
+        <TrainingBlockers blockers={capabilities.blockers} />
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Review</CardTitle>
+            <CardDescription>What will run, what it is expected to cost, and what is held.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <dl className="divide-y divide-border rounded-lg border border-border text-sm">
+              {rows.map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-6 p-3">
+                  <dt className="shrink-0 text-muted-foreground">{label}</dt>
+                  <dd className="text-right font-medium text-foreground">{value}</dd>
+                </div>
+              ))}
+            </dl>
+
+            <div data-testid="training-estimate">
+              <h3 className="text-sm font-semibold text-foreground">{e ? "Estimate" : "Cost"}</h3>
+              {e ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  A planning figure worked out from the dataset&apos;s size and the model, not a
+                  measurement of this run. The charge is for the seconds the run actually takes.
+                </p>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground" data-testid="training-no-estimate">
+                  This dataset&apos;s training time cannot be estimated: no tokens per row were measured
+                  when it was validated (as for a Parquet file). The run is held for the run limit you
+                  chose and charged for the seconds it actually takes.
+                </p>
+              )}
+              <dl className="mt-3 divide-y divide-border rounded-lg border border-border text-sm">
+                {e && (
+                  <div className="flex items-start justify-between gap-6 p-3">
+                    <dt className="text-muted-foreground">Expected cost</dt>
+                    <dd className="text-right">
+                      <span className="font-mono font-semibold tabular-nums text-foreground">
+                        {formatCents(e.estimate.cents)}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        range {formatCents(e.low.cents)} to {formatCents(e.high.cents)}
+                      </span>
+                    </dd>
+                  </div>
+                )}
+                {e && (
+                  <div className="flex items-start justify-between gap-6 p-3">
+                    <dt className="text-muted-foreground">Expected time on the GPU</dt>
+                    <dd className="text-right">
+                      <span className="font-medium text-foreground">{formatRunTime(e.estimate.seconds)}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        range {formatRunTime(e.low.seconds)} to {formatRunTime(e.high.seconds)}
+                      </span>
+                    </dd>
+                  </div>
+                )}
+                <div className="flex items-start justify-between gap-6 p-3">
+                  <dt className="text-muted-foreground">Price</dt>
+                  <dd className="text-right font-medium text-foreground">{formatGpuRate(hold.pricePerSecondUsd)}</dd>
+                </div>
+                <div className="flex items-start justify-between gap-6 p-3">
+                  <dt className="text-muted-foreground">Run limit</dt>
+                  <dd className="text-right">
+                    <span className="font-medium text-foreground">{formatRunTime(hold.maxRuntimeSeconds)}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {!e
+                        ? "the limit you chose"
+                        : runLimitMinutes.trim() === ""
+                          ? "the suggested limit for this estimate"
+                          : `suggested: ${formatRunTime(e.runLimit.suggestedSeconds)}`}
+                    </span>
+                  </dd>
+                </div>
+                <div className="flex items-start justify-between gap-6 p-3">
+                  <dt className="text-muted-foreground">
+                    Held when the job is created
+                    <span className="block text-xs">the most this job can cost</span>
+                  </dt>
+                  <dd
+                    className="text-right font-mono font-semibold tabular-nums text-foreground"
+                    data-testid="training-maximum"
+                  >
+                    {formatCents(hold.cents)}
+                  </dd>
+                </div>
+                <div className="flex items-start justify-between gap-6 p-3">
+                  <dt className="text-muted-foreground">Your balance</dt>
+                  <dd className="text-right font-mono tabular-nums text-foreground" data-testid="training-balance">
+                    {data.balanceCents === null ? "Could not be read" : formatCents(data.balanceCents)}
+                  </dd>
+                </div>
+              </dl>
+              <p className="mt-3 text-xs text-muted-foreground">
+                The hold is the price per second times the run limit. When the job ends the whole hold
+                is returned and the seconds it ran are charged, never more than the hold. Time waiting
+                for a GPU node is free, and a job that fails for a reason that is not your data is not
+                charged.
+              </p>
+              {e && !e.fitsRunLimit && (
+                <p className="mt-3 rounded-md border border-border bg-muted p-3 text-sm text-foreground">
+                  The expected time is longer than this run limit. The trainer stops at the limit and
+                  keeps a partial adapter, which is charged for the time it ran. Raise the run limit, or
+                  lower the epochs, to finish the run.
+                </p>
+              )}
+              {e?.suggestionCapped && (
+                <p className="mt-3 rounded-md border border-border bg-muted p-3 text-sm text-foreground">
+                  The suggested run limit was cut to the longest this server allows (
+                  {formatRunTime(e.runLimit.maxSeconds)}).
+                </p>
+              )}
+            </div>
+
+            {short !== null && !refusal && (
+              <div className="rounded-lg border border-border bg-muted p-4 text-sm" data-testid="training-short">
+                <p className="font-medium text-foreground">
+                  Your balance is {formatCents(short)} short of the amount this run holds.
+                </p>
+                <Link
+                  href="/dashboard/billing"
+                  className="mt-2 inline-flex font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  Add credits
+                </Link>
+              </div>
+            )}
+
+            {refusalPanel}
+
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setStep("configure")} disabled={isStarting}>
+                Back
+              </Button>
+              <Button
+                onClick={handleStart}
+                isLoading={isStarting}
+                disabled={!capabilities.canStart}
+                data-testid="start-training"
+              >
+                Hold {formatCents(hold.cents)} and start
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
+  // ============================================
+  // Configure
+  // ============================================
+
   return (
-    <div className="flex flex-col">
-      <Header
-        title="New Training Job"
-        description="Fine-tune a model with your data"
-      />
+    <div className="mx-auto max-w-3xl space-y-6">
+      <Link
+        href="/dashboard/training"
+        className="inline-flex items-center text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="mr-2 h-4 w-4" />
+        Back to fine-tuning
+      </Link>
 
-      <div className="p-8">
-        {/* Progress steps */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between">
-            {steps.map((step, index) => (
-              <div key={step.id} className="flex items-center">
-                <button
-                  onClick={() => setCurrentStep(step.id)}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-                    currentStep === step.id
-                      ? "bg-primary/15 text-primary-700"
-                      : index < currentStepIndex
-                      ? "text-primary-600"
-                      : "text-gray-400"
-                  )}
-                >
-                  <step.icon className="h-4 w-4" />
-                  <span className="hidden md:inline">{step.label}</span>
-                </button>
-                {index < steps.length - 1 && (
-                  <div
-                    className={cn(
-                      "mx-2 h-0.5 w-8 md:w-16",
-                      index < currentStepIndex ? "bg-primary-500" : "bg-muted"
-                    )}
-                  />
-                )}
-              </div>
-            ))}
+      <TrainingBlockers blockers={capabilities.blockers} />
+
+      {/* Name and dataset */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Job and dataset</CardTitle>
+          <CardDescription>The job is pinned to the dataset as it was validated.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <label htmlFor="job-name" className="block text-sm font-medium text-foreground">
+              Name
+            </label>
+            <Input
+              id="job-name"
+              value={name}
+              maxLength={100}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="support-assistant-v1"
+              className="mt-1"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Also names the fine-tuned model the job produces.
+            </p>
           </div>
-        </div>
 
-        <div className="grid gap-8 lg:grid-cols-3">
-          {/* Main content */}
-          <div className="lg:col-span-2">
-            <Card>
-              <CardContent className="py-6">
-                {/* Model selection */}
-                {currentStep === "model" && (
-                  <div>
-                    <h3 className="text-lg font-medium">Select Base Model</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Choose the model you want to fine-tune
-                    </p>
-
-                    {models.length === 0 ? (
-                      <div className="mt-6">
-                        <EmptyState
-                          icon={Cpu}
-                          title="No trainable models available"
-                          description="There are no base models that support fine-tuning to choose from."
-                        />
-                      </div>
-                    ) : (
-                      <div className="mt-6 space-y-4">
-                        {models.map((model) => (
-                          <button
-                            key={model.id}
-                            onClick={() => {
-                              setFormData({
-                                ...formData,
-                                baseModelId: model.id,
-                                gpuTier: model.recommendedGpuTier,
-                                method: model.supportedMethods[0] as any,
-                              });
-                            }}
-                            className={cn(
-                              "w-full rounded-lg border-2 p-4 text-left transition-all",
-                              formData.baseModelId === model.id
-                                ? "border-primary-500 bg-primary/10"
-                                : "border-border hover:border-muted-foreground/40"
-                            )}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium">{model.displayName}</p>
-                                <p className="text-sm text-muted-foreground">{model.hfId}</p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-sm font-medium">
-                                  {model.parameters ? `${(model.parameters / 1e9).toFixed(0)}B params` : ""}
-                                </p>
-                                <div className="mt-1 flex gap-1">
-                                  {model.supportedMethods.map((method) => (
-                                    <Badge key={method} variant="secondary" className="text-xs">
-                                      {method}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Dataset selection */}
-                {currentStep === "dataset" && (
-                  <div>
-                    <h3 className="text-lg font-medium">Select Dataset</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Choose a validated dataset for training
-                    </p>
-
-                    {datasets.length === 0 ? (
-                      <div className="mt-6">
-                        <EmptyState
-                          icon={Database}
-                          title="No validated datasets available"
-                          description="Training needs a validated dataset. Upload one on the Datasets page."
-                          actionLabel="Upload Dataset"
-                          actionHref="/dashboard/training/datasets"
-                        />
-                      </div>
-                    ) : (
-                      <div className="mt-6 space-y-4">
-                        {datasets.map((dataset) => (
-                          <button
-                            key={dataset.id}
-                            onClick={() => setFormData({ ...formData, datasetId: dataset.id })}
-                            className={cn(
-                              "w-full rounded-lg border-2 p-4 text-left transition-all",
-                              formData.datasetId === dataset.id
-                                ? "border-primary-500 bg-primary/10"
-                                : "border-border hover:border-muted-foreground/40"
-                            )}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="font-medium">{dataset.name}</p>
-                                <p className="text-sm text-muted-foreground">
-                                  {dataset.description || `${dataset.format} format`}
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="font-medium">{formatDatasetRows(dataset.rowCount)}</p>
-                                <p className="text-sm text-muted-foreground">
-                                  {(dataset.sizeBytes / 1024 / 1024).toFixed(2)} MB
-                                </p>
-                              </div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Configuration */}
-                {currentStep === "config" && (
-                  <div className="space-y-6">
-                    <div>
-                      <h3 className="text-lg font-medium">Training Configuration</h3>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Configure hyperparameters and compute resources
-                      </p>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-foreground">
-                        Job Name *
-                      </label>
-                      <Input
-                        value={formData.name}
-                        onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                        placeholder="my-finetuned-model"
-                        className="mt-1"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-sm font-medium text-foreground">
-                        Training Method
-                      </label>
-                      <div className="mt-2 grid gap-3 md:grid-cols-3">
-                        {(selectedModel?.supportedMethods || ["lora", "qlora"]).map((method) => (
-                          <button
-                            key={method}
-                            onClick={() => setFormData({ ...formData, method: method as any })}
-                            className={cn(
-                              "rounded-lg border-2 p-3 text-left transition-all",
-                              formData.method === method
-                                ? "border-primary-500 bg-primary/10"
-                                : "border-border hover:border-muted-foreground/40"
-                            )}
-                          >
-                            <p className="font-medium uppercase">{method}</p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {methodDescriptions[method]}
-                            </p>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div>
-                        <label className="block text-sm font-medium text-foreground">GPU Tier</label>
-                        <Select
-                          value={formData.gpuTier}
-                          onChange={(e) => setFormData({ ...formData, gpuTier: e.target.value })}
-                          className="mt-1"
-                        >
-                          <option value="rtx-3060">Basic (~$0.15/hr)</option>
-                          <option value="rtx-4070">Standard (~$0.35/hr) ★ Recommended</option>
-                          <option value="rtx-4090">Premium (~$0.50/hr)</option>
-                          <option value="a100">Enterprise (~$1.50/hr)</option>
-                        </Select>
-                        {estimate?.recommendedGpuTier && estimate.recommendedGpuTier !== formData.gpuTier && (
-                          <p className="mt-1 text-xs text-yellow-600">
-                            Recommended: {estimate.recommendedGpuTier}
-                          </p>
-                        )}
-
-                        {/* Advanced GPU toggle */}
-                        <button
-                          type="button"
-                          onClick={() => setShowAdvancedGpu((v) => !v)}
-                          className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                        >
-                          {showAdvancedGpu ? (
-                            <ChevronDown className="h-3 w-3" />
-                          ) : (
-                            <ChevronRight className="h-3 w-3" />
-                          )}
-                          Advanced GPU Options
-                        </button>
-
-                        {showAdvancedGpu && (
-                          <div className="mt-2">
-                            <label className="block text-xs text-muted-foreground mb-1">
-                              Specific GPU Model
-                            </label>
-                            <Select
-                              value={formData.gpuTier}
-                              onChange={(e) => setFormData({ ...formData, gpuTier: e.target.value })}
-                            >
-                              <option value="rtx-3060">RTX 3060 (12GB) - $0.15/hr</option>
-                              <option value="rtx-4070">RTX 4070 (12GB) - $0.35/hr</option>
-                              <option value="rtx-4090">RTX 4090 (24GB) - $0.50/hr</option>
-                              <option value="a100">A100 40GB - $1.50/hr</option>
-                              <option value="a100-80gb">A100 80GB - $2.50/hr</option>
-                            </Select>
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-foreground">Epochs</label>
-                        <Input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={formData.config?.epochs}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              config: { ...formData.config!, epochs: parseInt(e.target.value) },
-                            })
-                          }
-                          className="mt-1"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-foreground">Batch Size</label>
-                        <Select
-                          value={formData.config?.batchSize?.toString()}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              config: { ...formData.config!, batchSize: parseInt(e.target.value) },
-                            })
-                          }
-                          className="mt-1"
-                        >
-                          {[1, 2, 4, 8, 16, 32].map((n) => (
-                            <option key={n} value={n}>{n}</option>
-                          ))}
-                        </Select>
-                      </div>
-
-                      <div>
-                        <label className="block text-sm font-medium text-foreground">
-                          Learning Rate
-                        </label>
-                        <Select
-                          value={formData.config?.learningRate?.toString()}
-                          onChange={(e) =>
-                            setFormData({
-                              ...formData,
-                              config: { ...formData.config!, learningRate: parseFloat(e.target.value) },
-                            })
-                          }
-                          className="mt-1"
-                        >
-                          <option value="0.0001">1e-4 (Conservative)</option>
-                          <option value="0.0002">2e-4 (Recommended)</option>
-                          <option value="0.0003">3e-4 (Aggressive)</option>
-                        </Select>
-                      </div>
-                    </div>
-
-                    {(formData.method === "lora" || formData.method === "qlora") && (
-                      <div>
-                        <h4 className="font-medium">LoRA Parameters</h4>
-                        <div className="mt-3 grid gap-4 md:grid-cols-3">
-                          <div>
-                            <label className="block text-sm text-muted-foreground">Rank (r)</label>
-                            <Select
-                              value={formData.config?.loraR?.toString()}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  config: { ...formData.config!, loraR: parseInt(e.target.value) },
-                                })
-                              }
-                              className="mt-1"
-                            >
-                              {[8, 16, 32, 64, 128].map((n) => (
-                                <option key={n} value={n}>{n}</option>
-                              ))}
-                            </Select>
-                          </div>
-
-                          <div>
-                            <label className="block text-sm text-muted-foreground">Alpha</label>
-                            <Select
-                              value={formData.config?.loraAlpha?.toString()}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  config: { ...formData.config!, loraAlpha: parseInt(e.target.value) },
-                                })
-                              }
-                              className="mt-1"
-                            >
-                              {[16, 32, 64, 128, 256].map((n) => (
-                                <option key={n} value={n}>{n}</option>
-                              ))}
-                            </Select>
-                          </div>
-
-                          <div>
-                            <label className="block text-sm text-muted-foreground">Dropout</label>
-                            <Select
-                              value={formData.config?.loraDropout?.toString()}
-                              onChange={(e) =>
-                                setFormData({
-                                  ...formData,
-                                  config: { ...formData.config!, loraDropout: parseFloat(e.target.value) },
-                                })
-                              }
-                              className="mt-1"
-                            >
-                              <option value="0">0 (None)</option>
-                              <option value="0.05">0.05</option>
-                              <option value="0.1">0.1</option>
-                            </Select>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Review */}
-                {currentStep === "review" && (
-                  <div>
-                    <h3 className="text-lg font-medium">Review Training Job</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Review your configuration before starting
-                    </p>
-
-                    <div className="mt-6 space-y-4">
-                      <div className="rounded-lg border p-4">
-                        <h4 className="font-medium">Job Details</h4>
-                        <dl className="mt-2 grid gap-2 text-sm">
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">Name</dt>
-                            <dd className="font-medium">{formData.name || "—"}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">Method</dt>
-                            <dd className="font-medium uppercase">{formData.method}</dd>
-                          </div>
-                        </dl>
-                      </div>
-
-                      <div className="rounded-lg border p-4">
-                        <h4 className="font-medium">Base Model</h4>
-                        <p className="mt-1 text-sm">
-                          {selectedModel?.displayName || formData.baseModelId}
-                        </p>
-                        <p className="text-xs text-muted-foreground">{selectedModel?.hfId}</p>
-                      </div>
-
-                      <div className="rounded-lg border p-4">
-                        <h4 className="font-medium">Dataset</h4>
-                        <p className="mt-1 text-sm">{selectedDataset?.name || "—"}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {selectedDataset ? formatDatasetRows(selectedDataset.rowCount) : ""}
-                        </p>
-                      </div>
-
-                      <div className="rounded-lg border p-4">
-                        <h4 className="font-medium">Hyperparameters</h4>
-                        <dl className="mt-2 grid grid-cols-2 gap-2 text-sm">
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">Epochs</dt>
-                            <dd>{formData.config?.epochs}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">Batch Size</dt>
-                            <dd>{formData.config?.batchSize}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">Learning Rate</dt>
-                            <dd>{formData.config?.learningRate}</dd>
-                          </div>
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">LoRA Rank</dt>
-                            <dd>{formData.config?.loraR}</dd>
-                          </div>
-                        </dl>
-                      </div>
-
-                      <div className="rounded-lg border p-4">
-                        <h4 className="font-medium">Compute</h4>
-                        <dl className="mt-2 grid gap-2 text-sm">
-                          <div className="flex justify-between">
-                            <dt className="text-muted-foreground">GPU Tier</dt>
-                            <dd className="font-medium">{formData.gpuTier}</dd>
-                          </div>
-                          {estimate && (
-                            <>
-                              <div className="flex justify-between">
-                                <dt className="text-muted-foreground">Estimated GPU Hours</dt>
-                                <dd>{estimate.gpuHours}</dd>
-                              </div>
-                              <div className="flex justify-between">
-                                <dt className="text-muted-foreground">Estimated Cost</dt>
-                                <dd className="font-medium text-primary-600">
-                                  ${estimate.totalCostUsd}
-                                </dd>
-                              </div>
-                            </>
-                          )}
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* Navigation */}
-            <div className="mt-6 flex justify-between">
-              <Button
-                variant="outline"
-                onClick={prevStep}
-                disabled={currentStepIndex === 0}
-              >
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                Back
-              </Button>
-
-              {currentStep === "review" ? (
-                <Button onClick={handleCreate} isLoading={isCreating}>
-                  <GraduationCap className="mr-2 h-4 w-4" />
-                  Start Training
-                </Button>
-              ) : (
-                <Button
-                  onClick={nextStep}
-                  disabled={
-                    (currentStep === "model" && !formData.baseModelId) ||
-                    (currentStep === "dataset" && !formData.datasetId)
-                  }
+          <div>
+            <label htmlFor="job-dataset" className="block text-sm font-medium text-foreground">
+              Dataset
+            </label>
+            {data.datasets.length === 0 ? (
+              <div className="mt-2">
+                <EmptyState
+                  icon={Database}
+                  title="No datasets yet"
+                  description="Upload and validate a dataset before starting a training job."
+                  actionLabel="Go to datasets"
+                  actionHref="/dashboard/training/datasets"
+                />
+              </div>
+            ) : (
+              <>
+                <Select
+                  id="job-dataset"
+                  value={datasetId}
+                  onChange={(event) => setDatasetId(event.target.value)}
+                  className="mt-1"
                 >
-                  Next
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Button>
+                  <option value="">Choose a dataset</option>
+                  {data.datasets.map((d) => {
+                    const blocker = datasetTrainingBlocker(d);
+                    return (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({formatDatasetRows(d.rowCount)}){blocker ? " - cannot be used yet" : ""}
+                      </option>
+                    );
+                  })}
+                </Select>
+                {dataset && datasetBlocker && (
+                  <p role="alert" className="mt-2 text-sm text-danger" data-testid="dataset-blocker">
+                    This dataset cannot be trained on yet. {datasetBlocker}{" "}
+                    <Link href="/dashboard/training/datasets" className="underline underline-offset-4">
+                      Open datasets
+                    </Link>
+                  </p>
+                )}
+                {dataset && !datasetBlocker && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {dataset.fileType}
+                    {dataset.schemaFormat ? `, ${dataset.schemaFormat} rows` : ""}
+                    {dataset.avgTokensPerRow !== null
+                      ? `, about ${Math.round(dataset.avgTokensPerRow).toLocaleString()} tokens per row`
+                      : ""}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Base model */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Base model</CardTitle>
+          <CardDescription>
+            The models this server can fine-tune. Memory figures are planning figures.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {data.models.length === 0 ? (
+            <p className="text-sm text-muted-foreground">This server offers no base model to fine-tune.</p>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Base model">
+              {data.models.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={modelId === m.id}
+                  aria-disabled={!m.available}
+                  disabled={!m.available}
+                  data-model={m.id}
+                  onClick={() => chooseModel(m)}
+                  className={choiceClass(modelId === m.id, !m.available)}
+                >
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-foreground">{m.displayName}</span>
+                    {formatParameters(m.parameters) && (
+                      <Badge variant="secondary">{formatParameters(m.parameters)}</Badge>
+                    )}
+                    {m.gated && (
+                      <Badge variant="outline">
+                        <Lock className="mr-1 h-3 w-3" aria-hidden="true" />
+                        Gated
+                      </Badge>
+                    )}
+                  </span>
+                  <span className="mt-1 block font-mono text-xs text-muted-foreground">{m.hfId}</span>
+                  <span className="mt-2 block text-xs text-muted-foreground">
+                    {m.available
+                      ? m.methods
+                          .map((entry) => `${TRAINING_METHOD_LABELS[entry.method]?.name ?? entry.method} from ${entry.requiredVramGb} GB`)
+                          .join(" · ")
+                      : `Not available: ${m.unavailableMessage ?? "it cannot be fine-tuned on this server."}`}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Method and tier */}
+      {model && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Method and GPU</CardTitle>
+            <CardDescription>One GPU per job. Billed per second while the run is on the GPU.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Method">
+              {model.methods.map((entry) => {
+                const blocker = methodBlocker(entry);
+                const label = TRAINING_METHOD_LABELS[entry.method];
+                return (
+                  <button
+                    key={entry.method}
+                    type="button"
+                    role="radio"
+                    aria-checked={method === entry.method}
+                    disabled={blocker !== null}
+                    data-method={entry.method}
+                    onClick={() => chooseMethod(entry.method)}
+                    className={choiceClass(method === entry.method, blocker !== null)}
+                  >
+                    <span className="font-medium text-foreground">{label?.name ?? entry.method}</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">{label?.description}</span>
+                    <span className="mt-2 block text-xs text-muted-foreground">
+                      {blocker ?? `Needs ${entry.requiredVramGb} GB of GPU memory.`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-foreground">GPU tier</p>
+              {tiers.length === 0 ? (
+                <p className="mt-2 text-sm text-muted-foreground">This server lists no GPU tier.</p>
+              ) : (
+                <div className="mt-2 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="GPU tier">
+                  {tiers.map((tier) => (
+                    <button
+                      key={tier.tier}
+                      type="button"
+                      role="radio"
+                      aria-checked={gpuTier === tier.tier}
+                      disabled={!tier.selectable}
+                      data-tier={tier.tier}
+                      onClick={() => setGpuTier(tier.tier)}
+                      className={choiceClass(gpuTier === tier.tier, !tier.selectable)}
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-foreground">{tier.name}</span>
+                        <span className="font-mono text-sm tabular-nums text-muted-foreground">
+                          {formatHourlyRate(tier.pricePerSecondUsd)}
+                        </span>
+                      </span>
+                      <span className="mt-1 block text-xs text-muted-foreground">
+                        {tier.vramGb} GB{tier.reason ? `. ${tier.reason}` : ""}
+                        {methodEntry?.recommendedTier === tier.tier ? ". Cheapest that fits." : ""}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Hyperparameters and run limit */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Hyperparameters and run limit</CardTitle>
+          <CardDescription>
+            Filled with the trainer&apos;s defaults. Only the values you change are sent.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {HYPERPARAM_FIELDS.map((field) => {
+              const bound = capabilities.hyperparameters.bounds[field.key];
+              const error = hyperErrors[field.key];
+              return (
+                <div key={field.key}>
+                  <label htmlFor={`hp-${field.key}`} className="block text-sm font-medium text-foreground">
+                    {field.label}
+                  </label>
+                  <Input
+                    id={`hp-${field.key}`}
+                    inputMode="decimal"
+                    value={hyperForm[field.key] ?? ""}
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={`hp-${field.key}-help`}
+                    onChange={(event) => setHyperForm((form) => ({ ...form, [field.key]: event.target.value }))}
+                    className="mt-1"
+                  />
+                  <p
+                    id={`hp-${field.key}-help`}
+                    className={cn("mt-1 text-xs", error ? "text-danger" : "text-muted-foreground")}
+                  >
+                    {error ??
+                      [field.hint, bound ? `${bound.min} to ${bound.max}${bound.integer ? ", whole number" : ""}` : ""]
+                        .filter(Boolean)
+                        .join(" ")}
+                  </p>
+                </div>
+              );
+            })}
+            <div>
+              <label htmlFor="hp-loraR" className="block text-sm font-medium text-foreground">
+                LoRA rank
+              </label>
+              <Select
+                id="hp-loraR"
+                value={hyperForm.loraR ?? ""}
+                onChange={(event) => setHyperForm((form) => ({ ...form, loraR: event.target.value }))}
+                className="mt-1"
+              >
+                {capabilities.hyperparameters.loraRanks.map((rank) => (
+                  <option key={rank} value={rank}>
+                    {rank}
+                  </option>
+                ))}
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">Size of the adapter.</p>
             </div>
           </div>
 
-          {/* Sidebar */}
           <div>
-            {estimate && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Cost Estimate</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-3">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">GPU Hours</span>
-                      <span className="font-medium">{estimate.gpuHours}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">GPU Tier</span>
-                      <span className="font-medium">{formData.gpuTier}</span>
-                    </div>
-                    <div className="border-t pt-3">
-                      <div className="flex justify-between">
-                        <span className="font-medium">Total Cost</span>
-                        <span className="text-xl font-bold text-primary-600">
-                          ${estimate.totalCostUsd}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <Card className="mt-6">
-              <CardHeader>
-                <CardTitle className="text-base">Training Tips</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3 text-sm text-muted-foreground">
-                <p>
-                  <strong>LoRA vs QLoRA:</strong> QLoRA uses 4-bit quantization, requiring less VRAM but slightly slower training.
-                </p>
-                <p>
-                  <strong>Epochs:</strong> Start with 3 epochs and monitor loss curves. Increase if underfitting.
-                </p>
-                <p>
-                  <strong>Batch Size:</strong> Larger batches train faster but require more VRAM. Use gradient accumulation for effective larger batches.
-                </p>
-              </CardContent>
-            </Card>
+            <label htmlFor="run-limit" className="block text-sm font-medium text-foreground">
+              Run limit, in minutes
+            </label>
+            <Input
+              id="run-limit"
+              inputMode="numeric"
+              value={runLimitMinutes}
+              aria-invalid={runLimitProblem ? true : undefined}
+              aria-describedby="run-limit-help"
+              onChange={(event) => setRunLimitMinutes(event.target.value)}
+              placeholder={needsRunLimit ? "Required for this dataset" : "Leave empty to use the suggested limit"}
+              className="mt-1 sm:max-w-xs"
+            />
+            <p
+              id="run-limit-help"
+              className={cn("mt-1 text-xs", runLimitProblem ? "text-danger" : "text-muted-foreground")}
+            >
+              {runLimitProblem ??
+                (minuteBounds.maxMinutes < minuteBounds.minMinutes
+                  ? "This server's job time limit leaves no room for a training run."
+                  : needsRunLimit
+                    ? `From ${minuteBounds.minMinutes.toLocaleString()} to ${minuteBounds.maxMinutes.toLocaleString()} minutes. Required for this dataset: no tokens per row were measured when it was validated, so its training time cannot be estimated and no limit can be suggested. The run stops at the limit, and the limit sets the amount held.`
+                    : `From ${minuteBounds.minMinutes.toLocaleString()} to ${minuteBounds.maxMinutes.toLocaleString()} minutes. The run stops at the limit, and the limit sets the amount held. The review shows a suggested limit for your dataset.`)}
+            </p>
           </div>
-        </div>
+        </CardContent>
+      </Card>
+
+      {refusalPanel}
+
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {!canReview && (
+          <p className="text-sm text-muted-foreground" data-testid="review-missing">
+            Still needed: {missing.join(", ")}.
+          </p>
+        )}
+        <Link href="/dashboard/training">
+          <Button variant="outline">Cancel</Button>
+        </Link>
+        <Button onClick={handleReview} disabled={!canReview} isLoading={isEstimating} data-testid="review-training">
+          Review and estimate
+        </Button>
       </div>
     </div>
   );

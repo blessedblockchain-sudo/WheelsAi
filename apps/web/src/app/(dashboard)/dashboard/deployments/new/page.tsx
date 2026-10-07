@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, Cpu, Check, Zap, Server, Box, ChevronRight, ChevronDown } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -15,7 +15,17 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API_BASE_URL, modelsApi, deploymentsApi, type Model, type GpuTier, getErrorMessage } from "@/lib/api";
+import {
+  API_BASE_URL,
+  modelsApi,
+  deploymentsApi,
+  fineTunedModelsApi,
+  type FineTunedModel,
+  type Model,
+  type GpuTier,
+  getApiErrorBody,
+  getErrorMessage,
+} from "@/lib/api";
 import { COMPUTE_PAUSED_MESSAGE, isComputePaused } from "@/lib/deployments";
 import { deploymentEndpointPattern } from "@/lib/public-urls";
 import { cn } from "@/lib/utils";
@@ -104,7 +114,17 @@ function ModelCardSkeleton() {
 }
 
 export default function NewDeploymentPage() {
+  // useSearchParams (the ?fineTunedModel= link from a model's page) needs a boundary.
+  return (
+    <Suspense fallback={null}>
+      <NewDeploymentContent />
+    </Suspense>
+  );
+}
+
+function NewDeploymentContent() {
   const router = useRouter();
+  const requestedFineTunedId = useSearchParams().get("fineTunedModel");
   const [step, setStep] = useState<Step>("model");
   const [models, setModels] = useState<Model[]>([]);
   const [gpuTiers, setGpuTiers] = useState<GpuTier[]>([]);
@@ -117,6 +137,17 @@ export default function NewDeploymentPage() {
 
   // Form state
   const [selectedModel, setSelectedModel] = useState<Model | null>(null);
+  // The organization's fine-tuned models, and the one being deployed (if any).
+  // Its base model is `selectedModel`; an adapter is served by vLLM only.
+  const [fineTunedModels, setFineTunedModels] = useState<FineTunedModel[]>([]);
+  const [selectedFineTuned, setSelectedFineTuned] = useState<FineTunedModel | null>(null);
+  // The ?fineTunedModel= link named a model that is not in the list.
+  const [fineTunedNotFound, setFineTunedNotFound] = useState(false);
+  // Why the API refused to deploy the fine-tuned model, in its own sentence.
+  const [deployRefusal, setDeployRefusal] = useState<string | null>(null);
+  // GPU memory the API said serving this fine-tuned model needs (from a
+  // tier_too_small_for_serving refusal). Smaller tiers are then not offered.
+  const [servingVramGb, setServingVramGb] = useState<number | null>(null);
   const [selectedGpu, setSelectedGpu] = useState<GpuTier | null>(null);
   const [selectedEngine, setSelectedEngine] = useState<Engine>("vllm");
   const [name, setName] = useState("");
@@ -131,9 +162,27 @@ export default function NewDeploymentPage() {
     setLoadError(null);
     setIsLoading(true);
     try {
-      const { models, gpuTiers } = await modelsApi.listDeployable();
+      const [{ models, gpuTiers }, fineTuned] = await Promise.all([
+        modelsApi.listDeployable(),
+        // The catalog can be deployed without this list; a failed read shows none.
+        fineTunedModelsApi.list().then(
+          (res) => res.fineTunedModels,
+          () => [] as FineTunedModel[],
+        ),
+      ]);
       setModels(models);
       setGpuTiers(gpuTiers);
+      setFineTunedModels(fineTuned);
+      if (requestedFineTunedId) {
+        // Preselected from the link on the model's page.
+        const requested = fineTuned.find((m) => m.id === requestedFineTunedId);
+        const base = requested ? models.find((m) => m.id === requested.baseModelId) : undefined;
+        if (requested && base) {
+          selectFineTuned(requested, base, gpuTiers);
+        } else if (!requested) {
+          setFineTunedNotFound(true);
+        }
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to load models"));
       setLoadError(error);
@@ -146,7 +195,27 @@ export default function NewDeploymentPage() {
     loadData();
   }, []);
 
+  /** Deploy a fine-tuned model: its base model on vLLM, with the adapter loaded. */
+  function selectFineTuned(fineTuned: FineTunedModel, base: Model, tiers: GpuTier[] = gpuTiers) {
+    setSelectedFineTuned(fineTuned);
+    setSelectedModel(base);
+    setName(fineTuned.slug.slice(0, 50));
+    setSelectedEngine("vllm");
+    setDeployRefusal(null);
+    setServingVramGb(null);
+    const compatible = tiers.find((g) => g.id === base.minGpuTier);
+    if (compatible) {
+      setSelectedGpu(compatible);
+      const matchedTier = SIMPLIFIED_TIERS.find((t) => compatible.id.includes(t.gpuIdFragment));
+      setSelectedSimplifiedTier(matchedTier?.id ?? "standard");
+    }
+    setStep("config");
+  }
+
   function selectModel(model: Model) {
+    setSelectedFineTuned(null);
+    setDeployRefusal(null);
+    setServingVramGb(null);
     setSelectedModel(model);
     setName(model.displayName.toLowerCase().replace(/\s+/g, "-"));
 
@@ -170,10 +239,14 @@ export default function NewDeploymentPage() {
   function getCompatibleGpus(model: Model): GpuTier[] {
     const tierOrder = ["3060", "4070", "4090", "a100", "h100"];
     const minIndex = tierOrder.indexOf(model.minGpuTier);
-    return gpuTiers.filter((g) => tierOrder.indexOf(g.id) >= minIndex);
+    return gpuTiers.filter(
+      (g) => tierOrder.indexOf(g.id) >= minIndex && (servingVramGb === null || g.vram >= servingVramGb)
+    );
   }
 
   function getAvailableEngines(model: Model): EngineOption[] {
+    // An adapter is loaded by vLLM; the API refuses any other engine for one.
+    if (selectedFineTuned) return ENGINE_OPTIONS.filter((e) => e.id === "vllm");
     return ENGINE_OPTIONS.filter((e) => model.supportedEngines.includes(e.id));
   }
 
@@ -205,10 +278,14 @@ export default function NewDeploymentPage() {
     if (!selectedModel || !selectedGpu) return;
 
     setIsDeploying(true);
+    setDeployRefusal(null);
     try {
       const { deployment } = await deploymentsApi.create({
         name,
-        modelId: selectedModel.id,
+        // The base model comes from the fine-tuned model on the server.
+        ...(selectedFineTuned
+          ? { fineTunedModelId: selectedFineTuned.id }
+          : { modelId: selectedModel.id }),
         gpuTier: selectedGpu.id,
         engine: selectedEngine,
         replicas,
@@ -221,6 +298,19 @@ export default function NewDeploymentPage() {
       if (isComputePaused(error)) {
         // Nothing was created or reserved. The API's reason is not shown.
         setComputePaused(true);
+      } else if (selectedFineTuned && getApiErrorBody(error)) {
+        // A refusal of the adapter (tier too small, model deleted, engine):
+        // it stays on the page with what to change. Nothing was reserved.
+        setDeployRefusal(getErrorMessage(error, "This fine-tuned model could not be deployed."));
+        const failure = getApiErrorBody(error);
+        const required = failure?.body.requiredVramGb;
+        if (failure?.body.error === "tier_too_small_for_serving" && typeof required === "number") {
+          // Back to the tier choice, with the tiers the API will accept.
+          setServingVramGb(required);
+          setSelectedGpu(null);
+          setShowAdvancedGpu(true);
+          setStep("config");
+        }
       } else {
         toast.error(getErrorMessage(error, "Failed to create deployment"));
       }
@@ -292,6 +382,53 @@ export default function NewDeploymentPage() {
         {/* Step 1: Select Model */}
         {step === "model" && (
           <div>
+            {fineTunedNotFound && (
+              <p role="alert" className="mb-4 rounded-lg border border-border bg-muted p-4 text-sm text-foreground">
+                The fine-tuned model in this link was not found. It may have been deleted. Choose a
+                model below.
+              </p>
+            )}
+            {!isLoading && !loadError && fineTunedModels.length > 0 && (
+              <div className="mb-8" data-testid="fine-tuned-choices">
+                <h2 className="mb-1 text-lg font-semibold">Your fine-tuned models</h2>
+                <p className="mb-4 text-sm text-muted-foreground">
+                  Served by vLLM as the base model with your adapter loaded.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {fineTunedModels.map((fineTuned) => {
+                    const base = models.find((m) => m.id === fineTuned.baseModelId);
+                    return (
+                      <button
+                        key={fineTuned.id}
+                        type="button"
+                        disabled={!base}
+                        data-fine-tuned={fineTuned.id}
+                        onClick={() => base && selectFineTuned(fineTuned, base)}
+                        className={cn(
+                          "rounded-lg border bg-card p-4 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          base ? "hover:border-primary/40 hover:shadow-md" : "cursor-not-allowed opacity-60",
+                          selectedFineTuned?.id === fineTuned.id && "border-primary ring-2 ring-primary/30"
+                        )}
+                      >
+                        <span className="flex items-start justify-between gap-2">
+                          <span className="font-semibold text-foreground">{fineTuned.name}</span>
+                          <Badge variant="default">Fine-tuned</Badge>
+                        </span>
+                        <span className="mt-1 block text-sm text-muted-foreground">
+                          {fineTuned.baseModelName} · {fineTuned.method.toUpperCase()} rank {fineTuned.loraR}
+                        </span>
+                        {!base && (
+                          <span className="mt-2 block text-xs text-muted-foreground">
+                            Cannot be deployed here: its base model is not in this server&apos;s
+                            deployable catalog.
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <h2 className="mb-4 text-lg font-semibold">Choose a model to deploy</h2>
             {isLoading ? (
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3" aria-busy="true">
@@ -373,12 +510,30 @@ export default function NewDeploymentPage() {
               <CardHeader>
                 <CardTitle>Configure Deployment</CardTitle>
                 <CardDescription>
-                  Deploying {selectedModel.displayName} on Nosana&apos;s
+                  Deploying{" "}
+                  {selectedFineTuned
+                    ? `${selectedFineTuned.name} (fine-tuned from ${selectedModel.displayName})`
+                    : selectedModel.displayName}{" "}
+                  on Nosana&apos;s
                   decentralized GPU network — billed per second of real
                   compute, not per month.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
+                {deployRefusal && (
+                  <div
+                    role="alert"
+                    data-testid="deploy-refusal"
+                    className="rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm"
+                  >
+                    <p className="font-medium text-foreground">{deployRefusal}</p>
+                    <p className="mt-1 text-muted-foreground">
+                      Nothing was created and nothing was reserved.
+                      {servingVramGb !== null &&
+                        ` Choose a GPU with at least ${servingVramGb} GB under Advanced GPU Options.`}
+                    </p>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-foreground">
                     Deployment Name
@@ -447,10 +602,17 @@ export default function NewDeploymentPage() {
                       );
                     })}
                   </div>
-                  {getAvailableEngines(selectedModel).length === 1 && (
+                  {selectedFineTuned ? (
                     <p className="mt-2 text-sm text-muted-foreground">
-                      This model only supports {selectedModel.defaultEngine} engine.
+                      A fine-tuned model is served by vLLM, which loads the adapter on top of the
+                      base model.
                     </p>
+                  ) : (
+                    getAvailableEngines(selectedModel).length === 1 && (
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        This model only supports {selectedModel.defaultEngine} engine.
+                      </p>
+                    )
                   )}
                 </div>
 
@@ -631,9 +793,15 @@ export default function NewDeploymentPage() {
               <CardContent className="space-y-6">
                 <div className="rounded-lg border border-border divide-y">
                   <div className="flex items-center justify-between p-4">
-                    <span className="text-muted-foreground">Model</span>
+                    <span className="text-muted-foreground">{selectedFineTuned ? "Base model" : "Model"}</span>
                     <span className="font-medium">{selectedModel.displayName}</span>
                   </div>
+                  {selectedFineTuned && (
+                    <div className="flex items-center justify-between p-4" data-testid="review-fine-tuned">
+                      <span className="text-muted-foreground">Fine-tuned model</span>
+                      <span className="font-medium">{selectedFineTuned.name}</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between p-4">
                     <span className="text-muted-foreground">Deployment Name</span>
                     <span className="font-medium">{name}</span>
@@ -695,6 +863,17 @@ export default function NewDeploymentPage() {
                     </div>
                   </div>
                 </div>
+
+                {deployRefusal && (
+                  <div
+                    role="alert"
+                    data-testid="deploy-refusal"
+                    className="rounded-lg border border-danger/30 bg-danger/10 p-4 text-sm"
+                  >
+                    <p className="font-medium text-foreground">{deployRefusal}</p>
+                    <p className="mt-1 text-muted-foreground">Nothing was created and nothing was reserved.</p>
+                  </div>
+                )}
 
                 {computePaused && (
                   <div

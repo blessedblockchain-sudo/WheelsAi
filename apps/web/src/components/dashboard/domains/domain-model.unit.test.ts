@@ -214,7 +214,7 @@ test("with no edge configured there is no routing record to show", () => {
   const plan = routingRecordPlan({ ...RECORDS, cnameRecord: null, aRecords: [], aaaaRecords: [], recommended: null });
   assert.equal(plan.available, false);
   assert.deepEqual(plan.recommended, []);
-  assert.match(plan.note, /not configured on this server/);
+  assert.match(plan.note, /temporarily unavailable/);
 });
 
 test("the page keeps re-reading only while the owner is waiting on DNS or a certificate", () => {

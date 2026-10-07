@@ -208,11 +208,10 @@ export default function SchedulerPage() {
         <>
           {!data.stats.schedulerEnabled && (
             <div role="status" className="rounded-lg border border-border bg-muted px-4 py-3 text-sm text-foreground">
-              <p className="font-medium">Scheduling is switched off on this server.</p>
+              <p className="font-medium">Scheduled runs are temporarily paused.</p>
               <p className="mt-1 text-muted-foreground">
-                No worker is firing schedules, so the next-run times below will not be acted on. Tasks can still be
-                saved and triggered by hand. An operator turns the scheduler on by setting SCHEDULER_INTERVAL_MS above
-                zero.
+                Tasks do not run on their schedule for now, so the next-run times below are on hold. You can still save
+                tasks and run them by hand.
               </p>
             </div>
           )}

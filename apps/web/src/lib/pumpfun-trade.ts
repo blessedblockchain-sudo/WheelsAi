@@ -17,7 +17,7 @@ import { getAssociatedTokenAddress } from "@solana/spl-token";
  */
 
 const TRADING_DISABLED_MESSAGE =
-  "Client-side pump.fun trading is disabled. Trading will return as a server-prepared transaction flow.";
+  "In-app trading is coming soon. You can trade this token on pump.fun meanwhile.";
 
 export async function buildBuyTransaction(
   _connection: Connection,

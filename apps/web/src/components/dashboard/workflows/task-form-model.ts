@@ -354,7 +354,7 @@ export function buildTaskInput(
   if (name === "") errors.name = "Give the task a name";
   else if (name.length > 80) errors.name = "The name is at most 80 characters";
 
-  if (!type.available) errors.taskType = type.reason ?? "This task type is not available on this server";
+  if (!type.available) errors.taskType = type.reason ?? "This task type is not available right now";
   if (type.agent === "required" && !form.agentId) errors.agentId = "Choose an agent";
   if (type.orchestration && !form.orchestrationId) errors.orchestrationId = "Choose a workflow";
 

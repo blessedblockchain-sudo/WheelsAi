@@ -95,8 +95,7 @@ export async function gpuBillingBlock(
   if (billingIntervalMs <= 0) {
     return {
       code: "service_unavailable",
-      message:
-        "Per-second GPU billing is not running on this server (GPU_BILLING_INTERVAL_MS=0), so dedicated deployments cannot serve requests.",
+      message: "Dedicated deployments are temporarily unavailable. Nothing was charged. Try again later.",
       extra: { reason: "gpu_billing_disabled" },
     };
   }

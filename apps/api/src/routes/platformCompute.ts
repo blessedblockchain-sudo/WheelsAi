@@ -24,6 +24,9 @@
  *                 already created the deployment. The name says which row it
  *                 was for.
  *
+ * It also lists what keeps fine-tuning from starting (`training`): each
+ * blocker's code, the one customers receive, with what to set.
+ *
  * An upstream read that fails does not fail the route: that section says
  * "unreadable" and the rest is still answered.
  *
@@ -129,6 +132,8 @@ export interface PlatformComputeDeps {
   findTrackedIds: (nosanaIds: string[]) => Promise<Set<string>>;
   loadOpenRows: () => Promise<OpenNosanaRow[]>;
   loadRunning: () => Promise<RunningComputeRow[]>;
+  /** What keeps fine-tuning from starting, in operator language. Absent = not reported. */
+  trainingBlockers?: () => Promise<Array<{ code: string; message: string }>>;
   /** Called with the tiers found priced below cost (the wallet path refuses nothing in a request). */
   reportBelowCost?: (tiers: string[]) => void;
   now?: () => Date;
@@ -216,6 +221,13 @@ export interface PlatformComputeResponse {
     truncated: boolean;
   };
   rows: { state: "ok" | "unreadable" };
+  /** Fine-tuning: whether a job can start, and if not, what is missing. */
+  training: {
+    state: SectionState;
+    /** Null when the section is not ok. */
+    canStart: boolean | null;
+    blockers: Array<{ code: string; message: string }>;
+  };
 }
 
 // ============================================
@@ -375,7 +387,7 @@ export async function computePlatformCompute(
   const holds = (mode: NosanaAccessMode) => modes.includes(mode);
 
   // Every read at once; each is settled on its own so one failure costs one section.
-  const [credits, minimumDeploy, wallet, costs, lists, openRows, running, tierList] = await Promise.all([
+  const [credits, minimumDeploy, wallet, costs, lists, openRows, running, tierList, training] = await Promise.all([
     access.hasApiKey ? settle(deps.readCredits, timeoutMs) : null,
     access.hasApiKey ? settle(deps.minimumDeployCredits, timeoutMs) : null,
     access.hasWallet ? settle(deps.readWallet, timeoutMs) : null,
@@ -389,6 +401,7 @@ export async function computePlatformCompute(
     settle(deps.loadOpenRows, timeoutMs),
     settle(deps.loadRunning, timeoutMs),
     deps.tiers(),
+    deps.trainingBlockers ? settle(deps.trainingBlockers, timeoutMs) : null,
   ]);
 
   // ---- Credits ---------------------------------------------------------
@@ -539,6 +552,15 @@ export async function computePlatformCompute(
       truncated: unreachable.length > MAX_LISTED,
     },
     rows: { state: openRows.ok && running.ok ? "ok" : "unreadable" },
+    training: !training
+      ? { state: "not_applicable", canStart: null, blockers: [] }
+      : training.ok
+        ? {
+            state: "ok",
+            canStart: training.value.length === 0,
+            blockers: training.value.map((blocker) => ({ code: blocker.code, message: blocker.message })),
+          }
+        : { state: "unreadable", canStart: null, blockers: [] },
   };
 }
 

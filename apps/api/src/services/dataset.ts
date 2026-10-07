@@ -1392,7 +1392,7 @@ const STORAGE_NOT_CONFIGURED = () =>
   refuse(
     503,
     "dataset_storage_not_configured",
-    "Dataset uploads are not available: object storage is not configured on this deployment.",
+    "Dataset uploads are temporarily unavailable. Nothing was saved. Try again later.",
   );
 
 const NOT_FOUND = () => refuse(404, "dataset_not_found", "Dataset not found");

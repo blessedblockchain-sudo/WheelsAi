@@ -1123,7 +1123,8 @@ async function prepareGraphChat(args: {
     return refuse({
       kind: "not_configured",
       code: "model_provider_not_configured",
-      message: "This server cannot run agent graphs.",
+      message:
+        "This agent answers through a graph, which is temporarily unavailable. Try again later.",
     });
   }
 

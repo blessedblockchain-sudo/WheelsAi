@@ -20,9 +20,12 @@
 
 import { z } from "zod";
 
+import { createLogger } from "../utils/logger.js";
 import type { FailClosedLimiter } from "./failClosedLimiter.js";
 import { publicChatKeys, utcDay } from "./publicChat.js";
 import { generatePublicKey, MAX_ALLOWED_ORIGINS, normalizeOrigin } from "./widgetKeys.js";
+
+const logger = createLogger("web-channel");
 
 /** Live (unrevoked) keys one agent may have. */
 export const MAX_KEYS_PER_AGENT = 20;
@@ -251,16 +254,22 @@ const trimSlash = (url: string) => url.replace(/\/+$/, "");
  * own addresses, so the dashboard never assembles one from where the browser
  * happens to be.
  */
+export const EMBED_SNIPPET_UNAVAILABLE = "The embed snippet is temporarily unavailable. Try again later.";
+
+let snippetWarningLogged = false;
+
 export function embedSnippet(
   publicKey: string,
   addresses: WebChannelDeps["snippet"],
 ): { snippet: string | null; reason: string | null } {
   if (!addresses.webUrl || !addresses.apiUrl) {
     const missing = [!addresses.webUrl && "PUBLIC_WEB_URL", !addresses.apiUrl && "PUBLIC_API_URL"].filter(Boolean);
-    return {
-      snippet: null,
-      reason: `This server does not know its public address (${missing.join(" and ")} not set), so it cannot write the snippet.`,
-    };
+    // The setting is the operator's; the owner reads one calm sentence.
+    if (!snippetWarningLogged) {
+      snippetWarningLogged = true;
+      logger.warn({ missing }, `Web chat embed snippets are off: ${missing.join(" and ")} not set`);
+    }
+    return { snippet: null, reason: EMBED_SNIPPET_UNAVAILABLE };
   }
   return {
     snippet: `<script src="${attr(trimSlash(addresses.webUrl))}/widget.js" data-wheelsai-key="${attr(

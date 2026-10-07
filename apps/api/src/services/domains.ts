@@ -18,7 +18,11 @@
 
 import crypto from "node:crypto";
 
-import { getCustomDomainConfig, type CustomDomainConfig } from "../config/customDomains.js";
+import {
+  CUSTOM_DOMAINS_UNAVAILABLE_MESSAGE,
+  getCustomDomainConfig,
+  type CustomDomainConfig,
+} from "../config/customDomains.js";
 import {
   buildDnsInstructions,
   buildReservedHosts,
@@ -270,7 +274,7 @@ export function createDomainsService(deps: DomainsServiceDeps) {
       throw new DomainError(
         501,
         "custom_domains_not_configured",
-        config.unavailableReason ?? "Custom domains are not configured on this server.",
+        CUSTOM_DOMAINS_UNAVAILABLE_MESSAGE,
       );
     }
     return config.edge;

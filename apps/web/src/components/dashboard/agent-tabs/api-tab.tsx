@@ -140,8 +140,8 @@ export function ApiTab({ agent, agentId, loadAgent }: AgentTabProps) {
       <div className="space-y-6">
         <EmptyState
           icon={PlugZap}
-          title="API endpoint not configured"
-          description={`This server has no public API address set (PUBLIC_API_URL), so it cannot print this agent's endpoint. The agent is still served at /v1/agents/${agent.slug}/chat/completions on the API host.`}
+          title="Endpoint address unavailable"
+          description={`The full endpoint address cannot be shown right now. Your agent is still served at /v1/agents/${agent.slug}/chat/completions on the WheelsAI API.`}
         />
         <EntrypointCard agent={agent} agentId={agentId} loadAgent={loadAgent} />
         <UsageCard agentId={agentId} />

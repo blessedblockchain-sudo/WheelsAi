@@ -548,7 +548,7 @@ export const TRAINING_FAILURE_CODES = {
   adapter_missing: "The run reported success but no adapter was stored",
   adapter_invalid: "The stored adapter is not the one the run reported",
   nosana_error: "The GPU deployment went into an error state",
-  nosana_insufficient_funds: "The GPU deployment ran out of platform funds",
+  nosana_insufficient_funds: "The run was stopped on our side, for a reason that had nothing to do with your account",
   interrupted: "The run was interrupted on the node",
   no_exit_code: "The run ended without reporting how",
   killed: "The process was killed on the node",

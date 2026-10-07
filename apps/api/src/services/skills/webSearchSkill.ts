@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { safeFetch } from "../../lib/ssrfGuard.js";
+import { createLogger } from "../../utils/logger.js";
 import type { BuiltinSkillDeps } from "./builtinDeps.js";
 import { clipText, describeFetchFailure, readBodyCapped } from "./httpLimits.js";
 import type { SkillDefinition } from "./types.js";
@@ -34,19 +35,18 @@ const responseSchema = z.object({
     .default([]),
 });
 
-const UNCONFIGURED = "web search is not configured on this server";
+const UNCONFIGURED = "web search is temporarily unavailable";
+
+const logger = createLogger("web-search-skill");
 
 export function createWebSearchSkill(deps: BuiltinSkillDeps): SkillDefinition {
   const apiKey = () => {
     const state = deps.getConfig();
     return state.error ? undefined : state.config.tavilyApiKey;
   };
-  const unavailableReason = () => {
-    const state = deps.getConfig();
-    return state.error
-      ? `web search is misconfigured on this server (${state.error})`
-      : UNCONFIGURED;
-  };
+  // Unset or invalid, the customer reads the same sentence; an invalid
+  // setting is logged for the operator by config/skills.ts.
+  const unavailableReason = () => UNCONFIGURED;
 
   return {
     key: "web_search",
@@ -104,9 +104,15 @@ export function createWebSearchSkill(deps: BuiltinSkillDeps): SkillDefinition {
         });
 
         if (res.status === 401 || res.status === 403) {
+          // The customer reads only that search is unavailable; the operator
+          // needs to know the platform's key was refused (never log the key).
+          logger.warn(
+            { status: res.status },
+            "Web search provider rejected TAVILY_API_KEY; check or rotate the key",
+          );
           return {
             status: "error",
-            message: "the web search provider rejected this server's API key",
+            message: "web search is temporarily unavailable",
           };
         }
         if (res.status === 429) {

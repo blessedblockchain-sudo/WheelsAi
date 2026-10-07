@@ -137,7 +137,7 @@ test("with the runner switched off, nothing is queued and the answer is 501", as
   const err = await codeOf(startWorkflowRun(args, deps));
   assert.equal(err.code, "workflow_runner_disabled");
   assert.equal(err.status, 501);
-  assert.match(err.message, /WORKFLOW_RUN_CONCURRENCY/);
+  assert.equal(err.message, "Workflow runs are temporarily unavailable. Nothing was started. Try again later.");
   assert.equal(world.rows.length, 0);
 });
 

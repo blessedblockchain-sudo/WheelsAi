@@ -21,7 +21,9 @@ import {
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan } from "../services/nosanaOrphans.js";
 import {
+  COMPUTE_UNAVAILABLE_MESSAGE,
   computeRefusal,
+  GPU_TIER_UNAVAILABLE_MESSAGE,
   isAccessModeUnavailable,
   runDeployPreflight,
 } from "../services/nosanaPreflight.js";
@@ -595,12 +597,15 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       await runDeployPreflight(await getNosanaClient(), body.gpuTier, body.replicas);
     } catch (err) {
       if (err instanceof NosanaNotConfiguredError) {
-        return reply.status(501).send({ error: err.code, message: err.message });
+        logger.warn({ code: err.code, agentId }, `Agent deploy refused: ${err.message}`);
+        return reply.status(501).send({ error: err.code, message: COMPUTE_UNAVAILABLE_MESSAGE });
       }
       if (err instanceof MarketNotConfiguredError) {
-        return err.code === "unknown_tier"
-          ? reply.status(400).send({ error: "unknown_gpu_tier", message: err.message })
-          : reply.status(501).send({ error: "gpu_market_not_configured", message: err.message });
+        if (err.code === "unknown_tier") {
+          return reply.status(400).send({ error: "unknown_gpu_tier", message: err.message });
+        }
+        logger.warn({ tier: err.tier, network: err.network, agentId }, `Agent deploy refused: ${err.message}`);
+        return reply.status(501).send({ error: "gpu_market_not_configured", message: GPU_TIER_UNAVAILABLE_MESSAGE });
       }
       // The platform's own funding refused (credits, key, price below cost).
       const refusal = computeRefusal(err);
@@ -609,7 +614,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       logger.error({ err, agentId }, "Nosana client unavailable for agent deploy");
       return reply.status(503).send({
         error: "nosana_unavailable",
-        message: "The compute backend is not available right now; nothing was reserved. Retry shortly.",
+        message: "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.",
       });
     }
 
@@ -785,7 +790,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
             return reply.status(409).send({
               error: "nosana_access_mode_unavailable",
               message:
-                "This deployment was created with a compute account that is not configured here, so it cannot be stopped right now. Contact support.",
+                "This deployment cannot be stopped right now. Contact support.",
             });
           }
           return reply.status(502).send({

@@ -565,7 +565,7 @@ export async function validateWorkflowDefinition(
   const modelSteps = deps.capabilities?.modelSteps;
   if (modelSteps && !modelSteps.available && def.steps.some((s) => s.stepType === "model")) {
     warnings.push(
-      `model steps cannot run on this server yet${modelSteps.reason ? `: ${modelSteps.reason}` : ""}`,
+      `model steps cannot run right now${modelSteps.reason ? `: ${modelSteps.reason}` : ""}`,
     );
   }
 

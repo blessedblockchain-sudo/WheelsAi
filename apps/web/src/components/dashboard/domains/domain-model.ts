@@ -222,7 +222,7 @@ export function routingRecordPlan(records: DnsRecords): RoutingRecordPlan {
       available: false,
       recommended: [],
       alternative: [],
-      note: "Custom domains are not configured on this server, so there is no address to point this domain at yet.",
+      note: "Custom domains are temporarily unavailable, so there is no address to point this domain at right now.",
     };
   }
   if (records.recommended === "a") {

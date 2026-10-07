@@ -270,12 +270,12 @@ const ERROR_RULES: Record<OpenAiErrorCode, ErrorRule> = {
   internal_error: server(500, "The request could not be completed."),
   model_provider_not_configured: server(
     501,
-    "No model provider is configured for this agent on this platform.",
+    "The model this agent uses is temporarily unavailable. Try again later.",
     false,
   ),
   hosted_model_not_available: server(
     501,
-    "WheelsAI-hosted models cannot be called from this path yet.",
+    "WheelsAI-hosted models cannot be called through this endpoint.",
     false,
   ),
   // Not retried: the same request finds the same deployment state, and a
@@ -296,7 +296,7 @@ const ERROR_RULES: Record<OpenAiErrorCode, ErrorRule> = {
   },
   // Someone cancelled the run from outside while this request waited.
   workflow_cancelled: invalid(409, "The workflow run was cancelled.", false),
-  workflow_runner_disabled: server(501, "Workflow runs are switched off on this server.", false),
+  workflow_runner_disabled: server(501, "Workflow runs are temporarily unavailable. Nothing was started. Try again later.", false),
   // A finished run is not retried by the SDK: every repeat is a whole new
   // run, and its steps are billed again.
   workflow_failed: server(502, "The workflow run failed.", false),

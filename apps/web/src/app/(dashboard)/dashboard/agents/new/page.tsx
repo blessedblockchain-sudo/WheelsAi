@@ -787,7 +787,7 @@ function NewAgentContent() {
                           return (
                             <Badge key={tool} variant={skill && !skill.available ? "warning" : "secondary"}>
                               {skill?.name ?? tool}
-                              {skill && !skill.available ? " (needs configuration)" : ""}
+                              {skill && !skill.available ? " (unavailable)" : ""}
                             </Badge>
                           );
                         })

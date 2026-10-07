@@ -669,63 +669,102 @@ export interface TrainingBlocker {
   message: string;
 }
 
-/** Why a job cannot start on this server, each with a sentence a user can read. */
-export function trainingBlockers(runtime: TrainingRuntime, store: ObjectStore | null): TrainingBlocker[] {
-  const blockers: TrainingBlocker[] = [];
+/**
+ * What a customer reads while something the platform runs keeps fine-tuning
+ * from starting. One calm sentence for every platform-side blocker: which
+ * setting is missing is the operator's business, and is said to the operator
+ * (trainingOperatorBlockers, the start-up log and GET /api/platform/compute).
+ */
+export const TRAINING_UNAVAILABLE_MESSAGE = "Fine-tuning is temporarily unavailable. Try again later.";
+
+/** The same, as the answer to a job that was refused before anything was written. */
+export const TRAINING_UNAVAILABLE_REFUSAL =
+  "Fine-tuning is temporarily unavailable. Nothing was created and no credits were held. Try again later.";
+
+/** A platform-side blocker as the operator reads it: its code and what to set. */
+export interface TrainingOperatorBlocker {
+  code: string;
+  message: string;
+}
+
+/**
+ * Why no job can start on this deployment, in operator language. The codes
+ * are the ones customers receive; the sentences are for the operator only.
+ * `storageReason` is the storage config's own reason when it has one.
+ */
+export function trainingOperatorBlockers(
+  runtime: TrainingRuntime,
+  store: ObjectStore | null,
+  storageReason?: string | null,
+): TrainingOperatorBlocker[] {
+  const blockers: TrainingOperatorBlocker[] = [];
   if (!store) {
     blockers.push({
       code: "dataset_storage_not_configured",
-      message: "Fine-tuning cannot start on this server yet: object storage for datasets and adapters is not configured.",
+      message: `Object storage for datasets and adapters is not configured${storageReason ? ` (${storageReason})` : ""}. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.`,
     });
   }
   if (!runtime.image.configured) {
     blockers.push({
       code: "training_image_not_configured",
-      message: "Fine-tuning cannot start on this server yet: the training image is not configured.",
+      message: `The training image is not configured (${runtime.image.reason}).`,
     });
   }
   if (runtime.nosanaMock) {
     blockers.push({
       code: "training_requires_real_nosana",
-      message: "Fine-tuning cannot start on this server: it runs with a stand-in for the GPU network, which cannot train a model.",
+      message: "The API runs with the development Nosana mock (ALLOW_NOSANA_MOCK), which cannot train a model.",
     });
   } else if (!runtime.nosanaConfigured) {
     blockers.push({
       code: "nosana_not_configured",
-      message: "Fine-tuning cannot start on this server yet: no GPU network account is configured.",
+      message: "No Nosana account is configured: set NOSANA_API_KEY or NOSANA_WALLET_PRIVATE_KEY.",
     });
   } else if (Object.keys(runtime.tiers).length === 0) {
     blockers.push({
       code: "gpu_market_not_configured",
-      message: "Fine-tuning cannot start on this server yet: no GPU tier is available on the configured network.",
+      message: "No GPU tier has a market on the configured Nosana network (see NOSANA_MARKETS_JSON).",
     });
   }
   if (!runtime.publicApiUrl) {
     blockers.push({
       code: "training_callbacks_not_configured",
-      message: "Fine-tuning cannot start on this server yet: the API has no public address for a training run to report to.",
+      message: "PUBLIC_API_URL is not set, so a training run has no address to report to.",
     });
   }
   if (runtime.pollIntervalMs <= 0) {
     blockers.push({
       code: "training_poller_disabled",
-      message: "Fine-tuning cannot start on this server: the worker that follows training runs is switched off.",
+      message: "The training poller is switched off (TRAINING_POLL_INTERVAL_MS is 0), so nothing would follow a run.",
     });
   }
   if (!runtime.orphanSweepEnabled) {
     blockers.push({
       code: "training_orphan_sweep_disabled",
-      message: "Fine-tuning cannot start on this server: the worker that stops GPU jobs left running is switched off.",
+      message:
+        "The deployment status worker is switched off (DEPLOYMENT_STATUS_INTERVAL_MS is 0), so a GPU job whose stop did not land would run on unwatched.",
     });
   }
   const bounds = trainingRunLimitBounds(runtime, runtime.batchJobTimeoutSeconds);
   if (bounds.maxSeconds < bounds.minSeconds) {
     blockers.push({
       code: "training_run_limit_unavailable",
-      message: "Fine-tuning cannot start on this server: its job time limit leaves no room for a training run.",
+      message:
+        "NOSANA_BATCH_JOB_TIMEOUT_SECONDS minus the setup allowance (TRAINING_SETUP_ALLOWANCE_SECONDS) leaves no room for the shortest training run.",
     });
   }
   return blockers;
+}
+
+/**
+ * Why a job cannot start, as a customer reads it: each platform-side blocker
+ * keeps its code and carries the one shared sentence.
+ */
+export function trainingBlockers(runtime: TrainingRuntime, store: ObjectStore | null): TrainingBlocker[] {
+  return trainingOperatorBlockers(runtime, store).map((blocker) => ({
+    code: blocker.code,
+    message: TRAINING_UNAVAILABLE_MESSAGE,
+  }));
 }
 
 /**
@@ -797,9 +836,9 @@ export async function listTrainingModels(deps: TrainingDeps) {
   });
   const byId = new Map(rows.map((row) => [row.id, row]));
   const reasons: Record<string, string> = {
-    hf_token_required: "This model needs a Hugging Face token, which this server does not have.",
-    no_tier_available: "No GPU tier with enough memory is available on this server.",
-    model_not_in_catalog: "This model is not in this server's model catalog.",
+    hf_token_required: "This model is not available for fine-tuning right now.",
+    no_tier_available: "No GPU with enough memory for this model is available right now.",
+    model_not_in_catalog: "This model is not available for fine-tuning right now.",
   };
   return options.map((option) => {
     const row = byId.get(option.modelId);
@@ -941,7 +980,7 @@ async function planTrainingJob(
         400,
         "run_limit_out_of_range",
         bounds.maxSeconds < bounds.minSeconds
-          ? "This server's job time limit leaves no room for a training run."
+          ? TRAINING_UNAVAILABLE_REFUSAL
           : `The run limit must be between ${bounds.minSeconds} and ${bounds.maxSeconds} seconds.`,
         { minSeconds: bounds.minSeconds, maxSeconds: bounds.maxSeconds },
       );
@@ -1144,13 +1183,13 @@ class CreateAborted extends Error {
 function preflightRefusal(error: unknown): TrainingRefusal {
   const code = errorCode(error);
   if (code === "nosana_not_configured") {
-    return refuse(501, code, "Fine-tuning cannot start: no GPU network account is configured.");
+    return refuse(501, code, TRAINING_UNAVAILABLE_REFUSAL);
   }
   if (code === "unknown_tier") {
     return refuse(400, "unknown_gpu_tier", "This GPU tier is not available.");
   }
   if (code === "market_not_configured") {
-    return refuse(501, "gpu_market_not_configured", "This GPU tier is not available on the configured network.");
+    return refuse(501, "gpu_market_not_configured", "This GPU tier is not available right now. Choose another tier.");
   }
   const refusal = computeRefusal(error);
   if (refusal) {
@@ -1186,23 +1225,15 @@ export async function createTrainingJob(
 
   // 7. Storage.
   if (!deps.getStore()) {
-    return refuse(
-      503,
-      "dataset_storage_not_configured",
-      "Fine-tuning is not available: object storage is not configured on this server.",
-    );
+    return refuse(503, "dataset_storage_not_configured", TRAINING_UNAVAILABLE_REFUSAL);
   }
   // 8. The image.
   if (!runtime.image.configured) {
-    return refuse(501, "training_image_not_configured", "Fine-tuning is not available: the training image is not configured.");
+    return refuse(501, "training_image_not_configured", TRAINING_UNAVAILABLE_REFUSAL);
   }
   // 9. Nosana. The development mock never runs anything, so it is refused by name.
   if (runtime.nosanaMock) {
-    return refuse(
-      501,
-      "training_requires_real_nosana",
-      "Fine-tuning needs the real GPU network; this server runs with a stand-in for it.",
-    );
+    return refuse(501, "training_requires_real_nosana", TRAINING_UNAVAILABLE_REFUSAL);
   }
   const nosanaTimeoutSeconds = trainingNosanaTimeoutSeconds(runtime, maxRuntimeSeconds);
   try {
@@ -1214,24 +1245,16 @@ export async function createTrainingJob(
   }
   // 10. Callbacks.
   if (!runtime.publicApiUrl) {
-    return refuse(
-      503,
-      "training_callbacks_not_configured",
-      "Fine-tuning is not available: the API has no public address for a training run to report to.",
-    );
+    return refuse(503, "training_callbacks_not_configured", TRAINING_UNAVAILABLE_REFUSAL);
   }
   // 11. The poller: with it off nothing would ever end a job.
   if (runtime.pollIntervalMs <= 0) {
-    return refuse(503, "training_poller_disabled", "Fine-tuning is not available: the worker that follows training runs is switched off.");
+    return refuse(503, "training_poller_disabled", TRAINING_UNAVAILABLE_REFUSAL);
   }
   // 12. The orphan sweep: a job whose stop did not land hands its deployment
   // to it, and settles. With it off that GPU would run on, unwatched (R5).
   if (!runtime.orphanSweepEnabled) {
-    return refuse(
-      503,
-      "training_orphan_sweep_disabled",
-      "Fine-tuning is not available: the worker that stops GPU jobs left running is switched off.",
-    );
+    return refuse(503, "training_orphan_sweep_disabled", TRAINING_UNAVAILABLE_REFUSAL);
   }
   // 13. Quota, then 14. free failures (both checked again inside the
   // transaction, under the organization's lock).
@@ -2337,7 +2360,7 @@ async function reconcileLegacy(deps: TrainingDeps, row: TrainingJobRow): Promise
     from: row.status as TrainingState,
     failureCode: row.status === "finalizing" ? "adapter_missing" : row.status === "running" ? "no_exit_code" : "submit_failed",
     charge: { kind: "none" },
-    message: "This job was created before fine-tuning could run. Nothing was charged.",
+    message: "This job could not run and has been closed. Nothing was charged.",
     orphanReason: "training_legacy_row",
   });
   return { action: failed === "lost" ? "none" : failed };

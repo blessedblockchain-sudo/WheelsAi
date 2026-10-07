@@ -534,7 +534,7 @@ test("POST / for a tier with no configured market is an honest 501; an unknown t
   const r1 = await a.app.inject({ method: "POST", url: "/", payload: createBody });
   assert.equal(r1.statusCode, 501);
   assert.equal(r1.json().error, "gpu_market_not_configured");
-  assert.match(r1.json().message, /market for tier 4090 is not configured/);
+  assert.equal(r1.json().message, "This GPU tier is not available right now. Choose another tier. Nothing was reserved.");
 
   const unknown = makeNosana({
     assertError: new MarketNotConfiguredError("9999", "mainnet", "unknown_tier"),

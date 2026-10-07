@@ -88,7 +88,7 @@ export async function createProCheckout(
   args: { orgId: string; email?: string; successUrl: string; cancelUrl: string },
 ): Promise<{ url: string; trialDays: number }> {
   if (!env.STRIPE_PRO_PRICE_ID) {
-    throw new CheckoutError("The Pro plan is not available for purchase yet.", 501, "pro_not_configured");
+    throw new CheckoutError("Pro checkout is temporarily unavailable. Nothing was charged. Try again later.", 501, "pro_not_configured");
   }
   const sub = await prisma.orgSubscription.findUnique({ where: { orgId: args.orgId } });
   const current = effectivePlan(sub);

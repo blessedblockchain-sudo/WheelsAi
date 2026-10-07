@@ -92,7 +92,7 @@ export async function startWorkflowRun(
   if (!deps.runnerEnabled) {
     throw new WorkflowError(
       "workflow_runner_disabled",
-      "Workflow runs are switched off on this server (WORKFLOW_RUN_CONCURRENCY is 0)",
+      "Workflow runs are temporarily unavailable. Nothing was started. Try again later.",
     );
   }
 

@@ -294,10 +294,15 @@ export async function prepareAdapterServing(
     ok: false,
     status: 503,
     code: "adapter_download_not_configured",
-    message:
-      "Fine-tuned models cannot be deployed on this server yet: PUBLIC_API_URL is not set, so a GPU node has nowhere to fetch the adapter from.",
+    message: "Deploying fine-tuned models is temporarily unavailable. Nothing was reserved. Try again later.",
   };
-  if (!publicApiUrl) return notConfigured;
+  if (!publicApiUrl) {
+    logger.warn(
+      { fineTunedModelId: row.id },
+      "Fine-tuned model deploy refused: PUBLIC_API_URL is not set, so a GPU node has nowhere to fetch the adapter from",
+    );
+    return notConfigured;
+  }
 
   // The same check the job definition makes at submit, made here so that a
   // value it would refuse is refused before anything is reserved.
@@ -309,11 +314,11 @@ export async function prepareAdapterServing(
   } catch (err) {
     if (!(err instanceof InvalidAdapterConfigError)) throw err;
     if (err.field === "adapter.downloadUrl") {
-      return {
-        ...notConfigured,
-        message:
-          "Fine-tuned models cannot be deployed on this server yet: PUBLIC_API_URL is not a plain http(s) address a GPU node can fetch the adapter from.",
-      };
+      logger.warn(
+        { fineTunedModelId: row.id },
+        "Fine-tuned model deploy refused: PUBLIC_API_URL is not a plain http(s) address a GPU node can fetch the adapter from",
+      );
+      return notConfigured;
     }
     logger.error({ fineTunedModelId: row.id, field: err.field }, "Fine-tuned model is not servable");
     return notServable("This fine-tuned model's stored details cannot be served. Contact support.");

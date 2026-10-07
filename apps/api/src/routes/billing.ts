@@ -204,7 +204,8 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
     if (!env.ALLOW_MOCK_CHECKOUT) {
       return reply.status(501).send({
         error: "card_payments_not_configured",
-        message: "Card payments are not configured on this server yet. Wallet top-ups work where enabled.",
+        message:
+          "Card payments are temporarily unavailable. Nothing was charged. Pay with another method on the Billing page, or try again later.",
       });
     }
 
@@ -273,7 +274,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       if (!stripe || !isProSubscriptionEnabled()) {
         return reply.status(501).send({
           error: "pro_not_configured",
-          message: "The Pro plan is not available for purchase on this server yet.",
+          message: "Pro checkout is temporarily unavailable. Nothing was charged. Try again later.",
         });
       }
       try {
@@ -302,7 +303,7 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       if (!stripe) {
         return reply.status(501).send({
           error: "card_payments_not_configured",
-          message: "Billing management is not configured on this server yet.",
+          message: "Billing management is temporarily unavailable. Try again later.",
         });
       }
       try {

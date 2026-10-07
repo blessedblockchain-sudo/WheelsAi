@@ -324,7 +324,7 @@ export function runLimitError(
   const value = Number(raw);
   if (raw.trim() === "" || !Number.isInteger(value)) return "Enter a whole number of minutes.";
   if (value < minMinutes || value > maxMinutes) {
-    return `The run limit is from ${minMinutes.toLocaleString()} to ${maxMinutes.toLocaleString()} minutes on this server.`;
+    return `The run limit is from ${minMinutes.toLocaleString()} to ${maxMinutes.toLocaleString()} minutes.`;
   }
   return null;
 }
@@ -409,7 +409,7 @@ export function methodOf(model: TrainableModel, method: string): TrainableModelM
 /** Why a method of a model cannot be chosen on this server, or null when it can. */
 export function methodBlocker(entry: TrainableModelMethod): string | null {
   return entry.tiers.length === 0
-    ? `Needs a GPU tier with ${entry.requiredVramGb} GB of memory; none is available on this server.`
+    ? `Needs a GPU tier with ${entry.requiredVramGb} GB of memory; none is available right now.`
     : null;
 }
 
@@ -442,7 +442,7 @@ export function tierChoices(
         if (entry && tier.vramGb < entry.requiredVramGb) {
           reason = `Too small: this needs ${entry.requiredVramGb} GB of GPU memory.`;
         } else if (!tier.deployable) {
-          reason = "Not available on this server.";
+          reason = "Not available right now.";
         } else {
           reason = "Not offered for this model and method.";
         }

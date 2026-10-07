@@ -126,7 +126,8 @@ test("POST /:agentId/deploy with compute not configured is a 501 with a named re
     });
     assert.equal(res.statusCode, 501, "not a 201 that fails later in the background");
     assert.equal(res.json().error, "nosana_not_configured");
-    assert.match(res.json().message, /NOSANA_WALLET_PRIVATE_KEY/);
+    assert.equal(res.json().message, "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again later.");
+    assert.ok(!/NOSANA_/.test(res.json().message), "the setting is for the operator's log, not the customer");
     assert.equal(state.created, 0, "no deployment row was created");
     assert.equal(state.reserved, 0, "no credits were reserved");
     assert.equal(state.transactions, 0);

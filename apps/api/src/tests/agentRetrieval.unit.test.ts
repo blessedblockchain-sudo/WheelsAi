@@ -77,7 +77,7 @@ test("keyword-mode retrieval is reported as keyword, with the reason", async () 
     search: {
       results: [hit()],
       mode: "keyword",
-      fallbackReason: "embeddings not configured (set EMBEDDING_PROVIDER)",
+      fallbackReason: "semantic search is temporarily unavailable",
     },
   });
   const result = await retrieveContextForAgent(
@@ -86,7 +86,7 @@ test("keyword-mode retrieval is reported as keyword, with the reason", async () 
   );
   assert.ok(result);
   assert.equal(result.mode, "keyword");
-  assert.match(result.fallbackReason!, /not configured/);
+  assert.equal(result.fallbackReason, "semantic search is temporarily unavailable");
 });
 
 test("low-scoring noise is dropped rather than grounded on", async () => {

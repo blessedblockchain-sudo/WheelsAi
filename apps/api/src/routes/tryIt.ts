@@ -215,7 +215,7 @@ export function createTryItRoutes(deps: TryItRouteDeps): FastifyPluginAsync {
         return sendPublicRefusal(reply, {
           status: 501,
           code: "not_supported",
-          message: "This agent answers through a graph, which cannot be previewed yet.",
+          message: "This agent answers through a graph, so Try it cannot preview it. Install it to chat with it.",
           reason,
         });
       }
@@ -353,7 +353,7 @@ export function createTryItRoutes(deps: TryItRouteDeps): FastifyPluginAsync {
           return reply.status(501).send({
             error: "trial_funding_not_configured",
             message:
-              "Paying for more Try it messages is not available yet: the price of a funded message (TRIAL_FUNDED_MESSAGE_CENTS) is not configured on this server.",
+              "Paying for more Try it messages is temporarily unavailable. Nothing was changed.",
           });
         }
 

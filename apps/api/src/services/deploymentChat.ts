@@ -472,7 +472,7 @@ export async function runDeploymentChat(
     if (deps.x402Required()) {
       throw new DeploymentChatError(
         "x402_required",
-        `the deployment "${deployment.name}" is billed per request, and this server takes per-request payment by x402 only (X402_INFERENCE_MODE=required); a workflow step has no payment to attach, so it cannot call it`,
+        `the deployment "${deployment.name}" is billed per request and accepts payment by x402 only; a workflow step has no payment to attach, so it cannot call it`,
       );
     }
     const balance = await deps.balanceCents(orgId);

@@ -1040,7 +1040,7 @@ export default function AgentBuilderPage() {
                       {enabledSkills.map((skill) => (
                         <option key={skill.key} value={skill.key}>
                           {skill.name}
-                          {skill.available ? "" : " — needs configuration"}
+                          {skill.available ? "" : " (unavailable)"}
                         </option>
                       ))}
                       {/* Listed so they can be found, not chosen: a run

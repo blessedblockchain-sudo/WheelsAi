@@ -145,7 +145,7 @@ test("nothing is hidden on an unconfigured server: unavailable types and options
   );
 
   const report = catalogue.find((t) => t.type === "report")!;
-  assert.match(report.fields.find((f) => f.key === "deliver.alertChannelId")!.help!, /email delivery is not configured/);
+  assert.match(report.fields.find((f) => f.key === "deliver.alertChannelId")!.help!, /email delivery is unavailable right now/);
 });
 
 // ============================================

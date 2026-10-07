@@ -203,16 +203,16 @@ test("unavailable and error results are rendered honestly for the model", async 
     callModel,
     executeTool: async (name) =>
       name === "web_search"
-        ? { status: "unavailable", reason: "web search is not configured on this server" }
+        ? { status: "unavailable", reason: "web search is temporarily unavailable" }
         : { status: "error", message: "bad expression" },
   });
   const toolMessages = requests[1]!.messages.filter((m) => m.role === "tool");
-  assert.equal(toolMessages[0]!.content, "unavailable: web search is not configured on this server");
+  assert.equal(toolMessages[0]!.content, "unavailable: web search is temporarily unavailable");
   assert.equal(toolMessages[1]!.content, "error: bad expression");
   assert.deepEqual(
     result.toolCalls.map((c) => [c.name, c.status, c.detail]),
     [
-      ["web_search", "unavailable", "web search is not configured on this server"],
+      ["web_search", "unavailable", "web search is temporarily unavailable"],
       ["calculator", "error", "bad expression"],
     ],
   );

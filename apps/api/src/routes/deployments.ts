@@ -26,7 +26,9 @@ import { scopedLatencyLoader, type ScopedLatency } from "../services/buildLatenc
 import type { ScopedWindow } from "../services/latencyQueries.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import {
+  COMPUTE_UNAVAILABLE_MESSAGE,
   computeRefusal,
+  GPU_TIER_UNAVAILABLE_MESSAGE,
   isAccessModeUnavailable,
   runDeployPreflight,
 } from "../services/nosanaPreflight.js";
@@ -132,14 +134,16 @@ export function deploymentEndpoint(slug: string): string {
  */
 function replyForPreflightError(reply: FastifyReply, error: unknown): boolean {
   if (error instanceof NosanaNotConfiguredError) {
-    reply.status(501).send({ error: error.code, message: error.message });
+    logger.warn({ code: error.code }, `Deploy refused: ${error.message}`);
+    reply.status(501).send({ error: error.code, message: COMPUTE_UNAVAILABLE_MESSAGE });
     return true;
   }
   if (error instanceof MarketNotConfiguredError) {
     if (error.code === "unknown_tier") {
       reply.status(400).send({ error: "unknown_gpu_tier", message: error.message });
     } else {
-      reply.status(501).send({ error: "gpu_market_not_configured", message: error.message });
+      logger.warn({ tier: error.tier, network: error.network }, `Deploy refused: ${error.message}`);
+      reply.status(501).send({ error: "gpu_market_not_configured", message: GPU_TIER_UNAVAILABLE_MESSAGE });
     }
     return true;
   }
@@ -161,7 +165,7 @@ function replyForPreflightError(reply: FastifyReply, error: unknown): boolean {
 const OTHER_ACCOUNT_REPLY = {
   error: "nosana_access_mode_unavailable",
   message:
-    "This deployment was created with a compute account that is not configured here, so it cannot be changed right now. Contact support.",
+    "This deployment cannot be changed right now. Contact support.",
 };
 
 /**
@@ -1001,7 +1005,7 @@ export function createDeploymentRoutes(
               return reply.status(refusal.status).send({
                 ...refusal.body,
                 message:
-                  "Replicas cannot be added right now because new GPU capacity is paused. Replicas were not changed and nothing was reserved.",
+                  "Replicas cannot be added right now because new GPU deployments are temporarily unavailable. Replicas were not changed, and nothing was reserved or charged.",
               });
             }
             return reply.status(502).send({

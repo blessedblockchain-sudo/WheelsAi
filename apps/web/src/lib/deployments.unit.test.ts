@@ -24,7 +24,7 @@ const paused = (reason: string) =>
   new ApiError(503, "Service Unavailable", {
     error: "compute_capacity_unavailable",
     reason,
-    message: "New GPU deployments are paused while the platform's compute balance is topped up. Nothing was reserved.",
+    message: "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.",
   });
 
 test("503 compute_capacity_unavailable is 'paused', whatever the reason", () => {
@@ -43,13 +43,18 @@ test("other failures are not 'paused'", () => {
 });
 
 test("the paused message states no amount and no provider", () => {
-  assert.equal(COMPUTE_PAUSED_MESSAGE, "GPU deployments are paused right now. Nothing was charged.");
+  assert.equal(
+    COMPUTE_PAUSED_MESSAGE,
+    "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.",
+  );
 });
 
-test("a run that ended because the platform's compute balance ran out says so, and that the owner was not charged", () => {
+test("a run the platform stopped says it was not the owner's doing, and that the owner was not charged", () => {
   const note = deploymentEndNote("failed", "nosana_insufficient_funds");
   assert.ok(note);
-  assert.match(note.body, /platform's compute balance ran out/);
+  assert.match(note.title, /stopped on our side/);
+  assert.match(note.body, /nothing to do with your account/);
+  assert.doesNotMatch(`${note.title} ${note.body}`, /balance|nosana|funds/i);
   assert.match(note.body, /not charged for time after the stop/);
   assert.match(note.body, /start it again/);
 });
@@ -60,7 +65,7 @@ test("a run refused inside the submit explains itself from the code, not the sto
     "nosana_credits_low: The platform's Nosana credits do not cover this deployment and the required floor",
   );
   assert.ok(note);
-  assert.match(note.body, /GPU capacity was paused/);
+  assert.match(note.body, /temporarily unavailable when it tried to start/);
   assert.doesNotMatch(`${note.title} ${note.body}`, /nosana|credits do not cover|floor/i);
 });
 

@@ -335,7 +335,7 @@ test("session: 404 for an unknown listing, 400 for an unknown field, and no chal
   assert.equal(res.statusCode, 501);
   assert.deepEqual(res.json(), {
     error: "not_supported",
-    message: "This agent answers through a graph, which cannot be previewed yet.",
+    message: "This agent answers through a graph, so Try it cannot preview it. Install it to chat with it.",
     reason: "graph_agent_preview",
   });
   assert.deepEqual(graph.turnstileCalls, []);
@@ -568,7 +568,7 @@ test("settings: a funded cap answers 501 with the reason until a funded message 
   const res = await patch(app, { fundedDailyCap: 50 });
   assert.equal(res.statusCode, 501);
   assert.equal(res.json().error, "trial_funding_not_configured");
-  assert.match(res.json().message, /TRIAL_FUNDED_MESSAGE_CENTS/);
+  assert.equal(res.json().message, "Paying for more Try it messages is temporarily unavailable. Nothing was changed.");
   assert.deepEqual(caps, [], "nothing was saved");
 
   const off = await patch(app, { fundedDailyCap: 0 });

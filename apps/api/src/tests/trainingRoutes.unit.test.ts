@@ -195,7 +195,7 @@ test("GET /capabilities and /models tell a page what can start and why not", asy
   assert.deepEqual(blocked.blockers, [
     {
       code: "training_image_not_configured",
-      message: "Fine-tuning cannot start on this server yet: the training image is not configured.",
+      message: "Fine-tuning is temporarily unavailable. Try again later.",
     },
   ]);
 

@@ -335,7 +335,7 @@ export const openclawRoutes: FastifyPluginAsync = async (app) => {
       // roadmap, Wave 3 with the OpenClaw runtime image).
       return reply.status(501).send({
         error: "logs_not_implemented",
-        message: "Log streaming is not available yet.",
+        message: "Live log streaming is not available for this deployment.",
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

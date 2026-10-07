@@ -12,6 +12,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { env } from "../config/env.js";
 import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { getTrainingConfig } from "../config/training.js";
+import { TRAINABLE_MODELS } from "../config/trainingCatalog.js";
 import { prisma as defaultPrisma } from "../lib/prisma.js";
 import { createLogger } from "../utils/logger.js";
 import { getNosanaClient, isNosanaMockEnabled } from "./nosana.js";
@@ -20,7 +21,9 @@ import { recordNosanaOrphan, type NosanaOrphanPrisma } from "./nosanaOrphans.js"
 import { getObjectStore, issueTransferUrl } from "./objectStore.js";
 import {
   placeableTrainingTiers,
+  trainingOperatorBlockers,
   type TrainingDeps,
+  type TrainingOperatorBlocker,
   type TrainingPrisma,
   type TrainingRuntime,
   type TrainingTierInfo,
@@ -74,6 +77,42 @@ export async function resolveTrainingRuntime(): Promise<TrainingRuntime> {
     }),
     allTiers,
   };
+}
+
+/**
+ * What keeps fine-tuning from starting on this deployment, in operator
+ * language: the operator view (GET /api/platform/compute) and the start-up
+ * log read it. Customers only ever see the codes and one calm sentence.
+ */
+export async function readTrainingOperatorBlockers(): Promise<TrainingOperatorBlocker[]> {
+  const runtime = await resolveTrainingRuntime();
+  const storage = getTrainingConfig().storage;
+  return trainingOperatorBlockers(runtime, getObjectStore(), storage.driver === null ? storage.reason : null);
+}
+
+/**
+ * Logs one warning per missing fine-tuning setting, once, at start-up. A
+ * failure to read the configuration is logged too, and never stops the boot.
+ */
+export async function logTrainingReadiness(
+  log: { warn: (context: Record<string, unknown>, message: string) => void } = logger,
+): Promise<void> {
+  try {
+    for (const blocker of await readTrainingOperatorBlockers()) {
+      log.warn({ code: blocker.code }, `Fine-tuning cannot start: ${blocker.message}`);
+    }
+    // Not a blocker: the other models still train. Customers see the gated
+    // ones as "not available for fine-tuning right now" (hf_token_required).
+    const gated = TRAINABLE_MODELS.filter((model) => model.gated).map((model) => model.modelId);
+    if (gated.length > 0 && !getTrainingConfig().hfToken) {
+      log.warn(
+        { code: "hf_token_required", models: gated },
+        `Fine-tuning cannot start: HF_TOKEN is not set, so the gated models (${gated.join(", ")}) are listed as unavailable`,
+      );
+    }
+  } catch (err) {
+    log.warn({ err }, "Fine-tuning readiness could not be read at start-up");
+  }
 }
 
 export function buildTrainingDeps(

@@ -21,7 +21,7 @@ export interface EmailMessage {
 export class EmailNotConfiguredError extends Error {
   readonly code = "email_not_configured";
   constructor() {
-    super("Email delivery is not configured on this server.");
+    super("Email is temporarily unavailable. Try again later.");
     this.name = "EmailNotConfiguredError";
   }
 }

@@ -415,8 +415,8 @@ export default function PlaygroundPage() {
                           {skill && <SkillUnavailableNote skill={skill} />}
                           {skills && !skill && (
                             <p className="mt-1 text-xs text-muted-foreground">
-                              This tool name is not one the server can run, so the model is
-                              not offered it.
+                              WheelsAI does not run a tool with this name, so the model is not
+                              offered it.
                             </p>
                           )}
                         </div>

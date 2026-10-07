@@ -10,7 +10,8 @@
 import { getApiErrorBody } from "./api";
 
 /** Shown when the API answers 503 compute_capacity_unavailable. */
-export const COMPUTE_PAUSED_MESSAGE = "GPU deployments are paused right now. Nothing was charged.";
+export const COMPUTE_PAUSED_MESSAGE =
+  "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.";
 
 /**
  * Whether a failed create, restart or scale-up was refused because new GPU
@@ -50,14 +51,14 @@ export function deploymentEndNote(
   const code = (statusReason ?? "").split(":")[0]!.trim();
   if (code === "nosana_insufficient_funds") {
     return {
-      title: "This deployment was stopped by the platform",
-      body: "The platform's compute balance ran out. You were not charged for time after the stop, and your reservation was returned. You can start it again.",
+      title: "This deployment was stopped on our side",
+      body: "The stop had nothing to do with your account. You were not charged for time after the stop, and your reservation was returned. You can start it again.",
     };
   }
   if (PAUSED_BEFORE_START.includes(code)) {
     return {
       title: "This deployment did not start",
-      body: "GPU capacity was paused before it could start. You were not charged for GPU time, and your reservation was returned. You can start it again.",
+      body: "New GPU deployments were temporarily unavailable when it tried to start. You were not charged for GPU time, and your reservation was returned. You can start it again.",
     };
   }
   if (code === "insufficient_credits") {

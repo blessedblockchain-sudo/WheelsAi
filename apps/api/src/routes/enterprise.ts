@@ -160,7 +160,7 @@ export async function enterpriseRoutes(app: FastifyInstance) {
         emailSent,
         message: emailSent
           ? `Invite emailed to ${invite.email}`
-          : "Invite created. Email is not configured, so share the invite link directly.",
+          : "Invite created. Share the invite link with them directly.",
       });
     } catch (error: any) {
       return reply.status(400).send({

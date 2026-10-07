@@ -248,7 +248,7 @@ export function TaskFormDialog({
           <DialogDescription id="task-form-description">
             {catalogue.schedulerEnabled
               ? `The scheduler checks for due tasks every ${Math.round(catalogue.intervalMs / 1000)} seconds.`
-              : "Scheduling is switched off on this server: tasks can be saved and triggered by hand, but none fires on its schedule."}
+              : "Scheduled runs are temporarily paused: you can still save tasks and run them by hand."}
           </DialogDescription>
         </DialogHeader>
 
@@ -288,7 +288,7 @@ export function TaskFormDialog({
             {type && <p className="mt-1 text-xs text-muted-foreground">{type.description}</p>}
             {type && !type.available && (
               <p role="status" className="mt-2 rounded-md border border-border bg-muted px-3 py-2 text-xs text-foreground">
-                Not available on this server: {type.reason ?? "no reason given"}
+                Not available right now: {type.reason ?? "try again later"}
               </p>
             )}
             <FieldError message={errors.taskType} />

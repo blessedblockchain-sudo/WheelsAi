@@ -375,7 +375,7 @@ test("tiers the API offers for the method are selectable; the rest carry their r
   );
   assert.match(choices[0]!.reason!, /Too small: this needs 24 GB/);
   assert.equal(choices[1]!.reason, null);
-  assert.match(choices[3]!.reason!, /Not available on this server/);
+  assert.equal(choices[3]!.reason, "Not available right now.");
 });
 
 test("with no method chosen no tier is selectable", () => {

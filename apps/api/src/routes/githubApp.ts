@@ -72,7 +72,7 @@ export function createGitHubAppRoutes(
   const now = deps.now ?? (() => new Date());
   const disabled = {
     error: "github_app_not_configured",
-    message: "The WheelsAI GitHub App is not configured on this deployment.",
+    message: "The WheelsAI GitHub App is temporarily unavailable. Try again later.",
   };
 
   return async (app) => {

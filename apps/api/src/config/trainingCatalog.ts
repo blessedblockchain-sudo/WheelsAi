@@ -194,7 +194,7 @@ export function selectTraining(input: TrainingSelectionInput): TrainingSelection
     return {
       ok: false,
       code: "hf_token_required",
-      message: `${model.modelId} needs a Hugging Face token, which this server does not have`,
+      message: `${model.modelId} is not available for fine-tuning right now`,
     };
   }
   const tier = Object.hasOwn(input.tiers, input.tier) ? input.tiers[input.tier] : undefined;

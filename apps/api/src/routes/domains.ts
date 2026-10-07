@@ -26,7 +26,11 @@
 import type { FastifyPluginAsync, FastifyReply, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 
-import { getCustomDomainConfig, type CustomDomainConfig } from "../config/customDomains.js";
+import {
+  CUSTOM_DOMAINS_UNAVAILABLE_MESSAGE,
+  getCustomDomainConfig,
+  type CustomDomainConfig,
+} from "../config/customDomains.js";
 import { requireAuth, requireRole as requireRoleFromDb } from "../middleware/auth.js";
 import {
   PENDING_EXPIRY_MS,
@@ -128,7 +132,7 @@ export function createDomainsRoutes(deps: DomainsRouteDeps = {}): FastifyPluginA
     if (config.edge) return null;
     return reply.status(501).send({
       error: "custom_domains_not_configured",
-      message: config.unavailableReason ?? "Custom domains are not configured on this server.",
+      message: CUSTOM_DOMAINS_UNAVAILABLE_MESSAGE,
     });
   }
 
@@ -149,7 +153,7 @@ export function createDomainsRoutes(deps: DomainsRouteDeps = {}): FastifyPluginA
         success: true,
         data: {
           configured: config.edge !== null,
-          unavailableReason: config.unavailableReason,
+          unavailableReason: config.edge ? null : CUSTOM_DOMAINS_UNAVAILABLE_MESSAGE,
           edge: config.edge
             ? { hostname: config.edge.hostname, ipv4: config.edge.ipv4, ipv6: config.edge.ipv6 }
             : null,

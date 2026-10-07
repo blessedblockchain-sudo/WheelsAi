@@ -4,19 +4,23 @@ import type { TrainingBlocker } from "@/lib/api";
 
 /**
  * Why a training job cannot start: each blocker in the API's own sentence
- * (GET /api/training/capabilities), shown where the action would be. Most
- * are about this server; one is about the organization (its free failures of
- * the last day, with when the next run can start). Renders nothing when
- * there is none.
+ * (GET /api/training/capabilities), shown where the action would be. Every
+ * platform-side blocker carries the same calm sentence, so a sentence is shown
+ * once; the organization's own blocker (its free failures of the last day,
+ * with when the next run can start) is specific. Renders nothing when there
+ * is none.
  */
 export function TrainingBlockers({
   blockers,
-  title = "Fine-tuning cannot start yet",
+  title = "Fine-tuning cannot start right now",
 }: {
   blockers: TrainingBlocker[];
   title?: string;
 }) {
   if (blockers.length === 0) return null;
+  const unique = blockers.filter(
+    (blocker, index) => blockers.findIndex((other) => other.message === blocker.message) === index,
+  );
   return (
     <div
       role="status"
@@ -28,7 +32,7 @@ export function TrainingBlockers({
         {title}
       </p>
       <ul className="mt-2 list-disc space-y-1 pl-9 text-sm text-muted-foreground">
-        {blockers.map((blocker) => (
+        {unique.map((blocker) => (
           <li key={blocker.code} data-blocker={blocker.code}>
             {blocker.message}
           </li>

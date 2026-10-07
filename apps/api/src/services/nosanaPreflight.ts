@@ -31,21 +31,31 @@ export async function runDeployPreflight(
 }
 
 /**
+ * What a customer reads when the platform's own compute setup refuses a
+ * deploy: no Nosana account is loaded, or the chosen tier has no market on
+ * the network in use. The detail (which setting) goes to the log, never here.
+ */
+export const COMPUTE_UNAVAILABLE_MESSAGE =
+  "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again later.";
+export const GPU_TIER_UNAVAILABLE_MESSAGE =
+  "This GPU tier is not available right now. Choose another tier. Nothing was reserved.";
+
+/**
  * Refusals that mean "the platform cannot pay for new compute right now".
  * The reason is for an operator and for support; the message is for the
  * customer and never states an amount.
  */
 const COMPUTE_REFUSAL_MESSAGES: Record<string, string> = {
   nosana_credits_low:
-    "New GPU deployments are paused while the platform's compute balance is topped up. Nothing was reserved.",
+    "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.",
   nosana_credits_unavailable:
-    "New GPU deployments are paused because the platform's compute balance could not be confirmed. Nothing was reserved.",
+    "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.",
   nosana_auth_failed:
-    "New GPU deployments are paused because the platform's compute provider refused the request. Nothing was reserved.",
+    "New GPU deployments are temporarily unavailable. Nothing was reserved or charged. Try again in a few minutes.",
   gpu_price_below_cost:
-    "This GPU tier is paused while its price is reviewed. Nothing was reserved.",
+    "This GPU tier is temporarily unavailable. Choose another tier, or try again later. Nothing was reserved.",
   gpu_cost_unavailable:
-    "This GPU tier is paused because its compute cost could not be confirmed. Nothing was reserved.",
+    "This GPU tier is temporarily unavailable. Choose another tier, or try again later. Nothing was reserved.",
 };
 
 export const COMPUTE_REFUSAL_CODES: ReadonlySet<string> = new Set(

@@ -356,8 +356,8 @@ function NewTrainingJobForm() {
               <h3 className="text-sm font-semibold text-foreground">{e ? "Estimate" : "Cost"}</h3>
               {e ? (
                 <p className="mt-1 text-xs text-muted-foreground">
-                  A planning figure worked out from the dataset&apos;s size and the model, not a
-                  measurement of this run. The charge is for the seconds the run actually takes.
+                  An estimate worked out from your dataset&apos;s size and the model. You are charged
+                  for the seconds the run actually takes.
                 </p>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground" data-testid="training-no-estimate">
@@ -442,7 +442,7 @@ function NewTrainingJobForm() {
               )}
               {e?.suggestionCapped && (
                 <p className="mt-3 rounded-md border border-border bg-muted p-3 text-sm text-foreground">
-                  The suggested run limit was cut to the longest this server allows (
+                  The suggested run limit was cut to the longest run allowed (
                   {formatRunTime(e.runLimit.maxSeconds)}).
                 </p>
               )}
@@ -583,12 +583,14 @@ function NewTrainingJobForm() {
         <CardHeader>
           <CardTitle className="text-base">Base model</CardTitle>
           <CardDescription>
-            The models this server can fine-tune. Memory figures are planning figures.
+            The models you can fine-tune, with the GPU memory each method needs.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {data.models.length === 0 ? (
-            <p className="text-sm text-muted-foreground">This server offers no base model to fine-tune.</p>
+            <p className="text-sm text-muted-foreground">
+              No base model is available to fine-tune right now. Try again later.
+            </p>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Base model">
               {data.models.map((m) => (
@@ -621,7 +623,7 @@ function NewTrainingJobForm() {
                       ? m.methods
                           .map((entry) => `${TRAINING_METHOD_LABELS[entry.method]?.name ?? entry.method} from ${entry.requiredVramGb} GB`)
                           .join(" · ")
-                      : `Not available: ${m.unavailableMessage ?? "it cannot be fine-tuned on this server."}`}
+                      : `Not available: ${m.unavailableMessage ?? "it cannot be fine-tuned right now."}`}
                   </span>
                 </button>
               ))}
@@ -666,7 +668,9 @@ function NewTrainingJobForm() {
             <div>
               <p className="text-sm font-medium text-foreground">GPU tier</p>
               {tiers.length === 0 ? (
-                <p className="mt-2 text-sm text-muted-foreground">This server lists no GPU tier.</p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  No GPU tier is available right now. Try again later.
+                </p>
               ) : (
                 <div className="mt-2 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="GPU tier">
                   {tiers.map((tier) => (
@@ -778,7 +782,7 @@ function NewTrainingJobForm() {
             >
               {runLimitProblem ??
                 (minuteBounds.maxMinutes < minuteBounds.minMinutes
-                  ? "This server's job time limit leaves no room for a training run."
+                  ? "Fine-tuning is temporarily unavailable. Try again later."
                   : needsRunLimit
                     ? `From ${minuteBounds.minMinutes.toLocaleString()} to ${minuteBounds.maxMinutes.toLocaleString()} minutes. Required for this dataset: no tokens per row were measured when it was validated, so its training time cannot be estimated and no limit can be suggested. The run stops at the limit, and the limit sets the amount held.`
                     : `From ${minuteBounds.minMinutes.toLocaleString()} to ${minuteBounds.maxMinutes.toLocaleString()} minutes. The run stops at the limit, and the limit sets the amount held. The review shows a suggested limit for your dataset.`)}

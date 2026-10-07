@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import type { Skill } from "@/lib/api";
 
 /**
- * How a skill (agent tool) stands on THIS server, in words a user can read.
+ * Whether a skill (agent tool) can run right now, in words a user can read.
  *
  * An unavailable skill is never hidden: the agent can still be configured
  * with it, and it answers "unavailable: <reason>" when the model calls it.
@@ -19,7 +19,7 @@ export function SkillStatusBadge({ skill }: { skill: Pick<Skill, "available"> })
   ) : (
     <Badge variant="warning" className="gap-1">
       <AlertTriangle className="h-3 w-3" />
-      Needs configuration
+      Unavailable
     </Badge>
   );
 }
@@ -32,7 +32,7 @@ export function SkillUnavailableNote({
   if (skill.available) return null;
   return (
     <p className="mt-1 text-xs text-yellow-600 dark:text-yellow-500">
-      needs configuration: {skill.unavailableReason ?? "not available on this server"}
+      Unavailable: {skill.unavailableReason ?? "not available right now"}
     </p>
   );
 }

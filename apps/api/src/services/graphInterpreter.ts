@@ -163,10 +163,13 @@ export const GRAPH_LIMITS: GraphLimits = {
 
 /**
  * Node types refused outright, with the reason the builder shows. `code` is
- * only refused while no sandbox runner is configured.
+ * only refused while no sandbox runner is configured. User code never runs in
+ * the API process; the operator reads the missing SANDBOX_RUNNER_URL in the
+ * start-up log (services/operatorReadiness.ts), the customer reads only
+ * that code execution is temporarily unavailable.
  */
 export const REFUSED_NODE_TYPES: Record<string, string> = {
-  code: "the `code` node would run user-supplied code, which never happens in the API process (that was the remote-code-execution hole the test runner shipped and Wave 1 closed). It runs only in an external sandbox, and no sandbox is configured on this server (SANDBOX_RUNNER_URL).",
+  code: "the `code` node runs your code in an isolated sandbox, and code execution is temporarily unavailable. Try again later, or use an `api` or `tool` node for this step.",
 };
 
 /** A node the interpreter deliberately will not run (not a crash). */

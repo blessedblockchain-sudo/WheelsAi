@@ -369,7 +369,7 @@ test("the plan says so when this server cannot run model steps", async () => {
   );
   assert.ok(result.ok);
   assert.deepEqual(result.plan.warnings, [
-    "model steps cannot run on this server yet: billing service not connected",
+    "model steps cannot run right now: billing service not connected",
   ]);
 });
 

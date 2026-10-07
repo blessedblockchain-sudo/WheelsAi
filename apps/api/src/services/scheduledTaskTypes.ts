@@ -45,11 +45,11 @@ export interface TaskTypeCapabilities {
 }
 
 export const RESTART_UNAVAILABLE_REASON =
-  "restarting a deployment from a health check is not available on this server: the restart service that re-reserves credits is not connected to the scheduler";
+  "restarting a deployment from a health check is unavailable right now; record the failure instead";
 export const EMAIL_UNAVAILABLE_REASON =
-  "email delivery is not configured on this server, so a report cannot be sent to an email channel";
+  "email delivery is unavailable right now, so a report cannot be sent to an email channel";
 export const WORKFLOW_RUNNER_UNAVAILABLE_REASON =
-  "workflow runs are switched off on this server (WORKFLOW_RUN_CONCURRENCY is 0)";
+  "workflow runs are temporarily unavailable";
 
 export interface TaskFieldOption {
   value: string;

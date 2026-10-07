@@ -217,7 +217,7 @@ export class ModelNotConfiguredError extends Error {
   readonly code = "model_provider_not_configured";
   constructor(readonly modelId: string) {
     super(
-      `Free model "${modelId}" is not available. The required API key is not configured on the platform.`,
+      `Free model "${modelId}" is temporarily unavailable. Choose another model or try again later.`,
     );
     this.name = "ModelNotConfiguredError";
   }

@@ -85,10 +85,10 @@ test("GET /api/skills lists every skill, unconfigured ones flagged with a reason
   assert.equal(byKey.calculator!.available, true);
   assert.equal(byKey.http_request!.available, true);
   assert.equal(byKey.web_search!.available, false);
-  assert.equal(byKey.web_search!.unavailableReason, "web search is not configured on this server");
+  assert.equal(byKey.web_search!.unavailableReason, "web search is temporarily unavailable");
   assert.deepEqual(byKey.web_search!.requires, ["TAVILY_API_KEY"]);
-  assert.match(byKey.code_interpreter!.unavailableReason!, /code execution sandbox is not configured/);
-  assert.match(byKey.file_read!.unavailableReason!, /file storage is not configured/);
+  assert.match(byKey.code_interpreter!.unavailableReason!, /code execution is temporarily unavailable/);
+  assert.match(byKey.file_read!.unavailableReason!, /file storage is temporarily unavailable/);
   assert.ok(skills.every((s) => s.moneyMoving === false));
   await app.close();
 });

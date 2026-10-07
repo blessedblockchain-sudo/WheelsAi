@@ -388,13 +388,13 @@ function SchedulesTab({
     <div className="space-y-4">
       {!catalogue.schedulerEnabled && (
         <p role="status" className="rounded-lg border border-border bg-muted px-4 py-3 text-sm text-foreground">
-          Scheduling is switched off on this server. Schedules can be saved and triggered by hand, but none fires on
-          its own, so the next-run times below will not be acted on.
+          Scheduled runs are temporarily paused. You can still save schedules and run them by hand; the next-run
+          times below are on hold for now.
         </p>
       )}
       {workflowRun && !workflowRun.available && (
         <p role="status" className="rounded-lg border border-border bg-muted px-4 py-3 text-sm text-foreground">
-          Workflows cannot be scheduled on this server: {workflowRun.reason}
+          Workflows cannot be scheduled right now: {workflowRun.reason}
         </p>
       )}
 

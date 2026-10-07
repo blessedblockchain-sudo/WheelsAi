@@ -120,6 +120,13 @@ export const DEFAULT_DOMAIN_LIMITS: CustomDomainLimits = {
   issuancePlatform: 200,
 };
 
+/**
+ * What a customer reads while custom domains are off on this deployment. The
+ * operator's reason (unavailableReason, which names the settings) stays in
+ * the log and on the edge's own route.
+ */
+export const CUSTOM_DOMAINS_UNAVAILABLE_MESSAGE = "Custom domains are temporarily unavailable. Try again later.";
+
 export const CUSTOM_DOMAINS_NOT_CONFIGURED =
   "Custom domains are not configured on this server: the edge proxy settings (CUSTOM_DOMAIN_EDGE_HOSTNAME, CUSTOM_DOMAIN_EDGE_IPV4/IPV6, CUSTOM_DOMAIN_ASK_TOKEN, CUSTOM_DOMAIN_EDGE_SECRET) are not set.";
 

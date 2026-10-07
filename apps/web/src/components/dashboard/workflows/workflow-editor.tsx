@@ -164,7 +164,7 @@ export function WorkflowEditor({
         setPlanState(
           issue
             ? { status: "invalid", issue }
-            : { status: "unchecked", message: getErrorMessage(error, "The server could not be reached") }
+            : { status: "unchecked", message: getErrorMessage(error, "WheelsAI could not be reached. Check your connection and try again.") }
         );
       }
     }, PLAN_DEBOUNCE_MS);

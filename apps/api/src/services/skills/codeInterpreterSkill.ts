@@ -5,7 +5,7 @@ import { clipText } from "./httpLimits.js";
 import { MAX_SANDBOX_CODE_BYTES, SandboxError, type SandboxResult } from "./sandboxRunner.js";
 import type { SkillDefinition } from "./types.js";
 
-const UNCONFIGURED = "code execution sandbox is not configured";
+const UNCONFIGURED = "code execution is temporarily unavailable";
 
 const inputSchema = z.object({
   language: z.string().trim().min(1).max(16).default("python"),
@@ -33,12 +33,9 @@ export function formatSandboxResult(result: SandboxResult): string {
  * unavailable, full stop.
  */
 export function createCodeInterpreterSkill(deps: BuiltinSkillDeps): SkillDefinition {
-  const unavailableReason = () => {
-    const state = deps.getConfig();
-    return state.error
-      ? `code execution is misconfigured on this server (${state.error})`
-      : UNCONFIGURED;
-  };
+  // Unset or invalid, the customer reads the same sentence; an invalid
+  // setting is logged for the operator by config/skills.ts.
+  const unavailableReason = () => UNCONFIGURED;
 
   return {
     key: "code_interpreter",

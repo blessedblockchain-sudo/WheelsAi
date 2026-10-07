@@ -304,7 +304,7 @@ export default function AgentDetailPage() {
                     </div>
                   ) : (
                     <p className="mt-1 text-sm text-muted-foreground">
-                      API endpoint not configured on this server
+                      Endpoint address unavailable right now
                     </p>
                   )}
                 </div>

@@ -383,14 +383,17 @@ test("list: today's usage is the counter the chat counts on, and null - not zero
   assert.equal(res.json().key.usageToday, null);
 });
 
-test("the snippet is null with a reason when this server does not know its public addresses", async () => {
+test("the snippet is null with a calm reason when this server does not know its public addresses", async () => {
   const { app } = await server({ snippet: { webUrl: null, apiUrl: "https://api.wheelsai.test" } });
   const { key } = (await create(app)).json();
   assert.equal(key.snippet, null);
-  assert.match(key.snippetUnavailableReason, /PUBLIC_WEB_URL/);
-  assert.ok(!key.snippetUnavailableReason.includes("PUBLIC_API_URL"));
+  assert.equal(key.snippetUnavailableReason, "The embed snippet is temporarily unavailable. Try again later.");
+  assert.ok(!/PUBLIC_/.test(key.snippetUnavailableReason), "the settings are for the operator's log");
 
-  assert.match(embedSnippet("wpk_x", { webUrl: null, apiUrl: null }).reason ?? "", /PUBLIC_WEB_URL and PUBLIC_API_URL/);
+  assert.equal(
+    embedSnippet("wpk_x", { webUrl: null, apiUrl: null }).reason,
+    "The embed snippet is temporarily unavailable. Try again later.",
+  );
   // Whatever the addresses hold, the tag stays one tag.
   const odd = embedSnippet("wpk_x", { webUrl: 'https://a.test/"><script>', apiUrl: "https://b.test" }).snippet ?? "";
   assert.ok(!odd.includes('"><script>'));

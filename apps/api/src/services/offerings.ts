@@ -114,7 +114,7 @@ export class OfferingError extends Error {
 }
 
 export const JOBS_NOT_CONFIGURED_MESSAGE =
-  "Paid jobs are switched off on this server (JOB_RUNNER_CONCURRENCY is 0), so nothing would run them.";
+  "Paid jobs are temporarily unavailable. Nothing was charged. Try again later.";
 
 // ============================================
 // Request shapes

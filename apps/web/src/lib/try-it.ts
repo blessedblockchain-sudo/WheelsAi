@@ -88,7 +88,11 @@ export function tryItNotice(status: number, body: TryItRefusalBody | null, now: 
   }
   if (status === 404) return { message: "This listing is no longer available.", action: "none", ended: true };
   if (status === 501) {
-    return { message: "This agent answers through a graph, which cannot be previewed yet.", action: "none", ended: true };
+    return {
+      message: "This agent answers through a graph, so Try it cannot preview it. Install it to chat with it.",
+      action: "none",
+      ended: true,
+    };
   }
   if (status === 400 || status === 413) {
     const message = typeof body?.message === "string" && body.message ? body.message : "That message could not be sent.";
@@ -98,7 +102,7 @@ export function tryItNotice(status: number, body: TryItRefusalBody | null, now: 
     return {
       message:
         code === "rate_limiter_unavailable"
-          ? "Previews are switched off for a moment because their limits cannot be counted. Try again shortly."
+          ? "Previews are temporarily unavailable. Try again shortly."
           : "This agent is not available right now. Try again shortly.",
       action: "none",
       ended: false,
@@ -111,10 +115,10 @@ export function tryItNotice(status: number, body: TryItRefusalBody | null, now: 
 /** Why a listing has no preview at all. */
 export function tryItDisabledMessage(reason: string | null): string {
   if (reason === "graph_agent_preview") {
-    return "This agent answers through a graph of steps, which cannot be previewed yet. You can install it or hire it for a task instead.";
+    return "This agent answers through a graph of steps, so Try it cannot preview it. You can install it or hire it for a task instead.";
   }
   if (reason === "no_model_available") {
-    return "Previews run on a free model that WheelsAI provides, and none is available on this server right now.";
+    return "Previews run on a free model that WheelsAI provides, which is temporarily unavailable. Try again later.";
   }
   return "This agent cannot be previewed right now.";
 }

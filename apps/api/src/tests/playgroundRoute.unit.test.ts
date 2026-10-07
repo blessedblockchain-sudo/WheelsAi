@@ -42,7 +42,7 @@ const RESULT: ChatResult = {
   usage: { inputTokens: 21, outputTokens: 6 },
   reportedUsage: { inputTokens: 21, outputTokens: 6 },
   finishReason: "stop",
-  toolCalls: [{ round: 1, name: "web_search", status: "unavailable", detail: "web search is not configured on this server" }],
+  toolCalls: [{ round: 1, name: "web_search", status: "unavailable", detail: "web search is temporarily unavailable" }],
   clientToolCalls: [],
   transcript: [],
 };
@@ -152,7 +152,7 @@ test("the playground response and SSE contract is unchanged on the shared servic
     model: "free/groq/llama-3.3-70b",
     usage: { inputTokens: 21, outputTokens: 6 },
     toolCalls: [
-      { round: 1, name: "web_search", status: "unavailable", detail: "web search is not configured on this server" },
+      { round: 1, name: "web_search", status: "unavailable", detail: "web search is temporarily unavailable" },
     ],
     billing: { listingTitle: "Support Pro", chargedCents: 5, creatorCents: 4 },
     retrieval: {
@@ -240,7 +240,7 @@ test("a platform-unconfigured model answers 501", async () => {
   const missingKey = chatDeps({
     resolveModel: (modelId) => {
       throw Object.assign(
-        new Error(`Free model "${modelId}" is not available. The required API key is not configured on the platform.`),
+        new Error(`Free model "${modelId}" is temporarily unavailable. Choose another model or try again later.`),
         { code: "model_provider_not_configured" },
       );
     },

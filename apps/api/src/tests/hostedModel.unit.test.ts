@@ -125,7 +125,7 @@ test("with the GPU billing worker off, a hosted model is refused, never served f
   try {
     const res = await resolveHostedModel({ orgId: ORG, modelId: "wheelsai/llama-3.1-8b" }, db(deployment()));
     assert.ok(!res.ok);
-    assert.match(res.message, /GPU billing is not running/);
+    assert.equal(res.message, "Dedicated deployments are temporarily unavailable. Nothing was charged. Try again later.");
   } finally {
     if (before === undefined) delete process.env.GPU_BILLING_INTERVAL_MS;
     else process.env.GPU_BILLING_INTERVAL_MS = before;

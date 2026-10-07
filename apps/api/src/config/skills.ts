@@ -61,6 +61,8 @@
 
 import { z } from "zod";
 
+import { createLogger } from "../utils/logger.js";
+
 export class SkillsConfigError extends Error {
   constructor(message: string) {
     super(`Invalid skills configuration: ${message}`);
@@ -211,6 +213,12 @@ export function getSkillsConfig(): SkillsConfigState {
       config: UNCONFIGURED,
       error: err instanceof Error ? err.message : String(err),
     };
+    // Once per process: the operator reads which setting is wrong here; a
+    // customer reads only that the tool is temporarily unavailable.
+    createLogger("skills-config").warn(
+      { error: cached.error },
+      "Skills configuration is invalid; web search and code execution are off",
+    );
   }
   return cached;
 }

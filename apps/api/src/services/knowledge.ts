@@ -380,7 +380,7 @@ async function trySemanticSearch(
 ): Promise<SemanticAttempt> {
   const config = resolveEmbeddingConfig();
   if (!config) {
-    return { ok: false, reason: "embeddings not configured (set EMBEDDING_PROVIDER)" };
+    return { ok: false, reason: "semantic search is temporarily unavailable" };
   }
   if (query.trim().length === 0) {
     return { ok: false, reason: "empty query" };

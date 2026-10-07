@@ -250,7 +250,7 @@ test("an enabled tool that is not configured tells the model 'unavailable', neve
     { registry: await makeRegistry(), fetchImpl: provider.fetchImpl },
   );
   const toolMessage = provider.bodies[1]!.messages.at(-1);
-  assert.equal(toolMessage.content, "unavailable: web search is not configured on this server");
+  assert.equal(toolMessage.content, "unavailable: web search is temporarily unavailable");
   assert.equal(result.toolCalls![0]!.status, "unavailable");
 });
 
@@ -763,7 +763,7 @@ test("platform-unconfigured vs missing agent key raise different typed errors", 
   // The PLATFORM has no Groq key: nothing the caller can fix (501).
   assert.throws(
     () => resolveModelForPlayground("free/groq/llama-3.3-70b"),
-    (err: unknown) => err instanceof ModelNotConfiguredError && /not configured on the platform/.test(err.message),
+    (err: unknown) => err instanceof ModelNotConfiguredError && /is temporarily unavailable/.test(err.message),
   );
   // The AGENT's own key is missing: the owner can fix it (400).
   assert.throws(

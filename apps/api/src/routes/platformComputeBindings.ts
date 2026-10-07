@@ -4,7 +4,8 @@
  *
  * Everything here reads: the access configuration, the Nosana client's
  * read-only calls (credit balance, wallet balance, market list, deployment
- * list) and our own tables. Nothing is created, stopped or changed.
+ * list), our own tables and the fine-tuning configuration. Nothing is
+ * created, stopped or changed.
  *
  * buildPlatformComputeDeps takes its collaborators as arguments so the wiring
  * is unit tested against a fake Nosana API and an in-memory store.
@@ -22,6 +23,7 @@ import {
   AGENT_DEPLOYMENT_NON_TERMINAL_STATUSES,
   MODEL_DEPLOYMENT_NON_TERMINAL_STATUSES,
 } from "../services/buildDeploymentStatusTickDeps.js";
+import { readTrainingOperatorBlockers } from "../services/buildTrainingDeps.js";
 import { getNosanaClient, type NosanaClient } from "../services/nosana.js";
 import { MARKETS } from "../services/nosanaMarkets.js";
 import { createLogger } from "../utils/logger.js";
@@ -70,6 +72,8 @@ export interface BuildPlatformComputeDepsInput {
   prisma: PlatformComputePrisma;
   getAccessConfig: () => NosanaAccessConfig;
   adminKey: () => string | undefined;
+  /** What keeps fine-tuning from starting, in operator language. */
+  trainingBlockers?: () => Promise<Array<{ code: string; message: string }>>;
   now?: () => Date;
 }
 
@@ -84,6 +88,7 @@ export function buildPlatformComputeDeps(input: BuildPlatformComputeDepsInput): 
   return {
     adminKey: input.adminKey,
     now: input.now,
+    ...(input.trainingBlockers ? { trainingBlockers: input.trainingBlockers } : {}),
     async access() {
       const cfg = input.getAccessConfig();
       // What is LOADED decides, not what is configured: the client reports the
@@ -263,6 +268,7 @@ export function createPlatformComputeRoutesProduction(): FastifyPluginAsync {
       getAccessConfig: getNosanaAccessConfig,
       // Read per request, so rotating the key needs no reboot.
       adminKey: () => process.env.PLATFORM_ADMIN_KEY,
+      trainingBlockers: readTrainingOperatorBlockers,
     }),
   );
 }

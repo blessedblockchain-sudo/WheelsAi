@@ -472,6 +472,69 @@ test("when our own tables cannot be read, nothing is called untracked", async ()
   assert.equal(body.rows.state, "unreadable");
 });
 
+test("training: what keeps fine-tuning from starting is listed for the operator, by code, with what to set", async () => {
+  const missing = [
+    { code: "training_image_not_configured", message: "The training image is not configured (TRAINING_IMAGE not set)." },
+    { code: "training_poller_disabled", message: "The training poller is switched off (TRAINING_POLL_INTERVAL_MS is 0)." },
+  ];
+  const blocked = await computePlatformCompute(deps({ trainingBlockers: async () => missing }));
+  assert.deepEqual(blocked.training, { state: "ok", canStart: false, blockers: missing });
+
+  const ready = await computePlatformCompute(deps({ trainingBlockers: async () => [] }));
+  assert.deepEqual(ready.training, { state: "ok", canStart: true, blockers: [] });
+
+  const unreadable = await computePlatformCompute(
+    deps({
+      trainingBlockers: async () => {
+        throw new Error("config unreadable");
+      },
+    }),
+  );
+  assert.deepEqual(unreadable.training, { state: "unreadable", canStart: null, blockers: [] });
+  assert.equal(unreadable.rows.state, "ok", "one unreadable section does not fail the view");
+
+  const unreported = await computePlatformCompute(deps());
+  assert.deepEqual(unreported.training, { state: "not_applicable", canStart: null, blockers: [] });
+});
+
+test("training: the operator sentences come from the training service, under the codes customers receive", async () => {
+  const { trainingOperatorBlockers, TRAINING_UNAVAILABLE_MESSAGE, trainingBlockers } = await import(
+    "../services/trainingJobs.js"
+  );
+  const runtime = {
+    image: { configured: false as const, reason: "TRAINING_IMAGE not set" },
+    hfToken: undefined,
+    pollIntervalMs: 0,
+    queueTimeoutSeconds: 1_800,
+    setupAllowanceSeconds: 900,
+    maxActiveJobsPerOrg: 2,
+    freeFailuresPerDay: 3,
+    orphanSweepEnabled: true,
+    adapterMaxBytes: 1024 ** 3,
+    datasetMaxBytes: 200 * 1024 ** 2,
+    datasetMaxRows: 200_000,
+    batchJobTimeoutSeconds: 21_600,
+    publicApiUrl: "https://api.example.com",
+    nosanaMock: false,
+    nosanaConfigured: true,
+    tiers: { "4090": { name: "RTX 4090", vram: 24, pricePerSecond: 0.0003 } },
+    allTiers: { "4090": { name: "RTX 4090", vram: 24, pricePerSecond: 0.0003 } },
+  };
+  const operator = trainingOperatorBlockers(runtime, null, "AWS_ACCESS_KEY_ID, DATASETS_BUCKET not set");
+  const body = await computePlatformCompute(deps({ trainingBlockers: async () => operator }));
+  assert.deepEqual(
+    body.training.blockers.map((b) => b.code),
+    ["dataset_storage_not_configured", "training_image_not_configured", "training_poller_disabled"],
+  );
+  assert.match(body.training.blockers[0]!.message, /AWS_ACCESS_KEY_ID, DATASETS_BUCKET not set/);
+  assert.match(body.training.blockers[1]!.message, /TRAINING_IMAGE not set/);
+  assert.match(body.training.blockers[2]!.message, /TRAINING_POLL_INTERVAL_MS/);
+  // The customer's view of the same state: the same codes, one calm sentence, no settings.
+  const customer = trainingBlockers(runtime, null);
+  assert.deepEqual(customer.map((b) => b.code), body.training.blockers.map((b) => b.code));
+  for (const blocker of customer) assert.equal(blocker.message, TRAINING_UNAVAILABLE_MESSAGE);
+});
+
 test("rows whose access mode has no credential here are listed; mock ids and reachable rows are not", async () => {
   const open: OpenNosanaRow[] = [
     { source: "model", rowId: "m1", nosanaDeploymentId: "dmWallet", accessMode: "wallet", status: "running" },

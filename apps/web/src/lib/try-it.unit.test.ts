@@ -42,9 +42,9 @@ test("limits: the session's messages end the preview, a rate limit says how long
   assert.match(tryItNotice(429, { error: "rate_limited", scope: "ip" }).message, /in a moment/);
 });
 
-test("the limiter being down is said as such, and nothing is offered that cannot work", () => {
+test("the limiter being down is said calmly, and nothing is offered that cannot work", () => {
   const notice = tryItNotice(503, { error: "rate_limiter_unavailable" });
-  assert.match(notice.message, /limits cannot be counted/);
+  assert.equal(notice.message, "Previews are temporarily unavailable. Try again shortly.");
   assert.equal(notice.action, "none");
   assert.match(tryItNotice(503, { error: "agent_unavailable", reason: "restarting" }).message, /not available right now/);
 });

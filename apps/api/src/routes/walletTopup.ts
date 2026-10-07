@@ -174,7 +174,7 @@ export function createWalletTopupRoutes(
 
   const disabledReply = {
     error: "wallet_topups_not_enabled",
-    message: "Wallet top-ups are not enabled on this deployment.",
+    message: "Wallet top-ups are temporarily unavailable. Try again later.",
   };
 
   return async (app) => {

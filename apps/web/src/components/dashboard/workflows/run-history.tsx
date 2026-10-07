@@ -300,7 +300,7 @@ export function RunView({
         </dl>
 
         {run.status === "queued" && (
-          <p className="mt-3 text-sm text-muted-foreground">Waiting for a worker to pick this run up.</p>
+          <p className="mt-3 text-sm text-muted-foreground">Queued. The run starts shortly.</p>
         )}
         {cancelRequested && (
           <p className="mt-3 text-sm text-muted-foreground">

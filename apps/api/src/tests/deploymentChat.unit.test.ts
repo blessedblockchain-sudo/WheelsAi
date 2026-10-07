@@ -319,7 +319,7 @@ test("where x402 is required, a per-request deployment is refused by name, unpai
   const { deps, world } = harness({ deployment: PER_REQUEST, x402Required: () => true });
   const err = await refusal(runDeploymentChat(request(), deps));
   assert.equal(err.code, "x402_required");
-  assert.match(err.message, /X402_INFERENCE_MODE=required/);
+  assert.match(err.message, /accepts payment by x402 only/);
   assert.deepEqual(world.events, []);
 
   // A GPU-billed deployment is not per-request: x402 does not apply to it.

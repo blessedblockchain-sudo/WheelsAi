@@ -53,8 +53,8 @@ export function WorkflowApiTab({ workflow }: { workflow: OrchestrationDetail }) 
       ) : (
         <EmptyState
           icon={PlugZap}
-          title="API endpoint not configured"
-          description={`This server has no public API address set (PUBLIC_API_URL), so it cannot print this workflow's endpoint. The workflow is still served at /v1/workflows/${workflow.slug}/chat/completions on the API host, and as model "${workflow.openaiModel}".`}
+          title="Endpoint address unavailable"
+          description={`The full endpoint address cannot be shown right now. Your workflow is still served at /v1/workflows/${workflow.slug}/chat/completions on the WheelsAI API, and as model "${workflow.openaiModel}".`}
         />
       )}
 

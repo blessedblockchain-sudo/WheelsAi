@@ -42,6 +42,8 @@ import { billingRoutes } from "./routes/billing.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { agentRoutes } from "./routes/agents.js";
 import { trainingRoutes } from "./routes/training.js";
+import { logTrainingReadiness } from "./services/buildTrainingDeps.js";
+import { logOperatorReadiness } from "./services/operatorReadiness.js";
 import { createStorageTransferRoutesProduction } from "./routes/storageTransfer.js";
 import { createFineTunedModelRoutesProduction } from "./routes/fineTunedModels.js";
 import { FINE_TUNED_MODELS_PREFIX } from "./services/fineTunedModels.js";
@@ -498,6 +500,12 @@ async function main() {
   } catch (err) {
     app.log.error({ err }, "Model catalog sync failed; model deployments will 400 until it succeeds");
   }
+  // One warning per fine-tuning setting that is missing, in operator terms.
+  // Customers see only "Fine-tuning is temporarily unavailable".
+  await logTrainingReadiness();
+  // Likewise for optional settings that switch a customer-facing feature off
+  // (funded Try it messages, web search, the code sandbox).
+  logOperatorReadiness();
 
   // Start server
   try {

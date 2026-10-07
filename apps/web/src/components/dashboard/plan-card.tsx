@@ -123,7 +123,7 @@ export function PlanCard({ autoUpgrade = false }: { autoUpgrade?: boolean }) {
               </Button>
             ) : (
               <span className="self-center text-xs text-muted-foreground">
-                Pro checkout is not enabled on this server yet
+                Pro checkout is temporarily unavailable
               </span>
             ))}
           {info.plan === "pro" && (

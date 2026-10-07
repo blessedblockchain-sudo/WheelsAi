@@ -20,6 +20,8 @@ import {
   retryTrainingJob,
   submitTrainingJob,
   trainingArtifactKeys,
+  trainingOperatorBlockers,
+  TRAINING_UNAVAILABLE_MESSAGE,
   TRAINING_SUBMIT_LOOKUP_GIVE_UP_SECONDS,
   TRAINING_SUBMIT_TIMEOUT_SECONDS,
 } from "../services/trainingJobs.js";
@@ -1742,9 +1744,23 @@ test("capabilities: can start when everything is configured; each blocker is nam
     ],
   );
   for (const blocker of blocked.blockers) {
-    assert.match(blocker.message, /^Fine-tuning cannot start on this server/);
-    assert.ok(!/TRAINING_|NOSANA_|PUBLIC_API_URL/.test(blocker.message), "no variable names in a user's sentence");
+    assert.equal(blocker.message, TRAINING_UNAVAILABLE_MESSAGE);
+    assert.ok(!/TRAINING_|NOSANA_|PUBLIC_API_URL|server|configured/.test(blocker.message), "no configuration in a user's sentence");
   }
+  // The operator reads which setting is missing, under the same codes.
+  const operator = trainingOperatorBlockers(w.world.runtime, w.world.store);
+  assert.deepEqual(
+    operator.map((blocker) => blocker.code),
+    blocked.blockers.map((blocker) => blocker.code),
+  );
+  const operatorByCode = Object.fromEntries(operator.map((blocker) => [blocker.code, blocker.message]));
+  assert.match(operatorByCode.dataset_storage_not_configured!, /DATASETS_BUCKET/);
+  assert.match(operatorByCode.training_image_not_configured!, /TRAINING_IMAGE not set/);
+  assert.match(operatorByCode.nosana_not_configured!, /NOSANA_API_KEY/);
+  assert.match(operatorByCode.training_callbacks_not_configured!, /PUBLIC_API_URL/);
+  assert.match(operatorByCode.training_poller_disabled!, /TRAINING_POLL_INTERVAL_MS/);
+  assert.match(operatorByCode.training_orphan_sweep_disabled!, /DEPLOYMENT_STATUS_INTERVAL_MS/);
+  assert.match(operatorByCode.training_run_limit_unavailable!, /NOSANA_BATCH_JOB_TIMEOUT_SECONDS/);
 
   w.world.runtime = { ...w.world.runtime, nosanaMock: true, nosanaConfigured: true };
   const mock = await describeTrainingCapabilities(w.deps);
@@ -1765,7 +1781,7 @@ test("models: every trainable model, with the reason one is unavailable", async 
   assert.equal(byId["phi-3-mini"]!.recommendedGpuTier, "4090");
   assert.equal(byId["llama-3.1-8b"]!.available, false);
   assert.equal(byId["llama-3.1-8b"]!.unavailableReason, "hf_token_required");
-  assert.match(byId["llama-3.1-8b"]!.unavailableMessage!, /Hugging Face token/);
+  assert.equal(byId["llama-3.1-8b"]!.unavailableMessage, "This model is not available for fine-tuning right now.");
   // In the trainable catalog but not in this server's model table.
   assert.equal(byId["qwen2-7b"]!.unavailableReason, "model_not_in_catalog");
   assert.ok(models.every((model) => model.methods.every((entry) => (entry.method as string) !== "full")));

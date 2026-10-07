@@ -38,7 +38,9 @@ export async function startCustomDomainCheckQueue(): Promise<void> {
   const config = getCustomDomainConfig();
   const edge = config.edge;
   if (!edge) {
-    logger.info(
+    // The operator's copy of the reason, naming the setting at fault;
+    // customers read only that custom domains are temporarily unavailable.
+    logger.warn(
       { reason: config.unavailableReason },
       "Custom domain check queue disabled (custom domains are not configured)",
     );

@@ -371,7 +371,8 @@ test("prepareAdapterServing: accepted for the owner on a tier that fits; each re
   const noUrl = await prepare({}, { publicApiUrl: () => undefined });
   assert.ok(!noUrl.ok);
   assert.deepEqual([noUrl.status, noUrl.code], [503, "adapter_download_not_configured"]);
-  assert.match(noUrl.message, /PUBLIC_API_URL/);
+  assert.equal(noUrl.message, "Deploying fine-tuned models is temporarily unavailable. Nothing was reserved. Try again later.");
+  assert.ok(!/PUBLIC_API_URL/.test(noUrl.message), "the setting is the operator's, in the log, not the customer's");
   assert.deepEqual(await refusal(prepare({}, { publicApiUrl: () => "https://user:pw@api.example.com" })), [
     503,
     "adapter_download_not_configured",

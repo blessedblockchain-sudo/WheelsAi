@@ -286,7 +286,7 @@ export async function restartModelDeployment(
         ok: false,
         code: "previous_run_other_account",
         message:
-          "The previous run was created with a compute account that is not configured here, so it cannot be confirmed stopped. Contact support.",
+          "The previous run cannot be confirmed stopped right now. Contact support.",
       };
     }
     if (!outcome?.reclaimed) {

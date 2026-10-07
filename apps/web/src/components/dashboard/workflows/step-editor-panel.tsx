@@ -78,7 +78,7 @@ export function StepEditorPanel({
   resources: WorkflowResources;
   /** Problems with this step, by field name. */
   fieldErrors: Record<string, string>;
-  /** Set when this server cannot run model steps; the reason, shown as is. */
+  /** Set when model steps cannot run right now; the reason, shown as is. */
   modelStepsWarning?: string;
   onChange: (patch: Partial<StepDraft>) => void;
   onRename: (name: string) => void;

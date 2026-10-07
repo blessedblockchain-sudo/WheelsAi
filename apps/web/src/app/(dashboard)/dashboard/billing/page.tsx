@@ -508,17 +508,17 @@ export default function BillingPage() {
                 <>
                   Wallet payments ({rails.walletAssets.join("/")}
                   {rails.network === "devnet" ? ", devnet" : ""}) are live:
-                  your wallet signs the exact transfer our server prepares.{" "}
+                  your wallet signs the exact transfer WheelsAI prepares.{" "}
                   {rails.stripeCheckout
                     ? "Card payments go through Stripe."
-                    : "Card payments are not enabled on this server yet."}{" "}
+                    : "Card payments are temporarily unavailable."}{" "}
                   Credits never expire.
                 </>
               ) : (
                 <>
                   {rails?.stripeCheckout
                     ? "Card payments go through Stripe."
-                    : "Card payments are not enabled on this server yet."}{" "}
+                    : "Card payments are temporarily unavailable."}{" "}
                   Credits never expire.
                 </>
               )}
@@ -600,25 +600,25 @@ export default function BillingPage() {
             <CardHeader>
               <CardTitle className="text-base">X402 Settlement Health</CardTitle>
               <CardDescription>
-                Live worker status, threshold alerts, and payment trend
+                Settlement status, alerts and the 24-hour trend for your x402 payments
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="mb-6 grid gap-4 md:grid-cols-4">
                 <div className="rounded-lg border p-4">
-                  <p className="text-sm text-muted-foreground">Worker Status</p>
+                  <p className="text-sm text-muted-foreground">Settlement</p>
                   <div className="mt-2 flex items-center gap-2">
                     <Activity className="h-4 w-4 text-blue-600" />
                     <p className="font-semibold text-foreground">
                       {x402Metrics.worker.enabled
                         ? x402Metrics.worker.running
                           ? "Running"
-                          : "Stopped"
-                        : "Disabled"}
+                          : "Idle"
+                        : "Paused"}
                     </p>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Last tick:{" "}
+                    Last checked:{" "}
                     {x402Metrics.worker.lastTickAt
                       ? new Date(x402Metrics.worker.lastTickAt).toLocaleTimeString()
                       : "Never"}
@@ -698,7 +698,7 @@ export default function BillingPage() {
                   <p className="mb-3 text-sm font-medium text-foreground">24h Trend</p>
                   {x402Trend.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
-                      No metrics history yet. Enable the settlement worker to collect snapshots.
+                      No history yet. It appears here as your x402 payments settle.
                     </p>
                   ) : (
                     <div className="space-y-4">

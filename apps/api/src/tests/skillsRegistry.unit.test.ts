@@ -211,7 +211,7 @@ test("an unavailable skill is still offered to the model, and answers 'unavailab
   const result = await registry.execute("web_search", { query: "x" }, ctx());
   assert.deepEqual(result, {
     status: "unavailable",
-    reason: "web search is not configured on this server",
+    reason: "web search is temporarily unavailable",
   });
 });
 
@@ -245,14 +245,14 @@ test("describe() reports availability and the reason, including agent-level fact
   assert.equal(byKey.calculator!.unavailableReason, null);
 
   assert.equal(byKey.web_search!.available, false);
-  assert.equal(byKey.web_search!.unavailableReason, "web search is not configured on this server");
+  assert.equal(byKey.web_search!.unavailableReason, "web search is temporarily unavailable");
   assert.deepEqual(byKey.web_search!.requires, ["TAVILY_API_KEY"]);
 
   assert.equal(byKey.code_interpreter!.available, false);
-  assert.match(byKey.code_interpreter!.unavailableReason!, /code execution sandbox is not configured/);
+  assert.match(byKey.code_interpreter!.unavailableReason!, /code execution is temporarily unavailable/);
 
   assert.equal(byKey.file_write!.available, false);
-  assert.match(byKey.file_write!.unavailableReason!, /file storage is not configured/);
+  assert.match(byKey.file_write!.unavailableReason!, /file storage is temporarily unavailable/);
 
   // knowledge_search: server-level it is fine; per agent it needs a KB.
   assert.equal(byKey.knowledge_search!.available, true);
@@ -261,7 +261,7 @@ test("describe() reports availability and the reason, including agent-level fact
   assert.match(noKb.unavailableReason!, /no knowledge base bound/);
 });
 
-test("a malformed skills environment shows up as the reason, not as silence", () => {
+test("a malformed skills environment leaves the tools unavailable, in the customer's words (the setting is logged for the operator)", () => {
   const registry = createSkillRegistry(
     makeDeps({}, {
       getConfig: () => ({
@@ -271,8 +271,11 @@ test("a malformed skills environment shows up as the reason, not as silence", ()
     }),
   );
   const byKey = Object.fromEntries(registry.describe().map((d) => [d.key, d]));
-  assert.match(byKey.web_search!.unavailableReason!, /misconfigured.*SANDBOX_RUNNER_URL/);
-  assert.match(byKey.code_interpreter!.unavailableReason!, /misconfigured/);
+  assert.equal(byKey.web_search!.available, false);
+  assert.equal(byKey.code_interpreter!.available, false);
+  assert.equal(byKey.web_search!.unavailableReason, "web search is temporarily unavailable");
+  assert.equal(byKey.code_interpreter!.unavailableReason, "code execution is temporarily unavailable");
+  assert.ok(!/SANDBOX_RUNNER_URL/.test(byKey.web_search!.unavailableReason!));
 });
 
 // ============================================
@@ -362,7 +365,7 @@ test("web_search without a key is 'unavailable', not an empty result list", asyn
   const registry = createSkillRegistry(makeDeps());
   assert.deepEqual(await registry.execute("web_search", { query: "solana" }, ctx()), {
     status: "unavailable",
-    reason: "web search is not configured on this server",
+    reason: "web search is temporarily unavailable",
   });
 });
 
@@ -409,7 +412,7 @@ test("web_search maps provider failures to honest errors and never leaks the key
 
   const unauthorized = await respond(401).execute("web_search", { query: "x" }, ctx());
   assert.equal(unauthorized.status, "error");
-  assert.match((unauthorized as { message: string }).message, /rejected this server's API key/);
+  assert.match((unauthorized as { message: string }).message, /^web search is temporarily unavailable$/);
 
   const limited = await respond(429).execute("web_search", { query: "x" }, ctx());
   assert.match((limited as { message: string }).message, /rate limit/);
@@ -561,7 +564,7 @@ test("file skills are 'unavailable' without storage, and without an agent contex
     ["file_read", { path: "a.txt" }],
   ] as const) {
     const r = await noStore.execute(key, input, ctx());
-    assert.deepEqual(r, { status: "unavailable", reason: "file storage is not configured on this server" }, key);
+    assert.deepEqual(r, { status: "unavailable", reason: "file storage is temporarily unavailable" }, key);
   }
 
   const store = new InMemoryAgentFileStore();
@@ -712,7 +715,7 @@ test("code_interpreter without a runner is 'unavailable' - the code is never run
     ctx(),
   );
   assert.equal(result.status, "unavailable");
-  assert.match((result as { reason: string }).reason, /^code execution sandbox is not configured/);
+  assert.match((result as { reason: string }).reason, /^code execution is temporarily unavailable/);
   assert.equal((globalThis as Record<string, unknown>)[marker], false);
   delete (globalThis as Record<string, unknown>)[marker];
 });

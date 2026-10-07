@@ -133,7 +133,7 @@ export function estimateTraining(input: TrainingEstimateInput): TrainingEstimate
     return {
       ok: false,
       code: "run_limit_out_of_range",
-      message: "No run limit is possible with this server's job timeout",
+      message: "Fine-tuning is temporarily unavailable. Try again later.",
     };
   }
   if (

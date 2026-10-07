@@ -307,7 +307,7 @@ test("GET /task-types returns the catalogue and whether schedules fire here", as
   }
   const workflow = body.taskTypes.find((t: { type: string }) => t.type === "workflow_run");
   assert.equal(workflow.available, false);
-  assert.match(workflow.reason, /WORKFLOW_RUN_CONCURRENCY is 0/);
+  assert.equal(workflow.reason, "workflow runs are temporarily unavailable");
   await app.close();
 });
 

@@ -71,7 +71,7 @@ export function createSlackEventsRoutes(
       if (!deps.enabled) {
         return reply.status(501).send({
           error: "slack_events_not_configured",
-          message: "Slack is not configured on this deployment.",
+          message: "Slack is temporarily unavailable. Try again later.",
         });
       }
 

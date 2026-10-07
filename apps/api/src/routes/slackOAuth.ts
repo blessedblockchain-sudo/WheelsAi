@@ -72,7 +72,7 @@ export function createSlackOAuthRoutes(
 
   const disabled = {
     error: "slack_oauth_not_configured",
-    message: "Slack installation is not configured on this deployment.",
+    message: "Installing Slack is temporarily unavailable. Try again later.",
   };
 
   return async (app) => {

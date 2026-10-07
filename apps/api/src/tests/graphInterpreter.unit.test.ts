@@ -128,7 +128,8 @@ test("a `code` node refuses by name: it would be RCE in the API process", async 
     deps,
   );
   assert.equal(result.status, "failed");
-  assert.match(result.error!, /remote-code-execution/);
+  assert.match(result.error!, /isolated sandbox/);
+  assert.match(result.error!, /temporarily unavailable/);
   const refused = result.trace.find((t) => t.nodeType === "code")!;
   assert.equal(refused.status, "refused", "refusal is a distinct state, not a generic failure");
   assert.equal(prompts.length, 0);
@@ -160,7 +161,9 @@ test("every refusal carries a reason a builder can act on", () => {
     assert.ok(reason.length > 40, `${type} needs a real explanation`);
   }
   assert.match(REFUSED_NODE_TYPES.code!, /sandbox/);
-  assert.match(REFUSED_NODE_TYPES.code!, /SANDBOX_RUNNER_URL/);
+  assert.match(REFUSED_NODE_TYPES.code!, /temporarily unavailable/);
+  // The customer-facing reason names no setting and no internal history.
+  assert.doesNotMatch(REFUSED_NODE_TYPES.code!, /SANDBOX_RUNNER_URL|this server|Wave/);
 });
 
 // CHANGED (B3): the message now points at the parallel node instead of a
@@ -634,8 +637,8 @@ test("a tool whose provider is not configured is REFUSED with the reason, not fa
   const entry = result.trace.find((t) => t.nodeId === "search")!;
   assert.equal(entry.status, "refused");
   assert.equal(entry.output, null);
-  assert.match(entry.error!, /unavailable: web search is not configured on this server/);
-  assert.match(result.error!, /cannot run: unavailable: web search is not configured/);
+  assert.match(entry.error!, /unavailable: web search is temporarily unavailable/);
+  assert.match(result.error!, /cannot run: unavailable: web search is temporarily unavailable/);
 });
 
 test("tool node misconfiguration fails by name", async () => {
@@ -1143,8 +1146,9 @@ test("a code node is REFUSED while no sandbox is configured", async () => {
   assert.equal(result.status, "failed");
   const entry = result.trace.find((t) => t.nodeId === "c")!;
   assert.equal(entry.status, "refused");
-  assert.match(entry.error!, /remote-code-execution/);
-  assert.match(entry.error!, /SANDBOX_RUNNER_URL/);
+  assert.match(entry.error!, /isolated sandbox/);
+  assert.match(entry.error!, /temporarily unavailable/);
+  assert.doesNotMatch(entry.error!, /SANDBOX_RUNNER_URL/);
   assert.equal(prompts.length, 0);
 });
 

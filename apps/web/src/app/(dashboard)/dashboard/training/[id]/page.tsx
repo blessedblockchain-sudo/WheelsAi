@@ -320,7 +320,7 @@ export default function TrainingJobPage() {
         </Card>
 
         {canRetryTraining(job.status) && retryBlocked && blockers && (
-          <TrainingBlockers blockers={blockers} title="Retry is not available yet" />
+          <TrainingBlockers blockers={blockers} title="Retry is not available right now" />
         )}
 
         {actionRefusal && (

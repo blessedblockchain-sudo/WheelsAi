@@ -419,8 +419,8 @@ function NewDeploymentContent() {
                         </span>
                         {!base && (
                           <span className="mt-2 block text-xs text-muted-foreground">
-                            Cannot be deployed here: its base model is not in this server&apos;s
-                            deployable catalog.
+                            Cannot be deployed right now: its base model is not available for
+                            deployment.
                           </span>
                         )}
                       </button>

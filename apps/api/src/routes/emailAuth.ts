@@ -158,7 +158,7 @@ export function createEmailAuthRoutes(
         if (!isEmailConfigured()) {
           return reply.status(501).send({
             error: "email_not_configured",
-            message: "Password reset by email is not available on this server yet.",
+            message: "Password reset by email is temporarily unavailable. Try again later, or contact support.",
           });
         }
         const user = await prisma.user.findUnique({

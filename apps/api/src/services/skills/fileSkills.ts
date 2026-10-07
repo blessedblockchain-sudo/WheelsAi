@@ -22,7 +22,7 @@ import type { SkillDefinition, SkillResult, ToolContext } from "./types.js";
 /** Characters returned per read; longer files are paged with `offset`. */
 const READ_PAGE_CHARS = 6_000;
 
-const UNCONFIGURED = "file storage is not configured on this server";
+const UNCONFIGURED = "file storage is temporarily unavailable";
 
 const logger = createLogger("file-skills");
 

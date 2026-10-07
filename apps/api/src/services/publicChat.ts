@@ -740,7 +740,7 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
       return refused({
         status: 501,
         code: "not_supported",
-        message: "This agent answers through a graph, which cannot be previewed yet.",
+        message: "This agent answers through a graph, so Try it cannot preview it. Install it to chat with it.",
         reason: "graph_agent_preview",
       });
     }

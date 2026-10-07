@@ -38,8 +38,8 @@ export function StateChip({ state, prefix, className }: { state: DomainState; pr
 }
 
 /**
- * Shown while the server has no edge proxy configured. The text is the
- * server's own reason, so a misconfiguration names the variable at fault.
+ * Shown while custom domains are unavailable. The API's reason is a calm
+ * sentence for the customer; the operator's detail is in the server log.
  */
 export function NotConfiguredBanner({ config }: { config: DomainsConfig }) {
   if (config.configured) return null;
@@ -47,13 +47,10 @@ export function NotConfiguredBanner({ config }: { config: DomainsConfig }) {
     <div role="status" className="flex gap-3 rounded-lg border border-border bg-muted p-4">
       <Info className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
       <div className="space-y-1 text-sm">
-        <p className="font-medium text-foreground">Custom domains are not configured on this server</p>
+        <p className="font-medium text-foreground">Custom domains are temporarily unavailable</p>
         <p className="text-muted-foreground">
-          {config.unavailableReason ?? "The edge proxy that serves custom domains has not been set up."}
-        </p>
-        <p className="text-muted-foreground">
-          Until it is, domains cannot be added, checked or switched on, no certificate is requested, and no request
-          to a custom domain is served. Domains you already have are listed below and can be switched off or deleted.
+          For now, domains cannot be added, checked or switched on, and requests to a custom domain are not served.
+          Domains you already have are listed below and can be switched off or deleted. Try again later.
         </p>
       </div>
     </div>

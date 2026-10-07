@@ -67,7 +67,7 @@ export async function registerTelegramWebhook(args: {
   fetchFn?: FetchFn;
 }): Promise<TelegramWebhookResult> {
   if (!args.publicApiUrl) {
-    return { registered: false, reason: "PUBLIC_API_URL is not set, so Telegram has no address to deliver to" };
+    return { registered: false, reason: "Telegram delivery is temporarily unavailable. Try again later." };
   }
   const url = telegramWebhookUrl(args.publicApiUrl, args.deploymentId);
   const result = await callBotApi(args.fetchFn ?? (fetch as unknown as FetchFn), args.botToken, "setWebhook", {

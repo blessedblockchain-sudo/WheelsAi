@@ -428,7 +428,7 @@ test("GET /config says whether custom domains work on this server and on this pl
   const off = (await t.app.inject({ method: "GET", url: "/api/domains/config" })).json().data;
   assert.equal(off.configured, false);
   assert.equal(off.edge, null);
-  assert.match(off.unavailableReason, /not configured on this server/);
+  assert.equal(off.unavailableReason, "Custom domains are temporarily unavailable. Try again later.");
   assert.equal(off.plan.entitled, false);
   assert.equal(off.plan.plan, "starter");
   await t.app.close();
@@ -448,15 +448,16 @@ test("unconfigured: everything that needs the edge answers 501 with the reason; 
   ]) {
     assert.equal(res.statusCode, 501);
     assert.equal(res.json().error, "custom_domains_not_configured");
-    assert.match(res.json().message, /CUSTOM_DOMAIN_EDGE_HOSTNAME/);
+    assert.equal(res.json().message, "Custom domains are temporarily unavailable. Try again later.");
   }
   assert.equal(t.db.domains.length, 1);
 
-  // A misconfigured server names the variable.
+  // A misconfigured server gives the customer the same sentence; the variable is for the operator's log.
   t.world.config = loadCustomDomainConfig({ CUSTOM_DOMAIN_EDGE_HOSTNAME: "edge.wheelsai.example.org" });
   const partial = await t.create({ domain: "b.customer.com" });
   assert.equal(partial.statusCode, 501);
-  assert.match(partial.json().message, /misconfigured.*CUSTOM_DOMAIN_ASK_TOKEN/);
+  assert.equal(partial.json().message, "Custom domains are temporarily unavailable. Try again later.");
+  assert.ok(!/CUSTOM_DOMAIN_/.test(partial.json().message));
 
   // The organization can still see and stop what it has.
   t.world.config = UNCONFIGURED;

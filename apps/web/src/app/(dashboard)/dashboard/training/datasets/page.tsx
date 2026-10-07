@@ -498,24 +498,18 @@ export default function DatasetsPage() {
 
           {/* Sidebar */}
           <div className="space-y-6">
-            {/* Storage is not set up: say so where the upload form would be */}
+            {/* Uploads are unavailable: say so where the upload form would be */}
             {storageUnavailable && (
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-                    Uploads are not available
+                    Uploads are temporarily unavailable
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm text-muted-foreground">
-                  <p>
-                    This server has no object storage configured, so it cannot accept a
-                    dataset upload yet. Nothing was uploaded or lost.
-                  </p>
-                  <p>
-                    Datasets that already exist are still listed. Uploading opens once an
-                    administrator connects a storage bucket.
-                  </p>
+                  <p>Dataset uploads are paused for the moment. Nothing was uploaded or lost.</p>
+                  <p>Your existing datasets are still listed. Try again later.</p>
                 </CardContent>
               </Card>
             )}
@@ -789,7 +783,7 @@ export default function DatasetsPage() {
                       onClick={() => handleRevalidate(selectedDataset.id)}
                       isLoading={isValidating}
                       disabled={!canUpload}
-                      title={canUpload ? undefined : "Validation reads the file from storage, which is not configured."}
+                      title={canUpload ? undefined : "Validation is temporarily unavailable. Try again later."}
                     >
                       <RefreshCw className="mr-2 h-4 w-4" />
                       Validate again

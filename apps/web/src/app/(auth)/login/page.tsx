@@ -23,7 +23,7 @@ interface LoginForm {
 export default function LoginPage() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
-  // 2FA challenge state (B5): set when the first factor checks out but
+  // 2FA challenge state: set when the first factor checks out but
   // the account needs a second one. No session exists until it clears.
   // Seeded from ?challenge= so the wallet flow can hand off here rather
   // than duplicating this step.
@@ -49,7 +49,7 @@ export default function LoginPage() {
         toast.info("Enter your authentication code to finish signing in.");
         return;
       }
-      toast.success("Welcome back!");
+      toast.success("Welcome back");
       router.push(safeNextPath());
     } catch (error) {
       toast.error(
@@ -68,7 +68,7 @@ export default function LoginPage() {
     setIsLoading(true);
     try {
       await authApi.completeTwoFactorLogin(challengeToken, otp.trim());
-      toast.success("Welcome back!");
+      toast.success("Welcome back");
       router.push(safeNextPath());
     } catch (error) {
       // The challenge is single-use: a wrong code burns nothing, but an

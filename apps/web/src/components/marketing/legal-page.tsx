@@ -22,10 +22,11 @@ export function LegalPage({ eyebrow, title, description, sections, children }: L
     <>
       <PageHero width="3xl" eyebrow={eyebrow} title={title} description={description} />
       <PageBody width="3xl">
-        <Callout variant="warning" title="Draft pending legal review" className="mt-0">
+        {/* [FOUNDER: remove this notice once counsel has reviewed the document and every marker below is filled in.] */}
+        <Callout variant="warning" title="Draft" className="mt-0">
           <p>
-            This document is a draft prepared on October 1, 2026 and has not yet been reviewed by counsel. Values marked{" "}
-            <code>[FOUNDER: ...]</code> are still to be confirmed. Effective date: <Founder>effective date on publication</Founder>.
+            This document is a draft and may change before it takes effect. Effective date:{" "}
+            <Founder>effective date on publication</Founder>.
           </p>
         </Callout>
 

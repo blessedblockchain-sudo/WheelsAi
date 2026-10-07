@@ -32,7 +32,7 @@ const terminalLines: Array<{ text: string; color: string; live?: "latency" }> = 
   { text: "  ✓ Compute provisioned, treasury PDA created", color: "text-success" },
   { text: "  ✓ Deploying agent...", color: "text-success" },
   { text: "", color: "" },
-  { text: "  Agent live!", color: "text-white font-bold" },
+  { text: "  Agent live", color: "text-white font-bold" },
   { text: `    Endpoint:  ${AGENT_ENDPOINT}`, color: "text-navy-400" },
   { text: `    Channels:  ${liveChatChannelList(", ")}`, color: "text-navy-400" },
   // The value is the platform's measured p50, read live; there is no number
@@ -40,7 +40,7 @@ const terminalLines: Array<{ text: string; color: string; live?: "latency" }> = 
   { text: "    Latency:   ", color: "text-navy-400", live: "latency" },
   { text: "", color: "" },
   { text: "  ✓ Publishing to marketplace...", color: "text-success" },
-  { text: `  ✓ Listed! ${MARKETPLACE_URL}`, color: "text-success" },
+  { text: `  ✓ Listed at ${MARKETPLACE_URL}`, color: "text-success" },
   { text: "", color: "" },
   { text: "█", color: "text-navy-400 animate-blink" },
 ];

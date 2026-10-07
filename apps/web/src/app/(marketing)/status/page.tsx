@@ -6,7 +6,7 @@ import { StatusBoard } from "@/components/marketing/status-board";
 export const metadata: Metadata = {
   title: "Status",
   description:
-    "Live health of the WheelsAI platform: database, queues, background workers and public uptime monitors.",
+    "Live health of the WheelsAI platform: API, database, queues and background workers, with response times and the uptime history of each listed monitor.",
 };
 
 export default function StatusPage() {
@@ -16,7 +16,7 @@ export default function StatusPage() {
         width="4xl"
         eyebrow="Status"
         title="Platform status"
-        description="Live checks of the services behind WheelsAI. Every figure on this page comes from the API's own probes; if something has not been measured, it says so."
+        description="Live health of the WheelsAI API, database, queues and background workers, with response times and the uptime history of each listed monitor. Refreshes every 30 seconds."
       />
       <PageBody width="4xl">
         <StatusBoard />

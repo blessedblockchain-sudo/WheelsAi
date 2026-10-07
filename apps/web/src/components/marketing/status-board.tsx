@@ -193,14 +193,14 @@ function LatencySection({ latency, nowMs }: { latency: LatencyPayload | undefine
 
       {!latency || latency.status === "unavailable" ? (
         <p className="mt-4 rounded-lg border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
-          The latency measurements could not be read right now, so no figure is shown.
+          Response times are temporarily unavailable. Check back in a few minutes.
         </p>
       ) : latency.status === "insufficient_data" ? (
         <div className="mt-4">
           <EmptyState
             icon={Activity}
             title="Measuring"
-            description={`A figure is published once at least ${wholeNumber.format(latency.minSampleCount)} answered requests from at least ${wholeNumber.format(latency.minOrgCount)} organizations fall inside the last ${window}. So far: ${wholeNumber.format(latency.sampleCount ?? 0)} answered ${latency.sampleCount === 1 ? "request" : "requests"}. Until then no latency is shown.`}
+            description={`Response times are published from at least ${wholeNumber.format(latency.minSampleCount)} answered requests from at least ${wholeNumber.format(latency.minOrgCount)} organizations in the last ${window}, so no single customer sets the figure.`}
           />
         </div>
       ) : (
@@ -236,8 +236,8 @@ function LatencySection({ latency, nowMs }: { latency: LatencyPayload | undefine
                 </time>
               </>
             )}
-            . The percentiles count answered requests only; failed and timed-out requests are the share shown
-            separately. Published only above {wholeNumber.format(latency.minSampleCount)} requests from{" "}
+            . The percentiles count answered requests; failed and timed-out requests are shown separately as a
+            share. Published from at least {wholeNumber.format(latency.minSampleCount)} requests across{" "}
             {wholeNumber.format(latency.minOrgCount)} organizations.
             {typeof latency.maxSamplesPerOrg === "number" && (
               <>
@@ -301,7 +301,9 @@ export function StatusBoard() {
       setError(null);
     } catch (err) {
       if (controller.signal.aborted) return;
-      setError(err instanceof Error && err.message ? err.message : "Request failed.");
+      // The page shows a calm sentence; the detail stays in the console.
+      console.warn("Status check failed:", err);
+      setError("The last check did not get an answer.");
     } finally {
       if (!controller.signal.aborted) {
         setLoading(false);
@@ -380,13 +382,13 @@ export function StatusBoard() {
                     <time dateTime={data.generatedAt} className="font-medium text-foreground">
                       {formatDateTime(data.generatedAt)}
                     </time>
-                    {!reachable && " (the most recent answer we received)"}. Refreshes every 30 seconds.
+                    {!reachable && " (the most recent status received)"}. Refreshes every 30 seconds.
                   </>
                 ) : (
-                  <>No status has been received yet. Retrying every 30 seconds.</>
+                  <>Checking again every 30 seconds.</>
                 )}
               </p>
-              {error && <p className="mt-1 break-words font-mono text-xs text-muted-foreground">{error}</p>}
+              {error && <p className="mt-1 text-xs text-muted-foreground">{error}</p>}
             </div>
           </div>
           <button
@@ -410,7 +412,7 @@ export function StatusBoard() {
           <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
             <div>
               <p className="font-medium text-foreground">API</p>
-              <p className="text-sm text-muted-foreground">Answered this page&apos;s status request from your browser.</p>
+              <p className="text-sm text-muted-foreground">Checked from your browser each time this page refreshes.</p>
             </div>
             <StatusPill tone={reachable ? "ok" : "bad"}>{reachable ? "Reachable" : "Unreachable"}</StatusPill>
           </li>
@@ -426,10 +428,10 @@ export function StatusBoard() {
                       "Capacity for new GPU deployments. Running deployments are not affected."
                     ) : c.latencyMs !== null ? (
                       <>
-                        Probe answered in <span className="font-mono tabular-nums">{formatMs(c.latencyMs)}</span>
+                        Last check answered in <span className="font-mono tabular-nums">{formatMs(c.latencyMs)}</span>
                       </>
                     ) : (
-                      "Probe did not answer"
+                      "No response to the last check"
                     )}
                   </p>
                 </div>
@@ -451,11 +453,11 @@ export function StatusBoard() {
           </p>
           {!data.workers.available ? (
             <p className="mt-4 rounded-lg border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
-              Worker run history could not be read right now, so no worker status is shown.
+              Background worker status is temporarily unavailable.
             </p>
           ) : data.workers.items.length === 0 ? (
             <p className="mt-4 rounded-lg border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
-              No background workers are scheduled on this deployment.
+              No background workers are scheduled right now.
             </p>
           ) : (
             <ul className="mt-4 divide-y divide-border rounded-lg border border-border bg-card">
@@ -504,13 +506,13 @@ export function StatusBoard() {
             <div className="mt-4">
               <EmptyState
                 icon={Activity}
-                title="No public monitors yet"
-                description="When the WheelsAI team publishes uptime monitors for the platform's own endpoints, their check history will appear here. Until real checks exist, no uptime figure is shown."
+                title="No uptime monitors listed"
+                description="Each uptime monitor listed here shows its daily check history and uptime over 24 hours, 7 days and 30 days. The core services above are checked live."
               />
             </div>
           ) : !data.monitors.available ? (
             <p className="mt-4 rounded-lg border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
-              Monitor data could not be read right now.
+              Uptime history is temporarily unavailable.
             </p>
           ) : (
             <ul className="mt-4 space-y-4">
@@ -579,7 +581,7 @@ export function StatusBoard() {
       {data && <LatencySection latency={data.latency} nowMs={nowMs} />}
 
       <p className="text-sm text-muted-foreground">
-        Something not working that this page does not show?{" "}
+        Seeing a problem this page does not show?{" "}
         <Link href="/contact?topic=support" className="font-medium text-primary underline-offset-4 hover:underline">
           Contact support
         </Link>

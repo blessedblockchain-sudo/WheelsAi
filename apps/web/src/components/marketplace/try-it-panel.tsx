@@ -27,7 +27,7 @@ function noticeOf(error: unknown): TryItNotice {
     const body = typeof error.data === "object" && error.data !== null ? (error.data as TryItRefusalBody) : null;
     return tryItNotice(error.status, body);
   }
-  return { message: "The server could not be reached. Check your connection and try again.", action: "none", ended: false };
+  return { message: "WheelsAI could not be reached. Check your connection and try again.", action: "none", ended: false };
 }
 
 /** The newest turns that fit the server's limits, starting with one of the visitor's. */
@@ -250,7 +250,7 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
           <li className="flex gap-2">
             <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
             <span>
-              Tools that move money, save or read files, or send requests out are switched off in previews.
+              Tools that move money, save or read files, or send requests out are turned off in previews.
               {availability.disabledTools.length > 0 && (
                 <>
                   {" "}
@@ -265,7 +265,7 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
           <div className="mt-6 rounded-lg border border-dashed p-6 text-center" data-testid="try-it-signin">
             <p className="text-sm text-foreground">Sign in to try this agent.</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Previews without an account need a human check, and that check is not configured on this server.
+              Previews are free, and signing in takes a moment.
             </p>
             <Link
               href={signInHref}

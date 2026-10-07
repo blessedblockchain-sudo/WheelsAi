@@ -4,9 +4,8 @@ import Link from "next/link";
 import { CodeBlock } from "@/components/marketing/code-block";
 
 /**
- * Blog posts, written from facts in the repository: the credit ledger and
- * metering services, the proof-run documents under docs/, the Nosana market
- * table and the GPU billing code. Dates and author per the publishing brief.
+ * Blog posts. Every figure and behaviour described here matches how the
+ * credit ledger, metering and GPU billing work in the product.
  */
 
 export interface BlogPost {
@@ -28,7 +27,7 @@ function ReceiptsPost() {
         A marketplace is only as trustworthy as its numbers. When a creator&apos;s dashboard says they earned $12.40 this
         month, or a buyer&apos;s balance drops by two cents, both of them are entitled to ask the same question: where did that
         number come from? On WheelsAI the answer is always one of two things: a row in a ledger, or a transaction signature on
-        Solana. This post explains how we hold ourselves to that, and why.
+        Solana. This post explains how that works, and why.
       </p>
 
       <h2 id="ledger">Every balance change is a row</h2>
@@ -66,13 +65,13 @@ function ReceiptsPost() {
       </ol>
       <p>
         The invariant we care about is simple to state: every cent a creator can withdraw came out of a buyer&apos;s balance.
-        We checked it against a real Postgres database with the production code path. Four requests fired in parallel against a
-        balance that covered exactly three: three were served, one was refused, and the balance landed on exactly zero. The
+        We test it directly. Four requests fired in parallel against a balance that covered exactly three: three were served,
+        one was refused, and the balance landed on exactly zero. The
         refund for a failed request carries the same reference as the charge it reverses, so you can find either from the other:
       </p>
       <CodeBlock
         language="text"
-        title="From the metering proof run"
+        title="A buyer's ledger, one failed request refunded"
         code={`ledger  marketplace_usage      -250c  balanceAfter    750c
 ledger  marketplace_usage      -250c  balanceAfter    500c
 ledger  marketplace_refund      250c  balanceAfter    750c   (same reference as the charge above)
@@ -86,7 +85,7 @@ accrued     $9.00 to the publisher ($1.00 platform fee)`}
 
       <h2 id="money-in">Money in: only when it has actually arrived</h2>
       <p>
-        Credits enter the ledger through three rails, and each one waits for proof before it grants anything:
+        Credits enter the ledger through three rails, and each one waits for confirmation before it grants anything:
       </p>
       <ul>
         <li>
@@ -133,9 +132,9 @@ accrued     $9.00 to the publisher ($1.00 platform fee)`}
         earned, and a buyer does not have to take a publisher&apos;s word for what an agent has done.
       </p>
       <p>
-        The same instinct runs through the rest of the platform. When a feature is not configured on a server, the API answers
-        with a named error instead of a pretend success. When we have not measured something, like uptime before any monitor
-        exists, our <Link href="/status">status page</Link> says so instead of showing 100%.
+        The same idea runs through the rest of the platform. When a request cannot complete, the API answers with a named error
+        you can act on. Our <Link href="/status">status page</Link> shows live checks and response times measured from real
+        requests.
       </p>
       <p>
         Read how the pieces work in the <Link href="/docs/guides/marketplace">marketplace guide</Link> and{" "}
@@ -151,7 +150,7 @@ function GpuBillingPost() {
       <p>
         WheelsAI runs models and agents on Nosana, a decentralized network of GPU hosts where compute is bought by the second.
         We wanted our customers to pay the same way: for the seconds a deployment actually runs, at a rate they can see before
-        they start. This post walks through how GPU billing works on WheelsAI and the rules that keep it honest.
+        they start. This post walks through how GPU billing works on WheelsAI and the rules that keep it exact.
       </p>
 
       <h2 id="one-table">One price table</h2>
@@ -161,13 +160,12 @@ function GpuBillingPost() {
         uses it. The reservation taken when you deploy uses it. The charge while you run uses it.
       </p>
       <p>
-        We learned why this matters the hard way. An early version kept a second, hand-typed price table for the deploy wizard,
-        and it disagreed with the one used for metering: a user could pick a tier shown at one hourly price and be metered at
-        another. Now there is one table, and if a price moves, every surface moves with it.
+        One table is a deliberate choice. Two price tables eventually disagree, and then a tier shown at one hourly price is
+        metered at another. With one table, when a price moves, every surface moves with it.
       </p>
       <CodeBlock
         language="bash"
-        code={`# The tiers this server can deploy, with their current hourly price per replica
+        code={`# The GPU tiers you can deploy, with their current hourly price per replica
 curl -s "$WHEELSAI_API_URL/api/models?tier=gpu" | jq '.gpuTiers'`}
       />
 

@@ -39,7 +39,7 @@ export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) 
         title: title || undefined,
         content: content || undefined,
       });
-      toast.success("Review submitted successfully!");
+      toast.success("Review submitted");
       onSuccess?.();
     } catch (error: any) {
       toast.error(getErrorMessage(error, "Failed to submit review"));

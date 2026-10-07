@@ -7,7 +7,7 @@ import { landingLatencyValue, latencyLineInput, usePublicStats } from "@/lib/pub
 
 /**
  * The landing page's latency, read live from GET /api/public/stats. It has
- * three honest states and no fallback number:
+ * three states and no fallback number:
  *   measured     the p50 the API measured, with what it measures
  *   measuring    not enough traffic yet to publish a figure; no number
  *   unavailable  the figure could not be read; no number
@@ -22,7 +22,7 @@ export function LiveLatencyValue() {
   return <span data-latency-status={status}>{landingLatencyValue(input)}</span>;
 }
 
-/** Under the terminal: what the value is, or why there is none, and where the proof is. */
+/** Under the terminal: what the value is, or why there is none, and how it is measured. */
 export function LiveLatencyCaption() {
   const input = latencyLineInput(usePublicStats());
   return (

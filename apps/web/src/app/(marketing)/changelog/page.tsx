@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
   title: "Changelog",
-  description: "What changed in WheelsAI, newest first: new features, improvements, fixes and security hardening.",
+  description: "What changed in WheelsAI, newest first: new features, improvements, fixes and security updates.",
 };
 
 const kindClass: Record<ChangeKind, string> = {
@@ -33,7 +33,7 @@ export default function ChangelogPage() {
         width="4xl"
         eyebrow="Changelog"
         title="What's new in WheelsAI"
-        description="Every notable change to the platform, newest first. Written from our commit history in plain language."
+        description="Every notable change to WheelsAI, newest first: new features, improvements, fixes and security updates."
       />
       <PageBody width="4xl">
         <ol className="space-y-14">

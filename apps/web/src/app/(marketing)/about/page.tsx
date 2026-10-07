@@ -26,7 +26,7 @@ const legs = [
     title: "Deploy",
     points: [
       "One step to Nosana's decentralized GPU markets, from RTX 3060 to H100.",
-      "Priced per second of GPU time, from the same table that drives every estimate and charge.",
+      "Billed per second of GPU time, at the same rates you see in every estimate.",
       "An OpenAI-compatible /v1 endpoint for every deployment, so existing clients work unchanged.",
     ],
   },
@@ -35,7 +35,7 @@ const legs = [
     title: "Monetize",
     points: [
       "A marketplace with four pricing models: free, per request, monthly, and tokenized.",
-      "Creators keep 90% of what buyers pay. Payouts are processed exactly once, in credits or on Solana.",
+      "Creators keep 90% of what buyers pay, paid out in credits or on Solana, each payout exactly once.",
       "Credits can be bought by card or from a Solana wallet, and API calls can be paid one at a time with x402 micropayments.",
     ],
   },
@@ -45,12 +45,12 @@ const principles = [
   {
     icon: Receipt,
     title: "Every earning has a receipt",
-    body: "Every change to a balance is a ledger row, and every on-chain payment has a transaction signature. Public agents have a receipts page anyone can check before installing.",
+    body: "Every change to a balance is recorded in your ledger, and every on-chain payment has a transaction signature. Public agents have a receipts page anyone can check before installing.",
   },
   {
     icon: ShieldCheck,
-    title: "Nothing simulates success",
-    body: "If a feature is not configured on a server, the API says so with a named error. What you see working is working.",
+    title: "Errors you can act on",
+    body: "When a request cannot complete, the API answers with a named error code and a plain explanation, so your code and your users know what to do next.",
   },
   {
     icon: Workflow,

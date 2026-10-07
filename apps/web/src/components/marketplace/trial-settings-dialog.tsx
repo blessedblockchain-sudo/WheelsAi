@@ -71,15 +71,13 @@ export function TrialSettingsDialog({
       setCap(String(saved.trial.fundedDailyCap));
       toast.success("Try it settings saved");
     } catch (error) {
-      // 501 while a funded message has no price: said in the server's words,
-      // which name what is not configured. Nothing was changed.
+      // 501 while a funded message has no price. The response names the
+      // missing setting for operators; publishers get a product sentence.
+      // Nothing was changed.
       setSaveError(
-        getErrorMessage(
-          error,
-          apiErrorCode(error) === "trial_funding_not_configured"
-            ? "Paying for more Try it messages is not available yet."
-            : "The settings could not be saved.",
-        ),
+        apiErrorCode(error) === "trial_funding_not_configured"
+          ? "Paid Try it messages are temporarily unavailable. Nothing was changed."
+          : getErrorMessage(error, "The settings could not be saved."),
       );
     } finally {
       setSaving(false);
@@ -148,7 +146,7 @@ export function TrialSettingsDialog({
                   ? `Used only after the free messages run out. Each one costs ${formatCurrency(
                       settings.pricing.fundedMessageCents!,
                     )} from your credits, charged when the answer is delivered and returned if it is not. 0 turns this off.`
-                  : "Not available yet: the price of a funded message is not configured on this server, so nothing can be charged. Listings keep the free daily messages."}
+                  : "Paid Try it messages are temporarily unavailable, so nothing is charged. Your listing keeps its free daily messages."}
               </p>
               {saveError && (
                 <p role="alert" className="mt-2 text-sm text-destructive">

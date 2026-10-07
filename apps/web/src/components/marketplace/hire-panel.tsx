@@ -43,7 +43,7 @@ function refusal(error: unknown): { message: string; action?: { label: string; h
     };
   }
   if (code === "jobs_not_configured") {
-    return { message: "Paid jobs are switched off on this server right now, so nothing was charged." };
+    return { message: "Hiring is temporarily unavailable. Nothing was charged. Try again later." };
   }
   return { message: getErrorMessage(error, "The offering could not be hired. Nothing was charged.") };
 }

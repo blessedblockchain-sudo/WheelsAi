@@ -235,8 +235,8 @@ export default function PublicAgentPage() {
                   >
                     <ShieldCheck className="h-3.5 w-3.5" />
                     {eligibility.eligible
-                      ? "Substance gate: passing"
-                      : "Substance gate: not yet"}
+                      ? "Eligible to launch a token"
+                      : "Not yet eligible to launch a token"}
                   </span>
                 )}
               </div>
@@ -301,7 +301,7 @@ export default function PublicAgentPage() {
             <p className="mt-1 text-xs text-muted-foreground">
               {uptime
                 ? `${uptime.totalRequests.toLocaleString()} requests metered`
-                : "No deployments measured yet"}
+                : "No usage recorded yet"}
             </p>
           </div>
         </div>
@@ -363,7 +363,7 @@ export default function PublicAgentPage() {
                     }`}
                   >
                     {chatChannelLabel(c.platform)}
-                    {c.live === false && " (configured, not live yet)"}
+                    {c.live === false && " (set up, not live)"}
                   </span>
                 ))}
               </div>
@@ -443,9 +443,9 @@ export default function PublicAgentPage() {
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <p className="text-muted-foreground">
             This is a public transparency feed. Treasury balances and payment
-            signatures are verifiable on Solana ({CLUSTER}); GPU time is metered
-            from the same usage records that back on-chain reputation
-            attestations. No account required.
+            signatures are verifiable on Solana; GPU time is metered from the
+            same usage records that back on-chain reputation attestations. No
+            account required.
           </p>
         </div>
       </div>

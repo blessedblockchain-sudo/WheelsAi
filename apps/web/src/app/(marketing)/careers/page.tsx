@@ -18,7 +18,7 @@ const areas = [
   },
   {
     title: "Frontend and product",
-    body: "Next.js 15, React and Tailwind. Dashboards that show real numbers or say plainly that there are none, accessible markup, and flows that get a new user from sign-up to a working agent quickly.",
+    body: "Next.js 15, React and Tailwind. Dashboards where every number traces back to its source, accessible markup, and flows that get a new user from sign-up to a working agent quickly.",
   },
   {
     title: "Solana programs",
@@ -68,15 +68,15 @@ export default function CareersPage() {
             <li className="flex gap-3">
               <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
               <span>
-                <strong className="text-foreground">Honest claims.</strong> We build up to what we say the product does, and
-                we say what is not done yet. Unfinished features answer with a named error, never a fake success.
+                <strong className="text-foreground">Say what it does.</strong> The product does what its pages say, and
+                every error names what went wrong and what to do next.
               </span>
             </li>
             <li className="flex gap-3">
               <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" aria-hidden="true" />
               <span>
-                <strong className="text-foreground">Proof over assertion.</strong> Money-moving features ship with tests, and
-                with written proof runs that record real transactions.
+                <strong className="text-foreground">Verified where money moves.</strong> Payment features ship with tests
+                and are checked end to end with real transactions before release.
               </span>
             </li>
             <li className="flex gap-3">

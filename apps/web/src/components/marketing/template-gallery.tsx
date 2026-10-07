@@ -89,8 +89,8 @@ export function TemplateGallery() {
     return (
       <EmptyState
         icon={LayoutTemplate}
-        title="No templates published yet"
-        description="When the WheelsAI team publishes starter agents, they will appear here. You can still create an agent from scratch or import one from GitHub."
+        title="No templates to show"
+        description="Starter agents appear here as they are published. You can create an agent from scratch or import one from GitHub."
         actionLabel="Create an account"
         actionHref="/register"
       />

@@ -1,7 +1,6 @@
 /**
- * Public changelog, curated from the repository's commit history (commit
- * bodies since 2026-08-01). Plain language, user-facing; internal-only
- * commits (docs, lint, audits, ops) are left out. Newest first.
+ * Public changelog: what changed for customers, in plain language, newest
+ * first. Changes with no customer-visible effect are left out.
  */
 
 export type ChangeKind = "New" | "Improved" | "Fixed" | "Security";
@@ -24,12 +23,12 @@ export const CHANGELOG: ChangelogDay[] = [
       {
         kind: "New",
         title: "Web chat widget: a fourth chat channel",
-        body: "Put an agent on your own site with one script tag. Create a web chat key under Integrations, Channels, list the sites that may use it, set its daily cap and look, and paste the snippet. Answers stream in; the widget is isolated from your page's styles and works with a keyboard and a screen reader. Anonymous visitors get no tool that spends, writes, reads saved files or sends requests out, and the limits refuse rather than run uncounted.",
+        body: "Put an agent on your own site with one script tag. Create a web chat key under Integrations, Channels, list the sites that may use it, set its daily cap and look, and paste the snippet. Answers stream in; the widget is isolated from your page's styles and works with a keyboard and a screen reader. Tools that spend, write, read saved files or send requests out stay off for visitors, and every message counts toward the key's limits.",
       },
       {
         kind: "New",
         title: "Try it on every marketplace listing",
-        body: "Each published listing has a Try it tab: a free, limited chat with the agent before you install or hire it. Previews run on a free model WheelsAI provides, and the tab says so when that differs from the listing's own model. Sign in to use it; anonymous previews open once the human check is configured. Publishers can see today's usage under Try it settings.",
+        body: "Each published listing has a Try it tab: a free, limited chat with the agent before you install or hire it. Previews run on a free model WheelsAI provides, and the tab says so when that differs from the listing's own model. Start a preview signed in, or as a visitor after a quick human check. Publishers can see today's usage under Try it settings.",
       },
     ],
   },
@@ -49,12 +48,12 @@ export const CHANGELOG: ChangelogDay[] = [
       {
         kind: "New",
         title: "Starter, Pro and Enterprise plans",
-        body: "Starter includes up to 3 agents and 1,000 API calls a month. Pro ($49/month, with a 14-day trial) includes unlimited agents, 100,000 API calls a month, higher free-model limits, custom domains, advanced analytics and priority marketplace placement. Enterprise is set up with the team. Limits answer with a clear error and an upgrade link.",
+        body: "Starter includes up to 3 agents and 1,000 API calls a month. Pro ($49/month, with a 14-day trial) includes unlimited agents, 100,000 API calls a month, higher free-model limits, custom domains, advanced analytics and priority marketplace placement. Enterprise is arranged with our team. When you reach a limit, you see which one and how to upgrade.",
       },
       {
         kind: "New",
         title: "Card payments with Stripe",
-        body: "Buy credit packs with Stripe Checkout, start Pro, and manage your payment method and invoices in Stripe's billing portal. Credits are granted only when Stripe confirms the payment, exactly once, and refunds take back the credits they paid for.",
+        body: "Buy credit packs with Stripe Checkout, start Pro, and manage your payment method and invoices in Stripe's billing portal. Credits are added only once Stripe confirms the payment, exactly once per payment, and a refunded payment takes back the credits it bought.",
       },
       {
         kind: "New",
@@ -87,14 +86,14 @@ export const CHANGELOG: ChangelogDay[] = [
         body: "max_tokens is now capped at 8,192 and defaults to 4,096. The worst-case cost of a request is held before it runs and settled to actual usage afterwards, so balances can no longer go negative, and a request that never reaches a GPU is not charged.",
       },
       {
-        kind: "Fixed",
-        title: "Free models work again",
-        body: "Our free-model provider retired the models the free catalog pointed to. The catalog now uses live models (GPT-OSS 120B, GPT-OSS 20B and Qwen3.8 27B), and existing agents keep working without changes.",
+        kind: "Improved",
+        title: "Updated free models",
+        body: "The free model catalog now offers GPT-OSS 120B, GPT-OSS 20B and Qwen3.8 27B, replacing models our provider retired. Existing agents keep working without changes.",
       },
       {
         kind: "Fixed",
-        title: "Model deployments on new installations",
-        body: "The deployable model catalog is loaded into the database automatically when the API starts, so deploying a model no longer fails with \"Model not found\" on a fresh setup.",
+        title: "Model deployments from the catalog",
+        body: "Deploying a model from the catalog no longer fails with \"Model not found\".",
       },
       {
         kind: "Security",
@@ -104,12 +103,12 @@ export const CHANGELOG: ChangelogDay[] = [
       {
         kind: "Security",
         title: "Payout and sign-in hardening",
-        body: "Two simultaneous payout requests can no longer both reserve the same balance, and payouts can only be requested by a signed-in owner or admin. Rate limits now hold across all servers, and repeated failed sign-ins lock an account for 15 minutes.",
+        body: "Two simultaneous payout requests can no longer both reserve the same balance, and payouts can only be requested by a signed-in owner or admin. Rate limits apply consistently across the platform, and repeated failed sign-ins lock an account for 15 minutes.",
       },
       {
         kind: "Improved",
         title: "Refined navy design",
-        body: "A new dark theme with one blue accent, a readable light theme, and error messages that show what the server actually said instead of a generic code.",
+        body: "A new dark theme with one blue accent, a readable light theme, and error messages that explain what went wrong instead of showing a generic code.",
       },
     ],
   },
@@ -153,8 +152,8 @@ export const CHANGELOG: ChangelogDay[] = [
       },
       {
         kind: "Fixed",
-        title: "Clearer errors, and graph templates that run",
-        body: "Invalid requests now answer 400 with the field at fault instead of a server error, error responses never include internal details, and the built-in visual-builder templates run out of the box.",
+        title: "Clearer errors and ready-to-run graph templates",
+        body: "Invalid requests now answer 400 and name the field at fault, error responses never expose internal details, and the built-in visual-builder templates run out of the box.",
       },
     ],
   },
@@ -168,13 +167,13 @@ export const CHANGELOG: ChangelogDay[] = [
       },
       {
         kind: "New",
-        title: "Multi-agent workflows and runnable graphs",
-        body: "Orchestrations now actually run multi-agent workflows, and the visual builder has a working Run button with a step-by-step trace of each run.",
+        title: "Multi-agent workflows and graph runs",
+        body: "Orchestrations run multi-agent workflows, and the visual builder has a Run button with a step-by-step trace of each run.",
       },
       {
         kind: "New",
         title: "Creator payouts",
-        body: "Marketplace creators can be paid out their earnings, processed exactly once by a dedicated payout worker.",
+        body: "Marketplace creators can request payouts of their earnings. Each payout request is paid once.",
       },
       {
         kind: "Security",
@@ -203,8 +202,8 @@ export const CHANGELOG: ChangelogDay[] = [
       },
       {
         kind: "New",
-        title: "Scheduled tasks, monitoring and alerts that run",
-        body: "Scheduled agent tasks now execute on time. Uptime monitors are probed on their interval and alert rules are evaluated, with notifications to your alert channels.",
+        title: "Scheduled tasks, uptime monitors and alerts",
+        body: "Scheduled agent tasks run on time. Uptime monitors are checked on their interval and alert rules are evaluated, with notifications to your alert channels.",
       },
       {
         kind: "New",
@@ -218,8 +217,8 @@ export const CHANGELOG: ChangelogDay[] = [
       },
       {
         kind: "Improved",
-        title: "Analytics history and a test runner that runs real agents",
-        body: "Usage history is recorded for analytics charts, and test suites now run against your actual agents.",
+        title: "Analytics history and test suites for your agents",
+        body: "Usage history is recorded for analytics charts, and test suites run against your own agents.",
       },
       {
         kind: "Security",

@@ -68,8 +68,8 @@ export default function TermsPage() {
       <p>
         WheelsAI lets you build AI agents, workflows and small language models, deploy them to GPU capacity on the Nosana
         network, and offer them to others through a marketplace. We keep improving the Service and may add, change or remove
-        features. Features that are not configured on a given server say so rather than simulate success. Features we label as
-        beta or preview may change without notice and are provided without any commitment of availability.
+        features. If a feature is temporarily unavailable, the Service tells you so. Features we label as beta or preview may
+        change without notice and are provided without any commitment of availability.
       </p>
 
       <h2 id="plans">4. Plans, credits and payments</h2>

@@ -1,11 +1,11 @@
-import { Zap, Users, Globe, Shield } from "lucide-react";
+import { Zap, Gift, Globe, Shield } from "lucide-react";
 
 import { LIVE_CHAT_CHANNELS, liveChatChannelList } from "@/lib/chat-channels";
 
 const trustSignals = [
   // Counted and named from the list of channels that are live, never written by hand.
   { icon: Globe, label: `${LIVE_CHAT_CHANNELS.length} Chat Channels`, sublabel: liveChatChannelList(" & ") },
-  { icon: Users, label: "Open Beta", sublabel: "$5 free credits at signup" },
+  { icon: Gift, label: "Free to Start", sublabel: "$5 in credits at signup" },
   { icon: Zap, label: "Instant Responses", sublabel: "Streaming inference" },
   { icon: Shield, label: "Secure by Default", sublabel: "2FA & encrypted secrets" },
 ];

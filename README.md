@@ -1,8 +1,8 @@
 <h1 align="center">WheelsAI</h1>
 
 <p align="center">
-  <strong>Build, Deploy & Monetize AI products — one platform.</strong><br/>
-  Agents · small language models · workflows — running on Nosana's decentralized GPU network, settling on Solana.
+  <strong>Build, deploy and monetize AI agents, workflows and small language models.</strong><br/>
+  One platform, running on Nosana's decentralized GPU network and settling on Solana.
 </p>
 
 <p align="center">
@@ -16,144 +16,230 @@
 
 ---
 
-## What it is
+Shipping an AI product means building three more products around it: hosting, billing and
+distribution. WheelsAI is those three, so you can spend your time on the agent, the workflow or
+the model itself, and earn from it the day it ships.
 
-Every AI creator hits the same wall: hosting, billing, and distribution are a
-second product they never planned to build. WheelsAI removes it.
+## Build
 
-- **Build** — import an agent from GitHub in any of six frameworks (Mastra,
-  ElizaOS, LangChain, AutoGen, CrewAI, custom), fine-tune small language
-  models, or chain both into scheduled workflows with a visual graph builder.
-- **Deploy** — one click to Nosana GPU markets (3060 → H100), billed per
-  second at live market pricing, behind an OpenAI-compatible `/v1` endpoint.
-- **Monetize** — a marketplace with four pricing models (per-request,
-  subscription, x402 micropayments, substance-gated tokens). Creators keep
-  90%; payouts settle on-chain; every revenue figure traces to a ledger row
-  or a transaction signature.
+- **Your framework, or none.** Bring agents built with Mastra, ElizaOS, LangChain, AutoGen,
+  CrewAI or your own code, or design one in the visual drag-and-drop builder. No lock-in.
+- **Import from GitHub.** Connect a repository, public or private, and every push redeploys.
+- **Tools, knowledge and memory.** Web search, HTTP requests, a code interpreter, file storage
+  and knowledge search out of the box; knowledge bases with semantic search; memory that carries
+  across conversations.
+- **Workflows.** Chain agents, models and retrieval steps into pipelines on a canvas, with
+  branches, loops and parallel steps. Run them on demand, on a schedule in any time zone, or
+  through the API.
+- **Models.** A catalog of 21 open models, including Llama, Mistral, Qwen, DeepSeek, Phi and
+  Gemma, and free models with no API key needed (Groq, Gemini) for prototyping.
+- **Fine-tuning.** Train a small language model on your own data with LoRA or QLoRA, watch the
+  loss as it trains, and deploy the result behind the same API.
+- **Testing.** Test suites for agents, with exact, semantic and custom assertions.
 
-The connective tissue is Solana: an Anchor treasury program lets a product's
-own earnings pay for its Nosana compute (`pay_nosana`), and a reputation
-oracle attests usage on-chain — so a token launch has to be *earned* with
-verified usage, and buyers can check a public receipts page before
-installing anything.
+## Deploy
 
-Honest platform stats, as shipped today: **6 frameworks · 21 models ·
-4 chat channels · 4 pricing models**. The channels are Discord, Telegram,
-Slack and Web: a chat widget an owner pastes into their own site
-(`apps/web/public/widget.js`, proof run in `docs/WEB-WIDGET-RUN.md`).
+- **GPUs in one click.** Deploy to Nosana GPU markets, from an RTX 3060 to an H100, billed per
+  second at live market prices.
+- **No DevOps.** Instant deployments, auto-scaling with warm replicas so there are no cold
+  starts, and health-based failover.
+- **An OpenAI-compatible API for everything you build.** Agents, workflows and models answer
+  `/v1/chat/completions` with streaming, function calling and tool use, so existing OpenAI
+  clients work unchanged.
+- **Where your users are.** One deploy reaches 4 chat channels: Discord, Telegram, Slack and your
+  own website through the embeddable chat widget.
+- **Production details included.** Custom domains with automatic TLS, logs, monitoring and
+  alerts, analytics, and a public status page with live response times.
+- **From your terminal.** `wheelsai deploy` builds, deploys and lists an agent in one command.
 
-## Proven, with receipts
+## Monetize
 
-This repo's standard: money-moving systems ship with a written proof run —
-real transactions, documented signatures — not a claim. All on Solana
-devnet:
+- **A marketplace for every product.** List agents, workflows and models, with four pricing
+  models: free, per request, monthly and tokenized. A per-request call is charged before it runs
+  and refunded automatically if it fails.
+- **Hire, not just install.** Publish offerings that buyers hire for a fixed price: payment is
+  held in escrow and released when the delivered work passes its checks. API keys can be scoped
+  to spending and capped per job and per day.
+- **Try before you buy.** Every listing has a free trial chat.
+- **Creators keep 90%.** Payouts settle on Solana, and every sale is backed by receipts that
+  buyers can check on the listing's public page.
+- **Pay the way you like.** Top up credits by card through Stripe or from a Solana wallet, or
+  pay per request with x402 micropayments.
+- **Self-funding agents.** Trading fees from an agent's token and a share of its earnings flow
+  into its own on-chain treasury, which pays for its compute on Nosana.
+- **Agent tokens.** Once an agent has verified usage, launch a token for it on a bonding curve
+  with pump.fun-style graduation to full liquidity on Solana.
+- **A leaderboard of proven products.** Agents, workflows and models ranked by verified revenue.
 
-| Proof | What it demonstrates |
-|---|---|
-| [`docs/D10-RUN.md`](docs/D10-RUN.md) | The closed loop, end to end: trading fees → fee router (exactly 1%) → treasury PDA → `pay_nosana` → on-chain usage attestation |
-| [`docs/WALLET-TOPUP-RUN.md`](docs/WALLET-TOPUP-RUN.md) | Wallet top-up rail: on-chain deposit credited exactly-once ($50 → 5,500 credits, byte-equality signed tx) |
-| [`docs/X402-RUN.md`](docs/X402-RUN.md) | x402 pay-per-request: full HTTP 402 → client-signed payment → broadcast → settlement cycle |
-| [`docs/PAYOUT-RUN.md`](docs/PAYOUT-RUN.md) | Creator payout executor: 0.25 SOL settled on-chain, exactly-once under the status CAS |
-| [`docs/MARKETPLACE-METERING-RUN.md`](docs/MARKETPLACE-METERING-RUN.md) | Per-request metering: charge before inference, refund on failure; 4 concurrent requests on a 3-request balance → 3 served, 1 refused, balance exactly zero |
-| [`docs/AGENT-JOBS-RUN.md`](docs/AGENT-JOBS-RUN.md) | Offerings and jobs: an agent job and a workflow job hired into escrow, run in the publisher's organization, accepted and paid 90% less model cost; failed checks, rejection, expiry and cancellation each refunded once; API keys without the spend scope or past their caps refused |
+## Plans
 
-On-chain programs (devnet, verifiable on any explorer):
+| | Starter | Pro | Enterprise |
+|---|---|---|---|
+| Price | Free | $49/month | Custom |
+| Agents | Up to 3 | Unlimited | Unlimited |
+| API calls | 1,000/month | 100,000/month | Volume pricing |
+| Included | Free models (Groq, Gemini), marketplace listing, community support | Priority model access, custom domains, advanced analytics, priority marketplace placement | Everything in Pro, custom model hosting, white-label marketplace, dedicated support and SLA, SSO and audit logging |
 
-- `agent-treasury` — `9TF7xZpYYwbiiVmcJJs6RDmjDTpqoscYtWKhNBcMzM1n`
-- `reputation-oracle` — `DMa1sNwXF6mZ2vyGiuA4QZhXPb5Sk4tp9gdnXsscrEB5`
+Start with $5 in free credits, no card required.
 
-One design rule holds across the codebase: **features never simulate
-success** — anything unconfigured or unfinished returns an honest `501`
-with a named reason, so what you see working is working.
+## Quickstart
 
-## Architecture
+Sign up, create an API key under **Dashboard → API keys**, and point any OpenAI client at the
+WheelsAI API. Pick what answers with `model`: `agent/<slug>` for an agent, `workflow/<slug>`
+for a workflow, or a deployment's slug for a model.
+
+```ts
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: `${process.env.WHEELSAI_API_URL}/v1`,
+  apiKey: process.env.WHEELSAI_API_KEY, // wheels_live_...
+});
+
+const reply = await client.chat.completions.create({
+  model: "agent/support-concierge",
+  messages: [{ role: "user", content: "How do I rotate an API key?" }],
+});
+
+console.log(reply.choices[0].message.content);
+```
+
+The same call with curl:
+
+```bash
+curl "$WHEELSAI_API_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "agent/support-concierge", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+Deploy and publish from your terminal:
+
+```bash
+wheelsai login --url "$WHEELSAI_API_URL"
+wheelsai deploy --agent support-concierge --publish
+```
+
+## Documentation
+
+The web app serves the documentation at `/docs`:
+
+- **Guides:** getting started, deploying a model, workflows, the marketplace, plans and
+  billing, templates, custom domains and the web chat widget.
+- **API reference:** agents, workflows, deployments, fine-tuning, the marketplace and jobs,
+  billing, webhooks, and the OpenAI-compatible `/v1` API. The API also serves an interactive
+  reference of every endpoint at `/docs` on the API host.
+- **SDK and CLI:** the TypeScript SDK and the `wheelsai` command line.
+
+## How it works
 
 ```
- Next.js 15 (apps/web)
+ Web app (apps/web) ─────────── dashboard · marketplace · docs · receipts pages
       │
- Fastify API (apps/api) ──── PostgreSQL + pgvector ──── Redis / BullMQ workers
-      │                          (packages/db)           (payments · scheduler ·
-      │                                                   indexer · attestation ·
-      ├── Nosana GPU markets  — per-second deploy + metering        uptime · …)
-      └── Solana devnet       — treasury · reputation oracle · x402 · payouts
-                                 (programs/agent-treasury, programs/reputation-oracle)
+ API (apps/api) ──── PostgreSQL + pgvector ──── Redis + BullMQ workers
+      │                                         (billing · scheduler · fine-tuning ·
+      │                                          payments · monitoring · ...)
+      ├── Nosana ── GPU deployments and fine-tuning jobs, billed per second
+      └── Solana ── agent treasuries · usage attestations · payouts · x402 payments
 ```
+
+- **Compute on Nosana.** Model deployments, agent runtimes and fine-tuning jobs run on Nosana's
+  decentralized GPU markets. Your organization is billed per second for the GPU time it uses.
+- **Money on Solana.** Two on-chain programs back the marketplace: `agent-treasury` holds an
+  agent's funds and pays for its compute, and `reputation-oracle` attests its usage on-chain.
+  Verified usage is what a token launch requires.
+- **Every amount accounted for.** Credits, holds, charges, refunds and payouts are recorded as
+  they happen, so every amount in the dashboard traces back to a ledger entry or a Solana
+  transaction.
+
+## Roadmap
+
+- **Fine-tuned models priced per request**, paid with credits or x402, alongside dedicated
+  deployments.
+- **More chat channels:** X, WhatsApp, Microsoft Teams, email, Matrix, Farcaster and SMS.
+- **Concierge and MCP:** find, hire and pay for agents from any MCP client, with
+  `wheelsai mcp`.
+- **Agent budgets:** spend policies that let agents hire other agents within limits you set.
+- **Products that run on their own revenue:** earnings that pay for all of a product's compute,
+  with a public report of every product doing it.
+
+## Develop WheelsAI
+
+### Repository
 
 ```
 apps/
-  api/          Fastify API — 52 route modules, service layer, BullMQ queue fleet
-  web/          Next.js 15 dashboard, marketplace, public receipts pages
+  api/            Fastify API, service layer, BullMQ workers
+  web/            Next.js 15 dashboard, marketplace, docs and receipts pages
 packages/
-  db/           Prisma schema + migrations (PostgreSQL, pgvector)
-  sdk/ cli/ shared/ types/
+  db/             Prisma schema, migrations and seed data (PostgreSQL, pgvector)
+  sdk/            TypeScript SDK
+  cli/            the wheelsai CLI
+  shared/ types/  shared code and types
 programs/
-  agent-treasury/      Anchor: per-agent treasury PDAs, fee_receive, pay_nosana
-  reputation-oracle/   Anchor: on-chain usage attestations, reputation scores
-docs/           Proof runs, deploy runbook, audits, grant application
+  agent-treasury/      Anchor program: per-agent treasuries, pay_nosana
+  reputation-oracle/   Anchor program: usage attestations, reputation scores
+infra/
+  training/       the fine-tuning container (LoRA and QLoRA)
+  edge/           the edge proxy that serves custom domains with TLS
 ```
 
-## Getting started
+### Run it locally
 
-Prereqs: Node 22+, Docker.
+Requires Node 22.13+ and Docker.
 
 ```bash
-# 1. Infra (Postgres w/ pgvector on 5434, Redis on 6380)
+# 1. Postgres with pgvector (port 5434) and Redis (port 6380)
 docker compose up -d
 
-# 2. Install + env
+# 2. Install and configure
 npm install
-cp .env.example apps/api/.env       # fill in secrets; safe defaults for dev
+cp .env.example apps/api/.env       # sensible defaults for development
+cp .env.example packages/db/.env    # the database scripts read DATABASE_URL from here
 echo "NEXT_PUBLIC_API_URL=http://localhost:4000" > apps/web/.env.local
 
-# 3. Database
-npm run db:generate && npm run db:migrate
+# 3. Database: schema, migrations, and the model catalog and templates
+npm run db:generate && npm run db:migrate && npm run db:seed
 
-# 4. Run (API :4000, web :3000)
+# 4. Start the API (port 4000) and the web app (port 3000)
 npm run dev
 ```
 
-Optional for real playground inference: set `GROQ_API_KEY` (free tier) or
-another provider key in `apps/api/.env`.
+Set `GROQ_API_KEY` in `apps/api/.env` to chat with free models right away. GPU deployments and
+fine-tuning need a Nosana account (an API key with credits, or a funded wallet); fine-tuning
+also needs the training image built from `infra/training`. Dataset uploads use an
+S3-compatible bucket, or a local folder in development (`STORAGE_DRIVER=local`).
+`.env.example` documents every setting.
+
+The SDK and CLI are built from this repository:
+
+```bash
+npm run build -w @wheelsai/sdk
+npm run build -w @wheelsai/cli
+alias wheelsai="node $PWD/packages/cli/bin/wheelsai.js"
+```
 
 ### Tests
 
 ```bash
-npm run test:unit -w @wheelsai/api    # 1,666 unit tests, no external deps, ~20s
-npm run test -w @wheelsai/api         # + integration (needs DB, Redis, RPC)
-cargo test --manifest-path programs/agent-treasury/Cargo.toml       # on-chain program (LiteSVM)
+npm run test:unit -w @wheelsai/api     # API unit tests, no external services
+npm run test:unit -w @wheelsai/web     # web unit tests
+npm run test -w @wheelsai/api          # adds integration tests (needs Postgres, Redis and an RPC)
+```
+
+The on-chain programs need Rust and Anchor; build them before testing:
+
+```bash
+anchor build
+cargo test --manifest-path programs/agent-treasury/Cargo.toml
 cargo test --manifest-path programs/reputation-oracle/Cargo.toml
 ```
 
-## How the money moves
+## Security
 
-```
-buyer credits  ◄─ Stripe (planned) · wallet top-up (proven) · x402 (proven)
-      │
-      ▼  per-request metering: charge → run → settle, refund on failure (proven)
-creator revenue (90%) ─► on-chain payout (proven)
-platform fee (10%, enforced in code)
-      │
-agent treasury ─► pay_nosana ─► GPU host operator (proven)
-                     └─► usage attested by reputation-oracle (proven)
-```
-
-## Roadmap
-
-1. **Public launch + first users** *(current)* — mainnet cutover (publish
-   the runtime containers; payments, payouts and receipts to mainnet),
-   production URL, first external creators via builders/content bounties.
-2. **Fine-tuning + SLM serving** — LoRA/QLoRA batch jobs on Nosana markets;
-   fine-tuned models served per-request via x402.
-3. **The self-sustaining loop at scale** — products paying 100% of their own
-   compute from their own revenue, chat channels 3 → 10, and a public,
-   receipted growth report.
-
-## More docs
-
-- [`docs/DEPLOY-RUNBOOK.md`](docs/DEPLOY-RUNBOOK.md) — production deploy sequence (Fly.io)
-- [`docs/UI-MATCHUP-AUDIT.md`](docs/UI-MATCHUP-AUDIT.md) — the build-up-don't-cut-down audit that drove the last two months
-- [`SECURITY.md`](SECURITY.md) — reporting vulnerabilities
+Please report vulnerabilities privately through a confidential issue on this project, not in a
+public issue.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

@@ -39,7 +39,27 @@ export interface AgentConfig {
     version: string;
   };
   modelDeploymentId?: string;
+  /**
+   * Where the container reaches the model of `modelDeploymentId`: an absolute
+   * OpenAI-compatible base URL on the public internet - this API's /v1 route
+   * for the deployment (modelDeploymentOpenAiBaseUrl), or the deployment's
+   * own Nosana endpoint. Required with `modelDeploymentId`: a Nosana node
+   * resolves no internal hostname, every service is reachable only through
+   * its public URL.
+   */
+  modelEndpointUrl?: string;
   externalModelUrl?: string;
+}
+
+/** An absolute http(s) URL with no credentials in it. */
+function isPublicBaseUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 // ============================================
@@ -50,13 +70,18 @@ export interface AgentConfig {
  * Generate Nosana job definition for an agent deployment
  */
 export function generateAgentJobDefinition(config: AgentConfig): NosanaJobDefinition {
-  const { agent, modelDeploymentId, externalModelUrl } = config;
+  const { agent, modelDeploymentId, modelEndpointUrl, externalModelUrl } = config;
 
   // Determine model endpoint
   let modelEndpoint: string;
   if (modelDeploymentId) {
-    // Use internal WheelsAI model deployment
-    modelEndpoint = `http://internal-model-${modelDeploymentId}:8000/v1`;
+    // A WheelsAI model deployment, at the public URL the caller resolved.
+    // Never a made-up internal hostname: fail here, before anything is
+    // created, rather than start an agent that cannot reach its model.
+    if (!isPublicBaseUrl(modelEndpointUrl)) {
+      throw new Error("The model deployment has no public endpoint for the agent to call");
+    }
+    modelEndpoint = modelEndpointUrl.replace(/\/+$/, "");
   } else if (externalModelUrl) {
     modelEndpoint = externalModelUrl;
   } else if (agent.modelConfig.externalModel) {
@@ -110,11 +135,10 @@ export function generateAgentJobDefinition(config: AgentConfig): NosanaJobDefini
           image: runtimeImage,
           env: envVars,
           gpu: shouldUseGpu(agent),
-          expose: [3000, 8080], // Agent HTTP server + health endpoint
-          resources: {
-            memory: "4Gi",
-            cpu: "2",
-          },
+          // Agent HTTP server + health endpoint. No CPU or memory limits:
+          // Nosana's schema has none (`resources` there is a list of model
+          // sources), and its strict validator refuses the create otherwise.
+          expose: [3000, 8080],
         },
       },
     ],

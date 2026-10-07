@@ -21,8 +21,18 @@
  * (that host is the SDK's own mainnet `backend_url`, node_modules/@nosana/sdk/dist/config.js).
  * vram comes from each market's `metadata[key=vram]`. The on-chain `jobPrice`
  * of three of them was cross-checked with `sdk.jobs.getMarket()` the same day
- * (3060 = 24, 4090 = 202, H100 = 757 NOS base units / second), which equals the
- * API's `nos_reward_per_second` x 1e6.
+ * (3060 = 24, 4090 = 202, H100 = 757 NOS base units / second), which equalled
+ * the API's `nos_reward_per_second` x 1e6 that day.
+ *
+ * Those NOS figures are not constants: Nosana derives them from the market's
+ * USD price and the NOS/USD rate, so they move with the NOS price. On
+ * 2026-10-07 the same 24 / 202 / 757 matched the fee-INCLUSIVE
+ * `nos_job_price_per_second` (0.0000242 / 0.0002024 / 0.0007579), with the
+ * reward at 0.000022 / 0.000184 / 0.000689. Whether the on-chain jobPrice
+ * carries the fee cannot be told from the API. If it does, the wallet path,
+ * which adds NOSANA_NETWORK_FEE_BPS on top, over-funds a vault by 10%: the
+ * safe direction, and the surplus is withdrawn on stop. Credits are priced in
+ * USD and are not affected.
  *
  * These are MAINNET addresses. Nosana's devnet dashboard lists only test
  * markets, so on devnet a tier is deployable only when the operator supplies an

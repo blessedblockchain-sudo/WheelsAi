@@ -49,6 +49,15 @@ const EP1: ObservedEndpoint = {
   url: "https://abc.node.k8s.prd.nos.ci",
   port: 8000,
   opId: "vllm-inference",
+  online: true,
+};
+
+/** An endpoint Nosana has created but no node serves yet. */
+const OFFLINE: ObservedEndpoint = {
+  url: "https://zzz.node.k8s.prd.nos.ci",
+  port: 11434,
+  opId: "ollama",
+  online: false,
 };
 
 function observation(
@@ -190,6 +199,14 @@ test("mapObservationToStatus: table", async () => {
     { kind: "agent", current: "running", obs: observation("running", []), next: null, why: "agent vocabulary has no degraded" },
     { kind: "model", current: "degraded", obs: observation("running"), next: "running", why: "recovers when an endpoint returns" },
     { kind: "model", current: "provisioning", obs: observation("running", [], { mock: true }), next: "running", why: "dev mock may run without an endpoint" },
+    // `online` decides, not the URL: Nosana creates every endpoint with the
+    // deployment (online:false) and says RUNNING before any node holds a job.
+    { kind: "model", current: "provisioning", obs: observation("running", [OFFLINE]), next: null, why: "RUNNING with only offline endpoints is still provisioning" },
+    { kind: "agent", current: "deploying", obs: observation("running", [OFFLINE]), next: null, why: "agent: endpoint not online yet" },
+    { kind: "model", current: "provisioning", obs: observation("running", [OFFLINE, EP1]), next: "running", why: "one online endpoint is enough" },
+    { kind: "model", current: "running", obs: observation("running", [OFFLINE]), next: "degraded", reason: "no_live_endpoint", why: "every endpoint offline while running degrades" },
+    { kind: "model", current: "degraded", obs: observation("running", [OFFLINE]), next: null, why: "degraded stays degraded while offline" },
+    { kind: "agent", current: "running", obs: observation("running", [OFFLINE]), next: null, why: "agent vocabulary has no degraded" },
     // still coming up / going down: no observation
     { kind: "model", current: "provisioning", obs: observation("draft"), next: null, why: "draft" },
     { kind: "model", current: "provisioning", obs: observation("starting"), next: null, why: "starting" },
@@ -295,7 +312,7 @@ function modelRow(overrides: Partial<DeploymentStatusRow> = {}): DeploymentStatu
 
 test("model RUNNING + endpoints: provisioning -> running, one node per REAL endpoint, probed right away", async () => {
   const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
-  const ep2 = { url: "https://def.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference" };
+  const ep2 = { url: "https://def.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference", online: true };
   const { deps, transitions, synced, probed, nodeHealthWrites } = makeDeps({
     rows: [modelRow()],
     observations: { job_1: observation("running", [EP1, ep2]) },
@@ -325,6 +342,51 @@ test("RUNNING without an endpoint does NOT become running and creates no node", 
   // the reconcile with [] only removes (legacy fabricated) nodes; nothing is invented
   assert.deepEqual(synced, [{ deploymentId: "m1", endpoints: [] }]);
   assert.deepEqual(probed, []);
+});
+
+test("RUNNING with every endpoint offline is not running: no billing edge, no node, no probe - for as long as it lasts", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  const { deps, transitions, synced, probed } = makeDeps({
+    rows: [modelRow()],
+    observations: { job_1: observation("running", [OFFLINE]) },
+  });
+  // A node is never found: tick after tick, nothing moves.
+  for (let i = 0; i < 3; i += 1) await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(transitions.length, 0, "never `running`, so GPU billing never starts");
+  assert.deepEqual(synced, [1, 2, 3].map(() => ({ deploymentId: "m1", endpoints: [] })), "an offline URL gets no node");
+  assert.deepEqual(probed, [], "nothing to probe and nothing to route to");
+});
+
+test("only the online endpoints become nodes and are probed; the row goes running once one is online", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  const { deps, transitions, synced, probed } = makeDeps({
+    rows: [modelRow()],
+    observations: { job_1: observation("running", [OFFLINE, EP1]) },
+  });
+  await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(transitions[0]!.toStatus, "running");
+  assert.deepEqual(synced, [{ deploymentId: "m1", endpoints: [EP1] }]);
+  assert.deepEqual(probed.map((p) => p.url), [EP1.url]);
+});
+
+test("a running model whose endpoints all go offline degrades and loses its nodes; it recovers when one is online", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  const offline = makeDeps({
+    rows: [modelRow({ status: "running", nodes: [{ id: "n1", nodeUrl: EP1.url, healthStatus: "healthy" }] })],
+    observations: { job_1: observation("running", [{ ...EP1, online: false }]) },
+  });
+  await runDeploymentStatusTick({ now: NOW }, offline.deps);
+  assert.equal(offline.transitions[0]!.toStatus, "degraded");
+  assert.equal(offline.transitions[0]!.reason, "no_live_endpoint");
+  assert.deepEqual(offline.synced, [{ deploymentId: "m1", endpoints: [] }], "no traffic is routed to it");
+  assert.deepEqual(offline.probed, []);
+
+  const back = makeDeps({
+    rows: [modelRow({ status: "degraded" })],
+    observations: { job_1: observation("running", [EP1]) },
+  });
+  await runDeploymentStatusTick({ now: NOW }, back.deps);
+  assert.equal(back.transitions[0]!.toStatus, "running");
 });
 
 test("a STARTING deployment leaves its nodes alone", async () => {
@@ -424,6 +486,79 @@ test("INSUFFICIENT_FUNDS -> failed (nosana_insufficient_funds) and releases the 
   await runDeploymentStatusTick({ now: NOW }, deps);
   assert.equal(transitions[0]!.reason, "nosana_insufficient_funds");
   assert.equal(released.length, 1);
+});
+
+test("a row failed because Nosana halted it is stopped in the same pass, through its own credential; a refusal or a throw is counted, never fatal", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  const stops: Array<[string, string | undefined]> = [];
+  const outcomes: Record<string, { stopRefused?: boolean } | Error> = {
+    job_if: {},
+    job_err: { stopRefused: true },
+    job_throw: new Error("Nosana down"),
+  };
+  const { deps, transitions } = makeDeps({
+    rows: [
+      modelRow({ id: "m_if", nosanaJobIds: ["job_if"], nosanaAccessMode: "api_key" }),
+      modelRow({ id: "m_err", status: "running", nosanaJobIds: ["job_err"] }),
+      row({ id: "a_throw", nosanaJobIds: ["job_throw"], nosanaAccessMode: "api_key" }),
+      // Not halted: a deployment Nosana stopped needs no stop from us.
+      modelRow({ id: "m_stopped", status: "running", nosanaJobIds: ["job_stopped"] }),
+    ],
+    observations: {
+      job_if: observation("insufficient_funds"),
+      job_err: observation("error"),
+      job_throw: observation("error"),
+      job_stopped: observation("stopped"),
+    },
+  });
+  const result = await runDeploymentStatusTick(
+    { now: NOW },
+    {
+      ...deps,
+      stopHaltedDeployment: async (id: string, mode?: string) => {
+        stops.push([id, mode]);
+        const outcome = outcomes[id]!;
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      },
+    },
+  );
+  assert.deepEqual(transitions.map((t) => [t.id, t.toStatus]), [
+    ["m_if", "failed"],
+    ["m_err", "failed"],
+    ["a_throw", "failed"],
+    ["m_stopped", "stopped"],
+  ]);
+  assert.deepEqual(stops, [
+    ["job_if", "api_key"],
+    ["job_err", undefined],
+    ["job_throw", "api_key"],
+  ]);
+  assert.equal(result.haltedStops, 1);
+  assert.equal(result.haltedStopsFailed, 2);
+  assert.equal(result.failed, 0, "the transitions stand");
+});
+
+test("a halted row whose transition lost its CAS is not stopped from here (the winner owns it)", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  const stops: string[] = [];
+  const { deps } = makeDeps({
+    rows: [modelRow()],
+    observations: { job_1: observation("insufficient_funds") },
+    persistCount: 0,
+  });
+  const result = await runDeploymentStatusTick(
+    { now: NOW },
+    {
+      ...deps,
+      stopHaltedDeployment: async (id: string) => {
+        stops.push(id);
+        return {};
+      },
+    },
+  );
+  assert.deepEqual(stops, []);
+  assert.equal(result.haltedStops + result.haltedStopsFailed, 0);
 });
 
 test("STOPPED releases the hold too; an already-released or empty hold is skipped", async () => {

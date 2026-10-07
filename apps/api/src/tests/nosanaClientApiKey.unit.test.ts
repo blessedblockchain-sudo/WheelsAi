@@ -44,11 +44,12 @@ for (const name of [
   delete process.env[name];
 }
 
-const { NosanaClient, NosanaNotConfiguredError, NosanaAccessModeUnavailableError, NosanaOneShotUnavailableError, wheelsaiDeploymentName, normalizeDeploymentJob } =
+const { NosanaClient, NosanaNotConfiguredError, NosanaAccessModeUnavailableError, NosanaOneShotUnavailableError, wheelsaiDeploymentName, normalizeDeploymentJob, DEPLOYMENT_ONLY } =
   await import("../services/nosana.js");
 const { NosanaLifecycleError } = await import("../services/nosanaDeploymentLifecycle.js");
 const { resetNosanaAccessConfigForTests } = await import("../config/nosanaAccess.js");
 const { MarketNotConfiguredError } = await import("../services/nosanaMarkets.js");
+const { pickFailureDetail } = await import("../services/buildDeploymentStatusTickDeps.js");
 
 const KEY = fake.apiKey;
 const M3060 = "7AtiXMSH6R1jjBxrcYjehCkkSF7zvYWte63gwEDBcGHq";
@@ -86,6 +87,9 @@ function resetFake() {
   fake.setMarkets(FAKE_MARKETS);
   fake.setOwner("11111111111111111111111111111111");
   fake.setInsufficientFunds(false);
+  // Every create carries its name as the idempotency key, and Nosana keeps
+  // keys unique: a name reused by an earlier test would answer 409.
+  fake.deployments.clear();
   fake.requests.length = 0;
 }
 
@@ -160,18 +164,23 @@ test("create -> start -> running -> scale -> stop -> released, with no vault cal
   assert.equal(body.strategy, "SIMPLE-EXTEND");
   assert.equal(body.confidential, true);
   assert.deepEqual(body.job_definition, DEFINITION);
+  assert.equal(body.idempotency_key, name, "the per-run name is the idempotency key");
+  assert.equal(body.autostart, undefined, "create and start stay two calls");
   assert.equal(sent("POST", /\/start$/).length, 1);
 
-  // Starting: no endpoint yet, none invented.
+  // Nosana reports RUNNING as soon as start is called. This definition
+  // exposes no port, so there is no endpoint, and none is invented.
   let status = await client.getDeploymentStatus(created.id, "api_key");
-  assert.equal(status.status, "starting");
+  assert.equal(status.status, "running");
   assert.deepEqual(status.endpoints, []);
 
-  fake.settle(created.id);
-  fake.setEndpoints(created.id, [{ opId: "vllm-inference", port: 8000, url: "https://abc.node.k8s.prd.nos.ci/" }]);
+  fake.setEndpoints(created.id, [{ opId: "vllm-inference", port: 8000, url: "https://abc.node.k8s.prd.nos.ci/", online: false }]);
   status = await client.getDeploymentStatus(created.id, "api_key");
   assert.equal(status.status, "running");
-  assert.deepEqual(status.endpoints, [{ url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference" }]);
+  assert.deepEqual(status.endpoints, [{ url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference", online: false }]);
+  fake.setEndpointsOnline(created.id, true);
+  status = await client.getDeploymentStatus(created.id, "api_key");
+  assert.deepEqual(status.endpoints, [{ url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference", online: true }]);
 
   // Scale up: balance checked, count changed, nothing funded.
   const scaled = await client.scaleDeployment(created.id, 2, "3060", "api_key");
@@ -444,7 +453,6 @@ test("release through the real SDK, for every Nosana state", async () => {
     { status: "ARCHIVED", state: "archived", stopSent: false, reclaimed: true },
     { status: "STOPPING", state: "stopping", stopSent: false, reclaimed: false },
     // Still up on Nosana: stopped here, and not released until it has wound down.
-    { status: "STARTING", state: "starting", stopSent: true, reclaimed: false },
     { status: "RUNNING", state: "running", stopSent: true, reclaimed: false },
     // Halted, and the fake accepts the stop: stopping, so not yet.
     { status: "INSUFFICIENT_FUNDS", state: "insufficient_funds", stopSent: true, reclaimed: false },
@@ -466,26 +474,78 @@ test("release through the real SDK, for every Nosana state", async () => {
       assert.equal((await client.reclaimDeploymentVault(created.id, "api_key")).reclaimed, true, `${c.status} once stopped`);
     }
   }
+
+  // STARTING: Nosana refuses a stop (HTTP 500 INCORRECT_STATE) until the LIST
+  // task has moved it to RUNNING. The refusal is waited out and the stop sent
+  // again a few times; one that stays STARTING throughout is a failure the
+  // sweep counts and retries - it never releases a deployment that may still run.
+  const starting = await createOne(client, "wheelsai-state-starting");
+  fake.setStatus(starting.id, "STARTING");
+  fake.requests.length = 0;
+  const waits: number[] = [];
+  (client as any).sleep = async (ms: number) => void waits.push(ms);
+  await assert.rejects(client.reclaimDeploymentVault(starting.id, "api_key"), coded("nosana_stop_failed"));
+  assert.equal(sent("POST", /\/stop$/).length, 4, "the first stop and three retries");
+  assert.ok(sent("POST", /\/stop$/).every((r) => r.status === 500));
+  assert.deepEqual(waits, [2_500, 2_500, 2_500]);
+  fake.settle(starting.id); // RUNNING
+  assert.equal((await client.reclaimDeploymentVault(starting.id, "api_key")).reclaimed, false, "stop accepted, winding down");
+  fake.settle(starting.id); // STOPPED
+  assert.equal((await client.reclaimDeploymentVault(starting.id, "api_key")).reclaimed, true);
   assert.equal(fake.vaultCalls(), 0);
 });
 
-test("a halted deployment that refuses the stop is released, so a restart is not blocked", async () => {
+test("a halted deployment that refuses the stop leaves service but is not released until a stop is accepted", async () => {
   resetFake();
   const client = await apiClient();
   for (const status of ["INSUFFICIENT_FUNDS", "ERROR"] as const) {
     const created = await createOne(client, `wheelsai-halted-${status.toLowerCase()}`);
     fake.setStatus(created.id, status);
 
-    fake.failNext({ method: "POST", path: /\/stop$/ }, { status: 400, body: { error: "nothing to stop" } });
+    // The sweep: refused, so not released - Nosana revives INSUFFICIENT_FUNDS after a top-up.
+    fake.failNext({ method: "POST", path: /\/stop$/ }, { status: 500, body: { error: "manager down" } });
     const reclaim = await client.reclaimDeploymentVault(created.id, "api_key");
-    assert.equal(reclaim.reclaimed, true, status);
+    assert.equal(reclaim.reclaimed, false, status);
+    assert.match(reclaim.reason ?? "", /no stop was accepted/);
 
-    fake.failNext({ method: "POST", path: /\/stop$/ }, { status: 400, body: { error: "nothing to stop" } });
+    // The user's stop: refused too. Nothing serves, so the stop goes through
+    // for the row, and the result says the release is still pending.
+    fake.failNext({ method: "POST", path: /\/stop$/ }, { status: 500, body: { error: "manager down" } });
     const stop = await client.stopDeployment(created.id, "api_key");
     assert.equal(stop.stopped, true);
-    assert.equal(stop.reclaimed, true, status);
+    assert.equal(stop.stopRefused, true);
+    assert.equal(stop.reclaimed, false, status);
     assert.equal(fake.deployments.get(created.id)!.status, status);
+
+    // The next sweep: the stop is accepted (Nosana takes one from a halted
+    // state), it winds down, and only then is it released.
+    assert.equal((await client.reclaimDeploymentVault(created.id, "api_key")).reclaimed, false);
+    assert.equal(fake.deployments.get(created.id)!.status, "STOPPING");
+    fake.settle(created.id);
+    assert.equal((await client.reclaimDeploymentVault(created.id, "api_key")).reclaimed, true, status);
   }
+});
+
+test("a stop refused while Nosana reads STARTING is retried after a wait, and accepted once it is RUNNING", async () => {
+  resetFake();
+  const client = await apiClient();
+  const created = await createOne(client, "wheelsai-stop-starting");
+  fake.setStatus(created.id, "STARTING");
+  const waits: number[] = [];
+  // The LIST task is scheduled during the first wait: STARTING -> RUNNING.
+  (client as any).sleep = async (ms: number) => {
+    waits.push(ms);
+    fake.settle(created.id);
+  };
+  fake.requests.length = 0;
+
+  const result = await client.stopDeployment(created.id, "api_key");
+
+  assert.equal(result.stopped, true);
+  assert.equal(result.alreadyStopped, false);
+  assert.deepEqual(waits, [2_500]);
+  assert.deepEqual(sent("POST", /\/stop$/).map((r) => r.status), [500, 200]);
+  assert.equal(fake.deployments.get(created.id)!.status, "STOPPING");
 });
 
 test("credits that run out at the start: the deployment reads insufficient_funds", async () => {
@@ -509,36 +569,430 @@ test("a running deployment whose stop Nosana refuses is an error, never a quiet 
 // The create-stage throw
 // ============================================
 
-test("an owner that is not a public key: create throws AFTER Nosana created it, and it can be found by name", async () => {
+test("an owner that is not a public key: create throws AFTER Nosana created it; the idempotency key finds it, and its id is carried", async () => {
   resetFake();
   const client = await apiClient();
   fake.setOwner("user_01HZX-not-a-base58-key!");
   const name = wheelsaiDeploymentName("model", "owner-case");
   const before = fake.deployments.size;
 
+  let carriedId: string | undefined;
   await assert.rejects(createOne(client, name), (err: unknown) => {
     assert.ok(err instanceof NosanaLifecycleError);
     assert.equal(err.stage, "create");
     assert.equal(err.code, "nosana_create_failed");
-    assert.equal(err.mayExistOnNosana, true);
     assert.equal(err.deploymentName, name);
-    assert.equal(err.deploymentId, undefined, "the SDK threw before it handed back an id");
+    // The key found it; the SDK cannot read it (the same owner parse), so it
+    // is neither started nor guessed at - its id goes back for the sweep.
+    assert.ok(err.deploymentId);
+    assert.equal(err.mayExistOnNosana, false, "the id is known: no lookup is left to do");
+    assert.match(err.message, /holds its idempotency key but could not be read/);
+    carriedId = err.deploymentId;
     return true;
   });
 
   assert.equal(fake.deployments.size, before + 1, "the deployment exists on the server");
   assert.equal(sent("POST", /\/start$/).length, 0, "it was never started");
+  assert.equal(sent("GET", /\/deployments$/).filter((r) => r.query.idempotency_key === name).length, 1);
 
   // The list is read without the SDK's owner parse, so it still works.
   const found = await client.findDeploymentByName(name);
   assert.ok(found);
-  assert.equal(found.name, name);
+  assert.equal(found.id, carriedId);
   assert.equal(found.status, "draft");
   assert.equal(found.accessMode, "api_key");
   assert.equal(await client.findDeploymentByName("wheelsai-model-nobody"), null);
 
   // Through the SDK that same deployment cannot be read: named, not hidden.
   await assert.rejects(client.getDeploymentStatus(found.id), coded("nosana_read_failed"));
+});
+
+// ============================================
+// The idempotent create: a lost answer, a 409, a deadline
+// ============================================
+
+test("a create whose answer is lost after Nosana made it: found by its idempotency key, started, one deployment", async () => {
+  resetFake();
+  const client = await apiClient();
+  const name = wheelsaiDeploymentName("model", "lost-answer");
+  // Carried out, then answered 502: the response never reached us.
+  fake.failNext({ method: "POST", path: /\/deployments\/create$/ }, { status: 502, body: { error: "Bad Gateway" } }, 1, {
+    afterAction: true,
+  });
+
+  const created = await createOne(client, name);
+
+  const all = [...fake.deployments.values()].filter((d) => d.idempotency_key === name);
+  assert.equal(all.length, 1, "exactly one deployment holds the key");
+  assert.equal(created.id, all[0]!.id);
+  assert.equal(all[0]!.status, "RUNNING", "the DRAFT it made was taken on and started");
+  assert.equal(sent("POST", /\/deployments\/create$/).length, 1, "never created twice");
+  assert.equal(sent("POST", /\/start$/).length, 1);
+  const lookups = sent("GET", /\/deployments$/).filter((r) => r.query.idempotency_key === name);
+  assert.equal(lookups.length, 1);
+});
+
+test("a create answered 409 (an earlier attempt of this run made it): the DRAFT holding the key is started", async () => {
+  resetFake();
+  const client = await apiClient();
+  const name = wheelsaiDeploymentName("model", "conflict");
+  const earlier = fake.seedDeployment({ name, idempotency_key: name, status: "DRAFT" });
+
+  const created = await createOne(client, name);
+
+  assert.equal(created.id, earlier.id);
+  assert.equal(sent("POST", /\/deployments\/create$/)[0]!.status, 409);
+  assert.equal(fake.deployments.get(earlier.id)!.status, "RUNNING");
+  assert.equal([...fake.deployments.values()].filter((d) => d.idempotency_key === name).length, 1);
+});
+
+test("a create that threw finds a deployment already past DRAFT under its key: stopped, and the error carries its id", async () => {
+  resetFake();
+  const client = await apiClient();
+  const name = wheelsaiDeploymentName("model", "conflict-running");
+  const earlier = fake.seedDeployment({ name, idempotency_key: name, status: "RUNNING" });
+
+  await assert.rejects(createOne(client, name), (err: unknown) => {
+    assert.ok(err instanceof NosanaLifecycleError);
+    assert.equal(err.stage, "create");
+    assert.equal(err.deploymentId, earlier.id);
+    assert.equal(err.mayExistOnNosana, false);
+    assert.equal(err.cleanup?.stopped, true);
+    assert.equal(err.cleanup?.reclaimed, false, "still stopping");
+    assert.match(err.message, /already running/);
+    return true;
+  });
+  assert.equal(sent("POST", /\/start$/).length, 0, "never started by this create");
+  assert.equal(fake.deployments.get(earlier.id)!.status, "STOPPING");
+});
+
+test("a create that failed with nothing under its key: may exist on Nosana, no id, nothing started", async () => {
+  resetFake();
+  const client = await apiClient();
+  const name = wheelsaiDeploymentName("model", "refused");
+  fake.failNext({ method: "POST", path: /\/deployments\/create$/ }, { status: 500, body: { error: "manager down" } });
+
+  await assert.rejects(createOne(client, name), (err: unknown) => {
+    assert.ok(err instanceof NosanaLifecycleError);
+    assert.equal(err.code, "nosana_create_failed");
+    assert.equal(err.mayExistOnNosana, true);
+    assert.equal(err.deploymentId, undefined);
+    assert.match(err.message, /no deployment holds its idempotency key/);
+    return true;
+  });
+  assert.equal(fake.deployments.size, 0);
+  assert.equal(sent("POST", /\/start$/).length, 0);
+
+  // The look-up itself failing is said too, and still carries no id.
+  fake.failNext({ method: "POST", path: /\/deployments\/create$/ }, { status: 500, body: { error: "manager down" } });
+  fake.failNext({ method: "GET", path: /\/deployments$/ }, { status: 500, body: { error: "down" } });
+  await assert.rejects(createOne(client, name), (err: unknown) => {
+    assert.ok(err instanceof NosanaLifecycleError);
+    assert.equal(err.mayExistOnNosana, true);
+    assert.match(err.message, /looking it up by its idempotency key failed too/);
+    return true;
+  });
+});
+
+test("a refused create's whole answer is reported, redacted, though the SDK's error keeps only one field", async () => {
+  resetFake();
+  const client = await apiClient();
+  const refusals: unknown[] = [];
+  (client as any).reportCreateRefusal = (refusal: unknown) => void refusals.push(refusal);
+  const definition = {
+    version: "0.1",
+    type: "container",
+    meta: { trigger: "wheelsai" },
+    ops: [
+      {
+        type: "container/run",
+        id: "train",
+        args: { image: "docker.io/x/y:1", env: { HF_TOKEN: "hf_secretsecret" }, required_vram: 12 },
+      },
+    ],
+  };
+
+  await assert.rejects(
+    client.createDeployment(definition as never, "3060", 1, { name: "wheelsai-refused-create" }),
+    (err: unknown) => {
+      assert.ok(err instanceof NosanaLifecycleError);
+      // What the SDK keeps: "Bad Request". The reason is not in it.
+      assert.doesNotMatch(err.message, /required_vram/);
+      return true;
+    },
+  );
+  assert.equal(refusals.length, 1);
+  const refusal = refusals[0] as { status: number; body: Record<string, unknown> };
+  assert.equal(refusal.status, 400);
+  assert.equal(refusal.body.code, "FST_ERR_VALIDATION");
+  assert.match(String(refusal.body.message), /ops\[0\]\.args\.required_vram/, "the reason reaches the log");
+  assert.doesNotMatch(JSON.stringify(refusals), /hf_secretsecret|nos_fake_key/);
+
+  // An accepted create is not reported.
+  await createOne(client, "wheelsai-accepted-create");
+  assert.equal(refusals.length, 1);
+});
+
+test("every SDK call has a deadline: a create that outlives it is looked up by its key and taken on; a read that outlives it fails by name", async () => {
+  resetFake();
+  const client = await apiClient({ NOSANA_SDK_TIMEOUT_MS: "200" });
+  const name = wheelsaiDeploymentName("model", "slow-create");
+  // Nosana makes the deployment at once and answers two seconds later.
+  fake.delayNext({ method: "POST", path: /\/deployments\/create$/ }, 2_000);
+
+  const startedAt = Date.now();
+  const created = await createOne(client, name);
+  assert.ok(Date.now() - startedAt < 1_500, "the create did not wait for the late answer");
+  const holding = [...fake.deployments.values()].filter((d) => d.idempotency_key === name);
+  assert.equal(holding.length, 1);
+  assert.equal(created.id, holding[0]!.id);
+  assert.equal(holding[0]!.status, "RUNNING");
+
+  // A read that hangs: the deadline names it, and nothing is fabricated.
+  fake.delayNext({ method: "GET", path: new RegExp(`/deployments/${created.id}$`) }, 2_000);
+  await assert.rejects(client.getDeploymentStatus(created.id, "api_key", DEPLOYMENT_ONLY), (err: unknown) => {
+    assert.ok(err instanceof NosanaLifecycleError);
+    assert.equal(err.code, "nosana_read_failed");
+    assert.equal((err.cause as { code?: string } | undefined)?.code, "nosana_timeout");
+    return true;
+  });
+
+  // A stop that hangs and was never carried out is a failed stop, never a
+  // quiet success: the read after it still says RUNNING.
+  fake.failNext({ method: "POST", path: /\/stop$/ }, { status: 500, body: { error: "stuck" } });
+  fake.delayNext({ method: "POST", path: /\/stop$/ }, 2_000);
+  await assert.rejects(client.stopDeployment(created.id, "api_key"), (err: unknown) => {
+    assert.ok(err instanceof NosanaLifecycleError);
+    assert.equal(err.code, "nosana_stop_failed");
+    assert.equal((err.cause as { code?: string } | undefined)?.code, "nosana_timeout");
+    return true;
+  });
+  assert.equal(fake.deployments.get(created.id)!.status, "RUNNING");
+
+  // One Nosana carried out but answered late: the read after it says
+  // STOPPING, and that is what counts.
+  fake.delayNext({ method: "POST", path: /\/stop$/ }, 2_000);
+  const stopped = await client.stopDeployment(created.id, "api_key");
+  assert.equal(stopped.stopped, true);
+  assert.equal(fake.deployments.get(created.id)!.status, "STOPPING");
+});
+
+// ============================================
+// Paginated reads: the list, the lookups, jobs and events
+// ============================================
+
+/** n deployments, a minute apart, oldest first. */
+function seedMany(n: number, name = (i: number) => `other-${i}`) {
+  const ids: string[] = [];
+  for (let i = 0; i < n; i += 1) {
+    ids.push(
+      fake.seedDeployment({ name: name(i), created_at: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString() }).id,
+    );
+  }
+  return ids;
+}
+
+test("listDeployments reads every page of 100, following cursor_next, never the SDK's list()", async () => {
+  resetFake();
+  fake.deployments.clear();
+  const ids = seedMany(230);
+  const client = await apiClient();
+
+  const rows = await client.listDeployments("api_key");
+  assert.equal(rows.length, 230);
+  assert.deepEqual(new Set(rows.map((r) => r.id)), new Set(ids));
+  assert.equal(rows[0]!.id, ids[229], "newest first, as Nosana answers");
+  const reads = sent("GET", /^\/api\/deployments$/);
+  assert.equal(reads.length, 3);
+  assert.deepEqual(reads.map((r) => r.query.limit), ["100", "100", "100"]);
+  assert.equal(reads[0]!.query.cursor, undefined);
+  assert.ok(reads[1]!.query.cursor && reads[2]!.query.cursor);
+  assert.equal(reads.every((r) => r.authorization === `Bearer ${KEY}`), true);
+});
+
+test("listDeployments: a bare array is still read; a body that is not a list, or a cursor that repeats, throws", async () => {
+  resetFake();
+  fake.deployments.clear();
+  const client = await apiClient();
+  const row = { id: "bare1", name: "wheelsai-bare", status: "RUNNING", created_at: "2026-10-01T00:00:00.000Z" };
+  fake.failNext({ method: "GET", path: /^\/api\/deployments$/ }, { status: 200, body: [row] });
+  assert.deepEqual((await client.listDeployments()).map((r) => r.id), ["bare1"]);
+
+  fake.failNext({ method: "GET", path: /^\/api\/deployments$/ }, { status: 200, body: { items: [] } });
+  await assert.rejects(client.listDeployments(), coded("nosana_read_failed"));
+
+  const looping = { deployments: [row], pagination: { cursor_next: "c1", cursor_prev: null, total_items: 99 } };
+  fake.failNext({ method: "GET", path: /^\/api\/deployments$/ }, { status: 200, body: looping }, 2);
+  await assert.rejects(client.listDeployments(), (err: unknown) => {
+    assert.ok(err instanceof NosanaLifecycleError);
+    assert.match(err.message, /repeated a page cursor/);
+    return true;
+  });
+
+  fake.failNext({ method: "GET", path: /^\/api\/deployments$/ }, { status: 400, body: { code: "FST_ERR_VALIDATION" } });
+  await assert.rejects(client.listDeployments(), coded("nosana_read_failed"));
+});
+
+test("findDeploymentByName asks Nosana's exact name filter, follows its pages and picks the newest", async () => {
+  resetFake();
+  fake.deployments.clear();
+  const name = wheelsaiDeploymentName("model", "paged");
+  // 150 rows with the name: the oldest first, so the newest is on page 1 and
+  // the oldest on page 2.
+  const ids = seedMany(150, () => name);
+  seedMany(5, () => name.toUpperCase());
+  const client = await apiClient();
+
+  const found = await client.findDeploymentByName(name);
+  assert.ok(found);
+  assert.equal(found.id, ids[149]);
+  assert.equal(found.name, name);
+  const reads = sent("GET", /^\/api\/deployments$/);
+  assert.equal(reads.length, 2, "both pages");
+  assert.deepEqual(reads.map((r) => [r.query.name, r.query.limit]), [[name, "100"], [name, "100"]]);
+  assert.equal(await client.findDeploymentByName("wheelsai-model-nobody"), null);
+
+  // A server that ignored the filter: the name is still checked here.
+  fake.failNext(
+    { method: "GET", path: /^\/api\/deployments$/ },
+    {
+      status: 200,
+      body: {
+        deployments: [
+          { id: "x1", name: "wheelsai-model-somebody-else", status: "RUNNING", created_at: "2026-10-09T00:00:00.000Z" },
+          { id: "x2", name, status: "STOPPED", created_at: "2026-10-01T00:00:00.000Z" },
+        ],
+        pagination: { cursor_next: null, cursor_prev: null, total_items: 2 },
+      },
+    },
+  );
+  assert.equal((await client.findDeploymentByName(name))?.id, "x2");
+});
+
+test("findDeploymentByIdempotencyKey uses the server's filter, and two answers for one key throw", async () => {
+  resetFake();
+  fake.deployments.clear();
+  seedMany(120);
+  const target = fake.seedDeployment({ name: "wheelsai-model-k", idempotency_key: "wheelsai-model-abc-r2" });
+  const client = await apiClient();
+
+  const found = await client.findDeploymentByIdempotencyKey("wheelsai-model-abc-r2");
+  assert.equal(found?.id, target.id);
+  assert.equal(found?.idempotencyKey, "wheelsai-model-abc-r2");
+  assert.equal(sent("GET", /^\/api\/deployments$/)[0]!.query.idempotency_key, "wheelsai-model-abc-r2");
+  assert.equal(await client.findDeploymentByIdempotencyKey("wheelsai-model-none-r0"), null);
+
+  // The filter was not applied: rows without a key cannot be told apart.
+  fake.failNext(
+    { method: "GET", path: /^\/api\/deployments$/ },
+    {
+      status: 200,
+      body: {
+        deployments: [
+          { id: "y1", name: "a", status: "RUNNING", created_at: "2026-10-09T00:00:00.000Z" },
+          { id: "y2", name: "b", status: "RUNNING", created_at: "2026-10-08T00:00:00.000Z" },
+        ],
+        pagination: { cursor_next: null, cursor_prev: null, total_items: 2 },
+      },
+    },
+  );
+  await assert.rejects(client.findDeploymentByIdempotencyKey("wheelsai-model-abc-r2"), coded("nosana_read_failed"));
+});
+
+test("getDeploymentStatus carries the newest jobs and events from their own routes; `include` narrows what is read", async () => {
+  resetFake();
+  const client = await apiClient();
+  const created = await createOne(client, "wheelsai-snapshot-lists");
+  const first = fake.addJob(created.id, { state: "COMPLETED", created_at: "2026-10-01T00:00:00.000Z" });
+  const second = fake.addJob(created.id, { node: null, state: "QUEUED" });
+  fake.addEvent(created.id, "JOB_EXTEND_SUCCESSFUL", "extended");
+  fake.requests.length = 0;
+
+  const snap = await client.getDeploymentStatus(created.id, "api_key");
+  assert.deepEqual(
+    snap.jobs.map((j) => [j.job, j.status, j.node]),
+    [
+      [second.job, "QUEUED", null],
+      [first.job, "COMPLETED", "DytPhPyM3GFQLBVwsT9ykQJcWVAGPC8DsMtgqZo23Pio"],
+    ],
+  );
+  assert.equal(snap.events[0]!.type, "JOB_EXTEND_SUCCESSFUL", "newest first");
+  assert.equal(snap.events.length, 3);
+  const jobs = sent("GET", new RegExp(`/${created.id}/jobs$`));
+  const events = sent("GET", new RegExp(`/${created.id}/events$`));
+  assert.deepEqual([jobs[0]!.query.limit, jobs[0]!.query.sort_order], ["10", "desc"]);
+  assert.deepEqual([events[0]!.query.limit, events[0]!.query.sort_order], ["20", "desc"]);
+
+  fake.requests.length = 0;
+  const bare = await client.getDeploymentStatus(created.id, "api_key", DEPLOYMENT_ONLY);
+  assert.deepEqual([bare.jobs, bare.events], [[], []]);
+  assert.deepEqual(fake.requests.map((r) => r.path), [`/api/deployments/${created.id}`]);
+
+  // "when_halted": the events explain a failure, so only then are they read.
+  fake.requests.length = 0;
+  await client.getDeploymentStatus(created.id, "api_key", { jobs: false, events: "when_halted" });
+  assert.equal(sent("GET", /\/events$/).length, 0);
+  fake.setStatus(created.id, "ERROR");
+  fake.addEvent(created.id, "JOB_LIST_ERROR", "Error Failed to list job: Insufficient credits. Available: $0.091, Required: $0.524");
+  const halted = await client.getDeploymentStatus(created.id, "api_key", { jobs: false, events: "when_halted" });
+  assert.equal(halted.status, "error");
+  assert.equal(halted.events[0]!.type, "JOB_LIST_ERROR");
+  // What the status worker records as the failure reason: Nosana's own words.
+  assert.equal(
+    pickFailureDetail(halted.events),
+    "JOB_LIST_ERROR: Error Failed to list job: Insufficient credits. Available: $0.091, Required: $0.524",
+  );
+  assert.equal(sent("GET", /\/jobs$/).length, 0);
+
+  // A failed jobs read fails the whole read: nothing is fabricated.
+  fake.failNext({ method: "GET", path: /\/jobs$/ }, { status: 500, body: { error: "down" } });
+  await assert.rejects(client.getDeploymentStatus(created.id, "api_key"), coded("nosana_read_failed"));
+});
+
+test("listDeploymentEvents follows pages for more than 100; listDeploymentJobs reads every page with `all`", async () => {
+  resetFake();
+  const client = await apiClient();
+  const created = await createOne(client, "wheelsai-many-events");
+  for (let i = 0; i < 150; i += 1) fake.addEvent(created.id, "JOB_EXTEND_SUCCESSFUL", `extension ${i}`);
+  for (let i = 0; i < 120; i += 1) fake.addJob(created.id, { state: "COMPLETED" });
+  fake.requests.length = 0;
+
+  const events = await client.listDeploymentEvents(created.id, "api_key", { count: 150 });
+  assert.equal(events.length, 150);
+  assert.equal(sent("GET", /\/events$/).length, 2);
+  assert.equal((await client.listDeploymentEvents(created.id, "api_key", { count: 15 })).length, 15);
+  assert.equal(sent("GET", /\/events$/).at(-1)!.query.limit, "20", "the smallest page that holds them");
+
+  const jobs = await client.listDeploymentJobs(created.id, "api_key", { all: true });
+  assert.equal(jobs.length, 120);
+  assert.equal((await client.listDeploymentJobs(created.id, "api_key", { state: "RUNNING" })).length, 0);
+});
+
+test("getDeploymentJob: a stopped job's timeEnd 0 falls back to the result's endTime, in milliseconds", async () => {
+  resetFake();
+  const client = await apiClient();
+  const created = await createOne(client, "wheelsai-job-end");
+  fake.setJob(created.id, "JobStopped1", {
+    state: 3,
+    timeStart: 1_781_459_639,
+    timeEnd: 0,
+    listedAt: 1_781_459_640,
+    jobResult: { status: "success", startTime: 1_781_459_641_319, endTime: 1_781_481_239_965, opStates: [] },
+  });
+  const job = await client.getDeploymentJob(created.id, "JobStopped1", "api_key");
+  assert.equal(job.state, "stopped");
+  assert.equal(job.timeStart?.toISOString(), new Date(1_781_459_639_000).toISOString());
+  assert.equal(job.timeEnd?.toISOString(), new Date(1_781_481_239_965).toISOString());
+  assert.deepEqual(job.raw, {
+    timeStart: 1_781_459_639,
+    timeEnd: 0,
+    listedAt: 1_781_459_640,
+    resultEndTime: 1_781_481_239_965,
+  });
+  // A real timeEnd wins over the result's.
+  const ended = normalizeDeploymentJob("d", "j", { timeEnd: 1_781_481_000, jobResult: { endTime: 1_781_481_239_965 } });
+  assert.equal(ended.timeEnd?.toISOString(), new Date(1_781_481_000_000).toISOString());
+  assert.equal(normalizeDeploymentJob("d", "j", { timeEnd: 0, jobResult: null }).timeEnd, null);
 });
 
 test("listDeployments returns Nosana's own list with normalised states", async () => {
@@ -654,7 +1108,7 @@ test("getDeploymentJob reads through the SDK and normalises state and times", as
   assert.equal(job.node, "NodePubkey1111111111111111111111111111111111");
   assert.equal(job.timeStart?.toISOString(), new Date(1_780_000_000_000).toISOString());
   assert.equal(job.timeEnd, null, "zero means not ended");
-  assert.deepEqual(job.raw, { timeStart: 1_780_000_000, timeEnd: 0, listedAt: 1_779_999_900 });
+  assert.deepEqual(job.raw, { timeStart: 1_780_000_000, timeEnd: 0, listedAt: 1_779_999_900, resultEndTime: undefined });
 
   await assert.rejects(client.getDeploymentJob(created.id, "NoSuchJob"), coded("nosana_read_failed"));
 });

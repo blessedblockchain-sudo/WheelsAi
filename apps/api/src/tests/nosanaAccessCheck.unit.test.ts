@@ -27,27 +27,15 @@ function reset() {
   fake.requests.length = 0;
 }
 
-function seed(name: string, status: "RUNNING" | "STOPPED" = "RUNNING", owner = "11111111111111111111111111111111") {
+function seed(
+  name: string,
+  status: "RUNNING" | "STOPPED" = "RUNNING",
+  owner = "11111111111111111111111111111111",
+  createdAt = "2026-10-07T10:00:00.000Z",
+) {
   const id = `seed${fake.deployments.size + 1}`;
-  const at = "2026-10-07T10:00:00.000Z";
-  fake.deployments.set(id, {
-    id,
-    name,
-    vault: owner,
-    market: "7AtiXMSH6R1jjBxrcYjehCkkSF7zvYWte63gwEDBcGHq",
-    owner,
-    status,
-    replicas: 1,
-    timeout: 7200,
-    strategy: "SIMPLE-EXTEND",
-    confidential: true,
-    active_revision: 1,
-    jobs: [],
-    events: [],
-    endpoints: [],
-    created_at: at,
-    updated_at: at,
-  });
+  fake.setOwner(owner);
+  fake.seedDeployment({ id, name, status, timeout: 7200, created_at: createdAt });
   return id;
 }
 
@@ -129,6 +117,37 @@ test("with an API key: mode, key suffix, balance, deployments, raw owner and vau
   assert.equal(fake.requests[2]!.authorization, undefined, "the public market list is asked without the key");
   assert.ok(result.requests.every((r) => r.method === "GET"));
   assert.equal(fake.deployments.get("seed1")!.status, "RUNNING", "nothing was changed");
+});
+
+test("the paginated list: every page of 100 is read, total_items printed, ours found on any page", async () => {
+  reset();
+  for (let i = 0; i < 130; i += 1) {
+    seed(i === 3 ? "wheelsai-model-on-the-last-page-r0" : `other-project-${i}`, i % 2 ? "STOPPED" : "RUNNING", undefined, new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString());
+  }
+  const { result, text } = await run({ NOSANA_API_KEY: API_KEY });
+  assert.equal(result.exitCode, 0, text);
+  assert.match(text, /deployments \(GET \/api\/deployments\?limit=100, every page\)/);
+  assert.match(text, /total: 130\n/);
+  assert.match(text, /by status: RUNNING 65, STOPPED 65/);
+  assert.match(text, /named wheelsai-\*: 1/);
+  assert.match(text, /wheelsai-model-on-the-last-page-r0 {2}STOPPED {2}id seed4/);
+  const lists = fake.requests.filter((r) => r.path === "/api/deployments");
+  assert.deepEqual(lists.map((r) => r.query.limit), ["100", "100"]);
+  assert.equal(lists[0]!.query.cursor, undefined);
+  assert.ok(lists[1]!.query.cursor, "the second page by cursor_next");
+});
+
+test("a list the old way (a bare array) is still read; a body that is neither is unreadable", async () => {
+  reset();
+  fake.failNext({ path: /^\/api\/deployments$/ }, { status: 200, body: [{ id: "a", name: "wheelsai-x", status: "RUNNING", owner: "11111111111111111111111111111111", vault: "11111111111111111111111111111111" }] });
+  let out = await run({ NOSANA_API_KEY: API_KEY });
+  assert.equal(out.result.exitCode, 0);
+  assert.match(out.text, /total: 1\n/);
+
+  fake.failNext({ path: /^\/api\/deployments$/ }, { status: 200, body: { items: [] } });
+  out = await run({ NOSANA_API_KEY: API_KEY });
+  assert.equal(out.result.exitCode, 1);
+  assert.match(out.text, /unreadable: HTTP 200, body is not a deployment list/);
 });
 
 test("an owner that is not a public key is called out, since the SDK would throw on it", async () => {

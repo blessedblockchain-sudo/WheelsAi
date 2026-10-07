@@ -295,6 +295,7 @@ export type TrainingNosanaPort = DeployPreflightPort &
     | "getDeploymentStatus"
     | "getDeploymentJob"
     | "findDeploymentByName"
+    | "findDeploymentByIdempotencyKey"
     | "stopDeployment"
   >;
 
@@ -622,7 +623,9 @@ async function readNosana(deps: TrainingDeps, row: TrainingJobRow): Promise<Nosa
   const mode = rowAccessMode(row.nosanaAccessMode);
   try {
     const nosana = await deps.getNosana();
-    const snapshot = await nosana.getDeploymentStatus(row.nosanaJobId, mode);
+    // Its jobs come newest first: with no address stored yet, the newest job
+    // is the run's (a SIMPLE deployment lists one).
+    const snapshot = await nosana.getDeploymentStatus(row.nosanaJobId, mode, { jobs: true, events: false });
     const deploymentState: TrainingDeploymentState =
       snapshot.status === "error"
         ? "error"
@@ -1550,16 +1553,19 @@ type LostSubmitOutcome = "none_found" | "retired" | "lookup_failed" | "not_handl
 
 /**
  * Looks the deterministic deployment name up on Nosana and retires what is
- * found (D6). "lookup_failed" means Nosana's list could not be read, so
- * nothing is known; "not_handled" means a deployment exists and could be
- * neither stopped-and-released nor recorded.
+ * found (D6). The name is also the create's idempotency_key, which Nosana
+ * keeps unique, so the key is asked first; the name filter covers a
+ * deployment created before the key was sent. "lookup_failed" means Nosana's
+ * list could not be read, so nothing is known; "not_handled" means a
+ * deployment exists and could be neither stopped-and-released nor recorded.
  */
 async function retireLostSubmit(deps: TrainingDeps, row: TrainingJobRow): Promise<LostSubmitOutcome> {
   const name = row.submitNonce ? trainingDeploymentName(row.id, row.submitNonce) : null;
   if (!name) return "none_found";
   let found: Awaited<ReturnType<TrainingNosanaPort["findDeploymentByName"]>>;
   try {
-    found = await (await deps.getNosana()).findDeploymentByName(name);
+    const nosana = await deps.getNosana();
+    found = (await nosana.findDeploymentByIdempotencyKey(name)) ?? (await nosana.findDeploymentByName(name));
   } catch (err) {
     // No credential at all: nothing can have been created from here.
     if (errorCode(err) === "nosana_not_configured") return "none_found";

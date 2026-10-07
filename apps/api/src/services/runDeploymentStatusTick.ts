@@ -10,28 +10,37 @@
  * The Nosana DEPLOYMENT-MANAGER id returned by createDeployment - not an
  * on-chain job address. The old tick polled it with `sdk.jobs.get(...)`, which
  * throws for such ids, so model deployments sat in `provisioning` forever. The
- * correct primitive is the Deployment object: `status`, `endpoints` (the real
- * public URLs), `jobs`, `events`. observeDeployment returns exactly that,
- * normalised and never invented.
+ * correct primitive is the Deployment object: `status` and `endpoints` (the
+ * real public URLs, each with `online`), plus the events that explain a halt.
+ * observeDeployment returns exactly that, normalised and never invented.
  *
  * Flow per row (AgentDeployment or model Deployment, both polled):
  *   1. observeDeployment(nosanaJobIds[0])                       (strict read)
  *   2. mapObservationToStatus -> target status or null
- *        running + >=1 endpoint       -> running   (no URL yet = still provisioning)
+ *        running + >=1 ONLINE endpoint -> running  (none online = still
+ *                                        provisioning; degraded for a running model row)
  *        error                        -> failed    (reason: latest Nosana event)
  *        insufficient_funds           -> failed    (reason: nosana_insufficient_funds)
  *        stopped / archived           -> stopped
  *        draft / starting / stopping  -> no change
+ *      Endpoints exist from the moment the deployment is created, with
+ *      online:false, and Nosana says RUNNING as soon as it schedules the LIST
+ *      task, before any node holds the job. Only `online` says a node serves.
  *   3. null / same as current -> no write (only-on-change)
  *   4. otherwise persistTransition (CAS on {id, fromStatus} and, for model
  *      rows, the run generation that was loaded) - a concurrent writer (user
  *      stop, another replica's tick, the GPU billing worker) wins and this
  *      tick's stale observation becomes a no-op; so does an observation of a
  *      run the user has since restarted
- *   5. terminal -> release the credit hold (CAS on reservationReleasedAt)
- *   6. model rows: reconcile DeploymentNode rows with the observed endpoints
- *      (one node per endpoint URL; fabricated rows are deleted), then probe
- *      each node with the engine's own health path
+ *   5. terminal -> release the credit hold (CAS on reservationReleasedAt);
+ *      failed for a HALTED Nosana state (error, insufficient_funds) -> issue
+ *      the stop in the same pass (stopHaltedDeployment): Nosana keeps retrying
+ *      an INSUFFICIENT_FUNDS deployment and revives it after a top-up of the
+ *      shared account. The reclaim sweep (8) confirms the stop and retries it
+ *   6. model rows: reconcile DeploymentNode rows with the ONLINE endpoints
+ *      (one node per endpoint URL - a load-balanced proxy per op, not a
+ *      replica; fabricated and offline rows are deleted), then probe each
+ *      node with the engine's own health path
  *   7. model rows still in service: reconcile the replica count with what
  *      Nosana really runs - a replica-change claim its request never finished
  *      (crash, ambiguous Nosana failure) once it is stale, or a count that
@@ -103,6 +112,8 @@ export interface ObservedEndpoint {
   url: string;
   port: number | string;
   opId: string;
+  /** Nosana reports a node serving this URL now. Only these count, are probed and get nodes. */
+  online: boolean;
 }
 
 export interface DeploymentObservation {
@@ -214,6 +225,12 @@ export interface VaultReclaimCandidate {
   orphan?: boolean;
   /** The credential that created it; the reclaim goes through the same one. */
   accessMode?: NosanaAccessModeName;
+  /**
+   * When the run ended in our records (the row's stoppedAt, an orphan's
+   * createdAt). A start sent just before may still land: see
+   * DRAFT_START_HOLD_MS.
+   */
+  endedAt?: Date | null;
 }
 
 export interface DeploymentStatusTickDeps {
@@ -330,6 +347,17 @@ export interface DeploymentStatusTickDeps {
    * access mode has no credential here. For the operator's log. Best effort.
    */
   reportAccessModeUnavailable?: (skipped: UnreachableNosanaDeployment[]) => void;
+  /**
+   * Stops a deployment this tick has just moved to `failed` because Nosana
+   * halted it (error / insufficient_funds), through the credential that
+   * created it. `stopRefused`: Nosana did not accept the stop. Throws when the
+   * stop could not be sent. Either way the reclaim sweep asks again until the
+   * stop is confirmed.
+   */
+  stopHaltedDeployment?: (
+    nosanaDeploymentId: string,
+    accessMode?: NosanaAccessModeName,
+  ) => Promise<{ stopRefused?: boolean }>;
 }
 
 export interface DeploymentStatusTickResult {
@@ -353,6 +381,10 @@ export interface DeploymentStatusTickResult {
   replicaReconcilesFailed: number;
   /** Rows and reclaim candidates skipped: no credential for their access mode. */
   accessModeUnavailable: number;
+  /** Halted deployments whose stop Nosana accepted in the transition's pass. */
+  haltedStops: number;
+  /** Halted deployments whose stop was refused or could not be sent (the sweep retries). */
+  haltedStopsFailed: number;
 }
 
 export interface StatusDecision {
@@ -368,11 +400,15 @@ export interface StatusDecision {
  *   Deployment:      pending | provisioning | running | degraded | stopped | failed
  *
  * A deployment is `running` only when Nosana reports RUNNING AND at least one
- * real endpoint exists - a RUNNING deployment with no URL cannot serve
- * traffic, so it stays in its provisioning state. A model deployment that
- * loses every endpoint while `running` becomes `degraded` (and recovers to
- * `running` when an endpoint returns); the agent vocabulary has no degraded,
- * so agents are left alone.
+ * endpoint is ONLINE. Nosana creates the endpoints with the deployment
+ * (online:false) and reports RUNNING once it has scheduled the LIST task,
+ * before any node is reserved, so neither proves anything is served; `online`
+ * turns true only when a node's tunnel is up for a running job. Until then the
+ * row stays in its provisioning state, and since `running` is what starts
+ * per-second GPU billing, a deployment no node ever picks up is never billed.
+ * A model deployment whose endpoints all go offline while `running` becomes
+ * `degraded` (and recovers to `running` when one is online again); the agent
+ * vocabulary has no degraded, so agents are left alone.
  */
 export function mapObservationToStatus(
   kind: DeploymentKind,
@@ -381,7 +417,7 @@ export function mapObservationToStatus(
 ): StatusDecision {
   switch (observation.state) {
     case "running": {
-      if (observation.endpoints.length > 0 || observation.mock === true) {
+      if (observation.endpoints.some((e) => e.online === true) || observation.mock === true) {
         return { next: "running" };
       }
       if (kind === "model" && currentStatus === "running") {
@@ -409,6 +445,8 @@ const TERMINAL_STATUSES = new Set(["failed", "stopped"]);
 const NODE_OWNING_STATUSES = new Set(["pending", "provisioning", "running", "degraded"]);
 /** Statuses in which a replica count is live on Nosana and can be reconciled. */
 const SCALABLE_STATUSES = new Set(["running", "degraded"]);
+/** Nosana states that halt a deployment without stopping it. */
+const HALTED_STATES = new Set<ObservedDeploymentState>(["error", "insufficient_funds"]);
 
 export async function runDeploymentStatusTick(
   input: DeploymentStatusTickInput,
@@ -428,6 +466,8 @@ export async function runDeploymentStatusTick(
   let nodeSyncsFailed = 0;
   let replicasReconciled = 0;
   let replicaReconcilesFailed = 0;
+  let haltedStops = 0;
+  let haltedStopsFailed = 0;
   const unreachable: UnreachableNosanaDeployment[] = [];
 
   for (const row of rows) {
@@ -506,6 +546,25 @@ export async function runDeploymentStatusTick(
               reservationReleasesFailed += 1;
             }
           }
+
+          // Failed because Nosana halted it: stop it now. INSUFFICIENT_FUNDS
+          // is recoverable on Nosana, so a halted deployment left alone comes
+          // back to life when the shared balance is topped up - with our row
+          // already terminal. Isolated: the transition is committed, and the
+          // reclaim sweep below retries the stop until it is confirmed.
+          if (
+            decision.next === "failed" &&
+            HALTED_STATES.has(observation.state) &&
+            deps.stopHaltedDeployment
+          ) {
+            try {
+              const stop = await deps.stopHaltedDeployment(nosanaId, row.nosanaAccessMode);
+              if (stop.stopRefused === true) haltedStopsFailed += 1;
+              else haltedStops += 1;
+            } catch {
+              haltedStopsFailed += 1;
+            }
+          }
         } else {
           // CAS miss - a concurrent writer already moved the row.
           unchanged += 1;
@@ -523,7 +582,9 @@ export async function runDeploymentStatusTick(
           NODE_OWNING_STATUSES.has(effectiveStatus) &&
           observation.state === "running"
         ) {
-          endpoints = observation.endpoints;
+          // Only what a node serves: /v1 routes to these nodes and the probe
+          // below checks them. An offline endpoint's node is removed.
+          endpoints = observation.endpoints.filter((e) => e.online === true);
         }
         if (endpoints !== null) {
           try {
@@ -706,5 +767,7 @@ export async function runDeploymentStatusTick(
     replicasReconciled,
     replicaReconcilesFailed,
     accessModeUnavailable: unreachable.length,
+    haltedStops,
+    haltedStopsFailed,
   };
 }

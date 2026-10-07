@@ -62,6 +62,9 @@ function resetFake() {
   fake.setMarkets(FAKE_MARKETS);
   fake.setOwner("11111111111111111111111111111111");
   fake.setInsufficientFunds(false);
+  // Every create carries its name as the idempotency key, and Nosana keeps
+  // keys unique: a name reused by an earlier test would answer 409.
+  fake.deployments.clear();
   fake.requests.length = 0;
 }
 

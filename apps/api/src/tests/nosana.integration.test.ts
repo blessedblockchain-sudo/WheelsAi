@@ -42,7 +42,13 @@ test("generateVllmJobDefinition returns correct job definition structure", async
   assert.equal(op.id, "vllm-inference");
   assert.equal(op.args.image, "vllm/vllm-openai:v0.6.0");
   assert.equal(op.args.gpu, true);
-  assert.deepStrictEqual(op.args.expose, [8000]);
+  assert.deepStrictEqual(op.args.expose, [
+    {
+      port: 8000,
+      type: "api",
+      health_checks: [{ type: "http", method: "GET", path: "/health", expected_status: 200, continuous: true }],
+    },
+  ]);
 
   // Command args should contain model and port
   assert.ok(Array.isArray(op.args.cmd), "cmd should be an array");
@@ -156,9 +162,16 @@ test("generateOllamaJobDefinition returns correct structure with mapped model", 
   const op = job.ops[0]!;
   assert.equal(op.type, "container/run");
   assert.equal(op.id, "ollama-inference");
-  assert.equal(op.args.image, "ollama/ollama:latest");
+  assert.equal(op.args.image, "docker.io/ollama/ollama:0.32.6");
   assert.equal(op.args.gpu, true);
-  assert.deepStrictEqual(op.args.expose, [11434]);
+  assert.deepStrictEqual(op.args.entrypoint, ["/bin/sh", "-c"]);
+  assert.deepStrictEqual(op.args.expose, [
+    {
+      port: 11434,
+      type: "api",
+      health_checks: [{ type: "http", method: "GET", path: "/api/tags", expected_status: 200, continuous: true }],
+    },
+  ]);
 
   // Should use the mapped Ollama model name, not the HF ID
   const cmdStr = op.args.cmd!.join(" ");
@@ -169,7 +182,7 @@ test("generateOllamaJobDefinition returns correct structure with mapped model", 
 
   // Env variables
   assert.equal(op.args.env!.OLLAMA_HOST, "0.0.0.0:11434");
-  assert.equal(op.args.env!.OLLAMA_NUM_CTX, "4096");
+  assert.equal(op.args.env!.OLLAMA_NUM_CTX, undefined, "not a variable Ollama reads");
   assert.equal(op.args.env!.OLLAMA_KEEP_ALIVE, "24h");
 });
 

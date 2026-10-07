@@ -66,13 +66,18 @@ export async function startDeploymentStatusQueue(): Promise<void> {
         // during an outage. `nosanaJobIds[0]` is a Deployment-Manager id, NOT
         // an on-chain job address, so jobs.get() cannot be used.
         // Each id is read through the credential that created it (the row's
-        // access-mode stamp), whatever the primary mode is today.
-        getDeploymentStatus: (id, mode) => client.getDeploymentStatus(id, mode),
+        // access-mode stamp), whatever the primary mode is today. Events only
+        // for a halted deployment: they are what explains the failure.
+        getDeploymentStatus: (id, mode) =>
+          client.getDeploymentStatus(id, mode, { jobs: false, events: "when_halted" }),
         checkNodeHealth: (nodeUrl, engine) => client.checkNodeHealth(nodeUrl, engine),
         // Retry vault.withdraw for stopped/failed deployments until the
         // platform's funds are verified recovered (with API-key access:
         // until Nosana reports the deployment no longer running).
-        reclaimVault: (id, mode) => client.reclaimDeploymentVault(id, mode),
+        reclaimVault: (id, mode, options) => client.reclaimDeploymentVault(id, mode, options),
+        // A row failed because Nosana halted it (ERROR, INSUFFICIENT_FUNDS) is
+        // stopped in the same tick: INSUFFICIENT_FUNDS resumes after a top-up.
+        stopDeployment: (id, mode) => client.stopDeployment(id, mode),
         // Once per tick: ids created by an access mode this process has no
         // credential for. They can be neither read nor stopped from here.
         reportAccessModeUnavailable: (skipped) =>

@@ -38,7 +38,7 @@ import {
   type NosanaClient,
   wheelsaiDeploymentName,
 } from "./nosana.js";
-import { NosanaLifecycleError } from "./nosanaDeploymentLifecycle.js";
+import { NosanaLifecycleError, startMayBeInFlight } from "./nosanaDeploymentLifecycle.js";
 import { recordNosanaOrphan, type NosanaOrphanPrisma } from "./nosanaOrphans.js";
 import { isAccessModeUnavailable, runDeployPreflight } from "./nosanaPreflight.js";
 
@@ -59,9 +59,10 @@ export type NosanaPort = Pick<
   Partial<Pick<NosanaClient, "preflightDeploy">>;
 
 /**
- * The name a run's Nosana deployment is created under. Deterministic, so a
- * deployment whose create call threw (it may exist on Nosana with no id here)
- * can be traced back to its row and run from Nosana's own list.
+ * The name a run's Nosana deployment is created under, and its idempotency_key
+ * (createAndStartDeployment sends the name as the key). Deterministic and per
+ * run, so a deployment whose create call threw (it may exist on Nosana with no
+ * id here) is found by the key, and traced back to its row and run.
  */
 export function modelDeploymentNosanaName(deploymentId: string, runGeneration: number): string {
   return wheelsaiDeploymentName("model", `${deploymentId}-r${runGeneration}`);
@@ -275,7 +276,11 @@ export async function restartModelDeployment(
   if (previousId && !deployment.vaultReclaimedAt && !isMockNosanaId(previousId)) {
     let otherAccount = false;
     const outcome = await nosana
-      .reclaimDeploymentVault(previousId, rowAccessMode(deployment.nosanaAccessMode))
+      .reclaimDeploymentVault(previousId, rowAccessMode(deployment.nosanaAccessMode), {
+        // A previous run that failed at its start moments ago may still be an
+        // unstarted DRAFT with the start on its way.
+        startMayBeInFlight: startMayBeInFlight(deployment.stoppedAt, now()),
+      })
       .catch((err) => {
         otherAccount = isAccessModeUnavailable(err);
         return null;
@@ -568,9 +573,11 @@ export async function submitToNosana(
       createdAccessMode ?? (error instanceof NosanaLifecycleError ? error.accessMode : undefined);
     const stoppedAt = now();
 
-    // The create call itself threw: the SDK parses the response after the
-    // server has created the deployment, so one may exist on Nosana with no id
-    // here. It was never started. Its name is all there is to find it by.
+    // The create call itself threw and the deployment could not be found by
+    // its idempotency key (createAndStartDeployment asks right away, and
+    // takes on an unstarted one it finds): one may still appear on Nosana, as
+    // an unstarted DRAFT that costs nothing. The per-run name is also its
+    // idempotency key, which is all there is to find it by.
     if (error instanceof NosanaLifecycleError && error.mayExistOnNosana) {
       logger.error(
         {
@@ -579,7 +586,7 @@ export async function submitToNosana(
           nosanaName: error.deploymentName ?? modelDeploymentNosanaName(deploymentId, runGeneration),
           accessMode: partialMode,
         },
-        "A Nosana deployment may exist for this run without an id - look it up by name",
+        "A Nosana deployment may exist for this run without an id - look it up by its idempotency key (the name)",
       );
     }
 
@@ -594,8 +601,10 @@ export async function submitToNosana(
             ? {
                 nosanaJobIds: [partialId],
                 nosanaAccessMode: partialMode ?? null,
-                // Explicit either way, as on every other terminal write.
-                vaultReclaimedAt: cleanup?.reclaimed ? stoppedAt : null,
+                // Explicit either way, as on every other terminal write. Both
+                // halves: an unstarted DRAFT whose start may still land is
+                // not stopped, and must stay with the reclaim sweep.
+                vaultReclaimedAt: cleanup?.stopped && cleanup.reclaimed ? stoppedAt : null,
               }
             : {}),
         },

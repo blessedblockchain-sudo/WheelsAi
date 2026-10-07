@@ -26,7 +26,7 @@ interface SdkCalls {
 function fakeSdk(opts: {
   jobPrice?: string;
   status?: string;
-  endpoints?: Array<{ opId: string; port: number; url: string }>;
+  endpoints?: Array<{ opId: string; port: number; url: string; online?: boolean }>;
   events?: any[];
   startError?: Error;
   createError?: Error;
@@ -73,6 +73,11 @@ function fakeSdk(opts: {
     },
   };
   const sdk = {
+    // The wallet's signed API header, as the SDK's AuthorizationManager makes it.
+    authorization: {
+      generate: async (message: string, options: { includeTime: boolean }) =>
+        `signed:${message}:${options.includeTime}`,
+    },
     deployments: {
       create: async (body: any) => {
         calls.ops.push("create");
@@ -102,10 +107,32 @@ function fakeSdk(opts: {
   return { sdk, calls, deployment };
 }
 
+/**
+ * The direct REST reads (jobs, events, the deployment list) go through the
+ * client's fetch seam; this stub answers them on no network at all and
+ * records what was asked.
+ */
+function fakeRest(lists: { jobs?: any[]; events?: any[]; deployments?: any[] } = {}) {
+  const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+  const fetcher = async (url: string, init: { headers?: Record<string, string> }) => {
+    requests.push({ url, headers: init.headers ?? {} });
+    const path = new URL(url).pathname;
+    const key = path.endsWith("/jobs") ? "jobs" : path.endsWith("/events") ? "events" : "deployments";
+    const items = lists[key] ?? [];
+    return {
+      status: 200,
+      ok: true,
+      json: async () => ({ [key]: items, pagination: { cursor_next: null, cursor_prev: null, total_items: items.length } }),
+    };
+  };
+  return { fetcher, requests };
+}
+
 async function makeClient(opts: {
   network?: "devnet" | "mainnet";
   wallet?: boolean;
   sdk?: ReturnType<typeof fakeSdk>;
+  rest?: ReturnType<typeof fakeRest>;
 }) {
   setupEnv();
   const { NosanaClient } = await import("../services/nosana.js");
@@ -113,6 +140,7 @@ async function makeClient(opts: {
   (client as any).sdk = (opts.sdk ?? fakeSdk()).sdk;
   (client as any).wallet = opts.wallet === false ? null : Keypair.generate();
   (client as any).network = opts.network ?? "mainnet";
+  (client as any).fetcher = (opts.rest ?? fakeRest()).fetcher;
   (client as any).isInitialized = true;
   return client;
 }
@@ -152,6 +180,31 @@ test("createDeployment on mainnet: real market, confidential, short timeout, fun
   assert.deepEqual(result.endpoints, [], "no URL exists yet - none is fabricated");
   assert.ok(!("nodes" in result), "the fabricated node mapping is gone");
   assert.equal(result.mock, undefined);
+});
+
+test("wallet createDeployment sends the name as the idempotency key; a create that throws is found by it (signed list) and taken on", async () => {
+  // Sent on every create.
+  const plain = fakeSdk({ jobPrice: "202" });
+  const plainClient = await makeClient({ sdk: plain });
+  await plainClient.createDeployment(DEFINITION as any, "4090", 1, { name: "wheelsai-model-w1-r0" });
+  assert.equal(plain.calls.createBodies[0].idempotency_key, "wheelsai-model-w1-r0");
+  assert.equal(plain.calls.createBodies[0].autostart, undefined, "create and start stay two calls");
+
+  // The create throws after the server acted: the key finds the DRAFT, which
+  // is funded and started as if the answer had arrived.
+  const sdk = fakeSdk({ jobPrice: "202", createError: new Error("Error creating deployment: socket hang up") });
+  const rest = fakeRest({
+    deployments: [{ id: "dm_test", name: "wheelsai-model-w2-r0", status: "DRAFT", idempotency_key: "wheelsai-model-w2-r0" }],
+  });
+  const client = await makeClient({ sdk, rest });
+  const created = await client.createDeployment(DEFINITION as any, "4090", 1, { name: "wheelsai-model-w2-r0" });
+  assert.equal(created.id, "dm_test");
+  assert.equal(created.accessMode, "wallet");
+  assert.deepEqual(sdk.calls.ops, ["getMarket", "create", "get:dm_test", "topup", "start"]);
+  const lookup = new URL(rest.requests[0]!.url);
+  assert.equal(lookup.pathname, "/api/deployments");
+  assert.equal(lookup.searchParams.get("idempotency_key"), "wheelsai-model-w2-r0");
+  assert.equal(rest.requests[0]!.headers.Authorization, "signed:NosanaApiAuthentication:true");
 });
 
 test("createDeployment kind 'batch' uses the SIMPLE strategy and the batch timeout (training is not auto-extended)", async () => {
@@ -247,16 +300,45 @@ test("assertCanDeploy: ok with wallet + configured market; 501-material errors o
 test("getDeploymentStatus returns the status and the endpoints Nosana reported - nothing invented", async () => {
   const sdk = fakeSdk({
     status: "RUNNING",
-    endpoints: [{ opId: "vllm-inference", port: 8000, url: "https://abc.node.k8s.prd.nos.ci/" }],
-    events: [{ type: "JOB_STARTED", message: "started", created_at: "2026-09-30T10:00:00.000Z" }],
+    endpoints: [
+      { opId: "vllm-inference", port: 8000, url: "https://abc.node.k8s.prd.nos.ci/", online: true },
+      // Created with the deployment and not yet served: kept, and marked so.
+      { opId: "sidecar", port: 9000, url: "https://def.node.k8s.prd.nos.ci", online: false },
+    ],
   });
-  const client = await makeClient({ sdk });
+  const rest = fakeRest({
+    jobs: [{ job: "JobNew", state: "RUNNING", node: "NodeA", created_at: "2026-09-30T10:05:00.000Z" }],
+    events: [{ type: "JOB_LIST_CONFIRMED", message: "listed", created_at: "2026-09-30T10:00:00.000Z" }],
+  });
+  const client = await makeClient({ sdk, rest });
   const snap = await client.getDeploymentStatus("dm_test");
   assert.equal(snap.status, "running");
   assert.deepEqual(snap.endpoints, [
-    { url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference" },
+    { url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference", online: true },
+    { url: "https://def.node.k8s.prd.nos.ci", port: 9000, opId: "sidecar", online: false },
   ]);
-  assert.equal(snap.events[0]!.type, "JOB_STARTED");
+  // Jobs and events come from their own routes, signed by the wallet.
+  assert.deepEqual(snap.jobs, [{ job: "JobNew", status: "RUNNING", node: "NodeA", createdAt: "2026-09-30T10:05:00.000Z" }]);
+  assert.equal(snap.events[0]!.type, "JOB_LIST_CONFIRMED");
+  assert.deepEqual(
+    rest.requests.map((r) => new URL(r.url).pathname).sort(),
+    ["/api/deployments/dm_test/events", "/api/deployments/dm_test/jobs"],
+  );
+  for (const request of rest.requests) {
+    assert.equal(new URL(request.url).origin, "https://dashboard.k8s.prd.nos.ci", "the wallet client's own backend");
+    assert.equal(request.headers.Authorization, "signed:NosanaApiAuthentication:true");
+    assert.equal(request.headers["x-user-id"], (client as any).wallet.publicKey.toBase58());
+  }
+});
+
+test("listDeployments with the wallet reads the paginated list directly, never the SDK's list()", async () => {
+  const rest = fakeRest({
+    deployments: [{ id: "dm_a", name: "wheelsai-a", status: "RUNNING", created_at: "2026-09-30T10:00:00.000Z" }],
+  });
+  const client = await makeClient({ rest });
+  const rows = await client.listDeployments("wallet");
+  assert.deepEqual(rows.map((r) => [r.id, r.status, r.accessMode]), [["dm_a", "running", "wallet"]]);
+  assert.equal(new URL(rest.requests[0]!.url).searchParams.get("limit"), "100");
 });
 
 test("getDeploymentStatus: no endpoints -> empty list; mock ids and API failures THROW", async () => {

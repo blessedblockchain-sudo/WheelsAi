@@ -23,8 +23,11 @@
  *                         the hold
  *                         An agent deployment that ends has no vault stamp, so
  *                         its Nosana id is handed to the orphan sweep
- *   syncNodes          -> reconcile DeploymentNode rows with Nosana's real
- *                         endpoints (one node per endpoint URL)
+ *   syncNodes          -> reconcile DeploymentNode rows with Nosana's real,
+ *                         ONLINE endpoints (one node per endpoint URL: a
+ *                         load-balanced proxy per op, not a replica)
+ *   stopHaltedDeployment -> NosanaClient.stopDeployment for a row the tick
+ *                         has just failed because Nosana halted it
  *   checkNodeHealth    -> NosanaClient.checkNodeHealth (engine-specific HTTP
  *                         probe, never throws)
  *   persistNodeHealth  -> updateMany by node id (race-safe: the node may
@@ -49,7 +52,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 
 import { rowAccessMode, type NosanaAccessMode } from "../config/nosanaAccess.js";
-import type { DeploymentSnapshot } from "./nosanaDeploymentLifecycle.js";
+import { startMayBeInFlight, type DeploymentSnapshot } from "./nosanaDeploymentLifecycle.js";
 import type {
   DeploymentNodeRow,
   DeploymentObservation,
@@ -161,7 +164,7 @@ interface ModelReclaimArgs {
     nosanaJobIds: { isEmpty: false };
     stoppedAt: { gte: Date };
   };
-  select: { id: true; nosanaJobIds: true; nosanaAccessMode: true };
+  select: { id: true; nosanaJobIds: true; nosanaAccessMode: true; stoppedAt: true };
   orderBy: { stoppedAt: "asc" };
   take: number;
 }
@@ -188,7 +191,9 @@ interface ModelDeploymentDelegateStub {
   >;
   findMany(
     args: ModelReclaimArgs,
-  ): Promise<Array<{ id: string; nosanaJobIds: string[]; nosanaAccessMode?: string | null }>>;
+  ): Promise<
+    Array<{ id: string; nosanaJobIds: string[]; nosanaAccessMode?: string | null; stoppedAt?: Date | null }>
+  >;
   findFirst: (args: {
     where: { id: string; status: { in: string[] }; runGeneration?: number };
     select: { id: true };
@@ -263,10 +268,12 @@ interface NosanaOrphanDelegateStub extends Pick<NosanaOrphanPrisma, "nosanaOrpha
   nosanaOrphanDeployment: NosanaOrphanPrisma["nosanaOrphanDeployment"] & {
     findMany(args: {
       where: { reclaimedAt: null; createdAt: { gte: Date } };
-      select: { id: true; nosanaDeploymentId: true; accessMode: true };
+      select: { id: true; nosanaDeploymentId: true; accessMode: true; createdAt: true };
       orderBy: { createdAt: "asc" };
       take: number;
-    }): Promise<Array<{ id: string; nosanaDeploymentId: string; accessMode?: string | null }>>;
+    }): Promise<
+      Array<{ id: string; nosanaDeploymentId: string; accessMode?: string | null; createdAt?: Date | null }>
+    >;
     updateMany(args: {
       where: { id: string; reclaimedAt: null };
       data: { reclaimedAt: Date };
@@ -381,12 +388,26 @@ export interface BuildDeploymentStatusTickDepsInput {
   reclaimVault?: (
     nosanaDeploymentId: string,
     accessMode?: NosanaAccessMode,
+    /**
+     * `startMayBeInFlight`: the run ended so recently that a start sent for it
+     * may still land, so an unstarted DRAFT is not yet released.
+     */
+    options?: { startMayBeInFlight?: boolean },
   ) => Promise<{ reclaimed: boolean }>;
   /**
    * Called once per tick with the ids skipped because this process holds no
    * credential for the access mode that created them (the queue logs it).
    */
   reportAccessModeUnavailable?: DeploymentStatusTickDeps["reportAccessModeUnavailable"];
+  /**
+   * NosanaClient.stopDeployment, for a deployment the tick has just moved to
+   * failed because Nosana halted it (error / insufficient_funds). Omit and
+   * only the reclaim sweep stops it.
+   */
+  stopDeployment?: (
+    nosanaDeploymentId: string,
+    accessMode?: NosanaAccessMode,
+  ) => Promise<{ stopRefused?: boolean }>;
   /** Give up retrying a vault withdraw this long after the deployment ended. */
   reclaimMaxAgeHours?: number;
   /** USD/second per replica for a GPU tier; defaults to the production table. */
@@ -826,8 +847,9 @@ export function buildDeploymentStatusTickDeps(
             await tx.deploymentNode.create({
               data: {
                 deploymentId,
-                // Deployment.endpoints carries no separate node id; the
-                // endpoint's host is the stable identity of this replica.
+                // Deployment.endpoints carries no node id. The endpoint's
+                // host is the stable identity of this URL: one load-balanced
+                // proxy per op, the same for every replica and every job.
                 nosanaNodeId: endpointNodeId(endpoint),
                 nodeUrl: endpoint.url,
                 healthStatus: "unknown",
@@ -858,6 +880,14 @@ export function buildDeploymentStatusTickDeps(
     emitTransition: input.emitTransition,
     ...(input.reportAccessModeUnavailable
       ? { reportAccessModeUnavailable: input.reportAccessModeUnavailable }
+      : {}),
+    ...(input.stopDeployment
+      ? {
+          stopHaltedDeployment: async (nosanaDeploymentId: string, accessMode?: NosanaAccessMode) => {
+            const stop = await input.stopDeployment!(nosanaDeploymentId, accessMode);
+            return stop.stopRefused === true ? { stopRefused: true } : {};
+          },
+        }
       : {}),
 
     // Refund the admission hold. The CAS on reservationReleasedAt lives
@@ -957,7 +987,7 @@ export function buildDeploymentStatusTickDeps(
           nosanaJobIds: { isEmpty: false },
           stoppedAt: { gte: oldest },
         },
-        select: { id: true, nosanaJobIds: true, nosanaAccessMode: true },
+        select: { id: true, nosanaJobIds: true, nosanaAccessMode: true, stoppedAt: true },
         orderBy: { stoppedAt: "asc" },
         take: VAULT_RECLAIM_BATCH_SIZE,
       });
@@ -966,7 +996,7 @@ export function buildDeploymentStatusTickDeps(
       const untracked = orphans
         ? await orphans.findMany({
             where: { reclaimedAt: null, createdAt: { gte: oldest } },
-            select: { id: true, nosanaDeploymentId: true, accessMode: true },
+            select: { id: true, nosanaDeploymentId: true, accessMode: true, createdAt: true },
             orderBy: { createdAt: "asc" },
             take: VAULT_RECLAIM_BATCH_SIZE,
           })
@@ -977,12 +1007,20 @@ export function buildDeploymentStatusTickDeps(
           nosanaDeploymentId: o.nosanaDeploymentId,
           orphan: true,
           accessMode: rowAccessMode(o.accessMode),
+          ...(o.createdAt ? { endedAt: o.createdAt } : {}),
         })),
         ...rows.flatMap((r) => {
           const nosanaDeploymentId = r.nosanaJobIds[0];
           // Mock ids never had a vault.
           return nosanaDeploymentId && !isMockNosanaId(nosanaDeploymentId)
-            ? [{ id: r.id, nosanaDeploymentId, accessMode: rowAccessMode(r.nosanaAccessMode) }]
+            ? [
+                {
+                  id: r.id,
+                  nosanaDeploymentId,
+                  accessMode: rowAccessMode(r.nosanaAccessMode),
+                  ...(r.stoppedAt ? { endedAt: r.stoppedAt } : {}),
+                },
+              ]
             : [];
         }),
       ];
@@ -994,7 +1032,11 @@ export function buildDeploymentStatusTickDeps(
       // failed needs. It goes through the credential that created the
       // deployment; with none for it here the call throws the named error and
       // the tick skips the candidate.
-      const outcome = await reclaim(candidate.nosanaDeploymentId, candidate.accessMode);
+      // A run that failed at its start moments ago may still read DRAFT with
+      // the start on its way: it is not released until that can no longer be.
+      const outcome = await reclaim(candidate.nosanaDeploymentId, candidate.accessMode, {
+        startMayBeInFlight: startMayBeInFlight(candidate.endedAt, now()),
+      });
       if (outcome.reclaimed && candidate.orphan) {
         await orphans?.updateMany({
           where: { id: candidate.id, reclaimedAt: null },

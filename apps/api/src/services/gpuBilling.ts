@@ -25,9 +25,13 @@
  *
  * What is billed
  * --------------
- * Only time a deployment is `running` (live endpoint). A `degraded` spell (no
- * live endpoint) is never billed, so the window is SETTLED at each edge of a
- * running spell instead of being left to the next tick:
+ * Only time a deployment is `running`: Nosana reports RUNNING and at least
+ * one endpoint `online` (a node serves it). Not from submission, not while
+ * Nosana is RUNNING with every endpoint still offline (queued, pulling the
+ * image, loading the model, or no node at all) - see mapObservationToStatus.
+ * A `degraded` spell (no online endpoint) is never billed, so the window is
+ * SETTLED at each edge of a running spell instead of being left to the next
+ * tick:
  *   - running -> degraded / stopped / failed seen by the status worker: settled
  *     ("settle" mode) in the same transaction as the status change;
  *   - a user stop from `running`: final window ("final" mode, rounded up) - from

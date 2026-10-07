@@ -58,6 +58,9 @@ function resetFake() {
   fake.setMarkets(FAKE_MARKETS);
   fake.setOwner("11111111111111111111111111111111");
   fake.setInsufficientFunds(false);
+  // Every create carries its name as the idempotency key, and Nosana keeps
+  // keys unique: a name reused by an earlier test would answer 409.
+  fake.deployments.clear();
   fake.requests.length = 0;
   fake.deployments.clear();
 }
@@ -86,20 +89,13 @@ async function submitted(w: World) {
   return created.job.id;
 }
 
-/** A node took the job: the deployment runs and lists one job that started now. */
+/**
+ * A node took the job: the deployment lists one job that started now. Its
+ * single read is the stand-in's live shape: state 1, timeStart in unix
+ * seconds, timeEnd 0, no result yet.
+ */
 function nodeStarts(w: World, deploymentId: string, job = "JobAddr1111111111111111111111111111111111111") {
-  fake.settle(deploymentId);
-  const deployment = fake.deployments.get(deploymentId)!;
-  deployment.jobs.push({
-    job,
-    status: "RUNNING",
-    tx: "tx",
-    deployment: deploymentId,
-    revision: 1,
-    created_at: new Date().toISOString(),
-  });
-  // State as a number and times as unix seconds, as the chain reports them.
-  fake.setJob(deploymentId, job, { state: 1, timeStart: w.clock.now.getTime() / 1000, timeEnd: 0, jobResult: null });
+  fake.addJob(deploymentId, { job, state: "RUNNING", time_start: w.clock.now.getTime() / 1000 });
   return job;
 }
 
@@ -250,4 +246,56 @@ test("a deployment that ran out of platform funds fails the job free and is reti
   assert.equal(w.db.job(jobId).failureCode, "nosana_insufficient_funds");
   assert.equal(w.db.job(jobId).actualCostCents, 0n);
   assert.equal(w.db.balance(), 10_000n);
+});
+
+test("no callback reached us: the NEWEST job's exit code and logs finish the run, and a stopped job's timeEnd 0 gives way to the result's endTime", async () => {
+  const w = await realWorld();
+  const jobId = await submitted(w);
+  const deploymentId = w.db.job(jobId).nosanaJobId!;
+  const startedSeconds = w.clock.now.getTime() / 1000;
+
+  // An older job is listed too; its result would read as a failure.
+  const older = fake.addJob(deploymentId, {
+    state: "STOPPED",
+    time_start: startedSeconds - 3_600,
+    created_at: new Date(w.clock.now.getTime() - 3_600_000).toISOString(),
+  });
+  fake.setJob(deploymentId, older.job, { state: 3, timeStart: startedSeconds - 3_600, timeEnd: 0, jobResult: jobResult(1) });
+  const newer = fake.addJob(deploymentId, { state: "RUNNING", time_start: startedSeconds });
+
+  const running = await reconcileTrainingJob(w.deps, jobId);
+  assert.deepEqual([running.from, running.to], ["queued", "running"]);
+  assert.equal(w.db.job(jobId).nosanaJobAddress, newer.job, "the newest job is the run's");
+  const jobsRead = sent("GET", new RegExp(`/${deploymentId}/jobs$`));
+  assert.equal(jobsRead.length >= 1, true, "jobs come from their own route");
+  assert.deepEqual([jobsRead[0]!.query.limit, jobsRead[0]!.query.sort_order], ["10", "desc"]);
+
+  // The trainer ran 600 s; we look 300 s later. Nosana reports the stopped
+  // job's timeEnd as 0 and the end only in the result, in milliseconds.
+  const endMs = w.clock.now.getTime() + 600_000;
+  w.advance(900);
+  const uploaded = w.storeAdapter(jobId);
+  const result = jobResult(0, [
+    eventLine(trainerEvent(1, "started")),
+    eventLine(trainerEvent(2, "uploaded", uploaded)),
+    eventLine(trainerEvent(3, "completed")),
+  ]) as { opStates: Array<{ logs: Array<Record<string, unknown>> }> };
+  for (const entry of result.opStates[0]!.logs) entry.timestamp = "2026-10-07T12:00:00Z";
+  fake.setJob(deploymentId, newer.job, {
+    state: 3,
+    timeStart: startedSeconds,
+    timeEnd: 0,
+    listedAt: startedSeconds - 5,
+    jobResult: { ...result, startTime: startedSeconds * 1000 + 2_000, endTime: endMs },
+  });
+  fake.updateJob(deploymentId, newer.job, { state: "STOPPED" });
+  fake.setStatus(deploymentId, "STOPPED");
+
+  const done = await reconcileTrainingJob(w.deps, jobId);
+  assert.equal(done.to, "completed", "exit 0 and the trainer's events, read from the newest job's result");
+  const row = w.db.job(jobId);
+  assert.equal(row.billedSeconds, 600, "billed to the result's endTime, not to when we looked");
+  assert.deepEqual(row.gpuStoppedAt, new Date(endMs));
+  assert.equal(w.db.fineTuned.length, 1);
+  assert.equal(sent("GET", new RegExp(`/${deploymentId}/jobs/${older.job}$`)).length, 0, "the older job is never read");
 });

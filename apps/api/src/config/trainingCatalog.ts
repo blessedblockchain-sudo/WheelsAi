@@ -136,7 +136,7 @@ export type TrainingSelectionResult =
       model: TrainableModel;
       method: TrainingMethod;
       tier: string;
-      /** The job definition's required_vram. */
+      /** GPU memory the run needs; it selects the tier (Nosana is not sent it). */
       requiredVramGb: number;
       pricePerSecondUsd: number;
     }

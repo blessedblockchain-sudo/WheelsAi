@@ -31,6 +31,20 @@ export function deploymentEndpoint(slug: string, publicApiUrl: string | null | u
   return `${apiBase(publicApiUrl) ?? ""}/v1/${segment(slug)}/chat/completions`;
 }
 
+/**
+ * An OpenAI client's base URL for ONE model deployment: `<api>/v1/<slug>`,
+ * so `<base>/chat/completions` is deploymentEndpoint. null when
+ * PUBLIC_API_URL is not set: a container on a Nosana node cannot resolve a
+ * host-relative URL.
+ */
+export function modelDeploymentOpenAiBaseUrl(
+  slug: string,
+  publicApiUrl: string | null | undefined,
+): string | null {
+  const base = openAiBaseUrl(publicApiUrl);
+  return base === null ? null : `${base}/${segment(slug)}`;
+}
+
 /** The one base URL an OpenAI client can be pointed at: `<api>/v1`. */
 export function openAiBaseUrl(publicApiUrl: string | null | undefined): string | null {
   const base = apiBase(publicApiUrl);

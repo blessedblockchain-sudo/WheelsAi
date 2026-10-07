@@ -57,12 +57,21 @@
  * NOSANA_TIMEOUT_UNIT                 (default "minutes": "seconds" | "minutes")
  *   The unit the Deployment Manager applies to a deployment's `timeout`. All of
  *   our arithmetic is in seconds; the value is converted only at the SDK
- *   boundary, rounding up. The installed SDK (0.4.74) says seconds in one
- *   JSDoc; the public deployment-manager source and the current public docs
- *   say MINUTES, which is why minutes is the default. It is also the cheaper
- *   way to be wrong: seconds sent to a backend that reads minutes holds sixty
- *   times the funds, while minutes sent to one that reads seconds ends the
- *   job early. Unverified against a paid run - see docs/NOSANA-DEPLOY-RUN.md.
+ *   boundary, rounding up. SETTLED as minutes: the OpenAPI document ("Timeout
+ *   in minutes"), the deployment-manager source (127f915, tasks/task/list/
+ *   worker.ts lists the job for timeout * 60 seconds) and live INFINITE
+ *   deployments that relist every timeout - rotation_time minutes. The SDK's
+ *   (0.4.74) and kit's "seconds" JSDoc is stale. "seconds" is kept only so an
+ *   old .env still parses, and it is warned about loudly at every boot: it
+ *   sends sixty times the intended timeout, and Nosana debits a full timeout
+ *   of credits per job when it is listed.
+ *
+ * NOSANA_SDK_TIMEOUT_MS               (default 30000, range 100..300000)
+ *   Deadline on every Nosana SDK call (create, get, start, stop,
+ *   updateReplicaCount, updateTimeout, getJob). Neither the SDK nor the API
+ *   client under it sets one, so a hung call would block a request or a
+ *   worker tick for ever. A create that runs out of time is treated as one
+ *   that may have happened (it is looked up by its idempotency key).
  */
 
 import { z } from "zod";
@@ -124,6 +133,8 @@ export interface NosanaAccessConfig {
   timeoutUnit: NosanaTimeoutUnit;
   /** True when NOSANA_TIMEOUT_UNIT was set explicitly. */
   timeoutUnitExplicit: boolean;
+  /** Deadline on each Nosana SDK call, milliseconds. */
+  sdkTimeoutMs: number;
   /** Things an operator should see at boot. Never contain the key. */
   warnings: string[];
 }
@@ -181,6 +192,7 @@ const rawSchema = z.object({
   NOSANA_CREDITS_CACHE_MS: intFromEnv(0, 3_600_000).default(30_000),
   NOSANA_COST_CACHE_MS: intFromEnv(0, 86_400_000).default(600_000),
   NOSANA_TIMEOUT_UNIT: z.enum(["seconds", "minutes"]).optional(),
+  NOSANA_SDK_TIMEOUT_MS: intFromEnv(100, 300_000).default(30_000),
   SOLANA_NETWORK: z.enum(["devnet", "mainnet-beta"]).default("devnet"),
   NODE_ENV: z.string().default("development"),
 });
@@ -276,9 +288,9 @@ export function loadNosanaAccessConfig(
       `the Nosana wallet is used on ${walletNetwork} (derived from SOLANA_NETWORK) and the API key on ${apiNetwork}; each keeps its own deployments there - set NOSANA_NETWORK to put both on one network`,
     );
   }
-  if (primary !== "none" && raw.NOSANA_TIMEOUT_UNIT === undefined) {
+  if (raw.NOSANA_TIMEOUT_UNIT === "seconds") {
     warnings.push(
-      "NOSANA_TIMEOUT_UNIT is unset, so deployment timeouts are sent as minutes, the unit the public deployment-manager source reads; the first paid run confirms it (docs/NOSANA-DEPLOY-RUN.md)",
+      "NOSANA_TIMEOUT_UNIT=seconds: THE DEPLOYMENT MANAGER READS MINUTES. Every deployment timeout is sent 60 times too long, and Nosana debits a full timeout of credits per job when it is listed. Remove the variable (minutes is the default)",
     );
   }
 
@@ -302,6 +314,7 @@ export function loadNosanaAccessConfig(
     costCacheMs: raw.NOSANA_COST_CACHE_MS,
     timeoutUnit: raw.NOSANA_TIMEOUT_UNIT ?? "minutes",
     timeoutUnitExplicit: raw.NOSANA_TIMEOUT_UNIT !== undefined,
+    sdkTimeoutMs: raw.NOSANA_SDK_TIMEOUT_MS,
     warnings,
   };
 }

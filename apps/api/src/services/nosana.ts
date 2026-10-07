@@ -47,6 +47,7 @@ import {
 import {
   createAndStartDeployment,
   creditsFunding,
+  DEFAULT_STOP_RETRY,
   ensureVaultRunway,
   normalizeStatus,
   NosanaLifecycleError,
@@ -55,19 +56,34 @@ import {
   scaleDeployment,
   stopAndReclaim,
   toBaseUnits,
+  toEventSnapshots,
+  toJobSnapshots,
   vaultFunding,
   type CreateDeploymentBody,
   type DeploymentFunding,
   type DeploymentSnapshot,
   type DeploymentState,
   type EndpointSnapshot,
+  type EventSnapshot,
+  type JobSnapshot,
   type NosanaDeploymentsPort,
   type ReclaimResult,
   type RunwayResult,
   type ScaleResult,
   type SdkDeploymentLike,
+  type SdkEventLike,
+  type SdkJobLike,
   type StopAndReclaimResult,
+  type StopRetryOptions,
 } from "./nosanaDeploymentLifecycle.js";
+import {
+  collectNosanaPages,
+  NOSANA_MAX_LIST_PAGES,
+  NOSANA_PAGE_LIMIT,
+  NosanaPaginationError,
+  readNosanaPage,
+  type NosanaPageSize,
+} from "./nosanaPagination.js";
 
 const logger = createLogger("nosana-service");
 
@@ -89,24 +105,106 @@ export interface NosanaJobDefinition {
   ops: NosanaOperation[];
 }
 
+/** How Nosana's tunnel treats an exposed port. */
+export type NosanaServiceType = "web" | "api" | "webapi" | "websocket" | "none";
+
+/**
+ * A health check of an exposed port. The node uses the first HTTP GET check
+ * expecting 200 as the tunnel's backend check for the deployment's URL: with
+ * one, a replica that is still loading or has died is taken out of routing;
+ * without one, a dead backend behind a live tunnel gives no signal
+ * (nosana-node ExposedPortHealthCheck.ts and expose-util.ts). `continuous`
+ * is required by the validator.
+ */
+export type NosanaHealthCheck =
+  | {
+      type: "http";
+      path: string;
+      method: "GET" | "POST" | "PUT" | "DELETE";
+      expected_status: number;
+      headers?: Record<string, string>;
+      body?: unknown;
+      continuous: boolean;
+    }
+  | { type: "websocket"; expected_response: string; continuous: boolean };
+
+export interface NosanaExposedPort {
+  port: number;
+  type?: NosanaServiceType;
+  health_checks?: NosanaHealthCheck[];
+}
+
+/** A model or file source the node fetches before the container starts. */
+export type NosanaResource =
+  | { type: "Ollama"; model: string; target?: string }
+  | { type: "HF"; target: string; repo: string; revision?: string; files?: string[]; accessToken?: string }
+  | { type: "S3"; target: string; url?: string; bucket?: string; files?: string[]; allowWrite?: boolean };
+
+/**
+ * A container/run operation: the ContainerRun type of @nosana/types 2.14.2,
+ * the version the Deployment Manager validates every create against. Its
+ * validator is strict - a key that is not one of these thirteen is refused
+ * with 400 - so this type lists them and nothing else. There is no
+ * `required_vram`, `work` or `output`, and `resources` is a list of sources,
+ * not CPU or memory limits (the schema has none).
+ *
+ * Narrower than the schema where we only ever send one form: `cmd` and
+ * `entrypoint` are arrays (the schema also takes a string), and `expose` is
+ * an array.
+ */
 export interface NosanaOperation {
-  type: string;
+  type: "container/run";
   id: string;
   args: {
     image: string;
-    /** Replaces the image's own entrypoint (the adapter bootstrap does). */
-    entrypoint?: string[];
+    aliases?: string | string[];
+    /**
+     * Passed to Docker unchanged, after the image's own entrypoint unless
+     * `entrypoint` replaces it. A shell command therefore needs the
+     * entrypoint override: see shellCommand.
+     */
     cmd?: string[];
-    env?: Record<string, string>;
+    volumes?: Array<{ name: string; dest: string }>;
+    expose?: Array<number | NosanaExposedPort>;
     gpu?: boolean;
-    expose?: number[];
-    work?: string;
-    output?: string;
-    resources?: {
-      memory?: string;
-      cpu?: string;
+    work_dir?: string;
+    /** Replaces the image's own entrypoint; passed to Docker unchanged. */
+    entrypoint?: string[];
+    env?: Record<string, string>;
+    restart_policy?:
+      | "no"
+      | "always"
+      | "unless-stopped"
+      | "on-failure"
+      | { policy: "on-failure"; restart_tries?: number };
+    private?: boolean;
+    resources?: NosanaResource[];
+    authentication?: {
+      docker?: { username?: string; password?: string; email?: string; server?: string };
     };
   };
+}
+
+/**
+ * An exposed API port with the HTTP check Nosana's tunnel gates routing on:
+ * GET `path` answering 200, at startup and continuously afterwards.
+ */
+export function apiPortWithHealthCheck(port: number, path: string): NosanaExposedPort {
+  return {
+    port,
+    type: "api",
+    health_checks: [{ type: "http", method: "GET", path, expected_status: 200, continuous: true }],
+  };
+}
+
+/**
+ * The entrypoint and cmd that run `script` in the image's shell. Always the
+ * pair: the node hands `cmd` to Docker after the image's own entrypoint, so
+ * a bare ["/bin/sh", "-c", script] cmd on an image whose entrypoint is a
+ * binary runs `<binary> /bin/sh -c ...` and exits.
+ */
+export function shellCommand(script: string): { entrypoint: string[]; cmd: string[] } {
+  return { entrypoint: ["/bin/sh", "-c"], cmd: [script] };
 }
 
 /** A market as read from the chain. Prices here are NOS base units, never USD. */
@@ -142,9 +240,11 @@ export interface NosanaDeployment {
   replicas: number;
   status: "active" | "stopped";
   /**
-   * Public endpoints Nosana has reported. Always empty right after creation -
-   * a deployment has no URL until a host picks the job up; the status worker
-   * learns the real URLs from the Nosana API. Never synthesised.
+   * Always [] here. Nosana does compute the endpoints at create - one URL per
+   * exposed port of each op, load-balanced across replicas, with
+   * online:false - but a URL proves nothing until a node serves it. The
+   * status worker reads them, with `online`, from the Nosana API and routes
+   * only to online ones. Never synthesised.
    */
   endpoints: EndpointSnapshot[];
   /** Vault holding the platform's funding for this deployment (wallet access only). */
@@ -167,8 +267,11 @@ export interface CreateDeploymentOptions {
    */
   kind?: "service" | "batch";
   /**
-   * The name on Nosana. Pass a DETERMINISTIC one (wheelsaiDeploymentName) so a
-   * deployment whose create call threw can still be found by name.
+   * The name on Nosana, and the create's idempotency_key. Pass a
+   * DETERMINISTIC one, unique per run (wheelsaiDeploymentName,
+   * modelDeploymentNosanaName): a create that threw, timed out or answered
+   * 409 is then looked up by that key, and an unstarted deployment it made is
+   * taken on. Nosana releases a key only on DELETE, so a name is never reused.
    */
   name?: string;
   /**
@@ -240,13 +343,49 @@ export interface NosanaDeploymentSummary {
   replicas: number | null;
   market: string | null;
   createdAt: Date | null;
+  /** The create's idempotency_key, when Nosana returns it; null otherwise. */
+  idempotencyKey: string | null;
   /** The credential the list was read with. */
   accessMode: NosanaAccessMode;
 }
 
+/**
+ * What getDeploymentStatus reads besides the deployment body, which no longer
+ * carries jobs or events. Omitted: both.
+ */
+export interface DeploymentReadInclude {
+  /** The newest jobs (GET .../jobs). Default true. */
+  jobs?: boolean;
+  /**
+   * The newest events (GET .../events). "when_halted": only when the
+   * deployment is ERROR or INSUFFICIENT_FUNDS, where they explain why; that
+   * read is best effort (a failure is logged and the snapshot carries no
+   * events), so a halted state is never lost to it. Default true.
+   */
+  events?: boolean | "when_halted";
+  /** How many of the newest events (1..1000; read across pages). Default 20. */
+  eventCount?: number;
+}
+
+/** The deployment body only: status, endpoints, replicas. */
+export const DEPLOYMENT_ONLY: Readonly<DeploymentReadInclude> = { jobs: false, events: false };
+
+/** Jobs a status read carries (newest first): a SIMPLE run lists one, an extended service a few. */
+const SNAPSHOT_JOBS_LIMIT = 10;
+/** Events a status read carries (newest first) unless `eventCount` says otherwise. */
+const SNAPSHOT_EVENTS_LIMIT = 20;
+/** The most events one read follows pages for. */
+const MAX_EVENT_COUNT = 1_000;
+const PAGE_SIZES: readonly NosanaPageSize[] = [10, 20, 50, 100];
+
 export type DeploymentJobState = "queued" | "running" | "completed" | "stopped" | "unknown";
 
-/** A job of a deployment, as GET /api/deployments/{id}/jobs/{job} reports it. */
+/**
+ * A job of a deployment, as GET /api/deployments/{id}/jobs/{job} reports it:
+ * `state` a number (0 queued, 1 running, 2 completed, 3 stopped), timeStart,
+ * timeEnd and listedAt unix seconds, timeEnd 0 for a job that ended by a stop,
+ * and jobResult.startTime / endTime in milliseconds (live reads, 2026-10-07).
+ */
 export interface DeploymentJobSnapshot {
   deploymentId: string;
   job: string;
@@ -259,15 +398,17 @@ export interface DeploymentJobSnapshot {
   market: string | null;
   revision: number | null;
   /**
-   * UNVERIFIED UNIT. The schema types these as bare numbers. They are read as
-   * unix SECONDS (the on-chain convention), or as milliseconds when the value
-   * is too large to be seconds; zero or negative means "not yet". Compare with
-   * `raw` before billing anything from them.
+   * Read as unix SECONDS, or as milliseconds when the value is too large to be
+   * seconds; zero or negative means "not yet".
    */
   timeStart: Date | null;
+  /**
+   * timeEnd; when Nosana reports 0 (a stopped job does), the result's
+   * endTime (milliseconds) instead. Null while neither is set.
+   */
   timeEnd: Date | null;
   listedAt: Date | null;
-  raw: { timeStart: unknown; timeEnd: unknown; listedAt: unknown };
+  raw: { timeStart: unknown; timeEnd: unknown; listedAt: unknown; resultEndTime: unknown };
   jobResult: unknown;
 }
 
@@ -288,6 +429,14 @@ function jobTime(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** A time Nosana sends in milliseconds (jobResult.startTime / endTime). */
+function millisecondTime(value: unknown): Date | null {
+  const n = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isFinite(n) || n <= 0) return null;
+  const date = new Date(n);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 /** Normalises a raw deployment-job body. Never throws on an odd field. */
 export function normalizeDeploymentJob(
   deploymentId: string,
@@ -304,6 +453,10 @@ export function normalizeDeploymentJob(
     state = JOB_STATE_BY_NAME[rawState.toUpperCase()] ?? "unknown";
   }
   const node = typeof body.node === "string" && body.node !== "" ? body.node : null;
+  const result =
+    typeof body.jobResult === "object" && body.jobResult !== null
+      ? (body.jobResult as Record<string, unknown>)
+      : null;
   return {
     deploymentId,
     job,
@@ -314,9 +467,14 @@ export function normalizeDeploymentJob(
     market: typeof body.market === "string" ? body.market : null,
     revision: typeof body.revision === "number" ? body.revision : null,
     timeStart: jobTime(body.timeStart),
-    timeEnd: jobTime(body.timeEnd),
+    timeEnd: jobTime(body.timeEnd) ?? millisecondTime(result?.endTime),
     listedAt: jobTime(body.listedAt),
-    raw: { timeStart: body.timeStart, timeEnd: body.timeEnd, listedAt: body.listedAt },
+    raw: {
+      timeStart: body.timeStart,
+      timeEnd: body.timeEnd,
+      listedAt: body.listedAt,
+      resultEndTime: result?.endTime,
+    },
     jobResult: body.jobResult ?? null,
   };
 }
@@ -367,8 +525,158 @@ function toDeploymentSummary(raw: unknown, accessMode: NosanaAccessMode): Nosana
     replicas: typeof row.replicas === "number" ? row.replicas : null,
     market: typeof row.market === "string" ? row.market : null,
     createdAt: toSummaryDate(row.created_at),
+    idempotencyKey: typeof row.idempotency_key === "string" ? row.idempotency_key : null,
     accessMode,
   };
+}
+
+function isRecordWith(value: unknown, key: string): boolean {
+  return typeof value === "object" && value !== null && typeof (value as Record<string, unknown>)[key] === "string";
+}
+
+/**
+ * Sorted newest first by createdAt (stable; rows without one keep their
+ * place after the dated ones). Nosana already answers in this order.
+ */
+function newestFirst<T extends { createdAt?: string | null }>(rows: T[]): T[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort(
+      (a, b) =>
+        (b.row.createdAt ?? "").localeCompare(a.row.createdAt ?? "") || a.index - b.index,
+    )
+    .map((entry) => entry.row);
+}
+
+// ============================================
+// Deadlines and error bodies of SDK calls
+// ============================================
+
+/** A Nosana SDK call that did not settle within NOSANA_SDK_TIMEOUT_MS. */
+export class NosanaDeadlineError extends Error {
+  readonly code = "nosana_timeout";
+  constructor(readonly what: string, readonly ms: number) {
+    super(`${what} did not answer within ${ms} ms`);
+    this.name = "NosanaDeadlineError";
+  }
+}
+
+/**
+ * `promise`, or a NosanaDeadlineError after `ms`. The call itself is not
+ * cancelled (the SDK takes no signal): what it did on the server may still
+ * happen, which is why a create that runs out of time is looked up by its
+ * idempotency key afterwards. A late rejection is swallowed, not left unhandled.
+ */
+export function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  promise.catch(() => undefined);
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new NosanaDeadlineError(what, ms)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+/** Keys whose values never leave this process, whatever their nesting. */
+const SECRET_KEYS = /^(value|values|env|authorization|token|secret|password|api_?key|headers|cmd|args|job_definition|data)$/i;
+/** Credentials that may appear inside an error message. */
+const SECRET_TEXT = /\b(nos_[A-Za-z0-9_-]{4,}|hf_[A-Za-z0-9]{4,}|Bearer\s+\S+|https?:\/\/[^\s"']*[?&](X-Amz-[A-Za-z]+|sig|signature|token)=[^\s"']*)/g;
+const MAX_ERROR_TEXT = 1_000;
+const MAX_ERROR_BODY = 4_000;
+
+function redactText(text: string): string {
+  const clean = text.replace(SECRET_TEXT, "[redacted]");
+  return clean.length > MAX_ERROR_TEXT ? `${clean.slice(0, MAX_ERROR_TEXT)}...` : clean;
+}
+
+function redactValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") return redactText(value);
+  if (typeof value !== "object" || value === null) return value;
+  if (depth >= 6) return "[nested]";
+  if (Array.isArray(value)) return value.slice(0, 50).map((v) => redactValue(v, depth + 1));
+  const out: Record<string, unknown> = {};
+  for (const [key, inner] of Object.entries(value)) {
+    out[key] = SECRET_KEYS.test(key) ? "[redacted]" : redactValue(inner, depth + 1);
+  }
+  return out;
+}
+
+/**
+ * The body of a Nosana error answer, fit for a log line: JSON keeps its shape
+ * (the validator's `path` and `message` are the point) with every value that
+ * could carry a secret replaced - a validator's `value`, env, cmd, auth - and
+ * key- or signature-shaped text scrubbed; anything else is cut-down text.
+ */
+export function redactNosanaErrorBody(text: string): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return redactText(text);
+  }
+  const redacted = redactValue(parsed, 0);
+  const size = JSON.stringify(redacted)?.length ?? 0;
+  return size > MAX_ERROR_BODY ? redactText(JSON.stringify(redacted)).slice(0, MAX_ERROR_BODY) : redacted;
+}
+
+/** A refused create, as the SDK's fetch saw it (its error formatter keeps one field of the body). */
+export interface NosanaCreateRefusal {
+  status: number;
+  body: unknown;
+}
+
+/** An error's name, message and code for a log line, redacted; undefined for none. */
+function describeCause(cause: unknown): Record<string, unknown> | string | undefined {
+  if (cause === undefined || cause === null) return undefined;
+  if (!(cause instanceof Error)) return redactText(String(cause));
+  const code = (cause as { code?: unknown }).code;
+  return {
+    name: cause.name,
+    message: redactText(cause.message),
+    ...(typeof code === "string" ? { code } : {}),
+  };
+}
+
+type GlobalFetch = typeof globalThis.fetch;
+
+function requestUrl(input: Parameters<GlobalFetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+/**
+ * Builds an SDK Client whose HTTP client reports every refused
+ * POST .../deployments/create to `onRefusal`. SDK 0.4.74's errorFormatter turns
+ * a 400 body {error: "Bad Request", message: "<the reason>"} into "Bad
+ * Request" and drops the rest, and the openapi-fetch client under it is not
+ * exposed - but it takes globalThis.fetch once, when the Client is
+ * constructed (openapi-fetch 0.14 createClient). So the Client is built with
+ * a reporting fetch in place, synchronously, and the global is restored
+ * before anything else can run. Only the answer is read (a clone); requests
+ * pass through untouched.
+ */
+function constructWithReportingFetch<T>(build: () => T, onRefusal: (refusal: NosanaCreateRefusal) => void): T {
+  const original: GlobalFetch = globalThis.fetch;
+  const reporting: GlobalFetch = async (input, init) => {
+    const response = await original(input, init);
+    try {
+      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      if (!response.ok && method === "POST" && /\/deployments\/create$/.test(new URL(requestUrl(input)).pathname)) {
+        const text = await response.clone().text();
+        onRefusal({ status: response.status, body: redactNosanaErrorBody(text) });
+      }
+    } catch {
+      // Reporting is for the log; it never changes what the SDK sees.
+    }
+    return response;
+  };
+  globalThis.fetch = reporting;
+  try {
+    return build();
+  } finally {
+    globalThis.fetch = original;
+  }
 }
 
 // isMockNosanaId lives in nosanaIds.ts (import-free); re-exported because
@@ -431,8 +739,19 @@ export class NosanaClient {
   /** One per backend: with two credentials the two networks price different markets. */
   private marketCosts = new Map<string, MarketCostReader>();
   private authProbe: { at: number; failed: boolean } | null = null;
-  /** HTTP seam for the direct credit, market and deployment-list reads. */
+  /** HTTP seam for the direct reads: credits, markets, the deployment list, jobs and events. */
   private fetcher: FetchLike = (url, init) => fetch(url, init);
+  /** Wait between stop attempts Nosana refuses while DRAFT or STARTING (test seam). */
+  private sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  /**
+   * Where a refused create's answer goes: its body, which the SDK's error
+   * drops, redacted (test seam; constructWithReportingFetch calls it).
+   */
+  private reportCreateRefusal: (refusal: NosanaCreateRefusal) => void = (refusal) =>
+    logger.error(
+      { status: refusal.status, body: refusal.body },
+      "Nosana refused a deployment create; the answer's body, redacted",
+    );
 
   constructor() {
     this.connection = new Connection(env.SOLANA_RPC_URL, "confirmed");
@@ -462,7 +781,14 @@ export class NosanaClient {
     }
 
     const access = getNosanaAccessConfig();
-    for (const warning of access.warnings) logger.warn(warning);
+    for (const warning of access.warnings) {
+      // The timeout unit is money: sixty times the credits per listed job.
+      if (access.timeoutUnit === "seconds" && warning.startsWith("NOSANA_TIMEOUT_UNIT=seconds")) {
+        logger.error(warning);
+      } else {
+        logger.warn(warning);
+      }
+    }
     // The wallet client keeps the network it always derived from
     // SOLANA_NETWORK, whichever credential is primary; only an explicit
     // NOSANA_NETWORK moves it. The API key has its own (mainnet by default).
@@ -484,22 +810,31 @@ export class NosanaClient {
 
     // Use OUR RPC for the SDK's on-chain calls (vault top-ups, job listing,
     // market reads) instead of the SDK's built-in shared endpoint.
-    this.sdk = new Client(this.network, sdkWallet, {
-      solana: { network: env.SOLANA_RPC_URL },
-      ...(ipfsConfig ? { ipfs: ipfsConfig } : {}),
-    });
+    const onRefusal = (refusal: NosanaCreateRefusal) => this.reportCreateRefusal(refusal);
+    this.sdk = constructWithReportingFetch(
+      () =>
+        new Client(this.network, sdkWallet, {
+          solana: { network: env.SOLANA_RPC_URL },
+          ...(ipfsConfig ? { ipfs: ipfsConfig } : {}),
+        }),
+      onRefusal,
+    );
 
     if (access.apiKey) {
       // An explicit throwaway keypair: with no wallet argument the SDK would
       // pick up process.env.SOLANA_WALLET. It signs nothing - every request
       // carries the Bearer key. The SDK shares one Solana preset per network
       // between clients, so both are given the same `solana` config.
-      this.apiSdk = new Client(this.apiNetwork, Keypair.generate(), {
-        apiKey: access.apiKey,
-        solana: { network: env.SOLANA_RPC_URL },
-        ...(access.apiUrl ? { api: { backend_url: access.apiUrl } } : {}),
-        ...(ipfsConfig ? { ipfs: ipfsConfig } : {}),
-      }) as unknown as ApiSdkLike;
+      this.apiSdk = constructWithReportingFetch(
+        () =>
+          new Client(this.apiNetwork, Keypair.generate(), {
+            apiKey: access.apiKey,
+            solana: { network: env.SOLANA_RPC_URL },
+            ...(access.apiUrl ? { api: { backend_url: access.apiUrl } } : {}),
+            ...(ipfsConfig ? { ipfs: ipfsConfig } : {}),
+          }),
+        onRefusal,
+      ) as unknown as ApiSdkLike;
       this.apiAccess = {
         apiKey: access.apiKey,
         backendUrl: access.apiUrl ?? NOSANA_BACKEND_URLS[this.apiNetwork],
@@ -602,6 +937,16 @@ export class NosanaClient {
 
   private timeoutUnit(): NosanaTimeoutUnit {
     return getNosanaAccessConfig().timeoutUnit;
+  }
+
+  /** The deadline of one SDK call (NOSANA_SDK_TIMEOUT_MS). */
+  private sdkCall<T>(fn: () => Promise<T>, what: string): Promise<T> {
+    return withDeadline(Promise.resolve().then(fn), getNosanaAccessConfig().sdkTimeoutMs, what);
+  }
+
+  /** How a stop Nosana refuses while DRAFT or STARTING is retried. */
+  private stopRetry(): StopRetryOptions {
+    return { ...DEFAULT_STOP_RETRY, sleep: (ms) => this.sleep(ms) };
   }
 
   /** The network NEW deployments are created on (the primary credential's). */
@@ -974,10 +1319,13 @@ export class NosanaClient {
     return this.authProbe.failed ? this.authFailed(err) : err;
   }
 
-  private async apiCall<T>(fn: () => Promise<T>): Promise<T> {
+  /** An API-key SDK call: under the deadline, and an authentication failure named. */
+  private async apiCall<T>(fn: () => Promise<T>, what: string): Promise<T> {
     try {
-      return await fn();
+      return await this.sdkCall(fn, what);
     } catch (err) {
+      // Out of time says nothing about the key: no balance probe for it.
+      if (err instanceof NosanaDeadlineError) throw err;
       throw await this.classifyApiError(err);
     }
   }
@@ -988,15 +1336,22 @@ export class NosanaClient {
   }
 
   /**
-   * Wraps an API-key SDK deployment. It has no vault. The SDK mutates its own
-   * object after start/stop/scale, so status and replicas are read through.
+   * Wraps an SDK deployment so its actions run under the deadline (`call`).
+   * The SDK mutates its own object after start/stop/scale, so status and
+   * replicas are read through. An API-key deployment has no vault (the SDK's
+   * object carries a placeholder, which must not be mistaken for one); a
+   * wallet one keeps its own, whose on-chain calls are not wrapped.
    */
-  private adaptApiDeployment(raw: unknown): SdkDeploymentLike {
+  private adaptDeployment(
+    raw: unknown,
+    call: <T>(fn: () => Promise<T>, what: string) => Promise<T>,
+    withVault: boolean,
+  ): SdkDeploymentLike {
     const sdkDeployment = raw as SdkDeploymentLike;
-    const call = <T>(fn: () => Promise<T>) => this.apiCall(fn);
-    return {
+    const id = () => String(sdkDeployment.id);
+    const adapted: SdkDeploymentLike = {
       get id() {
-        return String(sdkDeployment.id);
+        return id();
       },
       get status() {
         return sdkDeployment.status;
@@ -1013,11 +1368,26 @@ export class NosanaClient {
       get events() {
         return sdkDeployment.events;
       },
-      start: () => call(() => sdkDeployment.start()),
-      stop: () => call(() => sdkDeployment.stop()),
+      start: () => call(() => sdkDeployment.start(), `Starting Nosana deployment ${id()}`),
+      stop: () => call(() => sdkDeployment.stop(), `Stopping Nosana deployment ${id()}`),
       updateReplicaCount: (replicas: number) =>
-        call(() => sdkDeployment.updateReplicaCount(replicas)),
+        call(
+          () => sdkDeployment.updateReplicaCount(replicas),
+          `Updating the replica count of Nosana deployment ${id()}`,
+        ),
     };
+    if (withVault) {
+      Object.defineProperty(adapted, "vault", { get: () => sdkDeployment.vault, enumerable: true });
+    }
+    return adapted;
+  }
+
+  private adaptApiDeployment(raw: unknown): SdkDeploymentLike {
+    return this.adaptDeployment(raw, (fn, what) => this.apiCall(fn, what), false);
+  }
+
+  private adaptWalletDeployment(raw: unknown): SdkDeploymentLike {
+    return this.adaptDeployment(raw, (fn, what) => this.sdkCall(fn, what), true);
   }
 
   /** The lifecycle port over the API-key client: same REST API, no chain reads. */
@@ -1027,18 +1397,24 @@ export class NosanaClient {
     return {
       create: async (body: CreateDeploymentBody) =>
         this.adaptApiDeployment(
-          await this.apiCall(() =>
-            sdk.deployments.create({
-              ...body,
-              timeout: secondsToSdkTimeout(body.timeout, unit),
-            }),
+          await this.apiCall(
+            () =>
+              sdk.deployments.create({
+                ...body,
+                timeout: secondsToSdkTimeout(body.timeout, unit),
+              }),
+            "Creating a Nosana deployment",
           ),
         ),
       get: async (id: string) =>
-        this.adaptApiDeployment(await this.apiCall(() => sdk.deployments.get(id))),
+        this.adaptApiDeployment(
+          await this.apiCall(() => sdk.deployments.get(id), `Reading Nosana deployment ${id}`),
+        ),
       getMarketJobPrice: async () => {
         throw new Error("The on-chain market price is not used with API-key access");
       },
+      findByIdempotencyKey: async (key: string) =>
+        (await this.findDeploymentByIdempotencyKey(key, "api_key"))?.id ?? null,
     };
   }
 
@@ -1098,17 +1474,33 @@ export class NosanaClient {
       // `timeout` is seconds everywhere in our code; it becomes the Deployment
       // Manager's unit here and nowhere else (a no-op for "seconds").
       create: async (body: CreateDeploymentBody) =>
-        (await sdk.deployments.create(
-          { ...body, timeout: secondsToSdkTimeout(body.timeout, unit) } as unknown as Parameters<
-            typeof sdk.deployments.create
-          >[0]
-        )) as unknown as SdkDeploymentLike,
+        this.adaptWalletDeployment(
+          await this.sdkCall(
+            () =>
+              sdk.deployments.create(
+                { ...body, timeout: secondsToSdkTimeout(body.timeout, unit) } as unknown as Parameters<
+                  typeof sdk.deployments.create
+                >[0]
+              ),
+            "Creating a Nosana deployment",
+          ),
+        ),
       get: async (id: string) =>
-        (await sdk.deployments.get(id)) as unknown as SdkDeploymentLike,
+        this.adaptWalletDeployment(
+          await this.sdkCall(() => sdk.deployments.get(id), `Reading Nosana deployment ${id}`),
+        ),
       getMarketJobPrice: async (marketAddress: string) => {
         const market = await sdk.jobs.getMarket(marketAddress);
         return toBaseUnits((market as { jobPrice?: unknown }).jobPrice);
       },
+      // Only with the wallet loaded: the lookup is a signed request. The
+      // keyless read port (no credential at all) never creates anything.
+      ...(this.wallet
+        ? {
+            findByIdempotencyKey: async (key: string) =>
+              (await this.findDeploymentByIdempotencyKey(key, "wallet"))?.id ?? null,
+          }
+        : {}),
     };
   }
 
@@ -1434,9 +1826,21 @@ export class NosanaClient {
           strategy: batch ? "SIMPLE" : cfg.strategy,
           solFeeLamportsPerReplica: cfg.vaultSolLamportsPerReplica,
           networkFeeBps: cfg.networkFeeBps,
+          stopRetry: this.stopRetry(),
         },
         access.funding,
       );
+
+      if (created.recoveredFromCreateError !== undefined) {
+        logger.warn(
+          {
+            deploymentId: created.deploymentId,
+            accessMode: access.mode,
+            createError: created.recoveredFromCreateError,
+          },
+          "Nosana deployment create failed, but the deployment it made was found by its idempotency key and started",
+        );
+      }
 
       logger.info(
         {
@@ -1471,6 +1875,12 @@ export class NosanaClient {
             deploymentId: (error as { deploymentId?: string }).deploymentId,
             deploymentName: (error as { deploymentName?: string }).deploymentName,
             mayExistOnNosana: (error as { mayExistOnNosana?: boolean }).mayExistOnNosana,
+            stage: (error as { stage?: string }).stage,
+            code: (error as { code?: string }).code,
+            // What the SDK threw, as it threw it (its message keeps one field
+            // of Nosana's answer; the whole answer of a refused create is
+            // logged, redacted, by reportCreateRefusal).
+            cause: describeCause((error as { cause?: unknown }).cause),
           },
           "Nosana deployment creation failed"
         );
@@ -1482,18 +1892,49 @@ export class NosanaClient {
 
   /**
    * STRICT read of a Deployment-Manager deployment: status, REAL endpoints
-   * reported by Nosana, jobs and events. Throws on API failure (and on mock
-   * ids) - a failed read must never become a fabricated state.
+   * reported by Nosana, and (per `include`, both by default) its newest jobs
+   * and events, which Nosana serves from their own routes. Throws on API
+   * failure, of any of the reads (and on mock ids) - a failed read must never
+   * become a fabricated state.
    */
   async getDeploymentStatus(
     deploymentId: string,
-    mode?: NosanaAccessMode
+    mode?: NosanaAccessMode,
+    include: DeploymentReadInclude = {},
   ): Promise<DeploymentSnapshot> {
     if (isMockNosanaId(deploymentId)) {
       this.requireSdk();
       throw new Error(`Mock Nosana id cannot be queried: ${deploymentId}`);
     }
-    return readDeployment(this.readPort(mode), deploymentId);
+    const snapshot = await readDeployment(this.readPort(mode), deploymentId);
+    // With no credential at all the keyless read above is all there is.
+    if (this.getAccessMode() === "none") return snapshot;
+    const wantJobs = include.jobs ?? true;
+    const whenHalted = include.events === "when_halted";
+    const wantEvents = whenHalted
+      ? snapshot.status === "error" || snapshot.status === "insufficient_funds"
+      : (include.events ?? true);
+    const readEvents = (): Promise<EventSnapshot[]> =>
+      this.listDeploymentEvents(deploymentId, mode, { count: include.eventCount ?? SNAPSHOT_EVENTS_LIMIT });
+    const [jobs, events] = await Promise.all([
+      wantJobs ? this.listDeploymentJobs(deploymentId, mode, { count: SNAPSHOT_JOBS_LIMIT }) : snapshot.jobs,
+      !wantEvents
+        ? snapshot.events
+        : whenHalted
+          ? // Only the failure text depends on these events. The halted state
+            // itself is already read, and it must reach the caller: a read that
+            // threw here would leave a halted deployment `running`, billed and
+            // never stopped for as long as the events route fails.
+            readEvents().catch((err) => {
+              logger.warn(
+                { deploymentId, status: snapshot.status, error: (err as Error).message },
+                "Could not read the events of a halted Nosana deployment; reporting it without them"
+              );
+              return snapshot.events;
+            })
+          : readEvents(),
+    ]);
+    return { ...snapshot, jobs, events };
   }
 
   /**
@@ -1516,75 +1957,253 @@ export class NosanaClient {
     const access = this.accessFor(mode);
     const deployment =
       access.mode === "api_key"
-        ? await this.apiCall(() => this.requireApiSdk().deployments.get(deploymentId))
-        : await this.requireSdk().deployments.get(deploymentId);
+        ? await this.apiCall(
+            () => this.requireApiSdk().deployments.get(deploymentId),
+            `Reading Nosana deployment ${deploymentId}`,
+          )
+        : await this.sdkCall(
+            () => this.requireSdk().deployments.get(deploymentId),
+            `Reading Nosana deployment ${deploymentId}`,
+          );
     return { access, deployment: deployment as unknown as Record<string, unknown> };
   }
 
+  // ---------------------------------------------------------------------------
+  // Direct REST reads: the lists the SDK reads wrongly (paginated bodies)
+  // ---------------------------------------------------------------------------
+
   /**
-   * Nosana's own list of this account's deployments (read-only). With an API
-   * key it is a direct GET: the SDK's list() parses every `owner` as a Solana
-   * public key and throws for the whole list if one is not.
+   * Where a direct read of `mode`'s account goes and how it authenticates: the
+   * API key as a Bearer token, or the wallet's signed header exactly as the
+   * SDK's own API client builds it (x-user-id plus a signature over
+   * "NosanaApiAuthentication" with the time).
+   */
+  private async restAccess(
+    mode: NosanaAccessMode,
+  ): Promise<{ baseUrl: string; headers: Record<string, string> }> {
+    if (mode === "api_key") {
+      const { apiKey, backendUrl } = this.requireApiAccess();
+      return { baseUrl: backendUrl, headers: { Authorization: `Bearer ${apiKey}` } };
+    }
+    const wallet = this.requireWallet();
+    const authorization = (this.requireSdk() as unknown as {
+      authorization?: { generate(message: string, options: { includeTime: boolean }): Promise<string> };
+    }).authorization;
+    if (typeof authorization?.generate !== "function") {
+      throw new NosanaLifecycleError("The wallet client cannot sign a Nosana API request", "read");
+    }
+    return {
+      baseUrl: NOSANA_BACKEND_URLS[this.network],
+      headers: {
+        "x-user-id": wallet.publicKey.toBase58(),
+        Authorization: await authorization.generate("NosanaApiAuthentication", { includeTime: true }),
+      },
+    };
+  }
+
+  /** One GET under {backend}/api. `what` names the resource in errors. */
+  private async restGet(
+    mode: NosanaAccessMode,
+    path: string,
+    query: Record<string, string | number | undefined>,
+    what: string,
+  ): Promise<unknown> {
+    const { baseUrl, headers } = await this.restAccess(mode);
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined) search.set(key, String(value));
+    }
+    const qs = search.toString();
+    let response: Awaited<ReturnType<FetchLike>>;
+    try {
+      response = await this.fetcher(`${baseUrl}/api${path}${qs ? `?${qs}` : ""}`, {
+        method: "GET",
+        headers: { ...headers, Accept: "application/json" },
+        signal: AbortSignal.timeout(15_000),
+        redirect: "error",
+      });
+    } catch (err) {
+      throw new NosanaLifecycleError(`${what} could not be fetched`, "read", { cause: err });
+    }
+    if (mode === "api_key" && (response.status === 401 || response.status === 403)) {
+      throw this.authFailed(undefined);
+    }
+    if (!response.ok) {
+      throw new NosanaLifecycleError(`${what} answered HTTP ${response.status}`, "read");
+    }
+    return response.json().catch(() => null);
+  }
+
+  /** Every page of a list (limit 100, following cursor_next, capped). */
+  private async restListAll(
+    mode: NosanaAccessMode,
+    path: string,
+    query: Record<string, string | number | undefined>,
+    key: string,
+    what: string,
+  ): Promise<unknown[]> {
+    try {
+      const { items } = await collectNosanaPages(
+        (cursor) =>
+          this.restGet(mode, path, { ...query, limit: NOSANA_PAGE_LIMIT, cursor: cursor ?? undefined }, what),
+        key,
+      );
+      return items;
+    } catch (err) {
+      if (err instanceof NosanaPaginationError) {
+        throw new NosanaLifecycleError(`${what}: ${err.message}`, "read", { cause: err });
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * The newest `count` rows of a list (sort_order desc): one page of the
+   * smallest size that holds them, following cursor_next only past 100.
+   */
+  private async restListNewest(
+    mode: NosanaAccessMode,
+    path: string,
+    query: Record<string, string | number | undefined>,
+    key: string,
+    count: number,
+    what: string,
+  ): Promise<unknown[]> {
+    if (!Number.isSafeInteger(count) || count < 1) throw new RangeError(`count must be a positive integer, got ${count}`);
+    const limit = PAGE_SIZES.find((size) => size >= count) ?? NOSANA_PAGE_LIMIT;
+    const items: unknown[] = [];
+    let cursor: string | null = null;
+    for (let pages = 1; ; pages += 1) {
+      const page = readNosanaPage(
+        await this.restGet(mode, path, { ...query, limit, sort_order: "desc", cursor: cursor ?? undefined }, what),
+        key,
+      );
+      if (!page) throw new NosanaLifecycleError(`${what} is not a list`, "read");
+      items.push(...page.items);
+      if (items.length >= count || page.cursorNext === null || page.cursorNext === cursor) break;
+      if (pages >= NOSANA_MAX_LIST_PAGES) break;
+      cursor = page.cursorNext;
+    }
+    return items.slice(0, count);
+  }
+
+  /** The access mode a direct read of an existing id goes through (the row's, else the primary). */
+  private restMode(mode?: NosanaAccessMode): NosanaAccessMode {
+    return this.accessFor(mode).mode;
+  }
+
+  /**
+   * Nosana's own list of this account's deployments (read-only), every page.
+   * A direct GET in both modes, never the SDK's list(): 0.4.74 maps the body
+   * as an array (it is an object now) and parses every `owner` as a public
+   * key; 0.4.87 reads the first page only. Throws rather than return a list
+   * it could not read whole.
    */
   async listDeployments(mode?: NosanaAccessMode): Promise<NosanaDeploymentSummary[]> {
-    const access = this.accessFor(mode);
-    let rows: unknown;
-    if (access.mode === "api_key") {
-      const { apiKey, backendUrl } = this.requireApiAccess();
-      let response: Awaited<ReturnType<FetchLike>>;
-      try {
-        response = await this.fetcher(`${backendUrl}/api/deployments`, {
-          method: "GET",
-          headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-          signal: AbortSignal.timeout(15_000),
-          redirect: "error",
-        });
-      } catch (err) {
-        throw new NosanaLifecycleError("Nosana's deployment list could not be fetched", "read", {
-          cause: err,
-        });
-      }
-      if (response.status === 401 || response.status === 403) throw this.authFailed(undefined);
-      if (!response.ok) {
-        throw new NosanaLifecycleError(
-          `Nosana's deployment list answered HTTP ${response.status}`,
-          "read",
-        );
-      }
-      rows = await response.json().catch(() => null);
-    } else {
-      const sdk = this.requireSdk() as unknown as { deployments: { list(): Promise<unknown[]> } };
-      try {
-        rows = await sdk.deployments.list();
-      } catch (err) {
-        throw new NosanaLifecycleError(
-          `Nosana's deployment list could not be read: ${(err as Error).message}`,
-          "read",
-          { cause: err },
-        );
-      }
-    }
-    if (!Array.isArray(rows)) {
-      throw new NosanaLifecycleError("Nosana's deployment list is not an array", "read");
-    }
+    const resolved = this.restMode(mode);
+    const rows = await this.restListAll(resolved, "/deployments", {}, "deployments", "Nosana's deployment list");
+    return this.toSummaries(rows, resolved);
+  }
+
+  private toSummaries(rows: unknown[], mode: NosanaAccessMode): NosanaDeploymentSummary[] {
     return rows
-      .map((row) => toDeploymentSummary(row, access.mode))
+      .map((row) => toDeploymentSummary(row, mode))
       .filter((row): row is NosanaDeploymentSummary => row !== null);
   }
 
   /**
    * The deployment with exactly this name, newest first when Nosana holds
    * several; null when there is none. This is how a deployment whose create
-   * call threw (NosanaLifecycleError.mayExistOnNosana) is looked for.
+   * call threw (NosanaLifecycleError.mayExistOnNosana) is looked for. The
+   * server filters (exact, case-sensitive); the name is checked again here.
    */
   async findDeploymentByName(
     name: string,
     mode?: NosanaAccessMode
   ): Promise<NosanaDeploymentSummary | null> {
-    const matches = (await this.listDeployments(mode))
+    const resolved = this.restMode(mode);
+    const rows = await this.restListAll(resolved, "/deployments", { name }, "deployments", "Nosana's deployment list");
+    const matches = this.toSummaries(rows, resolved)
       .filter((row) => row.name === name)
       .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
     return matches[0] ?? null;
+  }
+
+  /**
+   * The deployment created with this idempotency_key; null when there is
+   * none. Nosana keeps the key unique, so more than one answer means the
+   * filter was not applied, and that THROWS rather than pick one.
+   */
+  async findDeploymentByIdempotencyKey(
+    idempotencyKey: string,
+    mode?: NosanaAccessMode
+  ): Promise<NosanaDeploymentSummary | null> {
+    const resolved = this.restMode(mode);
+    const rows = await this.restListAll(
+      resolved,
+      "/deployments",
+      { idempotency_key: idempotencyKey },
+      "deployments",
+      "Nosana's deployment list",
+    );
+    // A row that names a key must name this one; a row that does not was
+    // selected by the server's filter.
+    const matches = this.toSummaries(rows, resolved).filter(
+      (row) => row.idempotencyKey === null || row.idempotencyKey === idempotencyKey,
+    );
+    if (matches.length > 1) {
+      throw new NosanaLifecycleError(
+        `Nosana answered ${matches.length} deployments for one idempotency key; the filter was not applied`,
+        "read",
+      );
+    }
+    return matches[0] ?? null;
+  }
+
+  /**
+   * A deployment's jobs, newest first (GET .../jobs): the newest `count`
+   * (default 10), or every page with `all`. `state` filters on Nosana's job
+   * state.
+   */
+  async listDeploymentJobs(
+    deploymentId: string,
+    mode?: NosanaAccessMode,
+    options: { state?: "QUEUED" | "RUNNING" | "COMPLETED" | "STOPPED"; count?: number; all?: boolean } = {},
+  ): Promise<JobSnapshot[]> {
+    if (isMockNosanaId(deploymentId)) {
+      throw new Error(`Mock Nosana id cannot be queried: ${deploymentId}`);
+    }
+    const resolved = this.restMode(mode);
+    const path = `/deployments/${encodeURIComponent(deploymentId)}/jobs`;
+    const what = `The jobs of Nosana deployment ${deploymentId}`;
+    const rows = options.all
+      ? await this.restListAll(resolved, path, { state: options.state, sort_order: "desc" }, "jobs", what)
+      : await this.restListNewest(resolved, path, { state: options.state }, "jobs", options.count ?? 10, what);
+    return newestFirst(
+      toJobSnapshots(
+        rows.filter((row): row is SdkJobLike => isRecordWith(row, "job")),
+      ),
+    );
+  }
+
+  /** A deployment's events, newest first (GET .../events): the newest `count` (default 20, at most 1000). */
+  async listDeploymentEvents(
+    deploymentId: string,
+    mode?: NosanaAccessMode,
+    options: { count?: number } = {},
+  ): Promise<EventSnapshot[]> {
+    if (isMockNosanaId(deploymentId)) {
+      throw new Error(`Mock Nosana id cannot be queried: ${deploymentId}`);
+    }
+    const rows = await this.restListNewest(
+      this.restMode(mode),
+      `/deployments/${encodeURIComponent(deploymentId)}/events`,
+      {},
+      "events",
+      Math.min(options.count ?? SNAPSHOT_EVENTS_LIMIT, MAX_EVENT_COUNT),
+      `The events of Nosana deployment ${deploymentId}`,
+    );
+    return newestFirst(toEventSnapshots(rows.filter((row): row is SdkEventLike => isRecordWith(row, "type"))));
   }
 
   /**
@@ -1613,8 +2232,8 @@ export class NosanaClient {
     try {
       raw =
         access.mode === "api_key"
-          ? await this.apiCall(() => getJob(jobAddress))
-          : await getJob(jobAddress);
+          ? await this.apiCall(() => getJob(jobAddress), `Reading job ${jobAddress}`)
+          : await this.sdkCall(() => getJob(jobAddress), `Reading job ${jobAddress}`);
     } catch (err) {
       if (err instanceof NosanaLifecycleError) throw err;
       throw new NosanaLifecycleError(
@@ -1629,8 +2248,16 @@ export class NosanaClient {
   /**
    * Change a deployment's per-job timeout. `timeoutSeconds` is ours (seconds);
    * the Deployment Manager is sent the value in NOSANA_TIMEOUT_UNIT, rounded
-   * up. The SDK refuses a value below 60 in whatever unit that is, so in
-   * "minutes" nothing under one hour can be set this way.
+   * up. The SDK refuses a value below 60 in whatever unit that is, and so
+   * does Nosana (minimum 60 minutes for every strategy), so nothing under one
+   * hour can be set this way.
+   *
+   * An increase extends a running job once, by the difference. A decrease
+   * does NOT shorten a job that is already running - it was prepaid for its
+   * full timeout when it was listed - and applies to the next jobs only
+   * (nosana-deployment-manager at 127f915,
+   * strategies/all/deploymentTimeoutUpdate.ts:22-80). To end a job early,
+   * stop the deployment.
    */
   async updateDeploymentTimeout(
     deploymentId: string,
@@ -1649,8 +2276,9 @@ export class NosanaClient {
     const { access, deployment } = await this.rawDeployment(deploymentId, mode);
     const updateTimeout = (deployment.updateTimeout as (timeout: number) => Promise<void>).bind(deployment);
     try {
-      if (access.mode === "api_key") await this.apiCall(() => updateTimeout(sentTimeout));
-      else await updateTimeout(sentTimeout);
+      const what = `Updating the timeout of Nosana deployment ${deploymentId}`;
+      if (access.mode === "api_key") await this.apiCall(() => updateTimeout(sentTimeout), what);
+      else await this.sdkCall(() => updateTimeout(sentTimeout), what);
     } catch (err) {
       if (err instanceof NosanaLifecycleError) throw err;
       throw new NosanaLifecycleError(
@@ -1686,11 +2314,20 @@ export class NosanaClient {
       };
     }
 
-    const result = await stopAndReclaim(access!.port, deploymentId, access!.funding);
-    logger.info(
-      { deploymentId, reclaimed: result.reclaimed, alreadyStopped: result.alreadyStopped },
-      "Deployment stopped via Nosana SDK"
-    );
+    const result = await stopAndReclaim(access!.port, deploymentId, access!.funding, {
+      stopRetry: this.stopRetry(),
+    });
+    if (result.stopRefused) {
+      logger.error(
+        { deploymentId, reclaimed: result.reclaimed, reason: result.reclaimError },
+        "Nosana refused the stop of a halted deployment; it stays for the reclaim sweep to stop"
+      );
+    } else {
+      logger.info(
+        { deploymentId, reclaimed: result.reclaimed, alreadyStopped: result.alreadyStopped },
+        "Deployment stopped via Nosana SDK"
+      );
+    }
     return result;
   }
 
@@ -1701,7 +2338,9 @@ export class NosanaClient {
    */
   async reclaimDeploymentVault(
     deploymentId: string,
-    mode?: NosanaAccessMode
+    mode?: NosanaAccessMode,
+    /** `startMayBeInFlight`: the run failed so recently that its start may still land. */
+    options: { startMayBeInFlight?: boolean } = {},
   ): Promise<ReclaimResult> {
     const access = this.accessForId(deploymentId, mode);
     if (isMockNosanaId(deploymentId)) {
@@ -1712,7 +2351,10 @@ export class NosanaClient {
         remainingNosBaseUnits: 0n,
       };
     }
-    return reclaimVault(access!.port, deploymentId, access!.funding);
+    return reclaimVault(access!.port, deploymentId, access!.funding, {
+      stopRetry: this.stopRetry(),
+      ...(options.startMayBeInFlight ? { startMayBeInFlight: true } : {}),
+    });
   }
 
   /**
@@ -1885,6 +2527,9 @@ export interface VllmAdapterConfig {
 /** The vLLM image every deployment ran on before tool calling was wired. */
 const VLLM_IMAGE = "vllm/vllm-openai:v0.6.0";
 
+/** vLLM's own liveness route: 200 once the engine has loaded the model. */
+const VLLM_HEALTH_PATH = "/health";
+
 interface VllmToolCalling {
   /** vLLM's --tool-call-parser value for this model family. */
   parser: "hermes" | "mistral" | "llama3_json";
@@ -1965,7 +2610,7 @@ export function generateVllmJobDefinition(
           image: toolCalling?.image ?? VLLM_IMAGE,
           cmd: vllmArgs,
           gpu: true,
-          expose: [8000],
+          expose: [apiPortWithHealthCheck(8000, VLLM_HEALTH_PATH)],
           // The old literal "${HF_TOKEN}" was never substituted by anything, so
           // gated models were handed that string as their token. Real token or
           // nothing.
@@ -2215,7 +2860,7 @@ function vllmAdapterJobDefinition(
             String(vllmMaxLoraRank(adapter.maxRank)),
           ],
           gpu: true,
-          expose: [8000],
+          expose: [apiPortWithHealthCheck(8000, VLLM_HEALTH_PATH)],
           env: {
             ...(config.hfToken ? { HF_TOKEN: config.hfToken } : {}),
             WHEELSAI_ADAPTER_URL: adapter.downloadUrl,
@@ -2226,6 +2871,75 @@ function vllmAdapterJobDefinition(
         },
       },
     ],
+  };
+}
+
+/**
+ * The Ollama image, pinned to the tag Nosana's markets pre-pull (the
+ * required_images of the 3060 and 4070 markets, among others), so a start
+ * does not spend paid time pulling it. Never `:latest`: an unpinned tag is
+ * pulled on every start and changes under us.
+ *
+ * Its entrypoint is /bin/ollama with cmd `serve` (the image config on Docker
+ * Hub, read 2026-10-07), and it sets OLLAMA_HOST=0.0.0.0:11434 itself.
+ */
+export const OLLAMA_IMAGE = "docker.io/ollama/ollama:0.32.6";
+
+const OLLAMA_PORT = 11434;
+
+/**
+ * Ollama's model list: 200 as soon as a server answers on the exposed port,
+ * which ollamaServeScript opens only once the model is there.
+ */
+const OLLAMA_HEALTH_PATH = "/api/tags";
+
+/**
+ * Where the server that pulls the model listens: inside the container only,
+ * on a port the definition does not expose.
+ */
+const OLLAMA_PULL_HOST = "127.0.0.1:11435";
+
+/**
+ * An Ollama model reference as it may reach the shell command below:
+ * `name`, `name:tag` or `namespace/name:tag`, and nothing a shell reads.
+ */
+const OLLAMA_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
+
+/**
+ * Pulls the model through a server only the container can reach, ends that
+ * server, and only then becomes (exec) the server on the exposed port. Nothing
+ * listens on that port during the download, so Nosana's health check cannot
+ * pass, the endpoint cannot turn online and nobody is billed or routed to a
+ * server that has no model yet. The loopback server gets a minute to answer;
+ * a failed pull ends the container instead of serving nothing; afterwards the
+ * container lives and dies with `ollama serve`.
+ */
+function ollamaServeScript(ollamaModel: string): string {
+  if (ollamaModel.length > 128 || !OLLAMA_MODEL_PATTERN.test(ollamaModel)) {
+    throw new Error("Unsupported Ollama model name");
+  }
+  const local = `OLLAMA_HOST=${OLLAMA_PULL_HOST}`;
+  return [
+    `${local} ollama serve & pid=$!`,
+    "i=0",
+    `until ${local} ollama list >/dev/null 2>&1; do i=$((i+1)); [ "$i" -ge 60 ] && exit 1; sleep 1; done`,
+    `${local} ollama pull ${ollamaModel} || exit 1`,
+    'kill "$pid"',
+    'wait "$pid"',
+    // OLLAMA_HOST of the definition's env: the exposed port.
+    "exec ollama serve",
+  ].join("; ");
+}
+
+/**
+ * The environment of the Ollama server. Only variables Ollama reads: the
+ * context length and GPU layer count are request and Modelfile options
+ * (num_ctx, num_gpu), not environment variables.
+ */
+function ollamaEnv(): Record<string, string> {
+  return {
+    OLLAMA_HOST: `0.0.0.0:${OLLAMA_PORT}`,
+    OLLAMA_KEEP_ALIVE: "24h", // Keep model loaded
   };
 }
 
@@ -2246,21 +2960,13 @@ export function generateOllamaJobDefinition(
         type: "container/run",
         id: "ollama-inference",
         args: {
-          image: "ollama/ollama:latest",
-          // Start Ollama, pull model, then keep serving
-          cmd: [
-            "/bin/sh",
-            "-c",
-            `ollama serve & sleep 5 && ollama pull ${ollamaModel} && wait`,
-          ],
+          image: OLLAMA_IMAGE,
+          // A shell in place of the image's /bin/ollama entrypoint: pull the
+          // model, then serve it.
+          ...shellCommand(ollamaServeScript(ollamaModel)),
           gpu: true,
-          expose: [11434],
-          env: {
-            OLLAMA_HOST: "0.0.0.0:11434",
-            OLLAMA_NUM_CTX: config.maxTokens.toString(),
-            OLLAMA_NUM_GPU: "999", // Use all available GPU layers
-            OLLAMA_KEEP_ALIVE: "24h", // Keep model loaded
-          },
+          expose: [apiPortWithHealthCheck(OLLAMA_PORT, OLLAMA_HEALTH_PATH)],
+          env: ollamaEnv(),
         },
       },
     ],
@@ -2287,20 +2993,11 @@ export function generateOllamaWithProxyJobDefinition(
         type: "container/run",
         id: "ollama-server",
         args: {
-          image: "ollama/ollama:latest",
-          cmd: [
-            "/bin/sh",
-            "-c",
-            `ollama serve & sleep 5 && ollama pull ${ollamaModel} && wait`,
-          ],
+          image: OLLAMA_IMAGE,
+          ...shellCommand(ollamaServeScript(ollamaModel)),
           gpu: true,
-          expose: [11434],
-          env: {
-            OLLAMA_HOST: "0.0.0.0:11434",
-            OLLAMA_NUM_CTX: config.maxTokens.toString(),
-            OLLAMA_NUM_GPU: "999",
-            OLLAMA_KEEP_ALIVE: "24h",
-          },
+          expose: [apiPortWithHealthCheck(OLLAMA_PORT, OLLAMA_HEALTH_PATH)],
+          env: ollamaEnv(),
         },
       },
       {

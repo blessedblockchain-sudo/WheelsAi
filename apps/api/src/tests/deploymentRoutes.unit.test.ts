@@ -1131,6 +1131,17 @@ test("submit failure AFTER the Nosana deployment was created persists its id so 
     assert.match(row.statusReason ?? "", /nosana_start_failed/);
   }
   void db;
+
+  // Released but not stopped: an unstarted DRAFT whose start may still land.
+  // It is not stamped, so the reclaim sweep keeps reading its id.
+  const draft = makeDb({ deployments: [{ id: "dep_1", status: "pending", nosanaJobIds: [], reservationCents: HOUR_4090_CENTS }] });
+  const unstopped = new NosanaLifecycleError("start timed out", "start", {
+    deploymentId: "dm_draft",
+    cleanup: { stopped: false, reclaimed: true, errors: ["stop: cannot stop a draft"] },
+  });
+  await assert.rejects(() => runSubmit(draft, makeNosana({ createError: unstopped })));
+  assert.deepEqual(draft.state.deployments[0]!.nosanaJobIds, ["dm_draft"]);
+  assert.equal(draft.state.deployments[0]!.vaultReclaimedAt, null);
 });
 
 test("submit does not revive a deployment that was stopped before it started", async () => {

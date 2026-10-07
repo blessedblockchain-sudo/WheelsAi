@@ -226,7 +226,10 @@ export interface TrainingJobDefinitionInput {
   image: string;
   /** Pull credentials, only when the registry is private. */
   registry?: { server: string; username: string; password: string } | null;
-  /** GB of GPU memory the node must have (the catalog's figure for the method). */
+  /**
+   * GB of GPU memory the node must have (the catalog's figure for the method).
+   * Checked here; the tier chosen from it is what reaches Nosana.
+   */
   requiredVramGb: number;
 
   jobId: string;
@@ -285,7 +288,9 @@ export interface TrainingJobDefinition {
       args: {
         image: string;
         gpu: true;
-        required_vram: number;
+        // No required_vram: the Deployment Manager validates args against the
+        // ContainerRun keys of @nosana/types 2.14.2 and refuses any other key
+        // (400). The GPU memory floor is met by the tier's market instead.
         env: Record<string, string>;
         authentication?: { docker: { username: string; password: string; server: string } };
       };
@@ -452,7 +457,6 @@ export function buildTrainingJobDefinition(
           args: {
             image: input.image,
             gpu: true,
-            required_vram: input.requiredVramGb,
             env,
             ...(registry
               ? {

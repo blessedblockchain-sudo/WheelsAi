@@ -6,14 +6,18 @@
  * The deployment id is `training_jobs.nosana_job_id` (also in the API log line
  * "Training job submitted to Nosana"). The script reads the same environment
  * the API reads and uses the API's own Nosana client, so it sees exactly what
- * the training poller sees. It calls two reads and nothing else:
- * getDeploymentStatus and getDeploymentJob.
+ * the training poller sees. It makes GET reads and nothing else:
+ * getDeploymentStatus (the deployment, plus its newest jobs and events, which
+ * Nosana serves from GET .../jobs and .../events), listDeploymentJobs (every
+ * page) and getDeploymentJob.
  *
  * It exists for the first paid fine-tuning run (docs/FINE-TUNE-RUN.md, part 2),
- * to settle what the poller's code assumes from the SDK's types:
- *   - whether a deployment of strategy SIMPLE lists exactly one job;
+ * to confirm what the poller's code reads:
+ *   - whether a deployment of strategy SIMPLE lists exactly one job (the
+ *     poller follows the NEWEST);
  *   - the raw `state`, `timeStart` and `timeEnd` of that job, and how this
- *     code reads them (their unit is not documented);
+ *     code reads them (unix seconds; a stopped job reports timeEnd 0 and the
+ *     result's endTime, in milliseconds, is used instead);
  *   - whether a finished (confidential) job's result is readable at all, and
  *     its shape: opStates, the exit code, the log entries;
  *   - whether the trainer's WHEELSAI_EVENT lines can be recovered from it.
@@ -46,7 +50,7 @@ async function main(): Promise<number> {
   }
   const deploymentId = args[0]!;
   const nosana = await getNosanaClient();
-  console.log("Nosana training job check - read-only (two reads, nothing is created, started or stopped)");
+  console.log("Nosana training job check - read-only (GET reads only, nothing is created, started or stopped)");
   console.log(`time: ${new Date().toISOString()}`);
   console.log(`access mode: ${nosana.getAccessMode()} | network: ${nosana.getNetwork()}`);
   if (nosana.getAccessMode() === "none") {
@@ -57,10 +61,14 @@ async function main(): Promise<number> {
   const deployment = await nosana.getDeploymentStatus(deploymentId);
   console.log(`\ndeployment ${deploymentId}`);
   console.log(`  status (as this code reads it): ${deployment.status}`);
-  console.log(`  jobs listed: ${deployment.jobs.length}${deployment.jobs.length === 1 ? "" : "   <- the poller follows the FIRST one"}`);
-  for (const job of deployment.jobs) {
-    const entry = job as unknown as Record<string, unknown>;
-    console.log(`    job ${String(entry.job).slice(0, 8)}...  fields: ${Object.keys(entry).sort().join(", ")}`);
+  const allJobs = await nosana.listDeploymentJobs(deploymentId, undefined, { all: true });
+  console.log(`  jobs listed (GET .../jobs, every page): ${allJobs.length}${allJobs.length <= 1 ? "" : "   <- the poller follows the NEWEST one"}`);
+  for (const job of allJobs) {
+    console.log(`    job ${job.job.slice(0, 8)}...  state ${job.status}  node ${job.node ? `${job.node.slice(0, 8)}...` : "none"}  created ${job.createdAt ?? "?"}`);
+  }
+  console.log(`  newest events (GET .../events): ${deployment.events.length}`);
+  for (const event of deployment.events.slice(0, 5)) {
+    console.log(`    ${event.createdAt ?? "?"}  ${event.type}`);
   }
   const first = deployment.jobs[0]?.job;
   if (!first) {
@@ -73,7 +81,9 @@ async function main(): Promise<number> {
   console.log(`  state: raw ${JSON.stringify(job.rawState)} -> read as "${job.state}"`);
   console.log(`  host node: ${job.node ?? "not set"} | market: ${job.market ?? "not set"}`);
   console.log(`  timeStart: raw ${JSON.stringify(job.raw.timeStart ?? null)} -> read as ${iso(job.timeStart)}`);
-  console.log(`  timeEnd:   raw ${JSON.stringify(job.raw.timeEnd ?? null)} -> read as ${iso(job.timeEnd)}`);
+  console.log(
+    `  timeEnd:   raw ${JSON.stringify(job.raw.timeEnd ?? null)} (result endTime ${JSON.stringify(job.raw.resultEndTime ?? null)}) -> read as ${iso(job.timeEnd)}`,
+  );
   console.log(`  listedAt:  raw ${JSON.stringify(job.raw.listedAt ?? null)} -> read as ${iso(job.listedAt)}`);
   if (job.timeStart && job.timeEnd) {
     console.log(`  timeEnd - timeStart as read: ${((job.timeEnd.getTime() - job.timeStart.getTime()) / 1000).toFixed(0)} s`);

@@ -21,15 +21,26 @@
  *
  * NOSANA_DEPLOYMENT_STRATEGY          (default "SIMPLE-EXTEND")
  *   One of "SIMPLE-EXTEND" | "INFINITE" | "SIMPLE".
- *   The SDK (0.4.74) does not document strategy semantics. What the SDK does
- *   expose is the task vocabulary the Deployment Manager schedules
- *   (`Task.task: "LIST" | "EXTEND" | "STOP"`). SIMPLE-EXTEND is the strategy that
- *   maps onto LIST + repeated EXTEND: one job stays alive by being extended
- *   before `timeout` elapses, so the model is NOT reloaded every period (a vLLM
- *   cold start is minutes) and only the next extension has to be funded.
- *   INFINITE re-lists a fresh job when one ends (a full cold start each period);
- *   SIMPLE runs the job once and stops at `timeout`. Semantics are inferred,
- *   not verified against a live funded run - see the W2 report.
+ *   From the Deployment Manager's source (nosana-deployment-manager at
+ *   127f915, read 2026-10-07), not from a run of ours:
+ *   SIMPLE-EXTEND keeps ONE job alive. When the job turns RUNNING an EXTEND
+ *   task is scheduled at `timeout` minus a buffer (10% of the timeout, at
+ *   least 1 and at most 5 minutes), and each EXTEND adds one full timeout to
+ *   the same job, charged then; the next follows a timeout later
+ *   (strategies/simple-extended/jobRunningUpdate.ts:22-29,
+ *   tasks/utils/getNextExtendTime.ts, tasks/task/extend/worker.ts:31-45). So
+ *   the model is NOT reloaded every period (a vLLM cold start is minutes) and
+ *   only the next extension has to be funded.
+ *   SIMPLE runs the job once: it ends at `timeout`, and the deployment
+ *   becomes STOPPED when no queued or running job is left
+ *   (strategies/all/jobAllActiveJobsStop.ts).
+ *   INFINITE lists a replacement job `rotation_time` minutes (default 20)
+ *   before the old one ends: a full cold start each period, with both jobs
+ *   prepaid while they overlap.
+ *   INFINITE needs NOSANA_JOB_TIMEOUT_SECONDS >= 3600: the Deployment Manager
+ *   refuses an INFINITE create with a timeout under 60 minutes (400
+ *   INVALID_TIMEOUT; deployment-manager 127f915, deploymentCreate.ts), so such
+ *   a configuration is refused here, at boot, instead of at every deploy.
  *
  * NOSANA_VAULT_FUND_SECONDS           (default 2 x NOSANA_JOB_TIMEOUT_SECONDS)
  *   How many seconds of run-time (all replicas) the vault is funded for at
@@ -130,6 +141,9 @@ export interface NosanaDeployConfig {
   allowLoopbackNodeUrls: boolean;
   marketOverrides: Record<string, MarketOverride>;
 }
+
+/** The Deployment Manager's floor for an INFINITE deployment's timeout (60 minutes). */
+export const INFINITE_MIN_TIMEOUT_SECONDS = 3_600;
 
 const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const TIER_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/i;
@@ -248,6 +262,12 @@ export function loadNosanaDeployConfig(
     );
   }
   const raw = parsed.data;
+
+  if (raw.NOSANA_DEPLOYMENT_STRATEGY === "INFINITE" && raw.NOSANA_JOB_TIMEOUT_SECONDS < INFINITE_MIN_TIMEOUT_SECONDS) {
+    throw new NosanaDeployConfigError(
+      `NOSANA_DEPLOYMENT_STRATEGY=INFINITE needs NOSANA_JOB_TIMEOUT_SECONDS >= ${INFINITE_MIN_TIMEOUT_SECONDS}: Nosana refuses an INFINITE deployment with a timeout under 60 minutes`,
+    );
+  }
 
   const vaultFundSeconds =
     raw.NOSANA_VAULT_FUND_SECONDS ?? raw.NOSANA_JOB_TIMEOUT_SECONDS * 2;

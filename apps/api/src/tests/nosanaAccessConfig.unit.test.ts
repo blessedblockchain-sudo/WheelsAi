@@ -246,18 +246,23 @@ test("NOSANA_API_URL: https anywhere, http only for loopback in development, no 
   );
 });
 
-test("timeout unit: minutes by default (with a warning once a credential is set), either unit when named", () => {
-  // Minutes is what the public deployment-manager source reads, and the
-  // cheaper way to be wrong: see the header of config/nosanaAccess.ts.
+test("timeout unit: minutes by default and settled, so no warning; seconds still parses but is warned about loudly, with or without a credential", () => {
+  // Minutes is settled: the OpenAPI document, the deployment-manager source
+  // and live INFINITE rotations (see the header of config/nosanaAccess.ts).
   const unset = loadNosanaAccessConfig({ NOSANA_API_KEY: KEY });
   assert.equal(unset.timeoutUnit, "minutes");
   assert.equal(unset.timeoutUnitExplicit, false);
-  assert.ok(unset.warnings.some((w) => /NOSANA_TIMEOUT_UNIT/.test(w)));
+  assert.ok(unset.warnings.every((w) => !/NOSANA_TIMEOUT_UNIT/.test(w)));
 
-  const seconds = loadNosanaAccessConfig({ NOSANA_API_KEY: KEY, NOSANA_TIMEOUT_UNIT: "seconds" });
-  assert.equal(seconds.timeoutUnit, "seconds");
-  assert.equal(seconds.timeoutUnitExplicit, true);
-  assert.ok(seconds.warnings.every((w) => !/NOSANA_TIMEOUT_UNIT/.test(w)));
+  for (const source of [{ NOSANA_API_KEY: KEY, NOSANA_TIMEOUT_UNIT: "seconds" }, { NOSANA_TIMEOUT_UNIT: "seconds" }]) {
+    const seconds = loadNosanaAccessConfig(source);
+    assert.equal(seconds.timeoutUnit, "seconds");
+    assert.equal(seconds.timeoutUnitExplicit, true);
+    const warning = seconds.warnings.find((w) => w.startsWith("NOSANA_TIMEOUT_UNIT=seconds"));
+    assert.ok(warning, "warned whenever it is set");
+    assert.match(warning!, /READS MINUTES/);
+    assert.match(warning!, /60 times/);
+  }
 
   const minutes = loadNosanaAccessConfig({ NOSANA_API_KEY: KEY, NOSANA_TIMEOUT_UNIT: "minutes" });
   assert.equal(minutes.timeoutUnit, "minutes");
@@ -265,6 +270,15 @@ test("timeout unit: minutes by default (with a warning once a credential is set)
   assert.ok(minutes.warnings.every((w) => !/NOSANA_TIMEOUT_UNIT/.test(w)));
 
   assert.throws(() => loadNosanaAccessConfig({ NOSANA_TIMEOUT_UNIT: "hours" }), NosanaAccessConfigError);
+});
+
+test("NOSANA_SDK_TIMEOUT_MS: 30 s by default, bounded, and never a value it cannot parse", () => {
+  assert.equal(loadNosanaAccessConfig({}).sdkTimeoutMs, 30_000);
+  assert.equal(loadNosanaAccessConfig({ NOSANA_SDK_TIMEOUT_MS: "" }).sdkTimeoutMs, 30_000);
+  assert.equal(loadNosanaAccessConfig({ NOSANA_SDK_TIMEOUT_MS: "45000" }).sdkTimeoutMs, 45_000);
+  for (const bad of ["0", "99", "300001", "soon", "1.5"]) {
+    assert.throws(() => loadNosanaAccessConfig({ NOSANA_SDK_TIMEOUT_MS: bad }), NosanaAccessConfigError, bad);
+  }
 });
 
 test("secondsToSdkTimeout converts only for minutes, and rounds up", () => {

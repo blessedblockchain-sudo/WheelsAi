@@ -418,8 +418,8 @@ test("readDeployment: snapshot carries status, endpoints, jobs, replicas and eve
     status: "RUNNING",
     replicas: 2,
     endpoints: [
-      { opId: "vllm-inference", port: 8000, url: "https://abc123.node.k8s.prd.nos.ci/" },
-      { opId: "vllm-inference", port: "8000", url: "https://def456.node.k8s.prd.nos.ci" },
+      { opId: "vllm-inference", port: 8000, url: "https://abc123.node.k8s.prd.nos.ci/", online: true },
+      { opId: "vllm-inference", port: "8000", url: "https://def456.node.k8s.prd.nos.ci", online: false },
     ],
     jobs: [
       { tx: "t1", job: "JobA", deployment: "dep_1", revision: 1, status: "CONFIRMED" },
@@ -437,8 +437,8 @@ test("readDeployment: snapshot carries status, endpoints, jobs, replicas and eve
   assert.equal(snap.status, "running");
   assert.equal(snap.replicas, 2);
   assert.deepEqual(snap.endpoints, [
-    { url: "https://abc123.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference" },
-    { url: "https://def456.node.k8s.prd.nos.ci", port: "8000", opId: "vllm-inference" },
+    { url: "https://abc123.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference", online: true },
+    { url: "https://def456.node.k8s.prd.nos.ci", port: "8000", opId: "vllm-inference", online: false },
   ]);
   assert.deepEqual(snap.jobs, [
     { job: "JobA", status: "CONFIRMED" },
@@ -472,15 +472,36 @@ test("readDeployment maps each deployment status without inventing endpoints", a
 test("normalizeEndpoints keeps only real https URLs, dedupes, and never constructs one", () => {
   const { endpoints, invalid } = normalizeEndpoints([
     { opId: "a", port: 1, url: "https://x.node.nos.ci/" },
-    { opId: "a", port: 1, url: "https://x.node.nos.ci" }, // duplicate after trimming the slash
+    { opId: "a", port: 1, url: "https://x.node.nos.ci", online: true }, // duplicate after trimming the slash
     { opId: "a", port: 1, url: "http://insecure.nos.ci" },
     { opId: "a", port: 1, url: "not a url" },
     { opId: "a", port: 1, url: "" },
     { opId: "a", port: 1, url: "https://user:pw@evil.nos.ci" },
   ]);
-  assert.deepEqual(endpoints, [{ url: "https://x.node.nos.ci", port: 1, opId: "a" }]);
+  // A duplicate that says online makes the one endpoint online.
+  assert.deepEqual(endpoints, [{ url: "https://x.node.nos.ci", port: 1, opId: "a", online: true }]);
   assert.equal(invalid, 4);
   assert.deepEqual(normalizeEndpoints(undefined), { endpoints: [], invalid: 0 });
+});
+
+test("normalizeEndpoints: online only when Nosana says exactly true - absent, false or anything else is offline", () => {
+  const { endpoints } = normalizeEndpoints([
+    { opId: "a", port: 1, url: "https://a.node.nos.ci", online: true },
+    { opId: "b", port: 1, url: "https://b.node.nos.ci", online: false },
+    { opId: "c", port: 1, url: "https://c.node.nos.ci" },
+    { opId: "d", port: 1, url: "https://d.node.nos.ci", online: "true" as never },
+    { opId: "e", port: 1, url: "https://e.node.nos.ci", online: 1 as never },
+  ]);
+  assert.deepEqual(
+    endpoints.map((e) => [e.opId, e.online]),
+    [
+      ["a", true],
+      ["b", false],
+      ["c", false],
+      ["d", false],
+      ["e", false],
+    ],
+  );
 });
 
 test("readDeployment: an API failure throws (strict read) and an unknown status throws", async () => {

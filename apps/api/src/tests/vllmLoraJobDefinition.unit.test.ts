@@ -26,7 +26,7 @@ import {
 import { TRAINING_LORA_RANKS } from "../services/trainingJobDefinition.js";
 
 // The vLLM job definition of a deployment that serves a fine-tuned adapter,
-// and proof that every other deployment's definition is what it always was.
+// and proof that every other deployment's definition is the pinned one.
 
 const BASE: ModelDeploymentConfig = {
   modelId: "m",
@@ -50,12 +50,15 @@ const ADAPTER: VllmAdapterConfig = {
 // Without an adapter: byte for byte what it was
 // ============================================
 
-test("without an adapter the definition is byte for byte the one produced before adapters existed", () => {
-  // Literal strings, taken from the generator as it stood at 5dcbf15.
+test("without an adapter the definition is byte for byte the pinned one", () => {
+  // Literal strings. Against the generator as it stood at 5dcbf15, vLLM
+  // differs only in `expose` (port 8000 now carries the /health check);
+  // Ollama was rewritten for the first paid run (pinned image, shell
+  // entrypoint, health check, only the variables Ollama reads).
   const pinned: Array<[ModelDeploymentConfig, string]> = [
     [
       BASE,
-      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.0","cmd":["--model","microsoft/Phi-3-mini-4k-instruct","--host","0.0.0.0","--port","8000","--max-model-len","4096","--gpu-memory-utilization","0.9"],"gpu":true,"expose":[8000]}}]}',
+      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.0","cmd":["--model","microsoft/Phi-3-mini-4k-instruct","--host","0.0.0.0","--port","8000","--max-model-len","4096","--gpu-memory-utilization","0.9"],"gpu":true,"expose":[{"port":8000,"type":"api","health_checks":[{"type":"http","method":"GET","path":"/health","expected_status":200,"continuous":true}]}]}}]}',
     ],
     [
       {
@@ -64,15 +67,15 @@ test("without an adapter the definition is byte for byte the one produced before
         hfToken: "hf_exampleTokenForTests0123",
         quantization: "awq",
       },
-      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.3","cmd":["--model","meta-llama/Meta-Llama-3.1-8B-Instruct","--host","0.0.0.0","--port","8000","--max-model-len","4096","--gpu-memory-utilization","0.9","--quantization","awq","--enable-auto-tool-choice","--tool-call-parser","llama3_json"],"gpu":true,"expose":[8000],"env":{"HF_TOKEN":"hf_exampleTokenForTests0123"}}}]}',
+      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.3","cmd":["--model","meta-llama/Meta-Llama-3.1-8B-Instruct","--host","0.0.0.0","--port","8000","--max-model-len","4096","--gpu-memory-utilization","0.9","--quantization","awq","--enable-auto-tool-choice","--tool-call-parser","llama3_json"],"gpu":true,"expose":[{"port":8000,"type":"api","health_checks":[{"type":"http","method":"GET","path":"/health","expected_status":200,"continuous":true}]}],"env":{"HF_TOKEN":"hf_exampleTokenForTests0123"}}}]}',
     ],
     [
       { ...BASE, hfModelId: "Qwen/Qwen2.5-7B-Instruct", maxTokens: 8192, gpuMemoryUtilization: 0.85 },
-      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.0","cmd":["--model","Qwen/Qwen2.5-7B-Instruct","--host","0.0.0.0","--port","8000","--max-model-len","8192","--gpu-memory-utilization","0.85","--enable-auto-tool-choice","--tool-call-parser","hermes"],"gpu":true,"expose":[8000]}}]}',
+      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.0","cmd":["--model","Qwen/Qwen2.5-7B-Instruct","--host","0.0.0.0","--port","8000","--max-model-len","8192","--gpu-memory-utilization","0.85","--enable-auto-tool-choice","--tool-call-parser","hermes"],"gpu":true,"expose":[{"port":8000,"type":"api","health_checks":[{"type":"http","method":"GET","path":"/health","expected_status":200,"continuous":true}]}]}}]}',
     ],
     [
       { ...BASE, hfModelId: "meta-llama/Meta-Llama-3.1-8B-Instruct", engine: "ollama" },
-      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"ollama-inference","args":{"image":"ollama/ollama:latest","cmd":["/bin/sh","-c","ollama serve & sleep 5 && ollama pull llama3.1:8b && wait"],"gpu":true,"expose":[11434],"env":{"OLLAMA_HOST":"0.0.0.0:11434","OLLAMA_NUM_CTX":"4096","OLLAMA_NUM_GPU":"999","OLLAMA_KEEP_ALIVE":"24h"}}}]}',
+      '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"ollama-inference","args":{"image":"docker.io/ollama/ollama:0.32.6","entrypoint":["/bin/sh","-c"],"cmd":["OLLAMA_HOST=127.0.0.1:11435 ollama serve & pid=$!; i=0; until OLLAMA_HOST=127.0.0.1:11435 ollama list >/dev/null 2>&1; do i=$((i+1)); [ \\"$i\\" -ge 60 ] && exit 1; sleep 1; done; OLLAMA_HOST=127.0.0.1:11435 ollama pull llama3.1:8b || exit 1; kill \\"$pid\\"; wait \\"$pid\\"; exec ollama serve"],"gpu":true,"expose":[{"port":11434,"type":"api","health_checks":[{"type":"http","method":"GET","path":"/api/tags","expected_status":200,"continuous":true}]}],"env":{"OLLAMA_HOST":"0.0.0.0:11434","OLLAMA_KEEP_ALIVE":"24h"}}}]}',
     ],
   ];
   for (const [config, expected] of pinned) {
@@ -106,7 +109,7 @@ test("with an adapter: the bootstrap replaces the entrypoint and vLLM gets LoRA,
   ]);
   assert.equal(args.image, plain.image);
   assert.equal(args.gpu, true);
-  assert.deepEqual(args.expose, [8000]);
+  assert.deepEqual(args.expose, plain.expose, "the same port and health check as a base deployment");
   assert.deepEqual(args.env, {
     WHEELSAI_ADAPTER_URL: ADAPTER.downloadUrl,
     WHEELSAI_ADAPTER_DIR: "/adapters/ft-support-tone",

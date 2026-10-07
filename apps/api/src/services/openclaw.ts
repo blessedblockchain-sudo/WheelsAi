@@ -210,7 +210,8 @@ export function shouldRollBackTelegramRegistration(
   return storedConfig === null || String(storedConfig.botToken ?? "") !== botToken;
 }
 
-function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
+/** Exported for the job-definition schema test. */
+export function buildOpenClawJobDefinition(deployment: OpenClawDeploymentRecord): {
   definition: NosanaJobDefinition;
   marketTier: string;
 } {

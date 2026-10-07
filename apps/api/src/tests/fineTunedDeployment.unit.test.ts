@@ -541,7 +541,7 @@ test("create without fineTunedModelId: the definition sent to Nosana has no trac
   const [definition] = nosana.calls.find((call) => call.op === "createDeployment")!.args;
   assert.equal(
     JSON.stringify(definition),
-    '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.0","cmd":["--model","microsoft/Phi-3-mini-4k-instruct","--host","0.0.0.0","--port","8000","--max-model-len","4096","--gpu-memory-utilization","0.9"],"gpu":true,"expose":[8000]}}]}',
+    '{"version":"0.1","type":"container","meta":{"trigger":"wheelsai"},"ops":[{"type":"container/run","id":"vllm-inference","args":{"image":"vllm/vllm-openai:v0.6.0","cmd":["--model","microsoft/Phi-3-mini-4k-instruct","--host","0.0.0.0","--port","8000","--max-model-len","4096","--gpu-memory-utilization","0.9"],"gpu":true,"expose":[{"port":8000,"type":"api","health_checks":[{"type":"http","method":"GET","path":"/health","expected_status":200,"continuous":true}]}]}}]}',
   );
   await app.close();
 });

@@ -11,10 +11,14 @@
  * submitted job definition carries, and reports the job the way the service
  * expects to read it from Nosana:
  *
- *   - the deployment goes STARTING -> RUNNING -> STOPPED, and lists one job;
- *   - GET .../jobs/<job> answers state, timeStart, timeEnd (unix seconds) and,
- *     once the process has exited, jobResult.opStates[0] with the exit code
- *     and every line the process printed;
+ *   - the deployment is RUNNING from the start request (as on Nosana), lists
+ *     one job (GET .../jobs) once the node takes it, and is STOPPED when the
+ *     process has exited;
+ *   - GET .../jobs/<job> answers in the live shape: state a number (1
+ *     running, 2 completed, 3 stopped), timeStart unix seconds, timeEnd 0,
+ *     and, once the process has exited, jobResult with startTime and endTime
+ *     in milliseconds and opStates[0] with the exit code and every line the
+ *     process printed ({log, type, timestamp});
  *   - a stop request sends the process SIGTERM (the trainer's exit 30).
  *
  * What it is NOT: Nosana, a container runtime or a GPU. The job result's
@@ -73,7 +77,7 @@ export interface LocalNodeRun {
   signal: string | null;
   timeStart: number | null;
   timeEnd: number | null;
-  lines: Array<{ type: "stdout" | "stderr"; log: string }>;
+  lines: Array<{ type: "stdout" | "stderr"; log: string; timestamp: string }>;
   stopSignalledAt: number | null;
 }
 
@@ -100,6 +104,9 @@ export interface LocalNode {
   runFor(deploymentName: string): LocalNodeRun | undefined;
   close(): Promise<void>;
 }
+
+/** The host node the local runs report. */
+const NODE = "LocaLCpuNode1111111111111111111111111111111";
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -151,15 +158,18 @@ export async function startLocalNode(options: LocalNodeOptions): Promise<LocalNo
   const publishJob = (run: LocalNodeRun, state: "RUNNING" | "COMPLETED" | "STOPPED") => {
     if (!run.jobAddress) return;
     fake.setJob(run.deploymentId, run.jobAddress, {
-      state,
-      node: "LocaLCpuNode1111111111111111111111111111111",
+      state: { RUNNING: 1, COMPLETED: 2, STOPPED: 3 }[state],
+      node: NODE,
       timeStart: run.timeStart ?? 0,
-      timeEnd: run.timeEnd ?? 0,
+      // Nosana reports 0 here for a job that ended; the end is in the result.
+      timeEnd: 0,
       // The result exists once the process has exited, not before.
       jobResult:
         run.phase === "exited"
           ? {
               status: run.exitCode === 0 ? "success" : "failed",
+              startTime: (run.timeStart ?? 0) * 1000,
+              endTime: (run.timeEnd ?? 0) * 1000,
               opStates: [
                 {
                   operationId: "train",
@@ -174,7 +184,7 @@ export async function startLocalNode(options: LocalNodeOptions): Promise<LocalNo
   };
 
   const take = (deployment: FakeDeployment, run: LocalNodeRun, behaviour: LocalNodeBehaviour) => {
-    if (closed || deployment.status !== "STARTING") return;
+    if (closed || deployment.status !== "RUNNING") return;
     const env: Record<string, string> = {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? tmpdir(),
@@ -199,16 +209,7 @@ export async function startLocalNode(options: LocalNodeOptions): Promise<LocalNo
     run.jobAddress = fakeAddress();
     run.phase = "running";
     run.timeStart = Math.floor(Date.now() / 1000);
-    deployment.status = "RUNNING";
-    deployment.jobs.push({
-      job: run.jobAddress,
-      status: "RUNNING",
-      tx: fakeAddress(),
-      deployment: deployment.id,
-      revision: 1,
-      created_at: new Date().toISOString(),
-    });
-    deployment.updated_at = new Date().toISOString();
+    fake.addJob(deployment.id, { job: run.jobAddress, state: "RUNNING", node: NODE, time_start: run.timeStart });
     publishJob(run, "RUNNING");
     log(
       `[node] ${deployment.name}: a node took the job; trainer started ` +
@@ -226,7 +227,7 @@ export async function startLocalNode(options: LocalNodeOptions): Promise<LocalNo
       return (chunk: Buffer) => {
         const parts = (rest + chunk.toString("utf8")).split("\n");
         rest = parts.pop() ?? "";
-        for (const line of parts) run.lines.push({ type, log: line });
+        for (const line of parts) run.lines.push({ type, log: line, timestamp: new Date().toISOString() });
       };
     };
     child.stdout?.on("data", collect("stdout"));
@@ -239,8 +240,7 @@ export async function startLocalNode(options: LocalNodeOptions): Promise<LocalNo
       run.signal = signal;
       run.timeEnd = Math.max(Math.floor(Date.now() / 1000), run.timeStart ?? 0);
       const stopped = run.stopSignalledAt !== null;
-      const job = deployment.jobs.find((entry) => entry.job === run.jobAddress);
-      if (job) job.status = stopped ? "STOPPED" : "COMPLETED";
+      if (run.jobAddress) fake.updateJob(deployment.id, run.jobAddress, { state: stopped ? "STOPPED" : "COMPLETED" });
       publishJob(run, stopped ? "STOPPED" : "COMPLETED");
       // A SIMPLE deployment is over when its one job is.
       deployment.status = "STOPPED";
@@ -257,7 +257,8 @@ export async function startLocalNode(options: LocalNodeOptions): Promise<LocalNo
         continue;
       }
       let run = runs.get(deployment.id);
-      if (!run && deployment.status === "STARTING") {
+      // Started (RUNNING at once on Nosana) and no node has taken it yet.
+      if (!run && deployment.status === "RUNNING" && deployment.jobs.length === 0) {
         const behaviour = next ?? {};
         next = null;
         const definition = submitted(deployment);

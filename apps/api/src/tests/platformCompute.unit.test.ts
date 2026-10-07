@@ -772,7 +772,7 @@ test("wired to the real client: balance, costs, untracked and unreachable rows, 
   ]);
   assert.deepEqual(
     body.nosana.untracked.map((d) => [d.id, d.status, d.row]),
-    [[ghostId, "starting", { scope: "model", rowId: ghostRow, run: 1 }]],
+    [[ghostId, "running", { scope: "model", rowId: ghostRow, run: 1 }]],
     "the row-tracked and the orphan-recorded deployments are not untracked",
   );
 
@@ -802,7 +802,7 @@ test("wired to the real client: balance, costs, untracked and unreachable rows, 
   assert.equal(fake.vaultCalls(), 0);
   assert.equal(rpc.count(), rpcBefore, "no Solana RPC request with API-key access");
   assert.ok(!JSON.stringify(body).includes(API_KEY), "the key never appears in the view");
-  assert.equal(fake.deployments.get(ghostId)!.status, "STARTING", "report-only: the untracked deployment is not stopped");
+  assert.equal(fake.deployments.get(ghostId)!.status, "RUNNING", "report-only: the untracked deployment is not stopped");
 });
 
 test("wired to the real client: a rejected key and a low balance read as unreadable and blocked", async () => {

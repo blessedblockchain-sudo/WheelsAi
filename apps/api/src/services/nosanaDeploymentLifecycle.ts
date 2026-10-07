@@ -28,6 +28,11 @@
  *   Whether the on-chain program debits exactly jobPrice x 1.10 per second could
  *   not be proven without a funded mainnet run, so funding deliberately rounds up
  *   and the surplus is recovered by `vault.withdraw` when the deployment stops.
+ *   These NOS figures move with the NOS price (Nosana derives them from the
+ *   market's USD price): on 2026-10-07 the same 24 / 202 / 757 matched the
+ *   fee-INCLUSIVE `nos_job_price_per_second`, not the reward. If jobPrice
+ *   already carries the fee, this path over-funds by 10% - still the safe
+ *   direction. See nosanaMarkets.ts.
  *
  * Failure model
  * -------------
@@ -70,15 +75,31 @@ const BPS_DENOMINATOR = 10_000n;
 
 export type DeploymentStrategyName = "SIMPLE-EXTEND" | "INFINITE" | "SIMPLE";
 
+/**
+ * One endpoint of a deployment. Nosana derives them when the deployment is
+ * created, one URL per exposed port of each op, load-balanced across the
+ * replicas, with `online: false`. `online` turns true only once a node's
+ * tunnel is up for a RUNNING job (deployment-manager 127f915,
+ * deploymentCreate.factory.ts and endpoints/deploymentEndpointStatus.ts).
+ */
 export interface SdkEndpointLike {
   opId: string;
   port: number | string;
   url: string;
+  online?: boolean;
 }
 
+/**
+ * One job of a deployment. GET /deployments/{id}/jobs sends `state` (QUEUED,
+ * RUNNING, COMPLETED, STOPPED), `node` and `time_start` (unix seconds); the
+ * deployment body of older backends embedded rows with `status` instead.
+ */
 export interface SdkJobLike {
   job: string;
-  status: string;
+  state?: string;
+  status?: string;
+  node?: string | null;
+  time_start?: number | null;
   tx?: string;
   deployment?: string;
   revision?: number;
@@ -128,13 +149,29 @@ export interface CreateDeploymentBody {
   /** Keeps the job definition (and any secrets in it) off public IPFS. */
   confidential: boolean;
   job_definition: unknown;
+  /**
+   * Nosana keeps it unique per account: a second create with the same key
+   * answers 409, and GET /deployments?idempotency_key= finds the one that
+   * exists. Released only by a DELETE, which we never send, so it is the
+   * per-run name and never reused.
+   */
+  idempotency_key?: string;
 }
+
+/** What Nosana accepts as an idempotency_key (DeploymentCreateBody in its OpenAPI document). */
+export const IDEMPOTENCY_KEY_PATTERN = /^[a-zA-Z0-9:/_.-]{1,128}$/;
 
 export interface NosanaDeploymentsPort {
   create(body: CreateDeploymentBody): Promise<SdkDeploymentLike>;
   get(id: string): Promise<SdkDeploymentLike>;
   /** market.jobPrice: NOS base units (1e-6 NOS) per second. */
   getMarketJobPrice(marketAddress: string): Promise<bigint>;
+  /**
+   * The id of the deployment created with this idempotency_key, or null when
+   * there is none. Throws when Nosana cannot be asked. Without it a create
+   * that threw is only reported (mayExistOnNosana), never looked up.
+   */
+  findByIdempotencyKey?(key: string): Promise<string | null>;
 }
 
 // ============================================
@@ -386,11 +423,20 @@ export interface EndpointSnapshot {
   url: string;
   port: number | string;
   opId: string;
+  /**
+   * True only when Nosana reports `online: true`: a node serves this URL now.
+   * Anything else (false, absent, not a boolean) is offline.
+   */
+  online: boolean;
 }
 
 export interface JobSnapshot {
   job: string;
+  /** Nosana's job state as sent (QUEUED, RUNNING, COMPLETED, STOPPED). */
   status: string;
+  /** Host node; null until a node has taken the job. */
+  node?: string | null;
+  createdAt?: string | null;
 }
 
 export interface EventSnapshot {
@@ -404,8 +450,14 @@ export interface DeploymentSnapshot {
   id: string;
   status: DeploymentState;
   endpoints: EndpointSnapshot[];
+  /**
+   * Newest first. The deployment body no longer carries jobs or events: they
+   * come from GET .../jobs and .../events, and are empty when the read was
+   * not asked for them (NosanaClient.getDeploymentStatus `include`).
+   */
   jobs: JobSnapshot[];
   replicas: number;
+  /** Newest first; see `jobs`. */
   events: EventSnapshot[];
   /** Endpoints the SDK returned that were not valid https URLs (dropped). */
   invalidEndpointCount: number;
@@ -413,13 +465,14 @@ export interface DeploymentSnapshot {
 
 /**
  * Keeps only real https URLs exactly as Nosana reported them (trailing slash
- * trimmed). Nothing is ever constructed from an id or a hostname pattern.
+ * trimmed), with whether each is online. Nothing is ever constructed from an
+ * id or a hostname pattern.
  */
 export function normalizeEndpoints(
   raw: SdkEndpointLike[] | undefined,
 ): { endpoints: EndpointSnapshot[]; invalid: number } {
   const endpoints: EndpointSnapshot[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, EndpointSnapshot>();
   let invalid = 0;
 
   for (const endpoint of raw ?? []) {
@@ -435,10 +488,22 @@ export function normalizeEndpoints(
       continue;
     }
     const clean = url.replace(/\/+$/, "");
+    const online = endpoint.online === true;
     const key = `${clean}|${endpoint.port}|${endpoint.opId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    endpoints.push({ url: clean, port: endpoint.port, opId: String(endpoint.opId ?? "") });
+    const earlier = seen.get(key);
+    if (earlier) {
+      // The same endpoint twice: online if either copy says so.
+      earlier.online = earlier.online || online;
+      continue;
+    }
+    const snapshot: EndpointSnapshot = {
+      url: clean,
+      port: endpoint.port,
+      opId: String(endpoint.opId ?? ""),
+      online,
+    };
+    seen.set(key, snapshot);
+    endpoints.push(snapshot);
   }
   return { endpoints, invalid };
 }
@@ -449,20 +514,35 @@ function toIso(value: string | Date | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+/** Job rows (GET .../jobs, or a legacy body's `jobs`) as the snapshot carries them. */
+export function toJobSnapshots(rows: readonly SdkJobLike[]): JobSnapshot[] {
+  return rows.map((j) => ({
+    job: String(j.job),
+    status: String(j.state ?? j.status ?? ""),
+    ...(j.node !== undefined ? { node: typeof j.node === "string" && j.node !== "" ? j.node : null } : {}),
+    ...(j.created_at !== undefined ? { createdAt: toIso(j.created_at) } : {}),
+  }));
+}
+
+/** Event rows (GET .../events, or a legacy body's `events`) as the snapshot carries them. */
+export function toEventSnapshots(rows: readonly SdkEventLike[]): EventSnapshot[] {
+  return rows.map((e) => ({
+    type: String(e.type),
+    message: String(e.message),
+    createdAt: toIso(e.created_at),
+    ...(e.tx ? { tx: e.tx } : {}),
+  }));
+}
+
 export function snapshotFromSdk(deployment: SdkDeploymentLike): DeploymentSnapshot {
   const { endpoints, invalid } = normalizeEndpoints(deployment.endpoints);
   return {
     id: String(deployment.id),
     status: normalizeStatus(deployment.status),
     endpoints,
-    jobs: (deployment.jobs ?? []).map((j) => ({ job: String(j.job), status: String(j.status) })),
+    jobs: toJobSnapshots(deployment.jobs ?? []),
     replicas: deployment.replicas,
-    events: (deployment.events ?? []).map((e) => ({
-      type: String(e.type),
-      message: String(e.message),
-      createdAt: toIso(e.created_at),
-      ...(e.tx ? { tx: e.tx } : {}),
-    })),
+    events: toEventSnapshots(deployment.events ?? []),
     invalidEndpointCount: invalid,
   };
 }
@@ -533,18 +613,25 @@ async function bestEffortCleanup(
   port: NosanaDeploymentsPort,
   deployment: SdkDeploymentLike,
   funding: DeploymentFunding,
+  stopRetry: StopRetryOptions | undefined,
+  /** A start was sent for this deployment and its outcome is not known. */
+  startAttempted = false,
 ): Promise<CleanupReport> {
   const errors: string[] = [];
-  let stopped = false;
-  try {
-    await deployment.stop();
-    stopped = true;
-  } catch (err) {
-    errors.push(`stop: ${errMessage(err)}`);
-  }
+  const id = String(deployment.id);
+  // A start that failed may still have reached Nosana, so a refusal while it
+  // reads DRAFT or STARTING is waited out like any other (stopWithRetry).
+  const stop = await stopWithRetry(port, id, deployment, stopRetry);
+  // A DRAFT is not "stopped": a start still in flight could yet move it, so
+  // it is left for the sweep to read again (with credits, `startAttempted`
+  // keeps it unreleased too: see ReleaseContext).
+  const stopped =
+    stop.accepted || (stop.state !== null && stop.state !== "draft" && NO_STOP_NEEDED.has(stop.state));
+  if (!stop.accepted && stop.error !== undefined) errors.push(`stop: ${errMessage(stop.error)}`);
   const withdraw = await funding.release(
     deployment,
-    await stateForRelease(port, String(deployment.id), funding, null),
+    await stateForRelease(port, id, funding, null),
+    { stopAccepted: stop.accepted, startAttempted },
   );
   if (withdraw.error) errors.push(`withdraw: ${withdraw.error}`);
   return { stopped, reclaimed: withdraw.reclaimed, errors };
@@ -565,6 +652,33 @@ export interface ReleaseOutcome {
   reclaimed: boolean;
   remainingNosBaseUnits: bigint | null;
   error?: string;
+}
+
+/** What the lifecycle did just before it asked whether a deployment is released. */
+export interface ReleaseContext {
+  /** Nosana accepted a stop of this deployment in the same call. */
+  stopAccepted?: boolean;
+  /**
+   * A start was sent for this deployment and may still land: the call failed
+   * or passed its deadline, which does not cancel it. A deployment that still
+   * reads DRAFT is then not released with credits - Nosana refuses a stop of a
+   * DRAFT, so one that starts afterwards would run with nobody watching it.
+   */
+  startAttempted?: boolean;
+}
+
+/**
+ * How long after a failed start a deployment that still reads DRAFT is kept
+ * for the reclaim sweep to read again. Twice the longest deadline a Nosana
+ * call may be given (NOSANA_SDK_TIMEOUT_MS, at most 300 000 ms), and the
+ * runtime's own limit on waiting for an answer: no request sent before the
+ * failure is still on its way after this.
+ */
+export const DRAFT_START_HOLD_MS = 10 * 60_000;
+
+/** Whether a start sent for a run that ended at `endedAt` may still land. */
+export function startMayBeInFlight(endedAt: Date | null | undefined, now: Date): boolean {
+  return endedAt != null && now.getTime() - endedAt.getTime() < DRAFT_START_HOLD_MS;
 }
 
 export interface FundingPrepareParams {
@@ -603,9 +717,14 @@ export interface DeploymentFunding {
   /**
    * After a stop (or instead of one). `state` is what Nosana reports NOW, read
    * again through the port by the lifecycle; null when that read failed or was
-   * not needed. vault ignores it - the vault balance is its authority.
+   * not needed. `context.stopAccepted`: Nosana accepted a stop in this call.
+   * vault ignores both - the vault balance is its authority.
    */
-  release(deployment: SdkDeploymentLike, state: DeploymentState | null): Promise<ReleaseOutcome>;
+  release(
+    deployment: SdkDeploymentLike,
+    state: DeploymentState | null,
+    context?: ReleaseContext,
+  ): Promise<ReleaseOutcome>;
   /** Before a scale-up. vault: fund the added replicas. credits: the balance gate. */
   fundExtraReplicas(
     deployment: SdkDeploymentLike,
@@ -743,10 +862,19 @@ export interface CreditsFundingDeps {
 
 /**
  * In credits mode Nosana still owes nothing back to us; "released" means it is
- * not running the deployment and will not schedule more work for it - every
- * state except these three. A halted state (error, insufficient_funds) counts
- * as released: nothing is listed for it any more, and treating it otherwise
- * would block a restart for ever in exactly the credits-ran-out case.
+ * not running the deployment and will not schedule more work for it. These
+ * three states never are.
+ *
+ * A halted state (error, insufficient_funds) is released only once Nosana has
+ * accepted a stop of it (or reports it stopping, stopped or archived). The
+ * Deployment Manager treats INSUFFICIENT_FUNDS as recoverable: it keeps
+ * retrying the LIST with a back-off for about 13 days and puts the deployment
+ * back to RUNNING after a credit top-up of the shared account, and a job that
+ * was listed before the funds ran out keeps running to its timeout
+ * (deployment-manager 127f915, tasks/task/retry/index.ts). Counting a halted
+ * deployment released without a stop let one refused stop leave it to be
+ * revived, untracked and unbilled. A stop is accepted from both halted states,
+ * so a restart is not blocked by this.
  */
 const CREDITS_HELD: ReadonlySet<DeploymentState> = new Set(["starting", "running", "stopping"]);
 
@@ -815,7 +943,7 @@ export function creditsFunding(deps: CreditsFundingDeps): DeploymentFunding {
       // Nosana reserves credits itself when it lists the job.
     },
 
-    async release(_deployment, state) {
+    async release(_deployment, state, context = {}) {
       if (state === null) {
         return {
           reclaimed: false,
@@ -825,6 +953,20 @@ export function creditsFunding(deps: CreditsFundingDeps): DeploymentFunding {
       }
       if (CREDITS_HELD.has(state)) {
         return { reclaimed: false, remainingNosBaseUnits: null, error: `still ${state} on Nosana` };
+      }
+      if (state === "draft" && context.startAttempted === true) {
+        return {
+          reclaimed: false,
+          remainingNosBaseUnits: null,
+          error: "still draft on Nosana while a start may be in flight",
+        };
+      }
+      if (HALTED.has(state) && context.stopAccepted !== true) {
+        return {
+          reclaimed: false,
+          remainingNosBaseUnits: null,
+          error: `still ${state} on Nosana and no stop was accepted; it resumes if credits are added`,
+        };
       }
       return { reclaimed: true, remainingNosBaseUnits: 0n };
     },
@@ -897,15 +1039,27 @@ export interface CreateAndStartParams {
   fundSeconds: number;
   /**
    * Default "SIMPLE-EXTEND": the Deployment Manager schedules LIST then EXTEND
-   * tasks (Task.task: "LIST" | "EXTEND" | "STOP" in the SDK schema), so ONE job
-   * is kept alive by extending it before `timeout` elapses. That keeps the model
-   * loaded (no cold start per period) and bounds up-front escrow to one short
-   * timeout instead of 30 days. "SIMPLE" runs once and stops at the timeout
-   * (batch work); "INFINITE" re-lists a fresh job when one ends.
+   * tasks, so ONE job is kept alive by extending it by a full timeout shortly
+   * before `timeout` elapses (at timeout minus 10% of it, clamped to 1-5
+   * minutes). That keeps the model loaded (no cold start per period) and
+   * bounds up-front escrow to one short timeout instead of 30 days. "SIMPLE"
+   * runs once and ends at the timeout, and the deployment becomes STOPPED
+   * when no job is left (batch work); "INFINITE" lists a replacement job
+   * before the old one ends. Source: nosana-deployment-manager at 127f915,
+   * strategies/simple-extended/jobRunningUpdate.ts and
+   * tasks/utils/getNextExtendTime.ts; see config/nosanaDeploy.ts.
    */
   strategy?: DeploymentStrategyName;
   solFeeLamportsPerReplica?: bigint;
   networkFeeBps?: number;
+  /**
+   * Sent as the create's idempotency_key. Default: `name`, which every caller
+   * makes per run (modelDeploymentNosanaName, the training name, the agent
+   * name). Must match IDEMPOTENCY_KEY_PATTERN, or nothing is created.
+   */
+  idempotencyKey?: string;
+  /** How a stop Nosana refuses while DRAFT or STARTING is retried during cleanup. */
+  stopRetry?: StopRetryOptions;
 }
 
 export interface CreateAndStartResult {
@@ -926,6 +1080,11 @@ export interface FundedCreateResult {
   fundingKind: FundingKind;
   /** credits: what the gate estimated for this deployment. vault: null. */
   estimateMicroUsd: bigint | null;
+  /**
+   * Set when the create call threw (or answered 409) and the deployment it had
+   * made was found by its idempotency_key and taken on: what the create said.
+   */
+  recoveredFromCreateError?: string;
 }
 
 export async function createAndStartDeployment(
@@ -951,6 +1110,12 @@ export async function createAndStartDeployment(
     );
   }
   const strategy = params.strategy ?? "SIMPLE-EXTEND";
+  const idempotencyKey = params.idempotencyKey ?? params.name;
+  if (!IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+    throw new RangeError(
+      `idempotency key '${idempotencyKey}' is not 1-128 of [a-zA-Z0-9:/_.-]; Nosana would refuse the create`,
+    );
+  }
 
   // Funding first: a bad/unknown market (vault) or a balance that does not
   // cover the deployment (credits) must fail BEFORE anything is created.
@@ -963,7 +1128,11 @@ export async function createAndStartDeployment(
     networkFeeBps: params.networkFeeBps,
   });
 
+  // Create and start stay two calls (no autostart): a create whose answer is
+  // lost leaves an unstarted DRAFT, which costs nothing, where an autostarted
+  // one would already be listing jobs on platform credits.
   let deployment: SdkDeploymentLike;
+  let recoveredFromCreateError: string | undefined;
   try {
     deployment = await port.create({
       name: params.name,
@@ -973,22 +1142,23 @@ export async function createAndStartDeployment(
       strategy,
       confidential: true,
       job_definition: params.definition,
+      idempotency_key: idempotencyKey,
     });
   } catch (err) {
-    // No id came back, but the deployment MAY exist (see mayExistOnNosana):
-    // the name is all a later look-up has to go on.
-    throw new NosanaLifecycleError(
-      `Nosana deployment creation failed: ${errMessage(err)}`,
-      "create",
-      { cause: err, deploymentName: params.name, mayExistOnNosana: true, ...keepRefusalCode(err) },
-    );
+    deployment = await recoverLostCreate(port, err, {
+      name: params.name,
+      idempotencyKey,
+      funder,
+      stopRetry: params.stopRetry,
+    });
+    recoveredFromCreateError = errMessage(err);
   }
   const deploymentId = String(deployment.id);
 
   try {
     await funder.fund(deployment, funding);
   } catch (err) {
-    const cleanup = await bestEffortCleanup(port, deployment, funder);
+    const cleanup = await bestEffortCleanup(port, deployment, funder, params.stopRetry);
     throw new NosanaLifecycleError(
       `Funding the vault of Nosana deployment ${deploymentId} failed: ${errMessage(err)} ` +
         `(cleanup: stopped=${cleanup.stopped}, reclaimed=${cleanup.reclaimed})`,
@@ -1000,7 +1170,7 @@ export async function createAndStartDeployment(
   try {
     await deployment.start();
   } catch (err) {
-    const cleanup = await bestEffortCleanup(port, deployment, funder);
+    const cleanup = await bestEffortCleanup(port, deployment, funder, params.stopRetry, true);
     throw new NosanaLifecycleError(
       `Starting Nosana deployment ${deploymentId} failed: ${errMessage(err)} ` +
         `(cleanup: stopped=${cleanup.stopped}, reclaimed=${cleanup.reclaimed})`,
@@ -1016,7 +1186,71 @@ export async function createAndStartDeployment(
     strategy,
     fundingKind: funder.kind,
     estimateMicroUsd,
+    ...(recoveredFromCreateError !== undefined ? { recoveredFromCreateError } : {}),
   };
+}
+
+/**
+ * The create call threw: the request may have timed out, the SDK may have
+ * failed to parse an answer it got after the server had created the
+ * deployment, or Nosana answered 409 because an earlier attempt for this run
+ * already did. The deployment, if any, is found by its idempotency_key - the
+ * per-run name, so whatever it finds was made for this very run - and taken on
+ * when it is still an unstarted DRAFT. Otherwise this throws:
+ *   - nothing found, or Nosana cannot be asked: mayExistOnNosana, no id (a
+ *     create still in flight on the server may yet make one);
+ *   - found but unreadable: the id, for the caller to keep for the sweep;
+ *   - found and no longer a DRAFT: stopped and released as after a failed
+ *     start, and the id is carried.
+ */
+async function recoverLostCreate(
+  port: NosanaDeploymentsPort,
+  createError: unknown,
+  args: {
+    name: string;
+    idempotencyKey: string;
+    funder: DeploymentFunding;
+    stopRetry: StopRetryOptions | undefined;
+  },
+): Promise<SdkDeploymentLike> {
+  const failed = (message: string, extra: { deploymentId?: string; cleanup?: CleanupReport } = {}) =>
+    new NosanaLifecycleError(`Nosana deployment creation failed: ${errMessage(createError)}${message}`, "create", {
+      cause: createError,
+      deploymentName: args.name,
+      // Without an id the caller has only the name and the key to look for.
+      mayExistOnNosana: extra.deploymentId === undefined,
+      ...extra,
+      ...keepRefusalCode(createError),
+    });
+  if (!port.findByIdempotencyKey) throw failed("");
+
+  let id: string | null;
+  try {
+    id = await port.findByIdempotencyKey(args.idempotencyKey);
+  } catch (lookupError) {
+    throw failed(`; looking it up by its idempotency key failed too: ${errMessage(lookupError)}`);
+  }
+  if (id === null) throw failed(" (no deployment holds its idempotency key)");
+
+  let deployment: SdkDeploymentLike;
+  let state: DeploymentState;
+  try {
+    deployment = await port.get(id);
+    state = normalizeStatus(deployment.status);
+  } catch (readError) {
+    throw failed(`; deployment ${id} holds its idempotency key but could not be read: ${errMessage(readError)}`, {
+      deploymentId: id,
+    });
+  }
+  if (state === "draft") return deployment;
+
+  // Not ours to start: whatever moved it, it must not run unaccounted for.
+  const cleanup = await bestEffortCleanup(port, deployment, args.funder, args.stopRetry);
+  throw failed(
+    `; deployment ${id} holds its idempotency key and is already ${state} ` +
+      `(cleanup: stopped=${cleanup.stopped}, reclaimed=${cleanup.reclaimed})`,
+    { deploymentId: id, cleanup },
+  );
 }
 
 // ============================================
@@ -1033,6 +1267,12 @@ export interface StopAndReclaimResult {
   reclaimed: boolean;
   remainingNosBaseUnits: bigint | null;
   reclaimError?: string;
+  /**
+   * Nosana refused the stop of a halted (ERROR / INSUFFICIENT_FUNDS)
+   * deployment. Nothing is serving, but with API-key access it is not released
+   * either (creditsFunding): the sweep retries the stop.
+   */
+  stopRefused?: boolean;
 }
 
 const NO_STOP_NEEDED: ReadonlySet<DeploymentState> = new Set([
@@ -1043,23 +1283,107 @@ const NO_STOP_NEEDED: ReadonlySet<DeploymentState> = new Set([
 ]);
 
 /**
- * States in which the Deployment Manager has already given up on the deployment:
- * a stop is attempted (jobs may linger) but a refusal is not fatal - the vault
- * is reclaimed regardless and the status worker moves the row to `failed`.
+ * States in which the Deployment Manager has stopped scheduling the deployment
+ * for now: a stop is attempted (jobs may linger, and INSUFFICIENT_FUNDS
+ * resumes after a top-up), and a refusal does not stop the user - the row
+ * still leaves service - but with credits it is not released until a stop is
+ * accepted (see CREDITS_HELD).
  */
 const HALTED: ReadonlySet<DeploymentState> = new Set(["error", "insufficient_funds"]);
 
 /**
+ * States in which Nosana refuses a stop (HTTP 500 INCORRECT_STATE) for now:
+ * STARTING turns RUNNING as soon as the LIST task is scheduled, and a DRAFT
+ * whose start is still in flight follows it (deployment-manager 127f915,
+ * deploymentStop.ts accepts only RUNNING, ERROR and INSUFFICIENT_FUNDS).
+ */
+const STOP_REFUSED_FOR_NOW: ReadonlySet<DeploymentState> = new Set(["draft", "starting"]);
+
+/** How a stop Nosana refuses while DRAFT or STARTING is retried. */
+export interface StopRetryOptions {
+  /** Stop requests in all, the first included. */
+  attempts: number;
+  /** Wait between a refusal and the next request. */
+  delayMs: number;
+  /** Test seam. Default: a timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** About 7.5 s of waiting at most: STARTING lasts until the LIST task is scheduled. */
+export const DEFAULT_STOP_RETRY: Readonly<StopRetryOptions> = { attempts: 4, delayMs: 2_500 };
+
+const timerSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+interface StopOutcome {
+  /** Nosana accepted a stop. */
+  accepted: boolean;
+  /** The state read after the last refusal; null when accepted or unreadable. */
+  state: DeploymentState | null;
+  /** The last refusal. */
+  error?: unknown;
+}
+
+/**
+ * Sends the stop. A refusal is followed by a fresh read; while that read says
+ * DRAFT or STARTING the stop is sent again after a short wait, a bounded number
+ * of times. Never throws: the caller decides what a refusal means.
+ */
+async function stopWithRetry(
+  port: NosanaDeploymentsPort,
+  id: string,
+  deployment: SdkDeploymentLike,
+  retry: StopRetryOptions = DEFAULT_STOP_RETRY,
+): Promise<StopOutcome> {
+  const attempts = Math.max(1, Math.floor(retry.attempts));
+  const sleep = retry.sleep ?? timerSleep;
+  let target = deployment;
+  for (let attempt = 1; ; attempt += 1) {
+    let error: unknown;
+    try {
+      await target.stop();
+      return { accepted: true, state: null };
+    } catch (err) {
+      error = err;
+    }
+    let state: DeploymentState | null;
+    try {
+      target = await port.get(id);
+      state = normalizeStatus(target.status);
+    } catch {
+      state = null;
+    }
+    if (state === null || !STOP_REFUSED_FOR_NOW.has(state) || attempt >= attempts) {
+      return { accepted: false, state, error };
+    }
+    await sleep(retry.delayMs);
+  }
+}
+
+/** Options of the stopping lifecycle calls. */
+export interface StopOptions {
+  stopRetry?: StopRetryOptions;
+  /**
+   * reclaimVault only: the run failed less than DRAFT_START_HOLD_MS ago, so a
+   * start sent for it may still land. A DRAFT is then reported not reclaimed
+   * (with credits) and read again on the next tick.
+   */
+  startMayBeInFlight?: boolean;
+}
+
+/**
  * Stops the deployment, then tries to pull the vault's funds back. The stop
  * MUST take effect (it throws NosanaLifecycleError("stop") otherwise - the GPU
- * would keep burning platform money). The withdraw is best effort: Nosana ends
- * the jobs asynchronously, so it commonly fails right after a stop; that is
- * reported as `reclaimed: false` and retried later by reclaimVault.
+ * would keep burning platform money); a refusal while Nosana reads DRAFT or
+ * STARTING is waited out first (stopWithRetry). The withdraw is best effort:
+ * Nosana ends the jobs asynchronously, so it commonly fails right after a
+ * stop; that is reported as `reclaimed: false` and retried later by
+ * reclaimVault.
  */
 export async function stopAndReclaim(
   port: NosanaDeploymentsPort,
   id: string,
   funding: DeploymentFunding = vaultFunding(port),
+  options: StopOptions = {},
 ): Promise<StopAndReclaimResult> {
   let deployment: SdkDeploymentLike;
   try {
@@ -1076,48 +1400,62 @@ export async function stopAndReclaim(
   const alreadyStopped = NO_STOP_NEEDED.has(before);
 
   if (!alreadyStopped) {
-    try {
-      await deployment.stop();
-    } catch (err) {
-      // A deployment Nosana already halted (ERROR / INSUFFICIENT_FUNDS) may
-      // refuse a stop; that must not leave the user unable to stop it.
-      if (HALTED.has(before)) {
-        const withdraw = await funding.release(
-          deployment,
-          await stateForRelease(port, id, funding, before),
-        );
-        return {
-          deploymentId: id,
-          stopped: true,
-          alreadyStopped: true,
-          reclaimed: withdraw.reclaimed,
-          remainingNosBaseUnits: withdraw.remainingNosBaseUnits,
-          ...(withdraw.error ? { reclaimError: withdraw.error } : {}),
-        };
-      }
-      // Lost a race with another stopper? Re-read before declaring failure.
-      let after: DeploymentState | null = null;
-      try {
-        after = normalizeStatus((await port.get(id)).status);
-      } catch {
-        after = null;
-      }
-      if (after === null || !NO_STOP_NEEDED.has(after)) {
-        throw new NosanaLifecycleError(
-          `Stopping Nosana deployment ${id} failed: ${errMessage(err)}`,
-          "stop",
-          { deploymentId: id, cause: err, ...keepRefusalCode(err) },
-        );
-      }
+    const stop = await stopWithRetry(port, id, deployment, options.stopRetry);
+    if (stop.accepted) {
+      const withdraw = await funding.release(
+        deployment,
+        await stateForRelease(port, id, funding, before),
+        { stopAccepted: true },
+      );
+      return {
+        deploymentId: id,
+        stopped: true,
+        alreadyStopped: false,
+        reclaimed: withdraw.reclaimed,
+        remainingNosBaseUnits: withdraw.remainingNosBaseUnits,
+        ...(withdraw.error ? { reclaimError: withdraw.error } : {}),
+      };
     }
+    // Lost a race with another stopper? The read after the refusal says so.
+    if (stop.state !== null && NO_STOP_NEEDED.has(stop.state) && stop.state !== "draft") {
+      const withdraw = await funding.release(deployment, await stateForRelease(port, id, funding, stop.state));
+      return {
+        deploymentId: id,
+        stopped: true,
+        alreadyStopped: false,
+        reclaimed: withdraw.reclaimed,
+        remainingNosBaseUnits: withdraw.remainingNosBaseUnits,
+        ...(withdraw.error ? { reclaimError: withdraw.error } : {}),
+      };
+    }
+    // A deployment Nosana already halted (ERROR / INSUFFICIENT_FUNDS) may
+    // refuse a stop; that must not leave the user unable to stop it. Nothing
+    // serves, so it is stopped for us, but it is released only when the
+    // funding says so - with credits not until a stop is accepted.
+    if (HALTED.has(before) && (stop.state === null || HALTED.has(stop.state))) {
+      const withdraw = await funding.release(deployment, stop.state ?? before, { stopAccepted: false });
+      return {
+        deploymentId: id,
+        stopped: true,
+        alreadyStopped: true,
+        stopRefused: true,
+        reclaimed: withdraw.reclaimed,
+        remainingNosBaseUnits: withdraw.remainingNosBaseUnits,
+        ...(withdraw.error ? { reclaimError: withdraw.error } : {}),
+      };
+    }
+    throw new NosanaLifecycleError(
+      `Stopping Nosana deployment ${id} failed: ${errMessage(stop.error)}` +
+        (stop.state !== null ? ` (Nosana reports it ${stop.state})` : ""),
+      "stop",
+      { deploymentId: id, cause: stop.error, ...keepRefusalCode(stop.error) },
+    );
   }
 
   const withdraw = await funding.release(
     deployment,
     // Nothing was asked of Nosana when it was already stopped: `before` is current.
-    alreadyStopped && before !== "stopping"
-      ? before
-      : await stateForRelease(port, id, funding, before),
+    before !== "stopping" ? before : await stateForRelease(port, id, funding, before),
   );
   return {
     deploymentId: id,
@@ -1149,50 +1487,50 @@ export interface ReclaimResult {
  * nobody paying for it: it is STOPPED here, not merely reported. A stop that
  * cannot be issued throws - the sweep counts it as a failure - because a silent
  * `reclaimed: false` would leave the GPU running indefinitely.
+ *
+ * A halted one (ERROR / INSUFFICIENT_FUNDS) is stopped too. A refusal there is
+ * not thrown: with credits it comes back `reclaimed: false`, so the sweep asks
+ * again on its next tick until a stop is accepted or Nosana reports it stopped.
+ *
+ * A DRAFT cannot be stopped (Nosana refuses it). While a start sent for it may
+ * still land (`options.startMayBeInFlight`) it is not released with credits
+ * either: the sweep reads it again, and stops it once it has started.
  */
 export async function reclaimVault(
   port: NosanaDeploymentsPort,
   id: string,
   funding: DeploymentFunding = vaultFunding(port),
+  options: StopOptions = {},
 ): Promise<ReclaimResult> {
   const deployment = await port.get(id);
   const state = normalizeStatus(deployment.status);
   let stopAttempted = false;
+  let stopAccepted = false;
 
   if (state === "running" || state === "starting") {
     stopAttempted = true;
-    try {
-      await deployment.stop();
-    } catch (err) {
-      // Lost a race with another stopper? Re-read before declaring failure.
-      let after: DeploymentState | null = null;
-      try {
-        after = normalizeStatus((await port.get(id)).status);
-      } catch {
-        after = null;
-      }
-      if (after === null || !NO_STOP_NEEDED.has(after)) {
-        throw new NosanaLifecycleError(
-          `Stopping Nosana deployment ${id} (terminal in our records, still ${state} on Nosana) failed: ${errMessage(err)}`,
-          "stop",
-          { deploymentId: id, cause: err, ...keepRefusalCode(err) },
-        );
-      }
+    const stop = await stopWithRetry(port, id, deployment, options.stopRetry);
+    stopAccepted = stop.accepted;
+    // Lost a race with another stopper? The read after the refusal says so.
+    if (!stop.accepted && (stop.state === null || !NO_STOP_NEEDED.has(stop.state))) {
+      throw new NosanaLifecycleError(
+        `Stopping Nosana deployment ${id} (terminal in our records, still ${stop.state ?? state} on Nosana) failed: ${errMessage(stop.error)}`,
+        "stop",
+        { deploymentId: id, cause: stop.error, ...keepRefusalCode(stop.error) },
+      );
     }
   } else if (HALTED.has(state)) {
     stopAttempted = true;
-    // Halted for us, but jobs may linger; stopping is idempotent and cheap.
-    try {
-      await deployment.stop();
-    } catch {
-      // Tolerated: the withdraw below is the authority on whether funds are free.
-    }
+    // Halted for us, but jobs may linger and INSUFFICIENT_FUNDS resumes after
+    // a top-up; a stop is accepted from both states.
+    stopAccepted = (await stopWithRetry(port, id, deployment, options.stopRetry)).accepted;
   }
 
   const withdraw = await funding.release(
     deployment,
     // Only a stop can have moved the state since the read above.
     stopAttempted ? await stateForRelease(port, id, funding, state) : state,
+    { stopAccepted, startAttempted: options.startMayBeInFlight === true },
   );
   return {
     deploymentId: id,

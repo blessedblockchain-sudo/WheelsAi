@@ -236,6 +236,23 @@ test("loadNosanaDeployConfig reads overrides and treats empty strings as unset",
   assert.equal(cfg.vaultSolLamportsPerReplica, 25_000_000n);
 });
 
+test("loadNosanaDeployConfig refuses INFINITE with a job timeout under an hour: Nosana's floor for INFINITE is 60 minutes", () => {
+  for (const timeout of ["600", "3599"]) {
+    assert.throws(
+      () => loadNosanaDeployConfig({ NOSANA_DEPLOYMENT_STRATEGY: "INFINITE", NOSANA_JOB_TIMEOUT_SECONDS: timeout }),
+      (err: unknown) => err instanceof NosanaDeployConfigError && /INFINITE needs NOSANA_JOB_TIMEOUT_SECONDS >= 3600/.test(err.message),
+      timeout,
+    );
+  }
+  assert.equal(
+    loadNosanaDeployConfig({ NOSANA_DEPLOYMENT_STRATEGY: "INFINITE", NOSANA_JOB_TIMEOUT_SECONDS: "3600" }).jobTimeoutSeconds,
+    3600,
+  );
+  // INFINITE with the default timeout (7,200 s) is fine; the other strategies keep their 600 s minimum.
+  assert.equal(loadNosanaDeployConfig({ NOSANA_DEPLOYMENT_STRATEGY: "INFINITE" }).strategy, "INFINITE");
+  assert.equal(loadNosanaDeployConfig({ NOSANA_DEPLOYMENT_STRATEGY: "SIMPLE-EXTEND", NOSANA_JOB_TIMEOUT_SECONDS: "600" }).jobTimeoutSeconds, 600);
+});
+
 test("loadNosanaDeployConfig rejects unsafe or inconsistent values", () => {
   assert.throws(() => loadNosanaDeployConfig({ NOSANA_JOB_TIMEOUT_SECONDS: "5" }), NosanaDeployConfigError);
   assert.throws(() => loadNosanaDeployConfig({ NOSANA_JOB_TIMEOUT_SECONDS: "99999999" }), NosanaDeployConfigError);

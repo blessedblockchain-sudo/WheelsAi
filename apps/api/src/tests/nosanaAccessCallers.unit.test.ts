@@ -80,6 +80,9 @@ function resetFake() {
   fake.setMarkets(FAKE_MARKETS);
   fake.setOwner("11111111111111111111111111111111");
   fake.setInsufficientFunds(false);
+  // Every create carries its name as the idempotency key, and Nosana keeps
+  // keys unique: a name reused by an earlier test would answer 409.
+  fake.deployments.clear();
   fake.requests.length = 0;
 }
 
@@ -607,10 +610,11 @@ test("the credit gate refusing INSIDE the lifecycle fails the row and refunds it
   await app.close();
 });
 
-test("a create call that throws after Nosana created the deployment: the row fails, the hold is refunded, and the name finds it", async () => {
+test("a create call that throws after Nosana created the deployment: the idempotency key finds it, the row fails holding its id, the hold is refunded", async () => {
   resetFake();
   const client = await apiClient();
-  // The SDK parses `owner` as a Solana public key AFTER the POST succeeded.
+  // The SDK parses `owner` as a Solana public key AFTER the POST succeeded,
+  // so the create throws and every SDK read of that deployment throws too.
   fake.setOwner("not-a-public-key");
   const db = makeDb();
   const { app, settle } = await makeApp(db, client);
@@ -620,15 +624,22 @@ test("a create call that throws after Nosana created the deployment: the row fai
   await settle();
 
   const row = db.state.deployments[0]!;
+  const name = modelDeploymentNosanaName(row.id, row.runGeneration);
   assert.equal(row.status, "failed");
-  assert.deepEqual(row.nosanaJobIds, [], "no id came back");
   assert.equal(db.state.balances.org_1, 10_000n, "the hold was refunded");
 
-  // It exists on Nosana as a DRAFT (never started), under the row's name.
-  const found = await client.findDeploymentByName(modelDeploymentNosanaName(row.id, row.runGeneration), "api_key");
-  assert.ok(found, "Nosana's list leads back to the row and its run");
+  // The create was sent with the per-run name as its idempotency key, and the
+  // lookup by that key found what it made: the row keeps the id, for the sweep.
+  const create = sent("POST", /\/deployments\/create$/);
+  assert.equal(create.length, 1);
+  assert.equal((create[0]!.body as Record<string, unknown>).idempotency_key, name);
+  assert.equal(sent("GET", /\/deployments$/).filter((r) => r.query.idempotency_key === name).length, 1);
+  const found = await client.findDeploymentByIdempotencyKey(name, "api_key");
+  assert.ok(found, "the key leads back to the row and its run");
   assert.equal(found!.status, "draft");
-  assert.equal(sent("POST", /\/start$/).length, 0);
+  assert.deepEqual(row.nosanaJobIds, [found!.id], "the id the key found is kept for the sweep");
+  assert.equal(row.nosanaAccessMode, "api_key");
+  assert.equal(sent("POST", /\/start$/).length, 0, "an unreadable deployment is never started");
   await app.close();
 });
 
@@ -699,18 +710,30 @@ test("a failure after creation stores the partial id with the mode the failed ca
 // ============================================
 
 for (const ended of ["INSUFFICIENT_FUNDS", "ERROR"] as const) {
-  test(`restart is not blocked after a credits-mode run ended in ${ended}, even when Nosana refuses the stop`, async () => {
+  test(`restart after a credits-mode run ended in ${ended}: held while Nosana refuses the stop, allowed once a stop is accepted and wound down`, async () => {
     resetFake();
     const client = await apiClient();
     const previous = await nosanaDeployment(client, `wheelsai-model-prev-${ended.toLowerCase()}`);
     fake.setStatus(previous, ended);
-    // A halted deployment's stop is attempted and a refusal is tolerated.
-    fake.failNext({ method: "POST", path: new RegExp(`/${previous}/stop$`) }, { status: 400, body: { error: "not running" } });
     const db = makeDb([endedRow({ nosanaJobIds: [previous], statusReason: "nosana_insufficient_funds" })]);
     const { app, settle } = await makeApp(db, client);
-    fake.requests.length = 0;
 
-    const res = await app.inject({ method: "POST", url: "/dep_1/restart" });
+    // A halted deployment is not released while Nosana refuses its stop: it
+    // could resume on its own after a credit top-up.
+    fake.failNext({ method: "POST", path: new RegExp(`/${previous}/stop$`) }, { status: 400, body: { error: "not running" } });
+    let res = await app.inject({ method: "POST", url: "/dep_1/restart" });
+    assert.equal(res.statusCode, 409, res.body);
+    assert.equal(res.json().error, "previous_run_winding_down");
+    assert.equal(db.state.deployments[0]!.runGeneration, 0);
+
+    // The stop is accepted the next time: winding down, still not released.
+    res = await app.inject({ method: "POST", url: "/dep_1/restart" });
+    assert.equal(res.statusCode, 409, res.body);
+    assert.equal(fake.deployments.get(previous)!.status, "STOPPING");
+
+    fake.settle(previous); // STOPPED
+    fake.requests.length = 0;
+    res = await app.inject({ method: "POST", url: "/dep_1/restart" });
     assert.equal(res.statusCode, 200, res.body);
     await settle();
 
@@ -851,6 +874,7 @@ test("a replica change and a log read reach an API-key deployment through the AP
   resetFake();
   const id = await nosanaDeployment(await apiClient(), "wheelsai-model-scale");
   fake.settle(id);
+  fake.addJob(id); // listed: Nosana records a JOB_LIST_CONFIRMED event
   const { client, wallet } = await walletPrimaryClient();
   const db = makeDb([
     {

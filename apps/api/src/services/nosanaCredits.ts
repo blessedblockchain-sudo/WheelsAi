@@ -12,8 +12,19 @@
  *
  * Units: the API reports USD as JSON numbers (assignedCredits, reservedCredits,
  * settledCredits; "Available balance is assignedCredits - reservedCredits -
- * settledCredits" per the SDK schema). They are converted once to integer
- * micro-USD and all arithmetic after that is bigint.
+ * settledCredits" per the SDK schema). USD, NOT cents: Nosana's API document
+ * and the @nosana/api types describe these fields as "USD cents", which is
+ * wrong. Settled on 2026-10-07 against the account's own history: all 329
+ * transactions reconcile in dollars (claims and top-ups = assigned; job
+ * debits - refunds = settled), and a 6-hour debit equals the market's hourly
+ * USD price x 6. Never divide by 100, whatever a generated type says. They
+ * are converted once to integer micro-USD and all arithmetic after that is
+ * bigint.
+ *
+ * What moves them: a job (one per replica) is debited price x its full
+ * timeout when it is assigned to a node, and the unused part comes back as a
+ * refund about a minute after it ends; every extension debits again. On the
+ * account read, the debits sat in settledCredits and reservedCredits was 0.
  *
  * Fail closed: an unreadable balance refuses a deployment, and the gate always
  * reads fresh - a cached value never admits one.

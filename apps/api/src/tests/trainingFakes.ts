@@ -492,6 +492,13 @@ export function makeFakeNosana() {
       if (!d.job) throw new Error("job unreadable");
       return { deploymentId: id, job, rawState: null, jobStatus: null, node: null, market: null, revision: 1, listedAt: null, raw: {}, ...d.job };
     },
+    findDeploymentByIdempotencyKey: async (key: string) => {
+      state.calls.push(`key:${key}`);
+      if (state.listError) throw state.listError;
+      // Every deployment here was created with its name as the key.
+      const found = [...state.deployments.values()].find((d) => d.name === key);
+      return found ? { id: found.id, name: key, status: found.status, accessMode: found.accessMode } : null;
+    },
     findDeploymentByName: async (name: string) => {
       state.calls.push(`find:${name}`);
       if (state.listError) throw state.listError;

@@ -8,10 +8,11 @@
  *   - which credential would pay for new deployments, the network and backend,
  *     and the last four characters of the API key (never the key);
  *   - with an API key: the prepaid credit balance against the floor, how many
- *     deployments the account holds and any named wheelsai-*, and the raw
- *     `owner` and `vault` fields of one existing deployment (the SDK parses
- *     `owner` as a Solana public key on every create, so know what an API-key
- *     account returns before the first one);
+ *     deployments the account holds (the list is paginated: every page of 100
+ *     is read and pagination.total_items printed) and any named wheelsai-*,
+ *     and the raw `owner` and `vault` fields of the newest deployment (the SDK
+ *     parses `owner` as a Solana public key on every create, so know what an
+ *     API-key account returns before the first one);
  *   - in every case, what each GPU tier costs from Nosana's public market list.
  *
  * It sends GET requests only (src/services/nosanaAccessCheck.ts has a single

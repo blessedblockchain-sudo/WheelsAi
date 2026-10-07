@@ -7,9 +7,13 @@
  * does not parse has NO cost (null), it is never given a guessed one.
  *
  * Cost per second = usd_reward_per_hour x (1 + network_fee_percentage / 100)
- * / 3600, rounded UP to a whole micro-USD. Whether the network fee is charged
- * on top for credit-paid deployments is unverified; adding it errs high, which
- * is the safe direction for both the credit estimate and the below-cost guard.
+ * / 3600, rounded UP to a whole micro-USD. The network fee IS charged on
+ * credit-paid jobs (settled 2026-10-07): GET /markets/prices returns exactly
+ * usd_reward_per_hour x 1.1 for every premium market, and past 6-hour credit
+ * debits equal that fee-inclusive price x 6, rounded up to $0.001. Rounding
+ * up per second puts this figure a few percent above what Nosana charges
+ * (3060: $0.0504/h here against $0.04796/h), the safe direction for both the
+ * credit estimate and the below-cost guard.
  */
 
 import type { FetchLike } from "./nosanaCredits.js";

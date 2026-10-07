@@ -10,8 +10,10 @@
  *     API-key path must make none).
  *
  * Unlike the tests, nobody scripts the state changes here, so the fake moves
- * a deployment on by itself: STARTING becomes RUNNING with one endpoint after
- * FAKE_START_MS, and STOPPING becomes STOPPED after FAKE_STOP_MS.
+ * a deployment on by itself. As on Nosana, a start makes it RUNNING at once;
+ * FAKE_START_MS later a node "takes" the job (one job listed) and its one
+ * endpoint, pointed at the fake node, comes online. STOPPING becomes STOPPED
+ * (the job stopped, the endpoint offline) after FAKE_STOP_MS.
  *
  * This is NOT Nosana and proves nothing about the live service: no GPU, no
  * credit accounting (the balance stays what FAKE_BALANCE_USD says), and the
@@ -26,7 +28,7 @@
  *   FAKE_NOSANA_KEY    the only Bearer key accepted (a test constant by default)
  *   FAKE_BALANCE_USD   100    assigned credits
  *   FAKE_LOW_BALANCE_USD 1    what SIGUSR1 sets the balance to (SIGUSR2 restores it)
- *   FAKE_START_MS      8000   STARTING -> RUNNING
+ *   FAKE_START_MS      8000   RUNNING -> a job listed and the endpoint online
  *   FAKE_STOP_MS       3000   STOPPING -> STOPPED
  *   FAKE_NODE_TLS_CERT, FAKE_NODE_TLS_KEY   PEM files for the fake node
  *
@@ -39,7 +41,8 @@
  *
  * Without one the node speaks plain http: the deployment still reaches
  * "running" (that needs an endpoint, not a healthy probe) and its node reads
- * unhealthy.
+ * unhealthy. Until the node takes the job, the endpoint Nosana computed at
+ * create is listed offline.
  *
  * Then start the API with NOSANA_API_KEY=<the key>, NOSANA_ACCESS_MODE=api_key,
  * NOSANA_API_URL=http://127.0.0.1:4310, SOLANA_RPC_URL=http://127.0.0.1:4312,
@@ -125,6 +128,8 @@ async function main(): Promise<void> {
   let printed = 0;
   // When each deployment entered the state it is in now.
   const since = new Map<string, { status: FakeDeploymentStatus; at: number }>();
+  // Deployments whose job a node has taken in their current run.
+  const served = new Set<string>();
 
   const timer = setInterval(() => {
     for (; printed < api.requests.length; printed += 1) {
@@ -141,14 +146,16 @@ async function main(): Promise<void> {
         console.log(`${stamp()} deployment ${deployment.id} (${deployment.name}) is ${deployment.status}`);
         continue;
       }
-      if (deployment.status === "STARTING" && now - seen.at >= startMs) {
+      if (deployment.status === "RUNNING" && !served.has(deployment.id) && now - seen.at >= startMs) {
+        served.add(deployment.id);
+        const job = api.addJob(deployment.id);
         api.setEndpoints(deployment.id, [
-          { opId: "inference", port: nodePort, url: `https://127.0.0.1:${nodePort}` },
+          { opId: deployment.endpoints[0]?.opId ?? "inference", port: nodePort, url: `https://127.0.0.1:${nodePort}`, online: true },
         ]);
-        api.settle(deployment.id);
+        console.log(`${stamp()} deployment ${deployment.id}: a node took job ${job.job.slice(0, 8)}...; endpoint online`);
       } else if (deployment.status === "STOPPING" && now - seen.at >= stopMs) {
-        api.setEndpoints(deployment.id, []);
         api.settle(deployment.id);
+        served.delete(deployment.id);
       }
     }
   }, 250);
@@ -158,7 +165,7 @@ async function main(): Promise<void> {
     `${stamp()} fake node         https://127.0.0.1:${nodePort}${tlsCert && tlsKey ? "" : " (advertised; serving plain http, so probes fail)"}`,
   );
   console.log(`${stamp()} fake Solana RPC   http://127.0.0.1:${rpcPort}`);
-  console.log(`${stamp()} balance $${balanceUsd}; STARTING->RUNNING after ${startMs} ms; STOPPING->STOPPED after ${stopMs} ms`);
+  console.log(`${stamp()} balance $${balanceUsd}; a node takes a RUNNING job after ${startMs} ms; STOPPING->STOPPED after ${stopMs} ms`);
 
   const shutdown = async () => {
     clearInterval(timer);

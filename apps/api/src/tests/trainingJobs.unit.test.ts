@@ -530,10 +530,15 @@ test("submit: Nosana refuses and nothing exists there - looked up by name, then 
   assert.deepEqual(w.db.ledgerOf(jobId), [RESERVATION, RELEASE]);
   assert.equal(w.db.balance(), START_BALANCE);
   assert.deepEqual(w.events(), ["training.started", "training.failed"]);
-  assert.equal(w.nosana.calls.filter((call) => call.startsWith("find:")).length, 1, "the name was looked up before the refund");
+  // Neither the key nor the name (for one created before keys were sent) finds anything.
+  assert.deepEqual(
+    w.nosana.calls.filter((call) => /^(key|find):/.test(call)).map((call) => call.split(":")[0]),
+    ["key", "find"],
+    "looked up before the refund",
+  );
 });
 
-test("lost deployment: the create call throws after Nosana acted - found by name and stopped before the refund", async () => {
+test("lost deployment: the create call throws after Nosana acted - found by its idempotency key and stopped before the refund", async () => {
   const w = makeWorld();
   const jobId = await admit(w);
   w.nosana.state.createThenThrow = true;
@@ -545,8 +550,11 @@ test("lost deployment: the create call throws after Nosana acted - found by name
   assert.equal(job.status, "failed");
   assert.equal(job.nosanaJobId, null, "the id never reached the row");
   assert.equal(deployment.status, "stopped", "what was created was found and stopped");
-  const order = w.nosana.calls.filter((call) => /^(find|stop):/.test(call)).map((call) => call.split(":")[0]);
-  assert.deepEqual(order, ["find", "stop"]);
+  // The name is the idempotency key: the exact lookup finds it, and the
+  // name filter (for a deployment created before keys were sent) is not needed.
+  const order = w.nosana.calls.filter((call) => /^(key|find|stop):/.test(call)).map((call) => call.split(":")[0]);
+  assert.deepEqual(order, ["key", "stop"]);
+  assert.equal(w.nosana.calls.find((call) => call.startsWith("key:")), `key:${deployment.name}`);
   // Stopped but the funding is not verified released: the sweep gets it, with its credential.
   assert.deepEqual(w.orphans, [
     { nosanaDeploymentId: deployment.id, sourceKind: "training", sourceId: jobId, reason: "submit_lost", accessMode: "api_key" },
@@ -606,7 +614,7 @@ test("submit: a failure past creation carries the id - it goes to the sweep unle
   assert.deepEqual(w.orphans, [
     { nosanaDeploymentId: "dep-partial", sourceKind: "training", sourceId: jobId, reason: "submit_failed", accessMode: "wallet" },
   ]);
-  assert.equal(w.nosana.calls.some((call) => call.startsWith("find:")), false, "the id is known: no lookup");
+  assert.equal(w.nosana.calls.some((call) => /^(key|find):/.test(call)), false, "the id is known: no lookup");
   assert.deepEqual(w.db.ledgerOf(jobId), [RESERVATION, RELEASE]);
 });
 

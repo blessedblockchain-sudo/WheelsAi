@@ -422,7 +422,10 @@ async function replicaChangeOutcome(
   // (API-key access) the credit gate for the added replicas.
   if (isAccessModeUnavailable(error) || computeRefusal(error)) return false;
   try {
-    const { replicas } = await nosana.getDeploymentStatus(change.nosanaId, change.accessMode);
+    const { replicas } = await nosana.getDeploymentStatus(change.nosanaId, change.accessMode, {
+      jobs: false,
+      events: false,
+    });
     if (replicas === change.to) return true;
     if (replicas === change.from) return false;
     return null;
@@ -1401,9 +1404,9 @@ export function createDeploymentRoutes(
     /**
      * Get deployment logs
      *
-     * What @nosana/sdk 0.4.74 exposes is the deployment's LIFECYCLE EVENTS
-     * (`deployment.events`: started, job listed, extended, stopped, errors) -
-     * there is no container stdout/stderr API. Those real events are returned;
+     * What Nosana exposes for a running deployment is its LIFECYCLE EVENTS
+     * (GET .../events: job listed, extended, stopped, errors) - there is no
+     * container stdout/stderr API. The newest `lines` real events are returned;
      * nothing is ever synthesised. A deployment with no Nosana deployment yet has
      * no events (empty list); a mock one cannot have logs (501).
      */
@@ -1448,6 +1451,7 @@ export function createDeploymentRoutes(
           const snapshot = await (await getNosana()).getDeploymentStatus(
             nosanaId,
             rowAccessMode(deployment.nosanaAccessMode),
+            { jobs: false, events: true, eventCount: lines },
           );
           const events = [...snapshot.events]
             .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""))

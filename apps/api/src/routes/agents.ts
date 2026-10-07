@@ -39,7 +39,10 @@ import {
   reserveDeploymentCredits,
 } from "../services/deploymentCreditGate.js";
 import { AGENT_FRAMEWORKS } from "../config/frameworks.js";
-import { agentApiEndpoints, serializeAgentDeployment } from "../services/publicEndpoints.js";
+import {
+  agentApiEndpoints,
+  serializeAgentDeployment,
+} from "../services/publicEndpoints.js";
 import {
   getAgentChatUsage,
   type AgentChatUsage,
@@ -586,6 +589,16 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       if (modelDeployment.status !== "running") {
         return reply.badRequest("Model deployment is not running");
       }
+      // Refused before anything is reserved or created. The only address of
+      // a model deployment a Nosana node can reach is this API's /v1 route,
+      // which needs an API key of the organization, and no key is delivered
+      // to the agent's container: it would start, hold its reservation and be
+      // billed while every call to its model answered 401.
+      logger.warn({ agentId, modelDeploymentId: body.modelDeploymentId }, "Agent deploy on a model deployment refused");
+      return reply.status(501).send({
+        error: "agent_model_deployment_unavailable",
+        message: AGENT_ON_MODEL_DEPLOYMENT_MESSAGE,
+      });
     }
 
     // Pre-flight BEFORE any credits are reserved (as POST /deployments does):
@@ -865,6 +878,10 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
 
 export const agentRoutes: FastifyPluginAsync = createAgentRoutes();
 
+/** What a deploy naming a model deployment is answered with (501). */
+const AGENT_ON_MODEL_DEPLOYMENT_MESSAGE =
+  "An agent cannot be deployed on a model deployment. Deploy it with externalModelUrl, or with an external model in the agent's modelConfig. Nothing was reserved or charged.";
+
 // ============================================
 // Helper Functions
 // ============================================
@@ -872,7 +889,7 @@ export const agentRoutes: FastifyPluginAsync = createAgentRoutes();
 async function submitAgentToNosana(
   deploymentId: string,
   agent: any,
-  config: z.infer<typeof deployAgentSchema>
+  config: z.infer<typeof deployAgentSchema>,
 ): Promise<void> {
   try {
     // Update status to building
@@ -887,7 +904,6 @@ async function submitAgentToNosana(
     // the runtime through confidential job delivery (claims ledger D1).
     const jobDefinition = generateAgentJobDefinition({
       agent: { ...agent, env: {} } as any,
-      modelDeploymentId: config.modelDeploymentId,
       externalModelUrl: config.externalModelUrl,
     });
 

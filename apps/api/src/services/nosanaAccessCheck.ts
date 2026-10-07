@@ -25,6 +25,7 @@ import {
 import { toCreditBalance, microUsdToUsd, type FetchLike } from "./nosanaCredits.js";
 import { parseMarketCost, type MarketCost } from "./nosanaMarketCosts.js";
 import { MARKETS, resolveMarketAddress } from "./nosanaMarkets.js";
+import { NOSANA_MAX_LIST_PAGES, NOSANA_PAGE_LIMIT, readNosanaPage } from "./nosanaPagination.js";
 
 export const NAME_PREFIX = "wheelsai-";
 
@@ -169,28 +170,50 @@ export async function runNosanaAccessCheck(deps: AccessCheckDeps): Promise<Acces
     }
 
     print("");
-    print("deployments (GET /api/deployments)");
-    const list = await get(`${cfg.backendUrl}/api/deployments`, key);
-    if (list.status === 401 || list.status === 403) {
-      failed = true;
-      print(`  REJECTED: HTTP ${list.status}. The key lacks the deployments permission, or is not accepted.`);
-    } else if (!list.ok || !Array.isArray(list.body)) {
-      failed = true;
-      print(
-        `  unreadable: ${list.status !== null ? `HTTP ${list.status}${list.ok ? ", body is not an array" : ""}` : list.error}`,
+    print(`deployments (GET /api/deployments?limit=${NOSANA_PAGE_LIMIT}, every page)`);
+    // The list is paginated: {deployments, pagination}; every page is read.
+    const listed: unknown[] = [];
+    let totalItems: number | null = null;
+    let listFailure: string | null = null;
+    let cursor: string | null = null;
+    for (let pages = 1; ; pages += 1) {
+      const page = await get(
+        `${cfg.backendUrl}/api/deployments?limit=${NOSANA_PAGE_LIMIT}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        key,
       );
+      if (page.status === 401 || page.status === 403) {
+        listFailure = `REJECTED: HTTP ${page.status}. The key lacks the deployments permission, or is not accepted.`;
+        break;
+      }
+      const parsed = page.ok ? readNosanaPage(page.body, "deployments") : null;
+      if (!parsed) {
+        listFailure = `unreadable: ${page.status !== null ? `HTTP ${page.status}${page.ok ? ", body is not a deployment list" : ""}` : page.error}`;
+        break;
+      }
+      listed.push(...parsed.items);
+      totalItems ??= parsed.totalItems;
+      if (parsed.cursorNext === null) break;
+      if (parsed.cursorNext === cursor || pages >= NOSANA_MAX_LIST_PAGES) {
+        listFailure = `incomplete: stopped after ${pages} pages; the list was not read whole`;
+        break;
+      }
+      cursor = parsed.cursorNext;
+    }
+    if (listFailure !== null) {
+      failed = true;
+      print(`  ${listFailure}`);
     } else {
-      const rows = list.body.filter(
+      const rows = listed.filter(
         (r): r is Record<string, unknown> => typeof r === "object" && r !== null,
       );
-      print(`  total: ${rows.length}`);
+      print(`  total: ${totalItems ?? rows.length}${totalItems !== null && totalItems !== rows.length ? ` (pagination.total_items; ${rows.length} rows read)` : ""}`);
       const byStatus = new Map<string, number>();
       for (const r of rows) {
         const status = typeof r.status === "string" ? r.status : "(none)";
         byStatus.set(status, (byStatus.get(status) ?? 0) + 1);
       }
       if (byStatus.size > 0) {
-        print(`  by status: ${[...byStatus].map(([s, n]) => `${s} ${n}`).join(", ")}`);
+        print(`  by status: ${[...byStatus].sort(([a], [b]) => a.localeCompare(b)).map(([s, n]) => `${s} ${n}`).join(", ")}`);
       }
       const ours = rows.filter((r) => typeof r.name === "string" && r.name.startsWith(NAME_PREFIX));
       print(`  named ${NAME_PREFIX}*: ${ours.length}`);
@@ -269,7 +292,7 @@ export async function runNosanaAccessCheck(deps: AccessCheckDeps): Promise<Acces
     if (cfg.network === "devnet") {
       print("  This is the devnet backend, which lists test markets. Set NOSANA_NETWORK=mainnet to read the mainnet costs.");
     }
-    print("  cost = host reward x (1 + fee), rounded up to a whole micro-USD per second. Whether the fee is added for credit-paid deployments is unverified.");
+    print("  cost = host reward x (1 + fee), rounded up to a whole micro-USD per second. Nosana charges the fee on credit-paid jobs.");
   }
 
   print("");

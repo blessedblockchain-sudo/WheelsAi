@@ -54,6 +54,7 @@ const { buildGpuBillingTickDeps, resetRunwayThrottleForTests } = await import(
   "../services/buildGpuBillingTickDeps.js"
 );
 const { recordNosanaOrphan } = await import("../services/nosanaOrphans.js");
+const { DRAFT_START_HOLD_MS, NosanaLifecycleError } = await import("../services/nosanaDeploymentLifecycle.js");
 
 import type {
   DeploymentStatusRow,
@@ -66,7 +67,7 @@ import type { GpuBillingRow, GpuBillingTickDeps } from "../services/runGpuBillin
 type Client = InstanceType<typeof NosanaClient>;
 
 const NOW = new Date("2026-10-07T12:00:00.000Z");
-const EP = { url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "ollama" };
+const EP = { url: "https://abc.node.k8s.prd.nos.ci", port: 8000, opId: "ollama", online: true };
 const RICH = { assignedCredits: 100, reservedCredits: 0, settledCredits: 0 };
 
 function resetFake() {
@@ -75,6 +76,9 @@ function resetFake() {
   fake.setMarkets(FAKE_MARKETS);
   fake.setOwner("11111111111111111111111111111111");
   fake.setInsufficientFunds(false);
+  // Every create carries its name as the idempotency key, and Nosana keeps
+  // keys unique: a name reused by an earlier test would answer 409.
+  fake.deployments.clear();
   fake.requests.length = 0;
 }
 
@@ -432,10 +436,12 @@ test("loadDeployments reads the access-mode stamp of both kinds; a row without o
 });
 
 test("observeDeployment and the reclaim pass the mode to the client calls; candidates carry it from rows and orphan records", async () => {
+  // Ended longer ago than a start sent for it could still be on its way.
+  const LONG_AGO = new Date(NOW.getTime() - DRAFT_START_HOLD_MS);
   const db = statusDb({
     models: [
       { id: "ended_key", status: "stopped", stoppedAt: NOW, nosanaJobIds: ["dm_k"], nosanaAccessMode: "api_key" },
-      { id: "ended_old", status: "failed", stoppedAt: NOW, nosanaJobIds: ["dm_w"] },
+      { id: "ended_old", status: "failed", stoppedAt: LONG_AGO, nosanaJobIds: ["dm_w"] },
     ],
     orphans: [
       { id: "o_key", nosanaDeploymentId: "dm_ok", accessMode: "api_key" },
@@ -461,20 +467,21 @@ test("observeDeployment and the reclaim pass the mode to the client calls; candi
 
   const candidates = await deps.loadVaultReclaimCandidates!();
   assert.deepEqual(candidates, [
-    { id: "o_key", nosanaDeploymentId: "dm_ok", orphan: true, accessMode: "api_key" },
-    { id: "o_old", nosanaDeploymentId: "dm_ow", orphan: true, accessMode: "wallet" },
-    { id: "ended_key", nosanaDeploymentId: "dm_k", accessMode: "api_key" },
-    { id: "ended_old", nosanaDeploymentId: "dm_w", accessMode: "wallet" },
+    { id: "o_key", nosanaDeploymentId: "dm_ok", orphan: true, accessMode: "api_key", endedAt: NOW },
+    { id: "o_old", nosanaDeploymentId: "dm_ow", orphan: true, accessMode: "wallet", endedAt: NOW },
+    { id: "ended_key", nosanaDeploymentId: "dm_k", accessMode: "api_key", endedAt: NOW },
+    { id: "ended_old", nosanaDeploymentId: "dm_w", accessMode: "wallet", endedAt: LONG_AGO },
   ]);
   assert.equal(db.selects.reclaim.nosanaAccessMode, true);
   assert.equal(db.selects.orphan.accessMode, true);
 
   for (const candidate of candidates) await deps.reclaimVault!(candidate);
   assert.deepEqual(reclaims, [
-    ["dm_ok", "api_key"],
-    ["dm_ow", "wallet"],
-    ["dm_k", "api_key"],
-    ["dm_w", "wallet"],
+    // Just ended: a start sent for it may still land, so a DRAFT is not released yet.
+    ["dm_ok", "api_key", { startMayBeInFlight: true }],
+    ["dm_ow", "wallet", { startMayBeInFlight: true }],
+    ["dm_k", "api_key", { startMayBeInFlight: true }],
+    ["dm_w", "wallet", { startMayBeInFlight: false }],
   ]);
 });
 
@@ -563,26 +570,82 @@ test("the real tick with rows of both modes: the API-key row reaches running, it
   assert.equal(reports.length, 2, "and once more on the next tick");
 });
 
-test("a credits-mode run that ran out of funds is failed by the tick and its row released by the sweep", async () => {
+test("through the real client: Nosana RUNNING with its endpoint offline never bills; the row goes running - and billing starts - only once the endpoint is online", async () => {
+  resetFake();
+  const client = await apiClient();
+  const created = await client.createDeployment(
+    {
+      version: "0.1",
+      type: "container",
+      meta: { trigger: "wheelsai" },
+      ops: [{ type: "container/run", id: "ollama", args: { image: "docker.io/ollama/ollama:0.32.6", expose: 11434 } }],
+    } as never,
+    "3060",
+    1,
+    { name: "wheelsai-model-online-gate" },
+  );
+  const fakeRow = fake.deployments.get(created.id)!;
+  // As live: RUNNING at once, and the endpoint exists from the create, offline.
+  assert.equal(fakeRow.status, "RUNNING");
+  assert.equal(fakeRow.endpoints.length, 1);
+  assert.equal(fakeRow.endpoints[0]!.online, false);
+
+  const db = statusDb({
+    models: [{ id: "m1", status: "provisioning", nosanaJobIds: [created.id], nosanaAccessMode: "api_key" }],
+  });
+  const deps = buildStatus(db, {
+    getDeploymentStatus: (id, mode) => client.getDeploymentStatus(id, mode, { jobs: false, events: "when_halted" }),
+  });
+
+  // No node ever takes it (the 3060 market had none idle): tick after tick,
+  // nothing moves and nothing is billed.
+  for (let i = 0; i < 3; i += 1) {
+    const tick = await runDeploymentStatusTick({ now: NOW }, deps);
+    assert.equal(tick.transitioned, 0);
+  }
+  const row = db.models[0]!;
+  assert.equal(row.status, "provisioning");
+  assert.equal(row.billedThroughAt ?? null, null, "no billing cursor: the GPU billing worker bills nothing");
+  assert.equal(db.nodes.length, 0, "no node, so /v1 routes nowhere and nothing is probed");
+
+  // A node takes the job and its tunnel comes up.
+  fake.addJob(created.id);
+  fake.setEndpointsOnline(created.id, true);
+  const live = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(live.transitioned, 1);
+  assert.equal(row.status, "running");
+  assert.deepEqual(row.billedThroughAt, NOW, "billing starts at the moment it is observed online");
+  assert.deepEqual(db.nodes.map((n) => n.nodeUrl), [fakeRow.endpoints[0]!.url], "one node for the one load-balanced URL");
+});
+
+test("a credits-mode run that ran out of funds is failed by the tick, stopped in the same pass, and released by the sweep once Nosana reports it stopped", async () => {
   resetFake();
   const client = await apiClient();
   const id = await nosanaDeployment(client, "wheelsai-model-out-of-funds");
   fake.setStatus(id, "INSUFFICIENT_FUNDS");
+  fake.addEvent(id, "JOB_LIST_ERROR", "Error Failed to list job: Insufficient credits. Available: $0.091, Required: $0.524");
   const db = statusDb({
     models: [{ id: "m1", status: "provisioning", nosanaJobIds: [id], nosanaAccessMode: "api_key" }],
   });
   const deps = buildStatus(db, {
-    getDeploymentStatus: (nosanaId, mode) => client.getDeploymentStatus(nosanaId, mode),
+    getDeploymentStatus: (nosanaId, mode) => client.getDeploymentStatus(nosanaId, mode, { jobs: false, events: "when_halted" }),
     reclaimVault: (nosanaId, mode) => client.reclaimDeploymentVault(nosanaId, mode),
+    stopDeployment: (nosanaId, mode) => client.stopDeployment(nosanaId, mode),
   });
+  fake.requests.length = 0;
 
   const result = await runDeploymentStatusTick({ now: NOW }, deps);
 
   const row = db.models[0]!;
   assert.equal(row.status, "failed");
   assert.equal(row.statusReason, "nosana_insufficient_funds");
-  // The sweep asks the halted deployment to stop. This fake accepts that and
-  // answers STOPPING, so the release is confirmed a tick later...
+  // Stopped in the transition's own pass: Nosana would otherwise revive it
+  // after a top-up of the shared balance. The sweep then reads STOPPING and
+  // asks nothing more, and does not release it yet.
+  assert.equal(result.haltedStops, 1);
+  assert.equal(result.haltedStopsFailed, 0);
+  assert.equal(sent("POST", new RegExp(`/${id}/stop$`)).length, 1, "one stop, from the transition");
+  assert.equal(fake.deployments.get(id)!.status, "STOPPING");
   assert.equal(result.vaultsPending, 1);
   assert.equal(row.vaultReclaimedAt, null);
   fake.settle(id);
@@ -591,24 +654,149 @@ test("a credits-mode run that ran out of funds is failed by the tick and its row
   assert.deepEqual(row.vaultReclaimedAt, NOW);
 });
 
-test("a halted credits-mode run whose stop Nosana refuses is released at once: nothing is running and nothing more is scheduled", async () => {
+test("a halted run whose events cannot be read is still failed and stopped: the failed read costs only the failure text", async () => {
+  resetFake();
+  const client = await apiClient();
+  const id = await nosanaDeployment(client, "wheelsai-model-halted-no-events");
+  fake.setStatus(id, "ERROR");
+  fake.addEvent(id, "JOB_LIST_ERROR", "Error Failed to list job: no node");
+  // The events route fails for as long as anyone asks (a 5xx, or a key whose
+  // scopes do not cover it).
+  fake.failNext({ method: "GET", path: new RegExp(`/${id}/events$`) }, { status: 500, body: { error: "manager down" } }, 100);
+  const db = statusDb({
+    models: [{ id: "m1", status: "provisioning", nosanaJobIds: [id], nosanaAccessMode: "api_key" }],
+  });
+  // Exactly the read of queues/deployment-status.queue.ts.
+  const deps = buildStatus(db, {
+    getDeploymentStatus: (nosanaId, mode) => client.getDeploymentStatus(nosanaId, mode, { jobs: false, events: "when_halted" }),
+    reclaimVault: (nosanaId, mode) => client.reclaimDeploymentVault(nosanaId, mode),
+    stopDeployment: (nosanaId, mode) => client.stopDeployment(nosanaId, mode),
+  });
+  fake.requests.length = 0;
+
+  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+
+  assert.equal(result.failed, 0, "the row was read");
+  assert.equal(sent("GET", new RegExp(`/${id}/events$`)).length, 1, "the events were asked for");
+  const row = db.models[0]!;
+  assert.equal(row.status, "failed", "the halted state reached the row");
+  assert.equal(row.statusReason, "nosana_error", "the code alone: Nosana's text could not be read");
+  assert.equal(result.haltedStops, 1);
+  assert.equal(sent("POST", new RegExp(`/${id}/stop$`)).length, 1);
+  assert.equal(fake.deployments.get(id)!.status, "STOPPING");
+
+  // A read that names the events itself stays strict.
+  await assert.rejects(
+    client.getDeploymentStatus(id, "api_key", { jobs: false, events: true }),
+    (err: unknown) => (err as { code?: string }).code === "nosana_read_failed",
+  );
+});
+
+test("a halted credits-mode run whose stop Nosana refuses is not released: the sweep asks again every tick until a stop is accepted and it has stopped", async () => {
   resetFake();
   const client = await apiClient();
   const id = await nosanaDeployment(client, "wheelsai-model-halted");
   fake.setStatus(id, "ERROR");
-  fake.failNext({ method: "POST", path: new RegExp(`/${id}/stop$`) }, { status: 400, body: { error: "not running" } });
+  fake.failNext({ method: "POST", path: new RegExp(`/${id}/stop$`) }, { status: 500, body: { error: "manager down" } }, 2);
+  const db = statusDb({
+    models: [{ id: "m1", status: "provisioning", nosanaJobIds: [id], nosanaAccessMode: "api_key" }],
+  });
+  const deps = buildStatus(db, {
+    getDeploymentStatus: (nosanaId, mode) => client.getDeploymentStatus(nosanaId, mode, { jobs: false, events: "when_halted" }),
+    reclaimVault: (nosanaId, mode) => client.reclaimDeploymentVault(nosanaId, mode),
+    stopDeployment: (nosanaId, mode) => client.stopDeployment(nosanaId, mode),
+  });
+
+  // Tick 1: failed; the transition's stop and the sweep's are both refused.
+  const first = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(db.models[0]!.status, "failed");
+  assert.equal(first.haltedStopsFailed, 1);
+  assert.equal(first.vaultsPending, 1, "refused: not released");
+  assert.equal(db.models[0]!.vaultReclaimedAt, null);
+  assert.equal(fake.deployments.get(id)!.status, "ERROR");
+
+  // Tick 2: the sweep's stop is accepted - winding down, still not released.
+  const second = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(second.vaultsPending, 1);
+  assert.equal(fake.deployments.get(id)!.status, "STOPPING");
+  assert.equal(db.models[0]!.vaultReclaimedAt, null);
+
+  // Tick 3: Nosana reports it stopped - released.
+  fake.settle(id);
+  const third = await runDeploymentStatusTick({ now: NOW }, deps);
+  assert.equal(third.vaultsReclaimed, 1);
+  assert.deepEqual(db.models[0]!.vaultReclaimedAt, NOW);
+  assert.equal(sent("POST", new RegExp(`/${id}/stop$`)).length, 3);
+});
+
+test("a start that passed its deadline and lands later: the unstarted DRAFT is not released, and the sweep stops it once it runs", async () => {
+  resetFake();
+  const client = await apiClient();
+  (client as any).sleep = async () => undefined; // the waits between refused stops
+  // The start call fails for us (its deadline passed) and has not reached
+  // Nosana yet: the deployment still reads DRAFT, and a stop of it is refused.
+  fake.failNext({ method: "POST", path: /\/start$/ }, { status: 504, body: { error: "gateway timeout" } });
+  let failure: InstanceType<typeof NosanaLifecycleError> | undefined;
+  await assert.rejects(
+    client.createDeployment(
+      { version: "0.1", type: "container", meta: { trigger: "wheelsai" }, ops: [] } as never,
+      "3060",
+      1,
+      { name: "wheelsai-model-late-start" },
+    ),
+    (err: unknown) => {
+      failure = err as InstanceType<typeof NosanaLifecycleError>;
+      return err instanceof NosanaLifecycleError;
+    },
+  );
+  const id = failure!.deploymentId!;
+  assert.equal(fake.deployments.get(id)!.status, "DRAFT");
+  assert.equal(failure!.cleanup?.stopped, false);
+  assert.equal(failure!.cleanup?.reclaimed, false, "not released: the start may still land");
+
+  // The row as submitToNosana leaves it: failed, the id kept, no stamp.
   const db = statusDb({
     models: [{ id: "m1", status: "failed", stoppedAt: NOW, nosanaJobIds: [id], nosanaAccessMode: "api_key" }],
   });
+  let clock = NOW;
+  // Exactly the wiring of queues/deployment-status.queue.ts.
   const deps = buildStatus(db, {
-    getDeploymentStatus: (nosanaId, mode) => client.getDeploymentStatus(nosanaId, mode),
-    reclaimVault: (nosanaId, mode) => client.reclaimDeploymentVault(nosanaId, mode),
+    reclaimVault: (nosanaId, mode, options) => client.reclaimDeploymentVault(nosanaId, mode, options),
+    now: () => clock,
   });
+  fake.requests.length = 0;
 
-  const result = await runDeploymentStatusTick({ now: NOW }, deps);
+  const first = await runDeploymentStatusTick({ now: clock }, deps);
+  assert.equal(first.vaultsPending, 1, "still DRAFT: read, not released");
+  assert.equal(db.models[0]!.vaultReclaimedAt, null);
+  assert.equal(sent("POST", /\/stop$/).length, 0, "Nosana refuses a stop of a DRAFT");
 
-  assert.equal(result.vaultsReclaimed, 1);
-  assert.deepEqual(db.models[0]!.vaultReclaimedAt, NOW);
+  // The start lands.
+  fake.setStatus(id, "RUNNING");
+  clock = new Date(NOW.getTime() + 60_000);
+  const second = await runDeploymentStatusTick({ now: clock }, deps);
+  assert.equal(sent("POST", new RegExp(`/${id}/stop$`)).length, 1, "running with nobody billed: stopped");
+  assert.equal(fake.deployments.get(id)!.status, "STOPPING");
+  assert.equal(second.vaultsPending, 1);
+  fake.settle(id);
+  const third = await runDeploymentStatusTick({ now: clock }, deps);
+  assert.equal(third.vaultsReclaimed, 1);
+  assert.deepEqual(db.models[0]!.vaultReclaimedAt, clock);
+
+  // One whose start never lands is released once no start can still arrive.
+  const idle = fake.seedDeployment({ name: "wheelsai-model-never-started", status: "DRAFT" });
+  const db2 = statusDb({
+    models: [{ id: "m2", status: "failed", stoppedAt: NOW, nosanaJobIds: [idle.id], nosanaAccessMode: "api_key" }],
+  });
+  const deps2 = buildStatus(db2, {
+    reclaimVault: (nosanaId, mode, options) => client.reclaimDeploymentVault(nosanaId, mode, options),
+    now: () => clock,
+  });
+  clock = new Date(NOW.getTime() + DRAFT_START_HOLD_MS - 1);
+  assert.equal((await runDeploymentStatusTick({ now: clock }, deps2)).vaultsPending, 1);
+  clock = new Date(NOW.getTime() + DRAFT_START_HOLD_MS);
+  assert.equal((await runDeploymentStatusTick({ now: clock }, deps2)).vaultsReclaimed, 1);
+  assert.deepEqual(db2.models[0]!.vaultReclaimedAt, clock);
 });
 
 // ============================================

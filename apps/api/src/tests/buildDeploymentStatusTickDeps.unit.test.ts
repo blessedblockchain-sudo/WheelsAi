@@ -50,6 +50,7 @@ const EP = {
   url: "https://abc.node.k8s.prd.nos.ci",
   port: 8000,
   opId: "vllm-inference",
+  online: true,
 };
 
 // ---------------------------------------------------------------------------
@@ -416,6 +417,7 @@ async function buildDeps(opts: {
   polled?: string[];
   reclaimVault?: (id: string) => Promise<{ reclaimed: boolean }>;
   reclaimMaxAgeHours?: number;
+  stopDeployment?: (id: string, mode?: string) => Promise<{ stopRefused?: boolean }>;
 }) {
   setupEnv();
   const { buildDeploymentStatusTickDeps } = await import(
@@ -435,6 +437,7 @@ async function buildDeps(opts: {
     emitTransition: async () => {},
     reclaimVault: opts.reclaimVault,
     reclaimMaxAgeHours: opts.reclaimMaxAgeHours,
+    ...(opts.stopDeployment ? { stopDeployment: opts.stopDeployment } : {}),
     pricePerSecondUsd: () => 0.00025, // 4090: $0.90/hour
     now: () => NOW,
   });
@@ -518,6 +521,35 @@ test("observeDeployment passes the Deployment-Manager id to the strict read and 
   const obs = await deps.observeDeployment("DeploymentManagerId1");
   assert.deepEqual(polled, ["DeploymentManagerId1"]);
   assert.deepEqual(obs, { state: "running", endpoints: [EP], replicas: 1 });
+});
+
+test("observeDeployment carries each endpoint's online flag through untouched", async () => {
+  const offline = { ...EP, url: "https://off.node.k8s.prd.nos.ci", online: false };
+  const deps = await buildDeps({
+    db: makeDb({}),
+    getDeploymentStatus: async () => snapshot("running", { endpoints: [offline, EP] }),
+  });
+  const obs = await deps.observeDeployment("dm_1");
+  assert.deepEqual(obs.endpoints, [offline, EP]);
+});
+
+test("stopHaltedDeployment is wired only with a stop, goes through the row's mode, and reports a refused stop", async () => {
+  assert.equal((await buildDeps({ db: makeDb({}) })).stopHaltedDeployment, undefined);
+
+  const calls: Array<[string, string | undefined]> = [];
+  const deps = await buildDeps({
+    db: makeDb({}),
+    stopDeployment: async (id, mode) => {
+      calls.push([id, mode]);
+      return id === "dm_refused" ? { stopRefused: true } : {};
+    },
+  });
+  assert.deepEqual(await deps.stopHaltedDeployment!("dm_ok", "api_key"), {});
+  assert.deepEqual(await deps.stopHaltedDeployment!("dm_refused", "wallet"), { stopRefused: true });
+  assert.deepEqual(calls, [
+    ["dm_ok", "api_key"],
+    ["dm_refused", "wallet"],
+  ]);
 });
 
 test("observeDeployment surfaces the Nosana failure event as the reason for ERROR", async () => {
@@ -698,7 +730,7 @@ test("persistTransition records the failure reason: lastError on agents, statusR
 test("syncNodes creates a node per endpoint url with the host as its identity", async () => {
   const db = makeDb({ models: [{ id: "m1", status: "provisioning" }] });
   const deps = await buildDeps({ db });
-  const ep2 = { url: "https://def.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference" };
+  const ep2 = { url: "https://def.node.k8s.prd.nos.ci", port: 8000, opId: "vllm-inference", online: true };
 
   const result = await deps.syncNodes!({ deploymentId: "m1", endpoints: [EP, ep2] });
 
@@ -810,8 +842,8 @@ test("loadVaultReclaimCandidates selects recent stopped/failed rows whose vault 
   });
   const candidates = await deps.loadVaultReclaimCandidates!();
   assert.deepEqual(candidates, [
-    { id: "fresh", nosanaDeploymentId: "dm_fresh", accessMode: "wallet" },
-    { id: "failed", nosanaDeploymentId: "dm_failed", accessMode: "wallet" },
+    { id: "fresh", nosanaDeploymentId: "dm_fresh", accessMode: "wallet", endedAt: hoursAgo(1) },
+    { id: "failed", nosanaDeploymentId: "dm_failed", accessMode: "wallet", endedAt: hoursAgo(2) },
   ]);
 });
 
@@ -1348,7 +1380,7 @@ test("the vault sweep also covers untracked Nosana deployments, oldest first and
   const deps = await buildDeps({ db, reclaimVault: async () => ({ reclaimed: true }), reclaimMaxAgeHours: 72 });
   assert.deepEqual(await deps.loadVaultReclaimCandidates!(), [
     { id: "o_live", nosanaDeploymentId: "dm_orphan", orphan: true, accessMode: "wallet" },
-    { id: "row", nosanaDeploymentId: "dm_row", accessMode: "wallet" },
+    { id: "row", nosanaDeploymentId: "dm_row", accessMode: "wallet", endedAt: hoursAgo(1) },
   ]);
 });
 

@@ -26,6 +26,7 @@ process.env.NOSANA_API_KEY = fake.apiKey;
 process.env.NOSANA_API_URL = fake.url;
 process.env.NOSANA_CREDITS_CACHE_MS = "0";
 process.env.NOSANA_COST_CACHE_MS = "0";
+process.env.PUBLIC_API_URL = "https://api.example.com";
 for (const name of [
   "NOSANA_WALLET_PRIVATE_KEY",
   "NOSANA_ACCESS_MODE",
@@ -56,6 +57,9 @@ function resetFake() {
   fake.setMarkets(FAKE_MARKETS);
   fake.setOwner("11111111111111111111111111111111");
   fake.setInsufficientFunds(false);
+  // Every create carries its name as the idempotency key, and Nosana keeps
+  // keys unique: a name reused by an earlier test would answer 409.
+  fake.deployments.clear();
   fake.requests.length = 0;
 }
 
@@ -198,6 +202,35 @@ test("agent deploy with API-key access stores api_key beside the Nosana id, unde
     assert.equal(fake.vaultCalls(), 0);
   } finally {
     await restore();
+  }
+});
+
+test("agent deploy on a model deployment is refused before anything is reserved or created: the container would have no key for the model's route", async () => {
+  resetFake();
+  const MODEL_DEPLOYMENT_ID = "33333333-3333-4333-8333-333333333333";
+  const restoreModel = patchPrisma({
+    deployment: { findFirst: async () => ({ id: MODEL_DEPLOYMENT_ID, orgId: "org-1", slug: "phi-3-mini", status: "running" }) },
+  });
+  const { app, state, restore } = await agentsApp();
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: `/${AGENT_ID}/deploy`,
+      payload: { gpuTier: "3060", replicas: 1, modelDeploymentId: MODEL_DEPLOYMENT_ID },
+    });
+    assert.equal(res.statusCode, 501, res.body);
+    assert.equal(res.json().error, "agent_model_deployment_unavailable");
+    assert.match(res.json().message, /externalModelUrl/);
+    assert.match(res.json().message, /Nothing was reserved/);
+    assert.equal(state.created, 0, "no deployment row");
+    assert.equal(state.reserved, 0, "no reservation");
+    // Nothing happens in the background either.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(fake.requests.length, 0, "Nosana was never asked for anything");
+    assert.equal(state.writes.length, 0);
+  } finally {
+    await restore();
+    restoreModel();
   }
 });
 

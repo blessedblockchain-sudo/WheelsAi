@@ -64,12 +64,12 @@ test("definition: one container op, the image, a GPU, no command", () => {
   const op = definition.ops[0];
   assert.equal(op.type, "container/run");
   assert.equal(op.id, "train");
-  assert.deepEqual(Object.keys(op.args).sort(), ["env", "gpu", "image", "required_vram"]);
+  assert.deepEqual(Object.keys(op.args).sort(), ["env", "gpu", "image"]);
   assert.equal(op.args.image, IMAGE);
   assert.equal(op.args.gpu, true);
-  assert.equal(op.args.required_vram, 12);
   const args = op.args as Record<string, unknown>;
-  for (const absent of ["cmd", "entrypoint", "expose", "volumes", "work", "authentication"]) {
+  // required_vram is not a ContainerRun key: Nosana's strict validator refuses it.
+  for (const absent of ["cmd", "entrypoint", "expose", "volumes", "work", "authentication", "required_vram"]) {
     assert.equal(Object.hasOwn(args, absent), false, `${absent} is not set`);
   }
 });

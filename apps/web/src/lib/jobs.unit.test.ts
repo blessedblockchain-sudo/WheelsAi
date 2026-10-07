@@ -44,7 +44,7 @@ const shape = (steps: ReturnType<typeof jobTimeline>) => steps.map((s) => `${s.k
 
 test("money and time read the way a person says them", () => {
   assert.equal(formatCents(50), "$0.50");
-  assert.equal(formatCents(100_000), "$1000.00");
+  assert.equal(formatCents(100_000), "$1,000.00");
   assert.equal(formatDuration(300), "5 minutes");
   assert.equal(formatDuration(5400), "1 hour 30 minutes");
   assert.equal(formatDuration(604_800), "7 days");
@@ -150,7 +150,7 @@ test("a hire carries the terms on screen, and a refused one says what the publis
   const shown = termsOf(offering);
   const price = termsChangedMessage(shown, { current: { priceCents: 100_000, slaSeconds: 3600, termsVersion: "bbbb" } });
   assert.match(price, /nothing was charged/);
-  assert.match(price, /The price changed from \$5\.00 to \$1000\.00\./);
+  assert.match(price, /The price changed from \$5\.00 to \$1,000\.00\./);
   assert.ok(!price.includes("delivery time"));
 
   const both = termsChangedMessage(shown, { current: { priceCents: 400, slaSeconds: 7200, termsVersion: "bbbb" } });

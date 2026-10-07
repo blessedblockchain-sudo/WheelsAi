@@ -41,7 +41,7 @@ test("the starting draft is sendable once it has a product, a title and a descri
 
 test("price and delivery time are held to the limits the API enforces", () => {
   for (const price of ["0.49", "1000.01", "abc", "1.999", ""]) {
-    assert.match(buildOffering(draft({ price })).errors.price ?? "", /between \$0\.50 and \$1000\.00/, price);
+    assert.match(buildOffering(draft({ price })).errors.price ?? "", /between \$0\.50 and \$1,000\.00/, price);
   }
   assert.equal(buildOffering(draft({ price: "0.50" })).content.priceCents, 50);
   assert.equal(buildOffering(draft({ price: "1000" })).content.priceCents, 100_000);

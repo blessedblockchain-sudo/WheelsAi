@@ -12,8 +12,10 @@ export const JOB_MAX_PRICE_CENTS = 100_000;
 export const JOB_MIN_SLA_SECONDS = 300;
 export const JOB_MAX_SLA_SECONDS = 604_800;
 
+const USD = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
 export function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  return USD.format(cents / 100);
 }
 
 /** "5 minutes", "1 hour 30 minutes", "2 days": at most two units. */

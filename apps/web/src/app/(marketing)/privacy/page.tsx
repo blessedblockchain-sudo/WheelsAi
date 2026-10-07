@@ -81,6 +81,13 @@ export default function PrivacyPage() {
           free-model usage counts.
         </li>
         <li>
+          A timing record for each chat request that reaches a model: the organization, the agent or deployment and the model
+          it was for, how it ended, how long it took and how many tokens the answer had. It holds no message content. We use
+          these records for your latency analytics and alerts, and to publish a platform-wide response-time figure that is
+          computed across organizations and identifies none of them.{" "}
+          <Founder>legal review: per-request timing records</Founder>
+        </li>
+        <li>
           Your credit ledger (every purchase, bonus, charge, hold, release and refund), subscriptions, marketplace installs,
           revenue, payouts and payout addresses.
         </li>
@@ -282,6 +289,10 @@ export default function PrivacyPage() {
           Ledger, billing, payout and tax-relevant records: for as long as we must keep them for accounting and legal purposes.
         </li>
         <li>Verification links expire after 24 hours and password reset links after 30 minutes.</li>
+        <li>
+          Per-request timing records: deleted on a schedule after a fixed number of days.{" "}
+          <Founder>legal review: the retention period of timing records (the configured default is 30 days)</Founder>
+        </li>
         <li>Server logs and backups: <Founder>log and backup retention periods</Founder>.</li>
         <li>On-chain records: permanent, and outside our control.</li>
       </ul>

@@ -384,6 +384,29 @@ const envSchema = z.object({
   // page says there are no public monitors yet.
   STATUS_PAGE_ORG_ID: z.string().uuid().optional(),
 
+  // Measured latency (services/latencySamples.ts). The public figure is the
+  // p50 of successful chat answers over a rolling window, and is published
+  // only once enough requests from enough different organizations are in it;
+  // below either threshold the page says "measuring" and shows no number.
+  PUBLIC_LATENCY_WINDOW_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+  PUBLIC_LATENCY_MIN_SAMPLES: z.coerce.number().int().min(1).default(50),
+  PUBLIC_LATENCY_MIN_ORGS: z.coerce.number().int().min(1).default(3),
+  // Comma-separated organization ids left out of the public figure: the
+  // operator's own and any used for testing.
+  PUBLIC_LATENCY_EXCLUDED_ORG_IDS: z
+    .string()
+    .optional()
+    .transform((value) =>
+      (value ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0),
+    )
+    .pipe(z.array(z.string().uuid())),
+  // How long per-request timing rows are kept. At least 2 days: the longest
+  // alert window is 24 hours and the analytics tick re-reads yesterday.
+  LATENCY_SAMPLE_RETENTION_DAYS: z.coerce.number().int().min(2).max(365).default(30),
+
   // Payout-executor BullMQ worker (W2 money keystone): settles requested
   // CreatorPayout rows — credits grants and/or on-chain crypto transfers
   // from the platform payout wallet. Set to 0 to disable (the default:

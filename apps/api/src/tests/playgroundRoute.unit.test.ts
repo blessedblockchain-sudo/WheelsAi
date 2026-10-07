@@ -201,6 +201,27 @@ test("the playground response and SSE contract is unchanged on the shared servic
   await app.close();
 });
 
+// The model string is the caller's. It goes on to the provider lookup, the
+// logs and the latency record, so a control character (a NUL above all, which
+// a Postgres text column refuses) is turned away at the door.
+test("a model id with a control character, or an absurd length, is refused before any chat runs", async () => {
+  const { deps, spy } = chatDeps({}, true);
+  const app = await buildApp(deps);
+  // index.ts answers a ZodError as 400; this bare app has no such handler,
+  // so what is pinned here is that the request is refused and nothing ran.
+  for (const model of ["openai/gpt-4\u0000", "openai/\ngpt-4", "\u007f", "", "m".repeat(201)]) {
+    const res = await chat(app, { messages: MESSAGES, model });
+    assert.ok(res.statusCode >= 400, `${JSON.stringify(model)} -> ${res.statusCode}`);
+    assert.match(res.body, /model/);
+  }
+  assert.equal(spy.chat.length, 0, "no model was called");
+  assert.deepEqual(spy.money, []);
+
+  const ok = await chat(app, { messages: MESSAGES, model: "free/groq/llama-3.3-70b" });
+  assert.equal(ok.statusCode, 200);
+  await app.close();
+});
+
 test("a platform-unconfigured model answers 501", async () => {
   // No model on the agent and no free-model key on the platform.
   const none = chatDeps({

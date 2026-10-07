@@ -1,5 +1,6 @@
 "use client";
 
+import { formatLatencyMs } from "@wheelsai/shared/latency";
 import { useState, useEffect, useCallback } from "react";
 import {
   BarChart3,
@@ -61,6 +62,9 @@ export default function AnalyticsDashboardPage() {
       currency: "USD",
     }).format(cents / 100);
   };
+
+  // A latency that was not measured is shown as a dash, never as 0 ms.
+  const formatLatency = formatLatencyMs;
 
   const formatNumber = (num: number) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + "M";
@@ -255,10 +259,12 @@ export default function AnalyticsDashboardPage() {
             <span className="text-sm">Avg Latency</span>
           </div>
           <div className="text-3xl font-bold">
-            {overview.avgLatencyMs.toFixed(0)}ms
+            {formatLatency(overview.avgLatencyMs)}
           </div>
           <div className="text-sm text-muted-foreground mt-1">
-            Per request average
+            {overview.avgLatencyMs === null
+              ? "No answered request measured in this period"
+              : `Median ${formatLatency(overview.p50LatencyMs)} · p95 ${formatLatency(overview.p95LatencyMs)}`}
           </div>
         </div>
       </div>
@@ -461,7 +467,7 @@ export default function AnalyticsDashboardPage() {
                       {formatNumber(d.tokensIn + d.tokensOut)}
                     </td>
                     <td className="py-3 text-right">{formatCurrency(d.costCents)}</td>
-                    <td className="py-3 text-right">{d.avgLatencyMs.toFixed(0)}ms</td>
+                    <td className="py-3 text-right">{formatLatency(d.avgLatencyMs)}</td>
                     <td className="py-3 text-right">
                       <span
                         className={

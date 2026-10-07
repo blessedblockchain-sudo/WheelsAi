@@ -1,5 +1,6 @@
 "use client";
 
+import { formatLatencyMs } from "@wheelsai/shared/latency";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
@@ -402,8 +403,15 @@ export default function DeploymentDetailPage() {
                 <div>
                   <p className="text-sm text-muted-foreground">Avg Latency</p>
                   <p className="text-2xl font-bold">
-                    {metrics?.metrics?.avgLatencyMs || 0}ms
+                    {formatLatencyMs(metrics?.metrics?.avgLatencyMs)}
                   </p>
+                  {typeof metrics?.metrics?.p50LatencyMs === "number" &&
+                    typeof metrics?.metrics?.p95LatencyMs === "number" && (
+                      <p className="text-xs text-muted-foreground">
+                        Median {formatLatencyMs(metrics.metrics.p50LatencyMs)} · p95{" "}
+                        {formatLatencyMs(metrics.metrics.p95LatencyMs)}
+                      </p>
+                    )}
                 </div>
               </div>
             </CardContent>
@@ -504,7 +512,7 @@ export default function DeploymentDetailPage() {
                       </div>
                     </div>
                     {node.latencyMs !== null && (
-                      <span className="text-sm text-muted-foreground">{node.latencyMs}ms latency</span>
+                      <span className="text-sm text-muted-foreground">{formatLatencyMs(node.latencyMs)} latency</span>
                     )}
                   </div>
                 ))}

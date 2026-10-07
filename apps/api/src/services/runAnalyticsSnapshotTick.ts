@@ -9,6 +9,11 @@
  * TODAY's rolling snapshot and re-upsert YESTERDAY's (finalizing it —
  * late usage rows land in the right day). Upserts make the tick freely
  * re-runnable. Per-org isolation.
+ *
+ * The same pass enforces the retention of the per-request latency samples
+ * the snapshots are computed from (LATENCY_SAMPLE_RETENTION_DAYS), after the
+ * snapshots are written so a day is summarised before any of it can go. A
+ * failed prune is reported and never costs the snapshots.
  */
 
 export interface AnalyticsSnapshotTickDeps {
@@ -16,6 +21,8 @@ export interface AnalyticsSnapshotTickDeps {
   loadActiveOrgIds: (args: { since: Date }) => Promise<string[]>;
   /** createDailySnapshot(orgId, day) — upsert, null when day had no usage. */
   snapshotOrgDay: (orgId: string, day: Date) => Promise<unknown | null>;
+  /** Deletes latency samples past retention; resolves to how many rows went. */
+  pruneLatencySamples: () => Promise<number>;
 }
 
 export interface AnalyticsSnapshotTickResult {
@@ -23,6 +30,9 @@ export interface AnalyticsSnapshotTickResult {
   snapshots: number;
   empty: number;
   failed: number;
+  prunedLatencySamples: number;
+  /** The prune threw: samples past retention are still stored. */
+  latencyPruneFailed: boolean;
 }
 
 export async function runAnalyticsSnapshotTick(
@@ -39,6 +49,8 @@ export async function runAnalyticsSnapshotTick(
     snapshots: 0,
     empty: 0,
     failed: 0,
+    prunedLatencySamples: 0,
+    latencyPruneFailed: false,
   };
 
   for (const orgId of orgIds) {
@@ -51,6 +63,12 @@ export async function runAnalyticsSnapshotTick(
         result.failed += 1;
       }
     }
+  }
+
+  try {
+    result.prunedLatencySamples = await deps.pruneLatencySamples();
+  } catch {
+    result.latencyPruneFailed = true;
   }
 
   return result;

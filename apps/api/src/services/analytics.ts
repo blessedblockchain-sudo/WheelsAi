@@ -5,6 +5,44 @@ import {
   type AgentUsageRow,
   type AgentUsageSummary,
 } from "./agentUsage.js";
+import {
+  groupedLatencyLoader,
+  scopedLatencyLoader,
+  type ScopedLatency,
+} from "./buildLatencySampleDeps.js";
+import type { LatencyGroup, ScopedWindow } from "./latencyQueries.js";
+import { agentSurface, type LatencyOutcome } from "./latencySamples.js";
+
+const defaultDb = prisma;
+
+// ============================================
+// Latency
+// ============================================
+
+/**
+ * Every latency in analytics is read from the per-request samples
+ * (request_latency_samples): the end-to-end time of answered requests, with
+ * exact percentiles. A period with no sample has no latency - null, never
+ * 0 ms and never an average of hourly averages.
+ */
+export interface AnalyticsLatencyReader {
+  loadScopedLatency(window: ScopedWindow): Promise<ScopedLatency>;
+  loadGroupedLatency(window: ScopedWindow, groupBy: LatencyGroup): Promise<Map<string, ScopedLatency>>;
+}
+
+const sampleLatency: AnalyticsLatencyReader = {
+  loadScopedLatency: scopedLatencyLoader(),
+  loadGroupedLatency: groupedLatencyLoader(),
+};
+
+// An injected database has no sample table behind it: nothing is measured.
+const noLatency: AnalyticsLatencyReader = {
+  loadScopedLatency: async () => ({ sampleCount: 0, avgMs: null, p50Ms: null, p95Ms: null, p99Ms: null }),
+  loadGroupedLatency: async () => new Map(),
+};
+
+// Analytics states how fast answers were, so only answered requests count.
+const ANSWERED: readonly LatencyOutcome[] = ["ok"];
 
 // ============================================
 // Real-time Analytics
@@ -15,7 +53,12 @@ export interface UsageMetrics {
   totalTokensIn: number;
   totalTokensOut: number;
   totalCostCents: number;
-  avgLatencyMs: number;
+  /** End-to-end time of answered requests; null when none was measured. */
+  avgLatencyMs: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  /** The answered requests the three figures above are computed over. */
+  latencySampleCount: number;
   errorRate: number;
 }
 
@@ -37,7 +80,10 @@ export interface DeploymentMetrics {
   tokensIn: number;
   tokensOut: number;
   costCents: number;
-  avgLatencyMs: number;
+  /** null when no answered request of this deployment was measured. */
+  avgLatencyMs: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
   errorRate: number;
 }
 
@@ -46,9 +92,11 @@ export interface DeploymentMetrics {
  */
 export async function getUsageOverview(
   orgId: string,
-  periodDays: number = 30
+  periodDays: number = 30,
+  latencyReader: AnalyticsLatencyReader = sampleLatency,
 ): Promise<UsageMetrics> {
-  const startDate = new Date();
+  const now = new Date();
+  const startDate = new Date(now);
   startDate.setDate(startDate.getDate() - periodDays);
 
   const records = await prisma.usageRecord.findMany({
@@ -62,15 +110,23 @@ export async function getUsageOverview(
   const totalTokensIn = records.reduce((sum, r) => sum + Number(r.inputTokens), 0);
   const totalTokensOut = records.reduce((sum, r) => sum + Number(r.outputTokens), 0);
   const totalCostCents = records.reduce((sum, r) => sum + Number(r.costCents), 0);
-  const totalLatency = records.reduce((sum, r) => sum + Number(r.totalLatencyMs), 0);
   const totalErrors = records.reduce((sum, r) => sum + r.errorCount, 0);
+  const latency = await latencyReader.loadScopedLatency({
+    orgId,
+    since: startDate,
+    until: now,
+    outcomes: ANSWERED,
+  });
 
   return {
     totalRequests,
     totalTokensIn,
     totalTokensOut,
     totalCostCents,
-    avgLatencyMs: totalRequests > 0 ? totalLatency / totalRequests : 0,
+    avgLatencyMs: latency.avgMs,
+    p50LatencyMs: latency.p50Ms,
+    p95LatencyMs: latency.p95Ms,
+    latencySampleCount: latency.sampleCount,
     errorRate: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0,
   };
 }
@@ -135,9 +191,11 @@ export async function getUsageTimeSeries(
  */
 export async function getDeploymentMetrics(
   orgId: string,
-  periodDays: number = 30
+  periodDays: number = 30,
+  latencyReader: AnalyticsLatencyReader = sampleLatency,
 ): Promise<DeploymentMetrics[]> {
-  const startDate = new Date();
+  const now = new Date();
+  const startDate = new Date(now);
   startDate.setDate(startDate.getDate() - periodDays);
 
   const deployments = await prisma.deployment.findMany({
@@ -149,12 +207,14 @@ export async function getDeploymentMetrics(
     },
   });
 
+  const latencyByDeployment = await latencyReader.loadGroupedLatency(
+    { orgId, since: startDate, until: now, outcomes: ANSWERED },
+    "deployment",
+  );
+
   return deployments.map((d) => {
     const totalRequests = d.usageRecords.reduce((sum, r) => sum + r.requestCount, 0);
-    const totalLatency = d.usageRecords.reduce(
-      (sum, r) => sum + Number(r.totalLatencyMs),
-      0
-    );
+    const latency = latencyByDeployment.get(d.id);
     const totalErrors = d.usageRecords.reduce((sum, r) => sum + r.errorCount, 0);
 
     return {
@@ -166,7 +226,9 @@ export async function getDeploymentMetrics(
       tokensIn: d.usageRecords.reduce((sum, r) => sum + Number(r.inputTokens), 0),
       tokensOut: d.usageRecords.reduce((sum, r) => sum + Number(r.outputTokens), 0),
       costCents: d.usageRecords.reduce((sum, r) => sum + Number(r.costCents), 0),
-      avgLatencyMs: totalRequests > 0 ? totalLatency / totalRequests : 0,
+      avgLatencyMs: latency?.avgMs ?? null,
+      p50LatencyMs: latency?.p50Ms ?? null,
+      p95LatencyMs: latency?.p95Ms ?? null,
       errorRate: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0,
     };
   });
@@ -248,10 +310,22 @@ export async function getCostByGpuTier(
 // Analytics Snapshots (Historical)
 // ============================================
 
+type SnapshotDb = Pick<
+  typeof prisma,
+  "usageRecord" | "agentUsageRecord" | "deployment" | "agentDeployment" | "analyticsSnapshot"
+>;
+
 /**
  * Create a daily analytics snapshot
  */
-export async function createDailySnapshot(orgId: string, date: Date) {
+export async function createDailySnapshot(
+  orgId: string,
+  date: Date,
+  options: { db?: SnapshotDb; latency?: AnalyticsLatencyReader } = {},
+) {
+  const prisma = options.db ?? defaultDb;
+  const latencyReader = options.latency ?? (options.db ? noLatency : sampleLatency);
+
   const startOfDay = new Date(date);
   startOfDay.setHours(0, 0, 0, 0);
 
@@ -277,18 +351,25 @@ export async function createDailySnapshot(orgId: string, date: Date) {
   const totalTokensIn = records.reduce((sum, r) => sum + Number(r.inputTokens), 0);
   const totalTokensOut = records.reduce((sum, r) => sum + Number(r.outputTokens), 0);
   const totalCostCents = records.reduce((sum, r) => sum + Number(r.costCents), 0);
-  const totalLatency = records.reduce((sum, r) => sum + Number(r.totalLatencyMs), 0);
   const totalErrors = records.reduce((sum, r) => sum + r.errorCount, 0);
 
-  // Calculate latency percentiles (simplified)
-  const latencies = records
-    .filter((r) => r.requestCount > 0)
-    .map((r) => Number(r.totalLatencyMs) / r.requestCount);
-  latencies.sort((a, b) => a - b);
-
-  const p50Index = Math.floor(latencies.length * 0.5);
-  const p95Index = Math.floor(latencies.length * 0.95);
-  const p99Index = Math.floor(latencies.length * 0.99);
+  // The day's latency, from the requests themselves. These columns used to
+  // hold percentiles of each hour's mean, which are not percentiles of
+  // anything a caller experienced.
+  const day: ScopedWindow = {
+    orgId,
+    since: startOfDay,
+    until: new Date(endOfDay.getTime() + 1),
+    outcomes: ANSWERED,
+  };
+  const dayLatency = await latencyReader.loadScopedLatency(day);
+  const latencyByAgent = await latencyReader.loadGroupedLatency(day, "agent");
+  const latencyColumns = {
+    avgLatencyMs: dayLatency.avgMs,
+    p50LatencyMs: dayLatency.p50Ms,
+    p95LatencyMs: dayLatency.p95Ms,
+    p99LatencyMs: dayLatency.p99Ms,
+  };
 
   // Get deployment stats
   const deploymentStats: Record<string, any> = {};
@@ -352,7 +433,7 @@ export async function createDailySnapshot(orgId: string, date: Date) {
   for (const [agentId, rows] of chatRowsByAgent) {
     agentStats[agentId] = {
       ...(agentStats[agentId] ?? { requests: 0, tokensIn: 0, tokensOut: 0, costCents: 0 }),
-      chat: summarizeAgentUsage(rows),
+      chat: summarizeAgentUsage(rows, latencyByAgent.get(agentId) ?? null),
     };
   }
 
@@ -373,10 +454,7 @@ export async function createDailySnapshot(orgId: string, date: Date) {
       totalTokensIn: BigInt(totalTokensIn),
       totalTokensOut: BigInt(totalTokensOut),
       totalCostCents: BigInt(totalCostCents),
-      avgLatencyMs: totalRequests > 0 ? totalLatency / totalRequests : null,
-      p50LatencyMs: latencies[p50Index] || null,
-      p95LatencyMs: latencies[p95Index] || null,
-      p99LatencyMs: latencies[p99Index] || null,
+      ...latencyColumns,
       errorRate: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : null,
       deploymentStats,
       agentStats,
@@ -386,10 +464,7 @@ export async function createDailySnapshot(orgId: string, date: Date) {
       totalTokensIn: BigInt(totalTokensIn),
       totalTokensOut: BigInt(totalTokensOut),
       totalCostCents: BigInt(totalCostCents),
-      avgLatencyMs: totalRequests > 0 ? totalLatency / totalRequests : null,
-      p50LatencyMs: latencies[p50Index] || null,
-      p95LatencyMs: latencies[p95Index] || null,
-      p99LatencyMs: latencies[p99Index] || null,
+      ...latencyColumns,
       errorRate: totalRequests > 0 ? (totalErrors / totalRequests) * 100 : null,
       deploymentStats,
       agentStats,
@@ -542,6 +617,12 @@ export interface AgentChatUsage {
 
 type AgentUsageReader = Pick<typeof prisma, "agentUsageRecord">;
 
+/** "agent_playground" -> "playground": a sample's surface back to its source. */
+function sourceOfSurface(surface: string, sources: Iterable<string>): string | null {
+  for (const source of sources) if (agentSurface(source) === surface) return source;
+  return null;
+}
+
 /**
  * An agent's chat traffic over a period, from the hourly rollup the shared
  * agent-chat service writes. Scoped by BOTH ids: a row is only ever read for
@@ -551,9 +632,10 @@ export async function getAgentChatUsage(
   orgId: string,
   agentId: string,
   period: AgentUsagePeriod,
-  options: { db?: AgentUsageReader; now?: Date } = {},
+  options: { db?: AgentUsageReader; now?: Date; latency?: AnalyticsLatencyReader } = {},
 ): Promise<AgentChatUsage> {
   const db = options.db ?? prisma;
+  const latencyReader = options.latency ?? (options.db ? noLatency : sampleLatency);
   const now = options.now ?? new Date();
   const since = new Date(now.getTime() - AGENT_USAGE_PERIODS[period] * 60 * 60 * 1000);
 
@@ -570,13 +652,28 @@ export async function getAgentChatUsage(
     byHour.set(hour, [...(byHour.get(hour) ?? []), row]);
   }
 
+  // The agent's own chats: bound to the organization AND the agent, like the
+  // rows above. Percentiles do not add up, so the total is its own read.
+  const window: ScopedWindow = { orgId, agentId, since, until: now, outcomes: ANSWERED };
+  const [totalLatency, latencyBySurface] = await Promise.all([
+    latencyReader.loadScopedLatency(window),
+    latencyReader.loadGroupedLatency(window, "surface"),
+  ]);
+  const latencyBySource = new Map<string, ScopedLatency>();
+  for (const [surface, latency] of latencyBySurface) {
+    const source = sourceOfSurface(surface, bySourceRows.keys());
+    if (source !== null) latencyBySource.set(source, latency);
+  }
+
   const bySource: Record<string, AgentUsageSummary> = {};
-  for (const [source, sourceRows] of bySourceRows) bySource[source] = summarizeAgentUsage(sourceRows);
+  for (const [source, sourceRows] of bySourceRows) {
+    bySource[source] = summarizeAgentUsage(sourceRows, latencyBySource.get(source) ?? null);
+  }
 
   return {
     period,
     since: since.toISOString(),
-    total: summarizeAgentUsage(rows),
+    total: summarizeAgentUsage(rows, totalLatency),
     bySource,
     series: [...byHour.entries()].map(([periodStart, hourRows]) => {
       const hour = summarizeAgentUsage(hourRows);

@@ -695,6 +695,45 @@ model AgentUsageRecord {
   @@map("agent_usage_records")
 }
 
+// One row per chat request that reached a model: the single source every
+// stated latency is computed from (services/latencySamples.ts). Append-only
+// telemetry with no relations - nothing is checked on the request path, and
+// a deleted agent's past timings stay true. Holds timings, never content.
+// Pruned after LATENCY_SAMPLE_RETENTION_DAYS. No seed may write here.
+model RequestLatencySample {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @map("org_id") @db.Uuid
+  // Which way the request came in: 'v1' | 'deployment_chat' |
+  // 'deployment_step' for a model deployment, 'agent_<source>' for an agent
+  // chat (LATENCY_SURFACES in latencySamples.ts).
+  surface      String
+  agentId      String?  @map("agent_id") @db.Uuid
+  deploymentId String?  @map("deployment_id") @db.Uuid
+  model        String?
+  // 'nosana' | 'nosana_mock' | 'groq' | 'google' | ... | 'unknown'
+  provider     String
+  streamed     Boolean  @default(false)
+  // 'ok' | 'error' | 'timeout' | 'cancelled'
+  outcome      String
+  statusCode   Int?     @map("status_code")
+  // From the API receiving the request to the end of the answer.
+  totalMs      Int      @map("total_ms")
+  // The part spent inside the inference node call, where that is separable.
+  upstreamMs   Int?     @map("upstream_ms")
+  // From receipt to the first content of a streamed answer.
+  firstTokenMs Int?     @map("first_token_ms")
+  // As reported by the model; null when it reported none.
+  outputTokens Int?     @map("output_tokens")
+
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([orgId, createdAt])
+  @@index([deploymentId, createdAt])
+  @@index([agentId, createdAt])
+  @@map("request_latency_samples")
+}
+
 model AgentDeployment {
   id            String   @id @default(uuid()) @db.Uuid
   agentId       String   @map("agent_id") @db.Uuid
@@ -1463,6 +1502,9 @@ model AnalyticsSnapshot {
   totalCostCents  BigInt   @default(0) @map("total_cost_cents")
 
   // Performance metrics
+  // End-to-end time of the day's answered requests, from RequestLatencySample
+  // (percentile_disc); NULL for a day with no sample. Percentiles stored
+  // before 20261010210000 were means of hourly means and were cleared.
   avgLatencyMs    Float?   @map("avg_latency_ms")
   p50LatencyMs    Float?   @map("p50_latency_ms")
   p95LatencyMs    Float?   @map("p95_latency_ms")

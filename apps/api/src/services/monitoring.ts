@@ -1,5 +1,6 @@
 import { prisma } from "@wheelsai/db";
 import { safeFetch } from "../lib/ssrfGuard.js";
+import { alertRuleProblem, type AlertMetric } from "./alertRuleValidation.js";
 
 // ============================================
 // Alert Channels
@@ -141,13 +142,7 @@ export async function testAlertChannel(channelId: string, orgId: string) {
 
 export type RuleType = "threshold" | "anomaly" | "uptime" | "budget";
 export type ResourceType = "deployment" | "agent" | "organization";
-export type Metric =
-  | "error_rate"
-  | "latency_p95"
-  | "latency_avg"
-  | "request_count"
-  | "cost"
-  | "uptime";
+export type Metric = AlertMetric;
 export type Operator = "gt" | "gte" | "lt" | "lte" | "eq";
 export type Severity = "info" | "warning" | "critical";
 
@@ -195,7 +190,32 @@ async function ownedChannelIds(
   return channelIds;
 }
 
+/**
+ * A rule on one deployment or agent may only name one the organization owns.
+ * The evaluator's reads are org-bound either way; this refuses a rule that
+ * could only ever watch nothing.
+ */
+async function assertResourceOwned(
+  orgId: string,
+  resourceType: string,
+  resourceId: string | null | undefined,
+): Promise<void> {
+  if (!resourceId) return;
+  const where = { id: resourceId, orgId };
+  const found =
+    resourceType === "deployment"
+      ? await prisma.deployment.findFirst({ where, select: { id: true } })
+      : resourceType === "agent"
+        ? await prisma.agent.findFirst({ where, select: { id: true } })
+        : { id: resourceId };
+  if (!found) throw new Error(`resourceId is not a ${resourceType} of this organization`);
+}
+
 export async function createAlertRule(orgId: string, input: CreateAlertRuleInput) {
+  const problem = alertRuleProblem(input as unknown as Record<string, unknown>, { partial: false });
+  if (problem) throw new Error(problem);
+  await assertResourceOwned(orgId, input.resourceType, input.resourceId);
+
   const rule = await prisma.alertRule.create({
     data: {
       orgId,
@@ -276,6 +296,21 @@ export async function updateAlertRule(
   orgId: string,
   updates: Partial<CreateAlertRuleInput>
 ) {
+  const problem = alertRuleProblem(updates as unknown as Record<string, unknown>, { partial: true });
+  if (problem) throw new Error(problem);
+  if (updates.resourceId !== undefined || updates.resourceType !== undefined) {
+    const existing = await prisma.alertRule.findFirst({
+      where: { id: ruleId, orgId },
+      select: { resourceType: true, resourceId: true },
+    });
+    if (!existing) throw new Error("Rule not found");
+    await assertResourceOwned(
+      orgId,
+      updates.resourceType ?? existing.resourceType,
+      updates.resourceId !== undefined ? updates.resourceId : existing.resourceId,
+    );
+  }
+
   const rule = await prisma.alertRule.update({
     where: { id: ruleId, orgId },
     data: {
@@ -446,7 +481,9 @@ export async function getAlertStats(orgId: string, days: number = 7) {
 export async function triggerAlert(
   rule: any,
   metricValue: number,
-  resourceId?: string
+  resourceId?: string,
+  /** The value's unit and base, e.g. "ms over 37 requests". */
+  detail?: string
 ) {
   // Check cooldown
   if (rule.lastTriggeredAt) {
@@ -466,7 +503,7 @@ export async function triggerAlert(
       status: "active",
       severity: rule.severity,
       title: `${rule.name} triggered`,
-      message: `${rule.metric} ${rule.operator} ${rule.threshold} (actual: ${metricValue.toFixed(2)})`,
+      message: `${rule.metric} ${rule.operator} ${rule.threshold} (actual: ${metricValue.toFixed(2)}${detail ? ` ${detail}` : ""})`,
       resourceType: rule.resourceType,
       resourceId: resourceId || rule.resourceId,
       metricValue,

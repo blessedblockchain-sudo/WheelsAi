@@ -1,5 +1,6 @@
 "use client";
 
+import { formatLatencyMs } from "@wheelsai/shared/latency";
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
@@ -316,7 +317,7 @@ export default function AgentAnalyticsPage() {
 
   const totalRevenueDollars = overview ? (overview.totalCostCents / 100).toFixed(2) : "0.00";
   const errorRatePct = overview ? `${overview.errorRate.toFixed(1)}%` : "0%";
-  const avgLatencyDisplay = overview ? `${Math.round(overview.avgLatencyMs)}ms` : "—";
+  const avgLatencyDisplay = formatLatencyMs(overview?.avgLatencyMs);
 
   // Derive a rough per-day cost/revenue split from projection data
   const projection = analytics?.projection;

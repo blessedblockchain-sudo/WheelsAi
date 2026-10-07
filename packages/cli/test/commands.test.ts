@@ -325,6 +325,69 @@ describe("wheelsai (the built command)", () => {
       assert.doesNotMatch(result.stdout, /Listed on the marketplace/, "listing needs --publish");
     });
 
+    describe("the Latency line", () => {
+      const figure = (over: Record<string, unknown>) => ({
+        latency: {
+          status: "measured",
+          metric: "response_time",
+          definition: "Time the WheelsAI API took to produce the complete answer to a chat request.",
+          windowHours: 24,
+          sampleCount: 1284,
+          minSampleCount: 50,
+          minOrgCount: 3,
+          p50Ms: 612,
+          p95Ms: 2140,
+          computedAt: "2026-10-07T00:00:00.000Z",
+          ...over,
+        },
+      });
+
+      it("prints the platform's measured p50, labelled platform-wide", async () => {
+        api.routes["GET /api/public/stats"] = figure({});
+        const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
+        assert.equal(result.code, 0, result.stderr);
+        assert.match(result.stdout, /Latency\s+612 ms p50 {2}\(platform-wide, last 24 h\)\n/);
+      });
+
+      it("prints no number below the publication thresholds", async () => {
+        api.routes["GET /api/public/stats"] = figure({ status: "insufficient_data", sampleCount: 12, p50Ms: null, p95Ms: null });
+        const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
+        assert.match(result.stdout, /Latency\s+measuring \(12 of 50 requests\)\n/);
+        assert.doesNotMatch(result.stdout, /\d\s?ms/);
+      });
+
+      it("does not trust a number that comes without the measured status", async () => {
+        api.routes["GET /api/public/stats"] = figure({ status: "insufficient_data", sampleCount: 12, p50Ms: 47 });
+        const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
+        assert.match(result.stdout, /Latency\s+measuring \(12 of 50 requests\)\n/);
+        assert.doesNotMatch(result.stdout, /47/);
+      });
+
+      it("says the figure is unavailable when the API cannot state it, and the deploy still succeeds", async () => {
+        for (const route of [undefined, reply(500, { error: "boom" }), { frameworks: 6 }, figure({ status: "unavailable", p50Ms: null })]) {
+          if (route === undefined) delete api.routes["GET /api/public/stats"];
+          else api.routes["GET /api/public/stats"] = route;
+          const result = await wheelsai(["deploy", "--agent", "my-support-bot"]);
+          assert.equal(result.code, 0, result.stderr);
+          assert.match(result.stdout, /Agent live!/);
+          assert.match(result.stdout, /Latency\s+live figure unavailable\n/);
+          assert.doesNotMatch(result.stdout, /\d\s?ms/);
+        }
+      });
+
+      it("with --json, carries the figure as the API stated it, or null", async () => {
+        api.routes["GET /api/public/stats"] = figure({});
+        const measured = JSON.parse((await wheelsai(["deploy", "my-support-bot", "--json"])).stdout);
+        assert.equal(measured.platformLatency.status, "measured");
+        assert.equal(measured.platformLatency.p50Ms, 612);
+        assert.equal(measured.platformLatency.sampleCount, 1284);
+
+        delete api.routes["GET /api/public/stats"];
+        const none = JSON.parse((await wheelsai(["deploy", "my-support-bot", "--json"])).stdout);
+        assert.equal(none.platformLatency, null);
+      });
+    });
+
     it("takes the agent as a bare argument too, and prints one JSON document with --json", async () => {
       const result = await wheelsai(["deploy", "my-support-bot", "--json"]);
       assert.equal(result.code, 0, result.stderr);

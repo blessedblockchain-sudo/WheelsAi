@@ -54,9 +54,8 @@ export interface AgentUsageSummary {
   /** Answered chats whose provider reported no tokens; NOT in the two sums above. */
   usageUnreported: number;
   toolCalls: number;
-  /** null when nothing was answered. */
+  /** Measured per request over answered chats, in ms; null when none was measured. */
   avgLatencyMs: number | null;
-  /** The upper bound of the latency bucket the percentile falls in; null when unknown. */
   p50LatencyMs: number | null;
   p95LatencyMs: number | null;
   /** errors / requests, 0..1. */

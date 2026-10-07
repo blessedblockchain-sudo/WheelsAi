@@ -90,6 +90,8 @@ import {
   cancelInFlightAgentChats,
   closeAgentChatConnections,
 } from "./services/buildAgentChatDeps.js";
+import { closeLatencySink } from "./services/buildLatencySampleDeps.js";
+import { processPublicLatency } from "./services/buildPublicLatencyDeps.js";
 import { collaborationRoutes } from "./routes/collaboration.js";
 import { closePublicChatConnections, warmPublicChatLimiter } from "./services/buildPublicChatDeps.js";
 import { createTryItRoutesProduction } from "./routes/tryItBindings.js";
@@ -223,6 +225,8 @@ async function main() {
     disconnectPlanUsage();
     // Agent chat's tool-continuation Redis (opened on the first chat).
     await closeAgentChatConnections();
+    // Writes the last interval of latency samples still held in memory.
+    await closeLatencySink();
     // The fail-closed limiter of the web widget and Try it.
     await closePublicChatConnections();
   });
@@ -438,6 +442,7 @@ async function main() {
   await app.register(
     createPublicStatsRoutes({
       countPublishedListings: () => prisma.agentListing.count({ where: { status: "published" } }),
+      latency: processPublicLatency(),
     }),
     { prefix: "/api" },
   ); // GET /api/public/stats

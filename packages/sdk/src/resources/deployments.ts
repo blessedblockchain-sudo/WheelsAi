@@ -80,7 +80,12 @@ export interface DeploymentMetrics {
     requests: number;
     inputTokens: number;
     outputTokens: number;
-    avgLatencyMs: number;
+    /** End-to-end time of answered requests, in ms; null when none was measured. */
+    avgLatencyMs: number | null;
+    p50LatencyMs: number | null;
+    p95LatencyMs: number | null;
+    /** The answered requests the three latency fields are computed over. */
+    latencySampleCount: number;
     errorRate: number;
   };
   byHour: Array<{ period: string; requests: number; inputTokens: number; outputTokens: number }>;

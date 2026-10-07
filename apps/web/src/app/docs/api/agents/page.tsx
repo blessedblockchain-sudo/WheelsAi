@@ -165,7 +165,7 @@ export default function AgentsApiPage() {
     "total": {
       "requests": 128, "errors": 2, "streamed": 97, "answered": 124,
       "inputTokens": 51234, "outputTokens": 9120, "usageUnreported": 3, "toolCalls": 41,
-      "avgLatencyMs": 1840, "p50LatencyMs": 2000, "p95LatencyMs": 8000, "errorRate": 0.015625
+      "avgLatencyMs": 1840, "p50LatencyMs": 1512, "p95LatencyMs": 6240, "errorRate": 0.015625
     },
     "bySource": { "api": { "requests": 110, "...": "..." }, "playground": { "requests": 18, "...": "..." } },
     "series": [{ "periodStart": "2026-10-06T10:00:00.000Z", "requests": 12, "errors": 0, "inputTokens": 4410, "outputTokens": 803 }]
@@ -178,9 +178,9 @@ export default function AgentsApiPage() {
             chats that reported none; they are not in the sums and nothing is estimated.
           </li>
           <li>
-            Latency covers answered chats only (<code>answered</code>). <code>p50LatencyMs</code> and{" "}
-            <code>p95LatencyMs</code> are upper bounds, the ceiling of the latency bucket the percentile falls in, and{" "}
-            <code>null</code> when there is no sample or the percentile is slower than two minutes.
+            Latency covers answered chats only and is measured per request, in milliseconds, at the API.{" "}
+            <code>p50LatencyMs</code> and <code>p95LatencyMs</code> are the times of actual requests (not interpolated),
+            and all three latency fields are <code>null</code> when no answered chat was measured in the period.
           </li>
           <li>
             <code>errors</code> are chats that were admitted and produced no answer. A caller that disconnected is a request,

@@ -1,5 +1,6 @@
 "use client";
 
+import { formatLatencyMs } from "@wheelsai/shared/latency";
 import { useState, useEffect } from "react";
 import {
   Bell,
@@ -38,6 +39,16 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 
 type Tab = "overview" | "alerts" | "rules" | "channels" | "uptime";
+
+// The unit each metric's threshold is in (the API's ALERT_METRIC_UNITS).
+const ALERT_METRIC_UNITS: Record<string, string> = {
+  error_rate: "%",
+  latency_p95: "ms",
+  latency_avg: "ms",
+  request_count: "requests",
+  cost: "cents",
+  uptime: "%",
+};
 
 const severityColors = {
   info: "bg-blue-500/10 text-blue-500",
@@ -397,7 +408,7 @@ export default function MonitoringPage() {
                         {monitor.uptimePercent24h?.toFixed(2) || "N/A"}%
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {monitor.avgLatencyMs?.toFixed(0) || "N/A"}ms
+                        {formatLatencyMs(monitor.avgLatencyMs)}
                       </div>
                     </div>
                   </div>
@@ -509,7 +520,9 @@ export default function MonitoringPage() {
                     <div>
                       <div className="font-medium">{rule.name}</div>
                       <div className="text-sm text-muted-foreground">
-                        {rule.metric} {rule.operator} {rule.threshold} (window: {rule.windowMinutes}m)
+                        {rule.metric} {rule.operator} {rule.threshold}
+                        {ALERT_METRIC_UNITS[rule.metric] ? ` ${ALERT_METRIC_UNITS[rule.metric]}` : ""} (window:{" "}
+                        {rule.windowMinutes}m)
                       </div>
                       <div className="flex items-center gap-2 mt-1">
                         <span
@@ -680,7 +693,7 @@ export default function MonitoringPage() {
                       </div>
                       <div>
                         <div className="font-bold">
-                          {monitor.avgLatencyMs?.toFixed(0) || "N/A"}ms
+                          {formatLatencyMs(monitor.avgLatencyMs)}
                         </div>
                         <div className="text-xs text-muted-foreground">Latency</div>
                       </div>
@@ -886,12 +899,15 @@ function RuleModal({
   const [metric, setMetric] = useState("error_rate");
   const [operator, setOperator] = useState("gt");
   const [threshold, setThreshold] = useState("5");
+  const [windowMinutes, setWindowMinutes] = useState("5");
   const [severity, setSeverity] = useState("warning");
   const [selectedChannels, setSelectedChannels] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   async function handleSave() {
     setSaving(true);
+    setSaveError(null);
     try {
       await monitoringApi.createRule({
         name,
@@ -900,13 +916,16 @@ function RuleModal({
         metric,
         operator: operator as any,
         threshold: parseFloat(threshold),
+        windowMinutes: parseInt(windowMinutes, 10),
         severity: severity as any,
         channelIds: selectedChannels,
       });
       onSave();
       onClose();
     } catch (error) {
-      console.error("Failed to create rule:", error);
+      // The API says which field it refused (an unknown metric, a threshold
+      // that is not a number); a rule that was not saved must not look saved.
+      setSaveError(error instanceof Error && error.message ? error.message : "The rule could not be created.");
     } finally {
       setSaving(false);
     }
@@ -964,14 +983,35 @@ function RuleModal({
               </select>
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">Threshold</label>
+              <label className="block text-sm font-medium mb-1">
+                Threshold ({ALERT_METRIC_UNITS[metric] ?? "value"})
+              </label>
               <input
                 type="number"
+                min={0}
                 value={threshold}
                 onChange={(e) => setThreshold(e.target.value)}
                 className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Window (minutes)</label>
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              value={windowMinutes}
+              onChange={(e) => setWindowMinutes(e.target.value)}
+              className="w-full px-3 py-2 bg-background border rounded-lg text-sm"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              {metric.startsWith("latency_")
+                ? "Latency is the end-to-end response time, in milliseconds, of the requests recorded in this window. A window with no request does not trigger the rule."
+                : "The metric is computed over this many minutes, up to 1,440 (a day)."}
+            </p>
           </div>
 
           <div>
@@ -1011,6 +1051,12 @@ function RuleModal({
               )}
             </div>
           </div>
+
+          {saveError && (
+            <p role="alert" className="text-sm text-danger">
+              {saveError}
+            </p>
+          )}
 
           <div className="flex gap-2 pt-2">
             <button

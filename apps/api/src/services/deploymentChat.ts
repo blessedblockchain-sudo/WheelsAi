@@ -37,6 +37,13 @@ import {
   type HoldResult,
   type SettleResult,
 } from "./inferenceCreditHold.js";
+import {
+  buildLatencySample,
+  classifyUpstreamOutcome,
+  providerForDeployment,
+  type LatencyOutcome,
+  type RecordLatency,
+} from "./latencySamples.js";
 import type { Deadline } from "./mastra-runtime.js";
 import { openAiError, type NormalizedMessage, type OpenAiErrorResponse } from "./openaiCompat.js";
 
@@ -375,6 +382,11 @@ export interface DeploymentChatDeps {
     gpuTier: string;
     failed: boolean;
   }): Promise<void>;
+  /**
+   * One latency sample per call that reached a node (services/
+   * latencySamples.ts). Synchronous; MUST NOT throw or wait on a write.
+   */
+  recordLatency: RecordLatency;
   /** INFERENCE_TIMEOUT_MS: how long the node may stay silent. */
   idleTimeoutMs: number;
   newRequestId(): string;
@@ -403,6 +415,8 @@ export async function runDeploymentChat(
   deps: DeploymentChatDeps,
 ): Promise<DeploymentChatResult> {
   const now = deps.now ?? Date.now;
+  // The caller's wait starts here, admission and the hold included.
+  const receivedAt = now();
   const { orgId, messages } = request;
   const signal = request.signal ?? new AbortController().signal;
 
@@ -505,6 +519,37 @@ export async function runDeploymentChat(
       .catch((err) => deps.logger?.error({ err }, "Failed to record usage"));
   };
 
+  // One sample per call that got as far as a node, however it ended. After
+  // the money: timing is never a reason to delay a settle or a release.
+  let nodeCalled = false;
+  let sampled = false;
+  const sample = (outcome: LatencyOutcome, extra: { statusCode?: number; outputTokens?: number } = {}) => {
+    if (sampled) return;
+    sampled = true;
+    try {
+      const at = now();
+      deps.recordLatency(
+        buildLatencySample(
+          {
+            orgId,
+            surface: "deployment_step",
+            deploymentId: deployment.id,
+            model: deployment.model.hfId,
+            provider: providerForDeployment(deployment),
+            streamed: false,
+            outcome,
+            totalMs: at - receivedAt,
+            upstreamMs: at - startTime,
+            ...extra,
+          },
+          new Date(at),
+        ),
+      );
+    } catch (err) {
+      deps.logger?.warn({ err }, "Failed to record a latency sample");
+    }
+  };
+
   /** Nothing was produced: the hold goes back. */
   const abandon = async (reason: string, options: { countError?: boolean } = {}) => {
     if (closed) return;
@@ -580,10 +625,12 @@ export async function runDeploymentChat(
     try {
       let response: Response;
       try {
+        nodeCalled = true;
         response = await deps.callNode(node.nodeUrl, nodeBody, deadline.signal);
       } catch (error) {
         if (signal.aborted) {
           await abandon("the run was cancelled");
+          sample("cancelled");
           throw abortError(signal);
         }
         deps.logger?.error({ error, nodeUrl: node.nodeUrl }, "Node request failed");
@@ -595,6 +642,7 @@ export async function runDeploymentChat(
         await abandon(timedOut ? "inference node timed out" : "inference node unreachable", {
           countError: true,
         });
+        sample(classifyUpstreamOutcome({ timedOut }));
         throw timedOut
           ? new DeploymentChatError("node_timeout", "The inference node did not answer in time.")
           : new DeploymentChatError("node_unreachable", "Failed to reach inference node");
@@ -609,6 +657,7 @@ export async function runDeploymentChat(
           "Node returned non-OK for a deployment chat",
         );
         await abandon(`Inference node responded ${response.status}`, { countError: true });
+        sample("error", { statusCode: response.status });
         const error = nodeStatusError(response.status, nodeErrorMessage(text), retryAfterOf(response));
         throw new DeploymentChatError("node_error", error.body.error.message, {
           status: response.status,
@@ -620,10 +669,14 @@ export async function runDeploymentChat(
       } catch (error) {
         if (signal.aborted) {
           await abandon("the run was cancelled");
+          sample("cancelled");
           throw abortError(signal);
         }
         deps.logger?.error({ error, nodeUrl: node.nodeUrl }, "Node answered 200 with a body that is not JSON");
         await abandon("inference node answered with an unreadable body", { countError: true });
+        sample(classifyUpstreamOutcome({ timedOut: deadline.expired(), httpOk: true, hasAnswer: false }), {
+          statusCode: response.status,
+        });
         throw deadline.expired()
           ? new DeploymentChatError("node_timeout", "The inference node did not finish answering in time.")
           : new DeploymentChatError(
@@ -638,6 +691,7 @@ export async function runDeploymentChat(
     if (typeof responseBody !== "object" || responseBody === null || !Array.isArray(responseBody.choices)) {
       deps.logger?.error({ nodeUrl: node.nodeUrl }, "Node answered 200 without choices");
       await abandon("inference node answered without a completion", { countError: true });
+      sample("error", { statusCode: 200 });
       throw new DeploymentChatError(
         "invalid_answer",
         "The inference node answered with a body that is not a completion.",
@@ -648,6 +702,8 @@ export async function runDeploymentChat(
     // text turns out to be.
     const reported = reportedNodeUsage(responseBody);
     const chargedCents = await charge(reported, completionChars(responseBody.choices));
+    // A completion, as /v1 counts it - even one whose text turns out empty.
+    sample("ok", { statusCode: 200, ...(reported && { outputTokens: reported.completion_tokens }) });
 
     const choice = responseBody.choices[0] as
       | { message?: { content?: unknown }; finish_reason?: unknown }
@@ -678,6 +734,8 @@ export async function runDeploymentChat(
     // A fault nobody mapped above: the hold must still go back. A no-op when
     // the request was already settled or released.
     await abandon("deployment chat failed");
+    // A no-op when the call's ending was already sampled above.
+    if (nodeCalled) sample("error");
     throw err;
   }
 }

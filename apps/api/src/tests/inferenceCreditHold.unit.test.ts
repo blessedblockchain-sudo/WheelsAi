@@ -123,7 +123,8 @@ async function v1App(p: any) {
   app.addHook("onRequest", async (request) => {
     (request as any).auth = { userId: "u", orgId: "org-1", type: "jwt", role: "owner" };
   });
-  await app.register(createInferenceRoutes());
+  // Latency samples go to a stub: a unit test opens no database.
+  await app.register(createInferenceRoutes({ recordLatency: () => {} }));
   return {
     app,
     restore: async () => {

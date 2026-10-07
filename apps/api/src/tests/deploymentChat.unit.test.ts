@@ -9,6 +9,7 @@ import {
   type DeploymentForChat,
 } from "../services/deploymentChat.js";
 import type { GpuBillingBlock } from "../services/hostedModel.js";
+import type { LatencySample } from "../services/latencySamples.js";
 import {
   holdInferenceCredits,
   releaseInferenceHold,
@@ -23,10 +24,12 @@ import {
 // here and is refused when its GPU time is not being collected; a per-request
 // one holds before the node is called and then settles or releases, once.
 
-const ORG = "org-1";
+// UUIDs, as real ids are: a latency sample keeps no other kind.
+const ORG = "11111111-1111-4111-8111-111111111111";
+const DEPLOYMENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const DEPLOYMENT: DeploymentForChat = {
-  id: "dep-1",
+  id: DEPLOYMENT_ID,
   name: "Llama",
   slug: "llama-prod",
   modelId: "llama-3.1-8b",
@@ -57,6 +60,7 @@ interface World {
   events: string[];
   nodeCalls: Array<{ nodeUrl: string; body: Record<string, any>; signal: AbortSignal }>;
   usage: Array<Parameters<DeploymentChatDeps["recordUsage"]>[0]>;
+  latency: LatencySample[];
   unhealthy: string[];
 }
 
@@ -69,7 +73,7 @@ function harness(
   } = {},
 ): { deps: DeploymentChatDeps; world: World } {
   const { deployment, balance, block, node, ...depOverrides } = over;
-  const world: World = { balance: balance ?? 1_000n, ledger: [], events: [], nodeCalls: [], usage: [], unhealthy: [] };
+  const world: World = { balance: balance ?? 1_000n, ledger: [], events: [], nodeCalls: [], usage: [], latency: [], unhealthy: [] };
   const db: InferenceHoldPrisma = {
     creditBalance: {
       updateMany: async ({ where, data }) => {
@@ -127,6 +131,9 @@ function harness(
     recordUsage: async (args) => {
       world.usage.push(args);
     },
+    recordLatency: (sample) => {
+      if (sample) world.latency.push(sample);
+    },
     idleTimeoutMs: 30_000,
     newRequestId: () => "req-1",
     ...depOverrides,
@@ -137,7 +144,7 @@ function harness(
 function request(over: Partial<DeploymentChatRequest> = {}): DeploymentChatRequest {
   return {
     orgId: ORG,
-    deploymentId: "dep-1",
+    deploymentId: DEPLOYMENT_ID,
     messages: [{ role: "user", content: "Say hello." }],
     ...over,
   };
@@ -209,7 +216,7 @@ test("a GPU-billed deployment answers with no hold, no charge and no ledger row"
     { ...world.usage[0]!, latencyMs: 0 },
     {
       orgId: ORG,
-      deploymentId: "dep-1",
+      deploymentId: DEPLOYMENT_ID,
       usage: { prompt_tokens: 9, completion_tokens: 21 },
       latencyMs: 0,
       costCents: 0,
@@ -509,4 +516,107 @@ test("a completion cap above the deployment limit is refused before the deployme
     assert.equal((await refusal(runDeploymentChat(request({ maxTokens }), deps))).code, "invalid_request");
   }
   assert.deepEqual(world.events, []);
+});
+
+// ============================================
+// Latency samples
+// ============================================
+
+test("an answered call leaves one latency sample, taken after the charge", async () => {
+  const { deps, world } = harness({ deployment: PER_REQUEST });
+  await runDeploymentChat(request(), deps);
+  assert.equal(world.latency.length, 1);
+  const sample = world.latency[0]!;
+  assert.equal(sample.orgId, ORG);
+  assert.equal(sample.surface, "deployment_step");
+  assert.equal(sample.deploymentId, DEPLOYMENT_ID);
+  assert.equal(sample.agentId, null);
+  assert.equal(sample.outcome, "ok");
+  assert.equal(sample.provider, "nosana_mock");
+  assert.equal(sample.model, "meta-llama/Meta-Llama-3.1-8B-Instruct");
+  assert.equal(sample.streamed, false);
+  assert.equal(sample.statusCode, 200);
+  assert.equal(sample.outputTokens, 21);
+  assert.ok(sample.upstreamMs !== null && sample.upstreamMs <= sample.totalMs);
+  assert.equal(world.events.at(-1), "settle");
+});
+
+test("a real Nosana deployment is sampled as nosana, and unreported tokens stay null", async () => {
+  const { deps, world } = harness({ node: async () => completion("Hi.", null) });
+  await runDeploymentChat(request(), deps);
+  assert.equal(world.latency[0]!.provider, "nosana");
+  assert.equal(world.latency[0]!.outputTokens, null);
+});
+
+test("the sample measures from the call's start, the node time from the hold", async () => {
+  // A clock that advances 10 ms per reading: entry, the hold's start, then
+  // the readings taken when the answer is in.
+  let clock = 1_000;
+  const { deps, world } = harness({ deployment: PER_REQUEST, now: () => (clock += 10) });
+  await runDeploymentChat(request(), deps);
+  const sample = world.latency[0]!;
+  assert.ok(sample.totalMs > 0);
+  assert.ok(sample.upstreamMs !== null && sample.upstreamMs < sample.totalMs);
+});
+
+for (const failure of FAILURES) {
+  test(`${failure.name}: sampled once as an error, never as an answer`, async () => {
+    const { deps, world } = harness({ deployment: PER_REQUEST, node: failure.node });
+    await refusal(runDeploymentChat(request(), deps));
+    assert.equal(world.latency.length, 1);
+    assert.equal(world.latency[0]!.outcome, "error");
+  });
+}
+
+test("a node that goes silent is sampled as a timeout", async () => {
+  const { deps, world } = harness({
+    deployment: PER_REQUEST,
+    idleTimeoutMs: 20,
+    callNode: (_url, _body, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason));
+      }),
+  });
+  await refusal(runDeploymentChat(request(), deps));
+  assert.deepEqual(world.latency.map((sample) => sample.outcome), ["timeout"]);
+});
+
+test("a call cancelled while the node works is sampled as cancelled", async () => {
+  const controller = new AbortController();
+  const { deps, world } = harness({
+    deployment: PER_REQUEST,
+    callNode: (_url, _body, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason));
+        controller.abort(new Error("stop"));
+      }),
+  });
+  await assert.rejects(runDeploymentChat(request({ signal: controller.signal }), deps));
+  assert.deepEqual(world.latency.map((sample) => sample.outcome), ["cancelled"]);
+});
+
+test("a call refused before a node is reached leaves no sample", async () => {
+  const none = harness({ deployment: null });
+  await refusal(runDeploymentChat(request(), none.deps));
+  const noNode = harness({ deployment: { ...PER_REQUEST, nodes: [] } });
+  await refusal(runDeploymentChat(request(), noNode.deps));
+  const broke = harness({ deployment: PER_REQUEST, balance: 0n });
+  await refusal(runDeploymentChat(request(), broke.deps));
+  assert.deepEqual([none.world.latency, noNode.world.latency, broke.world.latency], [[], [], []]);
+});
+
+test("a recorder that throws changes neither the answer nor the ledger", async () => {
+  const quiet = harness({ deployment: PER_REQUEST });
+  const expected = await runDeploymentChat(request(), quiet.deps);
+  const { deps, world } = harness({
+    deployment: PER_REQUEST,
+    recordLatency: () => {
+      throw new Error("sink exploded");
+    },
+  });
+  const result = await runDeploymentChat(request(), deps);
+  assert.equal(result.content, expected.content);
+  assert.deepEqual(result.billing, expected.billing);
+  assert.equal(world.balance, quiet.world.balance);
+  assert.deepEqual(world.events, quiet.world.events);
 });

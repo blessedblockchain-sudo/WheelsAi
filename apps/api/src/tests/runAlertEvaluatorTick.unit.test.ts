@@ -44,7 +44,7 @@ function makeDeps(opts: {
   metrics?: Record<string, MetricComputation | Error>;
   fireReturnsNull?: boolean;
 }) {
-  const fired: Array<{ ruleId: string; value: number }> = [];
+  const fired: Array<{ ruleId: string; value: number; detail?: string }> = [];
   const emitted: Array<{ ruleId: string; alertId: string }> = [];
   return {
     fired,
@@ -56,8 +56,8 @@ function makeDeps(opts: {
         if (m instanceof Error) throw m;
         return m ?? { kind: "value", value: 10 };
       },
-      fireAlert: async (r: AlertRuleRow, value: number) => {
-        fired.push({ ruleId: r.id, value });
+      fireAlert: async (r: AlertRuleRow, value: number, detail?: string) => {
+        fired.push(detail === undefined ? { ruleId: r.id, value } : { ruleId: r.id, value, detail });
         return opts.fireReturnsNull
           ? null
           : { id: `alert_for_${r.id}`, title: `${r.name} triggered` };
@@ -153,13 +153,13 @@ test("no_data and unsupported metrics are counted, never evaluated as zero", asy
   const { deps, fired } = makeDeps({
     rules: [
       rule({ id: "r_nodata", operator: "lt", threshold: 100 }),
-      rule({ id: "r_unsup", metric: "latency_p95" }),
+      rule({ id: "r_unsup", metric: "queue_depth" }),
     ],
     metrics: {
       // lt 100 would BREACH if no-data were coerced to 0 — the counter
       // proves it is not.
       r_nodata: { kind: "no_data" },
-      r_unsup: { kind: "unsupported", reason: "needs raw samples" },
+      r_unsup: { kind: "unsupported", reason: "unknown usage metric queue_depth" },
     },
   });
   const result = await runAlertEvaluatorTick({ now: NOW }, deps);
@@ -185,4 +185,44 @@ test("per-rule isolation: a computeMetric throw fails that rule only", async () 
   assert.equal(result.failed, 1);
   assert.equal(result.fired, 1);
   assert.deepEqual(fired, [{ ruleId: "r_good", value: 50 }]);
+});
+
+test("a latency_p95 breach in ms fires once, with what the value is of, and cooldown still applies", async () => {
+  const { runAlertEvaluatorTick } = await import(
+    "../services/runAlertEvaluatorTick.js"
+  );
+  const p95 = rule({ id: "r_p95", name: "slow answers", metric: "latency_p95", operator: "gt", threshold: 2_000 });
+  const measured: MetricComputation = { kind: "value", value: 2_140, detail: "ms over 37 requests" };
+
+  const first = makeDeps({ rules: [p95], metrics: { r_p95: measured } });
+  const result = await runAlertEvaluatorTick({ now: NOW }, first.deps);
+  assert.equal(result.breached, 1);
+  assert.equal(result.fired, 1);
+  assert.equal(result.unsupported, 0, "latency_p95 is evaluated, not skipped");
+  assert.deepEqual(first.fired, [{ ruleId: "r_p95", value: 2_140, detail: "ms over 37 requests" }]);
+  assert.equal(first.emitted.length, 1);
+
+  // Still breaching on the next pass: the trigger's cooldown declines.
+  const second = makeDeps({ rules: [p95], metrics: { r_p95: measured }, fireReturnsNull: true });
+  const again = await runAlertEvaluatorTick({ now: NOW }, second.deps);
+  assert.deepEqual([again.breached, again.fired, again.inCooldown], [1, 0, 1]);
+  assert.equal(second.emitted.length, 0);
+
+  // 1,900 ms is within a 2,000 ms threshold.
+  const within = makeDeps({ rules: [p95], metrics: { r_p95: { kind: "value", value: 1_900 } } });
+  const quiet = await runAlertEvaluatorTick({ now: NOW }, within.deps);
+  assert.deepEqual([quiet.withinThreshold, quiet.fired], [1, 0]);
+});
+
+test("a latency window with no request is no_data: an lt rule does not fire on a missing 0 ms", async () => {
+  const { runAlertEvaluatorTick } = await import(
+    "../services/runAlertEvaluatorTick.js"
+  );
+  const { deps, fired } = makeDeps({
+    rules: [rule({ id: "r_avg", metric: "latency_avg", operator: "lt", threshold: 500 })],
+    metrics: { r_avg: { kind: "no_data" } },
+  });
+  const result = await runAlertEvaluatorTick({ now: NOW }, deps);
+  assert.deepEqual([result.noData, result.breached], [1, 0]);
+  assert.equal(fired.length, 0);
 });

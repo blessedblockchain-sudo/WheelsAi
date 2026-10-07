@@ -1,5 +1,6 @@
 "use client";
 
+import { formatLatencyMs } from "@wheelsai/shared/latency";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Activity, AlertTriangle, CheckCircle2, RotateCw, XCircle } from "lucide-react";
@@ -52,6 +53,27 @@ interface StatusPayload {
       days: Array<{ date: string; checks: number; uptimePercent: number | null }>;
     }>;
   };
+  /** Absent from an API that predates the measurement. */
+  latency?: LatencyPayload;
+}
+
+/** GET /api/status `latency`: the same figure GET /api/public/stats states. */
+interface LatencyPayload {
+  status: "measured" | "insufficient_data" | "unavailable";
+  definition: string;
+  windowHours: number;
+  sampleCount: number | null;
+  minSampleCount: number;
+  minOrgCount: number;
+  /** Absent from an API that predates the per-organization cap. */
+  maxSamplesPerOrg?: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  firstTokenP50Ms: number | null;
+  firstTokenSampleCount: number | null;
+  computedAt: string | null;
+  histogram: Array<{ upToMs: number | null; count: number }> | null;
+  errorSharePercent: number | null;
 }
 
 type Tone = "ok" | "warn" | "bad" | "none";
@@ -141,6 +163,114 @@ function dayTone(value: number | null): string {
   if (value >= 100) return "bg-success";
   if (value >= 95) return "bg-yellow-500";
   return "bg-danger";
+}
+
+const wholeNumber = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+
+// The one way a measured latency is written (packages/shared/src/latency.ts).
+const formatMs = formatLatencyMs;
+
+/** "up to 250 ms", "250 ms to 500 ms", "over 30,000 ms". */
+function bucketLabel(upToMs: number | null, previousUpToMs: number | null): string {
+  if (upToMs === null) return previousUpToMs === null ? "any" : `over ${formatMs(previousUpToMs)}`;
+  return previousUpToMs === null ? `up to ${formatMs(upToMs)}` : `${formatMs(previousUpToMs)} to ${formatMs(upToMs)}`;
+}
+
+/**
+ * Request latency. A number is rendered only from a "measured" answer; the
+ * other two states say why there is none.
+ */
+function LatencySection({ latency, nowMs }: { latency: LatencyPayload | undefined; nowMs: number }) {
+  const window = latency ? `${latency.windowHours} hours` : null;
+  return (
+    <section id="latency" aria-labelledby="latency-heading" className="scroll-mt-24">
+      <h2 id="latency-heading" className="text-xl font-semibold text-foreground">
+        Request latency
+      </h2>
+      {latency?.definition && <p className="mt-1 text-sm text-muted-foreground">{latency.definition}</p>}
+
+      {!latency || latency.status === "unavailable" ? (
+        <p className="mt-4 rounded-lg border border-dashed border-border bg-card px-4 py-6 text-sm text-muted-foreground">
+          The latency measurements could not be read right now, so no figure is shown.
+        </p>
+      ) : latency.status === "insufficient_data" ? (
+        <div className="mt-4">
+          <EmptyState
+            icon={Activity}
+            title="Measuring"
+            description={`A figure is published once at least ${wholeNumber.format(latency.minSampleCount)} answered requests from at least ${wholeNumber.format(latency.minOrgCount)} organizations fall inside the last ${window}. So far: ${wholeNumber.format(latency.sampleCount ?? 0)} answered ${latency.sampleCount === 1 ? "request" : "requests"}. Until then no latency is shown.`}
+          />
+        </div>
+      ) : (
+        <div className="mt-4 rounded-lg border border-border bg-card p-4">
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            {(
+              [
+                ["Median (p50)", formatMs(latency.p50Ms)],
+                ["95th percentile (p95)", formatMs(latency.p95Ms)],
+                [
+                  "Median time to first token",
+                  latency.firstTokenP50Ms === null ? "Not enough streamed answers" : formatMs(latency.firstTokenP50Ms),
+                ],
+                [
+                  "Requests that failed",
+                  latency.errorSharePercent === null ? "No data" : `${latency.errorSharePercent}%`,
+                ],
+              ] as const
+            ).map(([k, v]) => (
+              <div key={k}>
+                <dt className="text-xs text-muted-foreground">{k}</dt>
+                <dd className="font-mono tabular-nums text-foreground">{v}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-3 text-xs text-muted-foreground">
+            Over {wholeNumber.format(latency.sampleCount ?? 0)} answered requests in the last {window}
+            {latency.computedAt && (
+              <>
+                , computed{" "}
+                <time dateTime={latency.computedAt} title={formatDateTime(latency.computedAt)}>
+                  {relative(latency.computedAt, nowMs)}
+                </time>
+              </>
+            )}
+            . The percentiles count answered requests only; failed and timed-out requests are the share shown
+            separately. Published only above {wholeNumber.format(latency.minSampleCount)} requests from{" "}
+            {wholeNumber.format(latency.minOrgCount)} organizations.
+            {typeof latency.maxSamplesPerOrg === "number" && (
+              <>
+                {" "}
+                Each organization counts for its {wholeNumber.format(latency.maxSamplesPerOrg)} most recent requests at
+                most, so no single customer sets the figure.
+              </>
+            )}
+          </p>
+          {latency.histogram && latency.histogram.length > 0 && (
+            <div className="mt-4">
+              <p className="text-xs text-muted-foreground" id="latency-histogram">
+                Answered requests by response time
+              </p>
+              <ol className="mt-2 space-y-1" aria-labelledby="latency-histogram">
+                {latency.histogram.map((bucket, index) => {
+                  const previous = index > 0 ? (latency.histogram?.[index - 1]?.upToMs ?? null) : null;
+                  const most = Math.max(1, ...(latency.histogram ?? []).map((b) => b.count));
+                  return (
+                    <li key={String(bucket.upToMs)} className="grid grid-cols-[9rem_1fr_3.5rem] items-center gap-2 text-xs sm:grid-cols-[12rem_1fr_4rem]">
+                      <span className="text-muted-foreground">{bucketLabel(bucket.upToMs, previous)}</span>
+                      <span className="h-2 overflow-hidden rounded-sm bg-muted" aria-hidden="true">
+                        <span className="block h-full rounded-sm bg-primary" style={{ width: `${(bucket.count / most) * 100}%` }} />
+                      </span>
+                      <span className="text-right font-mono tabular-nums text-foreground">{wholeNumber.format(bucket.count)}</span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function StatusBoard() {
@@ -291,7 +421,7 @@ export function StatusBoard() {
                   <p className="text-sm text-muted-foreground">
                     {c.latencyMs !== null ? (
                       <>
-                        Probe answered in <span className="font-mono tabular-nums">{c.latencyMs} ms</span>
+                        Probe answered in <span className="font-mono tabular-nums">{formatMs(c.latencyMs)}</span>
                       </>
                     ) : (
                       "Probe did not answer"
@@ -405,7 +535,7 @@ export function StatusBoard() {
                           ["Uptime, 24 h", percent(m.uptimePercent["24h"])],
                           ["Uptime, 7 days", percent(m.uptimePercent["7d"])],
                           ["Uptime, 30 days", percent(m.uptimePercent["30d"])],
-                          ["Avg. latency", m.avgLatencyMs === null ? "No data" : `${m.avgLatencyMs} ms`],
+                          ["Avg. latency", m.avgLatencyMs === null ? "No data" : formatMs(m.avgLatencyMs)],
                         ] as const
                       ).map(([k, v]) => (
                         <div key={k}>
@@ -439,6 +569,9 @@ export function StatusBoard() {
           )}
         </section>
       )}
+
+      {/* Request latency */}
+      {data && <LatencySection latency={data.latency} nowMs={nowMs} />}
 
       <p className="text-sm text-muted-foreground">
         Something not working that this page does not show?{" "}

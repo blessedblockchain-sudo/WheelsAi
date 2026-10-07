@@ -1,5 +1,6 @@
 import { Check, Terminal } from "lucide-react";
 
+import { LiveLatencyCaption, LiveLatencyValue } from "@/components/landing/live-latency";
 import { liveChatChannelList } from "@/lib/chat-channels";
 import { landingAgentEndpoint, landingMarketplaceUrl } from "@/lib/public-urls";
 
@@ -24,7 +25,7 @@ const bullets = [
   "Free marketplace listing with verifiable receipts",
 ];
 
-const terminalLines = [
+const terminalLines: Array<{ text: string; color: string; live?: "latency" }> = [
   { text: `$ wheelsai deploy --agent ${AGENT_SLUG}`, color: "text-white" },
   { text: "", color: "" },
   { text: "  ✓ Building agent graph... 4 nodes, 3 tools", color: "text-success" },
@@ -34,7 +35,9 @@ const terminalLines = [
   { text: "  Agent live!", color: "text-white font-bold" },
   { text: `    Endpoint:  ${AGENT_ENDPOINT}`, color: "text-navy-400" },
   { text: `    Channels:  ${liveChatChannelList(", ")}`, color: "text-navy-400" },
-  { text: "    Latency:   47ms avg", color: "text-navy-400" },
+  // The value is the platform's measured p50, read live; there is no number
+  // in this file, and none is shown until the API has measured one.
+  { text: "    Latency:   ", color: "text-navy-400", live: "latency" },
   { text: "", color: "" },
   { text: "  ✓ Publishing to marketplace...", color: "text-success" },
   { text: `  ✓ Listed! ${MARKETPLACE_URL}`, color: "text-success" },
@@ -89,10 +92,12 @@ export function CodePreview() {
                 {terminalLines.map((line, i) => (
                   <div key={i} className={line.color || "text-transparent"}>
                     {line.text || "\u00A0"}
+                    {line.live === "latency" && <LiveLatencyValue />}
                   </div>
                 ))}
               </div>
             </div>
+            <LiveLatencyCaption />
           </div>
         </div>
       </div>

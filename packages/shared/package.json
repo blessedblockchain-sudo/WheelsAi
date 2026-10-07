@@ -9,6 +9,10 @@
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts"
+    },
+    "./latency": {
+      "types": "./src/latency.ts",
+      "default": "./src/latency.ts"
     }
   },
   "scripts": {

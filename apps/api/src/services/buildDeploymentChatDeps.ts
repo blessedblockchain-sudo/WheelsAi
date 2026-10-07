@@ -21,6 +21,7 @@ import {
   type DeploymentForChat,
   type NodeUsage,
 } from "./deploymentChat.js";
+import { recordLatencySample } from "./buildLatencySampleDeps.js";
 import { gpuBillingBlock, selectNode, type NodeInfo } from "./hostedModel.js";
 import {
   holdInferenceCredits,
@@ -185,6 +186,7 @@ export function buildDeploymentChatDeps(): DeploymentChatDeps {
         args.gpuTier,
         args.failed,
       ),
+    recordLatency: recordLatencySample,
     idleTimeoutMs: env.INFERENCE_TIMEOUT_MS,
     newRequestId: createPaymentRequestId,
     logger,

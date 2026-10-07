@@ -19,6 +19,15 @@ import { Prisma, prisma } from "@wheelsai/db";
 import { PRICING_TIERS, calculateTokenCost } from "@wheelsai/shared";
 import { abortOnClientClose, CLIENT_GONE } from "../services/chatStreamSettlement.js";
 import { proxyToNode, recordDeploymentUsage as recordUsage } from "../services/buildDeploymentChatDeps.js";
+import { recordLatencySample } from "../services/buildLatencySampleDeps.js";
+import {
+  buildLatencySample,
+  classifyUpstreamOutcome,
+  providerForDeployment,
+  type DeploymentSurface,
+  type LatencyOutcome,
+  type RecordLatency,
+} from "../services/latencySamples.js";
 import {
   MIN_INFERENCE_BALANCE_CENTS,
   completionChars,
@@ -86,6 +95,13 @@ interface InferenceRouteDeps {
   auth?: preHandlerHookHandler;
   /** Keep-alive comment interval on a stream; 0 turns it off. */
   heartbeatMs?: number;
+  /**
+   * Takes one latency sample per request that reached a node. Synchronous;
+   * defaults to the process sink (services/buildLatencySampleDeps.ts).
+   */
+  recordLatency?: RecordLatency;
+  /** Which way in this handler serves; the dashboard's is "deployment_chat". */
+  surface?: Exclude<DeploymentSurface, "deployment_step">;
 }
 
 /** What billing needs to know about a request before the node is called. */
@@ -134,8 +150,15 @@ export function createDeploymentCompletionHandler(
 ): DeploymentCompletionHandler {
   const verifyPaymentFn = deps.verifyPaymentFn ?? verifyPayment;
   const heartbeatMs = deps.heartbeatMs ?? STREAM_HEARTBEAT_MS;
+  const recordLatency = deps.recordLatency ?? recordLatencySample;
+  const surface = deps.surface ?? "v1";
 
   return async (request, reply, target) => {
+    // When the API received the request: latency is measured from here, so
+    // it includes the guard, admission and billing, not just the node call.
+    // (elapsedTime is 0 where Fastify keeps no start time; the clock then
+    // starts at this handler, which understates and never invents.)
+    const receivedAt = Date.now() - reply.elapsedTime;
     // Wired before the first await: a client that leaves stops the node call.
     const abort = abortOnClientClose(reply.raw);
 
@@ -355,6 +378,42 @@ export function createDeploymentCompletionHandler(
       );
     };
 
+    // One latency sample per request that got as far as a node, however it
+    // ended. Always called after the money has been settled or released, and
+    // after the answer's status is known; it cannot fail the request.
+    let firstTokenAt: number | null = null;
+    const sample = (outcome: LatencyOutcome, extra: { outputTokens?: number } = {}) => {
+      try {
+        const at = Date.now();
+        recordLatency(
+          buildLatencySample(
+            {
+              orgId,
+              surface,
+              deploymentId: deployment.id,
+              model: deployment.model.hfId,
+              provider: providerForDeployment(deployment),
+              streamed: chat.stream,
+              outcome,
+              statusCode: reply.statusCode,
+              totalMs: at - receivedAt,
+              upstreamMs: at - startTime,
+              ...(firstTokenAt !== null && { firstTokenMs: firstTokenAt - receivedAt }),
+              ...extra,
+            },
+            new Date(at),
+          ),
+        );
+      } catch (err) {
+        logger.warn({ err }, "Failed to record a latency sample");
+      }
+    };
+    /** Samples a refusal after it has been written, so its status is the one sent. */
+    const sampled = <T>(outcome: LatencyOutcome, sent: T): T => {
+      sample(outcome);
+      return sent;
+    };
+
     // 3. Select healthy node
     const node = selectNode(deployment.nodes as NodeInfo[]);
     if (!node) {
@@ -397,7 +456,7 @@ export function createDeploymentCompletionHandler(
       deadline.clear();
       if (abort.signal.aborted) {
         await abandon(CLIENT_GONE);
-        return refuse("client_closed_request");
+        return sampled("cancelled", refuse("client_closed_request"));
       }
       logger.error({ error, nodeUrl: node.nodeUrl }, "Node request failed");
 
@@ -414,9 +473,12 @@ export function createDeploymentCompletionHandler(
         deadline.expired() ? "inference node timed out" : "inference node unreachable",
         { countError: true },
       );
-      return deadline.expired()
-        ? refuse("upstream_timeout", { message: "The inference node did not answer in time." })
-        : refuse("upstream_error", { message: "Failed to reach inference node" }, 502);
+      return sampled(
+        classifyUpstreamOutcome({ timedOut: deadline.expired() }),
+        deadline.expired()
+          ? refuse("upstream_timeout", { message: "The inference node did not answer in time." })
+          : refuse("upstream_error", { message: "Failed to reach inference node" }, 502),
+      );
     }
 
     // The node answered, but not with a completion. Nothing is charged for
@@ -431,9 +493,12 @@ export function createDeploymentCompletionHandler(
         "Node returned non-OK for /v1 chat completion",
       );
       await abandon(`Inference node responded ${response.status}`, { countError: true });
-      return sendOpenAiError(
-        reply,
-        nodeStatusError(response.status, nodeErrorMessage(text), retryAfterOf(response)),
+      return sampled(
+        "error",
+        sendOpenAiError(
+          reply,
+          nodeStatusError(response.status, nodeErrorMessage(text), retryAfterOf(response)),
+        ),
       );
     }
 
@@ -455,9 +520,12 @@ export function createDeploymentCompletionHandler(
           "Node did not answer a streaming request with an event stream",
         );
         await abandon("inference node did not stream", { countError: true });
-        return refuse("upstream_error", {
-          message: "The inference node did not answer the streaming request with a stream.",
-        });
+        return sampled(
+          "error",
+          refuse("upstream_error", {
+            message: "The inference node did not answer the streaming request with a stream.",
+          }),
+        );
       }
 
       const watched = passthroughStream(
@@ -471,6 +539,9 @@ export function createDeploymentCompletionHandler(
         ),
         abort.signal,
         deadline,
+        () => {
+          firstTokenAt = Date.now();
+        },
       );
 
       // No meter: forwardAndSettle's settle-or-refund follows DELIVERY, which
@@ -513,7 +584,12 @@ export function createDeploymentCompletionHandler(
         // status worker's call, from /health.
         await abandon(generated.error, { countError: !callerLeft });
       }
-      if (!sent.started) return refuse("client_closed_request");
+      // What the CALLER got: a finished answer, one they hung up on, or none.
+      const streamOutcome = generated.ok
+        ? "ok"
+        : classifyUpstreamOutcome({ clientGone: callerLeft, timedOut: generated.code === "deadline" });
+      if (!sent.started) return sampled(streamOutcome, refuse("client_closed_request"));
+      sample(streamOutcome, { ...(generated.ok && reported && { outputTokens: reported.completion_tokens }) });
       return;
     }
 
@@ -525,26 +601,33 @@ export function createDeploymentCompletionHandler(
       deadline.clear();
       if (abort.signal.aborted) {
         await abandon(CLIENT_GONE);
-        return refuse("client_closed_request");
+        return sampled("cancelled", refuse("client_closed_request"));
       }
       logger.error({ error, nodeUrl: node.nodeUrl }, "Node answered 200 with a body that is not JSON");
       await abandon("inference node answered with an unreadable body", { countError: true });
-      return deadline.expired()
-        ? refuse("upstream_timeout", { message: "The inference node did not finish answering in time." })
-        : refuse("upstream_error", { message: "The inference node answered with a body that is not a completion." });
+      return sampled(
+        classifyUpstreamOutcome({ timedOut: deadline.expired(), httpOk: true, hasAnswer: false }),
+        deadline.expired()
+          ? refuse("upstream_timeout", { message: "The inference node did not finish answering in time." })
+          : refuse("upstream_error", { message: "The inference node answered with a body that is not a completion." }),
+      );
     }
     deadline.clear();
 
     if (typeof responseBody !== "object" || responseBody === null || !Array.isArray(responseBody.choices)) {
       logger.error({ nodeUrl: node.nodeUrl }, "Node answered 200 without choices");
       await abandon("inference node answered without a completion", { countError: true });
-      return refuse("upstream_error", {
-        message: "The inference node answered with a body that is not a completion.",
-      });
+      return sampled(
+        "error",
+        refuse("upstream_error", {
+          message: "The inference node answered with a body that is not a completion.",
+        }),
+      );
     }
 
     const reported = reportedNodeUsage(responseBody);
     await charge(reported, completionChars(responseBody.choices));
+    sample("ok", { ...(reported && { outputTokens: reported.completion_tokens }) });
 
     return { ...responseBody, model: deployment.slug };
   };

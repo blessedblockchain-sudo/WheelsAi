@@ -22,6 +22,7 @@ const toc = [
   { id: "errors", title: "Errors" },
   { id: "rate-limits", title: "Rate limits" },
   { id: "index", title: "Endpoint index" },
+  { id: "measured-latency", title: "Measured latency" },
 ];
 
 export default function ApiOverviewPage() {
@@ -228,6 +229,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { group: <Link href="/docs/guides/templates#api">Templates</Link>, prefix: <code>/api/templates</code> },
           { group: <Link href="/docs/guides/web-chat-widget#api">Web chat widget and Try it</Link>, prefix: <><code>/api/channels/web</code>, <code>/api/widget</code>, <code>/api/marketplace/listings/:slug/try</code></> },
           { group: <Link href="/status">Platform status</Link>, prefix: <code>/api/status</code> },
+          { group: <a href="#measured-latency">Platform facts and measured latency</a>, prefix: <code>/api/public/stats</code> },
         ]}
       />
       <p>
@@ -245,9 +247,121 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { name: "GET /api/marketplace/listings", type: "catalog", description: "Published listings, with search and filters." },
           { name: "GET /api/templates", type: "catalog", description: "Published agent templates." },
           { name: "GET /api/a/{slug}", type: "receipts", description: "A public agent's transparency feed: treasury, compute paid, recent payment signatures." },
-          { name: "GET /api/status", type: "health", description: "Live platform status (the data behind /status)." },
+          { name: "GET /api/status", type: "health", description: "Live platform status (the data behind /status), including the measured latency with its histogram and error share." },
+          { name: "GET /api/public/stats", type: "facts", description: "Platform facts read from the constants the product runs on (frameworks, models, pricing models, chat channels) and the measured latency. Always 200; cacheable for 5 minutes." },
         ]}
       />
+
+      <h2 id="measured-latency">Measured latency</h2>
+      <p>
+        Every latency WheelsAI states, on the landing page, on <Link href="/status#latency">/status</Link>, in the CLI and
+        in your dashboards, is computed from one record per served chat request. There is no default or estimated value: when
+        nothing was measured, the field is <code>null</code> and the page shows no number.
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -s "$WHEELSAI_API_URL/api/public/stats"`}
+      />
+      <CodeBlock
+        language="json"
+        code={`{
+  "frameworks": 6, "models": 21, "pricingModels": 4, "channels": 3,
+  "latency": {
+    "status": "insufficient_data",
+    "metric": "response_time",
+    "definition": "Time the WheelsAI API took to produce the complete answer to a chat request, successful answers only; network time between the caller and the API is not included. Each organization counts for a bounded number of its most recent answers.",
+    "windowHours": 24,
+    "sampleCount": 12, "minSampleCount": 50, "minOrgCount": 3, "maxSamplesPerOrg": 17,
+    "p50Ms": null, "p95Ms": null,
+    "firstTokenP50Ms": null, "firstTokenSampleCount": 0,
+    "computedAt": "2026-10-07T12:00:00.000Z"
+  }
+}`}
+      />
+      <Fields
+        title="latency"
+        fields={[
+          {
+            name: "status",
+            type: "string",
+            description: (
+              <>
+                <code>measured</code>: enough answered requests from enough organizations fall inside the window, and{" "}
+                <code>p50Ms</code> and <code>p95Ms</code> are stated. <code>insufficient_data</code>: the measurements were
+                read but are below a publication threshold; no latency is stated. <code>unavailable</code>: the measurements
+                could not be read; every number is <code>null</code>.
+              </>
+            ),
+          },
+          {
+            name: "p50Ms, p95Ms",
+            type: "integer | null",
+            description: (
+              <>
+                Milliseconds, non-null only when <code>status</code> is <code>measured</code>. Each is the time of a request
+                that was actually served (<code>percentile_disc</code>), not an interpolation and not an average of averages.
+              </>
+            ),
+          },
+          {
+            name: "sampleCount",
+            type: "integer | null",
+            description: (
+              <>
+                Answered requests in the window that count toward the figure: at most <code>maxSamplesPerOrg</code> from
+                any one organization. <code>null</code> only when unavailable. If it reaches <code>minSampleCount</code>{" "}
+                while the status is still <code>insufficient_data</code>, the requests come from fewer than{" "}
+                <code>minOrgCount</code> organizations.
+              </>
+            ),
+          },
+          {
+            name: "minSampleCount, minOrgCount, windowHours",
+            type: "integer",
+            description:
+              "The publication rule: a figure is stated only above this many counted requests from this many organizations inside the rolling window.",
+          },
+          {
+            name: "maxSamplesPerOrg",
+            type: "integer",
+            description:
+              "How many of one organization's most recent requests count toward the figure, the distribution and the error share: an equal share of minSampleCount (minSampleCount / minOrgCount, rounded up). Sending more requests than this adds nothing, so one customer's timings are never published as the platform's.",
+          },
+          {
+            name: "firstTokenP50Ms",
+            type: "integer | null",
+            description:
+              "Median time to the first content of a streamed answer, held to the same thresholds on its own samples. Null without enough of them.",
+          },
+          { name: "computedAt", type: "string | null", description: "When the measurements were read. The figure is recomputed at most once a minute." },
+        ]}
+      />
+      <ul>
+        <li>
+          <strong>What is timed.</strong> The time the API took to produce the complete answer to a chat request: agent chats
+          and model deployments, called through <code>/v1</code>, the playground and the dashboard. The clock runs at the API,
+          so the network between you and the API is not in it; your own measurement from a client will be higher.
+        </li>
+        <li>
+          <strong>What counts.</strong> The headline counts successfully answered requests only. Requests that failed or
+          timed out are reported next to it on <Link href="/status#latency">/status</Link> as a share of all recorded
+          requests, with the distribution of response times. Scheduled runs, workflow steps and test runs are measured but
+          are not part of the public figure. Each organization counts for its <code>maxSamplesPerOrg</code> most recent
+          requests at most, so the figure describes the platform across its customers rather than its busiest one.
+        </li>
+        <li>
+          <strong>Your own numbers.</strong> <Link href="/docs/api/deployments">Deployment metrics</Link> and{" "}
+          <Link href="/docs/api/agents">agent usage</Link> return <code>avgLatencyMs</code>, <code>p50LatencyMs</code> and{" "}
+          <code>p95LatencyMs</code> for your organization from the same records, and alert rules on{" "}
+          <code>latency_p95</code> and <code>latency_avg</code> are evaluated against them, with the threshold in
+          milliseconds.
+        </li>
+        <li>
+          <strong>Retention.</strong> A timing record holds the organization, the agent or deployment, the model, the outcome
+          and the times. It holds no message content. Records are deleted after a fixed retention period; see the{" "}
+          <Link href="/privacy">privacy policy</Link>.
+        </li>
+      </ul>
     </DocPage>
   );
 }

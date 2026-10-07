@@ -483,6 +483,13 @@ wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
           followed by the OpenAI base URL and the model id (<code>agent/&lt;slug&gt;</code>);
         </li>
         <li>
+          prints <code>Latency</code>: the platform&apos;s <Link href="/docs/api#measured-latency">measured response time</Link>,
+          read from <code>GET /api/public/stats</code>, for example <code>612 ms p50 (platform-wide, last 24 h)</code>. It is
+          the platform&apos;s figure, not this agent&apos;s, which has answered nothing yet. A number appears only when the
+          API measured one: below the publication thresholds the line reads <code>measuring (12 of 50 requests)</code>, and
+          when the figure cannot be read it reads <code>live figure unavailable</code>. This step never fails the deploy;
+        </li>
+        <li>
           with <code>--publish</code>, lists the agent on the marketplace.
         </li>
       </ol>

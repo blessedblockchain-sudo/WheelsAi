@@ -381,6 +381,8 @@ async function makeApp(opts: {
   webhooks?: Array<[string, string]>;
   /** Run the real submitToNosana (against the fake port) instead of recording the call. */
   realSubmit?: boolean;
+  /** The deployment's measured latency; omitted = no sample table behind the fake database. */
+  loadScopedLatency?: (window: any) => Promise<any>;
 }) {
   const nosana = opts.nosana ?? makeNosana();
   const mod = await import("../routes/deployments.js");
@@ -404,6 +406,7 @@ async function makeApp(opts: {
         opts.webhooks?.push([orgId, event]);
       }) as never,
       now: () => T_NOW,
+      ...(opts.loadScopedLatency ? { loadScopedLatency: opts.loadScopedLatency } : {}),
       ...(opts.realSubmit
         ? {}
         : {
@@ -2234,4 +2237,62 @@ test("a commit that fails after Nosana applied the change leaves the claim for t
   assert.equal(row.reservationCents, HOUR_4090_CENTS * 3n);
   // Only the claim's whole-cent settle at the old count (7) stands.
   assert.deepEqual(db.state.ledger.map((l) => [l.type, l.amountCents]), [["gpu_usage", -7n]]);
+});
+
+// ============================================
+// Metrics: measured latency
+// ============================================
+
+test("metrics state no latency for a deployment nobody called: null, not 0 ms", async () => {
+  const db = makeDb({ deployments: [running()] });
+  const { app } = await makeApp({ db });
+  const res = await app.inject({ method: "GET", url: "/dep_1/metrics" });
+  assert.equal(res.statusCode, 200);
+  const { metrics } = res.json();
+  assert.equal(metrics.requests, 0);
+  assert.deepEqual(
+    [metrics.avgLatencyMs, metrics.p50LatencyMs, metrics.p95LatencyMs, metrics.latencySampleCount],
+    [null, null, null, 0],
+  );
+});
+
+test("metrics take avg, p50 and p95 from the deployment's own samples over the same 24 hours", async () => {
+  const db = makeDb({ deployments: [running()] });
+  const windows: any[] = [];
+  const { app } = await makeApp({
+    db,
+    loadScopedLatency: async (window) => {
+      windows.push(window);
+      return { sampleCount: 41, avgMs: 930, p50Ms: 712, p95Ms: 2_480, p99Ms: 3_100 };
+    },
+  });
+  const { metrics } = (await app.inject({ method: "GET", url: "/dep_1/metrics" })).json();
+  assert.deepEqual(
+    [metrics.avgLatencyMs, metrics.p50LatencyMs, metrics.p95LatencyMs, metrics.latencySampleCount],
+    [930, 712, 2_480, 41],
+  );
+  assert.deepEqual(windows, [
+    {
+      orgId: "org_1",
+      since: new Date(T_NOW.getTime() - 24 * 60 * 60 * 1000),
+      until: T_NOW,
+      outcomes: ["ok"],
+      deploymentIds: ["dep_1"],
+    },
+  ]);
+});
+
+test("metrics of another organization's deployment are a 404 and read no samples", async () => {
+  const db = makeDb({ deployments: [running({ orgId: "org_2" })] });
+  let reads = 0;
+  const { app } = await makeApp({
+    db,
+    loadScopedLatency: async () => {
+      reads += 1;
+      return { sampleCount: 9, avgMs: 1, p50Ms: 1, p95Ms: 1, p99Ms: 1 };
+    },
+  });
+  const res = await app.inject({ method: "GET", url: "/dep_1/metrics" });
+  assert.equal(res.statusCode, 404);
+  assert.equal(reads, 0);
 });

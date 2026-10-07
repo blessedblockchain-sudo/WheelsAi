@@ -152,7 +152,13 @@ What it does, in order, stopping at the first failure:
    OpenClaw (Discord, Telegram, Slack) deployment and prints its channels if it is `RUNNING`
    and has any; otherwise `none reported by the API`. `logs` and `agents get` show an endpoint
    as an address only while its deployment is running.
-7. **Publish**, only with `--publish` (below).
+7. **Latency.** Once the agent is live, the CLI reads the platform's measured response time
+   from `GET /api/public/stats` and prints it as `612 ms p50  (platform-wide, last 24 h)`: the
+   median time the API took to answer a chat request, across the platform, not this agent's
+   own (it has answered nothing yet). The number appears only when the API measured one. Below
+   the API's publication thresholds the line reads `measuring (12 of 50 requests)`, and when
+   the figure cannot be read it reads `live figure unavailable`. It never fails the deploy.
+8. **Publish**, only with `--publish` (below).
 
 ```text
 ✔ Agent My Support Bot my-support-bot  2e86922d-...
@@ -170,6 +176,7 @@ What it does, in order, stopping at the first failure:
   OpenAI base   https://api.example.com/v1/agents/my-support-bot
   Model         agent/my-support-bot
   Channels      none reported by the API
+  Latency       measuring (12 of 50 requests)
 
   Listed on the marketplace
   URL           http://localhost:3000/marketplace/my-support-bot
@@ -178,8 +185,10 @@ What it does, in order, stopping at the first failure:
 ```
 
 Progress goes to stderr and results to stdout, so `--json` (one JSON document on stdout:
-`agent`, `deployment`, `endpoint`, `openaiBaseUrl`, `openaiModel`, `channels`, `listing`) is safe
-to pipe.
+`agent`, `deployment`, `endpoint`, `openaiBaseUrl`, `openaiModel`, `channels`,
+`platformLatency`, `listing`) is safe to pipe. `platformLatency` is the figure as the API stated
+it (`status`, `p50Ms`, `p95Ms`, `sampleCount`, the thresholds and the window), or `null` when
+it could not be read; `p50Ms` is `null` unless `status` is `measured`.
 
 The agent's `/v1` endpoint is served by the API itself and answers whether or not a deployment
 is running; `wheelsai agents get <agent>` shows it at any time.

@@ -1,5 +1,6 @@
 "use client";
 
+import { formatLatencyMs } from "@wheelsai/shared/latency";
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Activity } from "lucide-react";
@@ -113,10 +114,8 @@ const PERIODS: Array<{ id: AgentUsagePeriod; label: string }> = [
 
 const SOURCE_LABELS: Record<string, string> = { api: "API (/v1)", playground: "Playground", widget: "Widget" };
 
-function ms(value: number | null): string {
-  if (value === null) return "—";
-  return value >= 1000 ? `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)} s` : `${value} ms`;
-}
+// The one way a measured latency is written (packages/shared/src/latency.ts).
+const ms = formatLatencyMs;
 
 /** Requests, errors, tokens and latency of the agent's chats, measured. */
 export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
@@ -194,11 +193,11 @@ export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
               />
               <Stat
                 label="Latency (median)"
-                value={total.p50LatencyMs === null ? ms(total.avgLatencyMs) : `≤ ${ms(total.p50LatencyMs)}`}
+                value={ms(total.p50LatencyMs)}
                 hint={
                   total.p50LatencyMs === null
-                    ? "average of answered chats"
-                    : `p95 ${total.p95LatencyMs === null ? "over 2 min" : `≤ ${ms(total.p95LatencyMs)}`} · average ${ms(total.avgLatencyMs)}`
+                    ? "no answered chat measured in this period"
+                    : `p95 ${ms(total.p95LatencyMs)} · average ${ms(total.avgLatencyMs)}`
                 }
               />
               <Stat

@@ -39,6 +39,51 @@ export interface PlatformStatus {
       days: Array<{ date: string; checks: number; uptimePercent: number | null }>;
     }>;
   };
+  /** The measured response time, with the histogram and error share behind it. */
+  latency: PublicLatencyDetail;
+}
+
+/**
+ * The measured response time of chat answers. A latency is present only when
+ * `status` is `"measured"`; there is no fallback value.
+ */
+export interface PublicLatency {
+  /**
+   * `measured`: enough answered requests from enough organizations in the window.
+   * `insufficient_data`: readable, but below a publication threshold; no latency is stated.
+   * `unavailable`: the measurements could not be read.
+   */
+  status: "measured" | "insufficient_data" | "unavailable";
+  metric: "response_time";
+  /** What is measured, in words. */
+  definition: string;
+  /** The request surfaces that count. */
+  surfaces: string[];
+  windowHours: number;
+  /**
+   * Answered requests in the window that count: at most `maxSamplesPerOrg`
+   * (the most recent) from any one organization. Null only when unavailable.
+   */
+  sampleCount: number | null;
+  minSampleCount: number;
+  minOrgCount: number;
+  /** How many of one organization's most recent answers count toward the figure. */
+  maxSamplesPerOrg: number;
+  /** Milliseconds; non-null only when measured. */
+  p50Ms: number | null;
+  p95Ms: number | null;
+  /** From streamed answers; null without enough of them. */
+  firstTokenP50Ms: number | null;
+  firstTokenSampleCount: number | null;
+  /** When the measurements were read. */
+  computedAt: string | null;
+}
+
+export interface PublicLatencyDetail extends PublicLatency {
+  /** Answered requests per bucket (`upToMs` null = slower than the last edge); null unless measured. */
+  histogram: Array<{ upToMs: number | null; count: number }> | null;
+  /** Share of recorded requests that ended in an error or a timeout; null unless measured. */
+  errorSharePercent: number | null;
 }
 
 /** `GET /api/public/stats`: platform facts read from the constants the product runs on. Public. */
@@ -50,6 +95,8 @@ export interface PublicStats {
   channelPlatforms: string[];
   /** Null when the count could not be read. */
   publishedListings: number | null;
+  /** The measured response time of chat answers. */
+  latency: PublicLatency;
 }
 
 export interface Skill {

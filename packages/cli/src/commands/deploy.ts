@@ -7,6 +7,7 @@ import { CliError } from "../errors.js";
 import { agentReference } from "../lib/agents.js";
 import { channelLabel, type ChannelReport } from "../lib/channels.js";
 import { DeployFailure, runDeploy } from "../lib/deploy.js";
+import { formatLatencyValue, loadPlatformLatency, type PublicLatencyFigure } from "../lib/latency.js";
 import { checkListingText } from "../lib/listing.js";
 import { parseWholeNumber } from "../lib/numbers.js";
 import { describePricing, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
@@ -105,6 +106,10 @@ export const deployCommand = new Command("deploy")
       throw error;
     }
 
+    // Asked once the agent is live, and never able to fail the deploy: an API that cannot
+    // state the figure leaves the line saying so.
+    const latency = await loadPlatformLatency(() => wheels.platform.stats());
+
     if (opts.json) {
       return printJson({
         agent: { id: result.agent.id, slug: result.agent.slug, name: result.agent.name },
@@ -113,11 +118,12 @@ export const deployCommand = new Command("deploy")
         openaiBaseUrl: result.agent.openaiBaseUrl ?? null,
         openaiModel: result.agent.openaiModel ?? null,
         channels: result.channels,
+        platformLatency: latency,
         listing: result.listing ? { ...result.listing.listing, url: result.listing.url } : undefined,
       });
     }
 
-    printLive(result.agent, result.deployment, result.channels);
+    printLive(result.agent, result.deployment, result.channels, latency);
     if (result.listing) printListing(result.listing.listing, result.listing.url);
   });
 
@@ -127,8 +133,17 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * Only reached with a deployment the API reports as `running`. The endpoint is the agent's
  * OpenAI-compatible URL on the API, printed exactly as returned, with what an OpenAI client
  * needs to use it: the base URL and the model id.
+ *
+ * The latency is the platform's measured figure (GET /api/public/stats), labelled as such:
+ * an agent that went live a moment ago has answered nothing yet, so it has none of its own.
+ * A number is printed only when the API measured one.
  */
-function printLive(agent: Agent, deployment: AgentDeployment, channels: ChannelReport): void {
+function printLive(
+  agent: Agent,
+  deployment: AgentDeployment,
+  channels: ChannelReport,
+  latency: PublicLatencyFigure | null,
+): void {
   console.log(chalk.bold("\n  Agent live!"));
   console.log(field("Deployment", deployment.id));
   console.log(field("GPU", `${clean(deployment.gpuTier)} x${deployment.replicas}`));
@@ -143,6 +158,14 @@ function printLive(agent: Agent, deployment: AgentDeployment, channels: ChannelR
       channels.kind === "reported" && channels.channels.length > 0
         ? `${clean(channels.channels.map(channelLabel).join(", "))}${channels.source === "openclaw" ? chalk.dim("  (the agent's OpenClaw deployment)") : ""}`
         : chalk.dim("none reported by the API"),
+    ),
+  );
+  console.log(
+    field(
+      "Latency",
+      latency?.status === "measured"
+        ? `${formatLatencyValue(latency)}${chalk.dim(`  (platform-wide${latency.windowHours === null ? "" : `, last ${latency.windowHours} h`})`)}`
+        : chalk.dim(formatLatencyValue(latency)),
     ),
   );
   console.log();

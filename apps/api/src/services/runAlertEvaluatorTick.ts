@@ -6,9 +6,9 @@
  * which owns cooldown, the Alert row, and channel notifications — then
  * emit the alert.triggered webhook event.
  *
- * Honesty rule: a metric we cannot truthfully compute (latency_p95 needs
- * raw samples; only per-window aggregates exist today) is SKIPPED and
- * counted, never approximated into a fake evaluation.
+ * Honesty rule: a metric we cannot truthfully compute (one this evaluator
+ * does not know) is SKIPPED and counted, and a window with nothing in it is
+ * no_data - neither is ever approximated into an evaluation against zero.
  *
  * Per-rule isolation: one bad rule never stops the rest.
  */
@@ -29,7 +29,8 @@ export interface AlertRuleRow {
 }
 
 export type MetricComputation =
-  | { kind: "value"; value: number }
+  /** `detail` says what the value is of, for the alert's message ("ms over 37 requests"). */
+  | { kind: "value"; value: number; detail?: string }
   | { kind: "no_data" }
   | { kind: "unsupported"; reason: string };
 
@@ -41,6 +42,7 @@ export interface AlertEvaluatorTickDeps {
   fireAlert: (
     rule: AlertRuleRow,
     metricValue: number,
+    detail?: string,
   ) => Promise<{ id: string; title: string } | null>;
   /** Fire-and-forget webhook emission for a created alert. */
   emitAlertTriggered: (
@@ -114,7 +116,7 @@ export async function runAlertEvaluatorTick(
       }
 
       result.breached += 1;
-      const alert = await deps.fireAlert(rule, computation.value);
+      const alert = await deps.fireAlert(rule, computation.value, computation.detail);
       if (alert === null) {
         // triggerAlert's cooldown declined to create a new alert.
         result.inCooldown += 1;

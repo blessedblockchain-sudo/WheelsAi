@@ -21,6 +21,8 @@ import {
   type ModelDeploymentConfig,
   type NosanaClient,
 } from "../services/nosana.js";
+import { scopedLatencyLoader, type ScopedLatency } from "../services/buildLatencySampleDeps.js";
+import type { ScopedWindow } from "../services/latencyQueries.js";
 import { NosanaLifecycleError } from "../services/nosanaDeploymentLifecycle.js";
 import {
   ACTIVE_STATUSES,
@@ -400,6 +402,8 @@ export interface DeploymentRouteDeps {
    * returned, so a URL shown here answers.
    */
   customDomains?: (orgId: string, deploymentIds: string[]) => Promise<Map<string, string>>;
+  /** A deployment's measured latency (request_latency_samples), org-bound. */
+  loadScopedLatency?: (window: ScopedWindow) => Promise<ScopedLatency>;
 }
 
 /** The chat-completions URL on a deployment's own custom domain. */
@@ -426,6 +430,18 @@ export function createDeploymentRoutes(
   // Built on first use: the handler talks to the global Prisma client.
   let chatCompletion = deps.chatCompletion ?? null;
   // An injected database has no domains service behind it.
+  // An injected database has no sample table behind it: nothing is measured.
+  const loadScopedLatency =
+    deps.loadScopedLatency ??
+    (deps.prisma
+      ? async (): Promise<ScopedLatency> => ({
+          sampleCount: 0,
+          avgMs: null,
+          p50Ms: null,
+          p95Ms: null,
+          p99Ms: null,
+        })
+      : scopedLatencyLoader());
   const lookupCustomDomains =
     deps.customDomains ?? (deps.prisma ? async () => new Map<string, string>() : servingCustomDomains);
   // The custom endpoint is an extra; failing to read it must not fail the
@@ -1281,7 +1297,8 @@ export function createDeploymentRoutes(
         }
 
         // Get usage records for last 24 hours
-        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const until = now();
+        const since = new Date(until.getTime() - 24 * 60 * 60 * 1000);
 
         const usageRecords = await prisma.usageRecord.findMany({
           where: {
@@ -1297,11 +1314,21 @@ export function createDeploymentRoutes(
             requests: acc.requests + r.requestCount,
             inputTokens: acc.inputTokens + Number(r.inputTokens),
             outputTokens: acc.outputTokens + Number(r.outputTokens),
-            totalLatencyMs: acc.totalLatencyMs + Number(r.totalLatencyMs),
             errors: acc.errors + r.errorCount,
           }),
-          { requests: 0, inputTokens: 0, outputTokens: 0, totalLatencyMs: 0, errors: 0 }
+          { requests: 0, inputTokens: 0, outputTokens: 0, errors: 0 }
         );
+
+        // Latency is the end-to-end time of the answered requests themselves,
+        // over the same 24 hours. With none measured it is null: a
+        // deployment nobody called did not answer in 0 ms.
+        const latency = await loadScopedLatency({
+          orgId,
+          since,
+          until,
+          outcomes: ["ok"],
+          deploymentIds: [deployment.id],
+        });
 
         return {
           deploymentId,
@@ -1310,10 +1337,10 @@ export function createDeploymentRoutes(
             requests: totals.requests,
             inputTokens: totals.inputTokens,
             outputTokens: totals.outputTokens,
-            avgLatencyMs:
-              totals.requests > 0
-                ? Math.round(totals.totalLatencyMs / totals.requests)
-                : 0,
+            avgLatencyMs: latency.avgMs,
+            p50LatencyMs: latency.p50Ms,
+            p95LatencyMs: latency.p95Ms,
+            latencySampleCount: latency.sampleCount,
             errorRate:
               totals.requests > 0
                 ? (totals.errors / totals.requests) * 100
@@ -1345,7 +1372,9 @@ export function createDeploymentRoutes(
         const { deploymentId } = z
           .object({ deploymentId: z.string().uuid() })
           .parse(request.params);
-        chatCompletion ??= createDeploymentCompletionHandler();
+        // Same handler, its own surface: dashboard chats are told apart
+        // from API traffic in the latency samples.
+        chatCompletion ??= createDeploymentCompletionHandler({ surface: "deployment_chat" });
         return chatCompletion(request, reply, { deploymentId });
       }
     );

@@ -22,6 +22,13 @@
  *               per-day history is counted from UptimeEvent rows; days with
  *               no checks come back as null, not 100.
  *
+ *   latency     The measured response time of chat answers
+ *               (services/publicLatency.ts): the same figure, from the same
+ *               read, as GET /api/public/stats, plus its histogram and the
+ *               share of requests that failed. Below the publication
+ *               thresholds, or when the samples cannot be read, it carries a
+ *               status and no number.
+ *
  * Always answers 200 with a body, even mid-outage: a status page that 503s
  * when the database is down cannot say that the database is down.
  *
@@ -35,6 +42,8 @@ import { Redis } from "ioredis";
 
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
+import { processPublicLatency } from "../services/buildPublicLatencyDeps.js";
+import type { PublicLatencyDetail, PublicLatencyReader } from "../services/publicLatency.js";
 
 // ============================================
 // Types
@@ -95,6 +104,11 @@ export interface StatusDeps {
   loadPublicMonitors: (() => Promise<PublicMonitorRow[]>) | null;
   /** Per-monitor, per-UTC-day check counts since `since`. */
   loadMonitorDays: (monitorIds: string[], since: Date) => Promise<MonitorDayRow[]>;
+  /**
+   * The measured response time of chat answers. The reader caches and bounds
+   * its own reads, so it is asked outside the probe timeout.
+   */
+  latency: Pick<PublicLatencyReader, "detail" | "unavailableDetail">;
   /** Releases connections on server close. */
   close?: () => Promise<void> | void;
   now?: () => Date;
@@ -143,6 +157,8 @@ export interface StatusResponse {
       days: Array<{ date: string; checks: number; uptimePercent: number | null }>;
     }>;
   };
+  /** Request latency. Not part of `status`: a slow answer is not an outage. */
+  latency: PublicLatencyDetail;
 }
 
 // ============================================
@@ -271,6 +287,11 @@ export async function computeStatus(deps: StatusDeps): Promise<StatusResponse> {
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const historyDays = deps.historyDays ?? DEFAULT_HISTORY_DAYS;
 
+  // Started first and awaited last, so it runs alongside the probes.
+  const latencyRead = Promise.resolve()
+    .then(() => deps.latency.detail())
+    .catch(() => deps.latency.unavailableDetail());
+
   // Concurrently, so a slow database cannot eat Redis's budget.
   const [database, redis] = await Promise.all([
     timed(deps.checkDatabase, timeoutMs),
@@ -377,12 +398,15 @@ export async function computeStatus(deps: StatusDeps): Promise<StatusResponse> {
     }
   }
 
+  const latency = await latencyRead;
+
   return {
     status: overallStatus(components, workerItems, monitors.items),
     generatedAt: now.toISOString(),
     components,
     workers: { available: workersAvailable, items: workerItems },
     monitors,
+    latency,
   };
 }
 
@@ -431,7 +455,7 @@ export function createStatusRoutes(deps: StatusDeps): FastifyPluginAsync {
         schema: {
           tags: ["Status"],
           description:
-            "Public platform status: database and Redis probes, worker last-run times, and the operator's public uptime monitors.",
+            "Public platform status: database and Redis probes, worker last-run times, the operator's public uptime monitors, and the measured response time of chat answers.",
         },
       },
       async (_request, reply) => {
@@ -696,6 +720,7 @@ export function buildStatusDeps(): StatusDeps {
         up: Number(r.up),
       }));
     },
+    latency: processPublicLatency(),
     close() {
       client?.disconnect();
       client = null;

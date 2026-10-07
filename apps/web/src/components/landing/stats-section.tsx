@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Store, Coins, Globe, Box } from "lucide-react";
-import { API_BASE_URL } from "@/lib/api";
 import { LIVE_CHAT_CHANNELS } from "@/lib/chat-channels";
+import { usePublicStats } from "@/lib/publicStats";
 
 interface StatItemProps {
   icon: React.ElementType;
@@ -87,25 +87,18 @@ const FALLBACK_STATS: PlatformStats = {
   channels: LIVE_CHAT_CHANNELS.length,
 };
 
+// Reads the page's one /api/public/stats request (lib/publicStats.ts), shared
+// with the latency line, so the landing page asks the API once.
 function usePlatformStats(): PlatformStats {
-  const [stats, setStats] = useState<PlatformStats>(FALLBACK_STATS);
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch(`${API_BASE_URL}/api/public/stats`, { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: Partial<PlatformStats> | null) => {
-        if (!data) return;
-        setStats((prev) => ({
-          frameworks: typeof data.frameworks === "number" ? data.frameworks : prev.frameworks,
-          models: typeof data.models === "number" ? data.models : prev.models,
-          pricingModels: typeof data.pricingModels === "number" ? data.pricingModels : prev.pricingModels,
-          channels: typeof data.channels === "number" ? data.channels : prev.channels,
-        }));
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, []);
-  return stats;
+  const state = usePublicStats();
+  if (state.phase !== "ready") return FALLBACK_STATS;
+  const { stats } = state;
+  return {
+    frameworks: stats.frameworks ?? FALLBACK_STATS.frameworks,
+    models: stats.models ?? FALLBACK_STATS.models,
+    pricingModels: stats.pricingModels ?? FALLBACK_STATS.pricingModels,
+    channels: stats.channels ?? FALLBACK_STATS.channels,
+  };
 }
 
 export function StatsSection() {

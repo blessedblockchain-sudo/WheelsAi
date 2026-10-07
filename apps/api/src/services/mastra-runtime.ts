@@ -810,14 +810,20 @@ export interface WatchedChatStream extends ChatStream {
  * Forwards a provider stream untouched while judging its outcome. Exported
  * for the model-deployment proxy (routes/inference.ts), whose upstream is an
  * inference node rather than a model provider but speaks the same SSE.
+ *
+ * `onFirstContent` fires once, when the first chunk carrying answer text is
+ * about to be forwarded: the moment time-to-first-token is measured at. It
+ * never fires for a stream that carried no text.
  */
 export function passthroughStream(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal | undefined,
   deadline: Deadline,
+  onFirstContent?: () => void,
 ): WatchedChatStream {
   const reader = body.getReader();
   const watcher = new SseWatcher();
+  let contentSeen = false;
   let settled = false;
   let resolveOutcome!: (o: StreamOutcome) => void;
   const outcome = new Promise<StreamOutcome>((resolve) => {
@@ -836,6 +842,14 @@ export function passthroughStream(
         const { done, value } = await reader.read();
         if (!done) {
           watcher.push(value);
+          if (!contentSeen && watcher.contentChars > 0) {
+            contentSeen = true;
+            try {
+              onFirstContent?.();
+            } catch {
+              // A timing hook is never a reason for a stream to fail.
+            }
+          }
           controller.enqueue(value);
           return;
         }

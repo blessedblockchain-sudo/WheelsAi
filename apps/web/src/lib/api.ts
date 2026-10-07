@@ -426,7 +426,11 @@ export const deploymentsApi = {
         requests: number;
         inputTokens: number;
         outputTokens: number;
-        avgLatencyMs: number;
+        /** End-to-end time of answered requests; null when none was measured. */
+        avgLatencyMs: number | null;
+        p50LatencyMs: number | null;
+        p95LatencyMs: number | null;
+        latencySampleCount: number;
         errorRate: number;
       };
       byHour: Array<{
@@ -969,9 +973,8 @@ export interface AgentUsageSummary {
   /** Answered chats whose provider reported no tokens; NOT in the sums above. */
   usageUnreported: number;
   toolCalls: number;
-  /** null when nothing was answered. */
+  /** Measured per request over answered chats; null when none was measured. */
   avgLatencyMs: number | null;
-  /** Upper bounds of the bucket the percentile falls in; null when unknown. */
   p50LatencyMs: number | null;
   p95LatencyMs: number | null;
   /** errors / requests, 0..1. */
@@ -2179,7 +2182,11 @@ export interface UsageMetrics {
   totalTokensIn: number;
   totalTokensOut: number;
   totalCostCents: number;
-  avgLatencyMs: number;
+  /** End-to-end time of answered requests; null when none was measured. */
+  avgLatencyMs: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
+  latencySampleCount: number;
   errorRate: number;
 }
 
@@ -2201,7 +2208,10 @@ export interface DeploymentMetrics {
   tokensIn: number;
   tokensOut: number;
   costCents: number;
-  avgLatencyMs: number;
+  /** null when no answered request of this deployment was measured. */
+  avgLatencyMs: number | null;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
   errorRate: number;
 }
 

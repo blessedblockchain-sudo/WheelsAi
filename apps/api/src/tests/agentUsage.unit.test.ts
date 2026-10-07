@@ -14,16 +14,16 @@ import Fastify from "fastify";
 import {
   LATENCY_BUCKET_COUNT,
   LATENCY_BUCKETS_MS,
-  addHistograms,
   histogramOf,
   latencyBucket,
-  latencyPercentile,
   recordAgentUsage,
   summarizeAgentUsage,
   usageIncrement,
   usagePeriodStart,
+  agentLatencySample,
   type AgentChatUsageEvent,
 } from "../services/agentUsage.js";
+import type { LatencySample } from "../services/latencySamples.js";
 
 // Agent chat traffic had no record of its own: no request count that
 // included streamed chats, no tokens, no latency. services/agentUsage.ts is
@@ -55,20 +55,6 @@ test("latency buckets: a value falls in the first bucket whose bound holds it; s
   assert.equal(latencyBucket(120_001), LATENCY_BUCKETS_MS.length);
   assert.equal(histogramOf(300).length, LATENCY_BUCKET_COUNT);
   assert.equal(histogramOf(300)[1], 1);
-});
-
-test("a percentile is the ceiling of its bucket, and unknown when it cannot be bounded", () => {
-  const h = addHistograms(addHistograms(histogramOf(100), histogramOf(300)), histogramOf(900));
-  assert.equal(latencyPercentile(h, 0.5), 500, "2 of 3 samples are at or under 500 ms");
-  assert.equal(latencyPercentile(h, 0.95), 1_000);
-  assert.equal(latencyPercentile([], 0.5), null, "no sample is not zero milliseconds");
-  assert.equal(
-    latencyPercentile(histogramOf(500_000), 0.5),
-    null,
-    "slower than the last bound: no ceiling to state",
-  );
-  // A row written with fewer buckets still adds up.
-  assert.equal(addHistograms([1, 2], histogramOf(100))[0], 2);
 });
 
 test("the period is the UTC hour", () => {
@@ -112,6 +98,7 @@ test("recordAgentUsage writes one atomic upsert keyed by agent, source and hour"
     },
     event(),
     AT,
+    () => {},
   );
   assert.equal(statements.length, 1);
   const { text, values } = statements[0]!;
@@ -125,11 +112,11 @@ test("recordAgentUsage writes one atomic upsert keyed by agent, source and hour"
   assert.ok(values.some((v) => v instanceof Date && v.toISOString() === "2026-10-06T10:00:00.000Z"));
 });
 
-test("a summary averages latency over answered chats and keeps unreported usage visible", () => {
+test("a summary counts from the rollup and takes its latency from the samples, never from the rollup", () => {
   const rows = [event({ latencyMs: 200 }), event({ latencyMs: 600, usage: null }), event({ ok: false, usage: null })].map(
     (e) => usageIncrement(e, AT),
   );
-  const summary = summarizeAgentUsage(rows);
+  const summary = summarizeAgentUsage(rows, { avgMs: 412, p50Ms: 207, p95Ms: 611 });
   assert.deepEqual(
     {
       requests: summary.requests,
@@ -139,10 +126,29 @@ test("a summary averages latency over answered chats and keeps unreported usage 
       usageUnreported: summary.usageUnreported,
       avgLatencyMs: summary.avgLatencyMs,
       p50LatencyMs: summary.p50LatencyMs,
+      p95LatencyMs: summary.p95LatencyMs,
     },
-    { requests: 3, errors: 1, answered: 2, inputTokens: 100, usageUnreported: 1, avgLatencyMs: 400, p50LatencyMs: 250 },
+    {
+      requests: 3,
+      errors: 1,
+      answered: 2,
+      inputTokens: 100,
+      usageUnreported: 1,
+      avgLatencyMs: 412,
+      p50LatencyMs: 207,
+      p95LatencyMs: 611,
+    },
   );
   assert.ok(Math.abs(summary.errorRate - 1 / 3) < 1e-9);
+
+  // The rows carry a latency sum and a histogram; without samples neither is
+  // turned into a figure (a bucket ceiling is not what a request took).
+  const unmeasured = summarizeAgentUsage(rows);
+  assert.deepEqual(
+    [unmeasured.avgLatencyMs, unmeasured.p50LatencyMs, unmeasured.p95LatencyMs],
+    [null, null, null],
+  );
+  assert.equal(unmeasured.answered, 2);
 
   const empty = summarizeAgentUsage([]);
   assert.equal(empty.avgLatencyMs, null, "no traffic is not a 0 ms average");
@@ -174,6 +180,8 @@ test("getAgentChatUsage reads only the caller's organization and agent, and spli
     periodStart: { gte: new Date("2026-10-05T12:00:00Z") },
   });
   assert.equal(usage.total.requests, 3);
+  // An injected database has no sample table behind it: no latency is stated.
+  assert.equal(usage.total.p50LatencyMs, null);
   assert.deepEqual(Object.keys(usage.bySource).sort(), ["api", "playground"]);
   assert.equal(usage.bySource.api!.requests, 2);
   assert.deepEqual(
@@ -183,6 +191,49 @@ test("getAgentChatUsage reads only the caller's organization and agent, and spli
       ["2026-10-06T11:00:00.000Z", 1],
     ],
   );
+});
+
+test("getAgentChatUsage states measured latency for the agent and per source, bound to the org and the agent", async () => {
+  const { getAgentChatUsage } = await import("../services/analytics.js");
+  const now = new Date("2026-10-06T12:00:00Z");
+  const windows: any[] = [];
+  const stored = [
+    { ...usageIncrement(event({ source: "api" }), AT) },
+    { ...usageIncrement(event({ source: "playground" }), AT) },
+  ];
+  const usage = await getAgentChatUsage(ORG, AGENT_ID, "24h", {
+    now,
+    db: { agentUsageRecord: { findMany: async () => stored } } as never,
+    latency: {
+      loadScopedLatency: async (window) => {
+        windows.push(window);
+        return { sampleCount: 2, avgMs: 900, p50Ms: 640, p95Ms: 1_870, p99Ms: 1_870 };
+      },
+      loadGroupedLatency: async (window, groupBy) => {
+        windows.push({ ...window, groupBy });
+        return new Map([
+          ["agent_api", { sampleCount: 1, avgMs: 640, p50Ms: 640, p95Ms: 640, p99Ms: 640 }],
+          // A surface with samples and no rollup row in the period is not invented into a source.
+          ["agent_widget", { sampleCount: 1, avgMs: 5, p50Ms: 5, p95Ms: 5, p99Ms: 5 }],
+        ]);
+      },
+    },
+  });
+  for (const window of windows) {
+    assert.equal(window.orgId, ORG);
+    assert.equal(window.agentId, AGENT_ID);
+    assert.equal(window.deploymentIds, undefined, "the agent's chats only, not its deployments' traffic");
+    assert.deepEqual(window.outcomes, ["ok"]);
+    assert.deepEqual([window.since, window.until], [new Date("2026-10-05T12:00:00Z"), now]);
+  }
+  assert.equal(windows[1].groupBy, "surface");
+  assert.deepEqual(
+    [usage.total.avgLatencyMs, usage.total.p50LatencyMs, usage.total.p95LatencyMs],
+    [900, 640, 1_870],
+  );
+  assert.equal(usage.bySource.api!.p50LatencyMs, 640);
+  assert.equal(usage.bySource.playground!.p50LatencyMs, null, "no sample for this source: no number");
+  assert.deepEqual(Object.keys(usage.bySource).sort(), ["api", "playground"]);
 });
 
 // ============================================
@@ -297,4 +348,113 @@ test("PATCH entrypoint=graph is refused until the agent has a graph, and bumps t
     await app.close();
     Object.assign(prisma as any, saved);
   }
+});
+
+// ============================================
+// The per-request latency sample
+// ============================================
+//
+// The rollup above can only say which bucket a percentile falls in. Every
+// chat that passes this hook also leaves one exact sample in
+// request_latency_samples, which is where stated latencies are computed.
+
+test("an answered chat becomes one sample of its own time, on its source's surface", () => {
+  const sample = agentLatencySample(
+    event({ source: "playground", modelId: "free/groq/llama-3.3-70b", streamed: true, latencyMs: 611.6 }),
+    AT,
+  );
+  assert.deepEqual(sample, {
+    orgId: ORG,
+    surface: "agent_playground",
+    agentId: AGENT_ID,
+    deploymentId: null,
+    model: "free/groq/llama-3.3-70b",
+    provider: "groq",
+    streamed: true,
+    outcome: "ok",
+    statusCode: null,
+    totalMs: 612,
+    upstreamMs: null,
+    firstTokenMs: null,
+    outputTokens: event().usage?.outputTokens ?? null,
+    createdAt: AT,
+  });
+});
+
+test("a failed chat is sampled as an error and an abandoned one as cancelled, without tokens", () => {
+  const failed = agentLatencySample(event({ ok: false, usage: null }), AT)!;
+  assert.deepEqual([failed.outcome, failed.outputTokens], ["error", null]);
+  const gone = agentLatencySample(event({ ok: false, clientGone: true }), AT)!;
+  assert.deepEqual([gone.outcome, gone.outputTokens], ["cancelled", null]);
+});
+
+test("a chat whose provider reported no usage has null tokens, and an unnamed model an unknown provider", () => {
+  const sample = agentLatencySample(event({ usage: null, modelId: undefined }), AT)!;
+  assert.deepEqual([sample.outputTokens, sample.model, sample.provider], [null, null, "unknown"]);
+  assert.equal(agentLatencySample(event({ modelId: "graph" }), AT)!.provider, "unknown");
+});
+
+test("a latency that is not a measurement leaves no sample, never 0 ms", () => {
+  for (const latencyMs of [Number.NaN, -1, Number.POSITIVE_INFINITY]) {
+    assert.equal(agentLatencySample(event({ latencyMs }), AT), null);
+  }
+});
+
+test("recordAgentUsage hands the sample over before the rollup is written", async () => {
+  const order: string[] = [];
+  const samples: Array<LatencySample | null> = [];
+  await recordAgentUsage(
+    {
+      $executeRaw: async () => {
+        order.push("rollup");
+        return 1;
+      },
+    },
+    event({ latencyMs: 1_234 }),
+    AT,
+    (sample) => {
+      order.push("sample");
+      samples.push(sample);
+    },
+  );
+  assert.deepEqual(order, ["sample", "rollup"]);
+  assert.equal(samples.length, 1);
+  assert.equal(samples[0]!.totalMs, 1_234);
+  assert.equal(samples[0]!.createdAt, AT);
+});
+
+test("the sample is recorded even when the rollup write fails", async () => {
+  const samples: Array<LatencySample | null> = [];
+  await assert.rejects(
+    recordAgentUsage(
+      {
+        $executeRaw: async () => {
+          throw new Error("db blip");
+        },
+      },
+      event(),
+      AT,
+      (sample) => samples.push(sample),
+    ),
+    /db blip/,
+  );
+  assert.equal(samples.length, 1);
+});
+
+test("a recorder that throws does not cost the rollup its row", async () => {
+  let written = 0;
+  await recordAgentUsage(
+    {
+      $executeRaw: async () => {
+        written += 1;
+        return 1;
+      },
+    },
+    event(),
+    AT,
+    () => {
+      throw new Error("sink exploded");
+    },
+  );
+  assert.equal(written, 1);
 });

@@ -41,7 +41,10 @@ const chatBodySchema = z.object({
       content: z.string().min(1).max(32000),
     })
   ).min(1).max(50),
-  model: z.string().optional(),
+  // A model id is a short printable name. Refused here rather than passed on:
+  // it reaches provider URLs, logs and the latency record as given.
+  // eslint-disable-next-line no-control-regex
+  model: z.string().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/, "Invalid model id").optional(),
   stream: z.boolean().optional().default(false),
 });
 

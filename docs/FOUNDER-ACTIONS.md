@@ -61,6 +61,14 @@ Updated 2026-10-06. Tick items off here as they land.
 ## 8. Operations
 
 - [ ] **The public `/status` page.** Create an organisation for the platform, add uptime monitors for its public endpoints, and set `STATUS_PAGE_ORG_ID`.
+- [ ] **Measured latency.** Apply migrations `20261010200000_request_latency` and `20261010210000_null_legacy_snapshot_percentiles` (the second clears the stored analytics percentiles that were averages of hourly averages). Then:
+  - set `PUBLIC_LATENCY_EXCLUDED_ORG_IDS` to every internal and test organisation, including the `STATUS_PAGE_ORG_ID` organisation if it ever sends chat traffic, so our own requests are not in the published figure;
+  - confirm the publication thresholds (`PUBLIC_LATENCY_MIN_SAMPLES=50`, `PUBLIC_LATENCY_MIN_ORGS=3`, `PUBLIC_LATENCY_WINDOW_HOURS=24`); until both are met, `/status` and `GET /api/public/stats` say "measuring" and state no number. Each organisation counts for at most its 17 most recent answered requests (50 / 3, rounded up; it follows the two thresholds), so the figure needs real traffic from at least three organisations and cannot be set by one;
+  - keep `ANALYTICS_SNAPSHOT_INTERVAL_MS` above 0 in production: that worker is what deletes timing rows older than `LATENCY_SAMPLE_RETENTION_DAYS` (30), and with it off the table only grows;
+  - keep `ALERT_EVALUATOR_INTERVAL_MS` above 0 for latency alerts to be evaluated.
+  - decide whether the running count should be public before a figure exists. The landing page says only "measuring"; `/status` ("So far: N answered requests"), `wheelsai deploy` ("measuring (N of 50 requests)") and `GET /api/public/stats` (`sampleCount`) state how many requests are in so far, which tells a reader how much traffic the platform has.
+  - the landing page's "Latency:" line and the note under it read `GET /api/public/stats` from the browser, so `NEXT_PUBLIC_API_URL` must be set on Netlify and the site's origin must be in `CORS_ORIGIN`; until then the line reads "live figure unavailable" (it never shows a number it did not read). `wheelsai deploy` prints the same field.
+- [ ] **Latency alert rules created before this release.** `latency_p95` and `latency_avg` rules were accepted and never evaluated; they are evaluated now, with the threshold read as milliseconds. A rule saved with `5` meaning seconds fires on every window slower than 5 ms. List them (`SELECT id, org_id, name, threshold FROM alert_rules WHERE metric IN ('latency_p95','latency_avg')`) and tell their owners, or disable them until confirmed.
 - [ ] `SENTRY_DSN` for error tracking.
 - [ ] `METRICS_TOKEN` if `/metrics` is reachable outside Fly's private network.
 - [ ] `PLATFORM_ADMIN_KEY` for marketplace curation (featured listings).
@@ -80,6 +88,7 @@ Updated 2026-10-06. Tick items off here as they land.
 The pages render unconfirmed details visibly as `[FOUNDER: ...]` so none can ship unnoticed.
 
 - [ ] **Privacy and terms** (both marked draft pending legal review):
+  - per-request timing records (organisation, agent or deployment, model, outcome, durations; no content) and their retention period, in sections 2 and 10 of the privacy page
   - legal entity name and registered address
   - hosting providers and the primary data region
   - log and backup retention periods

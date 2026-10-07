@@ -221,9 +221,11 @@ export default function DeploymentsApiPage() {
 
       <Endpoint id="metrics" method="GET" path="/api/deployments/{deploymentId}/metrics" auth="API key or session" title="Usage metrics, last 24 hours">
         <p>
-          Returns totals for <code>requests</code>, <code>inputTokens</code>, <code>outputTokens</code>,{" "}
-          <code>avgLatencyMs</code> and <code>errorRate</code>, plus a <code>byHour</code> series, from the usage recorded for
-          each <code>/v1</code> request.
+          Returns totals for <code>requests</code>, <code>inputTokens</code>, <code>outputTokens</code> and{" "}
+          <code>errorRate</code>, plus a <code>byHour</code> series, from the usage recorded for each <code>/v1</code>{" "}
+          request. <code>avgLatencyMs</code>, <code>p50LatencyMs</code> and <code>p95LatencyMs</code> are the end-to-end
+          time of the answered requests in the same 24 hours, measured per request at the API over{" "}
+          <code>latencySampleCount</code> requests; all three are <code>null</code> when none was measured.
         </p>
       </Endpoint>
 

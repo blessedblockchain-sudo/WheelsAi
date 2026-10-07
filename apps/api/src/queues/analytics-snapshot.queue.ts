@@ -3,6 +3,10 @@ import { Queue, Worker } from "bullmq";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { createDailySnapshot } from "../services/analytics.js";
+import {
+  buildLatencySampleDeps,
+  latencyConfigFromEnv,
+} from "../services/buildLatencySampleDeps.js";
 import { runAnalyticsSnapshotTick } from "../services/runAnalyticsSnapshotTick.js";
 import { createLogger } from "../utils/logger.js";
 import { getQueueConnectionOpts } from "./connection.js";
@@ -18,7 +22,8 @@ let worker: Worker | null = null;
 /**
  * Starts the analytics-snapshot queue (Wave 1) — the first caller
  * createDailySnapshot ever had. Maintains today's rolling daily
- * snapshot and finalizes yesterday's for every org with recent usage.
+ * snapshot and finalizes yesterday's for every org with recent usage, then
+ * deletes per-request latency samples past LATENCY_SAMPLE_RETENTION_DAYS.
  * Only starts when `env.ANALYTICS_SNAPSHOT_INTERVAL_MS` is > 0.
  */
 export async function startAnalyticsSnapshotQueue(): Promise<void> {
@@ -49,6 +54,8 @@ export async function startAnalyticsSnapshotQueue(): Promise<void> {
     },
   );
 
+  const latency = buildLatencySampleDeps({ config: latencyConfigFromEnv(env) });
+
   worker = new Worker(
     QUEUE_NAME,
     async () => {
@@ -61,9 +68,17 @@ export async function startAnalyticsSnapshotQueue(): Promise<void> {
               select: { orgId: true },
               distinct: ["orgId"],
             });
-            return rows.map((r) => r.orgId);
+            // An org whose only traffic is agent chats has no UsageRecord,
+            // and its day (latency included) belongs in the history too.
+            const agentRows = await prisma.agentUsageRecord.findMany({
+              where: { periodStart: { gte: since } },
+              select: { orgId: true },
+              distinct: ["orgId"],
+            });
+            return [...new Set([...rows, ...agentRows].map((r) => r.orgId))];
           },
           snapshotOrgDay: (orgId, day) => createDailySnapshot(orgId, day),
+          pruneLatencySamples: latency.pruneLatencySamples,
         },
       );
       logger.info(result, "Analytics snapshot tick complete");

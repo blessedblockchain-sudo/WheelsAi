@@ -137,3 +137,50 @@ test.describe("Landing Page", () => {
     ).toBeVisible();
   });
 });
+
+// The terminal's "Latency:" line is the platform's measured p50, read from
+// GET /api/public/stats. It used to be a constant ("47ms avg").
+test.describe("Landing page latency line", () => {
+  const stats = (latency: Record<string, unknown>) => ({
+    frameworks: 6,
+    models: 21,
+    pricingModels: 4,
+    channels: 3,
+    latency: {
+      metric: "response_time",
+      definition: "Time the WheelsAI API took to produce the complete answer to a chat request.",
+      windowHours: 24,
+      minSampleCount: 50,
+      minOrgCount: 3,
+      computedAt: "2026-10-07T00:00:00.000Z",
+      ...latency,
+    },
+  });
+
+  test("shows the measured p50 and links to how it is measured", async ({ page }) => {
+    await page.route("**/api/public/stats", (route) =>
+      route.fulfill({ json: stats({ status: "measured", sampleCount: 1284, p50Ms: 612, p95Ms: 2140 }) })
+    );
+    await page.goto("/");
+    await expect(page.locator('[data-latency-status="measured"]')).toHaveText("612 ms p50");
+    await expect(page.getByRole("link", { name: "How it is measured" })).toHaveAttribute("href", "/status#latency");
+    await expect(page.getByText(/measured over 1,284 answered requests in the last 24 hours/)).toBeVisible();
+  });
+
+  test("shows no number while the platform is below the publication thresholds", async ({ page }) => {
+    await page.route("**/api/public/stats", (route) =>
+      route.fulfill({ json: stats({ status: "insufficient_data", sampleCount: 12, p50Ms: null, p95Ms: null }) })
+    );
+    await page.goto("/");
+    await expect(page.locator('[data-latency-status="insufficient_data"]')).toHaveText("measuring");
+    await expect(page.getByText(/12 of 50/)).toHaveCount(0);
+  });
+
+  test("says the figure is unavailable when the API cannot be read, and never prints 47ms", async ({ page }) => {
+    await page.route("**/api/public/stats", (route) => route.fulfill({ status: 500, json: { error: "boom" } }));
+    await page.goto("/");
+    await expect(page.locator('[data-latency-status="unavailable"]')).toHaveText("live figure unavailable");
+    await expect(page.locator("body")).not.toContainText("47ms");
+    await expect(page.locator("body")).not.toContainText("47 ms");
+  });
+});

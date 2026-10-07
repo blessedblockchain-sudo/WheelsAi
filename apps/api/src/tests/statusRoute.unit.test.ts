@@ -31,7 +31,36 @@ const {
 } = await import("../routes/status.js");
 type StatusDeps = Parameters<typeof createStatusRoutes>[0];
 
+const { summarizePublicLatencyDetail } = await import("../services/publicLatency.js");
+const { HISTOGRAM_EDGES_MS } = await import("../services/latencyQueries.js");
+
 const NOW = new Date("2026-10-01T12:00:00.000Z");
+
+const latencyThresholds = { windowHours: 24, minSamples: 50, minOrgs: 3 };
+function latencySnapshot(sampleCount: number, orgCount: number) {
+  return {
+    window: {
+      windowHours: 24,
+      sampleCount,
+      orgCount,
+      p50Ms: 612,
+      p95Ms: 2140,
+      firstTokenSampleCount: 0,
+      firstTokenOrgCount: 0,
+      firstTokenP50Ms: null,
+      computedAt: NOW,
+    },
+    outcomes: { ok: sampleCount, error: 3, timeout: 1, cancelled: 0 },
+    histogram: [...HISTOGRAM_EDGES_MS, null].map((upToMs: number | null, i: number) => ({ upToMs, count: i })),
+  };
+}
+/** A latency reader that answers with the detail of `snapshot` (null = unread). */
+function latencyOf(snapshot: ReturnType<typeof latencySnapshot> | null) {
+  return {
+    detail: async () => summarizePublicLatencyDetail(snapshot, latencyThresholds),
+    unavailableDetail: () => summarizePublicLatencyDetail(null, latencyThresholds),
+  };
+}
 const ok = async () => {};
 const boom = async () => {
   throw new Error("connection refused");
@@ -46,6 +75,7 @@ function baseDeps(overrides: Partial<StatusDeps> = {}): StatusDeps {
     readWorkerRuns: async () => ({}),
     loadPublicMonitors: null,
     loadMonitorDays: async () => [],
+    latency: latencyOf(null),
     now: () => NOW,
     timeoutMs: 50,
     cacheTtlMs: 0,
@@ -363,4 +393,63 @@ test("readRunsFromRedis: top score of each finished set, one pipeline", async ()
     a: { lastCompletedAt: new Date(1790000000000), lastFailedAt: null },
     b: { lastCompletedAt: null, lastFailedAt: new Date(1790000001000) },
   });
+});
+
+// ============================================
+// Request latency
+// ============================================
+
+test("latency: a measured figure passes through with its histogram and error share", async () => {
+  const body = (await get(baseDeps({ latency: latencyOf(latencySnapshot(396, 5)) }))).json();
+  assert.equal(body.latency.status, "measured");
+  assert.deepEqual([body.latency.p50Ms, body.latency.p95Ms, body.latency.sampleCount], [612, 2140, 396]);
+  assert.equal(body.latency.histogram.length, HISTOGRAM_EDGES_MS.length + 1);
+  assert.deepEqual(body.latency.histogram[0], { upToMs: 250, count: 0 });
+  assert.equal(body.latency.histogram.at(-1).upToMs, null);
+  assert.equal(body.latency.errorSharePercent, 1); // 4 of 400
+  assert.equal(body.latency.computedAt, NOW.toISOString());
+  assert.equal(body.status, "operational");
+});
+
+test("latency: below the thresholds the section says so and shows no number", async () => {
+  const body = (await get(baseDeps({ latency: latencyOf(latencySnapshot(12, 1)) }))).json();
+  assert.equal(body.latency.status, "insufficient_data");
+  assert.equal(body.latency.sampleCount, 12);
+  assert.deepEqual(
+    [body.latency.p50Ms, body.latency.p95Ms, body.latency.histogram, body.latency.errorSharePercent],
+    [null, null, null, null],
+  );
+});
+
+test("latency: unread samples are unavailable with nulls, and are not an outage of their own", async () => {
+  const body = (await get(baseDeps())).json();
+  assert.equal(body.latency.status, "unavailable");
+  assert.deepEqual(
+    [body.latency.p50Ms, body.latency.p95Ms, body.latency.sampleCount, body.latency.histogram],
+    [null, null, null, null],
+  );
+  assert.equal(body.status, "operational");
+});
+
+test("latency: a reader that throws still gives a 200 with the unavailable state", async () => {
+  const res = await get(
+    baseDeps({
+      latency: {
+        detail: async () => {
+          throw new Error("connection refused");
+        },
+        unavailableDetail: latencyOf(null).unavailableDetail,
+      },
+    }),
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().latency.status, "unavailable");
+  assert.equal(res.json().latency.p50Ms, null);
+});
+
+test("latency: a database outage still reports the rest, with whatever the reader can state", async () => {
+  const body = (await get(baseDeps({ checkDatabase: boom, latency: latencyOf(null) }))).json();
+  assert.equal(body.status, "major_outage");
+  assert.equal(body.latency.status, "unavailable");
+  assert.equal(body.latency.p50Ms, null);
 });

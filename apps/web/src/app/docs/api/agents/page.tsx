@@ -27,7 +27,18 @@ const toc = [
   { id: "run-agent", title: "Run a task", sub: true },
   { id: "public-link", title: "Public link", sub: true },
   { id: "public-run", title: "Run from a public page", sub: true },
+  { id: "public-page", title: "Read a public page", sub: true },
   { id: "agent-management-errors", title: "Errors", sub: true },
+  { id: "schedule-and-runs", title: "Schedule and runs" },
+  { id: "get-schedule", title: "Read the schedule", sub: true },
+  { id: "put-schedule", title: "Set the schedule", sub: true },
+  { id: "run-schedule", title: "Run it now", sub: true },
+  { id: "list-runs", title: "List the runs", sub: true },
+  { id: "resend-run", title: "Send a result again", sub: true },
+  { id: "where-results-go", title: "Where results go" },
+  { id: "list-destinations", title: "List the places", sub: true },
+  { id: "create-destination", title: "Add a place", sub: true },
+  { id: "test-destination", title: "Send a test message", sub: true },
   { id: "agent-api", title: "Agent API (/v1)" },
   { id: "agent-completions", title: "Create a chat completion", sub: true },
   { id: "agent-streaming", title: "Streaming", sub: true },
@@ -110,6 +121,7 @@ export default function AgentsApiPage() {
             { name: "systemPrompt", type: "string", description: "What the agent should do. Up to 10,000 characters." },
             { name: "agentKind", type: "enum", description: <><code>conversation</code> (the default), <code>task</code> or <code>scheduled</code>. See <a href="#agent-kinds">kinds of agent</a>.</> },
             { name: "kindConfig", type: "object | null", description: <>The settings of the kind: <code>task</code> holds the <a href="#task-form">form</a>, <code>scheduled</code> holds a suggested schedule and what the agent is told at each run. Up to 16 KB.</> },
+            { name: "schedule", type: "object", description: <>The agent&apos;s own schedule, made with the agent. Only with <code>agentKind</code> <code>scheduled</code> (or a template of that kind). See <a href="#create-with-schedule">create with a schedule</a>.</> },
             { name: "templateId", type: "uuid", description: <>Start from a published <Link href="/docs/guides/templates">template</Link>. Its values are the defaults, and each field you send replaces the template&apos;s.</> },
             { name: "modelConfig", type: "object", description: <><code>externalModel</code> (a free model id such as <code>free/groq/llama-3.3-70b</code>, or <code>provider/model</code>), <code>modelId</code> (a catalog model), <code>temperature</code> 0 to 2 (default 0.7), <code>maxTokens</code> 1 to 32768 (default 4096). Without a model, the agent answers on the platform&apos;s default free model.</> },
             { name: "framework", type: "enum", description: <><code>mastra</code>, <code>elizaos</code>, <code>langchain</code>, <code>autogen</code>, <code>crewai</code> or <code>custom</code> (the default).</> },
@@ -169,12 +181,71 @@ export default function AgentsApiPage() {
     "openaiBaseUrl": "https://api.example.com/v1/agents/release-notes-helper",
     "openaiModel": "agent/release-notes-helper"
   },
+  "schedule": null,
   "message": "Agent created successfully"
 }`}
         />
         <p>
-          Fires the <code>agent.created</code> webhook. A request that cannot be accepted answers <code>400</code>{" "}
+          <code>schedule</code> is always there: <code>null</code> unless the request carried one, and the same for an agent
+          made from a template. Fires the <code>agent.created</code> webhook. A request that cannot be accepted answers <code>400</code>{" "}
           <code>validation_failed</code> with a sentence for each field; see <a href="#agent-management-errors">errors</a>.
+        </p>
+
+        <h4 id="create-with-schedule">Create with a schedule</h4>
+        <p>
+          A scheduled agent can be made with its schedule in one request. The agent and the schedule are made together: if
+          the schedule cannot be used, no agent is made.
+        </p>
+        <Fields
+          title="schedule"
+          fields={[
+            { name: "cronExpression", type: "string", required: true, description: <>Five fields, for example <code>0 9 * * 1-5</code>.</> },
+            { name: "timezone", type: "string", description: <>An IANA time zone such as <code>Europe/Berlin</code>. Default <code>UTC</code>.</> },
+            { name: "prompt", type: "string | null", description: "What the agent is told at each run, up to 20,000 characters. Left out, it gets a short default line." },
+            { name: "deliver", type: "object | null", description: <><code>&#123; channelId &#125;</code>: one of your <a href="#where-results-go">places</a>. <code>null</code> or left out, results are only saved on the agent&apos;s page.</> },
+            { name: "enabled", type: "boolean", description: <>Default <code>true</code>.</> },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/agents" \
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Morning brief",
+    "agentKind": "scheduled",
+    "systemPrompt": "You write a short brief of what changed overnight.",
+    "schedule": {
+      "cronExpression": "0 9 * * 1-5",
+      "timezone": "Europe/Berlin",
+      "prompt": "Summarise the changes merged yesterday.",
+      "deliver": { "channelId": "5b1c7e0a-..." }
+    }
+  }'`}
+        />
+        <p>The answer carries the schedule it made, without what the agent is told or where results go:</p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "agent": { "id": "8f0c2a4e-...", "agentKind": "scheduled", "...": "..." },
+  "schedule": {
+    "id": "c2d9e1a7-...",
+    "enabled": true,
+    "cronExpression": "0 9 * * 1-5",
+    "timezone": "Europe/Berlin",
+    "nextRunAt": "2026-10-09T07:00:00.000Z"
+  },
+  "message": "Agent created successfully"
+}`}
+        />
+        <p>
+          A schedule made this way is on, reads its times in UTC unless you say otherwise, tells the agent the date and time at
+          each run, tries once more after a failed run, and stops a run after five minutes. Change any of that with{" "}
+          <a href="#put-schedule">the schedule route</a>. A schedule that cannot be used answers <code>400</code>{" "}
+          <code>validation_failed</code> with a sentence under <code>schedule</code> or the part that is wrong:{" "}
+          <code>schedule.cronExpression</code> (times that cannot be read, or that never come), <code>schedule.timezone</code>,{" "}
+          <code>schedule.prompt</code>, <code>schedule.deliver.channelId</code> (a place that is not yours, or cannot receive
+          results). A <code>schedule</code> sent with another kind is refused with &quot;To create an agent with a schedule, set agentKind to scheduled. For another kind, create the agent first and add its schedule afterwards.&quot; An agent of any kind can be given a schedule later with <a href="#put-schedule">the schedule route</a>.
         </p>
 
         <h4 id="agent-kinds">Kinds of agent</h4>
@@ -202,7 +273,9 @@ export default function AgentsApiPage() {
         <p>
           The kind and its settings are stored with the agent, copied to a buyer&apos;s copy and recorded on each version.{" "}
           <code>scheduled.schedule</code> is a suggestion that travels with the agent: saving it starts no runs. To run an
-          agent at set times, create a scheduled task with the <Link href="/docs/api/workflows#scheduler">scheduler</Link>.
+          agent at set times, give it a schedule of its own: with <a href="#create-with-schedule">the create request</a> or{" "}
+          <a href="#put-schedule">the schedule route</a>. Its other scheduled tasks live in the{" "}
+          <Link href="/docs/api/workflows#scheduler">scheduler</Link>.
         </p>
 
         <h4 id="task-form">Task forms</h4>
@@ -268,6 +341,14 @@ export default function AgentsApiPage() {
           code={`{ "env": { "OPENAI_API_KEY": "sk-...", "OLD_TOKEN": null } }`}
         />
         <p>
+          Moving a scheduled agent&apos;s kind away from <code>scheduled</code> stops it running on its own: its schedule is
+          turned off in the same change, and the answer carries <code>&quot;schedulePaused&quot;: true</code> beside{" "}
+          <code>agent</code>. The schedule and its runs are kept, and setting the kind back turns nothing on. An agent with no
+          schedule, or one that is already off, answers without it. Restoring an older version through{" "}
+          <code>POST /api/versioning/agents/&#123;agentId&#125;/versions/&#123;version&#125;/rollback</code> follows the same
+          rule and carries the same field.
+        </p>
+        <p>
           <code>entrypoint</code> chooses what answers a chat, in the playground and on <code>/v1</code>:{" "}
           <code>&quot;chat&quot;</code> (the default) is the agent&apos;s prompt, model and tools;{" "}
           <code>&quot;graph&quot;</code> is the graph saved in the builder. Setting <code>&quot;graph&quot;</code> on an agent
@@ -316,7 +397,8 @@ export default function AgentsApiPage() {
 
       <Endpoint id="delete-agent" method="DELETE" path="/api/agents/{agentId}" auth="API key or session" title="Delete an agent">
         <p>
-          Stops the agent&apos;s running deployments and deletes it. Fires <code>agent.deleted</code>.
+          Stops the agent&apos;s running deployments and deletes it. Its own schedule goes with it, so nothing keeps firing.
+          Fires <code>agent.deleted</code>.
         </p>
       </Endpoint>
 
@@ -556,6 +638,37 @@ export default function AgentsApiPage() {
         </p>
       </Endpoint>
 
+      <Endpoint id="public-page" method="GET" path="/api/a/{handle}" auth="Public" title="Read a public page">
+        <p>
+          What an agent&apos;s page shows, found by its handle. <code>use</code> says how the page can be used right now and
+          carries one panel for the agent&apos;s kind: <code>chat</code>, <code>task</code> or <code>scheduled</code>.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "agent": { "name": "Morning brief", "handle": "morning-brief", "agentKind": "scheduled", "...": "..." },
+  "use": {
+    "state": "on",
+    "key": "wheels_pub_...",
+    "transcriptsStored": false,
+    "scheduled": {
+      "resultsPublic": true,
+      "latest": [
+        { "finishedAt": "2026-10-08T07:00:41.000Z", "text": "Yesterday: ..." }
+      ]
+    }
+  },
+  "...": "..."
+}`}
+        />
+        <p>
+          <code>latest</code> holds the agent&apos;s last results, newest first: at most 3, each cut at 8,000 characters, and
+          only while the owner shows results (<code>showResults</code> on the <a href="#set-public-link">public link</a>).
+          Otherwise <code>resultsPublic</code> is <code>false</code> and <code>latest</code> is empty. A result carries when
+          it finished and its text and nothing else: never where it was sent, and never a run that did not finish.
+        </p>
+      </Endpoint>
+
       <h3 id="agent-management-errors">Errors</h3>
       <p>
         The endpoints above answer errors as <code>&#123; error, message &#125;</code>. A request that cannot be accepted
@@ -594,6 +707,276 @@ export default function AgentsApiPage() {
           { status: <code>501</code>, code: <code>agent_gpu_unavailable</code>, when: <>A dedicated GPU for the agent cannot be started right now (<code>agentGpu.available</code> is <code>false</code> in <code>GET /api/capabilities</code>). Nothing is reserved or charged, and the agent keeps answering on its API.</> },
         ]}
       />
+
+      <h2 id="schedule-and-runs">Schedule and runs</h2>
+      <p>
+        An agent owns one schedule: when it runs, what it is told, and where the result goes. Every run is kept, so you can
+        read what the agent produced, why a run did not finish, and whether the result arrived. The schedule belongs to the
+        agent, so deleting the agent leaves nothing firing. Other scheduled tasks that use the agent stay on the{" "}
+        <Link href="/docs/api/workflows#scheduler">scheduler</Link>; <code>otherTasks</code> counts them.
+      </p>
+
+      <Endpoint id="get-schedule" method="GET" path="/api/agents/{agentId}/schedule" auth="API key or session" title="Read the schedule">
+        <CodeBlock
+          language="json"
+          code={`{
+  "schedule": {
+    "id": "c2d9e1a7-...",
+    "enabled": true,
+    "cronExpression": "0 9 * * 1-5",
+    "timezone": "Europe/Berlin",
+    "prompt": "Summarise yesterday's merged changes.",
+    "stampTime": true,
+    "deliver": { "channelId": "5b1c7e0a-...", "name": "Team Slack", "type": "slack" },
+    "timeoutSeconds": 300,
+    "maxRetries": 1,
+    "nextRunAt": "2026-10-09T07:00:00.000Z",
+    "lastRunAt": "2026-10-08T07:00:00.000Z",
+    "lastRunStatus": "success"
+  },
+  "suggested": { "schedule": { "cronExpression": "0 9 * * *", "timezone": "UTC" }, "prompt": "..." },
+  "otherTasks": 0,
+  "schedulerRunning": true
+}`}
+        />
+        <ul>
+          <li>
+            <code>schedule</code> is <code>null</code> until the agent has one. <code>cronExpression</code> is{" "}
+            <code>null</code> only for an older task that runs on an interval or once.
+          </li>
+          <li>
+            <code>stampTime</code> says whether the date and time, in the schedule&apos;s time zone, are told to the agent
+            ahead of its prompt at each run.
+          </li>
+          <li>
+            <code>deliver</code> is the place results go to, as an id, a name and a type; never its link or its address. A
+            place that was removed after it was chosen shows an empty <code>name</code> and the type <code>unknown</code>.
+          </li>
+          <li>
+            <code>suggested</code> is the times and the line a template or the creator suggested, or <code>null</code>. It
+            starts nothing.
+          </li>
+          <li>
+            <code>schedulerRunning</code> is <code>false</code> while nothing here fires schedules. Runs can still be
+            started by hand.
+          </li>
+        </ul>
+        <p>
+          An agent from another organization, or an id that is not an id, answers <code>404</code>.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="put-schedule" method="PUT" path="/api/agents/{agentId}/schedule" auth="API key or session" title="Set the schedule">
+        <p>Creates the schedule when the agent has none, and changes it otherwise. It answers what the read answers.</p>
+        <Fields
+          fields={[
+            { name: "enabled", type: "boolean", required: true, description: "Turn the schedule on or off." },
+            { name: "cronExpression", type: "string", required: true, description: <>Five fields, for example <code>0 9 * * 1-5</code>.</> },
+            { name: "timezone", type: "string", description: <>An IANA time zone such as <code>Europe/Berlin</code>. A new schedule uses <code>UTC</code>; an existing one keeps its zone.</> },
+            { name: "prompt", type: "string", description: "What the agent is told at each run, up to 20,000 characters. A new schedule without one gets a short default line." },
+            { name: "stampTime", type: "boolean", description: "Tell the agent the date and time at each run. On for a new schedule; an existing one keeps its setting." },
+            { name: "deliver", type: "object | null", description: <><code>&#123; channelId &#125;</code>: a <a href="#where-results-go">place</a> to send each result to. <code>null</code> removes it. Left out, the place stays as it is.</> },
+            { name: "timeoutSeconds", type: "integer", description: "A run is stopped after this long, 5 to 3,600. A new schedule uses 300, five minutes." },
+            { name: "maxRetries", type: "integer", description: "Tries after a failed run, 0 to 5. A new schedule uses 1." },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X PUT "$WHEELSAI_API_URL/api/agents/$AGENT_ID/schedule" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "enabled": true,
+    "cronExpression": "0 9 * * 1-5",
+    "timezone": "Europe/Berlin",
+    "deliver": { "channelId": "5b1c7e0a-..." }
+  }'`}
+        />
+        <DocTable
+          caption="Schedule refusals"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "code", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: <code>400</code>, code: <code>invalid_schedule</code>, when: <>The times cannot be read, the time zone is not one, or the schedule has no future run (turning it on needs one). <code>reason</code> and <code>field</code> say which.</> },
+            { status: <code>400</code>, code: <code>validation_failed</code>, when: <><code>fields</code> says which part and why: a prompt that is too long, a time limit or number of tries out of range, a place that is not yours or cannot receive results, email while email is unavailable.</> },
+            { status: <code>404</code>, code: <code>not_found</code>, when: "No agent with that id in your organization." },
+            { status: <code>409</code>, code: <code>schedule_changed</code>, when: "The schedule was changed somewhere else since it was read. Nothing is written; read it again and retry." },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="run-schedule" method="POST" path="/api/agents/{agentId}/schedule/run" auth="API key with the agents:invoke scope, or session" title="Run it now">
+        <p>
+          Starts one run now and waits for it. A run started here is billed, limited, recorded and delivered exactly as a
+          timed run is, within the schedule&apos;s time limit, and is not tried again if it fails. Answers <code>201</code> with the run:
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "run": {
+    "id": "e4a7b0c2-...",
+    "status": "finished",
+    "startedAt": "2026-10-08T12:00:00.000Z",
+    "finishedAt": "2026-10-08T12:00:09.000Z",
+    "durationMs": 9120,
+    "startedBy": "person",
+    "text": "Yesterday: ...",
+    "failure": null,
+    "delivery": []
+  }
+}`}
+        />
+        <p>
+          <code>404</code> <code>schedule_not_found</code> when the agent has no schedule, and <code>409</code>{" "}
+          <code>already_running</code> while a run is in flight. A key without <code>agents:invoke</code> answers{" "}
+          <code>403</code> <code>missing_scope</code>.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="list-runs" method="GET" path="/api/agents/{agentId}/runs" auth="API key or session" title="List the runs">
+        <p>
+          The schedule&apos;s runs, newest first, whoever started them. <code>limit</code> is 1 to 100 (default 20).{" "}
+          <code>before</code> is the id of the last run you already have: the page after it comes back. An agent with no
+          schedule has no runs.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "runs": [
+    {
+      "id": "e4a7b0c2-...",
+      "status": "finished",
+      "startedAt": "2026-10-08T07:00:00.000Z",
+      "finishedAt": "2026-10-08T07:00:41.000Z",
+      "durationMs": 41200,
+      "startedBy": "schedule",
+      "text": "Yesterday: ...",
+      "failure": null,
+      "delivery": [
+        { "channelId": "5b1c7e0a-...", "name": "Team Slack", "type": "slack", "status": "sent", "at": "2026-10-08T07:00:42.000Z" }
+      ]
+    }
+  ],
+  "hasMore": true
+}`}
+        />
+        <DocTable
+          caption="A run's status"
+          columns={[
+            { key: "status", label: "status" },
+            { key: "means", label: "Meaning" },
+          ]}
+          rows={[
+            { status: <code>running</code>, means: <>It has not ended. <code>finishedAt</code> and <code>durationMs</code> are <code>null</code>.</> },
+            { status: <code>finished</code>, means: <>It has a result, in <code>text</code>.</> },
+            { status: <code>did_not_finish</code>, means: <><code>failure</code> says why in one sentence: it ran past its time limit, it was interrupted, a limit was reached, or no model was available.</> },
+            { status: <code>stopped</code>, means: "Someone stopped it." },
+          ]}
+        />
+        <ul>
+          <li>
+            <code>startedBy</code> is <code>schedule</code> for a timed run and <code>person</code> for a run started by hand.
+          </li>
+          <li>
+            <code>delivery</code> lists every try to send the result, oldest first: the place&apos;s id, name and type, a{" "}
+            <code>status</code> of <code>sent</code>, <code>failed</code> or <code>skipped</code>, a <code>reason</code>{" "}
+            in plain words unless it was sent, and when it was tried. It never carries a link or an address.
+          </li>
+          <li>
+            A delivery that fails never changes the run&apos;s <code>status</code> and never runs the agent again. The
+            result stays on the run.
+          </li>
+        </ul>
+      </Endpoint>
+
+      <Endpoint id="resend-run" method="POST" path="/api/agents/{agentId}/runs/{runId}/deliver" auth="API key or session" title="Send a result again">
+        <p>
+          Posts the saved result of a finished run to the place the schedule names now, and adds how that went to the
+          run&apos;s <code>delivery</code>. It runs nothing: no model is called and nothing is charged. Answers{" "}
+          <code>200</code> with the run.
+        </p>
+        <DocTable
+          caption="Send again refusals"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "code", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: <code>400</code>, code: <code>no_place</code>, when: "The schedule names no place. Choose where results go first." },
+            { status: <code>404</code>, code: <code>not_found</code>, when: "No such agent or run in your organization, or the run belongs to another schedule." },
+            { status: <code>409</code>, code: <code>run_not_finished</code>, when: "Only a finished run has a result to send." },
+            { status: <code>502</code>, code: <code>delivery_failed</code>, when: <>The place did not take it. The try is recorded all the same, and the answer carries <code>error</code>, <code>message</code> and the <code>run</code> as it now is.</> },
+          ]}
+        />
+      </Endpoint>
+
+      <h2 id="where-results-go">Where results go</h2>
+      <p>
+        A schedule sends each finished result to one place, and always keeps it on the run as well. A place is a Slack or
+        Discord channel, which you add by pasting the link the service gave you, or your own email. A place is its id, its
+        name and its type: no answer ever returns a link or an address.
+      </p>
+
+      <Endpoint id="list-destinations" method="GET" path="/api/destinations" auth="API key or session" title="List the places">
+        <p>
+          The places your organization has that results can go to, as an array of <code>&#123; channelId, name, type, mine &#125;</code>.{" "}
+          <code>type</code> is <code>slack</code>, <code>discord</code>, <code>email</code> or <code>webhook</code>. <code>mine</code> is{" "}
+          <code>true</code> only for an email place that goes to your own address, and always <code>false</code> for an API
+          key and for Slack, Discord and webhook places. Pass a <code>channelId</code> as <code>deliver</code> on a schedule.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="create-destination" method="POST" path="/api/destinations" auth="API key or session" title="Add a place">
+        <Fields
+          fields={[
+            { name: "type", type: "enum", required: true, description: <><code>slack</code>, <code>discord</code> or <code>email</code>.</> },
+            { name: "link", type: "string", description: <>For <code>slack</code> and <code>discord</code>: the https link the service gave you for the channel. Not for <code>email</code>.</> },
+            { name: "name", type: "string", description: <>Up to 80 characters. Left out, it is named after the service: <code>Slack</code>, then <code>Slack 2</code>; an email place is <code>Email to &lt;display name&gt;</code>, or <code>Email to a teammate</code>.</> },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/destinations" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "type": "slack", "link": "https://hooks.slack.com/services/T000/B000/XXXX", "name": "Team Slack" }'`}
+        />
+        <p>
+          Answers <code>201</code> with <code>&#123; channelId, name, type, mine &#125;</code>. Email takes no address: it is the
+          verified address of the person signed in, so it can only be chosen with a session, and choosing it again answers{" "}
+          <code>200</code> with the place that already exists. The link is checked before anything is saved, and is never
+          shown again.
+        </p>
+        <DocTable
+          caption="Place refusals"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "code", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: <code>400</code>, code: <code>invalid_link</code>, when: <>The link is not that service&apos;s channel link, or <code>email</code> was sent with one.</> },
+            { status: <code>400</code>, code: <code>email_needs_sign_in</code>, when: "Email with an API key. Choose it in the dashboard." },
+            { status: <code>400</code>, code: <code>email_not_verified</code>, when: "The signed-in person has not verified their email address." },
+            { status: <code>400</code>, code: <code>validation_failed</code>, when: <>The request itself: another <code>type</code>, or a name that is empty or too long.</> },
+            { status: <code>409</code>, code: <code>name_taken</code>, when: "A place with this name already exists." },
+            { status: <code>501</code>, code: <code>email_not_configured</code>, when: "Email delivery is temporarily unavailable. Results are still saved on the run." },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="test-destination" method="POST" path="/api/destinations/{channelId}/test" auth="API key or session" title="Send a test message">
+        <p>
+          Sends a short test message to the place and answers <code>&#123; sent: true &#125;</code>. Another
+          organization&apos;s place, or an id that is not an id, answers <code>404</code>; a place that is turned off{" "}
+          <code>400</code> <code>place_turned_off</code>; a place that did not take the message <code>502</code>{" "}
+          <code>delivery_failed</code>, with nothing of the place&apos;s link in the answer.
+        </p>
+      </Endpoint>
 
       <h2 id="agent-api">Agent API (/v1)</h2>
       <p>

@@ -1149,6 +1149,25 @@ export interface CreateAgentInput {
   templateId?: string;
   /** Left out, it is made from the name. Either way it is made unique. */
   slug?: string;
+  /**
+   * The agent's own schedule, made with the agent. Only with `agentKind: "scheduled"`
+   * (or a template of that kind). Left out, the agent has no schedule yet.
+   */
+  schedule?: CreateAgentSchedule;
+}
+
+/** The schedule a create may carry. Time limit and tries keep their defaults; change them with `agentsApi.putSchedule`. */
+export interface CreateAgentSchedule {
+  /** Five-field cron, for example `0 9 * * 1-5`. */
+  cronExpression: string;
+  /** An IANA time zone such as `Europe/Berlin`. Default `UTC`. */
+  timezone?: string;
+  /** What the agent is told at each run. Left out, it gets the default line. */
+  prompt?: string | null;
+  /** Where results go: one of `destinationsApi.list`. null or left out, results are only saved on the agent's page. */
+  deliver?: { channelId: string } | null;
+  /** Default `true`. */
+  enabled?: boolean;
 }
 
 /** What `PATCH /api/agents/:id` accepts: any part of a create but the template and the slug. */
@@ -1166,6 +1185,24 @@ export interface CreatedAgent {
   apiEndpoint: string | null;
   openaiBaseUrl: string | null;
   openaiModel: string;
+}
+
+/** The agent's own schedule as a create answers it. Never what it is told or where results go. */
+export interface CreatedAgentSchedule {
+  /** The scheduled task's id. */
+  id: string;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string;
+  nextRunAt: string | null;
+}
+
+/** The 201 of `POST /api/agents` and of `POST /api/templates/:id/use`. */
+export interface CreateAgentResult {
+  agent: CreatedAgent;
+  /** Always present: null when the agent was created without a schedule. */
+  schedule: CreatedAgentSchedule | null;
+  message: string;
 }
 
 export interface DeployAgentInput {
@@ -1247,22 +1284,155 @@ export interface AgentRunResult {
   billing: { listingTitle: string; chargedCents: number; creatorCents: number } | null;
 }
 
+/** A place results can go to. Never its link or its address. */
+export interface Destination {
+  channelId: string;
+  /** "" when the place was removed after it was chosen. */
+  name: string;
+  /** `slack`, `discord`, `email` or `webhook`; `unknown` when the place was removed after it was chosen. */
+  type: string;
+  /** true only for an email place that goes to the signed-in person's own address; always false for an API key and for the other types. */
+  mine: boolean;
+}
+
+/** The body of `destinationsApi.create`. Email takes no address: it is the signed-in person's own verified address. */
+export interface CreateDestinationInput {
+  type: "slack" | "discord" | "email";
+  /** The pasted Slack or Discord link. Not for `email`. */
+  link?: string;
+  /** Left out, it is named after the service ("Slack", "Slack 2"; an email place is "Email to <display name>", or "Email to a teammate"). */
+  name?: string;
+}
+
+/** An agent's own schedule, as the agent page reads and changes it. */
+export interface ScheduleView {
+  id: string;
+  enabled: boolean;
+  /** null only for an older task that runs on an interval or once. */
+  cronExpression: string | null;
+  timezone: string;
+  /** What the agent is told at each run. */
+  prompt: string;
+  /** Whether the date and time are told to the agent at each run. */
+  stampTime: boolean;
+  deliver: Omit<Destination, "mine"> | null;
+  /** A run is stopped after this many seconds (5 to 3,600). */
+  timeoutSeconds: number;
+  /** Tries after a failed run (0 to 5). */
+  maxRetries: number;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+}
+
+/** `GET` and `PUT /api/agents/:id/schedule`. */
+export interface ScheduleAnswer {
+  /** null until the agent has one. */
+  schedule: ScheduleView | null;
+  /** The times and the line a template or the creator suggested. */
+  suggested: { schedule?: { cronExpression: string; timezone?: string }; prompt?: string } | null;
+  /** The agent's other scheduled tasks; they are on the Scheduler page. */
+  otherTasks: number;
+  /** false while no worker here fires schedules; runs can still be started by hand. */
+  schedulerRunning: boolean;
+}
+
+/** What `PUT /api/agents/:id/schedule` accepts. It creates the schedule, or changes it. */
+export interface ScheduleInput {
+  enabled: boolean;
+  cronExpression: string;
+  timezone?: string;
+  prompt?: string;
+  stampTime?: boolean;
+  /** A place from `destinationsApi.list`; null clears it; left out, it is kept as it is. */
+  deliver?: { channelId: string } | null;
+  /** 5 to 3,600. */
+  timeoutSeconds?: number;
+  /** 0 to 5. */
+  maxRetries?: number;
+}
+
+/** `running`: not done yet. `finished`: it has a result. `did_not_finish`: see `failure`. `stopped`: someone stopped it. */
+export type RunStatus = "running" | "finished" | "did_not_finish" | "stopped";
+
+/** How sending one result to one place went. */
+export interface RunDelivery {
+  channelId: string;
+  name: string;
+  type: string;
+  status: "sent" | "failed" | "skipped";
+  /** Present unless `status` is `sent`. */
+  reason?: string;
+  /** When it was tried (ISO). */
+  at: string;
+}
+
+/** One run of an agent's own schedule. */
+export interface RunView {
+  id: string;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  startedBy: "schedule" | "person";
+  /** The answer of a finished run; null otherwise. */
+  text: string | null;
+  /** One plain sentence when the run did not finish; null otherwise. */
+  failure: string | null;
+  /** Every try to send the result, oldest first. A failed delivery never changes `status`. */
+  delivery: RunDelivery[];
+}
+
+/** `GET /api/agents/:id/runs`, newest first. */
+export interface RunsPage {
+  runs: RunView[];
+  hasMore: boolean;
+}
+
 export const agentsApi = {
   list: () => api<{ agents: Agent[]; total: number }>("/api/agents"),
 
   get: (id: string) => api<{ agent: AgentDetail }>(`/api/agents/${id}`),
 
   create: (input: CreateAgentInput) =>
-    api<{ agent: CreatedAgent; message: string }>(
+    api<CreateAgentResult>(
       "/api/agents",
       { method: "POST", body: input }
     ),
 
+  /** `schedulePaused` is `true` only when this change turned the agent's own schedule off by moving its kind away from `scheduled`. */
   update: (id: string, updates: UpdateAgentInput) =>
-    api<{ agent: AgentDetail }>(`/api/agents/${id}`, {
+    api<{ agent: AgentDetail; schedulePaused?: true }>(`/api/agents/${id}`, {
       method: "PATCH",
       body: updates,
     }),
+
+  getSchedule: (id: string) => api<ScheduleAnswer>(`/api/agents/${id}/schedule`),
+
+  /** Creates the schedule, or changes it. 409 `schedule_changed`: it was changed somewhere else; reload it. */
+  putSchedule: (id: string, body: ScheduleInput) =>
+    api<ScheduleAnswer>(`/api/agents/${id}/schedule`, { method: "PUT", body }),
+
+  /** One run now, billed and delivered as a timed run is. 409 `already_running`; 404 `schedule_not_found`. */
+  runScheduleNow: (id: string) =>
+    api<{ run: RunView }>(`/api/agents/${id}/schedule/run`, { method: "POST" }),
+
+  /** Newest first. `before` is the id of the last run already shown. */
+  listRuns: (id: string, params?: { limit?: number; before?: string }) => {
+    const sp = new URLSearchParams();
+    if (params?.limit) sp.set("limit", params.limit.toString());
+    if (params?.before) sp.set("before", params.before);
+    const q = sp.toString();
+    return api<RunsPage>(`/api/agents/${id}/runs${q ? `?${q}` : ""}`);
+  },
+
+  /**
+   * "Send again": posts the saved result of a finished run to the place the
+   * schedule names now. Runs nothing. A place that does not take it answers
+   * 502 `delivery_failed` with the run.
+   */
+  resendRun: (id: string, runId: string) =>
+    api<{ run: RunView }>(`/api/agents/${id}/runs/${runId}/deliver`, { method: "POST" }),
 
   /**
    * Run a task agent on one filled-in form and wait for the result (the JSON
@@ -1313,6 +1483,19 @@ export const agentsApi = {
       method: "POST",
       body: { githubUrl },
     }),
+};
+
+export const destinationsApi = {
+  /** The places results can go to, by id, name and type. No answer carries a link or an address. */
+  list: () => api<Destination[]>("/api/destinations"),
+
+  /** Slack or Discord by pasted link, or `email` for the signed-in person's own verified address (not with an API key). Answers 200 when that email place already exists. */
+  create: (input: CreateDestinationInput) =>
+    api<Destination>("/api/destinations", { method: "POST", body: input }),
+
+  /** Sends a short test message. */
+  test: (channelId: string) =>
+    api<{ sent: true }>(`/api/destinations/${channelId}/test`, { method: "POST" }),
 };
 
 // ============================================
@@ -1966,6 +2149,7 @@ export type PublicAgentUse = PublicAgentUseBase &
         scheduled?: never;
       }
     | {
+        /** `latest`: at most 3 results of at most 8,000 characters, newest first, only while `resultsPublic`; otherwise empty. */
         scheduled: { resultsPublic: boolean; latest: Array<{ finishedAt: string; text: string }> };
         chat?: never;
         task?: never;
@@ -3633,8 +3817,9 @@ export const versioningApi = {
     ),
 
   // Rollback to a specific version
+  // `schedulePaused` is `true` only when the rollback turned the agent's own schedule off (its kind moved away from `scheduled`).
   rollbackToVersion: (agentId: string, version: string) =>
-    api<AgentVersion>(
+    api<AgentVersion & { schedulePaused?: true }>(
       `/api/versioning/agents/${agentId}/versions/${version}/rollback`,
       { method: "POST" }
     ),
@@ -5291,7 +5476,7 @@ export const templateApi = {
     // Only a name is needed; the slug is optional and made unique. The route
     // answers what POST /api/agents answers (201) — the caller redirects to
     // the new agent instead of stranding the user on the gallery (INT-B2).
-    api<{ agent: CreatedAgent; message: string }>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
+    api<CreateAgentResult>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
 };
 
 // ============================================

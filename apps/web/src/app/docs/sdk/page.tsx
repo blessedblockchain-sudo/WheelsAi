@@ -18,6 +18,7 @@ const toc = [
   { id: "sdk-methods", title: "Resources and methods", sub: true },
   { id: "sdk-create-agent", title: "Creating an agent", sub: true },
   { id: "sdk-run-task", title: "Running a task and sharing it", sub: true },
+  { id: "sdk-schedule", title: "Running on a schedule", sub: true },
   { id: "sdk-jobs", title: "Hiring an offering", sub: true },
   { id: "sdk-errors", title: "Errors and timeouts", sub: true },
   { id: "sdk-agent-chat", title: "Talking to an agent", sub: true },
@@ -157,7 +158,9 @@ if (agentGpu.available) {
                 <code>usage(id, period)</code>, <code>delete</code>, <code>deploy</code>, <code>getDeployment</code>,{" "}
                 <code>stopDeployment</code>, <code>deploymentLogs</code>, <code>chatCompletion(agentSlug, request)</code>,{" "}
                 <code>run(id, input, options?)</code>, <code>publicLink.get(id)</code>,{" "}
-                <code>publicLink.set(id, body)</code>, <code>playgroundChat</code>, <code>playgroundModels</code>,{" "}
+                <code>publicLink.set(id, body)</code>, <code>schedule.get(id)</code>, <code>schedule.set(id, body)</code>,{" "}
+                <code>schedule.runNow(id)</code>, <code>runs.list(id, params?)</code>, <code>runs.resend(id, runId)</code>,{" "}
+                <code>playgroundChat</code>, <code>playgroundModels</code>,{" "}
                 <code>getGraph</code>, <code>saveGraph</code>, <code>validateGraph</code>
               </>
             ),
@@ -168,9 +171,19 @@ if (agentGpu.available) {
                 <code>/api/agents/&#123;id&#125;/deployments/&#123;deploymentId&#125;</code>,{" "}
                 <code>POST /api/agents/&#123;id&#125;/run</code>,{" "}
                 <code>/api/agents/&#123;id&#125;/public-link</code>,{" "}
+                <code>/api/agents/&#123;id&#125;/schedule</code>, <code>/api/agents/&#123;id&#125;/runs</code>,{" "}
                 <code>POST /v1/agents/&#123;slug&#125;/chat/completions</code>
               </>
             ),
+          },
+          {
+            resource: <code>destinations</code>,
+            methods: (
+              <>
+                <code>list</code>, <code>create(&#123; type, link?, name? &#125;)</code>, <code>test(channelId)</code>
+              </>
+            ),
+            endpoint: <code>/api/destinations</code>,
           },
           {
             resource: <code>deployments</code>,
@@ -392,6 +405,50 @@ console.log(link.url, link.usedToday);`}
         <code>off</code> (a read can also give <code>view_only</code>); <code>set</code> also takes <code>dailyCap</code>,{" "}
         <code>handle</code> and <code>showResults</code>, and answers <code>409</code> <code>handle_taken</code> when another
         agent has the address. See <Link href="/docs/api/agents#public-link">the public link</Link>.
+      </p>
+
+      <h3 id="sdk-schedule">Running on a schedule</h3>
+      <p>
+        A <code>scheduled</code> agent runs on its own and keeps every run. <code>agents.create</code> takes a{" "}
+        <code>schedule</code> (with <code>agentKind: &quot;scheduled&quot;</code>) and answers with the schedule it made, or{" "}
+        <code>null</code>; <code>agents.schedule.get</code> and <code>agents.schedule.set</code> read and change it;{" "}
+        <code>agents.schedule.runNow</code> runs it once now; <code>agents.runs.list</code> pages through its runs, newest
+        first; <code>agents.runs.resend</code> posts a finished run&apos;s saved result again and runs nothing.{" "}
+        <code>destinations</code> holds the places results can go to. See{" "}
+        <Link href="/docs/api/agents#schedule-and-runs">schedule and runs</Link>.
+      </p>
+      <CodeBlock
+        language="ts"
+        code={`// Slack or Discord by the link the service gave you. Email is the signed-in person's own
+// verified address, so an API key cannot choose it.
+const place = await wheels.destinations.create({ type: "slack", link: slackLink, name: "Team Slack" });
+await wheels.destinations.test(place.channelId); // { sent: true }
+
+const { agent, schedule } = await wheels.agents.create({
+  name: "Morning brief",
+  agentKind: "scheduled",
+  schedule: { cronExpression: "0 9 * * 1-5", timezone: "Europe/Berlin", deliver: { channelId: place.channelId } },
+});
+console.log(schedule?.nextRunAt);
+
+await wheels.agents.schedule.set(agent.id, { enabled: true, cronExpression: "0 8 * * *", maxRetries: 2 });
+
+const { run } = await wheels.agents.schedule.runNow(agent.id); // a key needs agents:invoke
+const { runs, hasMore } = await wheels.agents.runs.list(agent.id, { limit: 20 });
+for (const r of runs) console.log(r.status, r.text ?? r.failure, r.delivery.map((d) => d.status));
+
+try {
+  await wheels.agents.runs.resend(agent.id, run.id);
+} catch (err) {
+  // 502 delivery_failed: the place did not take it. The run is in err.data.run.
+  if (err instanceof WheelsAIError && err.code === "delivery_failed") console.log(err.message);
+}`}
+      />
+      <p>
+        A run&apos;s <code>status</code> is <code>running</code>, <code>finished</code>, <code>did_not_finish</code> or{" "}
+        <code>stopped</code>. A failed delivery never changes a run and never runs the agent again.{" "}
+        <code>agents.update</code> and <code>versioning.rollback</code> answer <code>schedulePaused: true</code> when they
+        turned the agent&apos;s schedule off by moving its kind away from <code>scheduled</code>.
       </p>
 
       <h3 id="sdk-jobs">Hiring an offering</h3>

@@ -523,7 +523,7 @@ console.log(reply.choices[0].message.content);`}
             { key: "payload", label: "payload" },
           ]}
           rows={[
-            { type: <code>agent_run</code>, needs: "agentId", payload: <><code>prompt</code>. Sends it to the agent and records the reply. <code>inference</code> is an older name for the same thing.</> },
+            { type: <code>agent_run</code>, needs: "agentId", payload: <><code>prompt</code>, <code>stampTime?</code> (<code>true</code> puts the run&apos;s date and time, in the task&apos;s time zone, ahead of the prompt; left out, it is off), <code>deliver?</code> (<code>&#123; alertChannelId &#125;</code>: send the finished result to one of your alert channels; the result is always saved on the run as well). Sends the prompt to the agent and records the reply. <code>inference</code> is an older name for the same thing, with the same fields. An agent&apos;s own schedule is a task of this type; see <Link href="/docs/api/agents#schedule-and-runs">schedule and runs</Link>.</> },
             { type: <code>workflow_run</code>, needs: "orchestrationId", payload: <><code>prompt?</code>, <code>input?</code>. Starts a run of the workflow; the execution follows the run&apos;s outcome. Not retried.</> },
             { type: <code>webhook</code>, needs: "nothing", payload: <><code>url</code>, <code>body?</code>, <code>headers?</code>. POSTs JSON that also carries <code>taskId</code>, <code>executionId</code> and <code>attempt</code>.</> },
             { type: <code>data_sync</code>, needs: "a knowledge base, or an agent that has one", payload: <><code>sources</code> (1 to 10 <code>&#123; url, title? &#125;</code>), <code>knowledgeBaseId?</code>, <code>maxBytes?</code>. Adds new content, replaces changed content, leaves unchanged content alone.</> },
@@ -617,6 +617,7 @@ console.log(reply.choices[0].message.content);`}
           { event: <code>workflow.completed</code>, when: "A workflow run completes." },
           { event: <code>workflow.failed</code>, when: "A workflow run fails or times out, however it was started. A cancelled run sends nothing." },
           { event: <code>scheduled_task.failed</code>, when: "A scheduled task fails, once per firing, after its last attempt. (A scheduled workflow run that fails sends workflow.failed.)" },
+          { event: <code>scheduled_task.completed</code>, when: "A scheduled task finishes with a result, whether its schedule or a person started it. Its data carries the first 2,000 characters of the answer." },
           { event: <code>report.generated</code>, when: <>A report task that asks for it with <code>deliver.webhookEvent</code> finishes.</> },
         ]}
       />

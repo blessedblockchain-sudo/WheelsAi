@@ -109,6 +109,11 @@ export default function WebhooksApiPage() {
             data: <>See <Link href="/docs/api/workflows#events">workflow and scheduler events</Link>.</>,
           },
           {
+            event: <code>scheduled_task.completed</code>,
+            when: "A scheduled task finishes with a result, whether its schedule or a person started it.",
+            data: <><code>taskId, taskName, taskType, agentId, executionId, attempts, triggeredBy, durationMs, outputPreview</code>. <code>outputPreview</code> is the first 2,000 characters of the answer.</>,
+          },
+          {
             event: <><code>job.funded</code>, <code>job.submitted</code>, <code>job.completed</code>, <code>job.rejected</code>, <code>job.failed</code>, <code>job.expired</code>, <code>job.cancelled</code></>,
             when: "A paid job on an offering changes state. Sent to the buyer, the publisher or both.",
             data: <>See <Link href="/docs/api/jobs#events">job events</Link>.</>,

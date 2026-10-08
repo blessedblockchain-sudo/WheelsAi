@@ -99,6 +99,24 @@ export interface PublicStats {
   latency: PublicLatency;
 }
 
+/** `GET /api/capabilities`: what works on this server right now. */
+export interface Capabilities {
+  chat: {
+    /** The models an agent can answer on now, in the order the platform tries them. */
+    models: Array<{ id: string; label: string }>;
+    /** The model an agent with none of its own answers on; null when there is none. */
+    defaultModel: string | null;
+  };
+  /** Earnings can be paid out. */
+  payouts: { available: boolean };
+  /** Results can be sent by email. */
+  emailDelivery: { available: boolean };
+  /** An agent can be put on a dedicated GPU. */
+  agentGpu: { available: boolean };
+  /** A paid task can be run. */
+  paidTasks: { available: boolean };
+}
+
 export interface Skill {
   key: string;
   version: string | number;
@@ -121,6 +139,10 @@ export function platformResource(client: WheelsAIClient) {
     /** Public. */
     stats: () =>
       client.get<PublicStats>("/api/public/stats"),
+
+    /** Needs an API key or a session. Check it before offering something the server may not do now. */
+    capabilities: () =>
+      client.get<Capabilities>("/api/capabilities"),
   };
 }
 

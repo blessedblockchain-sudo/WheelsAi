@@ -13,6 +13,7 @@ export {
 } from "./auth.js";
 export {
   agentsResource,
+  AGENT_KINDS,
   type Agent,
   type AgentDetail,
   type AgentDeployment,
@@ -22,6 +23,7 @@ export {
   type AgentUsagePeriod,
   type AgentUsageSummary,
   type AgentFramework,
+  type AgentKind,
   type AgentLatestDeployment,
   type AgentModelConfig,
   type AgentSourceType,
@@ -32,6 +34,12 @@ export {
   type GraphNode,
   type GraphValidation,
   type CreateAgentInput,
+  type CreatedAgent,
+  type KindConfig,
+  type KindConfigInput,
+  type TaskField,
+  type TaskFieldInput,
+  type TaskFieldType,
   type UpdateAgentInput,
   type DeployAgentInput,
   type PlaygroundChatResponse,
@@ -122,6 +130,7 @@ export { openclawResource, type OpenClawChannel, type OpenClawDeployment } from 
 export {
   platformResource,
   skillsResource,
+  type Capabilities,
   type OverallStatus,
   type PlatformStatus,
   type PublicStats,

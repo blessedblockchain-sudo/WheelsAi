@@ -36,6 +36,17 @@ describe("defaultListingFields", () => {
     });
   });
 
+  it("the fallback line says how a task agent and a scheduled agent are used", () => {
+    assert.equal(
+      defaultListingFields(agent({ description: null, agentKind: "task" })).shortDescription,
+      "My Support Bot: a custom agent that does a task you give it, built on WheelsAI.",
+    );
+    assert.equal(
+      defaultListingFields(agent({ description: null, agentKind: "scheduled" })).shortDescription,
+      "My Support Bot: a custom agent that runs on its own, built on WheelsAI.",
+    );
+  });
+
   it("truncates a long description to the API's 280 characters", () => {
     const fields = defaultListingFields(agent({ description: "x".repeat(500) }));
     assert.equal(fields.shortDescription.length, 280);

@@ -13,13 +13,75 @@ const wheels = new WheelsAI({
   apiKey: process.env.WHEELSAI_API_KEY, // wheels_live_...; sent as `Authorization: Bearer`
 });
 
-const { agents } = await wheels.agents.list();
-const agent = await wheels.agents.resolve("my-support-bot"); // slug or id, one request
+// Only a name is needed. The agent's OpenAI-compatible API is on as soon as it exists.
+const { agent } = await wheels.agents.create({ name: "My support bot" });
+const reply = await wheels.agents.chatCompletion(agent.slug, {
+  messages: [{ role: "user", content: "How long do refunds take?" }],
+});
 
-const tiers = await wheels.models.gpuTiers();                // the GPU tiers open for deployment now
-const { deployment } = await wheels.agents.deploy(agent!.id, { gpuTier: tiers[0]!.id });
-const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deployment.id);
+const { agents } = await wheels.agents.list();
+const found = await wheels.agents.resolve("my-support-bot"); // slug or id, one request
+
+// A dedicated GPU is optional. Ask what the server can do before starting one.
+const { agentGpu } = await wheels.platform.capabilities();
+if (agentGpu.available) {
+  const tiers = await wheels.models.gpuTiers();              // the GPU tiers open for deployment now
+  const { deployment } = await wheels.agents.deploy(agent.id, { gpuTier: tiers[0]!.id });
+  const { deployment: row } = await wheels.agents.getDeployment(agent.id, deployment.id);
+}
 ```
+
+When `agentGpu.available` is `false`, `agents.deploy` throws a `WheelsAIError` with status 501
+and code `agent_gpu_unavailable`. Nothing is reserved or charged, and the agent keeps answering
+on its API.
+
+## Creating an agent
+
+Only a name is needed. An agent is one of three kinds, which decides how people use it:
+`conversation` (they talk to it; the default), `task` (made for one request in and one result
+back, with a form that says what a request holds) or `scheduled` (made to run on its own at set
+times). Every kind still answers a chat.
+
+```ts
+const { agent } = await wheels.agents.create({ name: "Release notes helper" });
+// agent: { id, name, slug, framework, agentKind, apiEndpoint, openaiBaseUrl, openaiModel }
+
+// A task agent with its form. A question's `key` is its name in code; left out, it is made
+// from the label ("Code to review" -> code_to_review) and then kept.
+await wheels.agents.create({
+  name: "Code review",
+  agentKind: "task",
+  systemPrompt: "Review the code you are given and list the problems, most serious first.",
+  kindConfig: {
+    task: {
+      fields: [
+        { label: "Code to review", type: "long_text", required: true, help: "Paste the code or the diff." },
+        { label: "What to look for", type: "choice", options: ["Everything", "Bugs", "Security"] },
+      ],
+    },
+  },
+});
+
+// From a template: its values are the defaults, and what you send replaces them field by field.
+await wheels.agents.create({ name: "Support desk", templateId });
+
+// Change the kind later. Settings are kept per kind, so changing back loses nothing.
+// The schedule here is a suggestion stored with the agent: saving it starts no runs.
+await wheels.agents.update(agent.id, {
+  agentKind: "scheduled",
+  kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *", timezone: "UTC" } } },
+});
+```
+
+A form has 1 to 12 questions of type `short_text`, `long_text`, `number`, `choice` (2 to 50
+`options`), `yes_no`, `link` or `list`. Inside `kindConfig`, a key you send (`task` or
+`scheduled`) replaces that key and the other stays; `null` removes it. `agents.list()`,
+`agents.get()`, marketplace listings (`listing.agent.agentKind`) and versions carry the kind;
+a rollback restores the kind and settings a version recorded.
+
+`platform.capabilities()` says what the server can do right now: the models an agent can answer
+on (`chat.models`, `chat.defaultModel`) and whether `payouts`, `emailDelivery`, `agentGpu` and
+`paidTasks` are `available`.
 
 ## Talking to an agent
 
@@ -123,9 +185,12 @@ user too, and answer an opaque `404` to a key.
 ## Errors
 
 Every failure throws a `WheelsAIError`: `status` (the HTTP status, or `0` for a network error or
-timeout), `message` (the API's `message` or `error`, with zod field errors spelled out), `code`
+timeout), `message` (the API's `message` or `error`, with field errors spelled out), `code`
 (the API's `error` code, e.g. `insufficient_credits`) and `data` (the parsed body, which carries
 extras such as `requiredCents` or a token-gated listing's `tokenSymbol` and `mintAddress`).
+A request the API cannot accept answers 400 `validation_failed`: `message` is the first problem as
+a plain sentence, and `data.fields` has one sentence per field, keyed by its path (`name`,
+`tools[1].type`, `kindConfig.task.fields[0].label`).
 The `/v1` API answers in OpenAI's shape, `{ error: { message, type, param, code } }`; `message`
 and `code` are read from there too (e.g. `agent_not_found`, `plan_limit_reached`).
 Requests time out after 30 seconds (`timeoutMs`); `agents.chatCompletion`, `agents.playgroundChat`,
@@ -141,7 +206,7 @@ refused before anything is sent, with an error that does not repeat it.
 `auth`, `agents`, `deployments` (model deployments), `models`, `billing`, `marketplace`,
 `inference` (OpenAI-compatible `/v1`), `workflows` (definitions are read-only here: `list`, `get`,
 `run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
-(`/api/status`, `/api/public/stats`) and `skills`. Billing amounts are dollars, as the API
+(`/api/status`, `/api/public/stats`, `/api/capabilities`) and `skills`. Billing amounts are dollars, as the API
 returns them. To stop an agent's deployment use `agents.stopDeployment`; to buy credits, use
 `billing.checkout`.
 

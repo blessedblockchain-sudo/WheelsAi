@@ -4,6 +4,68 @@ import type { ChatCompletionRequest, ChatCompletionResponse } from "./inference.
 export type AgentFramework = "mastra" | "langchain" | "autogen" | "elizaos" | "crewai" | "custom";
 export type AgentSourceType = "inline" | "github" | "ipfs";
 
+/**
+ * How people use an agent: they talk to it (`conversation`), they give it a task by
+ * filling in a short form and get one result back (`task`), or it runs on its own on a
+ * schedule (`scheduled`). The kind picks the front door: every agent still answers a chat.
+ */
+export type AgentKind = "conversation" | "task" | "scheduled";
+
+/** The kinds, in the order the product shows them. */
+export const AGENT_KINDS: readonly AgentKind[] = ["conversation", "task", "scheduled"];
+
+/** What a question of a task form asks for. */
+export type TaskFieldType = "short_text" | "long_text" | "number" | "choice" | "yes_no" | "link" | "list";
+
+/** One question of a task form. */
+export interface TaskField {
+  /**
+   * The name in code: what a caller sends and what the model sees. A lowercase letter, then
+   * up to 39 lowercase letters, digits or underscores. Made from the label when left out,
+   * then kept, so renaming a question never breaks a caller.
+   */
+  key: string;
+  /** Up to 120 characters. */
+  label: string;
+  type: TaskFieldType;
+  required: boolean;
+  /** One line under the question, up to 300 characters. */
+  help?: string;
+  /** `choice` only: 2 to 50 options of up to 100 characters, in order. */
+  options?: string[];
+}
+
+/** A question as it may be sent: `key`, `type` (`short_text`) and `required` (false) have defaults. */
+export type TaskFieldInput = Omit<TaskField, "key" | "type" | "required"> & {
+  key?: string;
+  type?: TaskFieldType;
+  required?: boolean;
+};
+
+/**
+ * The settings of each kind, one key per kind, so changing an agent's kind and changing
+ * back loses nothing.
+ */
+export interface KindConfig {
+  /** The form of a task agent: 1 to 12 questions, in order. */
+  task?: { fields: TaskField[] };
+  scheduled?: {
+    /** A suggested schedule: a five-part cron expression and an IANA time zone. */
+    schedule?: { cronExpression: string; timezone?: string };
+    /** What the agent is told at each run, up to 2,000 characters. */
+    prompt?: string;
+  };
+}
+
+/**
+ * `kindConfig` as it may be sent. A key that is sent replaces that key whole and the other
+ * stays as stored; a key set to null removes it. The whole value is at most 16 KB of JSON.
+ */
+export interface KindConfigInput {
+  task?: { fields: TaskFieldInput[] } | null;
+  scheduled?: KindConfig["scheduled"] | null;
+}
+
 /** Statuses an agent deployment moves through. `running`, `failed` and `stopped` are final for a poller. */
 export type AgentDeploymentStatus =
   | "pending"
@@ -83,6 +145,7 @@ export interface Agent {
   version: string;
   tags: string[];
   isPublic: boolean;
+  agentKind: AgentKind;
   /**
    * The agent's OpenAI-compatible chat-completions URL on this API
    * (`<api>/v1/agents/<slug>/chat/completions`). Always on: no deployment is needed.
@@ -140,6 +203,9 @@ export interface AgentDetail {
   version: string;
   isPublic: boolean;
   tags: string[];
+  agentKind: AgentKind;
+  /** null when the agent has no settings. A task agent without a form of its own uses one long-text question. */
+  kindConfig: KindConfig | null;
   /** See `Agent.apiEndpoint`. */
   apiEndpoint: string | null;
   openaiBaseUrl: string | null;
@@ -151,26 +217,57 @@ export interface AgentDetail {
   deployments: AgentDeployment[];
 }
 
+/** Only `name` is needed. */
 export interface CreateAgentInput {
+  /** 3 to 100 characters. */
   name: string;
   description?: string;
-  framework: AgentFramework;
+  /** Defaults to `custom`. */
+  framework?: AgentFramework;
   systemPrompt?: string;
   tools?: AgentTool[];
-  /** Required by the API, but every field in it has a default: pass `{}` for the defaults. */
-  modelConfig: { modelId?: string; externalModel?: string; temperature?: number; maxTokens?: number };
-  sourceType: AgentSourceType;
+  /** Every field has a default: temperature 0.7, maxTokens 4096. */
+  modelConfig?: { modelId?: string; externalModel?: string; temperature?: number; maxTokens?: number };
+  /** Defaults to `inline`. */
+  sourceType?: AgentSourceType;
   /** Required for `github` and `ipfs`. */
   sourceUrl?: string;
-  /** Required for `inline`. */
   sourceCode?: string;
   env?: Record<string, string>;
   tags?: string[];
   isPublic?: boolean;
   knowledgeBaseId?: string | null;
+  /** Defaults to `conversation`, or to the template's kind. */
+  agentKind?: AgentKind;
+  /** null clears the settings. A task agent sent with no form gets one long-text question. */
+  kindConfig?: KindConfigInput | null;
+  /**
+   * A published template to start from. Its values are the defaults, and each field sent
+   * here replaces the template's. An unknown one answers 404 `template_not_found`.
+   */
+  templateId?: string;
+  /** Left out, the slug is made from the name. Either way it is made unique. */
+  slug?: string;
 }
 
-export interface UpdateAgentInput extends Partial<Omit<CreateAgentInput, "env">> {
+/** The agent in the answer to a create. */
+export interface CreatedAgent {
+  id: string;
+  name: string;
+  slug: string;
+  framework: AgentFramework;
+  agentKind: AgentKind;
+  /** See `Agent.apiEndpoint`. */
+  apiEndpoint: string | null;
+  openaiBaseUrl: string | null;
+  openaiModel: string;
+}
+
+/**
+ * Any part of a create but the template and the slug. Changing `agentKind` or `kindConfig`
+ * bumps the agent's patch version; sending the stored values again does not.
+ */
+export interface UpdateAgentInput extends Partial<Omit<CreateAgentInput, "env" | "templateId" | "slug">> {
   /** A string sets or replaces a variable; null deletes it. */
   env?: Record<string, string | null>;
   /**
@@ -263,11 +360,13 @@ export function agentsResource(client: WheelsAIClient) {
     get: (id: string) =>
       client.get<{ agent: AgentDetail }>(`/api/agents/${seg(id)}`),
 
+    /**
+     * `POST /api/agents`. A request the API cannot accept answers 400 `validation_failed`:
+     * the error's `message` is the first problem as a sentence, and `error.data.fields` has
+     * one sentence per field, keyed by its path (`name`, `kindConfig.task.fields[0].label`).
+     */
     create: (input: CreateAgentInput) =>
-      client.post<{ agent: { id: string; name: string; slug: string; framework: AgentFramework }; message: string }>(
-        "/api/agents",
-        input,
-      ),
+      client.post<{ agent: CreatedAgent; message: string }>("/api/agents", input),
 
     /** `PATCH /api/agents/{id}`. The answer is the agent row alone: its deployments are not included. */
     update: (id: string, updates: UpdateAgentInput) =>

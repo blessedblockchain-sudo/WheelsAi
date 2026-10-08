@@ -1,4 +1,5 @@
 import { seg, type WheelsAIClient } from "../client.js";
+import type { AgentKind } from "./agents.js";
 
 export type ListingCategory =
   | "customer-support"
@@ -39,7 +40,8 @@ export interface AgentListing {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  agent?: { id: string; framework: string; tags: string[]; slug?: string; isPublic?: boolean };
+  /** `agentKind` says how people use the listed agent. */
+  agent?: { id: string; framework: string; agentKind: AgentKind; tags: string[]; slug?: string; isPublic?: boolean };
 }
 
 export interface Pagination {

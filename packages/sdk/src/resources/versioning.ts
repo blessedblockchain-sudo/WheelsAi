@@ -1,4 +1,5 @@
 import { seg, type WheelsAIClient } from "../client.js";
+import type { AgentKind, KindConfig } from "./agents.js";
 
 export type ChangeType = "major" | "minor" | "patch";
 
@@ -20,6 +21,13 @@ export interface AgentVersion {
    * before it was recorded (a rollback to one leaves the agent's entrypoint as it is).
    */
   entrypoint: "chat" | "graph" | null;
+  /**
+   * How people used the agent at this version, and that kind's settings; a rollback restores
+   * both. `agentKind` is null on versions taken before it was recorded: a rollback to one
+   * makes the agent a `conversation` and leaves its settings as they are.
+   */
+  agentKind: AgentKind | null;
+  kindConfig: KindConfig | null;
   isLatest: boolean;
   isPublished: boolean;
   createdAt: string;
@@ -31,6 +39,7 @@ export interface VersionDiff {
   agentId: string;
   fromVersion: string;
   toVersion: string;
+  /** By field name, for example `systemPrompt`, `tools`, `agentKind` or `kindConfig`. */
   changes: Record<string, { from: unknown; to: unknown }>;
   addedFields: string[];
   removedFields: string[];

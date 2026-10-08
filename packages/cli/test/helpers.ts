@@ -121,6 +121,7 @@ export function agent(overrides: Partial<Agent> = {}): Agent {
     version: "1.0.0",
     tags: [],
     isPublic: false,
+    agentKind: "conversation",
     apiEndpoint: "https://api.example.test/v1/agents/my-support-bot/chat/completions",
     openaiBaseUrl: "https://api.example.test/v1/agents/my-support-bot",
     openaiModel: "agent/my-support-bot",

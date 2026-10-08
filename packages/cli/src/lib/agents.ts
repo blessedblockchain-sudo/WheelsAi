@@ -1,4 +1,4 @@
-import type { Agent, WheelsAI } from "@wheelsai/sdk";
+import type { Agent, AgentKind, WheelsAI } from "@wheelsai/sdk";
 
 import { CliError } from "../errors.js";
 
@@ -14,6 +14,23 @@ export async function resolveAgent(wheels: WheelsAI, reference: string): Promise
     });
   }
   return agent;
+}
+
+/** How an agent is used, in the words the dashboard shows beside its name. */
+export const AGENT_KIND_LABELS: Record<AgentKind, string> = {
+  conversation: "Chat",
+  task: "Task",
+  scheduled: "Runs on its own",
+};
+
+/**
+ * The plain-word kind of an agent. An API that sends no kind, or one this CLI does not
+ * know, reads as a chat: that is what every agent is unless it says otherwise.
+ */
+export function agentKindLabel(kind: unknown): string {
+  return typeof kind === "string" && Object.hasOwn(AGENT_KIND_LABELS, kind)
+    ? AGENT_KIND_LABELS[kind as AgentKind]
+    : AGENT_KIND_LABELS.conversation;
 }
 
 /** The agent reference from `--agent` and/or the positional argument. */

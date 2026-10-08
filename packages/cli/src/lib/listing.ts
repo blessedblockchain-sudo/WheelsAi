@@ -81,15 +81,22 @@ export function publishCommandLine(agentSlug: string, options: PublishOptions): 
   return parts.join(" ");
 }
 
+/** What a listing's fallback line says the agent is, by how people use it. */
+function describeKind(agent: Pick<Agent, "framework"> & Partial<Pick<Agent, "agentKind">>): string {
+  if (agent.agentKind === "task") return `a ${agent.framework} agent that does a task you give it, built on WheelsAI.`;
+  if (agent.agentKind === "scheduled") return `a ${agent.framework} agent that runs on its own, built on WheelsAI.`;
+  return `a ${agent.framework} agent built on WheelsAI.`;
+}
+
 /** Listing text for an agent, from the agent's own fields. */
 export function defaultListingFields(
-  agent: Pick<Agent, "name" | "description" | "framework" | "tags">,
+  agent: Pick<Agent, "name" | "description" | "framework" | "tags"> & Partial<Pick<Agent, "agentKind">>,
 ): { title: string; shortDescription: string; category: ListingCategory } {
   const description = agent.description?.trim() ?? "";
   const shortDescription =
     description.length >= SHORT_DESCRIPTION_MIN
       ? description.slice(0, SHORT_DESCRIPTION_MAX)
-      : `${agent.name}: a ${agent.framework} agent built on WheelsAI.`;
+      : `${agent.name}: ${describeKind(agent)}`;
   const tag = agent.tags.find((candidate) => (LISTING_CATEGORIES as readonly string[]).includes(candidate));
   return {
     title: agent.name,

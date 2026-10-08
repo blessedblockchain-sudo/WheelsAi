@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { WheelsAI, WheelsAIError } from "../src/index.js";
+import { AGENT_KINDS, WheelsAI, WheelsAIError } from "../src/index.js";
 import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } from "./helpers.js";
 
 const AGENT = "11111111-1111-4111-8111-111111111111";
@@ -68,7 +68,7 @@ const cases: Case[] = [
   { name: "agents.resolve", run: (w) => w.agents.resolve("my-bot"), method: "GET", path: "/api/agents" },
   { name: "agents.get", run: (w) => w.agents.get(AGENT), method: "GET", path: `/api/agents/${AGENT}` },
   { name: "agents.create", run: (w) => w.agents.create({ name: "My Bot", framework: "custom", sourceType: "inline", sourceCode: "x", modelConfig: {} }), method: "POST", path: "/api/agents", body: { name: "My Bot", framework: "custom", sourceType: "inline", sourceCode: "x", modelConfig: {} } },
-  { name: "agents.update", run: (w) => w.agents.update(AGENT, { description: "new", env: { KEY: null }, entrypoint: "graph" }), method: "PATCH", path: `/api/agents/${AGENT}`, body: { description: "new", env: { KEY: null }, entrypoint: "graph" } },
+  { name: "agents.update", run: (w) => w.agents.update(AGENT, { description: "new", env: { KEY: null }, entrypoint: "graph", agentKind: "scheduled", kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *", timezone: "UTC" } }, task: null } }), method: "PATCH", path: `/api/agents/${AGENT}`, body: { description: "new", env: { KEY: null }, entrypoint: "graph", agentKind: "scheduled", kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *", timezone: "UTC" } }, task: null } } },
   { name: "agents.delete", run: (w) => w.agents.delete(AGENT), method: "DELETE", path: `/api/agents/${AGENT}` },
   { name: "agents.usage", run: (w) => w.agents.usage(AGENT, "7d"), method: "GET", path: `/api/agents/${AGENT}/usage`, query: { period: "7d" } },
   { name: "agents.deploy", run: (w) => w.agents.deploy(AGENT, { gpuTier: "3060", replicas: 2 }), method: "POST", path: `/api/agents/${AGENT}/deploy`, body: { gpuTier: "3060", replicas: 2 } },
@@ -187,6 +187,7 @@ const cases: Case[] = [
   // ---- platform and skills ----
   { name: "platform.status", run: (w) => w.platform.status(), method: "GET", path: "/api/status" },
   { name: "platform.stats", run: (w) => w.platform.stats(), method: "GET", path: "/api/public/stats" },
+  { name: "platform.capabilities", run: (w) => w.platform.capabilities(), method: "GET", path: "/api/capabilities" },
   { name: "skills.list", run: (w) => w.skills.list({ agentId: AGENT }), method: "GET", path: "/api/skills", query: { agentId: AGENT } },
 ];
 
@@ -262,6 +263,105 @@ describe("methods that were wrong before", () => {
     const wheels = new WheelsAI({ baseUrl: BASE_URL }) as unknown as Record<string, Record<string, unknown>>;
     assert.equal(wheels.agents?.stop, undefined, "agents.stop hit a path the API does not serve");
     assert.equal(wheels.billing?.addCredits, undefined, "billing.addCredits hit a path the API does not serve");
+  });
+});
+
+describe("creating an agent", () => {
+  it("needs only a name, and sends nothing the caller did not", async () => {
+    const { fetch, calls } = recordingFetch();
+    await new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }).agents.create({ name: "My Bot" });
+    assert.deepEqual(calls[0]?.body, { name: "My Bot" });
+  });
+
+  it("sends the kind, its settings, the template and the slug as given", async () => {
+    const input = {
+      name: "Code review",
+      agentKind: "task" as const,
+      kindConfig: { task: { fields: [{ label: "Code to review", type: "long_text" as const, required: true }] } },
+      templateId: LISTING,
+      slug: "code-review",
+    };
+    const { fetch, calls } = recordingFetch();
+    await new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }).agents.create(input);
+    assert.deepEqual(calls[0]?.body, input);
+  });
+
+  it("returns the created agent with its kind and where its API is", async () => {
+    const agent = {
+      id: AGENT,
+      name: "My Bot",
+      slug: "my-bot",
+      framework: "custom",
+      agentKind: "conversation",
+      apiEndpoint: `${BASE_URL}/v1/agents/my-bot/chat/completions`,
+      openaiBaseUrl: `${BASE_URL}/v1/agents/my-bot`,
+      openaiModel: "agent/my-bot",
+    };
+    const wheels = new WheelsAI({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      fetch: recordingFetch(() => jsonResponse({ agent, message: "Agent created successfully" }, 201)).fetch,
+    });
+    const created = await wheels.agents.create({ name: "My Bot" });
+    assert.equal(created.agent.agentKind, "conversation");
+    assert.equal(created.agent.openaiModel, "agent/my-bot");
+  });
+
+  it("the kinds are the three the API stores", () => {
+    assert.deepEqual([...AGENT_KINDS], ["conversation", "task", "scheduled"]);
+  });
+});
+
+describe("errors the API documents for agents", () => {
+  const failing = (status: number, body: unknown) =>
+    new WheelsAI({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      fetch: recordingFetch(() => jsonResponse(body, status)).fetch,
+    });
+
+  it("a refused create reads as the API's sentence and keeps the sentence of each field", async () => {
+    const body = {
+      error: "validation_failed",
+      message: "Give your agent a name of at least 3 characters.",
+      fields: { name: "Give your agent a name of at least 3 characters.", "kindConfig.task.fields[0].label": "Give this question a label." },
+      details: { formErrors: [], fieldErrors: { name: ["Give your agent a name of at least 3 characters."], kindConfig: ["Give this question a label."] } },
+    };
+    await assert.rejects(failing(400, body).agents.create({ name: "ab" }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 400);
+      assert.equal(err.code, "validation_failed");
+      assert.equal(err.message, "Give your agent a name of at least 3 characters.");
+      assert.equal(
+        (err.data as { fields: Record<string, string> }).fields["kindConfig.task.fields[0].label"],
+        "Give this question a label.",
+      );
+      return true;
+    });
+  });
+
+  it("a template that is gone answers 404 template_not_found", async () => {
+    const body = { error: "template_not_found", message: "This template is no longer available. Choose another one." };
+    await assert.rejects(failing(404, body).agents.create({ name: "My Bot", templateId: LISTING }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.code, "template_not_found");
+      assert.equal(err.message, body.message);
+      return true;
+    });
+  });
+
+  it("a GPU deploy the server cannot start answers 501 agent_gpu_unavailable with its message", async () => {
+    const body = {
+      error: "agent_gpu_unavailable",
+      message: "Dedicated GPUs for agents are being built. Nothing was reserved or charged. Your agent keeps answering on WheelsAI.",
+    };
+    await assert.rejects(failing(501, body).agents.deploy(AGENT, { gpuTier: "3060" }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 501);
+      assert.equal(err.code, "agent_gpu_unavailable");
+      assert.equal(err.message, body.message);
+      return true;
+    });
   });
 });
 

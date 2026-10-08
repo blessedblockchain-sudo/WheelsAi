@@ -126,7 +126,11 @@ What it does, in order, stopping at the first failure:
    API lists none, `--gpu-tier` is still sent so the API can answer with its reason; without it
    there is nothing to choose and the command stops.
 4. **Deploy** (`POST /api/agents/{id}/deploy`), with `--replicas` (1 to 5; the API enforces
-   it) and optionally `--model-deployment <id>` or `--external-model-url <url>`.
+   it) and optionally `--model-deployment <id>` or `--external-model-url <url>`. When the
+   server cannot start a dedicated GPU for an agent right now (`agentGpu.available` is `false`
+   in `GET /api/capabilities`), the command stops here with the API's answer, 501
+   `agent_gpu_unavailable`: nothing is reserved or charged, and the agent keeps answering on
+   its API.
 5. **Wait** for the deployment to run, polling `GET /api/agents/{id}/deployments/{deploymentId}`
    up to `--timeout` seconds (default 600). The first checks come after 5, 10 and 20 seconds,
    then every `--interval` seconds (default 30, which is how often the API refreshes a
@@ -227,7 +231,7 @@ wheelsai publish --agent my-support-bot --title "Support Pro" --category custome
 | --- | --- |
 | pricing: `--free`, `--price-per-request <cents>`, `--monthly <cents>`, `--tokenized` (choose one) | free for a new listing, so publishing never charges by accident; an existing listing keeps its pricing |
 | `--title` | the agent's name |
-| `--description` | the agent's description (cut to 280 characters), else `<name>: a <framework> agent built on WheelsAI.` |
+| `--description` | the agent's description (cut to 280 characters), else a line made from its name, framework and kind, such as `<name>: a <framework> agent built on WheelsAI.` |
 | `--category` | a category found in the agent's tags, else `other` (`customer-support`, `coding`, `research`, `automation`, `creative`, `other`) |
 
 An agent has at most one listing, so a second run reuses it: it is edited only if you passed
@@ -243,12 +247,17 @@ so when it prints the listing.
 ## Inspect
 
 ```bash
-wheelsai agents list                  # slug, name, latest deployment status
-wheelsai agents get my-support-bot    # configuration, secrets' names, every deployment
+wheelsai agents list                  # slug, name, latest deployment status, kind
+wheelsai agents get my-support-bot    # kind, configuration, secrets' names, every deployment
 wheelsai test my-support-bot -m "Hello" --model free/groq/llama-3.3-70b    # playground, no GPU
 wheelsai logs <deployment-id>         # status and logs of an agent deployment
 wheelsai logs <deployment-id> --model # a model deployment (GET /api/deployments)
 ```
+
+Both say how the agent is used: `Chat` (people talk to it), `Task` (made for one request in
+and one result back) or `Runs on its own` (made to work at set times). `agents get` also lists
+the questions of a task agent's form, and a scheduled agent's suggested times. `--json` carries
+the API's own `agentKind` (`conversation`, `task` or `scheduled`) and `kindConfig`.
 
 `test` waits up to `--timeout` seconds (default 120) for the reply. If the agent is an installed
 marketplace listing priced per request, the message is charged, and the charge the API reports

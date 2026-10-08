@@ -576,6 +576,62 @@ describe("wheelsai (the built command)", () => {
       assert.ok(result.stdout.includes(`${api.url}/v1/my-chat/chat/completions`), result.stdout);
     });
 
+    it("agents list and get say how each agent is used, in plain words", async () => {
+      const detail = {
+        orgId: "o",
+        systemPrompt: null,
+        tools: [],
+        modelConfig: { temperature: 0.7, maxTokens: 4096 },
+        sourceType: "inline",
+        sourceUrl: null,
+        sourceCode: null,
+        env: { keys: [] },
+        knowledgeBaseId: null,
+        deployments: [],
+      };
+      const task = agent({ agentKind: "task" });
+      const scheduled = agent({ id: DEPLOYMENT_ID, slug: "daily-brief", name: "Daily Brief", agentKind: "scheduled" });
+      // An API that sends no kind: the agent reads as a chat.
+      const { agentKind: _none, ...unlabelled } = agent({ id: "33333333-3333-4333-8333-333333333333", slug: "older", name: "Older" });
+      api.routes["GET /api/agents"] = { agents: [task, scheduled, unlabelled], total: 3 };
+
+      const listed = await wheelsai(["agents", "list"]);
+      assert.equal(listed.code, 0, listed.stderr);
+      assert.match(listed.stdout, new RegExp(`${AGENT_ID}  Task  custom  v1\\.0\\.0`));
+      assert.match(listed.stdout, new RegExp(`${DEPLOYMENT_ID}  Runs on its own  custom`));
+      assert.ok(listed.stdout.includes("33333333-3333-4333-8333-333333333333  Chat  custom"), listed.stdout);
+
+      api.routes[`GET /api/agents/${AGENT_ID}`] = {
+        agent: {
+          ...task,
+          ...detail,
+          kindConfig: {
+            task: {
+              fields: [
+                { key: "code", label: "Code to review", type: "long_text", required: true },
+                { key: "focus", label: "What to look for", type: "choice", required: false, options: ["Everything", "Bugs"] },
+              ],
+            },
+          },
+        },
+      };
+      const shownTask = await wheelsai(["agents", "get", "my-support-bot"]);
+      assert.equal(shownTask.code, 0, shownTask.stderr);
+      assert.match(shownTask.stdout, /Kind\s+Task\n/);
+      assert.match(shownTask.stdout, /Form\s+Code to review, What to look for\n/);
+
+      api.routes[`GET /api/agents/${AGENT_ID}`] = { agent: { ...task, ...detail, kindConfig: null } };
+      assert.match((await wheelsai(["agents", "get", "my-support-bot"])).stdout, /Form\s+Your request\n/);
+
+      api.routes[`GET /api/agents/${DEPLOYMENT_ID}`] = {
+        agent: { ...scheduled, ...detail, kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *", timezone: "UTC" } } } },
+      };
+      const shownScheduled = await wheelsai(["agents", "get", "daily-brief"]);
+      assert.equal(shownScheduled.code, 0, shownScheduled.stderr);
+      assert.match(shownScheduled.stdout, /Kind\s+Runs on its own\n/);
+      assert.match(shownScheduled.stdout, /Suggested\s+0 9 \* \* \* \(UTC\)\n/);
+    });
+
     it("agents get shows the agent's API endpoint, OpenAI base URL and model id as the API returned them", async () => {
       const detail = {
         ...agent(),
@@ -588,11 +644,14 @@ describe("wheelsai (the built command)", () => {
         sourceCode: null,
         env: { keys: [] },
         knowledgeBaseId: null,
+        kindConfig: null,
         deployments: [],
       };
       api.routes[`GET /api/agents/${AGENT_ID}`] = { agent: detail };
       const shown = await wheelsai(["agents", "get", "my-support-bot"]);
       assert.equal(shown.code, 0, shown.stderr);
+      assert.match(shown.stdout, /Kind\s+Chat\n/);
+      assert.doesNotMatch(shown.stdout, /Form\s/);
       assert.match(shown.stdout, /API\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\/chat\/completions\n/);
       assert.match(shown.stdout, /OpenAI base\s+https:\/\/api\.example\.test\/v1\/agents\/my-support-bot\n/);
       assert.match(shown.stdout, /Model id\s+agent\/my-support-bot\n/);

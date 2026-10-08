@@ -2,7 +2,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 
 import { createSession } from "../client.js";
-import { resolveAgent } from "../lib/agents.js";
+import { agentKindLabel, resolveAgent } from "../lib/agents.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, colorStatus, field, printJson, shortId } from "../ui.js";
 
@@ -31,7 +31,7 @@ agentsCommand
       const latest = agent.latestDeployment;
       const deployed = latest ? `${colorStatus(latest.status)} ${chalk.dim(`deployment ${shortId(latest.id)}`)}` : chalk.dim("not deployed");
       console.log(`  ${chalk.cyan(clean(agent.slug))}  ${clean(agent.name)}  ${deployed}`);
-      console.log(chalk.dim(`    ${agent.id}  ${clean(agent.framework)}  v${clean(agent.version)}`));
+      console.log(chalk.dim(`    ${agent.id}  ${agentKindLabel(agent.agentKind)}  ${clean(agent.framework)}  v${clean(agent.version)}`));
     }
     console.log();
   });
@@ -53,6 +53,19 @@ agentsCommand
     console.log(chalk.bold(`\n  ${clean(agent.name)}\n`));
     console.log(field("Slug", clean(agent.slug)));
     console.log(field("ID", agent.id));
+    // How people use it: they talk to it, give it a task, or it runs on its own.
+    console.log(field("Kind", agentKindLabel(agent.agentKind)));
+    if (agent.agentKind === "task") {
+      // The questions of its form, in order; with none of its own it asks one: "Your request".
+      const questions = agent.kindConfig?.task?.fields ?? [];
+      console.log(field("Form", questions.length > 0 ? clean(questions.map((question) => question.label).join(", ")) : "Your request"));
+    }
+    if (agent.agentKind === "scheduled") {
+      const suggested = agent.kindConfig?.scheduled?.schedule;
+      if (suggested) {
+        console.log(field("Suggested", clean(`${suggested.cronExpression}${suggested.timezone ? ` (${suggested.timezone})` : ""}`)));
+      }
+    }
     console.log(field("Framework", clean(agent.framework)));
     console.log(field("Version", clean(agent.version)));
     console.log(field("Public", String(agent.isPublic)));

@@ -40,7 +40,7 @@ test("every declared event is in exactly one category", () => {
 test("workflow, scheduled-task and report events have categories", () => {
   const categories = webhookEventCategories(declaredEvents());
   assert.deepEqual(categories.workflow, ["workflow.completed", "workflow.failed"]);
-  assert.deepEqual(categories.scheduled_task, ["scheduled_task.failed"]);
+  assert.deepEqual(categories.scheduled_task, ["scheduled_task.failed", "scheduled_task.completed"]);
   assert.deepEqual(categories.report, ["report.generated"]);
   // The five that existed keep their contents and come first, in order.
   assert.deepEqual(Object.keys(categories), [

@@ -57,6 +57,40 @@ function aborted(signal: AbortSignal | undefined): Error {
   return reason instanceof Error ? reason : new DOMException("The operation was aborted", "AbortError");
 }
 
+/**
+ * The refusal a thrown Error stands for. Every refusal of the chat core that
+ * becomes an Error here carries its kind, so a caller can tell "refused,
+ * nothing ran and nothing was charged" from a model call that failed, without
+ * reading the message. The scheduler ends a firing on the three that the next
+ * attempt would only meet again (FINAL_CHAT_REFUSALS).
+ */
+export type ChatRefusalKind = Exclude<AgentChatRefusal["kind"], "client_gone">;
+
+/** Refusals another attempt a few seconds later cannot get past. */
+export const FINAL_CHAT_REFUSALS: readonly ChatRefusalKind[] = [
+  "rate_limited",
+  "payment_required",
+  "licence_revoked",
+];
+
+function marked<E extends Error>(error: E, kind: ChatRefusalKind): E {
+  // Not enumerable: the mark is for code, and must not show up where an
+  // error is logged or serialized.
+  Object.defineProperty(error, "chatRefusal", { value: kind, enumerable: false });
+  return error;
+}
+
+/**
+ * The refusal behind an error thrown by createRunAgentChat, or null: a failed
+ * model call, an abort, or an error from somewhere else. Read by shape, so an
+ * error that crossed a module boundary still counts.
+ */
+export function chatRefusalOf(err: unknown): ChatRefusalKind | null {
+  if (typeof err !== "object" || err === null) return null;
+  const kind = (err as { chatRefusal?: unknown }).chatRefusal;
+  return typeof kind === "string" ? (kind as ChatRefusalKind) : null;
+}
+
 /** The Error a caller records for a chat that was refused before it ran. */
 function refusalError(
   refusal: AgentChatRefusal,
@@ -65,25 +99,31 @@ function refusalError(
 ): Error {
   switch (refusal.kind) {
     case "agent_not_found":
-      return new Error(`agent ${agentId} not found in this organization`);
+      return marked(new Error(`agent ${agentId} not found in this organization`), refusal.kind);
     case "rate_limited":
-      return new Error(FREE_TIER_LIMIT_MESSAGE);
+      return marked(new Error(FREE_TIER_LIMIT_MESSAGE), refusal.kind);
     // The same typed errors a graph run throws, so a caller that tells a
     // billing refusal from a failed run sees one shape for both.
     case "licence_revoked":
-      return new MarketplaceLicenceRevokedError(refusal.listingTitle, refusal.revocation, refusal.token);
+      return marked(
+        new MarketplaceLicenceRevokedError(refusal.listingTitle, refusal.revocation, refusal.token),
+        refusal.kind,
+      );
     case "payment_required":
-      return new MarketplacePaymentRequiredError({
-        requiredCents: refusal.requiredCents,
-        balanceCents: refusal.balanceCents,
-        listingTitle: refusal.listingTitle,
-      });
+      return marked(
+        new MarketplacePaymentRequiredError({
+          requiredCents: refusal.requiredCents,
+          balanceCents: refusal.balanceCents,
+          listingTitle: refusal.listingTitle,
+        }),
+        refusal.kind,
+      );
     case "shutting_down":
-      return new Error(SHUTTING_DOWN);
+      return marked(new Error(SHUTTING_DOWN), refusal.kind);
     case "client_gone":
       return aborted(signal);
     default:
-      return new Error(refusal.message);
+      return marked(new Error(refusal.message), refusal.kind);
   }
 }
 

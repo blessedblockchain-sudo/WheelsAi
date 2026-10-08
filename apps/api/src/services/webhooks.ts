@@ -27,6 +27,7 @@ export type WebhookEventType =
   | "workflow.completed"
   | "workflow.failed"
   | "scheduled_task.failed"
+  | "scheduled_task.completed"
   | "report.generated"
   | "job.funded"
   | "job.submitted"
@@ -59,6 +60,9 @@ export const WEBHOOK_EVENTS: WebhookEventType[] = [
   // A scheduled task's firing ended failed after its last attempt. (A
   // scheduled workflow run reports through workflow.failed instead.)
   "scheduled_task.failed",
+  // A scheduled task's run finished with success, started by its schedule or
+  // by hand. Carries the start of what it produced (outputPreview).
+  "scheduled_task.completed",
   // A report task asked for its report to be sent to the org's webhooks.
   "report.generated",
   // Offerings and Jobs. job.funded goes to the publisher, job.submitted to

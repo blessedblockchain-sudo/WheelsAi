@@ -343,3 +343,243 @@ test("a webhook that answers with a redirect is NOT followed (a 302 to the metad
   );
   assert.deepEqual(calls, ["https://example.com/hook"], "the redirect target was never requested");
 });
+
+// ============================================
+// Refusals are final; everything else retries as before
+// ============================================
+
+/** A refusal as services/sharedAgentChat.ts marks it. */
+function refusal(kind: string, message: string, name = "Error"): Error {
+  const err = new Error(message);
+  err.name = name;
+  Object.defineProperty(err, "chatRefusal", { value: kind, enumerable: false });
+  return err;
+}
+
+async function failureOf(task: ScheduledTaskForExecution, thrown: unknown, signal?: AbortSignal) {
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const { isPermanentFailure } = await import("../services/scheduledTasks/taskError.js");
+  const { deps } = makeDeps({});
+  let calls = 0;
+  deps.runAgentChat = async () => {
+    calls += 1;
+    throw thrown;
+  };
+  let caught: unknown;
+  try {
+    await executeScheduledTask(task, deps, signal ? { signal } : {});
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught !== undefined, "the run was expected to fail");
+  return { caught, calls, permanent: isPermanentFailure(caught) };
+}
+
+for (const [label, thrown] of [
+  [
+    "the free-model limit",
+    refusal("rate_limited", "free-model limit reached for this org; retry later or use your own provider key"),
+  ],
+  [
+    "a payment refusal",
+    refusal("payment_required", "This agent is billed per request by its publisher.", "MarketplacePaymentRequiredError"),
+  ],
+  [
+    "an ended licence",
+    refusal("licence_revoked", "Your licence for Pro has ended.", "MarketplaceLicenceRevokedError"),
+  ],
+] as const) {
+  test(`agent_run: ${label} ends the firing at once, with the message it came with`, async () => {
+    const { caught, calls, permanent } = await failureOf(baseTask(), thrown);
+    assert.equal(permanent, true, "the tick does not spend a retry on it");
+    assert.equal((caught as Error).message, thrown.message);
+    assert.equal(calls, 1);
+  });
+}
+
+test("agent_run: a refusal is final through the tick too: one execution, no backoff, reported once", async () => {
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const { runTaskFiring } = await import("../services/runSchedulerTick.js");
+  const { deps } = makeDeps({});
+  let chats = 0;
+  deps.runAgentChat = async () => {
+    chats += 1;
+    throw refusal("rate_limited", "free-model limit reached for this org; retry later or use your own provider key");
+  };
+  const row = {
+    ...baseTask(),
+    orchestrationId: null,
+    maxRetries: 3,
+    scheduleType: "cron",
+    cronExpression: "0 9 * * *",
+    intervalSeconds: null,
+    scheduledAt: null,
+    timezone: "UTC",
+    nextRunAt: new Date("2026-10-14T09:00:00Z"),
+  };
+  const sleeps: number[] = [];
+  const finishes: Array<{ status: string; retryAt?: Date }> = [];
+  let executions = 0;
+  const firing = await runTaskFiring(row, { triggeredBy: "schedule" }, {
+    createExecution: async () => ({ id: `exec_${++executions}` }),
+    executeTask: (t, ctx) => executeScheduledTask(t, deps, ctx),
+    finishExecution: async (_id, _t, outcome) => {
+      finishes.push({ status: outcome.status, retryAt: outcome.retryAt });
+      return true;
+    },
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+  });
+  assert.equal(firing.status, "failed");
+  assert.equal(firing.attempts, 1);
+  assert.equal(chats, 1, "the agent was asked once");
+  assert.equal(executions, 1);
+  assert.deepEqual(sleeps, []);
+  assert.deepEqual(finishes, [{ status: "failed", retryAt: undefined }]);
+});
+
+test("agent_run: a graph run's own billing errors are final by their name", async () => {
+  const unmarked = Object.assign(new Error("top up to keep using it"), { name: "MarketplacePaymentRequiredError" });
+  assert.equal((await failureOf(baseTask(), unmarked)).permanent, true);
+  const ended = Object.assign(new Error("licence ended"), { name: "MarketplaceLicenceRevokedError" });
+  assert.equal((await failureOf(baseTask(), ended)).permanent, true);
+});
+
+test("agent_run: 'the server is restarting' stays retryable", async () => {
+  const restart = refusal("shutting_down", "the server is restarting; nothing was charged - retry in a moment");
+  const { caught, permanent } = await failureOf(baseTask(), restart);
+  assert.equal(permanent, false);
+  assert.equal(caught, restart, "thrown on as it was");
+});
+
+test("agent_run: a failed model call stays retryable, as does any other refusal", async () => {
+  const model = new Error("The model provider rejected the key.");
+  const failed = await failureOf(baseTask(), model);
+  assert.equal(failed.permanent, false);
+  assert.equal(failed.caught, model);
+
+  for (const kind of ["hosted_model_unavailable", "not_configured", "model_invalid", "agent_not_found"]) {
+    const other = refusal(kind, "No model is available for this agent right now.");
+    assert.equal((await failureOf(baseTask(), other)).permanent, false, kind);
+  }
+});
+
+test("agent_run: a timeout or cancel is seen as the abort, never turned into a final failure", async () => {
+  const controller = new AbortController();
+  controller.abort(new DOMException("task timeout", "AbortError"));
+  const marked = refusal("rate_limited", "free-model limit reached");
+  const { caught, permanent } = await failureOf(baseTask(), marked, controller.signal);
+  assert.equal(permanent, false);
+  assert.equal(caught, marked);
+});
+
+test("the inference alias makes refusals final too; no other type's errors change", async () => {
+  const limit = refusal("rate_limited", "free-model limit reached");
+  assert.equal((await failureOf(baseTask({ taskType: "inference" }), limit)).permanent, true);
+
+  // A webhook that answers 500 is retried as it always was.
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const { isPermanentFailure } = await import("../services/scheduledTasks/taskError.js");
+  const { deps } = makeDeps({ fetchStatus: 500 });
+  await assert.rejects(
+    executeScheduledTask(
+      baseTask({ taskType: "webhook", agentId: null, payload: { url: "https://example.com/hook" } }),
+      deps,
+    ),
+    (err: unknown) => !isPermanentFailure(err) && /webhook responded 500/.test((err as Error).message),
+  );
+});
+
+// ============================================
+// The date line
+// ============================================
+
+test("runDateLine says the run's date and time on the wall clock of the given zone", async () => {
+  const { runDateLine } = await import("../services/executeScheduledTask.js");
+  const at = new Date("2026-10-14T07:00:00Z");
+  assert.equal(runDateLine(at, "Europe/Berlin"), "It is Wednesday 14 October 2026, 09:00 (Europe/Berlin).");
+  assert.equal(runDateLine(at, "UTC"), "It is Wednesday 14 October 2026, 07:00 (UTC).");
+  assert.equal(runDateLine(at, "America/New_York"), "It is Wednesday 14 October 2026, 03:00 (America/New_York).");
+  // Half-hour zones, and a zone already in the next day.
+  assert.equal(runDateLine(at, "Asia/Kolkata"), "It is Wednesday 14 October 2026, 12:30 (Asia/Kolkata).");
+  assert.equal(
+    runDateLine(new Date("2026-10-14T20:15:00Z"), "Asia/Tokyo"),
+    "It is Thursday 15 October 2026, 05:15 (Asia/Tokyo).",
+  );
+  // ...and one still in the day before.
+  assert.equal(
+    runDateLine(new Date("2026-01-01T03:05:00Z"), "America/Los_Angeles"),
+    "It is Wednesday 31 December 2025, 19:05 (America/Los_Angeles).",
+  );
+  // Midnight is 00:00, never 24:00.
+  assert.equal(runDateLine(new Date("2026-10-14T00:00:00Z"), "UTC"), "It is Wednesday 14 October 2026, 00:00 (UTC).");
+});
+
+test("runDateLine follows daylight saving: the hour that does not exist, and both sides of the change", async () => {
+  const { runDateLine } = await import("../services/executeScheduledTask.js");
+  // Europe/Berlin springs forward on 29 March 2026 at 01:00 UTC: 01:59 is
+  // followed by 03:00.
+  assert.equal(
+    runDateLine(new Date("2026-03-29T00:59:00Z"), "Europe/Berlin"),
+    "It is Sunday 29 March 2026, 01:59 (Europe/Berlin).",
+  );
+  assert.equal(
+    runDateLine(new Date("2026-03-29T01:00:00Z"), "Europe/Berlin"),
+    "It is Sunday 29 March 2026, 03:00 (Europe/Berlin).",
+  );
+  // It falls back on 25 October 2026 at 01:00 UTC: the same instant a day
+  // apart reads an hour apart on the wall.
+  assert.equal(
+    runDateLine(new Date("2026-10-24T07:00:00Z"), "Europe/Berlin"),
+    "It is Saturday 24 October 2026, 09:00 (Europe/Berlin).",
+  );
+  assert.equal(
+    runDateLine(new Date("2026-10-25T07:00:00Z"), "Europe/Berlin"),
+    "It is Sunday 25 October 2026, 08:00 (Europe/Berlin).",
+  );
+  // New York, the other way round in the year.
+  assert.equal(
+    runDateLine(new Date("2026-03-08T07:00:00Z"), "America/New_York"),
+    "It is Sunday 8 March 2026, 03:00 (America/New_York).",
+  );
+});
+
+test("runDateLine reads a missing or unknown zone as UTC and says UTC", async () => {
+  const { runDateLine } = await import("../services/executeScheduledTask.js");
+  const at = new Date("2026-10-14T07:00:00Z");
+  const utc = "It is Wednesday 14 October 2026, 07:00 (UTC).";
+  assert.equal(runDateLine(at, "Mars/Olympus_Mons"), utc);
+  assert.equal(runDateLine(at, ""), utc);
+  assert.equal(runDateLine(at, null), utc);
+  assert.equal(runDateLine(at, undefined), utc);
+});
+
+test("agent_run puts the date line ahead of the prompt only when stampTime is true, in the task's zone", async () => {
+  const { executeScheduledTask } = await import("../services/executeScheduledTask.js");
+  const now = new Date("2026-10-14T07:00:00Z");
+  const promptFor = async (payload: Record<string, unknown>, timezone?: string) => {
+    const { deps, chatCalls } = makeDeps({});
+    await executeScheduledTask({ ...baseTask({ payload }), ...(timezone ? { timezone } : {}) }, deps, { now });
+    return chatCalls[0]!.prompt;
+  };
+
+  assert.equal(
+    await promptFor({ prompt: "summarize the day", stampTime: true }, "Europe/Berlin"),
+    "It is Wednesday 14 October 2026, 09:00 (Europe/Berlin).\n\nsummarize the day",
+  );
+  assert.equal(
+    await promptFor({ prompt: "summarize the day", stampTime: true }, "Asia/Tokyo"),
+    "It is Wednesday 14 October 2026, 16:00 (Asia/Tokyo).\n\nsummarize the day",
+  );
+  // Absent or false: exactly the prompt it has always been.
+  assert.equal(await promptFor({ prompt: "summarize the day" }, "Europe/Berlin"), "summarize the day");
+  assert.equal(await promptFor({ prompt: "summarize the day", stampTime: false }, "Europe/Berlin"), "summarize the day");
+  // Only the boolean turns it on.
+  assert.equal(await promptFor({ prompt: "summarize the day", stampTime: "true" }, "Europe/Berlin"), "summarize the day");
+  // The fallback prompt is stamped like any other.
+  assert.equal(
+    await promptFor({ stampTime: true }, "UTC"),
+    "It is Wednesday 14 October 2026, 07:00 (UTC).\n\nRun scheduled task: digest",
+  );
+});

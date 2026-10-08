@@ -23,6 +23,7 @@ import type {
   ExecutionOutcome,
   SchedulerTickDeps,
   TaskAttemptContext,
+  TaskSuccess,
 } from "../services/runSchedulerTick.js";
 
 const NOW = new Date("2026-08-02T12:00:00Z");
@@ -60,6 +61,8 @@ function makeDeps(opts: {
   execute?: (t: DueTaskRow, ctx: TaskAttemptContext) => Promise<{ output: unknown; deferred?: true }>;
   finishResult?: boolean;
   cancelled?: () => boolean;
+  /** Runs inside the success hook, after the call was recorded. */
+  onSuccess?: (t: DueTaskRow, success: TaskSuccess) => Promise<void> | void;
 }) {
   const finishes: Array<{ executionId: string; taskId: string; outcome: ExecutionOutcome }> = [];
   const executions: Array<{
@@ -72,6 +75,9 @@ function makeDeps(opts: {
   const contexts: TaskAttemptContext[] = [];
   const sleeps: number[] = [];
   const failures: Array<{ taskId: string; executionId: string; error: string; attempts: number }> = [];
+  const successes: Array<{ taskId: string } & TaskSuccess> = [];
+  /** Every call that reaches a dep, in order. */
+  const order: string[] = [];
   const attemptsSeen: Record<string, number> = {};
   let executionSeq = 0;
   const deps: SchedulerTickDeps = {
@@ -105,18 +111,24 @@ function makeDeps(opts: {
     },
     finishExecution: async (executionId, t, outcome) => {
       finishes.push({ executionId, taskId: t.id, outcome });
+      order.push(`finish:${outcome.status}`);
       return opts.finishResult ?? true;
     },
     ...(opts.cancelled ? { isExecutionCancelled: async () => opts.cancelled!() } : {}),
     notifyFailure: async (t, failure) => {
       failures.push({ taskId: t.id, ...failure });
     },
+    notifySuccess: async (t, success) => {
+      successes.push({ taskId: t.id, ...success });
+      order.push("notifySuccess");
+      await opts.onSuccess?.(t, success);
+    },
     sleep: async (ms) => {
       sleeps.push(ms);
     },
     cancelPollMs: 5,
   };
-  return { finishes, executions, contexts, sleeps, failures, deps };
+  return { finishes, executions, contexts, sleeps, failures, successes, order, deps };
 }
 
 const EMPTY = { due: 0, executed: 0, failed: 0, skipped: 0, deferred: 0, cancelled: 0, retries: 0, reaped: 0 };
@@ -486,4 +498,208 @@ test("without an injected clock the start time is the wall clock", async () => {
   await runTaskFiring(task(), { triggeredBy: "schedule" }, deps);
   assert.ok(executions[0]!.now.getTime() >= before);
   assert.ok(executions[0]!.now.getTime() <= Date.now());
+});
+
+// ============================================
+// notifySuccess: told once, decides nothing
+// ============================================
+
+test("a won finish as success tells notifySuccess once, after the row is closed", async () => {
+  const { runSchedulerTick } = await import("../services/runSchedulerTick.js");
+  const at = new Date("2026-08-02T12:00:07Z");
+  const { deps, successes, failures, order } = makeDeps({
+    due: [task()],
+    executeResults: { task_1: { output: { content: "the digest" } } },
+  });
+  deps.clock = () => at;
+  const result = await runSchedulerTick({ now: NOW }, deps);
+
+  assert.deepEqual(result, { ...EMPTY, due: 1, executed: 1 });
+  assert.equal(successes.length, 1);
+  const { durationMs, ...told } = successes[0]!;
+  assert.deepEqual(told, {
+    taskId: "task_1",
+    executionId: "exec_1",
+    attempts: 1,
+    triggeredBy: "schedule",
+    output: { content: "the digest" },
+    finishedAt: at,
+  });
+  assert.ok(durationMs >= 0);
+  assert.deepEqual(order, ["finish:success", "notifySuccess"], "never before the compare-and-set");
+  assert.equal(failures.length, 0);
+});
+
+test("a success after retries is told once, with the attempt that succeeded", async () => {
+  const { runSchedulerTick } = await import("../services/runSchedulerTick.js");
+  const { deps, successes, failures, order } = makeDeps({
+    due: [task({ maxRetries: 2 })],
+    executeResults: { task_1: [new Error("provider 500"), { output: { content: "second try" } }] },
+  });
+  await runSchedulerTick({ now: NOW }, deps);
+
+  assert.equal(successes.length, 1);
+  assert.equal(successes[0]!.executionId, "exec_2");
+  assert.equal(successes[0]!.attempts, 2);
+  assert.deepEqual(order, ["finish:failed", "finish:success", "notifySuccess"]);
+  assert.equal(failures.length, 0);
+});
+
+test("a success whose finish loses the compare-and-set tells nobody", async () => {
+  const { runSchedulerTick } = await import("../services/runSchedulerTick.js");
+  const { deps, successes, finishes } = makeDeps({ due: [task()], finishResult: false });
+  await runSchedulerTick({ now: NOW }, deps);
+
+  assert.equal(finishes.length, 1, "the finish was tried");
+  assert.equal(successes.length, 0, "another finisher closed the row; nothing is announced or sent");
+});
+
+test("a success that could not be saved tells nobody", async () => {
+  const { runSchedulerTick } = await import("../services/runSchedulerTick.js");
+  const { deps, successes } = makeDeps({ due: [task()] });
+  deps.finishExecution = async () => {
+    throw new Error("db down");
+  };
+  const result = await runSchedulerTick({ now: NOW }, deps);
+  assert.deepEqual(result, { ...EMPTY, due: 1, failed: 1 });
+  assert.equal(successes.length, 0);
+});
+
+test("notifySuccess is never told about a failure, a timeout, a cancel or a deferred run", async () => {
+  const { runSchedulerTick } = await import("../services/runSchedulerTick.js");
+
+  const failed = makeDeps({ due: [task({ maxRetries: 1 })], executeResults: { task_1: new Error("boom") } });
+  await runSchedulerTick({ now: NOW }, failed.deps);
+  assert.equal(failed.successes.length, 0);
+  assert.equal(failed.failures.length, 1);
+
+  const timedOut = makeDeps({ due: [task({ timeout: 20 })], executeDelayMs: 200 });
+  await runSchedulerTick({ now: NOW }, timedOut.deps);
+  assert.equal(timedOut.successes.length, 0);
+
+  let cancelled = false;
+  const stopped = makeDeps({
+    due: [task()],
+    cancelled: () => cancelled,
+    execute: async (_t, ctx) => {
+      cancelled = true;
+      await new Promise((_, reject) => ctx.signal.addEventListener("abort", () => reject(ctx.signal.reason)));
+      return { output: {} };
+    },
+  });
+  assert.deepEqual(await runSchedulerTick({ now: NOW }, stopped.deps), { ...EMPTY, due: 1, cancelled: 1 });
+  assert.equal(stopped.successes.length, 0);
+
+  const deferred = makeDeps({
+    due: [task({ taskType: "workflow_run" })],
+    executeResults: { task_1: { output: { executionId: "run_1" }, deferred: true } },
+  });
+  assert.deepEqual(await runSchedulerTick({ now: NOW }, deferred.deps), { ...EMPTY, due: 1, deferred: 1 });
+  assert.equal(deferred.successes.length, 0);
+});
+
+test("a hook that throws leaves the run a success: one finish, no new attempt, the same schedule", async () => {
+  const { runSchedulerTick } = await import("../services/runSchedulerTick.js");
+  const run = async (onSuccess?: () => Promise<void>) => {
+    const made = makeDeps({ due: [task({ maxRetries: 3 })], ...(onSuccess ? { onSuccess } : {}) });
+    const claims: Array<{ taskId: string; now: Date }> = [];
+    made.deps.claimTask = async (t, now) => {
+      claims.push({ taskId: t.id, now });
+      return true;
+    };
+    const result = await runSchedulerTick({ now: NOW }, made.deps);
+    return { ...made, claims, result };
+  };
+
+  const quiet = await run();
+  const throwing = await run(async () => {
+    throw new Error("slack is down");
+  });
+
+  assert.deepEqual(throwing.result, { ...EMPTY, due: 1, executed: 1 });
+  assert.deepEqual(throwing.result, quiet.result, "counted exactly as a run whose hook did nothing");
+  // The only writes to the row and the task are the claim (next run time)
+  // and the one finish (status, counters): the same with and without.
+  assert.deepEqual(throwing.claims, quiet.claims);
+  assert.deepEqual(
+    throwing.finishes.map((f) => [f.executionId, f.outcome.status, f.outcome.output, f.outcome.retryAt]),
+    quiet.finishes.map((f) => [f.executionId, f.outcome.status, f.outcome.output, f.outcome.retryAt]),
+  );
+  assert.deepEqual(throwing.finishes.map((f) => f.outcome.status), ["success"]);
+  assert.equal(throwing.executions.length, 1, "no second execution row");
+  assert.equal(throwing.contexts.length, 1, "the task ran once");
+  assert.deepEqual(throwing.sleeps, [], "no backoff was started");
+  assert.equal(throwing.failures.length, 0, "and it is not reported as a failure");
+  assert.equal(throwing.successes.length, 1);
+});
+
+test("a hook that throws before its first await is dropped the same way", async () => {
+  const { runTaskFiring } = await import("../services/runSchedulerTick.js");
+  const { deps, finishes, failures } = makeDeps({ due: [] });
+  deps.notifySuccess = (() => {
+    throw new Error("not even a promise");
+  }) as never;
+  const firing = await runTaskFiring(task({ maxRetries: 2 }), { triggeredBy: "manual" }, deps);
+  assert.deepEqual(firing, { status: "success", executionId: "exec_1", attempts: 1 });
+  assert.deepEqual(finishes.map((f) => f.outcome.status), ["success"]);
+  assert.equal(failures.length, 0);
+});
+
+test("a hook that never answers is waited for up to its bound, then the firing ends as success", async () => {
+  const { runTaskFiring, DEFAULT_NOTIFY_SUCCESS_TIMEOUT_MS } = await import("../services/runSchedulerTick.js");
+  assert.equal(DEFAULT_NOTIFY_SUCCESS_TIMEOUT_MS, 30_000);
+  const { deps, finishes, executions, successes } = makeDeps({
+    due: [],
+    onSuccess: () => new Promise<void>(() => {}),
+  });
+  deps.notifySuccessTimeoutMs = 20;
+  const started = Date.now();
+  const firing = await runTaskFiring(task({ maxRetries: 2 }), { triggeredBy: "schedule" }, deps);
+
+  assert.deepEqual(firing, { status: "success", executionId: "exec_1", attempts: 1 });
+  assert.ok(Date.now() - started < 5_000, "the firing did not wait for the hook");
+  assert.equal(successes.length, 1);
+  assert.deepEqual(finishes.map((f) => f.outcome.status), ["success"]);
+  assert.equal(executions.length, 1);
+});
+
+test("a manual firing that succeeds tells notifySuccess once, as manual", async () => {
+  const { runTaskFiring } = await import("../services/runSchedulerTick.js");
+  const { deps, successes } = makeDeps({ due: [] });
+  await runTaskFiring(task(), { triggeredBy: "manual", maxRetries: 0 }, deps);
+  assert.equal(successes.length, 1);
+  assert.equal(successes[0]!.triggeredBy, "manual");
+});
+
+test("a firing with no success hook finishes as it always did", async () => {
+  const { runTaskFiring } = await import("../services/runSchedulerTick.js");
+  const { deps } = makeDeps({ due: [] });
+  delete deps.notifySuccess;
+  assert.deepEqual(await runTaskFiring(task(), { triggeredBy: "schedule" }, deps), {
+    status: "success",
+    executionId: "exec_1",
+    attempts: 1,
+  });
+});
+
+test("\"Run now\" goes through the same firing, with the same hook", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const service = read("../services/scheduler.ts");
+  // triggerTask runs the firing the worker runs, on deps built in one place...
+  // (firingDeps is the default of buildFiringDeps; the execution row is the
+  // one made under the task's lock, tests/schedulerTriggerRace.unit.test.ts.)
+  assert.match(service, /buildFiringDeps: \(\) => TaskFiringDeps = firingDeps,/);
+  assert.match(
+    service,
+    /await runTaskFiring\(\s*row,\s*\{ triggeredBy: "manual", maxRetries: 0 \},[\s\S]{0,120}\{ \.\.\.buildFiringDeps\(\), createExecution: async \(\) => \(\{ id: executionId \}\) \},\s*\)/,
+  );
+  // ...and those deps, like the worker's, can deliver.
+  const firingDeps = service.slice(service.indexOf("function firingDeps()"), service.indexOf("export async function triggerTask"));
+  assert.match(firingDeps, /buildSchedulerTickDeps\(\{/);
+  assert.match(firingDeps, /resultDelivery: buildResultDeliveryDeps,/);
+  assert.match(firingDeps, /triggerWebhook\(eventOrgId, type, data\)/);
+  const queue = read("../queues/scheduler.queue.ts");
+  assert.match(queue, /resultDelivery: buildResultDeliveryDeps,/);
+  assert.match(queue, /triggerWebhook\(orgId, type, data\)/);
 });

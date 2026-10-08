@@ -135,8 +135,70 @@ function wired<K extends keyof ScheduledTaskTypeDeps>(
   return service;
 }
 
+/**
+ * The line a task with `stampTime` puts ahead of its prompt: the run's date
+ * and time on the wall clock of the task's own time zone, in words a model
+ * reads without working anything out.
+ *
+ *   It is Wednesday 14 October 2026, 09:00 (Europe/Berlin).
+ *
+ * A zone the runtime does not know is read as UTC and named as UTC, so the
+ * line never states a time in a zone it did not use.
+ */
+export function runDateLine(now: Date, timezone: string | null | undefined): string {
+  const format = (timeZone: string) =>
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(now);
+
+  let zone = typeof timezone === "string" && timezone.trim() !== "" ? timezone.trim() : "UTC";
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = format(zone);
+  } catch {
+    zone = "UTC";
+    parts = format(zone);
+  }
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "";
+  return `It is ${part("weekday")} ${part("day")} ${part("month")} ${part("year")}, ${part("hour")}:${part("minute")} (${zone}).`;
+}
+
+/** Billing refusals a graph run throws itself (services/marketplaceMetering.ts). */
+const FINAL_REFUSAL_ERROR_NAMES = new Set([
+  "MarketplaceLicenceRevokedError",
+  "MarketplacePaymentRequiredError",
+]);
+/** The marks services/sharedAgentChat.ts puts on those refusals (FINAL_CHAT_REFUSALS). */
+const FINAL_REFUSAL_KINDS = new Set(["rate_limited", "payment_required", "licence_revoked"]);
+
+/**
+ * True for a chat that was refused in a way another attempt would only meet
+ * again: the free-model limit, a buyer who cannot pay, a licence that ended.
+ * Nothing ran and nothing was charged. Matched by shape, as a permanent
+ * failure is, so this file does not load the chat core.
+ *
+ * "The server is restarting" is a refusal too, and is NOT one of these: the
+ * next attempt lands on a process that can answer. A model call that failed
+ * after a charge is not a refusal at all (the core refunded it) and is
+ * retried as before.
+ */
+export function isFinalChatRefusal(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const { chatRefusal, name } = err as { chatRefusal?: unknown; name?: unknown };
+  if (typeof chatRefusal === "string") return FINAL_REFUSAL_KINDS.has(chatRefusal);
+  return typeof name === "string" && FINAL_REFUSAL_ERROR_NAMES.has(name);
+}
+
 async function runAgentTask(
-  task: ScheduledTaskForExecution,
+  task: ScheduledTaskForExecution & { timezone?: string | null },
   ctx: TaskRunContext,
   deps: ExecuteScheduledTaskDeps,
 ): Promise<TaskResult> {
@@ -150,12 +212,26 @@ async function runAgentTask(
   const payload = payloadRecord(task.payload);
   // Tasks saved before prompts were required have none; they keep running
   // with the prompt they have always been given.
-  const prompt =
+  const asked =
     typeof payload.prompt === "string" && payload.prompt.trim() !== ""
       ? payload.prompt
       : `Run scheduled task: ${task.name}`;
+  // Only when the task asks for it: a task saved before this existed sends
+  // exactly the prompt it always has.
+  const prompt =
+    payload.stampTime === true ? `${runDateLine(ctx.now, task.timezone)}\n\n${asked}` : asked;
 
-  const result = await deps.runAgentChat({ agent, prompt, signal: ctx.signal });
+  let result: Awaited<ReturnType<ExecuteScheduledTaskDeps["runAgentChat"]>>;
+  try {
+    result = await deps.runAgentChat({ agent, prompt, signal: ctx.signal });
+  } catch (err) {
+    // A refusal ends the firing at once, with the message it came with: the
+    // retry would be refused the same way seconds later.
+    if (isFinalChatRefusal(err) && !isAbort(err, ctx.signal)) {
+      throw permanentFailure(err instanceof Error ? err.message : String(err));
+    }
+    throw err;
+  }
   return {
     output: {
       content: result.content,
@@ -242,7 +318,8 @@ async function runWebhookTask(
 }
 
 export async function executeScheduledTask(
-  task: ScheduledTaskForExecution,
+  /** `timezone` is the task's own zone; only the date line reads it. */
+  task: ScheduledTaskForExecution & { timezone?: string | null },
   deps: ExecuteScheduledTaskDeps,
   context: Partial<TaskRunContext> = {},
 ): Promise<TaskResult> {

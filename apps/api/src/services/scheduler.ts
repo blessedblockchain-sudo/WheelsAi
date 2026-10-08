@@ -17,8 +17,9 @@ import { Prisma, prisma } from "@wheelsai/db";
 import { env } from "../config/env.js";
 import { buildSchedulerTickDeps, effectiveMaxRetries } from "./buildSchedulerTickDeps.js";
 import { finishScheduledExecution } from "./finishScheduledExecution.js";
-import { runTaskFiring, type DueTaskRow } from "./runSchedulerTick.js";
+import { runTaskFiring, type DueTaskRow, type TaskFiringDeps } from "./runSchedulerTick.js";
 import { buildSchedulerExecutorDeps } from "./scheduledTaskExecutorProduction.js";
+import { buildResultDeliveryDeps } from "./scheduledTasks/buildResultDeliveryDeps.js";
 import { productionTaskTypeCapabilities } from "./scheduledTasks/buildScheduledTaskTypeDeps.js";
 import {
   taskTypeCatalogue,
@@ -348,6 +349,8 @@ function firingDeps() {
     emitEvent: async (eventOrgId, type, data) => {
       await triggerWebhook(eventOrgId, type, data);
     },
+    // A "Run now" that succeeds is delivered like a scheduled run.
+    resultDelivery: buildResultDeliveryDeps,
   });
 }
 
@@ -366,22 +369,52 @@ function firingDeps() {
  * A manual run is not retried; the person who asked is looking at the
  * result and can ask again.
  */
-export async function triggerTask(id: string, orgId: string) {
-  const task = await prisma.scheduledTask.findFirst({ where: { id, orgId } });
-  if (!task) throw taskNotFound();
+export async function triggerTask(
+  id: string,
+  orgId: string,
+  /** The firing's dependencies; replaced in tests. */
+  buildFiringDeps: () => TaskFiringDeps = firingDeps,
+) {
+  // Two requests that arrive together must not both read "none running" and
+  // both run (and both charge). The task's row is locked first, so the read
+  // and the creation of the execution row are one step per task: the second
+  // request waits for the first and then sees its row.
+  const { task, executionId } = await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT "id" FROM "scheduled_tasks"
+      WHERE "id" = ${id}::uuid AND "org_id" = ${orgId}::uuid
+      FOR UPDATE`);
+    if (locked.length === 0) throw taskNotFound();
+    const task = await tx.scheduledTask.findFirst({ where: { id, orgId } });
+    if (!task) throw taskNotFound();
 
-  const running = await prisma.taskExecution.findFirst({
-    where: { taskId: id, status: "running" },
-    select: { id: true },
+    const running = await tx.taskExecution.findFirst({
+      where: { taskId: id, status: "running" },
+      select: { id: true },
+    });
+    if (running) {
+      throw new SchedulerError(
+        409,
+        "already_running",
+        "This task is already running; wait for it to finish or cancel that execution",
+        { executionId: running.id },
+      );
+    }
+    // The row the firing would make for its first attempt
+    // (buildSchedulerTickDeps, createExecution), made here under the lock.
+    const execution = await tx.taskExecution.create({
+      data: {
+        taskId: task.id,
+        status: "running",
+        input: (task.payload ?? {}) as Prisma.InputJsonValue,
+        triggeredBy: "manual",
+        attempt: 1,
+        startedAt: new Date(),
+      },
+      select: { id: true },
+    });
+    return { task, executionId: execution.id };
   });
-  if (running) {
-    throw new SchedulerError(
-      409,
-      "already_running",
-      "This task is already running; wait for it to finish or cancel that execution",
-      { executionId: running.id },
-    );
-  }
 
   const row: DueTaskRow = {
     id: task.id,
@@ -400,7 +433,12 @@ export async function triggerTask(id: string, orgId: string) {
     timezone: task.timezone,
     nextRunAt: task.nextRunAt ?? new Date(),
   };
-  const firing = await runTaskFiring(row, { triggeredBy: "manual", maxRetries: 0 }, firingDeps());
+  const firing = await runTaskFiring(
+    row,
+    { triggeredBy: "manual", maxRetries: 0 },
+    // A manual run has one attempt, and its row exists already.
+    { ...buildFiringDeps(), createExecution: async () => ({ id: executionId }) },
+  );
   if (!firing.executionId) {
     throw new Error(`could not record the execution: ${firing.error ?? "unknown error"}`);
   }

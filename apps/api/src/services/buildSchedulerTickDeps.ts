@@ -19,6 +19,16 @@
  * clock), never the time of the tick that queued it. A workflow_run row
  * waits for the longest a workflow may run instead, because its worker
  * (and that worker's own reaper) normally finishes it.
+ *
+ * After a run is closed as success, notifySuccess does three things in
+ * this order, each on its own so a failure in one does not stop the next:
+ *   1. emits scheduled_task.completed to the organization's webhooks (every
+ *      task type);
+ *   2. sends the result to the place the task names (agent_run and inference
+ *      only; resultDelivery.ts decides, so a report is never sent twice);
+ *   3. writes how that went to TaskExecution.delivery, when anything was
+ *      tried, by a write that sets that one column.
+ * None of it can change the run: the tick has already recorded it.
  */
 
 import type { Prisma, PrismaClient } from "@prisma/client";
@@ -32,7 +42,13 @@ import {
   type FinishScheduledExecutionPrisma,
 } from "./finishScheduledExecution.js";
 import type { DueTaskRow, SchedulerTickDeps } from "./runSchedulerTick.js";
+import { answerTextOf } from "./agentOwnSchedule.js";
 import { getTaskType } from "./scheduledTaskTypes.js";
+import {
+  deliverResult,
+  type DeliveryRecord,
+  type ResultDeliveryDeps,
+} from "./scheduledTasks/resultDelivery.js";
 import { nextRun } from "./scheduleCalc.js";
 
 const DEFAULT_BATCH_LIMIT = 20;
@@ -47,6 +63,23 @@ export const LOST_EXECUTION_ERROR =
   "run lost: the worker stopped before this execution finished";
 /** Errors travel in a webhook payload; a stack-sized message does not belong there. */
 const EVENT_ERROR_MAX = 2000;
+/** The same cut workflow.completed makes (runWorkflowExecutionJob.ts). */
+const EVENT_OUTPUT_PREVIEW_CHARS = 2_000;
+
+/**
+ * The start of what a finished run produced, for the webhook event: the
+ * answer text of an agent run; for a type that has no answer text (a
+ * webhook's status, a sync's counts) the stored output as JSON, which is
+ * what workflow.completed carries. Cut the way that event cuts it.
+ */
+export function outputPreviewOf(output: unknown): string {
+  const text =
+    answerTextOf(output) ??
+    (output === undefined || output === null ? "" : (JSON.stringify(output) ?? ""));
+  return text.length > EVENT_OUTPUT_PREVIEW_CHARS
+    ? `${text.slice(0, EVENT_OUTPUT_PREVIEW_CHARS)}...`
+    : text;
+}
 
 interface ScheduledTaskDelegateStub {
   findMany: (args: {
@@ -121,6 +154,21 @@ export interface SchedulerPrismaStub {
   taskExecution: TaskExecutionDelegateStub & FinishScheduledExecutionPrisma["taskExecution"];
 }
 
+/**
+ * The one write the delivery step makes: the delivery column of one
+ * execution, and nothing else on the row. Its own surface, so the tick's
+ * Prisma stub stays what it was for callers that deliver nothing.
+ */
+export interface DeliveryRecordPrisma {
+  taskExecution: {
+    update: (args: {
+      where: { id: string };
+      data: { delivery: Prisma.InputJsonValue };
+      select: { id: true };
+    }) => Promise<unknown>;
+  };
+}
+
 type SchedulerPrismaSurface =
   | Pick<PrismaClient, "scheduledTask" | "taskExecution">
   | SchedulerPrismaStub;
@@ -150,13 +198,19 @@ type _ReapArgsCheck = Parameters<
 >[0] extends Prisma.TaskExecutionFindManyArgs
   ? true
   : never;
+type _DeliveryArgsCheck = Parameters<
+  DeliveryRecordPrisma["taskExecution"]["update"]
+>[0] extends Prisma.TaskExecutionUpdateArgs
+  ? true
+  : never;
 const _argsCheck: [
   _FindArgsCheck,
   _UpdateArgsCheck,
   _CreateArgsCheck,
   _StatusArgsCheck,
   _ReapArgsCheck,
-] = [true, true, true, true, true];
+  _DeliveryArgsCheck,
+] = [true, true, true, true, true, true];
 void _argsCheck;
 
 export interface BuildSchedulerTickDepsInput {
@@ -166,13 +220,23 @@ export interface BuildSchedulerTickDepsInput {
   /** Signed outbound webhook events; absent in tests that do not care. */
   emitEvent?: (
     orgId: string,
-    type: "scheduled_task.failed",
+    type: SchedulerEventType,
     data: Record<string, unknown>,
   ) => Promise<void>;
+  /**
+   * How a finished agent run's result reaches the place its task names
+   * (buildResultDeliveryDeps() in production). Absent: results are stored
+   * and nothing is sent, which is what a test that does not care gets.
+   */
+  resultDelivery?: ResultDeliveryDeps | (() => ResultDeliveryDeps);
+  /** Where the delivery outcome is written; defaults to `prisma`. */
+  deliveryStore?: DeliveryRecordPrisma;
   cancelPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
   clock?: () => Date;
 }
+
+export type SchedulerEventType = "scheduled_task.failed" | "scheduled_task.completed";
 
 /** The retries a task type is allowed; a type that is not retried gets none. */
 export function effectiveMaxRetries(taskType: string, maxRetries: number): number {
@@ -184,6 +248,14 @@ export function buildSchedulerTickDeps(
 ): SchedulerTickDeps {
   const prisma = input.prisma as SchedulerPrismaStub;
   const batchLimit = input.batchLimit ?? DEFAULT_BATCH_LIMIT;
+  const deliveryStore = input.deliveryStore ?? (input.prisma as unknown as DeliveryRecordPrisma);
+  // Built on first use, once: a tick whose tasks deliver nothing opens nothing.
+  let deliveryDeps: ResultDeliveryDeps | null = null;
+  const resultDelivery = (): ResultDeliveryDeps | null => {
+    if (!input.resultDelivery) return null;
+    return (deliveryDeps ??=
+      typeof input.resultDelivery === "function" ? input.resultDelivery() : input.resultDelivery);
+  };
 
   return {
     reapLostExecutions: async (now) => {
@@ -326,6 +398,57 @@ export function buildSchedulerTickDeps(
         triggeredBy: failure.triggeredBy,
         error: failure.error.slice(0, EVENT_ERROR_MAX),
       });
+    },
+
+    notifySuccess: async (task, success) => {
+      // 1. The event, for every task type.
+      try {
+        await input.emitEvent?.(task.orgId, "scheduled_task.completed", {
+          taskId: task.id,
+          taskName: task.name,
+          taskType: task.taskType,
+          agentId: task.agentId,
+          executionId: success.executionId,
+          attempts: success.attempts,
+          triggeredBy: success.triggeredBy,
+          durationMs: success.durationMs,
+          outputPreview: outputPreviewOf(success.output),
+        });
+      } catch {
+        // An organization's webhooks being unreachable is not a reason to
+        // keep the result from the place its owner chose.
+      }
+
+      // 2. The result, to the place the task names. deliverResult answers
+      // [] without calling anything for a task that names none or is not an
+      // agent run, and does not throw for a delivery that failed.
+      let records: DeliveryRecord[] = [];
+      try {
+        const deps = resultDelivery();
+        if (deps) {
+          records = await deliverResult(deps, {
+            orgId: task.orgId,
+            task: { name: task.name, taskType: task.taskType, payload: task.payload },
+            execution: { id: success.executionId, finishedAt: success.finishedAt },
+            text: answerTextOf(success.output) ?? "",
+          });
+        }
+      } catch {
+        records = [];
+      }
+
+      // 3. How it went. Only the delivery column: the row's status, output
+      // and times are the finish's, and stay as it wrote them.
+      if (records.length === 0) return;
+      try {
+        await deliveryStore.taskExecution.update({
+          where: { id: success.executionId },
+          data: { delivery: records as unknown as Prisma.InputJsonValue },
+          select: { id: true },
+        });
+      } catch {
+        // The result was sent (or not) either way; the run is unchanged.
+      }
     },
 
     sleep: input.sleep,

@@ -13,7 +13,12 @@ import {
   MarketplacePaymentRequiredError,
 } from "../services/marketplaceMetering.js";
 import type { ChatMessage, ChatResult, RunChatOptions } from "../services/mastra-runtime.js";
-import { createRunAgentChat, FREE_TIER_LIMIT_MESSAGE } from "../services/sharedAgentChat.js";
+import {
+  chatRefusalOf,
+  createRunAgentChat,
+  FINAL_CHAT_REFUSALS,
+  FREE_TIER_LIMIT_MESSAGE,
+} from "../services/sharedAgentChat.js";
 
 // Drives services/sharedAgentChat.ts, the agent call that scheduled tasks,
 // workflow steps and the test runner share. It runs through the SAME core as
@@ -536,4 +541,72 @@ test("the deps are built on first use, once", async () => {
   await run({ agent: agent(OWN_KEY), prompt: "a" });
   await run({ agent: agent(OWN_KEY), prompt: "b" });
   assert.equal(builds, 1);
+});
+
+// ============================================
+// Refusals are marked, so a caller can tell them from a failed model call
+// ============================================
+
+/** The error a run throws, or a failed assertion when it answers. */
+async function thrownBy(run: Promise<unknown>): Promise<unknown> {
+  try {
+    await run;
+  } catch (err) {
+    return err;
+  }
+  return assert.fail("the run was expected to throw");
+}
+
+test("each refusal carries its kind; the message a caller records is unchanged", async () => {
+  const limited = makeDeps(agent(FREE), { allowed: false });
+  const limit = await thrownBy(createRunAgentChat(limited.deps)({ agent: agent(FREE), prompt: "hi" }));
+  assert.equal(chatRefusalOf(limit), "rate_limited");
+  assert.equal((limit as Error).message, FREE_TIER_LIMIT_MESSAGE);
+
+  const broke = makeDeps(agent(OWN_KEY), {
+    metering: { ok: false, reason: "insufficient_credits", requiredCents: 5n, balanceCents: 1n, listingTitle: "Pro" },
+  });
+  const payment = await thrownBy(createRunAgentChat(broke.deps)({ agent: agent(OWN_KEY), prompt: "hi" }));
+  assert.equal(chatRefusalOf(payment), "payment_required");
+  assert.ok(payment instanceof MarketplacePaymentRequiredError, "still the typed error");
+
+  const ended = makeDeps(agent(OWN_KEY), {
+    metering: { ok: false, reason: "licence_revoked", listingTitle: "Pro", revocation: "uninstalled" },
+  });
+  const licence = await thrownBy(createRunAgentChat(ended.deps)({ agent: agent(OWN_KEY), prompt: "hi" }));
+  assert.equal(chatRefusalOf(licence), "licence_revoked");
+  assert.ok(licence instanceof MarketplaceLicenceRevokedError, "still the typed error");
+
+  const restarting = makeDeps(agent(OWN_KEY), { beginRun: () => null });
+  const restart = await thrownBy(createRunAgentChat(restarting.deps)({ agent: agent(OWN_KEY), prompt: "hi" }));
+  assert.equal(chatRefusalOf(restart), "shutting_down");
+
+  // The mark is for code: it is not a field anyone sees when the error is
+  // logged or serialized.
+  assert.deepEqual(Object.keys(limit as object).includes("chatRefusal"), false);
+});
+
+test("the refusals that end a firing are the limit, a payment and an ended licence; a restart is not one", () => {
+  assert.deepEqual([...FINAL_CHAT_REFUSALS].sort(), ["licence_revoked", "payment_required", "rate_limited"]);
+  assert.equal((FINAL_CHAT_REFUSALS as readonly string[]).includes("shutting_down"), false);
+});
+
+test("a failed model call and an abort are not refusals", async () => {
+  const failing = makeDeps(agent(OWN_KEY), {
+    runChat: async () => {
+      throw Object.assign(new Error("The model provider rejected the key."), {
+        name: "ProviderHttpError",
+        status: 401,
+      });
+    },
+  });
+  const failed = await thrownBy(createRunAgentChat(failing.deps)({ agent: agent(OWN_KEY), prompt: "hi" }));
+  assert.equal(chatRefusalOf(failed), null);
+  // Charged, then refunded by the core: what makes a retry safe to bill again.
+  assert.deepEqual(failing.world.events.slice(0, 2), ["meter:charge", "meter:refund"]);
+
+  assert.equal(chatRefusalOf(new DOMException("The operation was aborted", "AbortError")), null);
+  assert.equal(chatRefusalOf(new Error("plain")), null);
+  assert.equal(chatRefusalOf(null), null);
+  assert.equal(chatRefusalOf("rate_limited"), null);
 });

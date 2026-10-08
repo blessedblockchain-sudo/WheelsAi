@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { buildSchedulerTickDeps } from "../services/buildSchedulerTickDeps.js";
 import { runSchedulerTick } from "../services/runSchedulerTick.js";
 import { buildSchedulerExecutorDeps } from "../services/scheduledTaskExecutorProduction.js";
+import { buildResultDeliveryDeps } from "../services/scheduledTasks/buildResultDeliveryDeps.js";
 import { triggerWebhook } from "../services/webhooks.js";
 import { createLogger } from "../utils/logger.js";
 import { getQueueConnectionOpts } from "./connection.js";
@@ -59,6 +60,7 @@ export async function startSchedulerQueue(): Promise<void> {
         emitEvent: async (orgId, type, data) => {
           await triggerWebhook(orgId, type, data);
         },
+        resultDelivery: buildResultDeliveryDeps,
       });
       const result = await runSchedulerTick(
         { now: new Date(), concurrency: env.SCHEDULER_CONCURRENCY },

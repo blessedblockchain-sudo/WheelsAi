@@ -33,6 +33,13 @@
  *      budget), and a cancel.
  *      A `deferred` result (a queued workflow run) is left 'running':
  *      the worker that owns the work finishes the row.
+ *        d. notifySuccess, once, after a finish as success that this
+ *           firing won. It is told about the run and decides nothing: it
+ *           runs after the row and the task's counters are written, a
+ *           throw or a hang past its bound is dropped, and the firing's
+ *           result is 'success' either way. Sending a result somewhere
+ *           lives here, so a failed delivery can never fail the run or
+ *           run the agent again.
  *
  * Due tasks run through a bounded pool, so one slow task no longer holds
  * up every task behind it. Per-task isolation: a throw anywhere fails
@@ -87,6 +94,19 @@ export interface TaskAttemptContext {
   now: Date;
 }
 
+/** What notifySuccess is told about the run that just finished. */
+export interface TaskSuccess {
+  executionId: string;
+  /** The number of the attempt that succeeded: 1 unless earlier ones failed. */
+  attempts: number;
+  triggeredBy: FiringTrigger;
+  durationMs: number;
+  /** What the task returned, as it was stored on the execution. */
+  output: unknown;
+  /** When the firing saw the row closed. */
+  finishedAt: Date;
+}
+
 export interface TaskFiringDeps {
   /** `now` is the attempt's own start time and becomes the row's startedAt. */
   createExecution: (
@@ -110,6 +130,16 @@ export interface TaskFiringDeps {
     task: DueTaskRow,
     failure: { executionId: string; error: string; attempts: number; triggeredBy: FiringTrigger },
   ) => Promise<void>;
+  /**
+   * Told once per firing that ended in success, after the execution row was
+   * closed by a compare-and-set this firing won (never when another finisher
+   * closed the row first, never for a deferred run). Nothing it does, throws
+   * or returns reaches the outcome: the run stays a success, no attempt
+   * follows, and the task's next run time and counters are already written.
+   */
+  notifySuccess?: (task: DueTaskRow, success: TaskSuccess) => Promise<void>;
+  /** How long notifySuccess may take before the firing stops waiting for it. */
+  notifySuccessTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   /** The wall clock; replaced in tests. */
   clock?: () => Date;
@@ -151,6 +181,25 @@ export interface FiringResult {
 
 export const DEFAULT_SCHEDULER_CONCURRENCY = 4;
 const DEFAULT_CANCEL_POLL_MS = 2_000;
+/**
+ * A webhook event and one post to a chat channel or mail provider fit in
+ * this many times over. Past it the firing stops waiting, so a place that
+ * never answers cannot hold a pool slot (or a "Run now" request) open.
+ */
+export const DEFAULT_NOTIFY_SUCCESS_TIMEOUT_MS = 30_000;
+
+/** The error stored on an execution that ran past its task's time limit. */
+export function taskTimeoutError(timeoutMs: number): string {
+  return `task timed out after ${timeoutMs}ms`;
+}
+
+/**
+ * Whether a stored error is that one: the scheduler's own time limit, and
+ * not a provider or a tool that timed out inside the run.
+ */
+export function isTaskTimeoutError(stored: string | null | undefined): boolean {
+  return typeof stored === "string" && /^task timed out after \d+ms$/.test(stored.trim());
+}
 
 /** 5 s, 10 s, 20 s, 40 s, then 60 s. */
 export function retryBackoffMs(failedAttempt: number): number {
@@ -229,6 +278,39 @@ async function runAttempt(
 }
 
 /**
+ * Tells the success hook and waits for it, up to its bound. Returns
+ * normally whatever the hook does: a notification is not part of the
+ * outcome.
+ */
+async function tellSuccess(
+  task: DueTaskRow,
+  success: TaskSuccess,
+  deps: TaskFiringDeps,
+): Promise<void> {
+  const notify = deps.notifySuccess;
+  if (!notify) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Started inside the try, so a hook that throws before its first await
+    // is dropped like one that rejects.
+    const told = Promise.resolve().then(() => notify(task, success));
+    // If the bound wins, the hook still settles later; its rejection must
+    // not surface as an unhandled one.
+    told.catch(() => {});
+    await Promise.race([
+      told,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, deps.notifySuccessTimeoutMs ?? DEFAULT_NOTIFY_SUCCESS_TIMEOUT_MS);
+      }),
+    ]);
+  } catch {
+    // The run succeeded and is recorded as such.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * One firing of one task: its attempts, their execution rows and the
  * final outcome. The schedule must already be claimed (the tick) or not
  * involved at all ("trigger now").
@@ -289,13 +371,13 @@ export async function runTaskFiring(
       return { status: "cancelled", executionId, attempts: attempt };
     }
     if (result.kind === "done") {
+      let won: boolean | void;
       try {
-        await deps.finishExecution(executionId, task, {
+        won = await deps.finishExecution(executionId, task, {
           status: "success",
           durationMs,
           output: result.output,
         });
-        return { status: "success", executionId, attempts: attempt };
       } catch (err) {
         // The work succeeded and could not be recorded. Re-running it
         // would do (and bill) it twice, so the row stays 'running',
@@ -309,11 +391,29 @@ export async function runTaskFiring(
           }`,
         };
       }
+      // `false` is a lost compare-and-set: someone else closed the row (a
+      // cancel, the reaper) and nothing was recorded as this success, so
+      // there is nothing to announce or send.
+      if (won !== false) {
+        await tellSuccess(
+          task,
+          {
+            executionId,
+            attempts: attempt,
+            triggeredBy: firing.triggeredBy,
+            durationMs,
+            output: result.output,
+            finishedAt: clock(),
+          },
+          deps,
+        );
+      }
+      return { status: "success", executionId, attempts: attempt };
     }
 
     const error =
       result.kind === "timeout"
-        ? `task timed out after ${task.timeout}ms`
+        ? taskTimeoutError(task.timeout)
         : result.error instanceof Error
           ? result.error.message
           : String(result.error);

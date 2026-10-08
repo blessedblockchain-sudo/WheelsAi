@@ -68,6 +68,11 @@ Updated 2026-10-08.
 - The scheduler worker runs one tick at a time: the tasks of a tick run in a pool, but the next tick waits for the slowest of them, retries included.
 - A scheduled workflow run that fails sends `workflow.failed`, not `scheduled_task.failed`.
 - A model step in a workflow has not been run against a live GPU deployment; no Nosana deployment can be started locally. The same holds for streaming on a model deployment through `/v1`.
+- A member who leaves an organization keeps receiving results through their email place ("Email to <name>") until someone removes or turns off that place in Monitoring. Nothing ties a place to a membership.
+- After a successful run the firing waits for the webhook event and the delivery, up to 30 seconds, inside the tick's pool slot (and inside a "Run now" request). A place that answers slowly holds that slot for that long.
+- A timed firing can start while a run started by hand is in flight: "Run now" is refused while a run is going, a scheduled time is not.
+- A run closed as success whose counter update on the task then throws is reported as "could not be saved": it sends no `scheduled_task.completed` and no delivery. "Send again" recovers the delivery; nothing recovers the event.
+- `POST /api/destinations/:id/test` does not record when a place was last tested, so a page cannot show "tested 2 days ago".
 
 ## Deploy and billing
 

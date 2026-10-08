@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import { corsOptionsFor } from "../lib/corsPolicy.js";
 import { createWidgetRoutes, WIDGET_BODY_LIMIT_BYTES, type WidgetKeyConfig } from "../routes/widget.js";
+import { TASK_MAX_BODY_BYTES } from "../services/agentTask.js";
 import { publicChatKeys } from "../services/publicChat.js";
 import {
   APP_ORIGIN,
@@ -16,6 +17,7 @@ import {
   LIMITS,
   NOW,
   ORIGIN,
+  PAGE_KEY,
   PUBLIC_KEY,
   type FakeChat,
   type FakeChatOptions,
@@ -140,6 +142,50 @@ test("config: unknown, malformed, revoked and disabled keys are all the same 404
     assert.equal(res.statusCode, 404, bad);
   }
   assert.deepEqual(configLookups, []);
+});
+
+test("config: a page key answers 404 unless its agent's page is on; an ordinary key on a private agent answers as before", async () => {
+  // The key of an agent's public page lists no sites: the platform's own page asks.
+  const PAGE_CONFIG: WidgetKeyConfig = { ...CONFIG, allowedOrigins: [], pageOfAgentId: "agent-1", agentIsPublic: true };
+  const get = async (config: WidgetKeyConfig, origin = APP_ORIGIN) => {
+    const { app } = await server({ config });
+    return app.inject({ method: "GET", url: configUrl(), headers: { origin } });
+  };
+
+  // What a disabled key answers: the page key's refusals must be this, byte for byte.
+  const disabled = await get({ ...CONFIG, enabled: false }, ORIGIN);
+  assert.equal(disabled.statusCode, 404);
+
+  const on = await get(PAGE_CONFIG);
+  assert.equal(on.statusCode, 200);
+  assert.equal(on.json().agent.name, "Support Bot");
+
+  const refusals: Array<[string, WidgetKeyConfig]> = [
+    ["the agent is no longer public", { ...PAGE_CONFIG, agentIsPublic: false }],
+    // Fails closed: a page key whose agent was not read is not found.
+    ["the agent was not read", { ...PAGE_CONFIG, agentIsPublic: undefined }],
+    ["paused", { ...PAGE_CONFIG, enabled: false }],
+    ["revoked", { ...PAGE_CONFIG, revokedAt: NOW }],
+  ];
+  for (const [name, config] of refusals) {
+    const res = await get(config);
+    assert.equal(res.statusCode, 404, name);
+    assert.equal(res.body, disabled.body, name);
+    assert.equal(res.headers["cache-control"], disabled.headers["cache-control"], name);
+    assert.ok(!res.body.includes("Support Bot"), name);
+  }
+
+  // A key made for a website does not depend on isPublic, read or not.
+  const before = await get(CONFIG, ORIGIN);
+  for (const config of [
+    { ...CONFIG, pageOfAgentId: null, agentIsPublic: false },
+    { ...CONFIG, agentIsPublic: false },
+    { ...CONFIG, pageOfAgentId: null },
+  ] satisfies WidgetKeyConfig[]) {
+    const res = await get(config, ORIGIN);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body, before.body);
+  }
 });
 
 test("config: a site the owner did not list, and a request with no Origin, are refused 403", async () => {
@@ -461,4 +507,262 @@ test("chat: a transcript is stored only for a key whose owner opted in, with the
       assistantMessage: "Streamed answer.",
     },
   ]);
+});
+
+// ============================================
+// POST run: a task run from an agent's public page
+// ============================================
+
+const runUrl = (key = PUBLIC_KEY) => `/api/widget/${key}/run`;
+const INPUT = { topic: "Returns policy", audience: "Customers" };
+
+/** The platform's own page is where a page key is used from. */
+const postRun = (app: FastifyInstance, body: unknown, headers: Record<string, string> = { origin: APP_ORIGIN }, key?: string) =>
+  app.inject({ method: "POST", url: runUrl(key), headers: { "content-type": "application/json", ...headers }, payload: JSON.stringify(body) });
+
+test("run: with stream false the answer is the result as text and the tools' names, readable from the page and never with credentials", async () => {
+  const { app, chat } = await server({ key: PAGE_KEY });
+  const res = await postRun(app, { input: INPUT, stream: false });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), {
+    output: { format: "text", text: "Hello there." },
+    toolCalls: [{ name: "web_search", status: "unavailable" }],
+  });
+  assert.equal(res.headers["access-control-allow-origin"], APP_ORIGIN);
+  assert.equal(res.headers["access-control-allow-credentials"], undefined);
+  assert.match(String(res.headers.vary), /Origin/);
+  assert.equal(res.headers["cache-control"], "no-store");
+  assert.ok(!res.body.includes("TAVILY"));
+  assert.ok(!res.body.includes("org-owner"));
+
+  // It ran as a public caller on the owner's agent, bounded as a task is.
+  assert.equal(chat.chatInputs.length, 1);
+  const input = chat.chatInputs[0]!;
+  assert.equal(input.caller, "public");
+  assert.equal(input.source, "widget");
+  assert.equal(input.orgId, KEY.orgId);
+  assert.deepEqual(input.agent, { id: KEY.agentId });
+  assert.equal(input.maxOutputTokens, 2048);
+  assert.equal(input.maxToolRounds, 3);
+  assert.equal(input.deadlineMs, 120_000);
+  assert.equal(input.modelOverride, undefined);
+});
+
+test("run: streaming is the default, in the public encoding, and the stream keeps its CORS headers", async () => {
+  const { app } = await server({
+    key: PAGE_KEY,
+    streamEvents: [
+      'data: {"id":"chatcmpl-1","model":"llama-3.3-70b-versatile","choices":[{"delta":{"content":"Streamed "}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"result."}}],"x_groq":{"id":"req_1"}}\n\n',
+    ],
+  });
+  const res = await postRun(app, { input: INPUT });
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.headers["content-type"]), /text\/event-stream/);
+  assert.equal(res.headers["access-control-allow-origin"], APP_ORIGIN);
+  assert.equal(res.headers["access-control-allow-credentials"], undefined);
+  assert.match(res.body, /"content":"Streamed "/);
+  assert.match(res.body, /"content":"result\."/);
+  assert.match(res.body, /data: \[DONE\]/);
+  assert.ok(!res.body.includes("llama") && !res.body.includes("x_groq") && !res.body.includes("chatcmpl"));
+
+  // A provider error in the stream is said once, in our words.
+  const failing = await server({
+    key: PAGE_KEY,
+    streamOutcome: { ok: false, error: "groq: invalid api key gsk_live_abc", toolCalls: [] },
+    streamEvents: ['data: {"error":{"message":"groq: invalid api key gsk_live_abc"}}\n\n'],
+  });
+  const failed = await postRun(failing.app, { input: INPUT });
+  assert.equal(failed.statusCode, 200);
+  assert.match(failed.body, /"code":"model_error"/);
+  assert.ok(!failed.body.includes("gsk_live") && !failed.body.includes("groq"));
+});
+
+test("run: the preflight from the page allows POST with content-type and no credentials", async () => {
+  const { app } = await server({ key: PAGE_KEY });
+  const res = await app.inject({
+    method: "OPTIONS",
+    url: runUrl(),
+    headers: {
+      origin: APP_ORIGIN,
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type",
+    },
+  });
+  assert.equal(res.statusCode, 204);
+  assert.equal(res.headers["access-control-allow-origin"], APP_ORIGIN);
+  assert.equal(res.headers["access-control-allow-credentials"], undefined);
+  assert.equal(res.headers["access-control-allow-methods"], "GET, POST");
+});
+
+test("run: 400 for a body that is not { input, stream? } or cannot be read, before any lookup", async () => {
+  const { app, chat } = await server({ key: PAGE_KEY, limits: { ...LIMITS, widget: { ...LIMITS.widget, perIpPerMinute: 100 } } });
+  for (const body of [{ input: INPUT, model: "gpt-4" }, { input: INPUT, stream: "yes" }, { messages: [] }, []]) {
+    const res = await postRun(app, body);
+    assert.equal(res.statusCode, 400, JSON.stringify(body));
+    assert.equal(res.json().error, "invalid_request");
+  }
+  const broken = await app.inject({
+    method: "POST",
+    url: runUrl(),
+    headers: { "content-type": "application/json", origin: APP_ORIGIN },
+    payload: "{not json",
+  });
+  assert.equal(broken.statusCode, 400);
+  assert.deepEqual(broken.json(), { error: "invalid_request", message: "The request could not be read." });
+  assert.ok(!chat.log.includes("loadKey"));
+  assert.equal(chat.chatInputs.length, 0);
+});
+
+test("run: 404 for unknown, malformed and paused keys and for a page that is off; 403 for any site but the platform's own page", async () => {
+  const unknown = await server({ key: PAGE_KEY });
+  const missing = await postRun(unknown.app, { input: INPUT }, { origin: APP_ORIGIN }, `wpk_${"b".repeat(32)}`);
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(missing.json(), { error: "widget_key_not_found", message: "Not found." });
+  unknown.chat.log.length = 0;
+  // Not the shape of a key: no lookup, and nothing counted.
+  assert.equal((await postRun(unknown.app, { input: INPUT }, { origin: APP_ORIGIN }, "not-a-key")).statusCode, 404);
+  assert.deepEqual(unknown.chat.log, []);
+
+  for (const key of [
+    { ...PAGE_KEY, enabled: false },
+    { ...PAGE_KEY, revokedAt: NOW },
+    { ...PAGE_KEY, agent: { ...PAGE_KEY.agent!, isPublic: false } },
+  ]) {
+    const { app, chat } = await server({ key });
+    const res = await postRun(app, { input: INPUT });
+    assert.equal(res.statusCode, 404);
+    assert.deepEqual(res.json(), missing.json(), "a stranger cannot tell why");
+    assert.equal(chat.chatInputs.length, 0);
+  }
+
+  const { app, chat } = await server({ key: PAGE_KEY });
+  for (const headers of [{ origin: ORIGIN }, { origin: "https://evil.example.net" }, {}] as Array<Record<string, string>>) {
+    const res = await postRun(app, { input: INPUT }, headers);
+    assert.equal(res.statusCode, 403);
+    assert.deepEqual(res.json(), { error: "origin_not_allowed", message: "This site is not allowed to use this agent." });
+  }
+  assert.equal(chat.chatInputs.length, 0);
+  assert.equal(await chat.limiter.peek(publicChatKeys.widgetKeyDay(KEY.id, DAY)), 0, "none of the page's cap was used");
+});
+
+test("run: 409 for an agent that is not a task agent, 413 for answers that are too long, 422 with each answer to fix; none of them spends the cap", async () => {
+  const chatAgent = await server({ key: { ...PAGE_KEY, agent: { ...PAGE_KEY.agent!, agentKind: "conversation" } } });
+  const conflict = await postRun(chatAgent.app, { input: INPUT });
+  assert.equal(conflict.statusCode, 409);
+  assert.deepEqual(conflict.json(), {
+    error: "not_a_task_agent",
+    message: "This agent is not set up to run tasks. Chat with it instead.",
+  });
+
+  const { app, chat } = await server({ key: PAGE_KEY });
+  const tooLong = await postRun(app, { input: { topic: "x".repeat(8_001) } });
+  assert.equal(tooLong.statusCode, 413);
+  assert.deepEqual(tooLong.json(), {
+    error: "input_too_large",
+    message: "Your answers are too long. Shorten them and try again.",
+  });
+
+  // A body over the route's limit is refused by the parser, and said the same way.
+  const huge = await postRun(app, { input: { topic: "x".repeat(TASK_MAX_BODY_BYTES) } });
+  assert.equal(huge.statusCode, 413);
+  assert.deepEqual(huge.json(), tooLong.json());
+  assert.equal(huge.headers["cache-control"], "no-store");
+
+  const invalid = await postRun(app, { input: { audience: "Everyone" } });
+  assert.equal(invalid.statusCode, 422);
+  assert.deepEqual(invalid.json(), {
+    error: "input_invalid",
+    message: "Some answers need another look.",
+    details: [
+      { path: "/topic", field: "topic", label: "Topic", message: "This question needs an answer." },
+      { path: "/audience", field: "audience", label: "Who is it for?", message: "Choose one of the options." },
+    ],
+  });
+  assert.equal(invalid.headers["access-control-allow-origin"], APP_ORIGIN, "readable by the page, so it can mark the answers");
+
+  assert.equal(chat.chatInputs.length, 0, "nothing wrong reached the model");
+  assert.equal(await chat.limiter.peek(publicChatKeys.widgetKeyDay(KEY.id, DAY)), 0);
+  assert.ok(!chat.log.some((entry) => entry.startsWith("plan:")));
+});
+
+test("run: 429 with Retry-After for the visitor and for the page's daily cap, without the cap's number", async () => {
+  const { app, chat } = await server({ key: PAGE_KEY });
+  for (let i = 0; i < LIMITS.widget.perIpPerMinute; i++) {
+    assert.equal((await postRun(app, { input: INPUT, stream: false })).statusCode, 200);
+  }
+  const before = chat.chatInputs.length;
+  const limited = await postRun(app, { input: INPUT, stream: false });
+  assert.equal(limited.statusCode, 429);
+  assert.deepEqual(limited.json(), {
+    error: "rate_limited",
+    message: "You have reached the limit for now. Try again in 1 minute.",
+    scope: "ip",
+    retryAfterSeconds: 60,
+  });
+  assert.equal(limited.headers["retry-after"], "60");
+  assert.equal(chat.chatInputs.length, before, "the agent is not called");
+
+  const capped = await server({ key: { ...PAGE_KEY, dailyMessageCap: 1 } });
+  assert.equal((await postRun(capped.app, { input: INPUT, stream: false })).statusCode, 200);
+  const atCap = await postRun(capped.app, { input: INPUT, stream: false });
+  assert.equal(atCap.statusCode, 429);
+  assert.deepEqual(atCap.json(), {
+    error: "rate_limited",
+    message: "This agent has reached its limit for today. Try again tomorrow.",
+    scope: "key",
+    retryAfterSeconds: 43_200,
+  });
+});
+
+test("run: 502 model_error, 503 agent_unavailable and 503 rate_limiter_unavailable, each in words a stranger may read", async () => {
+  const failing = await server({
+    key: PAGE_KEY,
+    failure: { code: "upstream_error", message: "Model API returned 500: org_01ABC quota", retryAfterSeconds: null },
+  });
+  const failed = await postRun(failing.app, { input: INPUT, stream: false });
+  assert.equal(failed.statusCode, 502);
+  assert.deepEqual(failed.json(), {
+    error: "model_error",
+    message: "The agent could not answer just now. Please try again.",
+  });
+
+  const noPlan = await server({ key: PAGE_KEY, planExhausted: true });
+  const quota = await postRun(noPlan.app, { input: INPUT });
+  assert.equal(quota.statusCode, 503);
+  assert.deepEqual(quota.json(), {
+    error: "agent_unavailable",
+    message: "This agent has reached its usage limit for now. Please try again later.",
+    reason: "quota_exhausted",
+  });
+
+  const down = await server({ key: PAGE_KEY, store: brokenStore });
+  const res = await postRun(down.app, { input: INPUT });
+  assert.equal(res.statusCode, 503);
+  assert.deepEqual(res.json(), {
+    error: "rate_limiter_unavailable",
+    message: "This agent is temporarily unavailable. Please try again shortly.",
+    retryAfterSeconds: 30,
+  });
+  assert.equal(res.headers["retry-after"], "30");
+  assert.deepEqual(down.chat.log, []);
+});
+
+test("run: a signed-in WheelsAI user's session means nothing here, and the config and chat routes answer as before", async () => {
+  const { app, chat } = await server({ key: PAGE_KEY });
+  const res = await postRun(app, { input: INPUT, stream: false }, { origin: APP_ORIGIN, cookie: "session=abc", authorization: "Bearer wheels_x" });
+  assert.equal(res.statusCode, 200);
+  assert.equal(chat.chatInputs[0]!.orgId, KEY.orgId, "the key's organization, never the caller's");
+
+  const other = await server();
+  assert.equal((await other.app.inject({ method: "GET", url: configUrl(), headers: { origin: ORIGIN } })).statusCode, 200);
+  assert.equal((await postChat(other.app, { messages: MESSAGES, stream: false })).statusCode, 200);
+  // A chat body over the chat's limit keeps the chat's own words.
+  const big = await other.app.inject({
+    method: "POST",
+    url: chatUrl(),
+    headers: { "content-type": "application/json", origin: ORIGIN },
+    payload: JSON.stringify({ messages: MESSAGES, pad: "x".repeat(WIDGET_BODY_LIMIT_BYTES) }),
+  });
+  assert.deepEqual(big.json(), { error: "invalid_request", message: "The request is too large." });
 });

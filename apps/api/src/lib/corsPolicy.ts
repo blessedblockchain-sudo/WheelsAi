@@ -7,7 +7,7 @@
  *               WheelsAI web app) with credentials, because the dashboard
  *               authenticates with a cookie. Any origin in local development.
  *
- *   the widget  /api/widget/:publicKey/config and /chat. Any origin, WITHOUT
+ *   the widget  /api/widget/:publicKey/config, /chat and /run. Any origin, WITHOUT
  *               credentials. An owner's customers sit on sites this server
  *               has never heard of, so the header cannot be an allowlist; it
  *               echoes the request's Origin and the route decides (403
@@ -17,7 +17,7 @@
  *               session cookie of a signed-in WheelsAI user is neither sent
  *               nor honoured, and the widget routes never read request.auth.
  *
- * The widget policy is matched on the two exact route shapes, not on a path
+ * The widget policy is matched on the three exact route shapes, not on a path
  * prefix: nothing else can be moved under it by a crafted URL.
  *
  * Pure: the environment is passed in.
@@ -54,9 +54,9 @@ export const WIDGET_EXPOSED_HEADERS = ["X-Request-Id", "Retry-After"] as const;
 
 export const WIDGET_PREFLIGHT_MAX_AGE_SECONDS = 600;
 
-const WIDGET_PATH = /^\/api\/widget\/[A-Za-z0-9_-]{1,128}\/(?:config|chat)$/;
+const WIDGET_PATH = /^\/api\/widget\/[A-Za-z0-9_-]{1,128}\/(?:config|chat|run)$/;
 
-/** Whether a request URL is one of the two public widget routes. */
+/** Whether a request URL is one of the three public widget routes. */
 export function isWidgetPath(url: string | undefined): boolean {
   if (typeof url !== "string") return false;
   const query = url.indexOf("?");

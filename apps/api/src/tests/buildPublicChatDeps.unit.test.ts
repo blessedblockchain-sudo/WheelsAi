@@ -144,6 +144,7 @@ test("a widget key is found by its publishable key, with only the columns chat r
   const [, args] = calls[0]!;
   assert.deepEqual(args.where, { publicKey: PUBLIC_KEY });
   assert.deepEqual(Object.keys(args.select).sort(), [
+    "agent",
     "agentId",
     "allowedOrigins",
     "dailyMessageCap",
@@ -151,10 +152,16 @@ test("a widget key is found by its publishable key, with only the columns chat r
     "id",
     "lastUsedAt",
     "orgId",
+    "pageOfAgentId",
     "perIpPerMinute",
     "revokedAt",
     "storeTranscripts",
   ]);
+  // Of the agent: whether its page is public (what a page key is held to)
+  // and what a task run reads. Not its instructions, tools or secrets.
+  assert.deepEqual(args.select.agent, {
+    select: { isPublic: true, agentKind: true, kindConfig: true, name: true },
+  });
 });
 
 test("Try it reads published listings only, and runs the agent in the agent's own organization", async () => {

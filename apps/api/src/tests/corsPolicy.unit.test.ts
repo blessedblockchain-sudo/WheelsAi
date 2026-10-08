@@ -23,10 +23,13 @@ const DEV = { corsOrigin: "http://localhost:3000", isDev: true };
 const KEY = `wpk_${"a".repeat(32)}`;
 const SHOP = "https://shop.example.com";
 
-test("only the two widget routes are widget paths", () => {
+test("only the three widget routes are widget paths", () => {
   assert.equal(isWidgetPath(`/api/widget/${KEY}/config`), true);
   assert.equal(isWidgetPath(`/api/widget/${KEY}/chat`), true);
   assert.equal(isWidgetPath(`/api/widget/${KEY}/chat?x=1`), true);
+  // A task run from an agent's public page.
+  assert.equal(isWidgetPath(`/api/widget/${KEY}/run`), true);
+  assert.equal(isWidgetPath(`/api/widget/${KEY}/run?x=1`), true);
 
   for (const url of [
     undefined,
@@ -156,4 +159,31 @@ test("through @fastify/cors: development reflects any origin on app paths, and s
     headers: { origin: "http://localhost:5173" },
   });
   assert.equal(widget.headers["access-control-allow-credentials"], undefined);
+});
+
+test("the run path has the widget's policy: any origin echoed, never credentials; the signed-in run routes keep the app's", () => {
+  for (const config of [PROD, DEV]) {
+    const options = corsOptionsFor({ url: `/api/widget/${KEY}/run` }, config);
+    assert.equal(options.origin, true);
+    assert.equal(options.credentials, false);
+    assert.deepEqual(options.methods, ["GET", "POST"]);
+    assert.deepEqual(options.allowedHeaders, ["content-type"]);
+    assert.deepEqual(options.exposedHeaders, ["X-Request-Id", "Retry-After"]);
+  }
+
+  for (const url of [
+    `/api/widget/${KEY}/run/extra`,
+    `/api/widget/${KEY}/runs`,
+    `/api/widget/${KEY}/rerun`,
+    "/api/widget/a/b/run",
+    // The owner's run and a paying user's run are called with a session.
+    "/api/agents/3f0c0a8e-0000-4000-8000-000000000000/run",
+    "/api/a/support-bot/run",
+    "/api/a/support-bot",
+  ]) {
+    assert.equal(isWidgetPath(url), false, url);
+    const options = corsOptionsFor({ url }, PROD);
+    assert.equal(options.origin, "https://app.wheelsai.test", url);
+    assert.equal(options.credentials, true, url);
+  }
 });

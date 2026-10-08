@@ -1,9 +1,11 @@
 // Fakes shared by the route tests of the web widget and Try it
-// (widgetRoutes, tryItRoutes): real services/publicChat.ts and a real
-// fail-closed limiter on its memory store, with a stand-in for agent chat.
-// Not a test file itself.
+// (widgetRoutes, tryItRoutes) and by the public task run's tests
+// (publicTask): real services/publicChat.ts and a real fail-closed limiter
+// on its memory store, with a stand-in for agent chat. Not a test file
+// itself.
 
 import type {
+  AgentChatFailure,
   AgentChatInput,
   AgentChatRefusal,
   AgentChatSession,
@@ -45,6 +47,29 @@ export const KEY: PublicWidgetKey = {
   enabled: true,
   revokedAt: null,
   lastUsedAt: null,
+};
+
+/** A task agent's form (Agent.kindConfig): three questions, one of them required. */
+export const TASK_FORM = {
+  task: {
+    fields: [
+      { key: "topic", label: "Topic", type: "short_text", required: true },
+      { key: "audience", label: "Who is it for?", type: "choice", required: false, options: ["Customers", "Team"] },
+      { key: "notes", label: "Notes", type: "long_text", required: false },
+    ],
+  },
+};
+
+/**
+ * The key of a task agent's public page, as the owner's side creates it:
+ * marked with its agent, no allowed sites, a cap of 100 a day.
+ */
+export const PAGE_KEY: PublicWidgetKey = {
+  ...KEY,
+  allowedOrigins: [],
+  dailyMessageCap: 100,
+  pageOfAgentId: KEY.agentId,
+  agent: { isPublic: true, agentKind: "task", kindConfig: TASK_FORM, name: "Brief Writer" },
 };
 
 export const LISTING: TrialListing = {
@@ -107,6 +132,12 @@ export interface FakeChatOptions {
   limits?: PublicChatLimitConfig;
   store?: LimiterStore;
   refusal?: AgentChatRefusal;
+  /** The core refuses at model resolution, before `admit`. */
+  refusalBeforeAdmit?: AgentChatRefusal;
+  /** The admitted chat produces no answer. */
+  failure?: AgentChatFailure;
+  /** The owner's plan has no API calls left. */
+  planExhausted?: boolean;
   anonymousAllowed?: boolean;
   trialModel?: string | null;
   /** Publisher-funded holds: "ok", "refused", or omitted = not configured. */
@@ -128,6 +159,7 @@ export function fakeChat(options: FakeChatOptions = {}): FakeChat {
   const prepareChat = async (input: AgentChatInput): Promise<PrepareAgentChatResult> => {
     chatInputs.push(input);
     log.push("prepare");
+    if (options.refusalBeforeAdmit) return { ok: false, refusal: options.refusalBeforeAdmit };
     await input.admit?.({ agentId: "agent", modelId: FREE_MODEL, freeModel: true });
     if (options.refusal) return { ok: false, refusal: options.refusal };
     const session = {
@@ -142,10 +174,12 @@ export function fakeChat(options: FakeChatOptions = {}): FakeChat {
       meter: null,
       complete: async () => {
         log.push("complete");
+        if (options.failure) return { ok: false as const, failure: options.failure };
         return { ok: true as const, result: RESULT };
       },
       stream: async () => {
         log.push("stream");
+        if (options.failure) return { ok: false as const, failure: options.failure };
         return {
           ok: true as const,
           chat: streamOf(
@@ -179,7 +213,7 @@ export function fakeChat(options: FakeChatOptions = {}): FakeChat {
     trialModelId: () => (options.trialModel === undefined ? FREE_MODEL : options.trialModel),
     meterOwnerCall: async (orgId) => {
       log.push(`plan:${orgId}`);
-      return true;
+      return !options.planExhausted;
     },
     ...(options.funding && {
       holdFundedMessage: async (args) => {

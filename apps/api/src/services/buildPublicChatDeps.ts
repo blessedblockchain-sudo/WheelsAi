@@ -134,6 +134,11 @@ const WIDGET_KEY_COLUMNS = {
   enabled: true,
   revokedAt: true,
   lastUsedAt: true,
+  // What makes a key the key of its agent's public page, and what that
+  // rule and a task run (services/publicTask.ts) read of the agent. None of
+  // it reaches a visitor.
+  pageOfAgentId: true,
+  agent: { select: { isPublic: true, agentKind: true, kindConfig: true, name: true } },
 } as const;
 
 interface TrialListingRow {

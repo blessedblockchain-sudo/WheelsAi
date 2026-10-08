@@ -423,6 +423,74 @@ test("a site that is not on the key's list gets 403 and uses none of the key's d
 });
 
 // ============================================
+// 2. The key of an agent's public page
+// ============================================
+
+const PAGE_AGENT = { isPublic: true, agentKind: "conversation", kindConfig: null, name: "Support Bot" };
+/** As the owner's side creates it: marked with its agent, and no sites. */
+const PAGE_KEY: PublicWidgetKey = { ...KEY, allowedOrigins: [], pageOfAgentId: KEY.agentId, agent: PAGE_AGENT };
+
+test("a page key answers only while its agent's page is on; otherwise it is the same 404 as a disabled key", async () => {
+  const on = harness({ key: PAGE_KEY });
+  assert.equal((await runPublicChat(widget({ origin: APP_ORIGIN }), on.deps)).kind, "answer");
+
+  const notLive: Array<[string, PublicWidgetKey]> = [
+    ["the agent is no longer public", { ...PAGE_KEY, agent: { ...PAGE_AGENT, isPublic: false } }],
+    ["paused", { ...PAGE_KEY, enabled: false }],
+    ["revoked", { ...PAGE_KEY, revokedAt: new Date("2026-10-01T00:00:00Z") }],
+    // Fails closed: a page key whose agent was not read is not live.
+    ["the agent was not read", { ...PAGE_KEY, agent: undefined }],
+    ["the agent is gone", { ...PAGE_KEY, agent: null }],
+  ];
+  const disabled = harness({ key: { ...KEY, enabled: false } });
+  const asDisabled = refusalOf(await runPublicChat(widget(), disabled.deps));
+  for (const [name, key] of notLive) {
+    const h = harness({ key });
+    const refusal = refusalOf(await runPublicChat(widget({ origin: APP_ORIGIN }), h.deps));
+    assert.deepEqual(refusal, asDisabled, name);
+    assert.deepEqual(refusal, { status: 404, code: "widget_key_not_found", message: "Not found." }, name);
+    assert.deepEqual(h.log, ["loadKey"], `${name}: no plan meter and no chat`);
+    assert.equal(await h.limiter.peek(publicChatKeys.widgetKeyDay(KEY.id, DAY)), 0, name);
+  }
+});
+
+test("an ordinary website key does not depend on the agent being public", async () => {
+  for (const key of [
+    { ...KEY, agent: { ...PAGE_AGENT, isPublic: false } },
+    { ...KEY, pageOfAgentId: null, agent: { ...PAGE_AGENT, isPublic: false } },
+    { ...KEY, pageOfAgentId: null },
+    KEY,
+  ] satisfies PublicWidgetKey[]) {
+    const h = harness({ key });
+    assert.equal((await runPublicChat(widget(), h.deps)).kind, "answer");
+    assert.deepEqual(h.log, ["loadKey", "prepare", "plan:org-owner", "admitted", "complete"]);
+  }
+});
+
+test("a page key lists no sites: the platform's own page is let in, every other origin is refused", async () => {
+  const own = harness({ key: PAGE_KEY });
+  assert.equal((await runPublicChat(widget({ origin: APP_ORIGIN }), own.deps)).kind, "answer");
+
+  for (const origin of [ORIGIN, "https://evil.test", `${APP_ORIGIN}.evil.test`, "null", null]) {
+    const h = harness({ key: PAGE_KEY });
+    const refusal = refusalOf(await runPublicChat(widget({ origin }), h.deps));
+    assert.deepEqual([refusal.status, refusal.code], [403, "origin_not_allowed"], String(origin));
+    assert.deepEqual(h.log, ["loadKey"]);
+    assert.equal(await h.limiter.peek(publicChatKeys.widgetKeyDay(KEY.id, DAY)), 0);
+  }
+});
+
+test("a refusal of a task's answers carries each one to fix; other refusals carry no details", () => {
+  const details = [{ path: "/topic", field: "topic", label: "Topic", message: "This question needs an answer." }];
+  assert.deepEqual(
+    publicRefusalBody({ status: 422, code: "input_invalid", message: "Some answers need another look.", details }),
+    { error: "input_invalid", message: "Some answers need another look.", details },
+  );
+  assert.ok(!("details" in publicRefusalBody({ status: 409, code: "not_a_task_agent", message: "x" })));
+  assert.ok(!("details" in publicRefusalBody({ status: 413, code: "input_too_large", message: "x" })));
+});
+
+// ============================================
 // 5-6. Model, then budget
 // ============================================
 

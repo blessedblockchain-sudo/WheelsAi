@@ -76,7 +76,9 @@ test("the widget's production deps read the key through Prisma, by its public ke
     p.widgetKey.findUnique = async (args: any) => {
       queried.push(args);
       if (args.where.publicKey !== "wpk_known") return null;
-      return args.select.agent
+      // The configuration lookup is the one that reads the widget's look.
+      // (Both lookups read the agent: the chat side for the page-key rule.)
+      return args.select.title
         ? {
             orgId: "org-1",
             allowedOrigins: ["https://shop.example.com"],
@@ -88,7 +90,8 @@ test("the widget's production deps read the key through Prisma, by its public ke
             hideBranding: false,
             enabled: true,
             revokedAt: null,
-            agent: { name: "Support Bot" },
+            pageOfAgentId: "agent-1",
+            agent: { name: "Support Bot", isPublic: true },
           }
         : { id: "key-1", orgId: "org-1", agentId: "agent-1" };
     };
@@ -99,6 +102,13 @@ test("the widget's production deps read the key through Prisma, by its public ke
     assert.equal(config?.agentName, "Support Bot");
     assert.equal(config?.orgId, "org-1");
     assert.ok(!("agent" in (config as object)));
+    // What the page-key rule reads (routes/widget.ts): whether this is the
+    // key of an agent's public page, and whether that page is public.
+    const configQuery = queried.find((args) => args.select.title);
+    assert.equal(configQuery.select.pageOfAgentId, true);
+    assert.deepEqual(configQuery.select.agent, { select: { name: true, isPublic: true } });
+    assert.equal(config?.pageOfAgentId, "agent-1");
+    assert.equal(config?.agentIsPublic, true);
     assert.equal(await deps.config.loadKeyConfig("wpk_unknown"), null);
 
     // The chat side: the same table, through the public chat composition root.

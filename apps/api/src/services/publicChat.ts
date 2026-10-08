@@ -16,8 +16,9 @@
  *                 it cannot count, the request is refused (503). Nothing
  *                 below runs for a request that was not counted - no lookup,
  *                 no meter, no model.
- *   2. key or     the widget's publishable key (enabled, not revoked), or
- *      listing    the published listing. Unknown is 404.
+ *   2. key or     the widget's publishable key (enabled, not revoked; and,
+ *      listing    for the key of an agent's public page, only while that
+ *                 page is on), or the published listing. Unknown is 404.
  *   3. origin     widget only: the request's Origin is one the owner listed.
  *   4. human      Try it only: the session token from the sign-in or
  *      check      Turnstile check, bound to this listing and this network.
@@ -50,6 +51,12 @@
  * stream hands back one meter for forwardAndSettle (services/sseReply.ts),
  * because only the socket knows whether the answer arrived.
  *
+ * A task run from an agent's public page (services/publicTask.ts) is the
+ * same visitor on the same key, so it goes through the same three steps of
+ * the widget: widgetAddressRules (1), loadLiveWidgetKey (2) and
+ * widgetKeyAdmit (6). They are exported so that chat and run count on the
+ * same counters and cannot drift on which keys are live.
+ *
  * Pure core: every effect is a dependency (services/buildPublicChatDeps.ts
  * binds the real ones), so the unit tests drive this file with fakes.
  */
@@ -65,8 +72,10 @@ import {
   type PrepareAgentChatResult,
 } from "./agentChat.js";
 import type { SettleableMeter } from "./chatStreamSettlement.js";
+import type { TaskInputIssue } from "./agentTask.js";
 import type { FailClosedLimiter, LimitRule } from "./failClosedLimiter.js";
 import type { ChatStream, StreamOutcome } from "./mastra-runtime.js";
+import { pageKeyUsable } from "./publicPageState.js";
 import type { TrialSessionResult } from "./trialSession.js";
 import { originAllowed } from "./widgetKeys.js";
 
@@ -172,6 +181,24 @@ export interface PublicWidgetKey {
   enabled: boolean;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
+  /**
+   * Set on the one key that serves its agent's public page (/a/<handle>);
+   * always that key's own agentId. null or absent on an ordinary website key.
+   */
+  pageOfAgentId?: string | null;
+  /**
+   * The agent behind the key: whether its page is public (what a page key
+   * is held to), and what a task run reads of it (services/agentTask.ts).
+   * Never sent to a visitor.
+   */
+  agent?: PublicWidgetKeyAgent | null;
+}
+
+export interface PublicWidgetKeyAgent {
+  isPublic: boolean;
+  agentKind: string | null;
+  kindConfig: unknown;
+  name: string | null;
 }
 
 /** A published listing and the agent behind it, as Try it reads them. */
@@ -297,7 +324,11 @@ export type PublicChatErrorCode =
   | "not_supported"
   | "model_error"
   | "rate_limiter_unavailable"
-  | "agent_unavailable";
+  | "agent_unavailable"
+  /** A task run (services/publicTask.ts): the three refusals of checkTaskInput. */
+  | "not_a_task_agent"
+  | "input_too_large"
+  | "input_invalid";
 
 export type AgentUnavailableReason =
   | "quota_exhausted"
@@ -312,7 +343,7 @@ export type PublicLimitScope = "ip" | "key" | "session" | "org" | "global" | "ag
 
 /** Everything a visitor is told about a request that was not answered. */
 export interface PublicChatRefusal {
-  status: 400 | 401 | 403 | 404 | 429 | 499 | 501 | 502 | 503;
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 422 | 429 | 499 | 501 | 502 | 503;
   code: PublicChatErrorCode;
   /** Written for a stranger: no balances, plan names, model or env names. */
   message: string;
@@ -322,6 +353,8 @@ export interface PublicChatRefusal {
   retryAfterSeconds?: number;
   /** trial_cap_reached: when the listing's day starts over (ISO, UTC). */
   resetsAt?: string;
+  /** input_invalid: each answer that needs another look, in the order of the form. */
+  details?: TaskInputIssue[];
 }
 
 export type PublicChatResult =
@@ -357,6 +390,7 @@ export function publicRefusalBody(refusal: PublicChatRefusal): Record<string, un
     ...(refusal.scope !== undefined && { scope: refusal.scope }),
     ...(refusal.retryAfterSeconds !== undefined && { retryAfterSeconds: refusal.retryAfterSeconds }),
     ...(refusal.resetsAt !== undefined && { resetsAt: refusal.resetsAt }),
+    ...(refusal.details !== undefined && { details: refusal.details }),
   };
 }
 
@@ -432,7 +466,7 @@ const UNAVAILABLE_MESSAGES: Record<AgentUnavailableReason, string> = {
   restarting: "Chat is restarting. Please try again in a moment.",
 };
 
-function agentUnavailable(reason: AgentUnavailableReason, retryAfterSeconds?: number): PublicChatRefusal {
+export function agentUnavailable(reason: AgentUnavailableReason, retryAfterSeconds?: number): PublicChatRefusal {
   return {
     status: 503,
     code: "agent_unavailable",
@@ -466,8 +500,11 @@ const MODEL_ERROR: PublicChatRefusal = {
 
 const SCOPES = new Set<string>(["ip", "key", "session", "org", "global", "agent"]);
 
-/** A refusal thrown out of the core's `admit` hook; caught in runPublicChat. */
-class AdmissionRefused extends Error {
+/**
+ * A refusal thrown out of the core's `admit` hook; caught in runPublicChat
+ * and runPublicTask.
+ */
+export class AdmissionRefused extends Error {
   constructor(readonly refusal: PublicChatRefusal) {
     super(refusal.code);
     this.name = "AdmissionRefused";
@@ -578,6 +615,130 @@ export async function consumePublicLimit(
 }
 
 // ============================================
+// The widget's steps, shared with a task run
+// ============================================
+
+export const WIDGET_KEY_NOT_FOUND: PublicChatRefusal = {
+  status: 404,
+  code: "widget_key_not_found",
+  message: "Not found.",
+};
+
+/**
+ * Step 1 of the widget: what one request is counted against for the
+ * visitor's address, across every key. A chat message and a task run are
+ * counted on the same two counters.
+ */
+export function widgetAddressRules(limits: PublicChatLimitConfig, bucket: string, at: Date): LimitRule[] {
+  return [
+    {
+      scope: "ip",
+      key: publicChatKeys.widgetIpMinute(bucket),
+      limit: limits.widget.perIpPerMinute,
+      windowSeconds: MINUTE,
+    },
+    {
+      scope: "ip",
+      key: publicChatKeys.widgetIpDay(bucket, utcDay(at)),
+      limit: limits.widget.perIpPerDay,
+      windowSeconds: secondsLeftInUtcDay(at),
+    },
+  ];
+}
+
+/**
+ * Step 2 of the widget: the key, when it may be used right now. null is
+ * "not found" (404 widget_key_not_found), whatever the reason: revoked and
+ * disabled keys are as unknown as a wrong one, and nothing tells a stranger
+ * which.
+ *
+ * The key of an agent's public page (pageOfAgentId set) is live only while
+ * that page is on (pageKeyUsable): an agent that is no longer public cannot
+ * be used through the key its page left behind. It fails closed: a page key
+ * whose agent was not read is not live. An ordinary website key does not
+ * depend on isPublic.
+ */
+export async function loadLiveWidgetKey(
+  deps: Pick<PublicChatDeps, "loadWidgetKey">,
+  publicKey: string,
+): Promise<PublicWidgetKey | null> {
+  const key = await deps.loadWidgetKey(publicKey);
+  if (!key || !key.enabled || key.revokedAt !== null) return null;
+  if (key.pageOfAgentId != null && !pageKeyUsable(key.agent?.isPublic === true, key)) return null;
+  return key;
+}
+
+/**
+ * Step 6 of the widget, as the core's `admit` hook: the key's own budgets
+ * (per minute, its daily cap, and its per-address limit when the owner set
+ * one), then one API call of the owner's plan. It runs after the model is
+ * known, so a request that could never have run uses up nobody's cap. To
+ * refuse it throws AdmissionRefused.
+ */
+export function widgetKeyAdmit(
+  deps: Pick<PublicChatDeps, "limiter" | "limits" | "meterOwnerCall" | "logger">,
+  key: PublicWidgetKey,
+  bucket: string,
+  at: Date,
+): () => Promise<void> {
+  const { limits } = deps;
+  return async () => {
+    const keyLimit = await consumePublicLimit(
+      deps.limiter,
+      [
+        {
+          scope: "key",
+          key: publicChatKeys.widgetKeyMinute(key.id),
+          limit: limits.widget.perKeyPerMinute,
+          windowSeconds: MINUTE,
+        },
+        {
+          scope: "key",
+          key: publicChatKeys.widgetKeyDay(key.id, utcDay(at)),
+          limit: key.dailyMessageCap ?? limits.widget.defaultDailyCap,
+          windowSeconds: secondsLeftInUtcDay(at),
+        },
+        ...(key.perIpPerMinute !== null
+          ? [
+              {
+                scope: "ip",
+                key: publicChatKeys.widgetKeyIpMinute(key.id, bucket),
+                limit: key.perIpPerMinute,
+                windowSeconds: MINUTE,
+              },
+            ]
+          : []),
+      ],
+      "widget",
+      deps.logger,
+    );
+    if (keyLimit) throw new AdmissionRefused(keyLimit);
+    // Widget messages are the owner's API calls: without this they would
+    // bypass the plan altogether.
+    if (!(await deps.meterOwnerCall(key.orgId))) {
+      throw new AdmissionRefused(agentUnavailable("quota_exhausted"));
+    }
+  };
+}
+
+/**
+ * Notes that a key was just used, at most once per KEY_USED_EVERY_MS. Best
+ * effort and not awaited: a failure is logged and never reaches the visitor.
+ */
+export function markWidgetKeyUsed(
+  deps: Pick<PublicChatDeps, "markKeyUsed" | "logger">,
+  key: PublicWidgetKey,
+  at: Date,
+): void {
+  if (!deps.markKeyUsed) return;
+  const previous = key.lastUsedAt;
+  if (previous && at.getTime() - previous.getTime() < KEY_USED_EVERY_MS) return;
+  void deps
+    .markKeyUsed({ id: key.id, previous, at })
+    .catch((err) => deps.logger?.warn({ err, widgetKeyId: key.id }, "failed to mark a widget key used"));
+}
+
+// ============================================
 // The service
 // ============================================
 
@@ -594,20 +755,7 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
   const bucket = deps.bucketOf(input.ip);
   const addressLimit = await consume(
     surface.kind === "widget"
-      ? [
-          {
-            scope: "ip",
-            key: publicChatKeys.widgetIpMinute(bucket),
-            limit: limits.widget.perIpPerMinute,
-            windowSeconds: MINUTE,
-          },
-          {
-            scope: "ip",
-            key: publicChatKeys.widgetIpDay(bucket, day),
-            limit: limits.widget.perIpPerDay,
-            windowSeconds: dayLeft,
-          },
-        ]
+      ? widgetAddressRules(limits, bucket, now)
       : [
           {
             scope: "ip",
@@ -646,12 +794,10 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
   };
 
   if (surface.kind === "widget") {
-    // 2. The key. Revoked and disabled keys are as unknown as a wrong one:
-    // nothing tells a stranger which.
-    const key = await deps.loadWidgetKey(surface.publicKey);
-    if (!key || !key.enabled || key.revokedAt !== null) {
-      return refused({ status: 404, code: "widget_key_not_found", message: "Not found." });
-    }
+    // 2. The key. Revoked and disabled keys, and a page key whose page is
+    // not on, are as unknown as a wrong one: nothing tells a stranger which.
+    const key = await loadLiveWidgetKey(deps, surface.publicKey);
+    if (!key) return refused(WIDGET_KEY_NOT_FOUND);
     widgetKey = key;
 
     // 3. The origin, before the key's own budgets: a site that is not allowed
@@ -670,38 +816,7 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
       agent: { id: key.agentId },
       source: "widget",
       // 6. The key's budgets, then the owner's plan.
-      admit: async () => {
-        const keyLimit = await consume([
-          {
-            scope: "key",
-            key: publicChatKeys.widgetKeyMinute(key.id),
-            limit: limits.widget.perKeyPerMinute,
-            windowSeconds: MINUTE,
-          },
-          {
-            scope: "key",
-            key: publicChatKeys.widgetKeyDay(key.id, day),
-            limit: key.dailyMessageCap ?? limits.widget.defaultDailyCap,
-            windowSeconds: dayLeft,
-          },
-          ...(key.perIpPerMinute !== null
-            ? [
-                {
-                  scope: "ip",
-                  key: publicChatKeys.widgetKeyIpMinute(key.id, bucket),
-                  limit: key.perIpPerMinute,
-                  windowSeconds: MINUTE,
-                },
-              ]
-            : []),
-        ]);
-        if (keyLimit) throw new AdmissionRefused(keyLimit);
-        // Widget messages are the owner's API calls: without this they would
-        // bypass the plan altogether.
-        if (!(await deps.meterOwnerCall(key.orgId))) {
-          throw new AdmissionRefused(agentUnavailable("quota_exhausted"));
-        }
-      },
+      admit: widgetKeyAdmit(deps, key, bucket, now),
     };
   } else {
     // 2. The listing.
@@ -845,14 +960,7 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
   }
   const { session } = prepared;
 
-  if (widgetKey && deps.markKeyUsed) {
-    const previous = widgetKey.lastUsedAt;
-    if (!previous || now.getTime() - previous.getTime() >= KEY_USED_EVERY_MS) {
-      void deps
-        .markKeyUsed({ id: widgetKey.id, previous, at: now })
-        .catch((err) => deps.logger?.warn({ err, widgetKeyId: widgetKey?.id }, "failed to mark a widget key used"));
-    }
-  }
+  if (widgetKey) markWidgetKeyUsed(deps, widgetKey, now);
 
   /** What follows an answer that reached the visitor. Never throws. */
   const delivered = async (content: string): Promise<void> => {

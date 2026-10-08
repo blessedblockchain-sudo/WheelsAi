@@ -1,6 +1,7 @@
 /**
  * Production wiring for /api/widget (routes/widget.ts): the public chat
- * deps the Try it routes share, and the key's configuration on Prisma.
+ * deps the Try it routes share, which a task run (POST /:publicKey/run)
+ * uses too, and the key's configuration on Prisma.
  *
  * Always mounted. Building it connects to nothing; the limiter's Redis
  * opens on the first request.
@@ -29,7 +30,9 @@ const KEY_CONFIG_COLUMNS = {
   hideBranding: true,
   enabled: true,
   revokedAt: true,
-  agent: { select: { name: true } },
+  // What the page-key rule reads (routes/widget.ts). Neither reaches a visitor.
+  pageOfAgentId: true,
+  agent: { select: { name: true, isPublic: true } },
 } as const;
 
 export function buildWidgetRouteDeps(): WidgetRouteDeps {
@@ -43,7 +46,7 @@ export function buildWidgetRouteDeps(): WidgetRouteDeps {
         const row = await prisma.widgetKey.findUnique({ where: { publicKey }, select: KEY_CONFIG_COLUMNS });
         if (!row) return null;
         const { agent, ...key } = row;
-        return { ...key, agentName: agent.name };
+        return { ...key, agentName: agent.name, agentIsPublic: agent.isPublic };
       },
       whiteLabel: orgHasWhiteLabel,
     },

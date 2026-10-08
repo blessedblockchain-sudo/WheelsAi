@@ -79,6 +79,12 @@
  *   configured NOSANA_JOB_TIMEOUT_SECONDS or NOSANA_BATCH_JOB_TIMEOUT_SECONDS
  *   below it is refused at start-up. Wallet access keeps the range above.
  *
+ * NOSANA_PROVISIONING_LIMIT_SECONDS   (default 1800 = 30 min, range 300..86400)
+ *   How long a deployment may wait to start serving (no GPU free, or a node
+ *   that never becomes ready) before the status worker fails it, stops it on
+ *   Nosana and returns the organization's hold. Without it a deployment
+ *   Nosana never places would keep its hold for ever.
+ *
  * NOSANA_SINGLE_JOB_TIMEOUT_SECONDS   (default 86400 = 24h)
  *   Timeout for the legacy one-shot `sdk.jobs.list` path (NosanaClient.submitJob).
  *   That path has no extend strategy, so the job simply ends at this timeout.
@@ -147,6 +153,8 @@ export interface NosanaDeployConfig {
   vaultSolLamportsPerReplica: bigint;
   networkFeeBps: number;
   batchJobTimeoutSeconds: number;
+  /** How long a deployment may wait to start serving before it is failed. */
+  provisioningLimitSeconds: number;
   singleJobTimeoutSeconds: number;
   reclaimMaxAgeHours: number;
   gpuBillingIntervalMs: number;
@@ -191,6 +199,7 @@ const rawSchema = z.object({
     .default("10000000"),
   NOSANA_NETWORK_FEE_BPS: intFromEnv(0, 5_000).default(1_000),
   NOSANA_BATCH_JOB_TIMEOUT_SECONDS: intFromEnv(600, 7 * 86_400).default(21_600),
+  NOSANA_PROVISIONING_LIMIT_SECONDS: intFromEnv(300, 86_400).default(1_800),
   NOSANA_SINGLE_JOB_TIMEOUT_SECONDS: intFromEnv(600, 30 * 86_400).default(86_400),
   NOSANA_RECLAIM_MAX_AGE_HOURS: intFromEnv(1, 24 * 30).default(72),
   GPU_BILLING_INTERVAL_MS: intFromEnv(0, 3_600_000).default(60_000),
@@ -354,6 +363,7 @@ export function loadNosanaDeployConfig(
     vaultSolLamportsPerReplica: BigInt(raw.NOSANA_VAULT_SOL_LAMPORTS_PER_REPLICA),
     networkFeeBps: raw.NOSANA_NETWORK_FEE_BPS,
     batchJobTimeoutSeconds: raw.NOSANA_BATCH_JOB_TIMEOUT_SECONDS,
+    provisioningLimitSeconds: raw.NOSANA_PROVISIONING_LIMIT_SECONDS,
     singleJobTimeoutSeconds: raw.NOSANA_SINGLE_JOB_TIMEOUT_SECONDS,
     reclaimMaxAgeHours: raw.NOSANA_RECLAIM_MAX_AGE_HOURS,
     gpuBillingIntervalMs: raw.GPU_BILLING_INTERVAL_MS,

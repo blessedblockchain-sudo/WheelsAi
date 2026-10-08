@@ -25,6 +25,11 @@ import {
 } from "../services/buildDeploymentStatusTickDeps.js";
 import { readTrainingOperatorBlockers } from "../services/buildTrainingDeps.js";
 import { getNosanaClient, type NosanaClient } from "../services/nosana.js";
+import { recentPlacementFailures } from "../services/nosanaPlacementFailures.js";
+import {
+  PLACEMENT_FAILURE_REASONS,
+  type PlacementFailure,
+} from "../services/runDeploymentStatusTick.js";
 import { MARKETS } from "../services/nosanaMarkets.js";
 import { createLogger } from "../utils/logger.js";
 import {
@@ -33,6 +38,7 @@ import {
   MAX_LISTED,
   type GpuComputeStatus,
   type OpenNosanaRow,
+  type PlacementFailureRow,
   type PlatformComputeDeps,
 } from "./platformCompute.js";
 
@@ -74,8 +80,17 @@ export interface BuildPlatformComputeDepsInput {
   adminKey: () => string | undefined;
   /** What keeps fine-tuning from starting, in operator language. */
   trainingBlockers?: () => Promise<Array<{ code: string; message: string }>>;
+  /**
+   * The placement failures this process's status worker observed, with
+   * Nosana's own message (services/nosanaPlacementFailures.ts). Omit and the
+   * view lists the failed rows without detail.
+   */
+  observedPlacementFailures?: () => PlacementFailure[];
   now?: () => Date;
 }
+
+/** How far back the view lists placement failures. */
+export const PLACEMENT_FAILURE_WINDOW_MS = 72 * 3_600_000;
 
 export function buildPlatformComputeDeps(input: BuildPlatformComputeDepsInput): PlatformComputeDeps {
   const { prisma: db } = input;
@@ -89,6 +104,56 @@ export function buildPlatformComputeDeps(input: BuildPlatformComputeDepsInput): 
     adminKey: input.adminKey,
     now: input.now,
     ...(input.trainingBlockers ? { trainingBlockers: input.trainingBlockers } : {}),
+    async loadPlacementFailures() {
+      const now = (input.now ?? (() => new Date()))();
+      const since = new Date(now.getTime() - PLACEMENT_FAILURE_WINDOW_MS);
+      // The durable part: model rows carry the reason code. One more than
+      // the ceiling, so the view can say "truncated".
+      const rows = await db.deployment.findMany({
+        where: {
+          status: "failed",
+          statusReason: { in: [...PLACEMENT_FAILURE_REASONS] },
+          stoppedAt: { gte: since },
+        },
+        select: { id: true, nosanaJobIds: true, statusReason: true, stoppedAt: true },
+        orderBy: { stoppedAt: "desc" },
+        take: MAX_LISTED + 1,
+      });
+      // Nosana's message is only in the memory of the process that saw it.
+      const observed = (input.observedPlacementFailures?.() ?? []).filter(
+        (failure) => failure.observedAt.getTime() >= since.getTime(),
+      );
+      const detailOf = new Map<string, string>();
+      for (const failure of observed) {
+        if (failure.detail && !detailOf.has(`${failure.kind}:${failure.id}:${failure.nosanaDeploymentId}`)) {
+          detailOf.set(`${failure.kind}:${failure.id}:${failure.nosanaDeploymentId}`, failure.detail);
+        }
+      }
+      const listed: PlacementFailureRow[] = rows.map((row) => {
+        const nosanaDeploymentId = (row.nosanaJobIds as string[] | undefined)?.[0] ?? null;
+        return {
+          source: "model",
+          rowId: row.id as string,
+          nosanaDeploymentId,
+          reason: row.statusReason as string,
+          failedAt: (row.stoppedAt as Date | null) ?? null,
+          detail: detailOf.get(`model:${row.id}:${nosanaDeploymentId}`) ?? null,
+        };
+      });
+      // An agent deployment keeps no reason code: only what this process saw.
+      for (const failure of observed) {
+        if (failure.kind !== "agent") continue;
+        listed.push({
+          source: "agent",
+          rowId: failure.id,
+          nosanaDeploymentId: failure.nosanaDeploymentId,
+          reason: failure.reason,
+          failedAt: failure.observedAt,
+          detail: failure.detail ?? null,
+        });
+      }
+      return listed.sort((a, b) => (b.failedAt?.getTime() ?? 0) - (a.failedAt?.getTime() ?? 0));
+    },
     async access() {
       const cfg = input.getAccessConfig();
       // What is LOADED decides, not what is configured: the client reports the
@@ -269,6 +334,7 @@ export function createPlatformComputeRoutesProduction(): FastifyPluginAsync {
       // Read per request, so rotating the key needs no reboot.
       adminKey: () => process.env.PLATFORM_ADMIN_KEY,
       trainingBlockers: readTrainingOperatorBlockers,
+      observedPlacementFailures: recentPlacementFailures,
     }),
   );
 }

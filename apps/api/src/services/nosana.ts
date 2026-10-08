@@ -1,3 +1,5 @@
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { Connection, Keypair } from "@solana/web3.js";
 import { Client } from "@nosana/sdk";
 import { env } from "../config/env.js";
@@ -710,9 +712,467 @@ export function nodeUrlAllowlistOptions(): NodeUrlAllowlistOptions {
   };
 }
 
-/** Engine-specific readiness probe: vLLM serves /health; Ollama does not. */
+/**
+ * Where an engine says its model is ready. vLLM serves /health, which answers
+ * 200 only once the model is loaded. Ollama has no such route: its server
+ * answers (and /api/tags lists the pulled model) before the model is in GPU
+ * memory, and the first request then waits for the load (42 seconds on the
+ * first live run, past the inference timeout of the day). /api/ps lists the
+ * models the server holds, so that is what is read (ollamaModelLoaded); it
+ * lists a model from the moment its load begins.
+ *
+ * Neither is the whole probe. A node's first generation is slow on both
+ * engines, so a node is healthy only once it has also answered a load
+ * request, one generated token, for the model (checkNodeHealth).
+ */
 export function nodeHealthPath(engine?: string): string {
-  return engine === "ollama" ? "/api/tags" : "/health";
+  return engine === "ollama" ? OLLAMA_LOADED_MODELS_PATH : "/health";
+}
+
+/** Ollama's list of the models loaded in memory now. */
+export const OLLAMA_LOADED_MODELS_PATH = "/api/ps";
+
+/** A body larger than this is not an /api/ps answer; it is not read further. */
+export const MAX_PROBE_BODY_BYTES = 64 * 1024;
+
+/**
+ * The body of a probe answer, or null when it is larger than `maxBytes`. The
+ * node belongs to a third-party host, so the cap is applied while reading: a
+ * declared length over the cap is refused unread, and a stream is cancelled at
+ * the first chunk that passes it. Nothing past the cap is ever held in memory.
+ */
+export async function readProbeBody(response: Response, maxBytes = MAX_PROBE_BODY_BYTES): Promise<string | null> {
+  const declared = Number(response.headers.get("content-length") ?? "");
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await reader.cancel().catch(() => undefined);
+    return null;
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** `name` as Ollama lists it: a reference without a tag is `:latest`. */
+function ollamaReference(name: string): string {
+  const last = name.slice(name.lastIndexOf("/") + 1);
+  return last.includes(":") ? name : `${name}:latest`;
+}
+
+/**
+ * Whether an /api/ps body lists `model` as loaded:
+ * {"models":[{"name":"llama3.2:3b","model":"llama3.2:3b",...}]}. With no
+ * model named, any loaded model counts. Anything that is not that shape is
+ * "not loaded": the probe fails closed.
+ */
+export function ollamaModelLoaded(body: unknown, model?: string): boolean {
+  const models = (body as { models?: unknown } | null)?.models;
+  if (!Array.isArray(models)) return false;
+  const names = models.flatMap((entry) => {
+    const row = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    return [row.name, row.model].filter((value): value is string => typeof value === "string" && value !== "");
+  });
+  if (model === undefined || model === "") return names.length > 0;
+  // Ollama treats model names without regard to letter case.
+  const wanted = ollamaReference(model).toLowerCase();
+  return names.some((name) => ollamaReference(name).toLowerCase() === wanted);
+}
+
+/** Whether a body is an /api/ps answer at all: an Ollama server said which models it holds. */
+function isOllamaLoadedModelsAnswer(body: unknown): boolean {
+  return Array.isArray((body as { models?: unknown } | null)?.models);
+}
+
+// ============================================
+// Loading a model that is not loaded
+// ============================================
+
+/** Where the load request goes: Ollama's generate route. */
+export const OLLAMA_LOAD_PATH = "/api/generate";
+
+/**
+ * The load request: the smallest real generation, one token, kept loaded for
+ * ever. Ollama loads the model if it has to, runs it and only then answers.
+ *
+ * A request with no prompt (Ollama's documented preload) is not enough. It is
+ * answered as soon as the weights are in memory, and a node's first generation
+ * after a cold start takes far longer than any later one: on the second live
+ * run a 4090 answered the bare load in 6 seconds and the customer's first
+ * request, 19 seconds later, still waited 22. Only an answered generation
+ * says the next request will be quick. One token costs a node that is warm
+ * about a third of a second.
+ */
+export function ollamaLoadRequestBody(model: string): string {
+  return JSON.stringify({
+    model,
+    prompt: "Hi",
+    stream: false,
+    keep_alive: -1,
+    // A prediction option, not a runner option: it never makes Ollama reload the model.
+    options: { num_predict: 1 },
+  });
+}
+
+/**
+ * Where a vLLM node is sent its load request: the OpenAI completions route.
+ */
+export const VLLM_LOAD_PATH = "/v1/completions";
+
+/**
+ * The load request of a vLLM node: one generated token. vLLM's /health says
+ * the engine is up, and the model is in memory by then, but a node's first
+ * generation is slow there too: on the first live vLLM deployment (a 4090,
+ * 2026-10-08) the first request took 27 seconds, Nosana's health check failed
+ * meanwhile and the deployment read as not serving for half a minute, where
+ * every later request took a quarter of a second. `model` is the name the
+ * engine serves the base model under (its Hugging Face id).
+ */
+export function vllmLoadRequestBody(model: string): string {
+  return JSON.stringify({ model, prompt: "Hi", max_tokens: 1, stream: false });
+}
+
+/** The engines whose nodes are sent a load request. */
+export type LoadRequestEngine = "ollama" | "vllm";
+
+/** Path and body of the load request, per engine. */
+const LOAD_REQUESTS: Readonly<Record<LoadRequestEngine, { path: string; body: (model: string) => string }>> = {
+  ollama: { path: OLLAMA_LOAD_PATH, body: ollamaLoadRequestBody },
+  vllm: { path: VLLM_LOAD_PATH, body: vllmLoadRequestBody },
+};
+
+/**
+ * `model` as a confirmation is stored and compared: Ollama compares names
+ * without regard to case and reads a missing tag as `:latest`; a vLLM name is
+ * taken as it is.
+ */
+function loadedModelKey(engine: LoadRequestEngine, model: string): string {
+  return engine === "ollama" ? ollamaReference(model).toLowerCase() : model;
+}
+
+/**
+ * How long one load request may take before it is given up. It waits for the
+ * whole model to be read into GPU memory and for the node's first generation:
+ * 42 seconds for a 2 GB model on a 4090 on the first live run, minutes for a
+ * large one. The next probe that still finds the model missing asks again.
+ */
+export const MODEL_LOAD_DEADLINE_MS = 10 * 60_000;
+
+/**
+ * How long a vLLM node's one-token request may take before it is given up.
+ * vLLM answers /health with 200 only once the model is in memory, so the
+ * request waits for a first generation and for no weights: 3.8 seconds on one
+ * live node, 27 for a first chat on another. Only one request per node may be
+ * in flight, so an answer lost on the way (the tunnel drops it, the container
+ * is replaced mid-request) would otherwise keep a node that answers from
+ * being confirmed for the whole of an Ollama load's ten minutes.
+ */
+export const VLLM_ANSWER_DEADLINE_MS = 90_000;
+
+/** The deadline of a load request, by engine, unless the caller gives one. */
+const LOAD_REQUEST_DEADLINES_MS: Record<LoadRequestEngine, number> = {
+  ollama: MODEL_LOAD_DEADLINE_MS,
+  vllm: VLLM_ANSWER_DEADLINE_MS,
+};
+
+/**
+ * Sends the load request and reads its answer to the end without keeping it;
+ * resolves with the status. Ollama sends nothing, not even headers, until the
+ * model is in memory, and the runtime's fetch gives up on a server that has
+ * sent no headers after 300 seconds whatever the caller's deadline says. So
+ * this goes through node:http(s), which has no limit of its own: `signal` is
+ * the only thing that ends it. It never follows a redirect (a 3xx is just a
+ * status), and it uses a connection of its own.
+ */
+function postLoadRequest(url: string, body: string, signal: AbortSignal): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const send = target.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = send(
+      target,
+      {
+        method: "POST",
+        agent: false,
+        signal,
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+      },
+      (res) => {
+        res.on("error", reject);
+        // Closing the connection early would cancel the load: read to the end.
+        res.on("close", () =>
+          res.complete ? resolve(res.statusCode ?? 0) : reject(new Error("the answer ended early")),
+        );
+        res.resume();
+      },
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+/** How a load request is sent: resolves with the HTTP status of the answer. */
+type LoadRequestTransport = (url: string, body: string, signal: AbortSignal) => Promise<number>;
+
+let loadRequestTransport: LoadRequestTransport = postLoadRequest;
+
+/**
+ * Test seam: replaces how a load request is sent and returns what restores
+ * it. A test that probes a node name which is not a loopback server needs it:
+ * the load does not go through fetch, so stubbing fetch does not hold it back.
+ */
+export function setLoadRequestTransportForTests(transport: LoadRequestTransport): () => void {
+  const previous = loadRequestTransport;
+  loadRequestTransport = transport;
+  return () => {
+    loadRequestTransport = previous;
+  };
+}
+
+/** The load requests in flight, by node URL: at most one per node at a time. */
+const loadRequestsInFlight = new Map<string, { load: Promise<void>; startedAt: number }>();
+
+/** The load requests in flight now (for tests, and for a shutdown that wants to wait). */
+export function pendingModelLoads(): Promise<void>[] {
+  return [...loadRequestsInFlight.values()].map((entry) => entry.load);
+}
+
+/**
+ * The nodes whose model this process has seen answer: a load request for it
+ * (ollamaLoadRequestBody: one generated token) was answered 2xx. /api/ps
+ * cannot say that on its own. It lists a model from the moment its load
+ * begins (seen with a real server: listed four seconds before the runner had
+ * started), and a model that is in memory has still not run its first, slow,
+ * generation. By node URL; the value is the model as Ollama compares names
+ * and when it was last seen answering.
+ *
+ * The URL belongs to the deployment, not to a container: Nosana can run a new
+ * container behind it, and that one lists its model while it is still
+ * loading. So a confirmation is forgotten on everything that can mean the
+ * server behind the URL is not the one that answered: /api/ps not listing the
+ * model, a probe that fails or is not answered by Ollama, a load request that
+ * fails, and (from the status tick, forgetNodeAnswered) an endpoint
+ * Nosana reports offline, a node that is dropped and a row that leaves
+ * service. It also has an age (NODE_ANSWERED_MAX_AGE_MS).
+ */
+const nodesSeenAnswering = new Map<string, { model: string; at: number }>();
+
+/** How many confirmations are kept. Nodes come and go; the oldest are dropped first. */
+const MAX_NODES_SEEN_ANSWERING = 10_000;
+
+/**
+ * How long a confirmation stands on its own. After it the next probe sends
+ * the one-token request again (a third of a second on a warm node) and takes
+ * its answer as the new confirmation. A backstop: a container replaced behind
+ * the same URL between two probes, with nothing seen failing, is found out
+ * within this time.
+ */
+export const NODE_ANSWERED_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * How long an unanswered load request counts as "not known yet" (`pending`)
+ * and not as "not ready". A warm node that is generating a customer's answer
+ * queues the one-token request behind it, so the request can go unanswered
+ * for the length of that answer without anything being wrong; a model that
+ * is really loading takes about this long or longer (49 seconds measured on
+ * a 4090).
+ */
+export const MODEL_LOAD_PENDING_GRACE_MS = 60_000;
+
+function recordNodeAnswered(nodeUrl: string, engine: LoadRequestEngine, model: string): void {
+  // Re-inserted, so the map stays ordered by the last confirmation.
+  nodesSeenAnswering.delete(nodeUrl);
+  nodesSeenAnswering.set(nodeUrl, { model: loadedModelKey(engine, model), at: Date.now() });
+  if (nodesSeenAnswering.size > MAX_NODES_SEEN_ANSWERING) {
+    const oldest = nodesSeenAnswering.keys().next().value;
+    if (oldest !== undefined) nodesSeenAnswering.delete(oldest);
+  }
+}
+
+/** Whether `model` was seen answering on the node, and no longer ago than `maxAgeMs`. */
+function nodeSeenAnswering(
+  nodeUrl: string,
+  engine: LoadRequestEngine,
+  model: string,
+  maxAgeMs = NODE_ANSWERED_MAX_AGE_MS,
+): boolean {
+  const seen = nodesSeenAnswering.get(nodeUrl);
+  return (
+    seen !== undefined &&
+    seen.model === loadedModelKey(engine, model) &&
+    Date.now() - seen.at <= maxAgeMs
+  );
+}
+
+/**
+ * Forgets that a node's model was seen answering: the next probe that finds
+ * the model listed asks again. Called whenever the server behind the URL may
+ * no longer be the one that answered (see nodesSeenAnswering).
+ */
+export function forgetNodeAnswered(nodeUrl: string): void {
+  nodesSeenAnswering.delete(nodeUrl);
+}
+
+/** Test seam: forget every confirmed load. */
+export function resetNodesSeenAnsweringForTests(): void {
+  nodesSeenAnswering.clear();
+}
+
+/** Test seam: makes a node's confirmation `ageMs` old. False when there is none. */
+export function ageNodeAnsweredForTests(nodeUrl: string, ageMs: number): boolean {
+  const seen = nodesSeenAnswering.get(nodeUrl);
+  if (!seen) return false;
+  seen.at = Date.now() - ageMs;
+  return true;
+}
+
+/**
+ * How long a probe waits for the load request it has just sent. A model that
+ * is warm and idle answers it in well under a second, so a node this process
+ * has not confirmed yet (every node, after the API restarts) is healthy
+ * within that same probe. A model that is still loading, has not finished its
+ * first generation, or is busy with a customer's answer does not answer in
+ * time: the probe leaves the request running and reports `pending`.
+ */
+export const MODEL_ANSWER_WAIT_MS = 2_000;
+
+/**
+ * What is known about a model /api/ps lists:
+ *   ready     - seen answering a load request, recently enough;
+ *   pending   - a load request is in flight and not answered yet, for less
+ *               than `pendingGraceMs`: loading, or warm and busy. Not known.
+ *   not_ready - nothing in flight (the URL is off the allowlist, or the
+ *               request just failed), or one unanswered for longer than that.
+ */
+type ModelReadiness = "ready" | "pending" | "not_ready";
+
+/**
+ * Whether a model /api/ps lists can answer now. This process has either seen
+ * a load request for it answered, or it sends one now and gives it `waitMs`.
+ * A request already in flight is not waited for here. Never throws.
+ */
+async function modelAnswersNow(
+  nodeUrl: string,
+  engine: LoadRequestEngine,
+  model: string,
+  waitMs: number,
+  pendingGraceMs: number,
+): Promise<ModelReadiness> {
+  if (nodeSeenAnswering(nodeUrl, engine, model)) return "ready";
+  if (requestModelLoad(nodeUrl, engine, model, { reason: "confirm" })) {
+    const sent = loadRequestsInFlight.get(nodeUrl);
+    if (sent) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        sent.load,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, waitMs);
+          timer.unref?.();
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    if (nodeSeenAnswering(nodeUrl, engine, model)) return "ready";
+  }
+  const inFlight = loadRequestsInFlight.get(nodeUrl);
+  if (!inFlight) return "not_ready";
+  return Date.now() - inFlight.startedAt < pendingGraceMs ? "pending" : "not_ready";
+}
+
+/**
+ * Sends a node its load request: one generated token (LOAD_REQUESTS).
+ *
+ * Ollama. Requests are only routed to nodes whose probe is healthy, healthy
+ * means "the model answers", and Ollama loads a model only when a request for
+ * it arrives: a node whose model is not loaded (the in-container preload
+ * failed, the runner restarted, the model was unloaded) would otherwise never
+ * get the request that loads it. So the probe that finds the server up and
+ * the model missing calls this, and the request also keeps the model loaded
+ * for ever.
+ *
+ * Both engines. The same request is how the probe learns that a node which
+ * reports its model ready (Ollama: listed by /api/ps; vLLM: /health 200) can
+ * answer (modelAnswersNow): a 2xx answer is recorded as the model seen
+ * answering on that node.
+ *
+ * Fire and forget: it returns at once and never throws. One request per node
+ * URL at a time (`false`: one is already in flight, or the URL is off the
+ * allowlist, and nothing was sent). The record of the request is removed when
+ * it ends, however it ends. Same SSRF allowlist and redirect rule as the probe.
+ */
+export function requestModelLoad(
+  nodeUrl: string,
+  engine: LoadRequestEngine,
+  model: string,
+  options: {
+    deadlineMs?: number;
+    /** For the log: the model was not listed (default), or the node reports ready and has not been seen to answer. */
+    reason?: "not_loaded" | "confirm";
+  } = {},
+): boolean {
+  let key: string;
+  try {
+    if (model === "" || !isAllowedNodeUrl(nodeUrl, nodeUrlAllowlistOptions())) return false;
+    // An allowlisted URL is an origin: scheme, host and port, nothing after.
+    key = nodeUrl;
+    if (loadRequestsInFlight.has(key)) return false;
+  } catch {
+    return false;
+  }
+  const startedAt = Date.now();
+  const load = (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), options.deadlineMs ?? LOAD_REQUEST_DEADLINES_MS[engine]);
+    // The deadline alone must not keep a process that is shutting down alive.
+    timer.unref?.();
+    try {
+      const status = await loadRequestTransport(
+        `${key}${LOAD_REQUESTS[engine].path}`,
+        LOAD_REQUESTS[engine].body(model),
+        controller.signal,
+      );
+      if (status >= 200 && status < 300) {
+        // Answered: the model is in memory and has run a generation.
+        recordNodeAnswered(key, engine, model);
+        logger.info(
+          { nodeUrl: key, engine, model, ms: Date.now() - startedAt },
+          "Model loaded on its node and answering",
+        );
+      } else {
+        // Whatever answered before, this server does not answer for the model now.
+        forgetNodeAnswered(key);
+        logger.warn(
+          { nodeUrl: key, engine, model, status },
+          "A node refused to load its model; the next probe asks again",
+        );
+      }
+    } catch (err) {
+      forgetNodeAnswered(key);
+      logger.warn(
+        { nodeUrl: key, engine, model, ms: Date.now() - startedAt, err: err instanceof Error ? err.message : String(err) },
+        "Loading a model on its node did not complete; the next probe asks again",
+      );
+    } finally {
+      clearTimeout(timer);
+      loadRequestsInFlight.delete(key);
+    }
+  })();
+  loadRequestsInFlight.set(key, { load, startedAt });
+  if (options.reason === "confirm") {
+    logger.debug({ nodeUrl: key, engine, model }, "A node reports its model ready; asking it for one token to confirm it answers");
+  } else {
+    logger.info({ nodeUrl: key, engine, model }, "A node answers without its model loaded; asking it to load the model");
+  }
+  return true;
 }
 
 // ============================================
@@ -2430,15 +2890,36 @@ export class NosanaClient {
   }
 
   /**
-   * Probe a node's readiness over HTTP. The path depends on the engine: vLLM
-   * serves /health, Ollama does not (it serves /api/tags). The URL is checked
-   * against the SSRF allowlist first; a disallowed URL is simply unhealthy.
-   * Never throws.
+   * Probe a node's readiness over HTTP: "the model answers", not "the
+   * server answers". The engine must report the model ready (vLLM: /health is
+   * 200; Ollama: /api/ps lists `model`, the deployment's served model, or any
+   * model when none is given) AND, when a model is named, a load request for
+   * it, one generated token, must have been answered: /api/ps lists a model
+   * while it is still loading, and a node's first generation is slow on both
+   * engines. The URL is checked against the SSRF allowlist first; a
+   * disallowed URL is simply unhealthy. Never throws.
+   *
+   * An Ollama server that answers without the model loaded is asked, in the
+   * background, to load it (requestModelLoad); the result of this probe
+   * is unhealthy all the same. A listed model this process has not seen answer
+   * is asked the same way and given MODEL_ANSWER_WAIT_MS: warm and
+   * idle, it answers at once and the probe is healthy. Otherwise the probe is
+   * not healthy and says `pending: true` while the request is in flight and
+   * younger than MODEL_LOAD_PENDING_GRACE_MS: the node is loading, or it is warm
+   * and busy with a customer's answer, and this probe cannot tell which. A
+   * pending probe never makes a row `running`; the caller keeps the health a
+   * serving node already had (runDeploymentStatusTick).
+   *
+   * A probe that gets no /api/ps list from the node (no connection, an error
+   * status, a body that is not the list) forgets that the node was seen
+   * answering: a new container may be behind the URL when it answers again.
    */
   async checkNodeHealth(
     nodeUrl: string,
-    engine?: string
-  ): Promise<{ healthy: boolean; latencyMs: number }> {
+    engine?: string,
+    model?: string,
+    options: { loadedCheckWaitMs?: number; pendingGraceMs?: number } = {}
+  ): Promise<{ healthy: boolean; latencyMs: number; pending?: true }> {
     const startTime = Date.now();
 
     if (!isAllowedNodeUrl(nodeUrl, nodeUrlAllowlistOptions())) {
@@ -2456,14 +2937,65 @@ export class NosanaClient {
           // Never follow a redirect off the allowlisted host.
           redirect: "manual",
         });
+        let healthy = response.ok;
+        let pending = false;
+        if (!healthy) forgetNodeAnswered(nodeUrl);
+        if (healthy && engine === "vllm" && model) {
+          // /health is 200: the engine is up. Its first generation is slow all
+          // the same, so the node is healthy only once it has answered one
+          // token (the same rule as for Ollama below).
+          const readiness = await modelAnswersNow(
+            nodeUrl,
+            "vllm",
+            model,
+            options.loadedCheckWaitMs ?? MODEL_ANSWER_WAIT_MS,
+            options.pendingGraceMs ?? MODEL_LOAD_PENDING_GRACE_MS,
+          );
+          healthy = readiness === "ready";
+          pending = readiness === "pending";
+        }
+        if (healthy && engine === "ollama") {
+          // Read under the same deadline; a body that is not the list is unhealthy.
+          // No more than MAX_PROBE_BODY_BYTES of it is read.
+          const text = await readProbeBody(response);
+          const body: unknown = text === null ? null : JSON.parse(text);
+          healthy = ollamaModelLoaded(body, model);
+          // Not the list, or the list without the model: whatever was seen
+          // answering here before is gone.
+          if (!healthy) forgetNodeAnswered(nodeUrl);
+          if (model && isOllamaLoadedModelsAnswer(body)) {
+            if (!healthy) {
+              // The server answers and the model is not in memory: nothing
+              // routes a request to this node until it is, so ask the node to
+              // load it. Not awaited; this probe stays unhealthy and a later
+              // one sees it loaded.
+              requestModelLoad(nodeUrl, "ollama", model);
+            } else {
+              // Listed is not loaded: the list shows a model from the moment
+              // its load begins.
+              const readiness = await modelAnswersNow(
+                nodeUrl,
+                "ollama",
+                model,
+                options.loadedCheckWaitMs ?? MODEL_ANSWER_WAIT_MS,
+                options.pendingGraceMs ?? MODEL_LOAD_PENDING_GRACE_MS,
+              );
+              healthy = readiness === "ready";
+              pending = readiness === "pending";
+            }
+          }
+        }
         return {
-          healthy: response.ok,
+          healthy,
           latencyMs: Date.now() - startTime,
+          ...(pending ? { pending: true as const } : {}),
         };
       } finally {
         clearTimeout(timeout);
       }
     } catch {
+      // No answer, or not one that could be read: see the doc above.
+      forgetNodeAnswered(nodeUrl);
       return {
         healthy: false,
         latencyMs: Date.now() - startTime,
@@ -2898,7 +3430,10 @@ const OLLAMA_PORT = 11434;
 
 /**
  * Ollama's model list: 200 as soon as a server answers on the exposed port,
- * which ollamaServeScript opens only once the model is there.
+ * which ollamaServeScript opens only once the model is there. This is
+ * Nosana's health check. It does not say the model is loaded: our own probe
+ * (checkNodeHealth) reads /api/ps for that, and a row is `running` only when
+ * both pass.
  */
 const OLLAMA_HEALTH_PATH = "/api/tags";
 
@@ -2915,6 +3450,16 @@ const OLLAMA_PULL_HOST = "127.0.0.1:11435";
 const OLLAMA_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/;
 
 /**
+ * Where the preload reaches the final server from inside the container: the
+ * exposed port, on loopback (the definition's own OLLAMA_HOST is the listen
+ * address 0.0.0.0).
+ */
+const OLLAMA_PRELOAD_HOST = `127.0.0.1:${OLLAMA_PORT}`;
+
+/** What the start script writes to the container's log when the preload does not complete. */
+export const OLLAMA_PRELOAD_FAILED_LINE = "model preload did not complete; the model loads on the first request";
+
+/**
  * Pulls the model through a server only the container can reach, ends that
  * server, and only then becomes (exec) the server on the exposed port. Nothing
  * listens on that port during the download, so Nosana's health check cannot
@@ -2922,21 +3467,46 @@ const OLLAMA_MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z
  * server that has no model yet. The loopback server gets a minute to answer;
  * a failed pull ends the container instead of serving nothing; afterwards the
  * container lives and dies with `ollama serve`.
+ *
+ * The preload. Ollama loads a model into GPU memory on the first request for
+ * it, not when the server starts, and a node's first generation after its
+ * container starts is far slower than any later one (first live run: the
+ * first request took 42 seconds and ran into the inference timeout; second
+ * live run: 49 seconds from the server answering to the first generated
+ * token on a 4090). So a background job, started just before the exec, waits
+ * for the final server to answer and runs `ollama run <model> ""`. In a
+ * container stdin is not a terminal, so the CLI sends a prompt of one space
+ * and not Ollama's documented empty preload: the model is loaded and
+ * generates a short answer, which is that first slow generation begun the
+ * moment the server is up. OLLAMA_KEEP_ALIVE=-1 keeps the model loaded. The
+ * job outlives the exec as a child of the server; if it fails the server
+ * still runs and it says so in one line on stderr. It is a head start, not
+ * what readiness rests on: our probe keeps the deployment out of `running`
+ * until the model has answered the platform's own one-token request
+ * (requestModelLoad), which loads the model if nothing else did.
  */
 function ollamaServeScript(ollamaModel: string): string {
   if (ollamaModel.length > 128 || !OLLAMA_MODEL_PATTERN.test(ollamaModel)) {
     throw new Error("Unsupported Ollama model name");
   }
   const local = `OLLAMA_HOST=${OLLAMA_PULL_HOST}`;
+  const exposed = `OLLAMA_HOST=${OLLAMA_PRELOAD_HOST}`;
   return [
     `${local} ollama serve & pid=$!`,
     "i=0",
     `until ${local} ollama list >/dev/null 2>&1; do i=$((i+1)); [ "$i" -ge 60 ] && exit 1; sleep 1; done`,
     `${local} ollama pull ${ollamaModel} || exit 1`,
     'kill "$pid"',
-    'wait "$pid"',
-    // OLLAMA_HOST of the definition's env: the exposed port.
-    "exec ollama serve",
+    // Quietly: the shell would report the server it just ended ("Terminated").
+    'wait "$pid" 2>/dev/null',
+    // The preload, in the background (one list element with the exec: `&;` is
+    // not shell), then OLLAMA_HOST of the definition's env: the exposed port.
+    // The preload writes nothing to the container's log (Ollama draws a
+    // progress spinner on stderr); if it does not complete, one plain line
+    // says so.
+    `(i=0; until ${exposed} ollama list >/dev/null 2>&1; do i=$((i+1)); [ "$i" -ge 60 ] && break; sleep 1; done; ` +
+      `[ "$i" -lt 60 ] && ${exposed} ollama run ${ollamaModel} "" >/dev/null 2>&1 </dev/null || ` +
+      `echo "${OLLAMA_PRELOAD_FAILED_LINE}" >&2) & exec ollama serve`,
   ].join("; ");
 }
 
@@ -2948,7 +3518,9 @@ function ollamaServeScript(ollamaModel: string): string {
 function ollamaEnv(): Record<string, string> {
   return {
     OLLAMA_HOST: `0.0.0.0:${OLLAMA_PORT}`,
-    OLLAMA_KEEP_ALIVE: "24h", // Keep model loaded
+    // Never unload: the model is loaded once, at start (ollamaServeScript),
+    // and a reload would be a cold request of tens of seconds.
+    OLLAMA_KEEP_ALIVE: "-1",
   };
 }
 

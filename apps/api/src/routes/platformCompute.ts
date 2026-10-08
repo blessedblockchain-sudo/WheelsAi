@@ -25,7 +25,10 @@
  *                 was for.
  *
  * It also lists what keeps fine-tuning from starting (`training`): each
- * blocker's code, the one customers receive, with what to set.
+ * blocker's code, the one customers receive, with what to set; and the
+ * deployments the status worker ended because Nosana could not place them
+ * (`placementFailures`), with Nosana's own message where this process has it.
+ * Customers only ever see the reason's sentence.
  *
  * An upstream read that fails does not fail the route: that section says
  * "unreadable" and the rest is still answered.
@@ -108,6 +111,18 @@ export interface OpenNosanaRow {
   status: string;
 }
 
+/** A deployment ended because Nosana could not place it, or it never became ready. */
+export interface PlacementFailureRow {
+  source: "model" | "agent";
+  rowId: string;
+  nosanaDeploymentId: string | null;
+  /** nosana_list_failed | no_capacity | start_timeout. */
+  reason: string;
+  failedAt: Date | null;
+  /** Nosana's own message. Null when this process did not observe the failure. */
+  detail: string | null;
+}
+
 export interface RunningComputeRow {
   gpuTier: string;
   replicas: number;
@@ -134,6 +149,8 @@ export interface PlatformComputeDeps {
   loadRunning: () => Promise<RunningComputeRow[]>;
   /** What keeps fine-tuning from starting, in operator language. Absent = not reported. */
   trainingBlockers?: () => Promise<Array<{ code: string; message: string }>>;
+  /** Recent placement failures, newest first. Absent = not reported. */
+  loadPlacementFailures?: () => Promise<PlacementFailureRow[]>;
   /** Called with the tiers found priced below cost (the wallet path refuses nothing in a request). */
   reportBelowCost?: (tiers: string[]) => void;
   now?: () => Date;
@@ -227,6 +244,20 @@ export interface PlatformComputeResponse {
     /** Null when the section is not ok. */
     canStart: boolean | null;
     blockers: Array<{ code: string; message: string }>;
+  };
+  /** Deployments ended because Nosana could not place them, newest first. */
+  placementFailures: {
+    state: SectionState;
+    rows: Array<{
+      source: "model" | "agent";
+      rowId: string;
+      nosanaDeploymentId: string | null;
+      reason: string;
+      failedAt: string | null;
+      /** Nosana's own message; null when this process did not observe the failure. */
+      detail: string | null;
+    }>;
+    truncated: boolean;
   };
 }
 
@@ -387,7 +418,7 @@ export async function computePlatformCompute(
   const holds = (mode: NosanaAccessMode) => modes.includes(mode);
 
   // Every read at once; each is settled on its own so one failure costs one section.
-  const [credits, minimumDeploy, wallet, costs, lists, openRows, running, tierList, training] = await Promise.all([
+  const [credits, minimumDeploy, wallet, costs, lists, openRows, running, tierList, training, placement] = await Promise.all([
     access.hasApiKey ? settle(deps.readCredits, timeoutMs) : null,
     access.hasApiKey ? settle(deps.minimumDeployCredits, timeoutMs) : null,
     access.hasWallet ? settle(deps.readWallet, timeoutMs) : null,
@@ -402,6 +433,7 @@ export async function computePlatformCompute(
     settle(deps.loadRunning, timeoutMs),
     deps.tiers(),
     deps.trainingBlockers ? settle(deps.trainingBlockers, timeoutMs) : null,
+    deps.loadPlacementFailures ? settle(deps.loadPlacementFailures, timeoutMs) : null,
   ]);
 
   // ---- Credits ---------------------------------------------------------
@@ -561,6 +593,22 @@ export async function computePlatformCompute(
             blockers: training.value.map((blocker) => ({ code: blocker.code, message: blocker.message })),
           }
         : { state: "unreadable", canStart: null, blockers: [] },
+    placementFailures: !placement
+      ? { state: "not_applicable", rows: [], truncated: false }
+      : placement.ok
+        ? {
+            state: "ok",
+            rows: placement.value.slice(0, MAX_LISTED).map((row) => ({
+              source: row.source,
+              rowId: row.rowId,
+              nosanaDeploymentId: row.nosanaDeploymentId,
+              reason: row.reason,
+              failedAt: row.failedAt ? row.failedAt.toISOString() : null,
+              detail: row.detail,
+            })),
+            truncated: placement.value.length > MAX_LISTED,
+          }
+        : { state: "unreadable", rows: [], truncated: false },
   };
 }
 

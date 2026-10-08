@@ -11,6 +11,7 @@ import { compileDeployPlan } from "../services/deployPlan.js";
 import { parseElizaCharacter } from "../services/frameworks/eliza.js";
 import {
   OLLAMA_IMAGE,
+  OLLAMA_PRELOAD_FAILED_LINE,
   apiPortWithHealthCheck,
   generateJobDefinition,
   generateOllamaJobDefinition,
@@ -301,9 +302,20 @@ test("ollama: pinned image, a shell entrypoint with one script, port 11434 with 
     assert.match(script, /^OLLAMA_HOST=127\.0\.0\.1:11435 ollama serve & /);
     assert.match(
       script,
-      /; OLLAMA_HOST=127\.0\.0\.1:11435 ollama pull llama3\.2:1b \|\| exit 1; kill "\$pid"; wait "\$pid"; exec ollama serve$/,
+      /; OLLAMA_HOST=127\.0\.0\.1:11435 ollama pull llama3\.2:1b \|\| exit 1; kill "\$pid"; wait "\$pid" 2>\/dev\/null; \(/,
     );
     assert.ok(script.indexOf("ollama list") < script.indexOf("ollama pull"), "it waits for the server before it pulls");
+    // The preload: a background job that waits for the final server on the
+    // exposed port and loads the model (Ollama's documented `run <model> ""`),
+    // started before the exec that becomes that server.
+    assert.match(
+      script,
+      /; \(i=0; until OLLAMA_HOST=127\.0\.0\.1:11434 ollama list >\/dev\/null 2>&1; do .*?; done; \[ "\$i" -lt 60 \] && OLLAMA_HOST=127\.0\.0\.1:11434 ollama run llama3\.2:1b "" >\/dev\/null 2>&1 <\/dev\/null \|\| echo "model preload did not complete; the model loads on the first request" >&2\) & exec ollama serve$/,
+    );
+    // Nothing the preload prints reaches the deployment's log: Ollama draws
+    // a progress spinner on stderr.
+    assert.match(script, /ollama run llama3\.2:1b "" >\/dev\/null 2>&1 <\/dev\/null/);
+    assert.doesNotMatch(script, /&;/, "`&;` is a shell syntax error");
     assert.equal(args.gpu, true);
     assert.deepEqual(args.expose, [
       {
@@ -312,7 +324,8 @@ test("ollama: pinned image, a shell entrypoint with one script, port 11434 with 
         health_checks: [{ type: "http", method: "GET", path: "/api/tags", expected_status: 200, continuous: true }],
       },
     ]);
-    assert.deepEqual(args.env, { OLLAMA_HOST: "0.0.0.0:11434", OLLAMA_KEEP_ALIVE: "24h" });
+    // -1: the model stays loaded once the preload has loaded it.
+    assert.deepEqual(args.env, { OLLAMA_HOST: "0.0.0.0:11434", OLLAMA_KEEP_ALIVE: "-1" });
   }
 });
 
@@ -333,7 +346,9 @@ test("ollama: a model name the shell would read is refused before any definition
 // <script>`), with a stand-in `ollama` on PATH that records what it is asked.
 const sh = spawnSync("/bin/sh", ["-c", "exit 0"]).status === 0;
 
-function runOllamaScript(mode: "ok" | "pull_fails" | "never_up"): { status: number | null; calls: string[] } {
+function runOllamaScript(
+  mode: "ok" | "pull_fails" | "never_up" | "final_never_up" | "preload_fails",
+): { status: number | null; calls: string[]; stderr: string } {
   const dir = mkdtempSync(path.join(tmpdir(), "wheelsai-ollama-"));
   try {
     const log = path.join(dir, "calls.log");
@@ -349,12 +364,19 @@ function runOllamaScript(mode: "ok" | "pull_fails" | "never_up"): { status: numb
         "  serve)",
         // The server on the exposed port: it must find the other one gone,
         // and then ends at once with a code the test can tell apart.
-        `    if [ "$OLLAMA_HOST" = "0.0.0.0:11434" ]; then kill -0 "$(cat "${dir}/pid")" 2>/dev/null && exit 9; exit 7; fi`,
+        // It answers (the `final_up` mark) only after its own line is in the
+        // log, stays up for a moment so the preload can reach it, then ends.
+        `    if [ "$OLLAMA_HOST" = "0.0.0.0:11434" ]; then kill -0 "$(cat "${dir}/pid")" 2>/dev/null && exit 9; [ "$MODE" != final_never_up ] && : > "${dir}/final_up"; /bin/sleep 0.6; exit 7; fi`,
         // The server on loopback: up after a moment, then it stays until it is
         // told to end (its output closed, so a leftover holds nothing open).
         `    exec >/dev/null 2>&1 </dev/null; echo $$ > "${dir}/pid"; /bin/sleep 0.3; : > "${dir}/up"; exec /bin/sleep 5 ;;`,
-        `  list) [ "$MODE" != never_up ] && [ -f "${dir}/up" ] ;;`,
+        // A client of the final server (the preload) is answered only once
+        // that server is up; a client of the loopback one as before.
+        `  list) if [ "$OLLAMA_HOST" = "127.0.0.1:11434" ]; then [ -f "${dir}/final_up" ]; else [ "$MODE" != never_up ] && [ -f "${dir}/up" ]; fi ;;`,
         '  pull) [ "$MODE" != pull_fails ] ;;',
+        // The preload's load: noisy on both streams, like the real spinner,
+        // and failing when the mode says so.
+        '  run) echo "spinner-out"; echo "spinner-err" >&2; [ "$MODE" != preload_fails ] ;;',
         "esac",
       ].join("\n"),
     );
@@ -367,7 +389,11 @@ function runOllamaScript(mode: "ok" | "pull_fails" | "never_up"): { status: numb
       env: { ...env, PATH: `${dir}:/usr/bin:/bin`, MODE: mode },
       timeout: 30_000,
     });
-    return { status: run.status, calls: readFileSync(log, "utf8").trim().split("\n") };
+    return {
+      status: run.status,
+      calls: readFileSync(log, "utf8").trim().split("\n"),
+      stderr: run.stderr.toString("utf8"),
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -375,6 +401,8 @@ function runOllamaScript(mode: "ok" | "pull_fails" | "never_up"): { status: numb
 
 const PULL_HOST = "127.0.0.1:11435";
 const EXPOSED_HOST = "0.0.0.0:11434";
+/** The final server, as the preload inside the container reaches it. */
+const PRELOAD_HOST = "127.0.0.1:11434";
 
 test("ollama script: nothing listens on the exposed port until the model is pulled; then it lives and ends with the server", { skip: !sh }, () => {
   const run = runOllamaScript("ok");
@@ -387,17 +415,39 @@ test("ollama script: nothing listens on the exposed port until the model is pull
   );
   assert.equal(run.calls.filter((c) => c.includes(" pull ")).length, 1);
   // Everything up to and including the pull happens on loopback. The exposed
-  // port - the one Nosana's health check and /v1 reach - is opened once, last.
-  assert.equal(run.calls.at(-2), `${PULL_HOST} pull llama3.2:1b`);
-  assert.equal(run.calls.at(-1), `${EXPOSED_HOST} serve`);
+  // port - the one Nosana's health check and /v1 reach - is opened once, after it.
+  const pullAt = run.calls.indexOf(`${PULL_HOST} pull llama3.2:1b`);
+  const serveAt = run.calls.indexOf(`${EXPOSED_HOST} serve`);
+  assert.ok(pullAt > 0 && serveAt > pullAt, "the exposed server starts after the pull");
+  assert.equal(run.calls.filter((c) => c === `${EXPOSED_HOST} serve`).length, 1);
   assert.deepEqual(
-    run.calls.slice(0, -1).filter((c) => !c.startsWith(`${PULL_HOST} `)),
+    run.calls.slice(0, pullAt + 1).filter((c) => !c.startsWith(`${PULL_HOST} `)),
     [],
     "before the pull returned, nothing touched the exposed address",
+  );
+  // The preload: the model is loaded through the final server, once, and only
+  // after that server was up (the stand-in answers `list` there only once the
+  // exposed server has started).
+  // (`run llama3.2:1b ""`: the empty prompt is the trailing space, which the
+  // log reader trims on a last line.)
+  const runAt = run.calls.findIndex((c) => c.trimEnd() === `${PRELOAD_HOST} run llama3.2:1b`);
+  assert.ok(runAt > serveAt, "the model is loaded after the final server started");
+  assert.equal(run.calls.filter((c) => c.includes(" run ")).length, 1, "loaded once");
+  assert.ok(
+    run.calls.slice(serveAt, runAt).some((c) => c === `${PRELOAD_HOST} list`),
+    "it waited for the final server to answer before loading",
+  );
+  assert.deepEqual(
+    run.calls.slice(pullAt + 1).filter((c) => c.startsWith(`${PULL_HOST} `)),
+    [],
+    "nothing asks the loopback server after the pull",
   );
   // 7: the exposed server's own exit code, which it gives only when the
   // loopback server had already ended.
   assert.equal(run.status, 7, "the container's exit is the server's");
+  // A preload that completed leaves nothing in the log: neither its own
+  // output nor the failure line.
+  assert.equal(run.stderr, "");
 });
 
 test("ollama script: a failed pull, or a server that never answers, ends the container instead of serving nothing", { skip: !sh }, () => {
@@ -409,6 +459,34 @@ test("ollama script: a failed pull, or a server that never answers, ends the con
   assert.equal(never.calls.filter((c) => c === `${PULL_HOST} list`).length, 60, "sixty attempts, then it gives up");
   assert.equal(never.calls.some((c) => c.includes(" pull ")), false);
   assert.equal(never.calls.some((c) => c.startsWith(EXPOSED_HOST)), false);
+  for (const run of [failed, never]) {
+    assert.equal(run.calls.some((c) => c.includes(" run ")), false, "nothing is loaded when nothing serves");
+    assert.equal(run.calls.some((c) => c.startsWith(PRELOAD_HOST)), false);
+  }
+});
+
+test("ollama script: the preload never loads a model through a server that is not up, and the container's life is still the server's", { skip: !sh }, () => {
+  const run = runOllamaScript("final_never_up");
+  assert.equal(run.status, 7, "the exit is the server's, whatever the preload did");
+  assert.ok(run.calls.includes(`${EXPOSED_HOST} serve`));
+  assert.equal(run.calls.some((c) => c.includes(" run ")), false);
+  assert.equal(run.calls.filter((c) => c === `${PRELOAD_HOST} list`).length, 60, "sixty attempts, then it gives up");
+  assert.equal(run.stderr, `${OLLAMA_PRELOAD_FAILED_LINE}\n`, "one plain line says the preload did not complete");
+});
+
+test("ollama script: a preload that fails says so in one plain line, keeps its own output out of the log, and the server still runs", { skip: !sh }, () => {
+  const run = runOllamaScript("preload_fails");
+  // Same order of calls as a start that went well: pull on loopback, then the
+  // exposed server, then the wait for it, then the load.
+  const pullAt = run.calls.indexOf(`${PULL_HOST} pull llama3.2:1b`);
+  const serveAt = run.calls.indexOf(`${EXPOSED_HOST} serve`);
+  const runAt = run.calls.findIndex((c) => c.trimEnd() === `${PRELOAD_HOST} run llama3.2:1b`);
+  assert.ok(pullAt > 0 && serveAt > pullAt && runAt > serveAt, "pull, then the exposed server, then the load");
+  assert.ok(run.calls.slice(serveAt, runAt).some((c) => c === `${PRELOAD_HOST} list`));
+  assert.equal(run.calls.filter((c) => c.includes(" run ")).length, 1, "it is not tried again in the container");
+  assert.equal(run.status, 7, "the exit is the server's");
+  assert.equal(run.stderr, `${OLLAMA_PRELOAD_FAILED_LINE}\n`);
+  assert.equal(OLLAMA_PRELOAD_FAILED_LINE, "model preload did not complete; the model loads on the first request");
 });
 
 // ============================================

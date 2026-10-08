@@ -130,7 +130,9 @@ export function inferenceResource(client: WheelsAIClient) {
      * answers: `agent/<slug>` for an agent, `workflow/<slug>` for a workflow (one call is one
      * run; see `workflows.chatCompletion`), or the slug of a running model deployment
      * (`listModels` returns all three). Not streamed: for server-sent events point the OpenAI SDK
-     * at `<api>/v1`. An agent with tools can outlast the default timeout: pass `{ timeoutMs }`.
+     * at `<api>/v1`. An agent with tools, or a long answer from a model deployment, can outlast
+     * the client's default timeout of 30 seconds (the API gives a model up to two minutes): pass
+     * `{ timeoutMs }`.
      */
     chat: (request: ChatCompletionRequest & { model: string }, options?: RequestOptions) =>
       client.post<ChatCompletionResponse>("/v1/chat/completions", request, options),
@@ -144,7 +146,8 @@ export function inferenceResource(client: WheelsAIClient) {
      * 8192. This method does not stream; the endpoint does (`stream: true` with the OpenAI SDK
      * pointed at `<api>/v1`). A deployment on real GPU capacity is billed per GPU-second by a
      * worker, so a request takes no per-token credit hold there; other deployments answer 402
-     * when credits run out.
+     * when credits run out. A long answer can outlast the client's default timeout of 30 seconds
+     * (the API gives the model up to two minutes): pass `{ timeoutMs }`.
      */
     chatCompletion: (deploymentSlug: string, request: ChatCompletionRequest, options?: RequestOptions) =>
       client.post<ChatCompletionResponse>(`/v1/${seg(deploymentSlug)}/chat/completions`, request, options),

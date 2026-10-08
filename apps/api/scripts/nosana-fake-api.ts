@@ -5,7 +5,10 @@
  *   - the fake Nosana REST API of the unit tests (src/tests/fakeNosanaApi.ts),
  *     which the real @nosana/sdk talks to when NOSANA_API_URL points at it;
  *   - a fake inference node that answers the readiness probes (/health for
- *     vLLM, /api/tags for Ollama), so a deployment can be observed "running";
+ *     vLLM; for Ollama /api/ps, listing FAKE_NODE_MODEL as loaded, and
+ *     /api/tags) and the load request of each engine (POST /api/generate for
+ *     that model, POST /v1/completions), so a deployment can be observed
+ *     "running";
  *   - a stand-in Solana RPC that answers 500 and counts its requests (the
  *     API-key path must make none).
  *
@@ -30,6 +33,9 @@
  *   FAKE_LOW_BALANCE_USD 1    what SIGUSR1 sets the balance to (SIGUSR2 restores it)
  *   FAKE_START_MS      8000   RUNNING -> a job listed and the endpoint online
  *   FAKE_STOP_MS       3000   STOPPING -> STOPPED
+ *   FAKE_NODE_MODEL    llama3.2:3b   the model the node's /api/ps lists as loaded
+ *                      (the platform's Ollama probe is healthy only for the
+ *                      deployment's own model; empty = nothing loaded)
  *   FAKE_NODE_TLS_CERT, FAKE_NODE_TLS_KEY   PEM files for the fake node
  *
  * The platform only accepts https endpoints, so the node is advertised as
@@ -40,8 +46,8 @@
  *     -addext "subjectAltName=IP:127.0.0.1" -keyout node.key -out node.crt
  *
  * Without one the node speaks plain http: the deployment still reaches
- * "running" (that needs an endpoint, not a healthy probe) and its node reads
- * unhealthy. Until the node takes the job, the endpoint Nosana computed at
+ * "provisioning" (a model deployment is "running" only once its node probes
+ * healthy) and its node reads unhealthy. Until the node takes the job, the endpoint Nosana computed at
  * create is listed offline.
  *
  * Then start the API with NOSANA_API_KEY=<the key>, NOSANA_ACCESS_MODE=api_key,
@@ -94,18 +100,51 @@ async function main(): Promise<void> {
     balance: { assignedCredits: balanceUsd, reservedCredits: 0, settledCredits: 0 },
   });
 
-  // The inference node: ready on both engines' probe paths, nothing else.
+  // The inference node: ready on both engines' probe paths, and it answers
+  // the platform's load request for its model (one generated token), which
+  // is what makes an Ollama deployment "running". Nothing else.
+  const nodeModel = process.env.FAKE_NODE_MODEL ?? "llama3.2:3b";
   let probes = 0;
   const answerProbe: RequestListener = (req, res) => {
     const path = (req.url ?? "/").split("?")[0];
-    if (req.method === "GET" && (path === "/health" || path === "/api/tags")) {
+    if (req.method === "GET" && (path === "/health" || path === "/api/tags" || path === "/api/ps")) {
       probes += 1;
+      const loaded = nodeModel ? [{ name: nodeModel, model: nodeModel }] : [];
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(path === "/health" ? { status: "ok" } : { models: [] }));
+      res.end(JSON.stringify(path === "/health" ? { status: "ok" } : { models: loaded }));
+      return;
+    }
+    // The load request of either engine: Ollama's generate route, vLLM's completions route.
+    if (req.method === "POST" && (path === "/api/generate" || path === "/v1/completions")) {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        let asked = "";
+        try {
+          asked = String((JSON.parse(raw) as { model?: unknown }).model ?? "");
+        } catch {
+          asked = "";
+        }
+        // A vLLM deployment asks for its Hugging Face id; this node serves whatever is asked on that route.
+        const known =
+          path === "/v1/completions"
+            ? asked !== ""
+            : nodeModel !== "" && asked.toLowerCase() === nodeModel.toLowerCase();
+        res.writeHead(known ? 200 : 404, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify(
+            known
+              ? path === "/v1/completions"
+                ? { object: "text_completion", model: asked, choices: [{ index: 0, text: " Hi", finish_reason: "length" }] }
+                : { model: nodeModel, response: "Hi", done: true, done_reason: "length" }
+              : { error: `model '${asked}' not found` },
+          ),
+        );
+      });
       return;
     }
     res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "the fake node only answers readiness probes" }));
+    res.end(JSON.stringify({ error: "the fake node only answers readiness probes and the load request" }));
   };
   const tlsCert = process.env.FAKE_NODE_TLS_CERT;
   const tlsKey = process.env.FAKE_NODE_TLS_KEY;

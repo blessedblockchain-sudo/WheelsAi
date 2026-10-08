@@ -29,7 +29,12 @@
  *   stopHaltedDeployment -> NosanaClient.stopDeployment for a row the tick
  *                         has just failed because Nosana halted it
  *   checkNodeHealth    -> NosanaClient.checkNodeHealth (engine-specific HTTP
- *                         probe, never throws)
+ *                         probe, never throws; for Ollama it is given the
+ *                         row's served model and is healthy only when that
+ *                         model is loaded and has answered a request)
+ *   readPlacementEvents -> NosanaClient.listDeploymentEvents, for a row that
+ *                         has waited with nothing online: a listing Nosana
+ *                         keeps failing ends the row (nosana_list_failed)
  *   persistNodeHealth  -> updateMany by node id (race-safe: the node may
  *                         have been cascade-deleted with its deployment
  *                         between load and write - count=0 beats P2025)
@@ -53,6 +58,10 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 
 import { rowAccessMode, type NosanaAccessMode } from "../config/nosanaAccess.js";
 import { startMayBeInFlight, type DeploymentSnapshot } from "./nosanaDeploymentLifecycle.js";
+import {
+  isPlacementFailureReason,
+  PLACEMENT_FAILURE_SENTENCES,
+} from "./runDeploymentStatusTick.js";
 import type {
   DeploymentNodeRow,
   DeploymentObservation,
@@ -108,6 +117,7 @@ interface AgentDeploymentDelegateStub {
       status: true;
       nosanaJobIds: true;
       nosanaAccessMode: true;
+      updatedAt: true;
       reservationCents: true;
       reservationReleasedAt: true;
       agent: { select: { orgId: true } };
@@ -118,6 +128,7 @@ interface AgentDeploymentDelegateStub {
       status: string;
       nosanaJobIds: string[];
       nosanaAccessMode?: string | null;
+      updatedAt?: Date | null;
       reservationCents: bigint | null;
       reservationReleasedAt: Date | null;
       agent: { orgId: string };
@@ -145,6 +156,8 @@ interface ModelLoadArgs {
     engine: true;
     nosanaJobIds: true;
     nosanaAccessMode: true;
+    updatedAt: true;
+    billedThroughAt: true;
     runGeneration: true;
     replicas: true;
     pendingReplicas: true;
@@ -153,6 +166,7 @@ interface ModelLoadArgs {
     replicaChangeHoldCents: true;
     reservationCents: true;
     reservationReleasedAt: true;
+    model: { select: { hfId: true } };
     nodes: { select: { id: true; nodeUrl: true; healthStatus: true } };
   };
 }
@@ -178,6 +192,9 @@ interface ModelDeploymentDelegateStub {
       engine: string;
       nosanaJobIds: string[];
       nosanaAccessMode?: string | null;
+      updatedAt?: Date | null;
+      billedThroughAt?: Date | null;
+      model?: { hfId: string } | null;
       runGeneration: number;
       replicas: number;
       pendingReplicas?: number | null;
@@ -367,11 +384,39 @@ export interface BuildDeploymentStatusTickDepsInput {
     nosanaDeploymentId: string,
     accessMode?: NosanaAccessMode,
   ) => Promise<DeploymentSnapshot>;
-  /** HTTP readiness probe (NosanaClient.checkNodeHealth - never throws). */
+  /**
+   * HTTP readiness probe (NosanaClient.checkNodeHealth - never throws).
+   * `pending`: the model is listed and has not answered yet (not known).
+   */
   checkNodeHealth: (
     nodeUrl: string,
     engine?: string,
-  ) => Promise<{ healthy: boolean; latencyMs: number }>;
+    model?: string,
+  ) => Promise<{ healthy: boolean; latencyMs: number; pending?: boolean }>;
+  /**
+   * Forgets that a node was seen answering (services/nosana.ts
+   * forgetNodeAnswered): the tick calls it for an endpoint that is
+   * offline, a node that is dropped and a row that leaves service.
+   */
+  forgetNodeReadiness?: (nodeUrl: string) => void;
+  /**
+   * The name an engine serves a model under (services/nosana.ts
+   * servedModelName): what the Ollama readiness probe looks for. Omit and
+   * the probe is given no model.
+   */
+  servedModelName?: (engine: string, hfId: string) => string;
+  /**
+   * The newest events of a Nosana deployment, newest first
+   * (NosanaClient.listDeploymentEvents), through the credential that created
+   * it. Omit and a deployment Nosana cannot place is ended only by the
+   * provisioning limit.
+   */
+  listDeploymentEvents?: (
+    nosanaDeploymentId: string,
+    accessMode?: NosanaAccessMode,
+  ) => Promise<DeploymentSnapshot["events"]>;
+  /** For the operator's log and view: a row failed for placement, with Nosana's message. */
+  reportPlacementFailure?: DeploymentStatusTickDeps["reportPlacementFailure"];
   /**
    * env.ALLOW_NOSANA_MOCK. Dev-only: mock ids are treated as running
    * instead of being queried. Production boot REJECTS the flag
@@ -447,6 +492,31 @@ function endpointNodeId(endpoint: ObservedEndpoint): string {
   }
 }
 
+/*
+ * WAITING_CLOCK: since when a row has been waiting to serve.
+ *
+ * It is the row's `updatedAt`, which Prisma stamps on every write to the row
+ * itself (not to its nodes). That is a sound clock only because nothing
+ * writes a waiting row (pending, provisioning, building, deploying) on a
+ * timer. The writes to such a row are, in order:
+ *   - the create and the reservation stored with it (routes/deployments.ts,
+ *     routes/agents.ts), or the restart claim (modelDeploymentLifecycle.ts);
+ *   - the submit: pending -> provisioning / building -> deploying, then the
+ *     Nosana id and access mode. This is the last one, so the clock starts
+ *     when Nosana has the deployment;
+ *   - the status change that ends the wait (this file, the stop routes).
+ * The periodic writers do not reach it: the billing cursor and the runway
+ * check act on `running` rows only (buildGpuBillingTickDeps.ts), the replica
+ * reconcile on `running`/`degraded`, the vault reclaim stamp on
+ * `stopped`/`failed`, the automatic-restart claim on a stopped or failed row,
+ * and the node probe and node sync write DeploymentNode rows.
+ * A customer's own edit of a waiting model deployment (PATCH config) writes
+ * the row once and so restarts the clock once. That is accepted: it delays
+ * the provisioning limit by at most one limit per edit and is not periodic.
+ * A writer added later that touches waiting rows on a timer would stop the
+ * limit from ever firing; it must then get its own column.
+ */
+
 export function buildDeploymentStatusTickDeps(
   input: BuildDeploymentStatusTickDepsInput,
 ): DeploymentStatusTickDeps {
@@ -476,6 +546,7 @@ export function buildDeploymentStatusTickDeps(
             status: true,
             nosanaJobIds: true,
             nosanaAccessMode: true,
+            updatedAt: true,
             reservationCents: true,
             reservationReleasedAt: true,
             agent: { select: { orgId: true } },
@@ -493,6 +564,8 @@ export function buildDeploymentStatusTickDeps(
             engine: true,
             nosanaJobIds: true,
             nosanaAccessMode: true,
+            updatedAt: true,
+            billedThroughAt: true,
             runGeneration: true,
             replicas: true,
             pendingReplicas: true,
@@ -501,6 +574,7 @@ export function buildDeploymentStatusTickDeps(
             replicaChangeHoldCents: true,
             reservationCents: true,
             reservationReleasedAt: true,
+            model: { select: { hfId: true } },
             nodes: { select: { id: true, nodeUrl: true, healthStatus: true } },
           },
         }),
@@ -514,6 +588,8 @@ export function buildDeploymentStatusTickDeps(
           status: r.status,
           nosanaJobIds: r.nosanaJobIds,
           nosanaAccessMode: rowAccessMode(r.nosanaAccessMode),
+          // The waiting clock: see WAITING_CLOCK below.
+          ...(r.updatedAt ? { waitingSince: r.updatedAt } : {}),
           reservationCents: r.reservationCents,
           reservationReleasedAt: r.reservationReleasedAt,
         })),
@@ -523,8 +599,16 @@ export function buildDeploymentStatusTickDeps(
           orgId: r.orgId,
           status: r.status,
           engine: r.engine,
+          ...(input.servedModelName && r.model?.hfId
+            ? { servedModel: input.servedModelName(r.engine, r.model.hfId) }
+            : {}),
           nosanaJobIds: r.nosanaJobIds,
           nosanaAccessMode: rowAccessMode(r.nosanaAccessMode),
+          ...(r.updatedAt ? { waitingSince: r.updatedAt } : {}),
+          // Set only while a run is billed (the restart claim clears it). A
+          // row with it set is never ended as "could not be placed": those
+          // endings tell the customer nothing was charged.
+          ...(r.billedThroughAt ? { billedThisRun: true } : {}),
           runGeneration: r.runGeneration,
           replicas: r.replicas,
           replicaChange:
@@ -580,9 +664,15 @@ export function buildDeploymentStatusTickDeps(
           where: { id: t.id, status: t.fromStatus },
           data: {
             ...base,
-            // AgentDeployment carries a lastError surface; record why.
+            // AgentDeployment carries a lastError surface; record why. It is
+            // shown to the customer, so a placement failure is its sentence,
+            // never the code or Nosana's own message.
             ...(t.toStatus === "failed"
-              ? { lastError: t.reason ?? "Nosana reported deployment failure" }
+              ? {
+                  lastError: isPlacementFailureReason(t.reason)
+                    ? PLACEMENT_FAILURE_SENTENCES[t.reason]
+                    : (t.reason ?? "Nosana reported deployment failure"),
+                }
               : {}),
           },
         });
@@ -861,7 +951,19 @@ export function buildDeploymentStatusTickDeps(
         return [...kept.values(), ...created];
       }),
 
-    checkNodeHealth: (nodeUrl, engine) => input.checkNodeHealth(nodeUrl, engine),
+    checkNodeHealth: (nodeUrl, engine, model) => input.checkNodeHealth(nodeUrl, engine, model),
+    ...(input.forgetNodeReadiness ? { forgetNodeReadiness: input.forgetNodeReadiness } : {}),
+    ...(input.listDeploymentEvents
+      ? {
+          readPlacementEvents: async (nosanaDeploymentId: string, accessMode?: NosanaAccessMode) =>
+            (await input.listDeploymentEvents!(nosanaDeploymentId, accessMode)).map((event) => ({
+              type: event.type,
+              message: event.message,
+              createdAt: event.createdAt,
+            })),
+        }
+      : {}),
+    ...(input.reportPlacementFailure ? { reportPlacementFailure: input.reportPlacementFailure } : {}),
 
     persistNodeHealth: async (obs: NodeHealthObservation) => {
       // updateMany, not update: the node may have been cascade-deleted

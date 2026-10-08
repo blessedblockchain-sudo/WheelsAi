@@ -183,7 +183,7 @@ test("generateOllamaJobDefinition returns correct structure with mapped model", 
   // Env variables
   assert.equal(op.args.env!.OLLAMA_HOST, "0.0.0.0:11434");
   assert.equal(op.args.env!.OLLAMA_NUM_CTX, undefined, "not a variable Ollama reads");
-  assert.equal(op.args.env!.OLLAMA_KEEP_ALIVE, "24h");
+  assert.equal(op.args.env!.OLLAMA_KEEP_ALIVE, "-1");
 });
 
 // ============================================

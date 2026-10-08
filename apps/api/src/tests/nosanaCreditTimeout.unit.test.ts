@@ -98,6 +98,12 @@ test("wallet access keeps its range: 600 seconds is still accepted", () => {
   }
 });
 
+test("the provisioning limit defaults to 30 minutes and is configurable within its range", () => {
+  assert.equal(loadNosanaDeployConfig({}).provisioningLimitSeconds, 1_800);
+  assert.equal(loadNosanaDeployConfig({ NOSANA_PROVISIONING_LIMIT_SECONDS: "600" }).provisioningLimitSeconds, 600);
+  assert.throws(() => loadNosanaDeployConfig({ NOSANA_PROVISIONING_LIMIT_SECONDS: "10" }), NosanaDeployConfigError);
+});
+
 test("validateEnv stops the boot on a credit-paid timeout under the minimum, naming the setting", async () => {
   await import("./unitEnv.js");
   const { validateEnv, EnvValidationError } = await import("../config/env.js");
@@ -119,6 +125,18 @@ test("validateEnv stops the boot on a credit-paid timeout under the minimum, nam
   assert.doesNotThrow(() => validateEnv({ ...base, NOSANA_API_KEY: KEY, NOSANA_JOB_TIMEOUT_SECONDS: "3000" }));
   assert.doesNotThrow(() => validateEnv({ ...base, NOSANA_WALLET_PRIVATE_KEY: WALLET, NOSANA_JOB_TIMEOUT_SECONDS: "600" }));
   assert.doesNotThrow(() => validateEnv({ ...base, NOSANA_JOB_TIMEOUT_SECONDS: "600" }));
+});
+
+test("the inference timeout defaults to two minutes and stays configurable", async () => {
+  await import("./unitEnv.js");
+  const { validateEnv } = await import("../config/env.js");
+  const base = {
+    NODE_ENV: "development",
+    DATABASE_URL: "postgresql://wheelsai:wheelsai@localhost:5432/wheelsai",
+    JWT_SECRET: "12345678901234567890123456789012",
+  };
+  assert.equal(validateEnv(base).INFERENCE_TIMEOUT_MS, 120_000);
+  assert.equal(validateEnv({ ...base, INFERENCE_TIMEOUT_MS: "45000" }).INFERENCE_TIMEOUT_MS, 45_000);
 });
 
 test("a training job's Nosana timeout is the run limit plus the allowance, and at least the credit-paid minimum", () => {

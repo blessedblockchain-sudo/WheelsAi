@@ -425,12 +425,127 @@ test("submitJob on devnet with no market is an honest error, not a placeholder a
 // engine-aware readiness probe
 // ============================================
 
-test("nodeHealthPath: vLLM serves /health, Ollama does not (it serves /api/tags)", async () => {
+test("nodeHealthPath: vLLM serves /health; Ollama is asked which models are loaded (/api/ps)", async () => {
   setupEnv();
   const { nodeHealthPath } = await import("../services/nosana.js");
   assert.equal(nodeHealthPath("vllm"), "/health");
-  assert.equal(nodeHealthPath("ollama"), "/api/tags");
+  assert.equal(nodeHealthPath("ollama"), "/api/ps");
   assert.equal(nodeHealthPath(undefined), "/health");
+});
+
+/** GET /api/ps as Ollama answers it (the fields this code reads, plus the size the live run showed). */
+function psBody(...names: string[]) {
+  return JSON.stringify({
+    models: names.map((name) => ({ name, model: name, size: 5_980_000_000, size_vram: 5_980_000_000 })),
+  });
+}
+
+test("ollamaModelLoaded: only the deployment's own model, loaded now, counts", async () => {
+  setupEnv();
+  const { ollamaModelLoaded } = await import("../services/nosana.js");
+  const loaded = JSON.parse(psBody("llama3.2:3b"));
+  assert.equal(ollamaModelLoaded(loaded, "llama3.2:3b"), true, "listed");
+  assert.equal(ollamaModelLoaded({ models: [] }, "llama3.2:3b"), false, "the server answers, nothing is loaded");
+  assert.equal(ollamaModelLoaded(loaded, "mistral:7b"), false, "another model is loaded");
+  assert.equal(ollamaModelLoaded(loaded, "llama3.2:1b"), false, "another tag of the same model");
+  // A reference without a tag is listed as :latest.
+  assert.equal(ollamaModelLoaded(JSON.parse(psBody("phi3:latest")), "phi3"), true);
+  assert.equal(ollamaModelLoaded(JSON.parse(psBody("library/phi3:latest")), "library/phi3"), true);
+  // No model named: any loaded model.
+  assert.equal(ollamaModelLoaded(loaded), true);
+  assert.equal(ollamaModelLoaded({ models: [] }), false);
+  // Not the shape: fail closed.
+  for (const body of [null, "ok", {}, { models: "llama3.2:3b" }, { models: [null, 7, { name: 3 }] }]) {
+    assert.equal(ollamaModelLoaded(body, "llama3.2:3b"), false);
+  }
+});
+
+test("checkNodeHealth for Ollama: healthy only when /api/ps lists the model and a load request for it was answered; not listed, wrong model and a server that is down are unhealthy", async () => {
+  const client = await makeClient({});
+  const { setLoadRequestTransportForTests, pendingModelLoads, resetNodesSeenAnsweringForTests } =
+    await import("../services/nosana.js");
+  const url = "https://abc.node.k8s.prd.nos.ci";
+  const seen: string[] = [];
+  const realFetch = globalThis.fetch;
+  let answer: () => Response = () => new Response(psBody("llama3.2:3b"), { status: 200 });
+  globalThis.fetch = (async (target: string) => {
+    seen.push(target);
+    return answer();
+  }) as never;
+  // The load request does not go through fetch. This name is not a server of
+  // ours, so the request is answered here and nothing leaves the process.
+  const loadsSent: Array<{ url: string; body: string }> = [];
+  let loadStatus = 200;
+  const restoreTransport = setLoadRequestTransportForTests(async (target, body) => {
+    loadsSent.push({ url: target, body });
+    return loadStatus;
+  });
+  resetNodesSeenAnsweringForTests();
+  try {
+    assert.equal(
+      (await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy,
+      true,
+      "model listed, and its load request answered",
+    );
+    assert.deepEqual(seen, [`${url}/api/ps`]);
+    assert.deepEqual(loadsSent, [
+      {
+        url: `${url}/api/generate`,
+        body: '{"model":"llama3.2:3b","prompt":"Hi","stream":false,"keep_alive":-1,"options":{"num_predict":1}}',
+      },
+    ]);
+    assert.equal((await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy, true);
+    assert.equal(loadsSent.length, 1, "seen loaded: the list is enough from now on");
+
+    // Listed, and the node will not load it: the list alone is not believed.
+    resetNodesSeenAnsweringForTests();
+    loadStatus = 500;
+    assert.equal((await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy, false, "listed, load refused");
+    loadStatus = 200;
+
+    answer = () => new Response(JSON.stringify({ models: [] }), { status: 200 });
+    assert.equal((await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy, false, "server up, model not loaded");
+    await Promise.all(pendingModelLoads());
+
+    answer = () => new Response(psBody("mistral:7b"), { status: 200 });
+    assert.equal((await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy, false, "wrong model");
+    await Promise.all(pendingModelLoads());
+    const asked = loadsSent.length;
+
+    answer = () => new Response("Ollama is running", { status: 200 });
+    assert.equal((await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy, false, "not the list");
+
+    answer = () => new Response(psBody("llama3.2:3b"), { status: 502 });
+    assert.equal((await client.checkNodeHealth(url, "ollama", "llama3.2:3b")).healthy, false, "the tunnel answers 502");
+    assert.equal(loadsSent.length, asked, "nothing is asked of a server that did not answer with its list");
+
+    answer = () => {
+      throw new Error("ECONNREFUSED");
+    };
+    const down = await client.checkNodeHealth(url, "ollama", "llama3.2:3b");
+    assert.equal(down.healthy, false, "server down");
+    assert.equal(typeof down.latencyMs, "number");
+
+    // vLLM: 200 on /health, whatever the body, and one token answered on its
+    // own route.
+    answer = () => new Response("", { status: 200 });
+    assert.equal((await client.checkNodeHealth(url, "vllm", "meta-llama/Llama-3.2-3B-Instruct")).healthy, true);
+    assert.equal(seen.at(-1), `${url}/health`);
+    assert.deepEqual(loadsSent.slice(asked), [
+      {
+        url: `${url}/v1/completions`,
+        body: '{"model":"meta-llama/Llama-3.2-3B-Instruct","prompt":"Hi","max_tokens":1,"stream":false}',
+      },
+    ]);
+    // Without a model name there is nothing to ask for.
+    assert.equal((await client.checkNodeHealth(url, "vllm")).healthy, true);
+    assert.equal(loadsSent.length, asked + 1);
+  } finally {
+    await Promise.all(pendingModelLoads());
+    restoreTransport();
+    resetNodesSeenAnsweringForTests();
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("checkNodeHealth probes the engine's own path and never follows redirects", async () => {
@@ -439,7 +554,7 @@ test("checkNodeHealth probes the engine's own path and never follows redirects",
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     seen.push({ url, redirect: init?.redirect });
-    return new Response("ok", { status: 200 });
+    return new Response(psBody("llama3.2:3b"), { status: 200 });
   }) as never;
   try {
     const vllm = await client.checkNodeHealth("https://abc.node.k8s.prd.nos.ci", "vllm");
@@ -455,7 +570,7 @@ test("checkNodeHealth probes the engine's own path and never follows redirects",
     seen.map((s) => s.url),
     [
       "https://abc.node.k8s.prd.nos.ci/health",
-      "https://abc.node.k8s.prd.nos.ci/api/tags",
+      "https://abc.node.k8s.prd.nos.ci/api/ps",
       "https://abc.node.k8s.prd.nos.ci/health",
     ],
   );

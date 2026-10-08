@@ -73,7 +73,7 @@ function makeDeps(opts: {
   observations?: Record<string, DeploymentObservation | Error>;
   persistCount?: number;
   /** Probe result (or throw) per nodeUrl; default healthy/40ms. */
-  nodeProbes?: Record<string, { healthy: boolean; latencyMs: number } | Error>;
+  nodeProbes?: Record<string, { healthy: boolean; latencyMs: number; pending?: boolean } | Error>;
   persistNodeHealthError?: Error;
   emitError?: Error;
   releaseError?: Error;
@@ -371,15 +371,18 @@ test("only the online endpoints become nodes and are probed; the row goes runnin
 
 test("a running model whose endpoints all go offline degrades and loses its nodes; it recovers when one is online", async () => {
   const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  // Nosana reports the endpoint offline, and nothing answers there either.
   const offline = makeDeps({
     rows: [modelRow({ status: "running", nodes: [{ id: "n1", nodeUrl: EP1.url, healthStatus: "healthy" }] })],
     observations: { job_1: observation("running", [{ ...EP1, online: false }]) },
+    nodeProbes: { [EP1.url]: { healthy: false, latencyMs: 700 } },
   });
   await runDeploymentStatusTick({ now: NOW }, offline.deps);
   assert.equal(offline.transitions[0]!.toStatus, "degraded");
   assert.equal(offline.transitions[0]!.reason, "no_live_endpoint");
   assert.deepEqual(offline.synced, [{ deploymentId: "m1", endpoints: [] }], "no traffic is routed to it");
-  assert.deepEqual(offline.probed, []);
+  assert.equal(offline.probed.length, 1, "the endpoint was asked once before it was given up");
+  assert.equal(offline.probed[0]!.url, EP1.url);
 
   const back = makeDeps({
     rows: [modelRow({ status: "degraded" })],
@@ -809,7 +812,7 @@ test("an ok probe flips a node unknown → healthy with latency and checkedAt", 
   assert.equal(result.nodesUnhealthy, 0);
 });
 
-test("the probe is told the deployment's engine (vllm /health vs ollama /api/tags)", async () => {
+test("the probe is told the deployment's engine (vllm /health vs ollama /api/ps)", async () => {
   const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
   const vllm = noSync({ rows: [modelRowWithNode({ engine: "vllm" })] });
   await runDeploymentStatusTick({ now: NOW }, vllm.deps);
@@ -1113,4 +1116,149 @@ test("a hold released inside persistTransition is counted once; the follow-up re
     },
   );
   assert.equal(result.reservationsReleased, 1);
+});
+
+// ============================================
+// A probe that does not know yet (`pending`)
+// ============================================
+
+// After a restart of the API nothing has been seen answering. A warm node that
+// is generating a customer's answer queues the probe's one-token request
+// behind it, so the probe cannot say "ready" in time. That is not "unhealthy".
+test("a pending probe leaves a serving node's health as it was: a warm node that is busy is not taken out of service", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  for (const status of ["running", "degraded"]) {
+    const { deps, nodeHealthWrites, probed } = noSync({
+      rows: [
+        modelRowWithNode({
+          status,
+          nodes: [{ id: "n1", nodeUrl: "https://node1.node.nos.ci", healthStatus: "healthy" }],
+        }),
+      ],
+      // The endpoint Nosana reports is the node's own URL.
+      observations: { job_1: observation("running", [{ ...EP1, url: "https://node1.node.nos.ci" }]) },
+      nodeProbes: { "https://node1.node.nos.ci": { healthy: false, latencyMs: 2004, pending: true } },
+    });
+    const result = await runDeploymentStatusTick({ now: NOW }, deps);
+    assert.equal(probed.length, 1, status);
+    assert.deepEqual(nodeHealthWrites, [], `${status}: the node stays healthy; nothing is written`);
+    assert.equal(result.nodesProbed, 1);
+    assert.equal(result.nodesUnhealthy, 0);
+  }
+});
+
+test("a pending probe gives no benefit of the doubt to a node that was not healthy, nor to a row that is not serving", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+  for (const healthStatus of ["unknown", "unhealthy"]) {
+    const { deps, nodeHealthWrites } = noSync({
+      rows: [modelRowWithNode({ nodes: [{ id: "n1", nodeUrl: "https://node1.node.nos.ci", healthStatus }] })],
+      nodeProbes: { "https://node1.node.nos.ci": { healthy: false, latencyMs: 9, pending: true } },
+    });
+    const result = await runDeploymentStatusTick({ now: NOW }, deps);
+    assert.equal(nodeHealthWrites[0]?.healthStatus, "unhealthy", healthStatus);
+    assert.equal(result.nodesUnhealthy, 1);
+  }
+
+  // A row still provisioning: pending is "not ready". It does not turn
+  // running, and its node is written unhealthy.
+  const waiting = makeDeps({
+    rows: [modelRow({ status: "provisioning" })],
+    observations: { job_1: observation("running") },
+    nodeProbes: { [EP1.url]: { healthy: false, latencyMs: 2003, pending: true } },
+  });
+  const result = await runDeploymentStatusTick({ now: NOW }, waiting.deps);
+  assert.deepEqual(waiting.transitions, [], "pending never starts billing");
+  assert.equal(result.awaitingReadiness, 1);
+  assert.equal(waiting.nodeHealthWrites[0]?.healthStatus, "unhealthy");
+});
+
+// A node URL belongs to the deployment, not to a container: Nosana can run a
+// new container behind it, and that one lists its model while still loading.
+test("what was seen answering is forgotten for an endpoint that is offline, a node that is dropped and a row that leaves service", async () => {
+  const { runDeploymentStatusTick } = await import("../services/runDeploymentStatusTick.js");
+
+  // The endpoint went offline: Nosana still reports it, nothing serves it.
+  const gone = { ...EP1, online: false };
+  const offline = makeDeps({
+    rows: [
+      modelRow({ status: "running", nodes: [{ id: "n1", nodeUrl: EP1.url, healthStatus: "healthy" }] }),
+    ],
+    observations: { job_1: observation("running", [gone]) },
+    nodeProbes: { [EP1.url]: { healthy: false, latencyMs: 700 } },
+  });
+  const forgotten: string[] = [];
+  await runDeploymentStatusTick(
+    { now: NOW },
+    { ...offline.deps, forgetNodeReadiness: (url: string) => void forgotten.push(url) },
+  );
+  assert.ok(forgotten.includes(EP1.url), "offline endpoint");
+  assert.equal(offline.probed.length, 1, "asked once, to see whether the node answers all the same; then its node is dropped");
+
+  // The same endpoint, and the node answers although Nosana reports it
+  // offline: it is taken as online, so what was seen there is kept.
+  const answering = makeDeps({
+    rows: [
+      modelRow({ status: "running", nodes: [{ id: "n1", nodeUrl: EP1.url, healthStatus: "healthy" }] }),
+    ],
+    observations: { job_1: observation("running", [gone]) },
+  });
+  forgotten.length = 0;
+  await runDeploymentStatusTick(
+    { now: NOW },
+    { ...answering.deps, forgetNodeReadiness: (url: string) => void forgotten.push(url) },
+  );
+  assert.equal(forgotten.length, 0, "an endpoint that answers is not forgotten");
+  assert.equal(answering.transitions.length, 0, "and the row stays running");
+
+  // Nosana no longer reports the endpoint at all: the node is dropped.
+  const dropped = makeDeps({
+    rows: [
+      modelRow({
+        status: "running",
+        nodes: [{ id: "n9", nodeUrl: "https://old.node.k8s.prd.nos.ci", healthStatus: "healthy" }],
+      }),
+    ],
+    observations: { job_1: observation("running") },
+  });
+  forgotten.length = 0;
+  await runDeploymentStatusTick(
+    { now: NOW },
+    { ...dropped.deps, forgetNodeReadiness: (url: string) => void forgotten.push(url) },
+  );
+  assert.deepEqual(forgotten, ["https://old.node.k8s.prd.nos.ci"]);
+
+  // The row leaves service: every URL it had.
+  const ended = makeDeps({
+    rows: [
+      modelRow({ status: "running", nodes: [{ id: "n1", nodeUrl: EP1.url, healthStatus: "healthy" }] }),
+    ],
+    observations: { job_1: observation("stopped", [EP1]) },
+  });
+  forgotten.length = 0;
+  await runDeploymentStatusTick(
+    { now: NOW },
+    {
+      ...ended.deps,
+      forgetNodeReadiness: (url: string) => {
+        forgotten.push(url);
+        throw new Error("never fatal");
+      },
+    },
+  );
+  assert.equal(ended.transitions[0]?.toStatus, "stopped");
+  assert.ok(forgotten.includes(EP1.url));
+
+  // A node that keeps serving is not forgotten.
+  const serving = makeDeps({
+    rows: [
+      modelRow({ status: "running", nodes: [{ id: "n1", nodeUrl: EP1.url, healthStatus: "healthy" }] }),
+    ],
+    observations: { job_1: observation("running") },
+  });
+  forgotten.length = 0;
+  await runDeploymentStatusTick(
+    { now: NOW },
+    { ...serving.deps, forgetNodeReadiness: (url: string) => void forgotten.push(url) },
+  );
+  assert.deepEqual(forgotten, []);
 });

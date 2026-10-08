@@ -5,7 +5,13 @@ import { prisma } from "../lib/prisma.js";
 import { buildDeploymentStatusTickDeps } from "../services/buildDeploymentStatusTickDeps.js";
 import { createEmitDeploymentTransition } from "../services/deploymentTransitionEvents.js";
 import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
-import { getNosanaClient, isNosanaMockEnabled } from "../services/nosana.js";
+import {
+  forgetNodeAnswered,
+  getNosanaClient,
+  isNosanaMockEnabled,
+  servedModelName,
+} from "../services/nosana.js";
+import { recordPlacementFailure } from "../services/nosanaPlacementFailures.js";
 import { runDeploymentStatusTick } from "../services/runDeploymentStatusTick.js";
 import { triggerWebhook } from "../services/webhooks.js";
 import { createLogger } from "../utils/logger.js";
@@ -70,7 +76,38 @@ export async function startDeploymentStatusQueue(): Promise<void> {
         // for a halted deployment: they are what explains the failure.
         getDeploymentStatus: (id, mode) =>
           client.getDeploymentStatus(id, mode, { jobs: false, events: "when_halted" }),
-        checkNodeHealth: (nodeUrl, engine) => client.checkNodeHealth(nodeUrl, engine),
+        // Readiness is "the model answers": the engine reports the row's
+        // own model ready (vLLM's /health; Ollama's /api/ps lists it) and the
+        // node has been seen to answer a one-token request for it. A model
+        // row becomes `running` (which starts billing) only when this passes
+        // too.
+        checkNodeHealth: (nodeUrl, engine, model) => client.checkNodeHealth(nodeUrl, engine, model),
+        // The URL is the deployment's, not a container's: once nothing
+        // serves it, what answered there before says nothing about what
+        // answers next.
+        forgetNodeReadiness: forgetNodeAnswered,
+        servedModelName,
+        // A row that has waited with nothing online: its newest events say
+        // whether Nosana keeps failing to list the job.
+        listDeploymentEvents: (id, mode) => client.listDeploymentEvents(id, mode),
+        // Nosana's own message goes to the log and the operator view, never
+        // to the row: the customer reads the reason's sentence.
+        reportPlacementFailure: (failure) => {
+          recordPlacementFailure(failure);
+          logger.error(
+            {
+              kind: failure.kind,
+              deploymentId: failure.id,
+              orgId: failure.orgId,
+              nosanaDeploymentId: failure.nosanaDeploymentId,
+              accessMode: failure.accessMode,
+              reason: failure.reason,
+              nosanaMessage: failure.detail,
+              waitedSeconds: failure.waitedSeconds,
+            },
+            "Deployment failed: Nosana could not place it or it never became ready. It was stopped on Nosana and its hold returned; nothing was charged",
+          );
+        },
         // Retry vault.withdraw for stopped/failed deployments until the
         // platform's funds are verified recovered (with API-key access:
         // until Nosana reports the deployment no longer running).
@@ -102,7 +139,13 @@ export async function startDeploymentStatusQueue(): Promise<void> {
           onError: (err, eventType) => logger.error({ err, eventType }, "tick webhook emission failed"),
         }),
       });
-      const result = await runDeploymentStatusTick({ now: new Date() }, deps);
+      const result = await runDeploymentStatusTick(
+        {
+          now: new Date(),
+          provisioningLimitMs: getNosanaDeployConfig().provisioningLimitSeconds * 1000,
+        },
+        deps,
+      );
       logger.info(result, "Deployment status tick complete");
     },
     {

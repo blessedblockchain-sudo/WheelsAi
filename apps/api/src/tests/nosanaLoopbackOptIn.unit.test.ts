@@ -22,7 +22,7 @@ test("development + ALLOW_LOOPBACK_NODE_URLS=true lets the health probe reach lo
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string) => {
     seen.push(url);
-    return new Response("ok", { status: 200 });
+    return new Response(JSON.stringify({ models: [{ name: "llama3.2:3b", model: "llama3.2:3b" }] }), { status: 200 });
   }) as never;
   try {
     assert.equal((await client.checkNodeHealth("http://localhost:8000", "vllm")).healthy, true);
@@ -30,7 +30,7 @@ test("development + ALLOW_LOOPBACK_NODE_URLS=true lets the health probe reach lo
   } finally {
     globalThis.fetch = realFetch;
   }
-  assert.deepEqual(seen, ["http://localhost:8000/health", "http://127.0.0.1:11434/api/tags"]);
+  assert.deepEqual(seen, ["http://localhost:8000/health", "http://127.0.0.1:11434/api/ps"]);
 });
 
 test("the opt-in still does not open lookalikes or private ranges", async () => {

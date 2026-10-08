@@ -136,7 +136,10 @@ const envSchema = z.object({
   STORAGE_DRIVER: z.enum(["s3", "local"]).optional(),
 
   // Inference Proxy
-  INFERENCE_TIMEOUT_MS: z.coerce.number().default(30000),
+  // How long a model node may stay silent before a request fails. A first
+  // answer after a restart loads the model, and a long answer on a small GPU
+  // takes more than 30 seconds (first live run, 2026-10-08).
+  INFERENCE_TIMEOUT_MS: z.coerce.number().default(120000),
   MAX_RETRIES: z.coerce.number().default(2),
 
   // OpenClaw

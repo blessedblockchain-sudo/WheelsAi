@@ -49,6 +49,15 @@ const fullPublicAgent = {
     framework: "elizaos",
     createdAt: new Date("2026-04-20T00:00:00Z"),
     isPublic: true,
+    description: "Talks through anything you bring.",
+    handle: "eliza",
+    agentKind: "conversation",
+  },
+  use: {
+    state: "view_only",
+    key: null,
+    transcriptsStored: false,
+    chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
   },
   treasury: {
     address: "PDA111",
@@ -292,4 +301,145 @@ test("GET /a/:slug serializes uptime=null and eligibility=null for a fresh unlis
   const body = res.json();
   assert.equal(body.uptime, null);
   assert.equal(body.eligibility, null);
+});
+
+// ============================================
+// The public page: handle, kind and how it can be used
+// ============================================
+
+const PAGE_KEY = `wpk_${"p".repeat(32)}`;
+
+test("GET /a/:handle looks the agent up by the handle in the address", async () => {
+  const asked: string[] = [];
+  const app = await makeApp({
+    loadPublicAgent: async (handle) => {
+      asked.push(handle);
+      return handle === "helper-0a1b2c3d" ? fullPublicAgent : null;
+    },
+  });
+  assert.equal((await app.inject({ method: "GET", url: "/a/helper-0a1b2c3d" })).statusCode, 200);
+  const missing = await app.inject({ method: "GET", url: "/a/helper" });
+  assert.equal(missing.statusCode, 404);
+  assert.deepEqual(missing.json(), { error: "agent_not_found" });
+  assert.deepEqual(asked, ["helper-0a1b2c3d", "helper"]);
+});
+
+test("GET /a/:handle adds the description, the handle, the kind and how the page can be used", async () => {
+  const app = await makeApp({ loadPublicAgent: async () => fullPublicAgent });
+  const body = (await app.inject({ method: "GET", url: "/a/eliza" })).json();
+  assert.deepEqual(body.agent, {
+    name: "Eliza",
+    slug: "eliza",
+    framework: "elizaos",
+    createdAt: "2026-04-20T00:00:00.000Z",
+    description: "Talks through anything you bring.",
+    handle: "eliza",
+    agentKind: "conversation",
+  });
+  assert.deepEqual(body.use, {
+    state: "view_only",
+    key: null,
+    transcriptsStored: false,
+    chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
+  });
+});
+
+test("GET /a/:handle sends the page key only while the page is on", async () => {
+  const withUse = (use: Record<string, unknown>) => ({ ...fullPublicAgent, use: { ...fullPublicAgent.use, ...use } });
+
+  const on = await makeApp({ loadPublicAgent: async () => withUse({ state: "on", key: PAGE_KEY, transcriptsStored: true }) });
+  const onBody = (await on.inject({ method: "GET", url: "/a/eliza" })).json();
+  assert.equal(onBody.use.state, "on");
+  assert.equal(onBody.use.key, PAGE_KEY);
+  assert.equal(onBody.use.transcriptsStored, true);
+
+  // Even if a loader handed the key over for a page that is not on, the
+  // route does not pass it along.
+  for (const state of ["paused", "view_only"]) {
+    const app = await makeApp({ loadPublicAgent: async () => withUse({ state, key: PAGE_KEY }) });
+    const res = await app.inject({ method: "GET", url: "/a/eliza" });
+    assert.equal(res.json().use.state, state);
+    assert.equal(res.json().use.key, null);
+    assert.ok(!res.body.includes(PAGE_KEY), state);
+  }
+});
+
+test("GET /a/:handle carries a task agent's form in order, and a self-running agent's results switch", async () => {
+  const inputSchema = {
+    type: "object",
+    properties: {
+      zebra: { type: "string", title: "Zebra", maxLength: 200 },
+      apple: { type: "string", title: "Apple", maxLength: 8000 },
+    },
+    required: ["zebra"],
+    additionalProperties: false,
+  };
+  const task = await makeApp({
+    loadPublicAgent: async () => ({
+      ...fullPublicAgent,
+      agent: { ...fullPublicAgent.agent, agentKind: "task" },
+      use: { state: "on", key: PAGE_KEY, transcriptsStored: false, task: { inputSchema, maxInputChars: 8000 } },
+    }),
+  });
+  const taskRes = await task.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(taskRes.json().agent.agentKind, "task");
+  assert.deepEqual(taskRes.json().use.task, { inputSchema, maxInputChars: 8000 });
+  assert.ok(taskRes.body.indexOf('"zebra"') < taskRes.body.indexOf('"apple"'), "field order survives");
+  assert.ok(!("chat" in taskRes.json().use));
+
+  const scheduled = await makeApp({
+    loadPublicAgent: async () => ({
+      ...fullPublicAgent,
+      agent: { ...fullPublicAgent.agent, agentKind: "scheduled" },
+      use: { state: "view_only", key: null, transcriptsStored: false, scheduled: { resultsPublic: true, latest: [] } },
+    }),
+  });
+  assert.deepEqual((await scheduled.inject({ method: "GET", url: "/a/eliza" })).json().use, {
+    state: "view_only",
+    key: null,
+    transcriptsStored: false,
+    scheduled: { resultsPublic: true, latest: [] },
+  });
+});
+
+test("GET /a/:handle drops anything private a loader might hand over beside the page's own fields", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () => ({
+      ...fullPublicAgent,
+      agent: {
+        ...fullPublicAgent.agent,
+        systemPrompt: "INSTRUCTIONS_NEVER_SHOWN",
+        tools: [{ name: "TOOL_NEVER_SHOWN" }],
+        env: { SECRET_NAME_NEVER_SHOWN: "x" },
+        kindConfig: { scheduled: { prompt: "RUN_MESSAGE_NEVER_SHOWN" } },
+      },
+      use: {
+        ...fullPublicAgent.use,
+        dailyCap: 37113,
+        usedToday: 41417,
+        deliver: ["DELIVERY_NEVER_SHOWN"],
+        taskId: "TASK_ID_NEVER_SHOWN",
+        chat: { ...fullPublicAgent.use.chat, perKeyPerMinute: 59359 },
+      },
+    }),
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  for (const forbidden of [
+    "INSTRUCTIONS_NEVER_SHOWN",
+    "TOOL_NEVER_SHOWN",
+    "SECRET_NAME_NEVER_SHOWN",
+    "RUN_MESSAGE_NEVER_SHOWN",
+    "DELIVERY_NEVER_SHOWN",
+    "TASK_ID_NEVER_SHOWN",
+    "37113",
+    "41417",
+    "59359",
+    "dailyCap",
+    "usedToday",
+    "kindConfig",
+    "systemPrompt",
+  ]) {
+    assert.ok(!res.body.includes(forbidden), forbidden);
+  }
 });

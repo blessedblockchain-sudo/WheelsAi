@@ -46,9 +46,9 @@ type AgentListPrisma = Parameters<typeof loadAgentListByPrisma>[1]["prisma"];
 
 export function createPublicAgentRoutesProduction() {
   return createPublicAgentRoutes({
-    loadPublicAgent: (slug) =>
+    loadPublicAgent: (handle) =>
       loadPublicAgentByPrisma(
-        { slug, paymentsLimit: PUBLIC_RECENT_PAYMENTS_LIMIT },
+        { handle, paymentsLimit: PUBLIC_RECENT_PAYMENTS_LIMIT },
         {
           prisma: prisma as unknown as PublicAgentPrisma,
           // The listing's own publisherId, not the caller's — this is

@@ -1,9 +1,15 @@
 /**
  * Public per-agent transparency feed (plan C5).
  *
- * GET /a/:slug — unauthenticated, presents the public-safe slice of an
+ * GET /a/:handle — unauthenticated, presents the public-safe slice of an
  * agent's economic state: identity, treasury balance + cumulative compute
  * paid, recent settlement signatures, enabled channels, deployment summary.
+ * The handle is the agent's public address, unique across the platform.
+ *
+ * It also says how the page can be used right now (`use`): view only, on
+ * (with the page's publishable key), or paused, and what the panel of the
+ * agent's kind needs. Never the agent's instructions, its tools, its
+ * secrets' names, its organization or its daily cap.
  *
  * This is the single most differentiated artifact in the product — it is
  * the visible manifestation of "agents that pay for their own compute"
@@ -19,6 +25,7 @@
  * so the route never reveals the existence of a private agent.
  */
 
+import type { TaskInputSchema } from "@wheelsai/shared/agent-kind";
 import type { FastifyPluginAsync } from "fastify";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -27,13 +34,48 @@ const LAMPORTS_PER_SOL = 1_000_000_000;
 // Shapes
 // ============================================
 
+/** What a visitor may send in one chat from the page (the public chat's own limits). */
+export interface PublicAgentChatUse {
+  maxMessages: number;
+  maxMessageChars: number;
+  maxTotalChars: number;
+}
+
+/**
+ * How the page can be used right now. `off` is not a state here: a page
+ * that is off answers 404. Exactly one of chat, task and scheduled is set,
+ * by the agent's kind.
+ */
+export interface PublicAgentUse {
+  state: "view_only" | "on" | "paused";
+  /** The page's publishable key, only while state is "on". */
+  key: string | null;
+  /** Whether the owner keeps a copy of what visitors send and get back. */
+  transcriptsStored: boolean;
+  chat?: PublicAgentChatUse;
+  task?: {
+    /** The form as a JSON Schema, its properties in the order of the questions. */
+    inputSchema: TaskInputSchema;
+    maxInputChars: number;
+  };
+  scheduled?: {
+    resultsPublic: boolean;
+    latest: Array<{ finishedAt: Date; text: string }>;
+  };
+}
+
 export interface PublicAgentDetail {
   agent: {
     name: string;
     slug: string;
     framework: string;
     createdAt: Date;
+    /** The owner's public description. Never the instructions. */
+    description: string | null;
+    handle: string;
+    agentKind: "conversation" | "task" | "scheduled";
   };
+  use: PublicAgentUse;
   treasury: {
     address: string;
     balanceLamports: bigint;
@@ -71,7 +113,8 @@ export interface PublicAgentDetail {
 }
 
 export interface PublicAgentDeps {
-  loadPublicAgent: (slug: string) => Promise<PublicAgentDetail | null>;
+  /** By public handle. null for an unknown handle and for an agent that is not public. */
+  loadPublicAgent: (handle: string) => Promise<PublicAgentDetail | null>;
 }
 
 // ============================================
@@ -88,6 +131,34 @@ function lamportsToSol4dp(lamports: bigint): number {
   return Math.round(exact * 10_000) / 10_000;
 }
 
+/** Field by field, like the rest of this answer: nothing the loader carries extra crosses. */
+function serializeUse(use: PublicAgentUse) {
+  return {
+    state: use.state,
+    key: use.state === "on" ? use.key : null,
+    transcriptsStored: use.transcriptsStored,
+    ...(use.chat && {
+      chat: {
+        maxMessages: use.chat.maxMessages,
+        maxMessageChars: use.chat.maxMessageChars,
+        maxTotalChars: use.chat.maxTotalChars,
+      },
+    }),
+    ...(use.task && {
+      task: { inputSchema: use.task.inputSchema, maxInputChars: use.task.maxInputChars },
+    }),
+    ...(use.scheduled && {
+      scheduled: {
+        resultsPublic: use.scheduled.resultsPublic,
+        latest: use.scheduled.latest.map((result) => ({
+          finishedAt: result.finishedAt.toISOString(),
+          text: result.text,
+        })),
+      },
+    }),
+  };
+}
+
 function serialize(detail: PublicAgentDetail) {
   return {
     agent: {
@@ -95,7 +166,11 @@ function serialize(detail: PublicAgentDetail) {
       slug: detail.agent.slug,
       framework: detail.agent.framework,
       createdAt: detail.agent.createdAt.toISOString(),
+      description: detail.agent.description,
+      handle: detail.agent.handle,
+      agentKind: detail.agent.agentKind,
     },
+    use: serializeUse(detail.use),
     treasury: detail.treasury
       ? {
           address: detail.treasury.address,
@@ -143,11 +218,11 @@ function serialize(detail: PublicAgentDetail) {
 
 export function createPublicAgentRoutes(deps: PublicAgentDeps): FastifyPluginAsync {
   return async (app) => {
-    app.get<{ Params: { slug: string } }>("/a/:slug", async (request, reply) => {
-      const { slug } = request.params;
-      const detail = await deps.loadPublicAgent(slug);
+    app.get<{ Params: { handle: string } }>("/a/:handle", async (request, reply) => {
+      const { handle } = request.params;
+      const detail = await deps.loadPublicAgent(handle);
       if (!detail) {
-        // 404, not 401/403 — never reveal that a private agent with this slug exists.
+        // 404, not 401/403 — never reveal that a private agent with this handle exists.
         return reply.status(404).send({ error: "agent_not_found" });
       }
       return reply.status(200).send(serialize(detail));

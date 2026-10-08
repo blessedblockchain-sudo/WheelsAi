@@ -94,6 +94,7 @@ import {
   createAgentListRoutesProduction,
 } from "./routes/transparencyBindings.js";
 import { playgroundRoutes } from "./routes/playground.js";
+import { createAgentPublicLinkRoutesProduction } from "./routes/agentPublicLinkBindings.js";
 import {
   cancelInFlightAgentChats,
   closeAgentChatConnections,
@@ -458,6 +459,8 @@ async function main() {
   await app.register(createAgentDetailRoutesProduction(), { prefix: "/api/feed" });
 
   await app.register(playgroundRoutes, { prefix: "/api" });
+  // The owner's switch for an agent's public page: GET, PUT /api/agents/:agentId/public-link.
+  await app.register(createAgentPublicLinkRoutesProduction(), { prefix: "/api/agents" });
   await app.register(skillsRoutes, { prefix: "/api" }); // GET /api/skills
   await app.register(
     createPublicStatsRoutes({

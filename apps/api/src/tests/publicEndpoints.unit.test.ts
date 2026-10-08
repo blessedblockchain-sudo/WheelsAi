@@ -6,10 +6,13 @@ import {
   agentEndpoint,
   agentOpenAiBaseUrl,
   agentOpenAiModel,
+  agentPageUrl,
+  agentRunEndpoint,
   apiBase,
   deploymentEndpoint,
   openAiBaseUrl,
   serializeAgentDeployment,
+  webBase,
   workflowEndpoint,
 } from "../services/publicEndpoints.js";
 
@@ -91,4 +94,23 @@ test("a running agent deployment shows the /v1 agent endpoint; any other status 
   }
   // Running, but the platform has no public URL: no endpoint, not a guess.
   assert.equal(serializeAgentDeployment(row("running"), "support-bot", undefined).endpoint, null);
+});
+
+test("agentRunEndpoint is the run route by id on PUBLIC_API_URL, or null without one", () => {
+  const id = "11111111-2222-4333-8444-555555555555";
+  assert.equal(agentRunEndpoint(id, "https://api.example.test/"), `https://api.example.test/api/agents/${id}/run`);
+  assert.equal(agentRunEndpoint("a/b", "https://api.example.test"), "https://api.example.test/api/agents/a%2Fb/run");
+  for (const unset of [undefined, null, "", "  "]) assert.equal(agentRunEndpoint(id, unset), null);
+});
+
+test("an agent's page is /a/<handle> on PUBLIC_WEB_URL, else CORS_ORIGIN, and null when neither is one address", () => {
+  assert.equal(webBase("https://app.example.test/", "http://localhost:3000"), "https://app.example.test");
+  assert.equal(webBase(undefined, "http://localhost:3000/"), "http://localhost:3000");
+  assert.equal(webBase("", "https://a.example.test,https://b.example.test"), null);
+  assert.equal(webBase(undefined, undefined), null);
+
+  assert.equal(agentPageUrl("support-bot", "https://app.example.test/", "http://localhost:3000"), "https://app.example.test/a/support-bot");
+  assert.equal(agentPageUrl("support-bot", undefined, "http://localhost:3000"), "http://localhost:3000/a/support-bot");
+  assert.equal(agentPageUrl("support-bot", undefined, undefined), null);
+  assert.equal(agentPageUrl("a/b", "https://app.example.test"), "https://app.example.test/a/a%2Fb");
 });

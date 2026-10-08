@@ -94,6 +94,47 @@ export function workflowOpenAiModel(slug: string): string {
   return `workflow/${slug}`;
 }
 
+/**
+ * Where a task agent is run from code: `<api>/api/agents/<id>/run`
+ * (routes/agentRun.ts). By id, not slug: the route takes the id, and a slug
+ * can be the same in two organizations. null when PUBLIC_API_URL is not set.
+ */
+export function agentRunEndpoint(agentId: string, publicApiUrl: string | null | undefined): string | null {
+  const base = apiBase(publicApiUrl);
+  return base === null ? null : `${base}/api/agents/${segment(agentId)}/run`;
+}
+
+/**
+ * The web app's own address, for links people open in a browser:
+ * PUBLIC_WEB_URL, else CORS_ORIGIN. Both already count as the platform's own
+ * origins for a public key (services/buildPublicChatDeps.ts), so a link built
+ * from either works with the settings a server has today. null when neither
+ * is one address (CORS_ORIGIN unset, or a list).
+ */
+export function webBase(
+  publicWebUrl: string | null | undefined,
+  corsOrigin: string | null | undefined,
+): string | null {
+  for (const candidate of [publicWebUrl, corsOrigin]) {
+    const base = (candidate ?? "").trim().replace(/\/+$/, "");
+    if (/^https?:\/\/[^\s,]+$/.test(base)) return base;
+  }
+  return null;
+}
+
+/**
+ * An agent's public page: `<web>/a/<handle>`, on PUBLIC_WEB_URL, else
+ * CORS_ORIGIN. null when the web address is not known.
+ */
+export function agentPageUrl(
+  handle: string,
+  publicWebUrl: string | null | undefined,
+  corsOrigin?: string | null,
+): string | null {
+  const base = webBase(publicWebUrl, corsOrigin);
+  return base === null ? null : `${base}/a/${segment(handle)}`;
+}
+
 export interface WorkflowApiEndpoints {
   /** null when PUBLIC_API_URL is not configured. */
   apiEndpoint: string | null;

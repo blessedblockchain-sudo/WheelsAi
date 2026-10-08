@@ -305,7 +305,7 @@ function UseTemplateModal({
       });
       // Land the user on their new agent instead of silently closing the
       // modal over the gallery (INT-B2).
-      router.push(`/dashboard/agents/${created.id}`);
+      router.push(`/dashboard/agents/${created.agent.id}`);
     } catch (err) {
       setError(getErrorMessage(err, "Failed to create agent from template"));
       setSubmitting(false);

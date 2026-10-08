@@ -16,6 +16,7 @@ const toc = [
   { id: "sdk", title: "TypeScript SDK" },
   { id: "sdk-auth", title: "Create a client", sub: true },
   { id: "sdk-methods", title: "Resources and methods", sub: true },
+  { id: "sdk-create-agent", title: "Creating an agent", sub: true },
   { id: "sdk-jobs", title: "Hiring an offering", sub: true },
   { id: "sdk-errors", title: "Errors and timeouts", sub: true },
   { id: "sdk-agent-chat", title: "Talking to an agent", sub: true },
@@ -79,17 +80,32 @@ const wheels = new WheelsAI({
   apiKey: process.env.WHEELSAI_API_KEY, // wheels_live_...
 });
 
-const agent = await wheels.agents.resolve("my-support-bot"); // slug or id; null if not found
-const tiers = await wheels.models.gpuTiers();                // the tiers this API can deploy now
-const { deployment } = await wheels.agents.deploy(agent!.id, { gpuTier: tiers[0]!.id });
+// Only a name is needed. The agent's OpenAI-compatible API is on as soon as it exists.
+const { agent } = await wheels.agents.create({ name: "My support bot" });
+console.log(agent.apiEndpoint, agent.openaiBaseUrl, agent.openaiModel);
 
-// The deploy answer is immediate (status "pending"): poll for progress.
-const { deployment: row } = await wheels.agents.getDeployment(agent!.id, deployment.id);
-console.log(row.status, row.endpoint);
+const reply = await wheels.agents.chatCompletion(agent.slug, {
+  messages: [{ role: "user", content: "How long do refunds take?" }],
+});
+console.log(reply.choices[0]?.message.content);
 
-// The agent's OpenAI-compatible API is on whether or not anything is deployed.
-console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
+// A dedicated GPU is optional. Ask what the server can do before starting one.
+const { agentGpu } = await wheels.platform.capabilities();
+if (agentGpu.available) {
+  const tiers = await wheels.models.gpuTiers();              // the tiers this API can deploy now
+  const { deployment } = await wheels.agents.deploy(agent.id, { gpuTier: tiers[0]!.id });
+
+  // The deploy answer is immediate (status "pending"): poll for progress.
+  const { deployment: row } = await wheels.agents.getDeployment(agent.id, deployment.id);
+  console.log(row.status, row.endpoint);
+}`}
       />
+      <p>
+        When <code>agentGpu.available</code> is <code>false</code>, <code>agents.deploy</code> throws a{" "}
+        <code>WheelsAIError</code> with status <code>501</code> and code <code>agent_gpu_unavailable</code>. Nothing is
+        reserved or charged, and the agent keeps answering on its API. <code>agents.resolve(&quot;my-support-bot&quot;)</code>{" "}
+        finds an existing agent by slug or id, or returns <code>null</code>.
+      </p>
       <p>
         To sign in with a password instead, call <code>auth.login(email, password)</code> and pass the returned token to{" "}
         <code>wheels.setToken(token)</code>. An account with two-factor authentication answers with a challenge: check with{" "}
@@ -263,12 +279,13 @@ console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
             methods: (
               <>
                 <code>openclaw.list</code>, <code>openclaw.get</code> (chat channels), <code>platform.status</code>,{" "}
-                <code>platform.stats</code>, <code>skills.list</code>
+                <code>platform.stats</code>, <code>platform.capabilities</code>, <code>skills.list</code>
               </>
             ),
             endpoint: (
               <>
-                <code>/api/openclaw</code>, <code>/api/status</code>, <code>/api/public/stats</code>
+                <code>/api/openclaw</code>, <code>/api/status</code>, <code>/api/public/stats</code>,{" "}
+                <code>/api/capabilities</code>, <code>/api/skills</code>
               </>
             ),
           },
@@ -286,6 +303,53 @@ console.log(agent!.apiEndpoint, agent!.openaiBaseUrl, agent!.openaiModel);`}
         Billing amounts are dollars, as the API returns them. There is no <code>agents.stop</code> or{" "}
         <code>billing.addCredits</code>: use <code>agents.stopDeployment(agentId, deploymentId)</code> and{" "}
         <code>billing.checkout</code>.
+      </p>
+
+      <h3 id="sdk-create-agent">Creating an agent</h3>
+      <p>
+        <code>agents.create</code> needs only a name. An agent is one of three kinds: <code>conversation</code> (people talk
+        to it; the default), <code>task</code> (made for one request in and one result back, with a form that says what a request holds) or{" "}
+        <code>scheduled</code> (made to run on its own at set times). The kind&apos;s settings go in <code>kindConfig</code>; see{" "}
+        <Link href="/docs/api/agents#agent-kinds">kinds of agent</Link> and{" "}
+        <Link href="/docs/api/agents#task-form">task forms</Link>.
+      </p>
+      <CodeBlock
+        language="ts"
+        code={`const { agent } = await wheels.agents.create({ name: "Release notes helper" });
+console.log(agent.slug, agent.agentKind, agent.openaiModel); // "release-notes-helper" "conversation" "agent/release-notes-helper"
+
+// A task agent with its form. A question's key is made from its label unless you send one.
+await wheels.agents.create({
+  name: "Code review",
+  agentKind: "task",
+  systemPrompt: "Review the code you are given and list the problems, most serious first.",
+  kindConfig: {
+    task: {
+      fields: [
+        { label: "Code to review", type: "long_text", required: true, help: "Paste the code or the diff." },
+        { label: "What to look for", type: "choice", options: ["Everything", "Bugs", "Security"] },
+      ],
+    },
+  },
+});
+
+// From a template: its values are the defaults, and what you send replaces them.
+await wheels.agents.create({ name: "Support desk", templateId });
+
+// Change the kind later. Settings are kept per kind, so changing back loses nothing.
+// The schedule here is a suggestion stored with the agent: saving it starts no runs.
+await wheels.agents.update(agent.id, {
+  agentKind: "scheduled",
+  kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *", timezone: "UTC" } } },
+});`}
+      />
+      <p>
+        <code>agents.list</code> and <code>agents.get</code> return each agent&apos;s <code>agentKind</code>;{" "}
+        <code>agents.get</code> also returns its <code>kindConfig</code>. Marketplace listings carry{" "}
+        <code>listing.agent.agentKind</code>, and each version records the kind and its settings, which a rollback restores.{" "}
+        <code>platform.capabilities()</code> says what the server can do right now: the models an agent can answer on (
+        <code>chat.models</code>, <code>chat.defaultModel</code>) and whether <code>payouts</code>,{" "}
+        <code>emailDelivery</code>, <code>agentGpu</code> and <code>paidTasks</code> are <code>available</code>.
       </p>
 
       <h3 id="sdk-jobs">Hiring an offering</h3>
@@ -326,7 +390,10 @@ if (current.status === "submitted") {
         Every failure throws a <code>WheelsAIError</code> with <code>status</code> (the HTTP status, or <code>0</code> for a
         network error or timeout), <code>message</code> (the API&apos;s <code>message</code> or <code>error</code>, with
         validation errors spelled out), <code>code</code> (the API&apos;s <code>error</code> code, such as{" "}
-        <code>insufficient_credits</code>) and <code>data</code> (the parsed body). See{" "}
+        <code>insufficient_credits</code>) and <code>data</code> (the parsed body). A request the API cannot accept answers{" "}
+        <code>400</code> <code>validation_failed</code>: <code>message</code> is the first problem as a sentence, and{" "}
+        <code>data.fields</code> has one sentence per field, keyed by its path (<code>name</code>,{" "}
+        <code>kindConfig.task.fields[0].label</code>). See{" "}
         <Link href="/docs/api#errors">Errors</Link> for the shapes. The <code>/v1</code> agent API answers in OpenAI&apos;s
         shape, <code>&#123; error: &#123; message, type, param, code &#125; &#125;</code>; <code>message</code> and{" "}
         <code>code</code> are read from there too (for example <code>agent_not_found</code>).
@@ -471,7 +538,11 @@ wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
           without it the cheapest is used;
         </li>
         <li>
-          starts the deployment (<code>POST /api/agents/&#123;id&#125;/deploy</code>), which reserves credits;
+          starts the deployment (<code>POST /api/agents/&#123;id&#125;/deploy</code>), which reserves credits. When the
+          server cannot start a dedicated GPU for an agent right now (<code>agentGpu.available</code> is{" "}
+          <code>false</code> in <code>GET /api/capabilities</code>), the command stops here with the API&apos;s answer,{" "}
+          <code>501</code> <code>agent_gpu_unavailable</code>: nothing is reserved or charged, and the agent keeps
+          answering on its API;
         </li>
         <li>
           waits until it is running, showing each status the API reports. Status is checked after 5, 10 and 20 seconds and then
@@ -534,13 +605,18 @@ wheelsai publish --agent my-support-bot --title "Support Pro" --category custome
       <h3 id="cli-inspect">wheelsai agents, logs, whoami, config</h3>
       <CodeBlock
         language="bash"
-        code={`wheelsai agents list                  # slug, name, latest deployment status
-wheelsai agents get my-support-bot    # configuration, secret names, every deployment
+        code={`wheelsai agents list                  # slug, name, latest deployment status, kind
+wheelsai agents get my-support-bot    # kind, configuration, secret names, every deployment
 wheelsai logs <deployment-id>         # an agent deployment: status and the logs the API has
 wheelsai logs <deployment-id> --model # a model deployment and its lifecycle events
 wheelsai whoami                       # who the credentials belong to
 wheelsai config show                  # effective API URL, web URL and where each comes from`}
       />
+      <p>
+        <code>agents list</code> and <code>agents get</code> say how each agent is used: <code>Chat</code>,{" "}
+        <code>Task</code> or <code>Runs on its own</code>. <code>agents get</code> also lists the questions of a task
+        agent&apos;s form.
+      </p>
       <p>
         <code>logs</code> accepts the id that <code>wheelsai deploy</code> prints; <code>--agent &lt;slug-or-id&gt;</code> skips
         the search for the agent that owns it. An endpoint is shown as an address only while its deployment is running. Text

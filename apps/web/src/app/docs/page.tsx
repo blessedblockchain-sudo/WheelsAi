@@ -59,12 +59,14 @@ export default function DocsHome() {
           limits are all per organization.
         </li>
         <li>
-          <strong>Agent.</strong> A system prompt, a model choice, tools and optional source code, tagged with one of six frameworks:
-          Mastra, ElizaOS, LangChain, AutoGen, CrewAI or custom. Agents can be created in the dashboard, started from a template,
-          or imported from a GitHub repository. Secrets you attach to an agent are encrypted at rest and never shown again.
+          <strong>Agent.</strong> Instructions, a model choice, tools and optional source code, tagged with one of six frameworks:
+          Mastra, ElizaOS, LangChain, AutoGen, CrewAI or custom. An agent is made for one of three uses: people talk to it, people
+          give it a task by filling in a short form, or it runs on its own at set times. Creating
+          one needs only a name. Agents can be created in the dashboard, started from a template, or imported from a GitHub
+          repository. Secrets you attach to an agent are encrypted at rest and never shown again.
         </li>
         <li>
-          <strong>Playground.</strong> Chat with any agent from the dashboard or the API. Free models are rate limited per
+          <strong>Playground.</strong> Chat with any agent, whichever way it is used, from the dashboard or the API. Free models are rate limited per
           organization; paid plans raise the limits.
         </li>
         <li>

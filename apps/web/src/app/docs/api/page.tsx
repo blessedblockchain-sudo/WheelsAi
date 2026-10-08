@@ -151,7 +151,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { key: "meaning", label: "Meaning" },
         ]}
         rows={[
-          { status: <code>400</code>, meaning: <>Invalid input. Body validation failures return <code>&#123; &quot;error&quot;: &quot;validation_failed&quot;, &quot;details&quot;: &#123; &quot;formErrors&quot;: [], &quot;fieldErrors&quot;: &#123;...&#125; &#125; &#125;</code>.</> },
+          { status: <code>400</code>, meaning: <>Invalid input. Body validation failures return <code>&#123; &quot;error&quot;: &quot;validation_failed&quot;, &quot;message&quot;: &quot;...&quot;, &quot;fields&quot;: &#123;...&#125;, &quot;details&quot;: &#123; &quot;formErrors&quot;: [], &quot;fieldErrors&quot;: &#123;...&#125; &#125; &#125;</code>: <code>message</code> is the first problem as a sentence, and <code>fields</code> has one sentence per field, keyed by its path in the request.</> },
           { status: <code>401</code>, meaning: "No valid API key or session, or the endpoint needs a person and got a key." },
           { status: <code>402</code>, meaning: <>Not enough credits (with the amount required), or an x402 payment is required. See <Link href="/docs/api/inference#errors">chat completions</Link>.</> },
           { status: <code>403</code>, meaning: <>Not allowed: a role check (<code>insufficient_role</code>), a plan feature (<code>plan_limit_reached</code>), or a revoked marketplace licence.</> },

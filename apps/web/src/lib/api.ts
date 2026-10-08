@@ -1,6 +1,10 @@
 // API Client for WheelsAI backend
 
+import type { AgentKind, KindConfig, TaskField, TaskFieldType } from "@wheelsai/shared/agent-kind";
+
 import { readSseChat, type SseChatEvent } from "./sse";
+
+export type { AgentKind, KindConfig, TaskField, TaskFieldType };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -93,6 +97,51 @@ export function getErrorMessage(
  * Reads once as text and parses opportunistically, so a body that is not JSON
  * is still returned to the caller rather than destroying the response.
  */
+/**
+ * The body of a 400 `validation_failed`. `message` is the first problem as one
+ * plain sentence; `fields` has one sentence per field, keyed by its path
+ * ("name", "tools[1].type", "kindConfig.task.fields[0].label"; "body" for the
+ * request as a whole). Show those two to people. `details` is the older
+ * shape, kept for forms that read it: the validator's own wording, filed
+ * under the top-level field.
+ */
+export interface ValidationErrorBody {
+  error: "validation_failed";
+  message: string;
+  fields: Record<string, string>;
+  details?: { formErrors: string[]; fieldErrors: Record<string, string[] | undefined> };
+}
+
+/**
+ * The validation problems of a failed API call, or null when the error is
+ * anything else. For a form that shows each sentence beside its field.
+ */
+export function getValidationError(err: unknown): ValidationErrorBody | null {
+  if (!(err instanceof ApiError) || err.status !== 400) return null;
+  const data = err.data;
+  if (typeof data !== "object" || data === null) return null;
+  const body = data as Record<string, unknown>;
+  if (body.error !== "validation_failed") return null;
+  const fields: Record<string, string> = {};
+  if (typeof body.fields === "object" && body.fields !== null && !Array.isArray(body.fields)) {
+    for (const [field, sentence] of Object.entries(body.fields)) {
+      if (typeof sentence === "string") fields[field] = sentence;
+    }
+  }
+  const message =
+    typeof body.message === "string" && body.message.trim()
+      ? body.message
+      : Object.values(fields)[0] ?? "Some of what was sent could not be accepted. Check it and try again.";
+  return {
+    error: "validation_failed",
+    message,
+    fields,
+    ...(typeof body.details === "object" && body.details !== null
+      ? { details: body.details as ValidationErrorBody["details"] }
+      : {}),
+  };
+}
+
 async function readBody(res: Response): Promise<unknown> {
   // 204/205 are defined to have no body; don't even read.
   if (res.status === 204 || res.status === 205) return null;
@@ -946,6 +995,12 @@ export interface Agent {
   tags: string[];
   isPublic: boolean;
   /**
+   * How people use the agent: they talk to it (`conversation`), they give it
+   * a task through a short form (`task`), or it runs on its own on a
+   * schedule (`scheduled`).
+   */
+  agentKind: AgentKind;
+  /**
    * The agent's OpenAI-compatible chat-completions URL, served by the
    * platform API whether or not anything is deployed. null when the API has
    * no PUBLIC_API_URL configured: there is no honest absolute URL to show.
@@ -1022,6 +1077,11 @@ export interface AgentDetail extends Omit<Agent, "latestDeployment"> {
   sourceUrl: string | null;
   sourceCode: string | null;
   env: Record<string, string>;
+  /**
+   * The settings of each kind, one key per kind, so changing the kind and
+   * changing back loses nothing. null when there are none.
+   */
+  kindConfig: KindConfig | null;
   deployments: AgentDeployment[];
 }
 
@@ -1039,10 +1099,20 @@ export interface AgentDeployment {
   stoppedAt: string | null;
 }
 
+/** What a create and an update accept for `kindConfig`: a key that is sent replaces that key. */
+export type KindConfigInput = {
+  /** The form of a task agent. A question sent without a `key` gets one from its label; without a `type` it is short text. */
+  task?: { fields: Array<Omit<TaskField, "key" | "type" | "required"> & { key?: string; type?: TaskFieldType; required?: boolean }> } | null;
+  /** A suggested schedule and what the agent is told at each run. */
+  scheduled?: { schedule?: { cronExpression: string; timezone?: string }; prompt?: string } | null;
+};
+
+/** Only `name` is needed. The rest has defaults: a `custom`, `inline` agent that people talk to. */
 export interface CreateAgentInput {
+  /** 3 to 100 characters. */
   name: string;
   description?: string;
-  framework: "mastra" | "langchain" | "autogen" | "custom";
+  framework?: Agent["framework"];
   systemPrompt?: string;
   tools?: Array<{
     name: string;
@@ -1050,18 +1120,45 @@ export interface CreateAgentInput {
     description?: string;
     config?: Record<string, any>;
   }>;
-  modelConfig: {
+  modelConfig?: {
     modelId?: string;
     externalModel?: string;
     temperature?: number;
     maxTokens?: number;
   };
-  sourceType: "inline" | "github" | "ipfs";
+  sourceType?: "inline" | "github" | "ipfs";
+  /** Needed when `sourceType` is `github` or `ipfs`. */
   sourceUrl?: string;
   sourceCode?: string;
   env?: Record<string, string>;
   tags?: string[];
   isPublic?: boolean;
+  knowledgeBaseId?: string | null;
+  /** Defaults to `conversation`, or to the template's kind. */
+  agentKind?: AgentKind;
+  /** null clears the settings; a task agent then gets the default form. */
+  kindConfig?: KindConfigInput | null;
+  /** A published template to start from. What is sent here replaces the template's value, field by field. */
+  templateId?: string;
+  /** Left out, it is made from the name. Either way it is made unique. */
+  slug?: string;
+}
+
+/** What `PATCH /api/agents/:id` accepts: any part of a create but the template and the slug. */
+export type UpdateAgentInput = Partial<Omit<CreateAgentInput, "templateId" | "slug">> & {
+  entrypoint?: AgentEntrypoint;
+};
+
+/** The agent in the answer to a create, from `POST /api/agents` or from a template. */
+export interface CreatedAgent {
+  id: string;
+  name: string;
+  slug: string;
+  framework: string;
+  agentKind: AgentKind;
+  apiEndpoint: string | null;
+  openaiBaseUrl: string | null;
+  openaiModel: string;
 }
 
 export interface DeployAgentInput {
@@ -1083,12 +1180,12 @@ export const agentsApi = {
   get: (id: string) => api<{ agent: AgentDetail }>(`/api/agents/${id}`),
 
   create: (input: CreateAgentInput) =>
-    api<{ agent: { id: string; name: string; slug: string; framework: string }; message: string }>(
+    api<{ agent: CreatedAgent; message: string }>(
       "/api/agents",
       { method: "POST", body: input }
     ),
 
-  update: (id: string, updates: Partial<CreateAgentInput> & { entrypoint?: AgentEntrypoint }) =>
+  update: (id: string, updates: UpdateAgentInput) =>
     api<{ agent: AgentDetail }>(`/api/agents/${id}`, {
       method: "PATCH",
       body: updates,
@@ -1706,6 +1803,8 @@ export interface MarketplaceListing {
   agent?: {
     id: string;
     framework: string;
+    /** How people use the listed agent. */
+    agentKind: AgentKind;
     tags: string[];
     // Present on the detail endpoint only (getListingBySlug select) —
     // used to link to the public /a/:slug transparency page.
@@ -3273,6 +3372,12 @@ export interface AgentVersion {
   graphEdges: any[] | null;
   /** How the agent answered at this version; null when it was not recorded. */
   entrypoint?: "chat" | "graph" | null;
+  /**
+   * How people used the agent at this version, and that kind's settings.
+   * `agentKind` is null on versions taken before kinds were recorded.
+   */
+  agentKind?: AgentKind | null;
+  kindConfig?: KindConfig | null;
   changeLog: string | null;
   changeType: string;
   tags: string[];
@@ -4996,6 +5101,9 @@ export interface AgentTemplate {
   difficulty: string;
   tags: string[];
   framework: string;
+  /** How an agent made from this template is used, and that kind's settings. */
+  agentKind: AgentKind;
+  kindConfig: KindConfig | null;
   iconUrl?: string;
   screenshots: string[];
   usageCount: number;
@@ -5008,9 +5116,10 @@ export interface AgentTemplate {
 }
 
 export const templateApi = {
-  list: (params?: { category?: string; framework?: string; difficulty?: string; search?: string; limit?: number; offset?: number }) => {
+  list: (params?: { category?: string; framework?: string; difficulty?: string; agentKind?: AgentKind; search?: string; limit?: number; offset?: number }) => {
     const sp = new URLSearchParams();
     if (params?.category) sp.set("category", params.category);
+    if (params?.agentKind) sp.set("agentKind", params.agentKind);
     if (params?.framework) sp.set("framework", params.framework);
     if (params?.difficulty) sp.set("difficulty", params.difficulty);
     if (params?.search) sp.set("search", params.search);
@@ -5022,10 +5131,37 @@ export const templateApi = {
   get: (idOrSlug: string) => api<AgentTemplate>(`/api/templates/${idOrSlug}`),
   getCategories: () => api<{ categories: string[] }>("/api/templates/categories"),
   getStats: () => api<{ total: number; published: number; featured: number; totalUsage: number }>("/api/templates/stats"),
-  use: (templateId: string, data: { name: string; slug: string; description?: string }) =>
-    // The route returns the created Agent row (201) — the caller redirects
-    // to it instead of stranding the user on the gallery (INT-B2).
-    api<{ id: string; name: string; slug: string }>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
+  use: (templateId: string, data: Omit<CreateAgentInput, "templateId">) =>
+    // Only a name is needed; the slug is optional and made unique. The route
+    // answers what POST /api/agents answers (201) — the caller redirects to
+    // the new agent instead of stranding the user on the gallery (INT-B2).
+    api<{ agent: CreatedAgent; message: string }>(`/api/templates/${templateId}/use`, { method: "POST", body: data }),
+};
+
+// ============================================
+// Capabilities API
+// ============================================
+
+/** What works on this server right now, so a screen offers only that. */
+export interface Capabilities {
+  chat: {
+    /** The models an agent can answer on now, in the order the platform tries them. */
+    models: Array<{ id: string; label: string }>;
+    /** The model an agent with none of its own answers on; null when there is none. */
+    defaultModel: string | null;
+  };
+  /** Earnings can be paid out. */
+  payouts: { available: boolean };
+  /** Results can be sent by email. */
+  emailDelivery: { available: boolean };
+  /** An agent can be put on a dedicated GPU. */
+  agentGpu: { available: boolean };
+  /** A paid task can be run. */
+  paidTasks: { available: boolean };
+}
+
+export const capabilitiesApi = {
+  get: () => api<Capabilities>("/api/capabilities"),
 };
 
 // ============================================

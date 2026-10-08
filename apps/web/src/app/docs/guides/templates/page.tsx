@@ -48,7 +48,8 @@ export default function TemplatesGuidePage() {
       <CodeBlock
         language="bash"
         code={`# Published templates, featured first. Filters: category, framework, difficulty,
-# isFeatured=true|false, search; paging: limit (default 20), offset.
+# agentKind=conversation|task|scheduled, isFeatured=true|false, search;
+# paging: limit (default 20), offset.
 curl -s "$WHEELSAI_API_URL/api/templates?framework=mastra&limit=10"
 
 # Categories that have at least one published template
@@ -63,10 +64,16 @@ curl -s "$WHEELSAI_API_URL/api/templates/$TEMPLATE_SLUG"`}
         code={`curl -s -X POST "$WHEELSAI_API_URL/api/templates/$TEMPLATE_ID/use" \\
   -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"name":"My research agent","slug":"my-research-agent"}'`}
+  -d '{"name":"My research agent"}'`}
       />
       <p>
-        The response is the created agent (<code>201</code>). The template catalog itself is maintained by the WheelsAI team;
+        Only a name is needed, and one template can be used as often as you like: each agent gets its own slug, made from
+        the name unless you send one. The agent takes the template&apos;s kind (<code>agentKind</code>) and its settings,
+        such as a task form, and any field of <Link href="/docs/api/agents#create-agent">create an agent</Link> you send
+        replaces the template&apos;s. The response (<code>201</code>) is the one that endpoint gives:{" "}
+        <code>&#123; agent: &#123; id, name, slug, framework, agentKind, apiEndpoint, openaiBaseUrl, openaiModel &#125;, message &#125;</code>.
+        A template that is not published answers <code>404</code> <code>template_not_found</code>, and over the plan&apos;s
+        agent limit the answer is <code>403</code> <code>plan_limit_reached</code>. The template catalog itself is maintained by the WheelsAI team;
         publishing your own agent for others is done through the <Link href="/docs/guides/marketplace">marketplace</Link>.
       </p>
     </DocPage>

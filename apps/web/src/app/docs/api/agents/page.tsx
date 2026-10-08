@@ -9,7 +9,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Agents, playground and agent API",
   description:
-    "WheelsAI agents API: import from GitHub, create, list, read, update and delete agents, encrypted environment variables, playground chat, and each agent's OpenAI-compatible /v1 endpoint with streaming, function calling and tool use.",
+    "WheelsAI agents API: import from GitHub, create, list, read, update and delete agents, the three kinds of agent and task forms, encrypted environment variables, playground chat, and each agent's OpenAI-compatible /v1 endpoint with streaming, function calling and tool use.",
 };
 
 const toc = [
@@ -18,10 +18,13 @@ const toc = [
   { id: "list-agents", title: "List agents", sub: true },
   { id: "get-agent", title: "Get an agent", sub: true },
   { id: "create-agent", title: "Create an agent", sub: true },
+  { id: "agent-kinds", title: "Kinds of agent", sub: true },
+  { id: "task-form", title: "Task forms", sub: true },
   { id: "update-agent", title: "Update an agent", sub: true },
   { id: "agent-usage", title: "Agent chat usage", sub: true },
   { id: "delete-agent", title: "Delete an agent", sub: true },
   { id: "deploy-agent", title: "Deploy an agent", sub: true },
+  { id: "agent-management-errors", title: "Errors", sub: true },
   { id: "agent-api", title: "Agent API (/v1)" },
   { id: "agent-completions", title: "Create a chat completion", sub: true },
   { id: "agent-streaming", title: "Streaming", sub: true },
@@ -74,7 +77,8 @@ export default function AgentsApiPage() {
         <p>
           Returns <code>&#123; agents, total &#125;</code>, newest first. Each agent has <code>id</code>, <code>name</code>,{" "}
           <code>slug</code>, <code>description</code>, <code>framework</code>, <code>version</code>, <code>tags</code>,{" "}
-          <code>isPublic</code>, <code>latestDeployment</code> and timestamps, plus where its API is:{" "}
+          <code>isPublic</code>, <code>agentKind</code> (<a href="#agent-kinds">how people use it</a>),{" "}
+          <code>latestDeployment</code> and timestamps, plus where its API is:{" "}
           <code>apiEndpoint</code> (the agent&apos;s chat-completions URL), <code>openaiBaseUrl</code> (the{" "}
           <code>base_url</code> for an OpenAI client) and <code>openaiModel</code> (<code>agent/&lt;slug&gt;</code>). The two
           URLs are <code>null</code> when they cannot be determined.
@@ -83,7 +87,8 @@ export default function AgentsApiPage() {
 
       <Endpoint id="get-agent" method="GET" path="/api/agents/{agentId}" auth="API key or session" title="Get an agent">
         <p>
-          Returns <code>&#123; agent &#125;</code> with its full configuration, deployments and the same{" "}
+          Returns <code>&#123; agent &#125;</code> with its full configuration, its <code>agentKind</code> and{" "}
+          <code>kindConfig</code> (<code>null</code> when it has no settings), deployments and the same{" "}
           <code>apiEndpoint</code>, <code>openaiBaseUrl</code> and <code>openaiModel</code> as the list. A deployment&apos;s{" "}
           <code>endpoint</code> is the agent&apos;s <code>/v1</code> URL while it is <code>running</code> and{" "}
           <code>null</code> otherwise. Environment variables come back as their <strong>names only</strong>: values are
@@ -95,13 +100,17 @@ export default function AgentsApiPage() {
         <Fields
           fields={[
             { name: "name", type: "string", required: true, description: "3 to 100 characters. A unique slug is derived from it." },
-            { name: "framework", type: "enum", required: true, description: <><code>mastra</code>, <code>elizaos</code>, <code>langchain</code>, <code>autogen</code>, <code>crewai</code> or <code>custom</code>.</> },
-            { name: "modelConfig", type: "object", required: true, description: <><code>externalModel</code> (a free model id such as <code>free/groq/llama-3.3-70b</code>, or <code>provider/model</code>), <code>modelId</code> (a catalog model), <code>temperature</code> 0 to 2 (default 0.7), <code>maxTokens</code> 1 to 32768 (default 4096).</> },
-            { name: "sourceType", type: "enum", required: true, description: <><code>inline</code> (requires <code>sourceCode</code>), <code>github</code> or <code>ipfs</code> (require <code>sourceUrl</code>).</> },
+            { name: "description", type: "string", description: "Up to 500 characters." },
+            { name: "systemPrompt", type: "string", description: "What the agent should do. Up to 10,000 characters." },
+            { name: "agentKind", type: "enum", description: <><code>conversation</code> (the default), <code>task</code> or <code>scheduled</code>. See <a href="#agent-kinds">kinds of agent</a>.</> },
+            { name: "kindConfig", type: "object | null", description: <>The settings of the kind: <code>task</code> holds the <a href="#task-form">form</a>, <code>scheduled</code> holds a suggested schedule and what the agent is told at each run. Up to 16 KB.</> },
+            { name: "templateId", type: "uuid", description: <>Start from a published <Link href="/docs/guides/templates">template</Link>. Its values are the defaults, and each field you send replaces the template&apos;s.</> },
+            { name: "modelConfig", type: "object", description: <><code>externalModel</code> (a free model id such as <code>free/groq/llama-3.3-70b</code>, or <code>provider/model</code>), <code>modelId</code> (a catalog model), <code>temperature</code> 0 to 2 (default 0.7), <code>maxTokens</code> 1 to 32768 (default 4096). Without a model, the agent answers on the platform&apos;s default free model.</> },
+            { name: "framework", type: "enum", description: <><code>mastra</code>, <code>elizaos</code>, <code>langchain</code>, <code>autogen</code>, <code>crewai</code> or <code>custom</code> (the default).</> },
+            { name: "sourceType", type: "enum", description: <><code>inline</code> (the default), <code>github</code> or <code>ipfs</code>. The last two need <code>sourceUrl</code>.</> },
             { name: "sourceCode", type: "string", description: "Up to 100,000 characters." },
             { name: "sourceUrl", type: "string (URL)", description: "Repository or IPFS URL." },
-            { name: "description", type: "string", description: "Up to 500 characters." },
-            { name: "systemPrompt", type: "string", description: "Up to 10,000 characters." },
+            { name: "slug", type: "string", description: "Up to 100 characters. Left out, it is made from the name. Either way it is made unique in your organization." },
             { name: "tools", type: "array", description: <>Items <code>&#123; name, type, description?, config? &#125;</code>, <code>type</code> one of <code>function</code>, <code>api</code>, <code>mcp</code>.</> },
             { name: "env", type: "object", description: "String values, for example provider keys. Encrypted at rest; write-only." },
             { name: "tags", type: "string[]", description: "Free-form tags." },
@@ -114,29 +123,140 @@ export default function AgentsApiPage() {
           code={`curl -s -X POST "$WHEELSAI_API_URL/api/agents" \\
   -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{
-    "name": "Release notes helper",
-    "framework": "custom",
-    "systemPrompt": "You turn commit messages into short, user-facing release notes.",
-    "modelConfig": { "externalModel": "free/groq/llama-3.3-70b", "temperature": 0.3 },
-    "sourceType": "github",
-    "sourceUrl": "https://github.com/owner/repo"
-  }'`}
+  -d '{ "name": "Release notes helper" }'`}
         />
         <p>
-          Answers <code>201</code> with <code>&#123; agent: &#123; id, name, slug, framework &#125;, message &#125;</code>. Over
-          the plan&apos;s agent limit it answers <code>403</code> with <code>plan_limit_reached</code>. Fires the{" "}
-          <code>agent.created</code> webhook.
+          Only a name is needed: that request creates an agent people can talk to. Add what you want it to do and anything
+          else from the table:
         </p>
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/agents" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "name": "Release notes helper",
+    "systemPrompt": "You turn commit messages into short, user-facing release notes.",
+    "modelConfig": { "externalModel": "free/groq/llama-3.3-70b", "temperature": 0.3 },
+    "agentKind": "task",
+    "kindConfig": {
+      "task": {
+        "fields": [
+          { "label": "Commit messages", "type": "long_text", "required": true, "help": "One per line." },
+          { "label": "Audience", "type": "choice", "options": ["Customers", "Developers"] }
+        ]
+      }
+    }
+  }'`}
+        />
+        <p>Answers <code>201</code>:</p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "agent": {
+    "id": "8f0c2a4e-...",
+    "name": "Release notes helper",
+    "slug": "release-notes-helper",
+    "framework": "custom",
+    "agentKind": "task",
+    "apiEndpoint": "https://api.example.com/v1/agents/release-notes-helper/chat/completions",
+    "openaiBaseUrl": "https://api.example.com/v1/agents/release-notes-helper",
+    "openaiModel": "agent/release-notes-helper"
+  },
+  "message": "Agent created successfully"
+}`}
+        />
+        <p>
+          Fires the <code>agent.created</code> webhook. A request that cannot be accepted answers <code>400</code>{" "}
+          <code>validation_failed</code> with a sentence for each field; see <a href="#agent-management-errors">errors</a>.
+        </p>
+
+        <h4 id="agent-kinds">Kinds of agent</h4>
+        <p>
+          <code>agentKind</code> says how people use the agent. It chooses what they see first; every agent still answers
+          a chat on its <a href="#agent-api">API</a>.
+        </p>
+        <DocTable
+          caption="The three kinds of agent"
+          columns={[
+            { key: "kind", label: "agentKind" },
+            { key: "use", label: "How it is used" },
+            { key: "settings", label: "Its settings in kindConfig" },
+          ]}
+          rows={[
+            { kind: <code>conversation</code>, use: "People talk to it, one message after another.", settings: "None." },
+            { kind: <code>task</code>, use: "Made for one request in and one result back. Its form says what a request holds.", settings: <><code>task.fields</code>: the questions of the form. Without one, the form is a single long-text question, &quot;Your request&quot;.</> },
+            { kind: <code>scheduled</code>, use: "Made to run on its own at set times.", settings: <><code>scheduled.schedule</code>: suggested times as <code>&#123; cronExpression, timezone? &#125;</code> (a five-part cron expression and an IANA time zone). <code>scheduled.prompt</code>: what the agent is told at each run, up to 2,000 characters.</> },
+          ]}
+        />
+        <p>
+          <code>kindConfig</code> has one key per kind, so changing an agent&apos;s kind and changing it back loses nothing.
+          Keys other than <code>task</code> and <code>scheduled</code> are refused.
+        </p>
+        <p>
+          The kind and its settings are stored with the agent, copied to a buyer&apos;s copy and recorded on each version.{" "}
+          <code>scheduled.schedule</code> is a suggestion that travels with the agent: saving it starts no runs. To run an
+          agent at set times, create a scheduled task with the <Link href="/docs/api/workflows#scheduler">scheduler</Link>.
+        </p>
+
+        <h4 id="task-form">Task forms</h4>
+        <p>
+          A task agent&apos;s form is <code>kindConfig.task.fields</code>: 1 to 12 questions, shown in the order you send them.
+        </p>
+        <Fields
+          title="A question"
+          fields={[
+            { name: "label", type: "string", required: true, description: "What the person is asked. Up to 120 characters." },
+            { name: "type", type: "enum", description: <><code>short_text</code> (the default), <code>long_text</code>, <code>number</code>, <code>choice</code>, <code>yes_no</code>, <code>link</code> or <code>list</code>.</> },
+            { name: "required", type: "boolean", description: <>Default <code>false</code>.</> },
+            { name: "help", type: "string", description: "One line shown under the question. Up to 300 characters." },
+            { name: "options", type: "string[]", description: <>For <code>choice</code>: 2 to 50 options of up to 100 characters each.</> },
+            { name: "key", type: "string", description: <>The question&apos;s name in code: a lowercase letter, then up to 39 lowercase letters, digits or underscores. Left out, it is made from the label (<code>Code to review</code> becomes <code>code_to_review</code>). Send it back when you edit the form and it stays the same, so renaming or reordering questions never breaks a caller.</> },
+          ]}
+        />
+        <DocTable
+          caption="What each type of question accepts"
+          columns={[
+            { key: "type", label: "type" },
+            { key: "answer", label: "Answer" },
+          ]}
+          rows={[
+            { type: <code>short_text</code>, answer: "Text of up to 200 characters." },
+            { type: <code>long_text</code>, answer: "Text of up to 20,000 characters." },
+            { type: <code>number</code>, answer: "A number." },
+            { type: <code>choice</code>, answer: <>One of the question&apos;s <code>options</code>.</> },
+            { type: <code>yes_no</code>, answer: <><code>true</code> or <code>false</code>.</> },
+            { type: <code>link</code>, answer: "A URL of up to 2,048 characters." },
+            { type: <code>list</code>, answer: "Up to 50 items of up to 500 characters each." },
+          ]}
+        />
       </Endpoint>
 
       <Endpoint id="update-agent" method="PATCH" path="/api/agents/{agentId}" auth="API key or session" title="Update an agent">
         <p>
           Send any subset of the create fields. <code>modelConfig</code> is merged into the existing one. <code>env</code> is
           merged key by key: a string sets or replaces a variable, <code>null</code> deletes it, and variables you do not mention
-          are kept. Changing the source, system prompt, tools or entrypoint bumps the agent&apos;s patch version. Fires{" "}
-          <code>agent.updated</code>.
+          are kept. Changing the source, system prompt, tools, entrypoint, kind or kind settings bumps the agent&apos;s patch
+          version. Fires <code>agent.updated</code>.
         </p>
+        <p>
+          <code>agentKind</code> and <code>kindConfig</code> stay as they are unless you send them. Inside{" "}
+          <code>kindConfig</code>, a key you send (<code>task</code> or <code>scheduled</code>) replaces that key and the
+          other is kept; a key set to <code>null</code> removes it, and <code>kindConfig: null</code> clears all settings. A
+          task agent always has a form: with none of its own it gets the single &quot;Your request&quot; question.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "agentKind": "scheduled",
+  "kindConfig": {
+    "scheduled": {
+      "schedule": { "cronExpression": "0 9 * * *", "timezone": "Europe/Berlin" },
+      "prompt": "Summarise yesterday's merged changes."
+    }
+  }
+}`}
+        />
         <CodeBlock
           language="json"
           code={`{ "env": { "OPENAI_API_KEY": "sk-...", "OLD_TOKEN": null } }`}
@@ -195,6 +315,12 @@ export default function AgentsApiPage() {
       </Endpoint>
 
       <Endpoint id="deploy-agent" method="POST" path="/api/agents/{agentId}/deploy" auth="API key or session" title="Deploy an agent to a GPU tier">
+        <p>
+          An agent answers on its <a href="#agent-api">API</a> without a deployment. This call gives it a dedicated GPU.
+          Ask <code>GET /api/capabilities</code> first: when <code>agentGpu.available</code> is <code>false</code>, the
+          call answers <code>501</code> <code>agent_gpu_unavailable</code> whatever is sent. Nothing is reserved or
+          charged, and the agent keeps answering on its API.
+        </p>
         <Fields
           fields={[
             { name: "gpuTier", type: "string", required: true, description: <>A tier id from <code>GET /api/models</code>, for example <code>4090</code>.</> },
@@ -214,6 +340,45 @@ export default function AgentsApiPage() {
           GPU job definition.
         </p>
       </Endpoint>
+
+      <h3 id="agent-management-errors">Errors</h3>
+      <p>
+        The endpoints above answer errors as <code>&#123; error, message &#125;</code>. A request that cannot be accepted
+        also says what to change, field by field:
+      </p>
+      <CodeBlock
+        language="json"
+        code={`{
+  "error": "validation_failed",
+  "message": "Give your agent a name of at least 3 characters.",
+  "fields": {
+    "name": "Give your agent a name of at least 3 characters.",
+    "kindConfig.task.fields[1].options": "Add at least two options."
+  },
+  "details": { "formErrors": [], "fieldErrors": { "name": ["..."], "kindConfig": ["..."] } }
+}`}
+      />
+      <p>
+        <code>message</code> is the first problem. <code>fields</code> has one sentence per field, keyed by its path in the
+        request. Show these two to people. <code>details</code> is the earlier shape, kept for clients that already read
+        it: the validator&apos;s own wording, grouped under the top-level field.
+      </p>
+      <DocTable
+        caption="Agent management errors"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "code", label: "error" },
+          { key: "when", label: "When" },
+        ]}
+        rows={[
+          { status: <code>400</code>, code: <code>validation_failed</code>, when: <>The request itself; <code>fields</code> says which part and why.</> },
+          { status: <code>400</code>, code: <code>agent_graph_missing</code>, when: <>Setting <code>entrypoint</code> to <code>graph</code> on an agent with no saved graph.</> },
+          { status: <code>402</code>, code: <code>insufficient_credits</code>, when: "A deployment needs more credits than the balance holds." },
+          { status: <code>403</code>, code: <code>plan_limit_reached</code>, when: "The plan's number of agents is used up." },
+          { status: <code>404</code>, code: <code>template_not_found</code>, when: <>The <code>templateId</code> is not a published template.</> },
+          { status: <code>501</code>, code: <code>agent_gpu_unavailable</code>, when: <>A dedicated GPU for the agent cannot be started right now (<code>agentGpu.available</code> is <code>false</code> in <code>GET /api/capabilities</code>). Nothing is reserved or charged, and the agent keeps answering on its API.</> },
+        ]}
+      />
 
       <h2 id="agent-api">Agent API (/v1)</h2>
       <p>

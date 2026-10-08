@@ -232,7 +232,10 @@ test("a platform-unconfigured model answers 501", async () => {
   let res = await chat(app, { messages: MESSAGES });
   assert.equal(res.statusCode, 501);
   assert.equal(res.json().error, "model_provider_not_configured");
-  assert.match(res.json().message, /no free models are available/i);
+  assert.equal(
+    res.json().message,
+    "No model is available for this agent right now. Nothing was charged. Try again later.",
+  );
   assert.deepEqual(none.spy.chat, []);
   await app.close();
 

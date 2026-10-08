@@ -774,8 +774,7 @@ export async function prepareAgentChat(
     return refuse({
       kind: "not_configured",
       code: "model_provider_not_configured",
-      message:
-        "No model specified and no free models are available. Configure a provider API key on the platform.",
+      message: "No model is available for this agent right now. Nothing was charged. Try again later.",
     });
   }
   if (input.platformFunded && !deps.isFreeModel(modelId)) {

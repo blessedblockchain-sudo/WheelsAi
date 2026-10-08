@@ -346,7 +346,7 @@ test("an agent with no model and no free model available is refused before the l
   const { deps, world } = makeDeps(agent(null), { freeModels: [] });
   await assert.rejects(
     createRunAgentChat(deps)({ agent: agent(null), prompt: "hi" }),
-    /No model specified and no free models are available/,
+    /No model is available for this agent right now\. Nothing was charged\. Try again later\./,
   );
   assert.deepEqual(world.events, []);
 });

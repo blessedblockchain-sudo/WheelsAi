@@ -631,6 +631,16 @@ model Agent {
   // Metadata
   version       String   @default("1.0.0")
   isPublic      Boolean  @default(false) @map("is_public")
+  // The agent's public address, /a/<handle>: unique across the platform, 3
+  // to 40 lower-case letters, digits and hyphens (services/publicHandle.ts;
+  // the database holds the same rule in agents_public_handle_check). Null
+  // until the agent is first made public. Kept out of kindConfig: that JSON
+  // is copied on install and restored on rollback, and an address or a
+  // privacy switch must not travel that way.
+  publicHandle  String?  @unique @map("public_handle")
+  // A scheduled agent's latest results are shown on its public page only
+  // when its owner turns this on.
+  publicResults Boolean  @default(false) @map("public_results")
   tags          String[] @default([])
 
   createdAt     DateTime @default(now()) @map("created_at")
@@ -642,7 +652,9 @@ model Agent {
   contributors  AgentContributor[]
   listing       AgentListing?
   offerings          Offering[]
-  widgetKeys         WidgetKey[]
+  widgetKeys         WidgetKey[]        @relation("WidgetKeyAgent")
+  // The one key that lets people use the agent from its public page.
+  pageKey            WidgetKey?         @relation("AgentPageKey")
   graph         AgentGraph?
   openclawDeployment OpenClawDeployment?
 
@@ -3437,11 +3449,18 @@ model WidgetKey {
   revokedAt        DateTime? @map("revoked_at")
   lastUsedAt       DateTime? @map("last_used_at")
 
+  // Set on the one key that serves an agent's public page (/a/<handle>), to
+  // that agent's id, which is then also agentId (the database checks it).
+  // Unique, so an agent has at most one page key. Cleared on revoke. Null on
+  // every key made for a website.
+  pageOfAgentId    String?   @unique @map("page_of_agent_id") @db.Uuid
+
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   organization     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  agent            Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  agent            Agent        @relation("WidgetKeyAgent", fields: [agentId], references: [id], onDelete: Cascade)
+  pageOfAgent      Agent?       @relation("AgentPageKey", fields: [pageOfAgentId], references: [id], onDelete: Cascade)
 
   @@index([orgId])
   @@index([agentId])

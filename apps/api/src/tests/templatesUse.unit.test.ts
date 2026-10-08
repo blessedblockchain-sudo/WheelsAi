@@ -243,6 +243,8 @@ test("the answer has the shape of POST /api/agents and no secret values", async 
         openaiBaseUrl: "https://api.example.test/v1/agents/code-reviewer",
         openaiModel: "agent/code-reviewer",
       },
+      // A template never makes a schedule by itself.
+      schedule: null,
       message: "Agent created successfully",
     });
 

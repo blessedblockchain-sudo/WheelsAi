@@ -1,7 +1,7 @@
 /**
  * Composition root for the create path (services/createAgent.ts): binds it
- * to Prisma, the plan limit, the secrets key, the free-model catalog and the
- * `agent.created` webhook.
+ * to Prisma, the plan limit, the secrets key, the free-model catalog, the
+ * agent's own schedule and the `agent.created` webhook.
  *
  * Delegates are read from the client per call, not captured at build time.
  */
@@ -10,9 +10,11 @@ import { Prisma, prisma as defaultPrisma, type PrismaClient } from "@wheelsai/db
 
 import { getAvailableFreeModels } from "../config/free-models.js";
 import { createLogger } from "../utils/logger.js";
+import { createOwnSchedule, isScheduleNameConflict, type OwnScheduleDb } from "./agentOwnSchedule.js";
 import { assignPublicHandle, isHandleConflict, type PublicLinkTx } from "./agentPublicLink.js";
 import { openAgentEnv, sealAgentEnv } from "./agentSecrets.js";
 import type { AgentTemplateSource, CreateAgentDeps } from "./createAgent.js";
+import { isEmailConfigured } from "./email/emailService.js";
 import { assertCanCreateAgent } from "./orgPlan.js";
 import { triggerWebhook } from "./webhooks.js";
 
@@ -20,7 +22,7 @@ const logger = createLogger("create-agent");
 
 type CreateAgentPrisma = Pick<PrismaClient, "agent" | "agentTemplate" | "knowledgeBase" | "$transaction">;
 
-/** What the agent's transaction can reach. A later batch writes a schedule through it. */
+/** What the agent's transaction can reach. The agent's own schedule is written through it. */
 export type CreateAgentTx = Prisma.TransactionClient;
 
 /** P2002 on the (org, slug) pair: another create took the slug first. */
@@ -106,8 +108,14 @@ export function buildCreateAgentDeps(
 
     assignHandle: (tx, agent) => assignPublicHandle(tx as unknown as Pick<PublicLinkTx, "agent">, agent, { inTransaction: true }),
 
+    // In the agent's transaction. Whether email can be sent is asked per
+    // create, so a place of type email is refused while it cannot.
+    insertSchedule: (tx, schedule) =>
+      createOwnSchedule(tx as unknown as OwnScheduleDb, { ...schedule, emailConfigured: isEmailConfigured() }),
+
     isSlugConflict: isAgentSlugConflict,
     isHandleConflict,
+    isScheduleNameConflict,
 
     announce: (orgId, agent) => {
       logger.info({ agentId: agent.id, orgId }, "Agent created");

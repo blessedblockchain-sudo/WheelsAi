@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Menu, X } from "lucide-react";
+import { SectionTabs, SectionTabsFallback } from "@/components/dashboard/section-tabs";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { SolanaWalletProvider } from "@/components/providers/solana-wallet-provider";
 import { ThemeProvider } from "@/components/providers/theme-provider";
@@ -51,7 +52,8 @@ export default function DashboardLayout({
                     onClick={() => setMobileMenuOpen(false)}
                   />
                   <div className="fixed inset-y-0 left-0 z-50 w-64">
-                    <Sidebar />
+                    {/* Some menu items change only the query string, which the effect above does not see. */}
+                    <Sidebar onNavigate={() => setMobileMenuOpen(false)} />
                   </div>
                 </div>
               )}
@@ -75,7 +77,12 @@ export default function DashboardLayout({
                 </div>
 
                 <VerifyEmailBanner />
-                <main className="flex-1 overflow-auto">{children}</main>
+                {/* Stays put above the page; only <main> scrolls. The fallback
+                    holds the bar's place until the query string is known. */}
+                <Suspense fallback={<SectionTabsFallback />}>
+                  <SectionTabs />
+                </Suspense>
+                <main className="min-h-0 flex-1 overflow-auto">{children}</main>
               </div>
             </div>
           </ConfirmProvider>

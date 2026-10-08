@@ -1,164 +1,95 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { OrgSwitcher } from "@/components/dashboard/org-switcher";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Cpu,
   LayoutDashboard,
-  Box,
   Bot,
   Store,
-  GraduationCap,
   Key,
   CreditCard,
   Settings,
-  MessageSquare,
   LogOut,
   BarChart3,
   Bell,
   Plug,
   FlaskConical,
-  Brain,
   Globe,
-  Clock,
   Database,
   GitBranch,
-  FileCode,
   ChevronDown,
-  Sparkles,
-  Coins,
   Moon,
   Sun,
-  Plus,
   Upload,
+  PackageCheck,
   DollarSign,
-  Trophy,
   Users,
-  ShieldCheck,
-  Briefcase,
   ClipboardCheck,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { featureFlags } from "@/lib/feature-flags";
+import { buildNav, locate } from "@/lib/nav";
 import { authApi } from "@/lib/api";
 import { WalletButton } from "@/components/dashboard/wallet-button";
 import { useTheme } from "@/components/providers/theme-provider";
 import type { LucideIcon } from "lucide-react";
-
-interface NavItem {
-  name: string;
-  href: string;
-  icon: LucideIcon;
-}
-
-interface NavGroup {
-  label: string;
-  items: NavItem[];
-  /** Sub-heading groups inside a leg (e.g. Build → Workflows). */
-  sections?: Array<{ label: string; items: NavItem[] }>;
-}
-
-const overviewItem: NavItem = {
-  name: "Dashboard",
-  href: "/dashboard",
-  icon: LayoutDashboard,
-};
+import type { NavIcon, NavItem, NavSearch } from "@/lib/nav";
 
 /**
- * The nav IS the positioning: the three verbs, Build, Deploy, Monetize,
- * in that order because BUILD leads, and inside Build the three product
- * types the platform builds: agents, workflows, and small language
- * models (including fine-tuning). Everything stays visible; groups are
- * collapsible as a user preference, not a default.
+ * One menu of 19 items for everyone, from the nav model: Home, then Build,
+ * Deploy, Monetize, Marketplace and Account. Sibling pages are tabs inside
+ * an item, shown in the tab bar at the top of the page, so nothing is
+ * hidden. Groups are collapsible as a user preference, not a default.
  */
-const navGroups: NavGroup[] = [
-  {
-    label: "Build",
-    items: [],
-    sections: [
-      {
-        label: "Agents",
-        items: [
-          { name: "My Agents", href: "/dashboard/agents", icon: Bot },
-          { name: "Create Agent", href: "/dashboard/agents/new", icon: Plus },
-          { name: "Templates", href: "/dashboard/templates", icon: FileCode },
-        ],
-      },
-      {
-        label: "Workflows",
-        items: [
-          { name: "Workflows", href: "/dashboard/orchestrations", icon: GitBranch },
-          { name: "Scheduler", href: "/dashboard/scheduler", icon: Clock },
-        ],
-      },
-      {
-        label: "Models",
-        items: [
-          { name: "Model Catalog", href: "/dashboard/models", icon: Cpu },
-          { name: "Fine-tuning", href: "/dashboard/training", icon: GraduationCap },
-          { name: "Datasets", href: "/dashboard/training/datasets", icon: Database },
-        ],
-      },
-      {
-        label: "Grounding & quality",
-        items: [
-          { name: "Knowledge", href: "/dashboard/knowledge", icon: Database },
-          { name: "Memory", href: "/dashboard/memory", icon: Brain },
-          { name: "Testing", href: "/dashboard/testing", icon: FlaskConical },
-        ],
-      },
-    ],
-  },
-  {
-    label: "Deploy",
-    items: [
-      { name: "Deployments", href: "/dashboard/deployments", icon: Box },
-      { name: "GPU Playground", href: "/dashboard/playground", icon: MessageSquare },
-      { name: "OpenClaw", href: "/dashboard/openclaw", icon: Sparkles },
-      { name: "Monitoring", href: "/dashboard/monitoring", icon: Bell },
-      { name: "Domains", href: "/dashboard/domains", icon: Globe },
-      { name: "Channels & Integrations", href: "/dashboard/integrations", icon: Plug },
-    ],
-  },
-  {
-    label: "Monetize",
-    items: [
-      { name: "Browse Marketplace", href: "/marketplace", icon: Store },
-      { name: "My Listings", href: "/dashboard/marketplace", icon: Upload },
-      { name: "Publish", href: "/dashboard/marketplace/publish", icon: Upload },
-      { name: "Offerings", href: "/dashboard/marketplace/offerings", icon: Briefcase },
-      { name: "Jobs", href: "/dashboard/jobs", icon: ClipboardCheck },
-      { name: "Installed Agents", href: "/dashboard/marketplace/installs", icon: Bot },
-      { name: "Revenue & Payouts", href: "/dashboard/marketplace/revenue", icon: DollarSign },
-      { name: "Insights", href: "/dashboard/marketplace/analytics", icon: BarChart3 },
-      { name: "Leaderboard", href: "/marketplace/leaderboard", icon: Trophy },
-      ...(featureFlags.tokenUi
-        ? [{ name: "Tokens", href: "/dashboard/marketplace/tokens", icon: Coins } as NavItem]
-        : []),
-    ],
-  },
-  {
-    label: "Account",
-    items: [
-      { name: "Billing & Plan", href: "/dashboard/billing", icon: CreditCard },
-      { name: "API Keys", href: "/dashboard/keys", icon: Key },
-      { name: "Usage Analytics", href: "/dashboard/analytics", icon: BarChart3 },
-      { name: "Team", href: "/dashboard/settings/team", icon: Users },
-      { name: "Security", href: "/dashboard/settings/security", icon: ShieldCheck },
-      { name: "Branding", href: "/dashboard/settings/branding", icon: Sparkles },
-      { name: "Settings", href: "/dashboard/settings", icon: Settings },
-    ],
-  },
-];
+const navOptions = { tokenUi: featureFlags.tokenUi };
+const navGroups = buildNav(navOptions);
 
-export function Sidebar() {
+const navIcons: Record<NavIcon, LucideIcon> = {
+  home: LayoutDashboard,
+  agents: Bot,
+  workflows: GitBranch,
+  models: Cpu,
+  knowledge: Database,
+  testing: FlaskConical,
+  channels: Plug,
+  domains: Globe,
+  monitoring: Bell,
+  listings: Upload,
+  earnings: DollarSign,
+  browse: Store,
+  installed: PackageCheck,
+  hired: ClipboardCheck,
+  billing: CreditCard,
+  keys: Key,
+  usage: BarChart3,
+  team: Users,
+  settings: Settings,
+};
+
+// useSearchParams needs a Suspense boundary on prerendered pages. Until the
+// query string is known the menu renders from the path alone.
+// onNavigate runs when a menu item is chosen, so the mobile drawer can close
+// even when only the query string changes.
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
+  return (
+    <Suspense fallback={<SidebarMenu search={null} onNavigate={onNavigate} />}>
+      <SidebarWithSearch onNavigate={onNavigate} />
+    </Suspense>
+  );
+}
+
+function SidebarWithSearch({ onNavigate }: { onNavigate?: () => void }) {
+  const search = useSearchParams();
+  return <SidebarMenu search={search} onNavigate={onNavigate} />;
+}
+
+function SidebarMenu({ search, onNavigate }: { search: NavSearch; onNavigate?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  // Every group starts EXPANDED: the three verbs are the product, and
-  // a collapsed leg is an invisible leg.
+  // Every group starts expanded: a collapsed group is an invisible one.
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const { resolvedTheme, setTheme } = useTheme();
 
@@ -175,32 +106,29 @@ export function Sidebar() {
     setCollapsed((prev) => ({ ...prev, [label]: !prev[label] }));
   };
 
-  // The most specific matching item is active, so /dashboard/training/datasets
-  // highlights Datasets and not Fine-tuning as well.
-  const allHrefs = navGroups.flatMap((g) => [
-    ...g.items.map((i) => i.href),
-    ...(g.sections ?? []).flatMap((s) => s.items.map((i) => i.href)),
-  ]);
-  const isItemActive = (href: string) => {
-    const matches = (h: string) => pathname === h || (h !== "/dashboard" && pathname.startsWith(h + "/"));
-    if (!matches(href)) return false;
-    return !allHrefs.some((other) => other !== href && other.startsWith(href + "/") && matches(other));
-  };
+  // The item a page belongs to, so a tab or a detail page highlights the
+  // item it sits under.
+  const activeId = locate(pathname, search, navOptions)?.item.id;
 
-  const renderItem = (item: NavItem) => (
-    <Link
-      key={item.href}
-      href={item.href}
-      aria-current={isItemActive(item.href) ? "page" : undefined}
-      className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-        isItemActive(item.href) ? "bg-primary/10 text-primary" : "text-foreground hover:bg-muted"
-      )}
-    >
-      <item.icon className="h-5 w-5" />
-      {item.name}
-    </Link>
-  );
+  const renderItem = (item: NavItem) => {
+    const Icon = navIcons[item.icon];
+    const isActive = item.id === activeId;
+    return (
+      <Link
+        key={item.id}
+        href={item.href}
+        onClick={onNavigate}
+        aria-current={isActive ? "page" : undefined}
+        className={cn(
+          "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+          isActive ? "bg-primary/10 text-primary" : "text-foreground hover:bg-muted"
+        )}
+      >
+        <Icon className="h-5 w-5" />
+        {item.label}
+      </Link>
+    );
+  };
 
   return (
     <div className="flex h-full w-64 flex-col border-r border-border bg-card">
@@ -215,54 +143,39 @@ export function Sidebar() {
       <OrgSwitcher />
 
       {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4">
-        {/* Dashboard - always visible, no group header */}
-        <Link
-          href={overviewItem.href}
-          className={cn(
-            "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-            isItemActive(overviewItem.href)
-              ? "bg-primary/10 text-primary"
-              : "text-foreground hover:bg-muted"
-          )}
-        >
-          <overviewItem.icon className="h-5 w-5" />
-          {overviewItem.name}
-        </Link>
-
-        {/* Grouped sections */}
+      <nav aria-label="Main" className="flex-1 overflow-y-auto px-3 py-4">
         {navGroups.map((group) => {
-          const isCollapsed = collapsed[group.label] ?? false;
+          // Home sits above the groups with no heading.
+          if (group.label === null) {
+            return <div key="home">{group.items.map(renderItem)}</div>;
+          }
+          const label = group.label;
+          const isCollapsed = collapsed[label] ?? false;
+          const listId = `nav-group-${label.toLowerCase()}`;
 
           return (
-            <div key={group.label} className="mt-4">
+            <div key={label} className="mt-4">
               <button
-                onClick={() => toggleGroup(group.label)}
+                type="button"
+                onClick={() => toggleGroup(label)}
+                aria-expanded={!isCollapsed}
+                aria-controls={listId}
                 className="flex w-full items-center justify-between px-3 py-1"
               >
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  {group.label}
+                  {label}
                 </span>
                 <ChevronDown
+                  aria-hidden="true"
                   className={cn(
                     "h-3 w-3 text-muted-foreground transition-transform",
                     isCollapsed && "-rotate-90"
                   )}
                 />
               </button>
-              {!isCollapsed && (
-                <div className="mt-1 space-y-0.5">
-                  {group.items.map(renderItem)}
-                  {group.sections?.map((section) => (
-                    <div key={section.label} className="pt-2">
-                      <p className="px-3 pb-1 text-[11px] font-medium text-muted-foreground">
-                        {section.label}
-                      </p>
-                      {section.items.map(renderItem)}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div id={listId} hidden={isCollapsed} className="mt-1 space-y-0.5">
+                {group.items.map(renderItem)}
+              </div>
             </div>
           );
         })}

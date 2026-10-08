@@ -75,7 +75,7 @@ export default function AnalyticsDashboardPage() {
   const header = (
     <div className="flex items-center justify-between">
       <div>
-        <h1 className="text-2xl font-bold">Analytics</h1>
+        <h1 className="text-2xl font-bold">Usage</h1>
         <p className="text-muted-foreground">
           Usage metrics and cost insights
         </p>

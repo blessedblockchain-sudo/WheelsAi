@@ -113,7 +113,7 @@ export default function ModelsPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Model Catalog"
+        title="Model catalog"
         description="Browse and deploy open-source AI models"
       />
 

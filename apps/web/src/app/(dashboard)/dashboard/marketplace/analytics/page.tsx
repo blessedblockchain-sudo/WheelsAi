@@ -22,6 +22,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
+import { LIST_AGENT_BUTTON } from "@/lib/nav";
 import {
   analyticsApi,
   marketplaceApi,
@@ -257,7 +258,7 @@ export default function MarketplaceAnalyticsPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Marketplace Intelligence"
+        title="Insights"
         description="Publisher analytics — revenue, installs, and category insights"
       />
 
@@ -273,8 +274,8 @@ export default function MarketplaceAnalyticsPage() {
             icon={BarChart3}
             title="No analytics data yet"
             description="Publish an agent to the marketplace to start tracking its performance."
-            actionLabel="Publish Agent"
-            actionHref="/dashboard/marketplace/publish"
+            actionLabel={LIST_AGENT_BUTTON.label}
+            actionHref={LIST_AGENT_BUTTON.href}
           />
         ) : (
           <>

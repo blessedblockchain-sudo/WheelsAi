@@ -28,6 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { agentsApi, marketplaceApi, type Agent, type CreateListingInput, getErrorMessage } from "@/lib/api";
+import { LIST_AGENT_BUTTON, NEW_AGENT_BUTTON } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
@@ -284,7 +285,7 @@ function PublishWizardContent() {
 
   const header = (
     <Header
-      title={editId ? "Edit Listing" : "Publish to Marketplace"}
+      title={editId ? "Edit Listing" : LIST_AGENT_BUTTON.label}
       description="Share your agent with the WheelsAI community"
     />
   );
@@ -379,8 +380,8 @@ function PublishWizardContent() {
                     icon={Bot}
                     title="No agents found"
                     description="Create an agent first before publishing to the marketplace."
-                    actionLabel="Create Agent"
-                    actionHref="/dashboard/agents/new"
+                    actionLabel={NEW_AGENT_BUTTON.label}
+                    actionHref={NEW_AGENT_BUTTON.href}
                   />
                 ) : (
                   <RadioGroup

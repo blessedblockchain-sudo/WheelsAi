@@ -49,7 +49,7 @@ export default function WebChatWidgetGuidePage() {
 
       <h2 id="create">1. Create a key</h2>
       <p>
-        In the dashboard open <Link href="/dashboard/integrations#channels">Integrations, then Channels</Link>, choose{" "}
+        In the dashboard open <Link href="/dashboard/integrations?tab=channels">Channels, then Website chat</Link>, choose{" "}
         <strong>New key</strong>, pick the agent and give the key a name. Owners and admins can create, edit, rotate and
         revoke keys; every member can see them. An agent can have up to 20 live keys, for example one per site.
       </p>

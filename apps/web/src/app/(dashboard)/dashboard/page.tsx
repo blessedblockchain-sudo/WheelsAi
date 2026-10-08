@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NEW_AGENT_BUTTON } from "@/lib/nav";
 import {
   agentsApi,
   deploymentsApi,
@@ -141,9 +142,9 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Dashboard"
+        title="Home"
         description="Build, deploy and monetize your agents, workflows and models"
-        action={{ label: "Create Agent", href: "/dashboard/agents/new" }}
+        action={NEW_AGENT_BUTTON}
       />
 
       <div className="p-8">
@@ -291,8 +292,8 @@ export default function DashboardPage() {
                     icon={Bot}
                     title="No agents yet"
                     description="Import one from GitHub or start from a template."
-                    actionLabel="Create Agent"
-                    actionHref="/dashboard/agents/new"
+                    actionLabel={NEW_AGENT_BUTTON.label}
+                    actionHref={NEW_AGENT_BUTTON.href}
                   />
                 </div>
               ) : (
@@ -407,14 +408,14 @@ export default function DashboardPage() {
         <div className="mt-8">
           <h2 className="text-lg font-semibold text-foreground">Quick Actions</h2>
           <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            <Link href="/dashboard/agents/new">
+            <Link href={NEW_AGENT_BUTTON.href}>
               <Card className="cursor-pointer transition-shadow hover:shadow-md">
                 <CardContent className="flex items-center gap-4 py-6">
                   <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary/15">
                     <Bot className="h-6 w-6 text-primary-600 dark:text-primary-400" />
                   </div>
                   <div>
-                    <h3 className="font-medium text-foreground">Create Agent</h3>
+                    <h3 className="font-medium text-foreground">{NEW_AGENT_BUTTON.label}</h3>
                     <p className="text-sm text-muted-foreground">
                       Import from GitHub or start fresh
                     </p>

@@ -181,7 +181,7 @@ test.describe("Offerings and jobs", () => {
 
       // The job is in the buyer's list, and the accept button is gone for good.
       await page.goto("/dashboard/jobs");
-      await expect(page.getByRole("tab", { name: /Hired by you/ })).toHaveAttribute("aria-selected", "true");
+      await expect(page.getByRole("heading", { name: "Hired", level: 1 })).toBeVisible();
       await expect(page.getByRole("link", { name: new RegExp((setup as Setup).title) }).first()).toBeVisible();
       await context.close();
     });

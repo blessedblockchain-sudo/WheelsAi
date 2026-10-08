@@ -135,7 +135,7 @@ export default function SettingsPage() {
 
   const tabs = [
     { id: "profile" as Tab, label: "Profile", icon: User },
-    { id: "security" as Tab, label: "Security", icon: Shield },
+    { id: "security" as Tab, label: "Password", icon: Shield },
     { id: "notifications" as Tab, label: "Notifications", icon: Bell },
     { id: "wallets" as Tab, label: "Wallets", icon: Wallet },
   ];
@@ -143,7 +143,7 @@ export default function SettingsPage() {
   if (isLoading) {
     return (
       <div className="flex flex-col">
-        <Header title="Settings" description="Manage your account and preferences" />
+        <Header title="Account" description="Manage your account and preferences" />
         <div className="p-8" aria-busy="true">
           <span className="sr-only">Loading settings</span>
           <div className="flex gap-8">
@@ -191,7 +191,7 @@ export default function SettingsPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Settings"
+        title="Account"
         description="Manage your account and preferences"
       />
 
@@ -342,7 +342,7 @@ export default function SettingsPage() {
               </Card>
             )}
 
-            {/* Security tab */}
+            {/* Password tab (two-factor sign-in is the Security page) */}
             {activeTab === "security" && (
               <div className="space-y-6">
                 <Card>

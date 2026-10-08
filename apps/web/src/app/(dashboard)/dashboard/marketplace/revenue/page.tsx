@@ -37,6 +37,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { marketplaceApi, getErrorMessage } from "@/lib/api";
 import { ContributionsCard } from "@/components/marketplace/contributions-card";
 import { EscrowBadge } from "@/components/marketplace/escrow-badge";
+import { JOBS_RECEIVED_HREF, JOBS_TAB_PARAM, JOBS_TAB_RECEIVED } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 // The one shape the API client declares, so a field added there reaches this page.
@@ -205,7 +206,7 @@ export default function RevenueDashboardPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Revenue & Payouts"
+        title="Earnings"
         description="Track your marketplace earnings and request payouts"
       />
 
@@ -296,7 +297,7 @@ export default function RevenueDashboardPage() {
                     </p>
                   </div>
                   <Link
-                    href="/dashboard/jobs?tab=received"
+                    href={JOBS_RECEIVED_HREF}
                     className="text-sm font-medium text-primary underline underline-offset-2"
                   >
                     See these jobs
@@ -466,7 +467,7 @@ export default function RevenueDashboardPage() {
                             <td className="py-3 capitalize">
                               {tx.jobId ? (
                                 <Link
-                                  href={`/dashboard/jobs/${tx.jobId}`}
+                                  href={`/dashboard/jobs/${tx.jobId}?${JOBS_TAB_PARAM}=${JOBS_TAB_RECEIVED}`}
                                   className="text-primary underline underline-offset-2"
                                 >
                                   Job

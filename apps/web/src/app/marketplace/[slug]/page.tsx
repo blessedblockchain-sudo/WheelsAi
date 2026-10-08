@@ -1111,7 +1111,7 @@ export default function ListingDetailPage() {
                   ? installState?.installed
                     ? "Installed as a private copy in your workspace."
                     : isMonthly
-                    ? `Charges ${monthlyPrice} from your credits now and every 30 days. Cancel anytime from Installed Agents.`
+                    ? `Charges ${monthlyPrice} from your credits now and every 30 days. Cancel anytime from Installed.`
                     : hasToken
                     ? `Requires at least 1 ${tokenData!.symbol} in a wallet linked to your organization.`
                     : "Installs a private copy of this agent into your workspace."

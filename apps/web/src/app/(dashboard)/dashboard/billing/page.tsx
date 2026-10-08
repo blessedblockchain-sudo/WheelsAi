@@ -357,7 +357,7 @@ export default function BillingPage() {
 
   const header = (
     <Header
-      title="Billing & Credits"
+      title="Billing"
       description="Manage your account balance and view usage"
     />
   );

@@ -343,7 +343,7 @@ export default function InstalledAgentsPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Installed Agents"
+        title="Installed"
         description="Manage agents you've installed from the marketplace"
       />
 
@@ -410,7 +410,7 @@ export default function InstalledAgentsPage() {
             {/* Installed Agents List */}
             <Card>
               <CardHeader>
-                <CardTitle>My Installed Agents</CardTitle>
+                <CardTitle>Installed agents</CardTitle>
               </CardHeader>
               <CardContent>
                 {isLoading ? (
@@ -420,7 +420,7 @@ export default function InstalledAgentsPage() {
                     icon={Bot}
                     title="No installed agents"
                     description="Browse the marketplace to find agents."
-                    actionLabel="Browse Marketplace"
+                    actionLabel="Browse the marketplace"
                     actionHref="/marketplace"
                   />
                 ) : (

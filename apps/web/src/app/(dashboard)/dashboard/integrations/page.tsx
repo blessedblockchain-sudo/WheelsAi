@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { MessageSquare, Plug, Webhook as WebhookLucide } from "lucide-react";
+import { Suspense, useState, useEffect } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Plug, Webhook as WebhookLucide } from "lucide-react";
 import {
   webhooksApi,
   integrationsApi,
@@ -138,9 +139,22 @@ const integrationIcons: Record<string, React.ReactNode> = {
   ),
 };
 
-export default function IntegrationsPage() {
+type IntegrationsTab = "webhooks" | "integrations" | "channels";
+
+function IntegrationsContent() {
   const confirmAction = useConfirm();
-  const [activeTab, setActiveTab] = useState<"webhooks" | "integrations" | "channels">("webhooks");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  // The view lives in the address: ?tab=channels is Website chat in the menu,
+  // ?tab=integrations the integrations list, and no query is webhooks.
+  const tabParam = searchParams.get("tab");
+  const activeTab: IntegrationsTab =
+    tabParam === "channels" || tabParam === "integrations" ? tabParam : "webhooks";
+
+  function setActiveTab(tab: IntegrationsTab) {
+    router.replace(tab === "webhooks" ? pathname : `${pathname}?tab=${tab}`, { scroll: false });
+  }
   const [webhooks, setWebhooks] = useState<Webhook[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [availableIntegrations, setAvailableIntegrations] = useState<AvailableIntegration[]>([]);
@@ -168,9 +182,9 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     loadData();
-    // Links from elsewhere in the dashboard (the OpenClaw wizard's Web Chat
-    // option) land on the Channels tab.
+    // Older links used #channels for the web chat keys.
     if (window.location.hash === "#channels") setActiveTab("channels");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadData() {
@@ -285,10 +299,13 @@ export default function IntegrationsPage() {
 
   const header = (
     <div>
-      <h1 className="text-3xl font-bold">Webhooks, Integrations & Channels</h1>
+      <h1 className="text-3xl font-bold">
+        {activeTab === "channels" ? "Website chat" : "Webhooks & integrations"}
+      </h1>
       <p className="text-muted-foreground mt-2">
-        Connect WheelsAI to external services, receive real-time event notifications, and put your agents where
-        people chat
+        {activeTab === "channels"
+          ? "Put your agent on your own website as a chat box."
+          : "Connect WheelsAI to external services and receive real-time event notifications"}
       </p>
     </div>
   );
@@ -301,42 +318,33 @@ export default function IntegrationsPage() {
     <div className="p-8 max-w-6xl mx-auto space-y-8">
       {header}
 
-      {/* Tabs */}
-      <div className="flex gap-2 border-b">
-        <button
-          onClick={() => setActiveTab("webhooks")}
-          className={`px-4 py-2 font-medium ${
-            activeTab === "webhooks"
-              ? "border-b-2 border-primary text-primary"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <WebhookIcon className="w-4 h-4 inline-block mr-2" />
-          Webhooks
-        </button>
-        <button
-          onClick={() => setActiveTab("integrations")}
-          className={`px-4 py-2 font-medium ${
-            activeTab === "integrations"
-              ? "border-b-2 border-primary text-primary"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <PlugIcon className="w-4 h-4 inline-block mr-2" />
-          Integrations
-        </button>
-        <button
-          onClick={() => setActiveTab("channels")}
-          className={`px-4 py-2 font-medium ${
-            activeTab === "channels"
-              ? "border-b-2 border-primary text-primary"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <MessageSquare className="w-4 h-4 inline-block mr-2" />
-          Channels
-        </button>
-      </div>
+      {/* Website chat is its own entry in the menu, so only the other two views switch here. */}
+      {activeTab !== "channels" && (
+        <div className="flex gap-2 border-b">
+          <button
+            onClick={() => setActiveTab("webhooks")}
+            className={`px-4 py-2 font-medium ${
+              activeTab === "webhooks"
+                ? "border-b-2 border-primary text-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <WebhookIcon className="w-4 h-4 inline-block mr-2" />
+            Webhooks
+          </button>
+          <button
+            onClick={() => setActiveTab("integrations")}
+            className={`px-4 py-2 font-medium ${
+              activeTab === "integrations"
+                ? "border-b-2 border-primary text-primary"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <PlugIcon className="w-4 h-4 inline-block mr-2" />
+            Integrations
+          </button>
+        </div>
+      )}
 
       {activeTab === "channels" && <WebChatKeys />}
 
@@ -804,6 +812,14 @@ export default function IntegrationsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function IntegrationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <IntegrationsContent />
+    </Suspense>
   );
 }
 

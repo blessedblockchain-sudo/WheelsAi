@@ -622,7 +622,7 @@ export default function AgentBuilderPage() {
 
   if (loading) {
     return (
-      <div className="h-screen flex items-center justify-center">
+      <div className="h-full flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
       </div>
     );
@@ -631,7 +631,7 @@ export default function AgentBuilderPage() {
   return (
     // `relative` anchors the run panel below; without it the panel would
     // position against the viewport by luck rather than by design.
-    <div className="relative h-screen flex flex-col bg-background">
+    <div className="relative h-full flex flex-col bg-background">
       {/* Header */}
       <div className="h-14 border-b flex items-center justify-between px-4 bg-card">
         <div className="flex items-center gap-4">

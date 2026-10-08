@@ -267,7 +267,7 @@ export default function TokenMarketplacePage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Agent Token Marketplace"
+        title="Tokens"
         description="Discover and trade AI agent tokens on Solana"
         action={{ label: "Create Token", href: "/dashboard/marketplace/tokens/create" }}
       />

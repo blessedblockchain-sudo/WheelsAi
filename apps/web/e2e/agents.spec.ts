@@ -92,7 +92,7 @@ test.describe("Agent Creation Wizard", () => {
     await page.goto("/dashboard/agents/new");
 
     const hasCreateAgent = await page
-      .getByText("Create Agent")
+      .getByRole("heading", { name: "New agent" })
       .isVisible()
       .catch(() => false);
 

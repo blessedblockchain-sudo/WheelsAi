@@ -23,7 +23,7 @@ export const CHANGELOG: ChangelogDay[] = [
       {
         kind: "New",
         title: "Web chat widget: a fourth chat channel",
-        body: "Put an agent on your own site with one script tag. Create a web chat key under Integrations, Channels, list the sites that may use it, set its daily cap and look, and paste the snippet. Answers stream in; the widget is isolated from your page's styles and works with a keyboard and a screen reader. Tools that spend, write, read saved files or send requests out stay off for visitors, and every message counts toward the key's limits.",
+        body: "Put an agent on your own site with one script tag. Create a web chat key under Channels, Website chat, list the sites that may use it, set its daily cap and look, and paste the snippet. Answers stream in; the widget is isolated from your page's styles and works with a keyboard and a screen reader. Tools that spend, write, read saved files or send requests out stay off for visitors, and every message counts toward the key's limits.",
       },
       {
         kind: "New",

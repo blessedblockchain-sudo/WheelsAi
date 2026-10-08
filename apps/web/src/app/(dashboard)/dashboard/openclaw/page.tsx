@@ -234,9 +234,9 @@ export default function OpenClawDeploymentsPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="OpenClaw Deployments"
-        description="Manage your AI agent deployments with multi-channel support"
-        action={{ label: "New Deployment", href: "/dashboard/openclaw/new" }}
+        title="Chat apps"
+        description="Put your agents in Discord, Telegram, Slack and other chat apps"
+        action={{ label: "Connect a chat app", href: "/dashboard/openclaw/new" }}
       />
 
       <div className="p-8 space-y-6">
@@ -325,9 +325,9 @@ export default function OpenClawDeploymentsPage() {
         ) : deployments.length === 0 ? (
           <EmptyState
             icon={Server}
-            title="No deployments yet"
-            description="Get started by creating your first OpenClaw deployment. Deploy AI agents with multi-channel support across Discord, Telegram, Slack, and more."
-            actionLabel="Create Deployment"
+            title="No chat apps yet"
+            description="Connect an agent to Discord, Telegram, Slack and more, and it answers people there."
+            actionLabel="Connect a chat app"
             actionHref="/dashboard/openclaw/new"
           />
         ) : (

@@ -333,7 +333,7 @@ export default function ApiKeysPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="API Keys"
+        title="API keys"
         description="Manage your API keys for accessing WheelsAI endpoints"
       />
 

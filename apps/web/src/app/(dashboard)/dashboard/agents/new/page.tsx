@@ -268,7 +268,7 @@ function NewAgentContent() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Create Agent"
+        title="New agent"
         description="Build a new AI agent"
       />
 

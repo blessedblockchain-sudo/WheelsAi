@@ -12,6 +12,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { agentsApi, type Agent, getErrorMessage } from "@/lib/api";
+import { NEW_AGENT_BUTTON } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const frameworkColors: Record<string, string> = {
@@ -92,9 +93,9 @@ export default function AgentsPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Agent Studio"
+        title="Agents"
         description="Build and deploy AI agents with your models"
-        action={{ label: "New Agent", href: "/dashboard/agents/new" }}
+        action={NEW_AGENT_BUTTON}
       />
 
       <div className="p-8">
@@ -148,8 +149,8 @@ export default function AgentsPage() {
             icon={Bot}
             title="No agents yet"
             description="Create your first AI agent to automate tasks and workflows."
-            actionLabel="Create Agent"
-            actionHref="/dashboard/agents/new"
+            actionLabel={NEW_AGENT_BUTTON.label}
+            actionHref={NEW_AGENT_BUTTON.href}
           />
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">

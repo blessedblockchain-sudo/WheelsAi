@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Briefcase, Inbox } from "lucide-react";
 import { toast } from "sonner";
 
@@ -15,9 +15,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getErrorMessage, jobsApi, type Job, type JobStatus, type JobSummary } from "@/lib/api";
 import { JOB_STATUS, PRODUCT_KIND_LABEL, formatCents } from "@/lib/jobs";
+import { JOBS_TAB_HIRED, JOBS_TAB_PARAM, JOBS_TAB_RECEIVED } from "@/lib/nav";
 
 const PAGE_SIZE = 20;
 type Role = "buyer" | "publisher";
@@ -169,7 +169,8 @@ function JobList({ role }: { role: Role }) {
               return (
                 <li key={job.id}>
                   <Link
-                    href={`/dashboard/jobs/${job.id}`}
+                    // A received job says so in its address, so the menu keeps Listings marked.
+                    href={`/dashboard/jobs/${job.id}${role === "publisher" ? `?${JOBS_TAB_PARAM}=${JOBS_TAB_RECEIVED}` : ""}`}
                     className="flex flex-wrap items-center justify-between gap-4 py-4 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <div className="min-w-0 flex-1">
@@ -210,9 +211,9 @@ function JobList({ role }: { role: Role }) {
 }
 
 function JobsContent() {
-  const router = useRouter();
   const searchParams = useSearchParams();
-  const tab = searchParams.get("tab") === "received" ? "received" : "hired";
+  // Anything but ?tab=received is the jobs you bought.
+  const tab = searchParams.get(JOBS_TAB_PARAM) === JOBS_TAB_RECEIVED ? JOBS_TAB_RECEIVED : JOBS_TAB_HIRED;
   const [summary, setSummary] = useState<JobSummary | null>(null);
 
   useEffect(() => {
@@ -223,7 +224,7 @@ function JobsContent() {
         if (!cancelled) setSummary(res);
       })
       .catch(() => {
-        // The counts on the tabs are a convenience; each list reports its own failure.
+        // The count is a convenience; the list reports its own failure.
       });
     return () => {
       cancelled = true;
@@ -231,39 +232,45 @@ function JobsContent() {
   }, [tab]);
 
   return (
-    <div className="p-8">
-      <Tabs value={tab} onValueChange={(value) => router.replace(`/dashboard/jobs${value === "received" ? "?tab=received" : ""}`)}>
-        <TabsList aria-label="Jobs">
-          <TabsTrigger value="hired">
-            Hired by you
-            {summary !== null && summary.awaitingReview > 0 && (
-              <Badge variant="warning">{summary.awaitingReview} to review</Badge>
+    <>
+      <Header
+        title={tab === JOBS_TAB_RECEIVED ? "Orders" : "Hired"}
+        description={
+          tab === JOBS_TAB_RECEIVED
+            ? "Tasks others hired from your offerings"
+            : "Tasks you hired from the marketplace"
+        }
+        action={
+          tab === JOBS_TAB_RECEIVED
+            ? { label: "Your offerings", href: "/dashboard/marketplace/offerings" }
+            : { label: "Browse offerings", href: "/marketplace?view=tasks" }
+        }
+      />
+      <div className="p-8">
+        {/* Hired and Orders are two menu entries, so the page shows one list. */}
+        {tab === JOBS_TAB_RECEIVED
+          ? summary !== null &&
+            summary.toDeliver > 0 && (
+              <div className="mb-4">
+                <Badge>{summary.toDeliver} in progress</Badge>
+              </div>
+            )
+          : summary !== null &&
+            summary.awaitingReview > 0 && (
+              <div className="mb-4">
+                <Badge variant="warning">{summary.awaitingReview} to review</Badge>
+              </div>
             )}
-          </TabsTrigger>
-          <TabsTrigger value="received">
-            Received
-            {summary !== null && summary.toDeliver > 0 && <Badge>{summary.toDeliver} in progress</Badge>}
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="hired">
-          <JobList role="buyer" />
-        </TabsContent>
-        <TabsContent value="received">
-          <JobList role="publisher" />
-        </TabsContent>
-      </Tabs>
-    </div>
+        <JobList key={tab} role={tab === JOBS_TAB_RECEIVED ? "publisher" : "buyer"} />
+      </div>
+    </>
   );
 }
 
 export default function JobsPage() {
   return (
     <div className="flex flex-col">
-      <Header
-        title="Jobs"
-        description="Tasks you hired, and tasks others hired from your offerings"
-        action={{ label: "Browse offerings", href: "/marketplace?view=tasks" }}
-      />
+      {/* The title depends on ?tab=, so the header is drawn inside the boundary. */}
       <Suspense
         fallback={
           <div className="p-8">

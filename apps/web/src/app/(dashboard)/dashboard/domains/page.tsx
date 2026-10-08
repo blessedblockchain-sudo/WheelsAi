@@ -220,7 +220,7 @@ export default function DomainsPage() {
   return (
     <div className="p-6">
       <PageHeader
-        title="Custom domains"
+        title="Domains"
         description="Serve an agent or a model deployment on your own hostname, over HTTPS, as an OpenAI-compatible base URL."
         actions={
           <Button

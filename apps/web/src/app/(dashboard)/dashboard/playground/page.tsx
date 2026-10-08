@@ -159,9 +159,9 @@ export default function PlaygroundPage() {
     : null;
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col">
+    <div className="flex h-full flex-col">
       <Header
-        title="Playground"
+        title="Try a model"
         description="Test your deployed models with an interactive chat interface"
       />
 

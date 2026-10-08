@@ -363,7 +363,7 @@ export default function SecuritySettingsPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background p-6 md:p-8">
+      <div className="min-h-full bg-background p-6 md:p-8">
         <div className="mx-auto max-w-3xl space-y-8" aria-busy="true">
           {/* Breadcrumb */}
           <Skeleton className="h-4 w-32" />
@@ -417,7 +417,7 @@ export default function SecuritySettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background p-6 md:p-8">
+    <div className="min-h-full bg-background p-6 md:p-8">
       <div className="mx-auto max-w-3xl space-y-8">
         {/* Breadcrumb */}
         <nav className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -434,7 +434,7 @@ export default function SecuritySettingsPage() {
             <Shield className="h-6 w-6 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-gray-100">Security Settings</h1>
+            <h1 className="text-2xl font-bold text-gray-100">Security</h1>
             <p className="text-sm text-muted-foreground">
               Manage two-factor authentication and account recovery
             </p>

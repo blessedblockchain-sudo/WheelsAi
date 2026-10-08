@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { CheckCircle, Copy, SearchX, Star, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiErrorCode, getErrorMessage, jobsApi, type Job } from "@/lib/api";
 import { JOB_STATUS, PRODUCT_KIND_LABEL, formatCents, isFinished } from "@/lib/jobs";
+import { JOBS_TAB_PARAM, JOBS_TAB_RECEIVED } from "@/lib/nav";
 
 function formatWhen(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
@@ -83,6 +84,7 @@ function refusalMessage(error: unknown, fallback: string): string {
 
 export default function JobPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const confirmAction = useConfirm();
   const [job, setJob] = useState<Job | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -112,6 +114,17 @@ export default function JobPage() {
   useEffect(() => {
     if (id) void load();
   }, [id, load]);
+
+  // A job you received belongs under Listings. A link without ?tab=received
+  // (an email, a notification) gets it added so the menu marks the right item.
+  const received = job !== null && job.role !== "buyer";
+  useEffect(() => {
+    if (!received) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get(JOBS_TAB_PARAM) === JOBS_TAB_RECEIVED) return;
+    params.set(JOBS_TAB_PARAM, JOBS_TAB_RECEIVED);
+    router.replace(`/dashboard/jobs/${id}?${params.toString()}`, { scroll: false });
+  }, [received, id, router]);
 
   // A queued or running job moves by itself; keep the page current.
   const moving = job?.status === "funded" || job?.status === "running";
@@ -465,7 +478,7 @@ export default function JobPage() {
                       href="/dashboard/marketplace/revenue"
                       className="mt-2 inline-block text-xs font-medium text-primary underline underline-offset-2"
                     >
-                      Revenue and payouts
+                      Earnings
                     </Link>
                   )}
                 </CardContent>

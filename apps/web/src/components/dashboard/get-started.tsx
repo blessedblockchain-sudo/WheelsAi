@@ -21,7 +21,7 @@ const ENTRY_POINTS = [
     icon: Bot,
     title: "Build an agent",
     body: "Import from GitHub (Mastra, ElizaOS, LangChain, AutoGen, CrewAI, custom) or start from a template.",
-    primary: { label: "Create agent", href: "/dashboard/agents/new" },
+    primary: { label: "New agent", href: "/dashboard/agents/new" },
     secondary: { label: "Templates", href: "/dashboard/templates" },
   },
   {

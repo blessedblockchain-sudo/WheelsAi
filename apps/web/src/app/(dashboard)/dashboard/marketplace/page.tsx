@@ -38,6 +38,7 @@ type RevenueSummary = Pick<
   Awaited<ReturnType<typeof marketplaceApi.getRevenue>>,
   "totalRevenueCents" | "pendingPayoutCents" | "totalInstalls" | "revenueByListing"
 >;
+import { LIST_AGENT_BUTTON } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
 const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
@@ -85,7 +86,7 @@ function StatCardSkeleton() {
   );
 }
 
-/** Placeholder shaped like the rows of the "My Listings" list. */
+/** Placeholder shaped like the rows of the listings list. */
 function ListingRowsSkeleton() {
   return (
     <div className="divide-y">
@@ -183,9 +184,9 @@ export default function MarketplaceDashboardPage() {
   return (
     <div className="flex flex-col">
       <Header
-        title="Marketplace"
+        title="Listings"
         description="Publish and manage your agents on the marketplace"
-        action={{ label: "Publish Agent", href: "/dashboard/marketplace/publish" }}
+        action={LIST_AGENT_BUTTON}
       />
 
       <div className="p-8">
@@ -196,7 +197,7 @@ export default function MarketplaceDashboardPage() {
             className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >
             <Package className="h-4 w-4" />
-            My Installed Agents
+            Installed
           </Link>
           <Link
             href="/marketplace"
@@ -204,7 +205,7 @@ export default function MarketplaceDashboardPage() {
             className="flex items-center gap-2 rounded-lg border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >
             <ExternalLink className="h-4 w-4" />
-            Browse Marketplace
+            Browse the marketplace
           </Link>
         </div>
 
@@ -284,11 +285,11 @@ export default function MarketplaceDashboardPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
-                  <CardTitle>My Listings</CardTitle>
-                  <Link href="/dashboard/marketplace/publish">
+                  <CardTitle>Listings</CardTitle>
+                  <Link href={LIST_AGENT_BUTTON.href}>
                     <Button size="sm">
                       <Plus className="mr-2 h-4 w-4" />
-                      New Listing
+                      {LIST_AGENT_BUTTON.label}
                     </Button>
                   </Link>
                 </div>
@@ -301,8 +302,8 @@ export default function MarketplaceDashboardPage() {
                     icon={Store}
                     title="No listings yet"
                     description="Publish your first agent to the marketplace."
-                    actionLabel="Publish Agent"
-                    actionHref="/dashboard/marketplace/publish"
+                    actionLabel={LIST_AGENT_BUTTON.label}
+                    actionHref={LIST_AGENT_BUTTON.href}
                   />
                 ) : (
                   <div className="divide-y">
@@ -416,7 +417,7 @@ export default function MarketplaceDashboardPage() {
                     href="/dashboard/marketplace/revenue"
                     className="text-sm font-medium text-primary hover:underline"
                   >
-                    Revenue &amp; payouts
+                    Earnings
                   </Link>
                 </CardHeader>
                 <CardContent>

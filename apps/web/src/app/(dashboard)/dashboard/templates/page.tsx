@@ -21,6 +21,7 @@ import {
   HelpCircle,
 } from "lucide-react";
 import { templateApi, type AgentTemplate, getErrorMessage } from "@/lib/api";
+import { NEW_AGENT_BUTTON } from "@/lib/nav";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -452,7 +453,7 @@ export default function TemplatesPage() {
   const regular = templates.filter((t) => !t.isFeatured);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-full bg-background">
       {/* Header */}
       <div className="border-b border-border bg-card/50 px-6 py-8 md:px-8">
         <div className="flex items-center gap-3">
@@ -460,7 +461,7 @@ export default function TemplatesPage() {
             <LayoutTemplate className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-gray-100">Agent Templates</h1>
+            <h1 className="text-2xl font-bold text-gray-100">Templates</h1>
             <p className="mt-0.5 text-sm text-muted-foreground">
               Get started quickly with pre-built agent templates
             </p>
@@ -551,8 +552,8 @@ export default function TemplatesPage() {
               icon={LayoutTemplate}
               title="No templates found"
               description="Try adjusting your search or filters to find what you are looking for."
-              actionLabel="Create Agent"
-              actionHref="/dashboard/agents/new"
+              actionLabel={NEW_AGENT_BUTTON.label}
+              actionHref={NEW_AGENT_BUTTON.href}
             />
           </div>
         )}

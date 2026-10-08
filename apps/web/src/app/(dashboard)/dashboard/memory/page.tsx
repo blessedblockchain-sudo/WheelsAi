@@ -100,7 +100,7 @@ export default function MemoryPage() {
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-foreground">Conversation Memory</h1>
+        <h1 className="text-2xl font-bold text-foreground">Memory</h1>
         <p className="text-muted-foreground mt-1">
           Manage conversation history and memory contexts for your agents
         </p>

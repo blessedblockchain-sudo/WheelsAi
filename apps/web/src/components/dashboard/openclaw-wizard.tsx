@@ -19,6 +19,7 @@ import {
   Bot,
   Sparkles,
 } from "lucide-react";
+import { CHANNELS_WEBSITE_CHAT_HREF } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/api";
 
@@ -216,8 +217,8 @@ export function OpenClawWizard() {
       // "Web Chat" made a web chat key, which still needs the sites that
       // may embed it before it works anywhere but the dashboard preview.
       if (data.webChatKey) {
-        toast.info("Web chat key created. Add your site and copy the snippet under Integrations, Channels.", {
-          action: { label: "Open Channels", onClick: () => router.push("/dashboard/integrations#channels") },
+        toast.info("Web chat key created. Add your site and copy the snippet under Channels, Website chat.", {
+          action: { label: "Open Website chat", onClick: () => router.push(CHANNELS_WEBSITE_CHAT_HREF) },
           duration: 15000,
         });
       }

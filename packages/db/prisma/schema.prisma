@@ -657,6 +657,10 @@ model Agent {
   pageKey            WidgetKey?         @relation("AgentPageKey")
   graph         AgentGraph?
   openclawDeployment OpenClawDeployment?
+  // Every scheduled task that runs this agent. The oldest agent_run task is
+  // the agent's own schedule (services/agentOwnSchedule.ts). They go with
+  // the agent, so a deleted agent leaves nothing firing.
+  scheduledTasks     ScheduledTask[]
 
   @@unique([orgId, slug])
   @@index([orgId])
@@ -2513,12 +2517,17 @@ model ScheduledTask {
   updatedAt     DateTime @updatedAt @map("updated_at")
 
   executions    TaskExecution[]
+  // Cascade: a task goes with its agent, history included. Before this
+  // relation agent_id was a bare column and a deleted agent's tasks kept
+  // firing.
+  agent         Agent?         @relation(fields: [agentId], references: [id], onDelete: Cascade)
   orchestration Orchestration? @relation(fields: [orchestrationId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, name])
   @@index([orgId, isEnabled])
   @@index([nextRunAt, isEnabled])
   @@index([status])
+  @@index([agentId])
   @@index([orchestrationId])
   @@map("scheduled_tasks")
 }
@@ -2536,6 +2545,11 @@ model TaskExecution {
   output        Json?
   error         String?
   logs          String?  @db.Text
+  // Where the result of a finished agent_run was sent, and how that went: a
+  // list of { channelId, name, type, status: sent | failed | skipped,
+  // reason?, at } (services/scheduledTasks/resultDelivery.ts). Null: nothing
+  // was asked to be sent. A delivery never changes `status` above.
+  delivery      Json?
 
   attempt       Int      @default(1)
   nextRetryAt   DateTime? @map("next_retry_at")

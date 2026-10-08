@@ -63,6 +63,7 @@ import { webhooksRoutes } from "./routes/webhooks.js";
 import { skillsRoutes } from "./routes/skills.js";
 import { createPublicStatsRoutes } from "./routes/publicStats.js";
 import { statusRoutes } from "./routes/status.js";
+import { createCapabilitiesRoutesProduction } from "./routes/capabilitiesBindings.js";
 import { createPlatformComputeRoutesProduction } from "./routes/platformComputeBindings.js";
 import { testingRoutes } from "./routes/testing.js";
 import { memoryRoutes } from "./routes/memory.js";
@@ -466,6 +467,9 @@ async function main() {
     { prefix: "/api" },
   ); // GET /api/public/stats
   await app.register(statusRoutes, { prefix: "/api/status" }); // public /status page
+  // What works right now (chat models, payouts, email delivery, agent GPU,
+  // paid tasks), for the web to draw only that. Signed-in session or API key.
+  await app.register(createCapabilitiesRoutesProduction(), { prefix: "/api/capabilities" });
   // Operator view of the GPU compute account (x-admin-key, read-only).
   await app.register(createPlatformComputeRoutesProduction(), { prefix: "/api/platform" });
   await app.register(collaborationRoutes, { prefix: "/api/agents" });

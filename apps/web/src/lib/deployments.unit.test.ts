@@ -69,6 +69,47 @@ test("a run refused inside the submit explains itself from the code, not the sto
   assert.doesNotMatch(`${note.title} ${note.body}`, /nosana|credits do not cover|floor/i);
 });
 
+test("a deployment the GPU network could not start says so, and that nothing was charged", () => {
+  const note = deploymentEndNote("failed", "nosana_list_failed");
+  assert.ok(note);
+  assert.equal(note.title, "This deployment could not be started");
+  assert.match(note.body, /nothing to do with your account/);
+  assert.match(note.body, /Nothing was charged/);
+  assert.match(note.body, /reservation was returned/);
+  assert.match(note.body, /start it again/);
+});
+
+test("a deployment that waited for a GPU that never came says so, and that nothing was charged", () => {
+  const note = deploymentEndNote("failed", "no_capacity");
+  assert.ok(note);
+  assert.equal(note.title, "No GPU became available");
+  assert.match(note.body, /was not started/);
+  assert.match(note.body, /Nothing was charged/);
+  assert.match(note.body, /reservation was returned/);
+  assert.match(note.body, /another GPU type/);
+});
+
+test("a deployment whose model never became ready says so, and that nothing was charged", () => {
+  const note = deploymentEndNote("failed", "start_timeout");
+  assert.ok(note);
+  assert.equal(note.title, "The model did not finish starting");
+  assert.match(note.body, /Nothing was charged/);
+  assert.match(note.body, /reservation was returned/);
+});
+
+test("the three endings of a deployment that never served carry no provider detail, and only apply to an ended run", () => {
+  for (const reason of ["nosana_list_failed", "no_capacity", "start_timeout"]) {
+    const note = deploymentEndNote("failed", reason)!;
+    assert.doesNotMatch(
+      `${note.title} ${note.body}`,
+      /nosana|timeout|credit-paid|3000|seconds|minutes|JOB_|listing|vault|wallet|api key/i,
+      reason,
+    );
+    assert.equal(deploymentEndNote("provisioning", reason), null, `${reason}: no note while it is still starting`);
+    assert.equal(deploymentEndNote("running", reason), null);
+  }
+});
+
 test("the owner's own credits running out is told apart from the platform's", () => {
   const note = deploymentEndNote("stopped", "insufficient_credits");
   assert.ok(note);
@@ -93,7 +134,14 @@ test("no note or message mentions how the platform pays for GPUs", () => {
   const texts = [
     COMPUTE_PAUSED_MESSAGE,
     stopConfirmation({ fundsReleased: false }),
-    ...["nosana_insufficient_funds", "nosana_credits_low", "insufficient_credits"].flatMap((r) => {
+    ...[
+      "nosana_insufficient_funds",
+      "nosana_credits_low",
+      "insufficient_credits",
+      "nosana_list_failed",
+      "no_capacity",
+      "start_timeout",
+    ].flatMap((r) => {
       const n = deploymentEndNote("failed", r)!;
       return [n.title, n.body];
     }),

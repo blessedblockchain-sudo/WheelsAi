@@ -61,6 +61,26 @@ export function deploymentEndNote(
       body: "New GPU deployments were temporarily unavailable when it tried to start. You were not charged for GPU time, and your reservation was returned. You can start it again.",
     };
   }
+  // The three endings of a deployment that never started serving. None of
+  // them was billed: billing starts only when the model can answer.
+  if (code === "nosana_list_failed") {
+    return {
+      title: "This deployment could not be started",
+      body: "The GPU network could not start it, and that had nothing to do with your account. Nothing was charged, and your reservation was returned. You can start it again; if it ends the same way, contact support.",
+    };
+  }
+  if (code === "no_capacity") {
+    return {
+      title: "No GPU became available",
+      body: "No GPU of this type was free in time, so the deployment was not started. Nothing was charged, and your reservation was returned. You can start it again, or choose another GPU type.",
+    };
+  }
+  if (code === "start_timeout") {
+    return {
+      title: "The model did not finish starting",
+      body: "A GPU was assigned, but the model was not ready in time, so the deployment was stopped. Nothing was charged, and your reservation was returned. You can start it again.",
+    };
+  }
   if (code === "insufficient_credits") {
     return {
       title: "Stopped: your credits ran out",

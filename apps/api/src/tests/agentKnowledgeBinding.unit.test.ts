@@ -64,7 +64,8 @@ test("BOTH write paths guard the binding — create and patch", () => {
   assert.doesNotMatch(routeSource, /prisma\.agent\.create\(/, "no insert in the route that could skip the guard");
 
   // Patch: its own check, before the update. The update is one function,
-  // run alone or inside the transaction that also turns a page key off.
+  // run alone or inside the transaction that also turns a page key off, the
+  // agent's own schedule off, or both.
   const patchIdx = routeSource.indexOf('const writeAgent = (db: Pick<typeof prisma, "agent">) =>');
   const patchGuardIdx = routeSource.lastIndexOf("!(await assertKnowledgeBaseOwned(", patchIdx);
   assert.ok(patchIdx > 0);
@@ -75,7 +76,7 @@ test("BOTH write paths guard the binding — create and patch", () => {
     "one update of an agent in the route, so one guard covers it",
   );
   const writes = [...routeSource.matchAll(/await writeAgent\(/g)].map((match) => match.index ?? -1);
-  assert.equal(writes.length, 2, "the update runs alone, or with the page key in one transaction");
+  assert.equal(writes.length, 2, "the update runs alone, or with the page key and the schedule in one transaction");
   assert.ok(writes.every((at) => at > patchGuardIdx), "every run of the update comes after the ownership check");
 });
 

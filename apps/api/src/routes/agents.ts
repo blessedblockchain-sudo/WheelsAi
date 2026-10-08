@@ -11,6 +11,7 @@ import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { mergeAgentEnv, redactAgentEnv } from "../services/agentSecrets.js";
 import { agentFieldsSchema } from "../services/agentCreateInput.js";
 import { resolveKindConfig } from "../services/agentKind.js";
+import { setOwnScheduleEnabled, type OwnScheduleDb } from "../services/agentOwnSchedule.js";
 import { assignPublicHandle, setPageUse, type PublicLinkTx } from "../services/agentPublicLink.js";
 import { buildCreateAgentDeps } from "../services/buildCreateAgentDeps.js";
 import { createAgent, createAgentAnswer, type CreateAgentResult } from "../services/createAgent.js";
@@ -390,11 +391,31 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
     // making the page public again never reopens public use by itself. The
     // link then reads "paused" until its owner turns it on. An agent with no
     // page key has nothing to move, which is not an error.
+    const closesPage = updates.isPublic === false && agent.isPublic;
+    // An agent whose kind leaves "scheduled" stops running on its own: its
+    // own schedule is turned off in the same transaction (a compare-and-set
+    // on its enabled column). The task and its history stay, and setting the
+    // kind back turns nothing on. An agent with no schedule, or one that is
+    // already off, has nothing to move, which is not an error.
+    const leavesScheduled = Boolean(kind) && agent.agentKind === "scheduled" && kind?.agentKind !== "scheduled";
+    let schedulePaused = false;
+    // Both rules in one transaction when a PATCH needs both; none is opened
+    // when it needs neither.
     const updatedAgent =
-      updates.isPublic === false && agent.isPublic
+      closesPage || leavesScheduled
         ? await prisma.$transaction(async (tx) => {
             const updated = await writeAgent(tx);
-            await setPageUse(tx as unknown as PublicLinkTx, { orgId, agentId, enabled: false });
+            if (closesPage) {
+              await setPageUse(tx as unknown as PublicLinkTx, { orgId, agentId, enabled: false });
+            }
+            if (leavesScheduled) {
+              const turnedOff = await setOwnScheduleEnabled(tx as unknown as Pick<OwnScheduleDb, "scheduledTask">, {
+                orgId,
+                agentId,
+                enabled: false,
+              });
+              schedulePaused = turnedOff.changed;
+            }
             return updated;
           })
         : await writeAgent(prisma);
@@ -414,6 +435,8 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
         env: redactAgentEnv(updatedAgent.env),
         secrets: undefined,
       },
+      // Only when this change turned the agent's own schedule off.
+      ...(schedulePaused ? { schedulePaused: true } : {}),
     };
   });
 
@@ -497,6 +520,11 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
     // The agent's channels go with it (cascade), so read their Telegram bots
     // first and release the webhooks once the rows are gone.
     const telegram = await collectAgentTelegramWebhooks(agentId);
+    // One statement, and the database does the rest: every scheduled task of
+    // the agent goes with it, and each task's saved runs with the task (the
+    // cascade on scheduled_tasks.agent_id). Nothing is switched off or
+    // deleted by hand first, so no task is ever left without its agent, and
+    // a delete that is refused above leaves the schedule as it was.
     await prisma.agent.delete({ where: { id: agentId } });
     await releaseTelegramWebhooks(telegram);
 

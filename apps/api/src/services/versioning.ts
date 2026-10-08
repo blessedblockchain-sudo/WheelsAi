@@ -2,6 +2,7 @@ import { prisma, Prisma } from "@wheelsai/db";
 import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
 
 import { cloneKindConfig } from "./agentKind.js";
+import { setOwnScheduleEnabled, type OwnScheduleDb } from "./agentOwnSchedule.js";
 
 // ============================================
 // Types
@@ -335,6 +336,10 @@ export async function getLatestVersion(scope: AgentScope) {
  * new version commit together or not at all. They used to be separate writes,
  * so a failure while recording left the agent rolled back with no version to
  * show for it.
+ *
+ * A rollback that takes the agent's kind away from "scheduled" also turns
+ * its own schedule off, in the same transaction; the version returned then
+ * carries `schedulePaused: true`.
  */
 export async function rollbackToVersion(
   scope: AgentScope,
@@ -355,6 +360,15 @@ export async function rollbackToVersion(
     if (!targetVersion) {
       throw new Error(`Version ${version} not found`);
     }
+
+    // The kind the agent has now, read under its row lock: a rollback that
+    // takes it away from "scheduled" turns its own schedule off, below.
+    const current = await tx.agent.findFirst({
+      where: { id: agentId, orgId: scope.orgId },
+      select: { agentKind: true },
+    });
+    const wasScheduled = current?.agentKind === "scheduled";
+    const restoredKind = isAgentKind(targetVersion.agentKind) ? targetVersion.agentKind : DEFAULT_AGENT_KIND;
 
     // Update the agent with the snapshot from the target version
     await tx.agent.update({
@@ -406,12 +420,30 @@ export async function rollbackToVersion(
       });
     }
 
+    // The same rule a change of kind follows (PATCH /api/agents/:id): an
+    // agent that stops being "scheduled" stops running on its own. Its own
+    // schedule is turned off here, in the transaction of the rollback; the
+    // task and its history stay, and rolling forward again turns nothing on.
+    // No schedule, or one already off, is not an error.
+    const schedulePaused =
+      wasScheduled && restoredKind !== "scheduled"
+        ? (
+            await setOwnScheduleEnabled(tx as unknown as Pick<OwnScheduleDb, "scheduledTask">, {
+              orgId: scope.orgId,
+              agentId,
+              enabled: false,
+            })
+          ).changed
+        : false;
+
     // Create a new version to record the rollback
-    return snapshotAgentVersion(tx, scope, author, {
+    const recorded = await snapshotAgentVersion(tx, scope, author, {
       changeLog: `Rolled back to version ${version}`,
       changeType: "patch",
       tags: ["rollback"],
     });
+    // Said the way the PATCH says it: only when this rollback turned it off.
+    return schedulePaused ? { ...recorded, schedulePaused: true as const } : recorded;
   });
 }
 

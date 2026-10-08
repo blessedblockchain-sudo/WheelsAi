@@ -276,6 +276,188 @@ test("a version from before agents had a kind rolls back to a conversation and k
   assert.equal(world.state.versionCreates[0]!.agentKind, "conversation");
 });
 
+// The same rule a change of kind follows: a rollback that takes the agent
+// away from "scheduled" turns its own schedule off, in its transaction.
+
+/** scheduled_tasks rows over a version world, as setOwnScheduleEnabled reads and switches them. */
+function withTasks(world: ReturnType<typeof makeVersionWorld>, tasks: Row[], opts: { writeFails?: boolean } = {}) {
+  const log = { reads: [] as Row[], writes: [] as Row[], open: 0, transactions: 0 };
+  world.models.scheduledTask = {
+    findMany: async ({ where, take }: Row) => {
+      log.reads.push({ where, inTransaction: log.open > 0 });
+      return tasks
+        .filter((t) => t.orgId === where.orgId && t.agentId === where.agentId && t.taskType === where.taskType)
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+        .slice(0, take)
+        .map((t) => ({ ...t }));
+    },
+    updateMany: async ({ where, data }: Row) => {
+      log.writes.push({ where, data, inTransaction: log.open > 0 });
+      if (opts.writeFails) throw new Error("the database went away");
+      const hit = tasks.filter(
+        (t) => t.id === where.id && t.orgId === where.orgId && t.agentId === where.agentId && t.isEnabled === where.isEnabled,
+      );
+      for (const t of hit) Object.assign(t, data);
+      return { count: hit.length };
+    },
+  };
+  // One transaction: what it changed on the agent is undone when it throws.
+  world.models.$transaction = async (fn: (tx: Row) => Promise<unknown>) => {
+    log.transactions += 1;
+    const before = { agent: { ...world.state.agent }, versions: world.state.versions.length };
+    log.open += 1;
+    try {
+      return await fn(world.models);
+    } catch (err) {
+      Object.assign(world.state.agent, before.agent);
+      world.state.versions.length = before.versions;
+      throw err;
+    } finally {
+      log.open -= 1;
+    }
+  };
+  return log;
+}
+
+const ownTask = (over: Row = {}): Row => ({
+  id: "task_own",
+  orgId: ORG,
+  agentId: AGENT_ID,
+  taskType: "agent_run",
+  isEnabled: true,
+  status: "active",
+  createdAt: new Date("2026-10-01T00:00:00Z"),
+  ...over,
+});
+
+const SCHEDULED_NOW = { agentKind: "scheduled", kindConfig: { scheduled: { prompt: "Report." } }, version: "1.1.0" };
+
+test("a rollback that takes the agent away from scheduled turns its own schedule off in the same transaction and says so", async () => {
+  // A version that recorded another kind, and one from before agents had a kind.
+  for (const [recorded, restored] of [
+    ["task", "task"],
+    ["conversation", "conversation"],
+    [null, "conversation"],
+  ] as const) {
+    const world = makeVersionWorld(SCHEDULED_NOW, [
+      { version: "1.0.0", agentKind: recorded, kindConfig: null },
+      { ...SCHEDULED_NOW, isLatest: true },
+    ]);
+    const tasks = [
+      ownTask(),
+      ownTask({ id: "task_later", createdAt: new Date("2026-10-05T00:00:00Z") }),
+      ownTask({ id: "task_other_agent", agentId: "agent_2" }),
+    ];
+    const log = withTasks(world, tasks);
+    const answer = (await withPrisma(world.models, async () => {
+      const { rollbackToVersion } = await versioning();
+      return rollbackToVersion(SCOPE, "1.0.0", "user_1");
+    })) as Row;
+
+    assert.equal(world.state.agent.agentKind, restored);
+    assert.equal(answer.schedulePaused, true, String(recorded));
+    // Still the version that records the rollback, as before.
+    assert.deepEqual(answer.tags, ["rollback"]);
+    assert.equal(answer.agentKind, restored);
+    assert.deepEqual(log.writes, [
+      {
+        where: { id: "task_own", orgId: ORG, agentId: AGENT_ID, isEnabled: true },
+        data: { isEnabled: false, status: "paused" },
+        inTransaction: true,
+      },
+    ]);
+    assert.equal(log.transactions, 1);
+    // The task stays, switched off; its other tasks and another agent's are untouched.
+    assert.deepEqual(
+      tasks.map((t) => [t.id, t.isEnabled]),
+      [
+        ["task_own", false],
+        ["task_later", true],
+        ["task_other_agent", true],
+      ],
+    );
+  }
+});
+
+test("a rollback that keeps or restores scheduled touches no schedule, and one with nothing to turn off is not an error", async () => {
+  // Stays scheduled: the schedule is left on.
+  const stays = makeVersionWorld(SCHEDULED_NOW, [
+    { version: "1.0.0", agentKind: "scheduled", kindConfig: null },
+    { ...SCHEDULED_NOW, isLatest: true },
+  ]);
+  const staysTasks = [ownTask()];
+  const staysLog = withTasks(stays, staysTasks);
+  const kept = (await withPrisma(stays.models, async () => {
+    const { rollbackToVersion } = await versioning();
+    return rollbackToVersion(SCOPE, "1.0.0", "user_1");
+  })) as Row;
+  assert.equal("schedulePaused" in kept, false);
+  assert.deepEqual([staysLog.reads, staysLog.writes], [[], []]);
+  assert.equal(staysTasks[0]!.isEnabled, true);
+
+  // Back to scheduled from another kind: nothing is turned on.
+  const back = makeVersionWorld({ agentKind: "task", version: "1.1.0" }, [
+    { version: "1.0.0", agentKind: "scheduled", kindConfig: null },
+    { version: "1.1.0", agentKind: "task", kindConfig: null, isLatest: true },
+  ]);
+  const backTasks = [ownTask({ isEnabled: false, status: "paused" })];
+  const backLog = withTasks(back, backTasks);
+  const restored = (await withPrisma(back.models, async () => {
+    const { rollbackToVersion } = await versioning();
+    return rollbackToVersion(SCOPE, "1.0.0", "user_1");
+  })) as Row;
+  assert.equal(back.state.agent.agentKind, "scheduled");
+  assert.equal("schedulePaused" in restored, false);
+  assert.deepEqual([backLog.reads, backLog.writes], [[], []]);
+  assert.equal(backTasks[0]!.isEnabled, false);
+
+  // An agent that was never scheduled: a task made for it on the Scheduler page keeps running.
+  const never = makeVersionWorld({ agentKind: "task", version: "1.1.0" }, [
+    { version: "1.0.0", agentKind: "conversation", kindConfig: null },
+    { version: "1.1.0", agentKind: "task", kindConfig: null, isLatest: true },
+  ]);
+  const neverTasks = [ownTask()];
+  const neverLog = withTasks(never, neverTasks);
+  await withPrisma(never.models, async () => {
+    const { rollbackToVersion } = await versioning();
+    await rollbackToVersion(SCOPE, "1.0.0", "user_1");
+  });
+  assert.deepEqual([neverLog.reads, neverLog.writes], [[], []]);
+  assert.equal(neverTasks[0]!.isEnabled, true);
+
+  // Leaving scheduled with no schedule, or one already off.
+  for (const tasks of [[], [ownTask({ isEnabled: false, status: "paused" })]]) {
+    const world = makeVersionWorld(SCHEDULED_NOW, [
+      { version: "1.0.0", agentKind: "task", kindConfig: null },
+      { ...SCHEDULED_NOW, isLatest: true },
+    ]);
+    const log = withTasks(world, tasks);
+    const answer = (await withPrisma(world.models, async () => {
+      const { rollbackToVersion } = await versioning();
+      return rollbackToVersion(SCOPE, "1.0.0", "user_1");
+    })) as Row;
+    assert.equal(world.state.agent.agentKind, "task");
+    assert.equal("schedulePaused" in answer, false);
+    assert.deepEqual(log.writes, []);
+  }
+});
+
+test("when the schedule cannot be turned off the rollback does not happen", async () => {
+  const world = makeVersionWorld(SCHEDULED_NOW, [
+    { version: "1.0.0", agentKind: "task", kindConfig: null },
+    { ...SCHEDULED_NOW, isLatest: true },
+  ]);
+  const tasks = [ownTask()];
+  withTasks(world, tasks, { writeFails: true });
+  await withPrisma(world.models, async () => {
+    const { rollbackToVersion } = await versioning();
+    await assert.rejects(rollbackToVersion(SCOPE, "1.0.0", "user_1"), /database went away/);
+  });
+  assert.equal(world.state.agent.agentKind, "scheduled");
+  assert.equal(world.state.versions.length, 2, "no version records a rollback that was undone");
+  assert.equal(tasks[0]!.isEnabled, true);
+});
+
 test("the diff between two versions reports a changed kind and changed settings", async () => {
   const changedForm = copy(FORM);
   changedForm.task!.fields[0]!.label = "Your code";

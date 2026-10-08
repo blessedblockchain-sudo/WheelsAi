@@ -1156,7 +1156,7 @@ export function createDeploymentRoutes(
               return reply.status(502).send({
                 error: "nosana_stop_failed",
                 message:
-                  "Nosana did not confirm the stop. The deployment was left as it was; retry shortly.",
+                  "We could not confirm the stop, so the deployment may still be running. Try again in a moment.",
               });
             }
           }

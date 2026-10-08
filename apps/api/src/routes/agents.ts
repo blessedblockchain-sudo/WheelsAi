@@ -528,7 +528,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
             return reply.status(502).send({
               error: "nosana_stop_failed",
               message:
-                "Nosana did not confirm that the agent's deployment stopped. The agent was not deleted; retry shortly.",
+                "We could not confirm that this agent's deployment stopped, so the agent was not deleted. Try again in a moment.",
             });
           }
         }
@@ -809,7 +809,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
           return reply.status(502).send({
             error: "nosana_stop_failed",
             message:
-              "Nosana did not confirm the stop. The deployment was left as it was; retry shortly.",
+              "We could not confirm the stop, so the deployment may still be running. Try again in a moment.",
           });
         }
         // AgentDeployment has no vault stamp: a withdraw that is still pending

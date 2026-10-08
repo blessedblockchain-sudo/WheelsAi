@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_STOP_READ_RETRY,
   NosanaLifecycleError,
   UnknownDeploymentStatusError,
   createAndStartDeployment,
   ensureVaultRunway,
+  isNetworkFailure,
   normalizeEndpoints,
   normalizeStatus,
   planVaultFunding,
@@ -55,8 +57,17 @@ function fakeDeployment(opts: FakeOptions = {}) {
   const topups: Array<{ NOS?: number; SOL?: number; lamports?: boolean }> = [];
   const state = { status: opts.status ?? "DRAFT", replicas: opts.replicas ?? 1 };
 
-  const deployment: SdkDeploymentLike & { calls: string[]; topups: typeof topups; vault: any } = {
+  const deployment: SdkDeploymentLike & {
+    calls: string[];
+    topups: typeof topups;
+    vault: any;
+    /** What Nosana reports from now on. */
+    setStatus(status: string): void;
+  } = {
     id: opts.id ?? "dep_1",
+    setStatus(status: string) {
+      state.status = status;
+    },
     get status() {
       return state.status;
     },
@@ -585,6 +596,221 @@ test("stopAndReclaim: a stop that fails and leaves the deployment running throws
     (err: unknown) => err instanceof NosanaLifecycleError && err.stage === "stop" && err.deploymentId === "dep_1",
   );
   assert.ok(!dep.calls.includes("withdraw"), "no withdraw while the GPU may still be running");
+});
+
+// The second live run (2026-10-08): the owner pressed Stop, the read that
+// precedes the stop failed on one unresolved name, and the deployment ran and
+// was billed until Stop was pressed again.
+function networkFailure(code = "EAI_AGAIN"): Error {
+  const socket = Object.assign(new Error(`getaddrinfo ${code} dashboard.k8s.prd.nos.ci`), { code });
+  // As the SDK's fetch reports it: "fetch failed", the socket error as its cause.
+  return new TypeError("fetch failed", { cause: new TypeError("fetch failed", { cause: socket }) });
+}
+
+test("isNetworkFailure: a socket error anywhere in the chain of causes; an answer from Nosana is not one", () => {
+  assert.equal(isNetworkFailure(networkFailure()), true);
+  for (const code of ["ENOTFOUND", "ECONNREFUSED", "ECONNRESET", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]) {
+    assert.equal(isNetworkFailure(networkFailure(code)), true, code);
+  }
+  assert.equal(isNetworkFailure(new Error("api 500")), false);
+  assert.equal(isNetworkFailure(Object.assign(new Error("Not found"), { status: 404 })), false);
+  assert.equal(isNetworkFailure(Object.assign(new Error("deadline"), { code: "nosana_timeout" })), false);
+  assert.equal(isNetworkFailure(null), false);
+  assert.equal(isNetworkFailure("EAI_AGAIN"), false);
+  // A chain that never ends is not followed for ever.
+  const loop: { cause?: unknown } = {};
+  loop.cause = loop;
+  assert.equal(isNetworkFailure(loop), false);
+});
+
+test("stopAndReclaim: the read before the stop is repeated after a network failure, and the stop then goes through", async () => {
+  const dep = fakeDeployment({ status: "RUNNING" });
+  const { port, calls } = fakePort(dep);
+  const realGet = port.get.bind(port);
+  let failures = 2;
+  port.get = async (id) => {
+    if (failures > 0) {
+      failures -= 1;
+      calls.push(`get-failed:${id}`);
+      throw networkFailure();
+    }
+    return realGet(id);
+  };
+  const slept: number[] = [];
+
+  const result = await stopAndReclaim(port, "dep_1", undefined, {
+    readRetry: { attempts: 3, delayMs: 750, sleep: async (ms) => void slept.push(ms) },
+  });
+
+  assert.equal(result.stopped, true);
+  assert.equal(result.alreadyStopped, false);
+  assert.deepEqual(slept, [750, 750]);
+  assert.deepEqual(calls.slice(0, 3), ["get-failed:dep_1", "get-failed:dep_1", "get:dep_1"]);
+  assert.ok(dep.calls.includes("stop"));
+  assert.deepEqual(DEFAULT_STOP_READ_RETRY, { attempts: 3, delayMs: 750 });
+});
+
+test("stopAndReclaim: a network failure on every read gives up after the last attempt, and nothing is stopped or released", async () => {
+  const dep = fakeDeployment({ status: "RUNNING", nosBaseUnits: 5_000_000 });
+  const { port, calls } = fakePort(dep, { getError: networkFailure() });
+  const slept: number[] = [];
+  await assert.rejects(
+    () =>
+      stopAndReclaim(port, "dep_1", undefined, {
+        readRetry: { attempts: 3, delayMs: 750, sleep: async (ms) => void slept.push(ms) },
+      }),
+    (err: unknown) => err instanceof NosanaLifecycleError && err.stage === "stop" && /EAI_AGAIN|fetch failed/.test(err.message),
+  );
+  assert.deepEqual(calls, ["get:dep_1", "get:dep_1", "get:dep_1"]);
+  assert.deepEqual(slept, [750, 750]);
+  assert.deepEqual(dep.calls, [], "no stop and no withdraw without a read");
+});
+
+test("stopAndReclaim: an answer from Nosana on the read is not repeated", async () => {
+  const dep = fakeDeployment({ status: "RUNNING" });
+  const { port, calls } = fakePort(dep, { getError: Object.assign(new Error("Deployment not found"), { status: 404 }) });
+  const slept: number[] = [];
+  await assert.rejects(
+    () =>
+      stopAndReclaim(port, "dep_1", undefined, {
+        readRetry: { attempts: 3, delayMs: 750, sleep: async (ms) => void slept.push(ms) },
+      }),
+    (err: unknown) => err instanceof NosanaLifecycleError && err.stage === "stop",
+  );
+  assert.deepEqual(calls, ["get:dep_1"]);
+  assert.deepEqual(slept, []);
+});
+
+test("stopAndReclaim: a stop that fails on the network is sent again, and one that did arrive is read as stopped", async () => {
+  // The stop request fails on the network and so does the read after it:
+  // nothing says whether it arrived. It is sent again and accepted.
+  const dep = fakeDeployment({ status: "RUNNING" });
+  const { port } = fakePort(dep);
+  const realStop = dep.stop.bind(dep);
+  const realGet = port.get.bind(port);
+  let stopFailures = 1;
+  let reads = 0;
+  dep.stop = async () => {
+    if (stopFailures > 0) {
+      stopFailures -= 1;
+      dep.calls.push("stop-failed");
+      throw networkFailure("ECONNRESET");
+    }
+    return realStop();
+  };
+  port.get = async (id) => {
+    reads += 1;
+    // The first read is the one before the stop; the second follows the failed stop.
+    if (reads === 2) throw networkFailure("ECONNRESET");
+    return realGet(id);
+  };
+  const slept: number[] = [];
+  const result = await stopAndReclaim(port, "dep_1", undefined, {
+    stopRetry: { attempts: 4, delayMs: 2_500, sleep: async (ms) => void slept.push(ms) },
+  });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(slept, [2_500]);
+  assert.deepEqual(dep.calls.filter((c) => c.startsWith("stop")), ["stop-failed", "stop"]);
+
+  // The connection dropped after the stop had arrived: the read after it says
+  // STOPPING, which is a stop.
+  const arrived = fakeDeployment({ status: "RUNNING" });
+  const second = fakePort(arrived);
+  arrived.stop = async () => {
+    arrived.calls.push("stop");
+    arrived.setStatus("STOPPING");
+    throw networkFailure("ECONNRESET");
+  };
+  const outcome = await stopAndReclaim(second.port, "dep_2", undefined, {
+    stopRetry: { attempts: 4, delayMs: 2_500, sleep: async () => undefined },
+  });
+  assert.equal(outcome.stopped, true);
+  assert.deepEqual(arrived.calls.filter((c) => c === "stop"), ["stop"], "not sent twice");
+});
+
+// The same incident one call later: every call resolves the name anew, so the
+// read can succeed, the stop fail, and the read after it succeed again.
+test("stopAndReclaim: a stop that fails on the network is sent again when the read after it still says RUNNING", async () => {
+  const dep = fakeDeployment({ status: "RUNNING" });
+  const { port } = fakePort(dep);
+  const realStop = dep.stop.bind(dep);
+  let stopFailures = 2;
+  dep.stop = async () => {
+    if (stopFailures > 0) {
+      stopFailures -= 1;
+      dep.calls.push("stop-failed");
+      // The name did not resolve: the request never left.
+      throw networkFailure("EAI_AGAIN");
+    }
+    return realStop();
+  };
+  const slept: number[] = [];
+  const result = await stopAndReclaim(port, "dep_1", undefined, {
+    stopRetry: { attempts: 4, delayMs: 2_500, sleep: async (ms) => void slept.push(ms) },
+  });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(slept, [2_500, 2_500]);
+  assert.deepEqual(dep.calls.filter((c) => c.startsWith("stop")), ["stop-failed", "stop-failed", "stop"]);
+
+  // Still bounded: a network that never comes back ends in the error, after the last attempt.
+  const never = fakeDeployment({ status: "RUNNING", stopError: networkFailure("EAI_AGAIN") });
+  const second = fakePort(never);
+  const waits: number[] = [];
+  await assert.rejects(
+    () =>
+      stopAndReclaim(second.port, "dep_2", undefined, {
+        stopRetry: { attempts: 4, delayMs: 2_500, sleep: async (ms) => void waits.push(ms) },
+      }),
+    (err: unknown) => err instanceof NosanaLifecycleError && err.stage === "stop",
+  );
+  assert.deepEqual(waits, [2_500, 2_500, 2_500]);
+  assert.equal(never.calls.filter((c) => c === "stop").length, 4);
+  assert.ok(!never.calls.includes("withdraw"), "nothing is released while the GPU may still be running");
+});
+
+test("stopAndReclaim: a stop whose answer was lost and that Nosana then refuses as a duplicate is read as stopped", async () => {
+  // The first stop arrived and its answer was lost; the read after it still
+  // says RUNNING. The stop is sent again, Nosana refuses it (the deployment
+  // is no longer in a state that accepts one), and the next read says STOPPING.
+  const dep = fakeDeployment({ status: "RUNNING" });
+  const { port } = fakePort(dep);
+  let stops = 0;
+  dep.stop = async () => {
+    stops += 1;
+    dep.calls.push("stop");
+    if (stops === 1) throw networkFailure("ECONNRESET");
+    dep.setStatus("STOPPING");
+    throw new Error("api 500 INCORRECT_STATE");
+  };
+  const slept: number[] = [];
+  const result = await stopAndReclaim(port, "dep_1", undefined, {
+    stopRetry: { attempts: 4, delayMs: 2_500, sleep: async (ms) => void slept.push(ms) },
+  });
+  assert.equal(result.stopped, true);
+  assert.deepEqual(slept, [2_500]);
+  assert.equal(stops, 2, "an answer from Nosana is not repeated");
+});
+
+test("stopAndReclaim: a stop Nosana answers with an error is not repeated when the read after it fails", async () => {
+  const dep = fakeDeployment({ status: "RUNNING", stopError: new Error("api 500") });
+  const { port } = fakePort(dep);
+  const realGet = port.get.bind(port);
+  let reads = 0;
+  port.get = async (id) => {
+    reads += 1;
+    if (reads > 1) throw networkFailure();
+    return realGet(id);
+  };
+  const slept: number[] = [];
+  await assert.rejects(
+    () =>
+      stopAndReclaim(port, "dep_1", undefined, {
+        stopRetry: { attempts: 4, delayMs: 2_500, sleep: async (ms) => void slept.push(ms) },
+      }),
+    (err: unknown) => err instanceof NosanaLifecycleError && err.stage === "stop",
+  );
+  assert.deepEqual(slept, [], "an answer is an answer: nothing to wait for");
+  assert.deepEqual(dep.calls.filter((c) => c === "stop"), ["stop"]);
 });
 
 test("stopAndReclaim: a deployment Nosana already halted (ERROR / INSUFFICIENT_FUNDS) is stoppable even if Nosana refuses the stop", async () => {

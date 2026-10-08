@@ -273,6 +273,32 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Error codes of a request that got no answer: a name that did not resolve, a connection that was never made or was dropped. */
+const NETWORK_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * Whether `err`, or a cause of it, is a network failure and not an answer
+ * from Nosana. The SDK's fetch wraps the socket error ("fetch failed" caused
+ * by `getaddrinfo EAI_AGAIN ...`), so the chain of causes is walked.
+ */
+export function isNetworkFailure(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 6 && typeof current === "object" && current !== null; depth += 1) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string" && NETWORK_FAILURE_CODES.has(code)) return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 // ============================================
 // Number helpers (bigint only - no floats in money math)
 // ============================================
@@ -1312,6 +1338,15 @@ export interface StopRetryOptions {
 /** About 7.5 s of waiting at most: STARTING lasts until the LIST task is scheduled. */
 export const DEFAULT_STOP_RETRY: Readonly<StopRetryOptions> = { attempts: 4, delayMs: 2_500 };
 
+/**
+ * How the read that precedes a stop is repeated after a network failure. A
+ * read is always safe to repeat, and a stop that gives up on one unresolved
+ * name leaves a GPU running that its owner asked to stop (second live run,
+ * 2026-10-08: `getaddrinfo EAI_AGAIN` on that read, and the deployment ran
+ * and was billed until the owner pressed Stop again).
+ */
+export const DEFAULT_STOP_READ_RETRY: Readonly<StopRetryOptions> = { attempts: 3, delayMs: 750 };
+
 const timerSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 interface StopOutcome {
@@ -1326,7 +1361,13 @@ interface StopOutcome {
 /**
  * Sends the stop. A refusal is followed by a fresh read; while that read says
  * DRAFT or STARTING the stop is sent again after a short wait, a bounded number
- * of times. Never throws: the caller decides what a refusal means.
+ * of times. So is a stop that failed on the network, unless the read after it
+ * shows the deployment stopping or stopped: every call resolves the name
+ * anew, so the read can answer RUNNING after a stop that never left (or fail
+ * too, and then nothing says whether it arrived). A stop that did arrive and
+ * is sent again is refused by Nosana, an answer, which is not repeated; the
+ * read after it says STOPPING, which the caller takes as stopped. Never
+ * throws: the caller decides what a refusal means.
  */
 async function stopWithRetry(
   port: NosanaDeploymentsPort,
@@ -1352,8 +1393,33 @@ async function stopWithRetry(
     } catch {
       state = null;
     }
-    if (state === null || !STOP_REFUSED_FOR_NOW.has(state) || attempt >= attempts) {
+    const retryable = isNetworkFailure(error)
+      ? state === null || STOP_REFUSED_FOR_NOW.has(state) || !NO_STOP_NEEDED.has(state)
+      : state !== null && STOP_REFUSED_FOR_NOW.has(state);
+    if (!retryable || attempt >= attempts) {
       return { accepted: false, state, error };
+    }
+    await sleep(retry.delayMs);
+  }
+}
+
+/**
+ * The read that precedes a stop, repeated after a network failure
+ * (DEFAULT_STOP_READ_RETRY). Any other failure, an answer from Nosana
+ * included, is thrown at once.
+ */
+async function readForStop(
+  port: NosanaDeploymentsPort,
+  id: string,
+  retry: StopRetryOptions = DEFAULT_STOP_READ_RETRY,
+): Promise<SdkDeploymentLike> {
+  const attempts = Math.max(1, Math.floor(retry.attempts));
+  const sleep = retry.sleep ?? timerSleep;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await port.get(id);
+    } catch (err) {
+      if (attempt >= attempts || !isNetworkFailure(err)) throw err;
     }
     await sleep(retry.delayMs);
   }
@@ -1362,6 +1428,8 @@ async function stopWithRetry(
 /** Options of the stopping lifecycle calls. */
 export interface StopOptions {
   stopRetry?: StopRetryOptions;
+  /** stopAndReclaim only: how its first read is repeated after a network failure. */
+  readRetry?: StopRetryOptions;
   /**
    * reclaimVault only: the run failed less than DRAFT_START_HOLD_MS ago, so a
    * start sent for it may still land. A DRAFT is then reported not reclaimed
@@ -1387,7 +1455,7 @@ export async function stopAndReclaim(
 ): Promise<StopAndReclaimResult> {
   let deployment: SdkDeploymentLike;
   try {
-    deployment = await port.get(id);
+    deployment = await readForStop(port, id, options.readRetry);
   } catch (err) {
     throw new NosanaLifecycleError(
       `Could not read Nosana deployment ${id} to stop it: ${errMessage(err)}`,

@@ -84,6 +84,8 @@ async function v1App(opts: {
   authType?: "jwt" | "api_key";
   /** What the inference node answers. Default: a 200 chat completion. */
   nodeResponse?: () => Response;
+  /** What the second lookup finds when no running deployment matches: one that exists and is not serving. */
+  notServing?: { status: string } | null;
 }) {
   const { prisma } = await import("@wheelsai/db");
   const { env } = await import("../config/env.js");
@@ -93,6 +95,9 @@ async function v1App(opts: {
     deployment: {
       findFirst: async (args: any) => {
         state.findFirstArgs.push(args);
+        // The route first looks for a running deployment, then for one that
+        // exists and is not serving (status: { in: [...] }).
+        if (typeof args.where?.status === "object") return opts.notServing ?? null;
         return opts.deployment;
       },
     },
@@ -283,6 +288,47 @@ test("a GPU-billed deployment still requires a HEALTHY node (503, nothing billed
     const res = await chat(app);
     assert.equal(res.statusCode, 503);
     assert.deepEqual(state.ledger, []);
+  } finally {
+    await restore();
+  }
+});
+
+// First live vLLM run (2026-10-08): the deployment read degraded for half a
+// minute and every request in that time was answered 404 model_not_found.
+// A client gives up on a 404; it tries a 503 again, and the deployment was
+// serving again 30 seconds later.
+test("a deployment that exists and is not serving answers 503, not 404: degraded, or still starting", async () => {
+  const cases = [
+    ["degraded", /not serving requests right now/],
+    ["provisioning", /still starting/],
+    ["pending", /still starting/],
+  ] as const;
+  for (const [status, text] of cases) {
+    const { app, state, restore } = await v1App({ balance: 0n, deployment: null, notServing: { status } });
+    try {
+      const res = await chat(app);
+      assert.equal(res.statusCode, 503, status);
+      const body = res.json();
+      assert.equal(body.error.code, "service_unavailable", status);
+      assert.match(body.error.message, text, status);
+      const second = state.findFirstArgs.find((a: any) => typeof a.where?.status === "object");
+      assert.deepEqual(second.where.status, { in: ["pending", "provisioning", "degraded"] });
+      assert.equal(second.where.orgId, "org-1", "only the caller's own deployments");
+      assert.equal(state.ledger.length, 0, "nothing was held or charged");
+      assert.equal(state.usage.length, 0);
+    } finally {
+      await restore();
+    }
+  }
+});
+
+test("a deployment that is stopped, failed or unknown is still not found", async () => {
+  const { app, state, restore } = await v1App({ balance: 0n, deployment: null, notServing: null });
+  try {
+    const res = await chat(app);
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.json().error.code, "model_not_found");
+    assert.equal(state.findFirstArgs.length, 2, "one look for a running one, one for one that is not serving");
   } finally {
     await restore();
   }

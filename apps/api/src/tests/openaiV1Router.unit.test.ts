@@ -268,7 +268,15 @@ test("an unknown deployment slug is 404 model_not_found from the real deployment
     assert.match(error.message, /gpt-4o/);
     assert.match(error.message, /agent\/<slug>/);
     assert.equal(res.headers["x-should-retry"], "false");
-    assert.deepEqual(lookups, [{ slug: "gpt-4o", orgId: ORG, status: "running" }], "org-scoped, running only");
+    assert.deepEqual(
+      lookups,
+      [
+        { slug: "gpt-4o", orgId: ORG, status: "running" },
+        // Nothing running: is there one that exists and is not serving (a 503, not a 404)?
+        { slug: "gpt-4o", orgId: ORG, status: { in: ["pending", "provisioning", "degraded"] } },
+      ],
+      "org-scoped; a running one first, then one that is starting or degraded",
+    );
 
     // A body the deployment route cannot take is a 400, not a 500.
     const bad = await app.inject({

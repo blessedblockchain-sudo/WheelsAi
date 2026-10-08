@@ -136,6 +136,12 @@ export type DeploymentCompletionHandler = (
 ) => Promise<unknown>;
 
 /**
+ * Statuses of a deployment that exists and will serve, or will serve again,
+ * without its owner doing anything: a request for it is answered 503, not 404.
+ */
+const NOT_SERVING_YET_STATUSES = ["pending", "provisioning", "degraded"] as const;
+
+/**
  * One chat completion against a model deployment of the caller's own
  * organization, in OpenAI's wire format: request (tools and tool_choice
  * included), response, SSE stream and errors.
@@ -208,6 +214,27 @@ export function createDeploymentCompletionHandler(
     });
 
     if (!deployment) {
+      // A deployment that exists and is not serving at this moment is not "not
+      // found". A client gives up on a 404 and tries a 503 again, and the
+      // second is right here: a deployment that is starting will serve, and one
+      // that lost its node comes back when the node does (first live vLLM run,
+      // 2026-10-08: half a minute of 404s while the deployment read degraded).
+      const notServing = await prisma.deployment.findFirst({
+        where: {
+          ...("deploymentSlug" in target ? { slug: target.deploymentSlug } : { id: target.deploymentId }),
+          orgId,
+          status: { in: [...NOT_SERVING_YET_STATUSES] },
+        },
+        select: { status: true },
+      });
+      if (notServing) {
+        return refuse("service_unavailable", {
+          message:
+            notServing.status === "degraded"
+              ? "This deployment is not serving requests right now. Try again in a moment."
+              : "This deployment is still starting. Try again once it is running.",
+        });
+      }
       return refuse("model_not_found", {
         message:
           "deploymentSlug" in target

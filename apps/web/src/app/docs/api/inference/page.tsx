@@ -360,7 +360,7 @@ for await (const chunk of stream) {
               </>
             ),
           },
-          { status: <code>404</code>, when: <>No deployment with that slug in your organization, or it is not running (<code>model_not_found</code>).</> },
+          { status: <code>404</code>, when: <>No deployment with that slug in your organization, or it is stopped or failed (<code>model_not_found</code>).</> },
           { status: <code>409</code>, when: <>The x402 payment transaction was already used for another request (<code>payment_already_used</code>). Sent with <code>x-should-retry: false</code>, so OpenAI SDKs do not retry it.</> },
           { status: <code>429</code>, when: <>Monthly API calls used up (<code>plan_limit_reached</code>), a rate limit, or the model server is at capacity (<code>provider_rate_limited</code>, with its <code>retry-after</code>).</> },
           {
@@ -373,9 +373,10 @@ for await (const chunk of stream) {
             status: <code>503</code>,
             when: (
               <>
-                The deployment has no healthy node right now, GPU billing is temporarily unavailable (
-                <code>gpu_billing_disabled</code>), or billing has not collected this deployment&apos;s GPU time for several
-                intervals (<code>gpu_billing_stalled</code>).
+                The deployment exists and is not serving at this moment: it is still starting, or it has no healthy GPU
+                node right now (<code>service_unavailable</code>); OpenAI SDKs retry it, and it answers once the deployment
+                is running. Also when GPU billing is temporarily unavailable (<code>gpu_billing_disabled</code>), or billing
+                has not collected this deployment&apos;s GPU time for several intervals (<code>gpu_billing_stalled</code>).
               </>
             ),
           },

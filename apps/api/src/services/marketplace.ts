@@ -1,6 +1,7 @@
-import { prisma } from "@wheelsai/db";
+import { prisma, Prisma } from "@wheelsai/db";
+import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
 import { getOrgPlan } from "./orgPlan.js";
-import { cloneAgentBehaviour } from "./marketplaceClone.js";
+import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
 import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
 import {
   installAccess,
@@ -165,6 +166,7 @@ export async function searchListings(params: ListingSearchParams) {
           select: {
             id: true,
             framework: true,
+            agentKind: true,
             tags: true,
           },
         },
@@ -196,6 +198,7 @@ export async function getListingBySlug(slug: string) {
           slug: true,
           isPublic: true,
           framework: true,
+          agentKind: true,
           tags: true,
           systemPrompt: true,
           tools: true,
@@ -225,7 +228,7 @@ export async function getListingTrialPreview(slug: string) {
     where: { slug, status: "published" },
     select: {
       id: true,
-      agent: { select: { entrypoint: true, modelConfig: true, tools: true } },
+      agent: { select: { entrypoint: true, agentKind: true, modelConfig: true, tools: true } },
     },
   });
   if (!listing) return null;
@@ -238,6 +241,7 @@ export async function getListingTrialPreview(slug: string) {
   return {
     id: listing.id,
     agentEntrypoint: listing.agent.entrypoint,
+    agentKind: isAgentKind(listing.agent.agentKind) ? listing.agent.agentKind : DEFAULT_AGENT_KIND,
     // Resolved to a model id by the caller, with the rule agent chat uses.
     agentModelConfig: modelConfig,
     agentTools: tools
@@ -296,6 +300,7 @@ export async function getListingById(id: string) {
         select: {
           id: true,
           framework: true,
+          agentKind: true,
           tags: true,
         },
       },
@@ -318,6 +323,7 @@ export async function getFeaturedListings(limit = 6) {
         select: {
           id: true,
           framework: true,
+          agentKind: true,
           tags: true,
         },
       },
@@ -505,6 +511,7 @@ export async function getPublisherProfile(slug: string) {
                 select: {
                   id: true,
                   framework: true,
+                  agentKind: true,
                   tags: true,
                 },
               },
@@ -603,6 +610,7 @@ export async function createListing(
         select: {
           id: true,
           framework: true,
+          agentKind: true,
           tags: true,
         },
       },
@@ -678,6 +686,7 @@ export async function updateListing(
         select: {
           id: true,
           framework: true,
+          agentKind: true,
           tags: true,
         },
       },
@@ -749,6 +758,7 @@ export async function getMyListings(orgId: string) {
         select: {
           id: true,
           framework: true,
+          agentKind: true,
           tags: true,
         },
       },
@@ -801,6 +811,9 @@ function formatListingForPublic(listing: any) {
       ? {
           id: listing.agent.id,
           framework: listing.agent.framework,
+          // What kind of agent the listing is: a chat, a task with a form,
+          // or one that runs on its own.
+          agentKind: isAgentKind(listing.agent.agentKind) ? listing.agent.agentKind : DEFAULT_AGENT_KIND,
           tags: listing.agent.tags,
           // Present only on selects that ask for them (getListingBySlug);
           // undefined elsewhere.
@@ -1056,6 +1069,7 @@ export async function installAgent(
       : null;
 
     const behaviour = cloneAgentBehaviour(listing.agent);
+    const kind = cloneAgentKind(listing.agent);
     const clonedAgent =
       previousClone ??
       (await tx.agent.create({
@@ -1080,6 +1094,11 @@ export async function installAgent(
           // The copy answers the way the original does: through its graph
           // when that is its entrypoint (see marketplaceClone.ts).
           entrypoint: behaviour.entrypoint,
+          // And is used the way the original is: the same kind, with a copy
+          // of its form or suggested schedule. The publisher's live schedule
+          // and public page are not part of this.
+          agentKind: kind.agentKind,
+          kindConfig: kind.kindConfig ?? Prisma.DbNull,
           ...(behaviour.graph && {
             graph: {
               create: {
@@ -1266,6 +1285,7 @@ export async function getMyInstalls(buyerId: string) {
             select: {
               id: true,
               framework: true,
+              agentKind: true,
               tags: true,
             },
           },

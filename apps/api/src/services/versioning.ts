@@ -1,4 +1,7 @@
-import { prisma, type Prisma } from "@wheelsai/db";
+import { prisma, Prisma } from "@wheelsai/db";
+import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
+
+import { cloneKindConfig } from "./agentKind.js";
 
 // ============================================
 // Types
@@ -136,6 +139,9 @@ export interface VersionSnapshot {
   graphNodes?: any[];
   graphEdges?: any[];
   entrypoint?: string | null;
+  /** Null on a version taken before agents had a kind. */
+  agentKind?: string | null;
+  kindConfig?: Record<string, any> | null;
 }
 
 // ============================================
@@ -229,6 +235,11 @@ async function snapshotAgentVersion(
       // Whether the agent answers as a chat or through its graph is part of
       // what a version is: the same prompt and graph behave differently.
       entrypoint: agent.entrypoint === "graph" ? "graph" : "chat",
+      // How the agent is used, and that kind's settings (the task form, the
+      // suggested schedule), are part of the version too. A copy, so a later
+      // edit of the agent cannot reach into this snapshot.
+      agentKind: isAgentKind(agent.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
+      kindConfig: cloneKindConfig(agent.kindConfig) ?? Prisma.DbNull,
       changeLog: input.changeLog,
       changeType: input.changeType || "patch",
       tags: input.tags || [],
@@ -365,6 +376,16 @@ export async function rollbackToVersion(
         ...(targetVersion.entrypoint === "chat" || targetVersion.entrypoint === "graph"
           ? { entrypoint: targetVersion.entrypoint }
           : {}),
+        // A version taken before agents had a kind was a conversation: that
+        // was the only way to use an agent then. It recorded no settings, so
+        // the agent keeps the ones it has; a version that did record its kind
+        // restores its settings exactly, an empty set included.
+        ...(isAgentKind(targetVersion.agentKind)
+          ? {
+              agentKind: targetVersion.agentKind,
+              kindConfig: cloneKindConfig(targetVersion.kindConfig) ?? Prisma.DbNull,
+            }
+          : { agentKind: DEFAULT_AGENT_KIND }),
       },
     });
 
@@ -513,6 +534,7 @@ async function createVersionDiff(
     "sourceUrl",
     "sourceCode",
     "entrypoint",
+    "agentKind",
   ];
 
   for (const field of fieldsToCompare) {
@@ -533,7 +555,7 @@ async function createVersionDiff(
   }
 
   // Compare JSON fields
-  const jsonFields = ["tools", "modelConfig", "env"];
+  const jsonFields = ["tools", "modelConfig", "env", "kindConfig"];
   for (const field of jsonFields) {
     const fromVal = JSON.stringify((from as any)[field]);
     const toVal = JSON.stringify((to as any)[field]);

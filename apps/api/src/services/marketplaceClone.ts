@@ -32,6 +32,10 @@
  * Pure.
  */
 
+import { DEFAULT_AGENT_KIND, isAgentKind, type AgentKind, type KindConfig } from "@wheelsai/shared/agent-kind";
+
+import { cloneKindConfig } from "./agentKind.js";
+
 export interface SourceGraph {
   nodes: unknown;
   edges: unknown;
@@ -187,5 +191,25 @@ export function cloneAgentBehaviour(source: {
       validationErrors: complete ? (graph.validationErrors ?? null) : needsConfiguration.map(describe),
       needsConfiguration,
     },
+  };
+}
+
+/** How a copy is used: the original's kind and that kind's settings. */
+export interface ClonedKind {
+  agentKind: AgentKind;
+  /** Null when the original has no settings to carry. */
+  kindConfig: KindConfig | null;
+}
+
+/**
+ * The kind and settings a buyer's copy starts with. The settings are a deep
+ * copy holding only the task form and the suggested schedule and run line:
+ * the publisher's live schedule, delivery places and public page are rows of
+ * their own and are never read here.
+ */
+export function cloneAgentKind(source: { agentKind?: string | null; kindConfig?: unknown }): ClonedKind {
+  return {
+    agentKind: isAgentKind(source.agentKind) ? source.agentKind : DEFAULT_AGENT_KIND,
+    kindConfig: cloneKindConfig(source.kindConfig),
   };
 }

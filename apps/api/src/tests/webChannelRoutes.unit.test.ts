@@ -77,6 +77,7 @@ function fakeDb() {
           enabled: true,
           revokedAt: null,
           lastUsedAt: null,
+          pageOfAgentId: null,
           createdAt: new Date(NOW.getTime() + seq),
           allowedOrigins: [],
           ...data,
@@ -530,4 +531,37 @@ test("delete: a soft revoke - the row stays, the widget answers 404, and the key
   assert.equal(keys[0]!.enabled, false);
   assert.equal((await app.inject({ method: "POST", url: `/api/channels/web/keys/${made.id}/rotate`, headers: owner })).statusCode, 404);
   assert.equal((await app.inject({ method: "DELETE", url: "/api/channels/web/keys/00000000-0000-4000-8000-00000000dead", headers: owner })).statusCode, 404);
+});
+
+test("a key says whether it is an agent's page key, and revoking one clears the mark in the same write", async () => {
+  const { app, keys } = await server();
+  const ordinary = (await create(app)).json().key;
+  assert.equal(ordinary.pageOfAgentId, null);
+
+  // The page key is made by the public link switch (services/agentPublicLink.ts); here it is a row.
+  const page = (await create(app, { name: "Public page" })).json().key;
+  keys.find((key) => key.id === page.id)!.pageOfAgentId = AGENT;
+
+  const list = (await app.inject({ method: "GET", url: "/api/channels/web/keys", headers: owner })).json();
+  assert.deepEqual(
+    list.keys.map((key: { id: string; pageOfAgentId: string | null }) => [key.id, key.pageOfAgentId]).sort(),
+    [[ordinary.id, null], [page.id, AGENT]].sort(),
+  );
+  const paused = await app.inject({ method: "PATCH", url: `/api/channels/web/keys/${page.id}`, headers: { ...json, ...owner }, payload: JSON.stringify({ enabled: false }) });
+  assert.equal(paused.json().key.pageOfAgentId, AGENT, "an edit leaves the mark alone");
+  assert.equal((await app.inject({ method: "POST", url: `/api/channels/web/keys/${page.id}/rotate`, headers: owner })).json().key.pageOfAgentId, AGENT);
+
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/channels/web/keys/${page.id}`, headers: owner })).statusCode, 204);
+  const stored = keys.find((key) => key.id === page.id)!;
+  assert.deepEqual(stored.revokedAt, NOW);
+  assert.equal(stored.enabled, false);
+  assert.equal(stored.pageOfAgentId, null, "so the agent can be given a new page key");
+
+  const all = (await app.inject({ method: "GET", url: "/api/channels/web/keys?includeRevoked=true", headers: owner })).json();
+  assert.equal(all.keys.find((key: { id: string }) => key.id === page.id).pageOfAgentId, null);
+
+  // An ordinary key is revoked exactly as before.
+  assert.equal((await app.inject({ method: "DELETE", url: `/api/channels/web/keys/${ordinary.id}`, headers: owner })).statusCode, 204);
+  const plain = keys.find((key) => key.id === ordinary.id)!;
+  assert.deepEqual([plain.revokedAt, plain.enabled, plain.pageOfAgentId], [NOW, false, null]);
 });

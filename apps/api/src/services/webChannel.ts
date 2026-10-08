@@ -114,6 +114,7 @@ export const WEB_KEY_COLUMNS = {
   enabled: true,
   revokedAt: true,
   lastUsedAt: true,
+  pageOfAgentId: true,
   createdAt: true,
   agent: { select: { name: true } },
 } as const;
@@ -135,6 +136,8 @@ export interface WebKeyRow {
   enabled: boolean;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
+  /** The agent whose public page this key serves; null on a key made for a website. */
+  pageOfAgentId?: string | null;
   createdAt: Date;
   agent: { name: string };
 }
@@ -160,6 +163,12 @@ export interface WidgetKeyDto {
   enabled: boolean;
   revokedAt: string | null;
   lastUsedAt: string | null;
+  /**
+   * Set on the one key that serves an agent's public page (/a/<handle>), to
+   * that agent's id; null on a key made for a website. Pausing it here pauses
+   * public use of the page (services/agentPublicLink.ts).
+   */
+  pageOfAgentId: string | null;
   createdAt: string;
   /** Messages counted today (UTC); null when the count cannot be read. */
   usageToday: number | null;
@@ -181,6 +190,8 @@ interface KeyWriteData {
   enabled?: boolean;
   publicKey?: string;
   revokedAt?: Date;
+  /** Only ever cleared here, and only by a revoke. */
+  pageOfAgentId?: null;
 }
 
 /** The slice of Prisma the owner routes touch. */
@@ -324,6 +335,7 @@ async function toDto(deps: WebChannelDeps, row: WebKeyRow, day: string): Promise
     enabled: row.enabled,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+    pageOfAgentId: row.pageOfAgentId ?? null,
     createdAt: row.createdAt.toISOString(),
     // The same key the chat counts on (publicChat.ts). Unreadable is null.
     usageToday: await deps.limiter.peek(publicChatKeys.widgetKeyDay(row.id, day)),
@@ -482,11 +494,17 @@ export async function rotateWebKey(deps: WebChannelDeps, orgId: string, id: stri
   return getWebKey(deps, orgId, id);
 }
 
-/** Permanent. Revoking a key that is already revoked changes nothing. */
+/**
+ * Permanent. Revoking a key that is already revoked changes nothing.
+ *
+ * A page key stops being its agent's page key in the same write: an agent
+ * has at most one (a unique index), and the revoked row stays, so without
+ * this the agent could never be given a new one.
+ */
 export async function revokeWebKey(deps: WebChannelDeps, orgId: string, id: string): Promise<void> {
   const revoked = await deps.db.widgetKey.updateMany({
     where: { id, orgId, revokedAt: null },
-    data: { revokedAt: (deps.now ?? (() => new Date()))(), enabled: false },
+    data: { revokedAt: (deps.now ?? (() => new Date()))(), enabled: false, pageOfAgentId: null },
   });
   if (revoked.count > 0) return;
   const row = await deps.db.widgetKey.findFirst({ where: { id, orgId }, select: WEB_KEY_COLUMNS });

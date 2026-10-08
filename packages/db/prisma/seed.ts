@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -346,7 +346,7 @@ const agentTemplates = [
     description:
       "A friendly AI agent that handles customer inquiries, resolves complaints, and escalates critical issues to human agents.",
     longDescription:
-      "Deploy a production-ready customer support agent powered by Llama 3.3 70B. The bot understands context across multi-turn conversations, searches your knowledge base for accurate answers, and automatically creates support tickets when escalation is needed. Configurable tone, escalation rules, and knowledge sources.",
+      "Deploy a production-ready customer support agent. The bot understands context across multi-turn conversations, searches your knowledge base for accurate answers, and automatically creates support tickets when escalation is needed. Configurable tone, escalation rules, and knowledge sources.",
     category: "customer-support",
     difficulty: "beginner",
     framework: "mastra",
@@ -801,6 +801,80 @@ def run_pipeline(goal: str) -> str:
   },
 ];
 
+// How an agent made from each template is used, and the form or suggested
+// schedule it starts with (AgentTemplate.agentKind and .kindConfig). The
+// values are the ones migration 20261013100000_agent_kind writes, so a
+// re-run of this seed changes nothing; apps/api/src/tests/agentKind.unit.test.ts
+// reads both files and holds them together.
+// template-kinds:start
+const templateKinds = {
+  "customer-support-bot": {
+    agentKind: "conversation",
+    kindConfig: Prisma.DbNull,
+  },
+  "code-review-assistant": {
+    agentKind: "task",
+    kindConfig: {
+      task: {
+        fields: [
+          { key: "code", label: "Code to review", type: "long_text", required: true, help: "Paste the code or the diff." },
+          { key: "language", label: "Language", type: "short_text", required: false, help: "For example TypeScript or Python." },
+          { key: "focus", label: "What to look for", type: "choice", required: false, options: ["Everything", "Bugs", "Security", "Performance", "Style"] },
+        ],
+      },
+    },
+  },
+  "research-summarizer": {
+    agentKind: "task",
+    kindConfig: {
+      task: {
+        fields: [
+          { key: "source", label: "What to summarize", type: "long_text", required: true, help: "Paste the text, or a link to the paper or article." },
+          { key: "length", label: "Length", type: "choice", required: false, options: ["Short", "Medium", "Detailed"] },
+          { key: "questions", label: "Questions to answer", type: "list", required: false, help: "One per line." },
+        ],
+      },
+    },
+  },
+  "content-writer": {
+    agentKind: "task",
+    kindConfig: {
+      task: {
+        fields: [
+          { key: "topic", label: "Topic", type: "short_text", required: true },
+          { key: "format", label: "Format", type: "choice", required: true, options: ["Blog post", "Social media thread", "Email", "Product description"] },
+          { key: "audience", label: "Audience", type: "short_text", required: false, help: "Who is it for?" },
+          { key: "tone", label: "Tone", type: "short_text", required: false, help: "For example friendly, formal or playful." },
+          { key: "keywords", label: "Keywords", type: "list", required: false, help: "Words to include, one per line." },
+          { key: "length", label: "Length", type: "choice", required: false, options: ["Short", "Medium", "Long"] },
+        ],
+      },
+    },
+  },
+  "trading-signal-agent": {
+    agentKind: "scheduled",
+    kindConfig: {
+      scheduled: {
+        schedule: { cronExpression: "0 9 * * *", timezone: "UTC" },
+        prompt: "Check the market for BTC, ETH and SOL and report today's trading signals, with the risk for each.",
+      },
+    },
+  },
+  "multi-agent-pipeline": {
+    agentKind: "task",
+    kindConfig: {
+      task: {
+        fields: [
+          { key: "goal", label: "Goal", type: "long_text", required: true, help: "What should the finished work achieve?" },
+          { key: "background", label: "Background", type: "long_text", required: false, help: "Anything the agents should know or use." },
+          { key: "deliverable", label: "What you want back", type: "short_text", required: false, help: "For example a report, a plan or a comparison." },
+        ],
+      },
+    },
+  },
+};
+// template-kinds:end
+
 async function main() {
   console.log("Seeding database...");
 
@@ -815,7 +889,10 @@ async function main() {
   }
 
   // Upsert agent templates
-  for (const template of agentTemplates) {
+  for (const seeded of agentTemplates) {
+    const kind = templateKinds[seeded.slug as keyof typeof templateKinds];
+    if (!kind) throw new Error(`Template ${seeded.slug} has no kind in templateKinds`);
+    const template = { ...seeded, ...kind };
     await prisma.agentTemplate.upsert({
       where: { slug: template.slug },
       update: template,

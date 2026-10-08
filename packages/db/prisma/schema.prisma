@@ -618,6 +618,16 @@ model Agent {
   // (AgentGraph). Set by the agent's owner; 'chat' unless they switch.
   entrypoint    String   @default("chat")
 
+  // How people use the agent: 'conversation' (talk to it), 'task' (a short
+  // form in, one result out) or 'scheduled' (it runs on its own). The kind
+  // picks the front door and removes nothing: every agent still answers a
+  // chat. Not named `kind`: /v1/models already answers wheelsai.kind.
+  agentKind     String   @default("conversation") @map("agent_kind")
+  // The kind's settings, one key per kind so that changing kind and back
+  // loses nothing: { task?: { fields }, scheduled?: { schedule?, prompt? } }.
+  // At most 16 KB (services/agentKind.ts). Null until a kind needs settings.
+  kindConfig    Json?    @map("kind_config")
+
   // Metadata
   version       String   @default("1.0.0")
   isPublic      Boolean  @default(false) @map("is_public")
@@ -1866,6 +1876,10 @@ model AgentVersion {
   // How the agent answered at this version: 'chat' or 'graph'. Null on
   // versions taken before it was recorded.
   entrypoint    String?
+  // How the agent was used at this version, and that kind's settings. Null
+  // on versions taken before they were recorded.
+  agentKind     String?  @map("agent_kind")
+  kindConfig    Json?    @map("kind_config")
 
   // Version metadata
   changeLog     String?  @map("change_log") @db.Text // Description of changes
@@ -2821,6 +2835,11 @@ model AgentTemplate {
 
   graphNodes    Json?    @map("graph_nodes")
   graphEdges    Json?    @map("graph_edges")
+
+  // How an agent made from this template is used, and the form or the
+  // suggested schedule it starts with (the shape of Agent.kindConfig).
+  agentKind     String   @default("conversation") @map("agent_kind")
+  kindConfig    Json?    @map("kind_config")
 
   iconUrl       String?  @map("icon_url")
   screenshots   String[] @default([])

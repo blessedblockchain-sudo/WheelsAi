@@ -13,6 +13,10 @@
     "./latency": {
       "types": "./src/latency.ts",
       "default": "./src/latency.ts"
+    },
+    "./agent-kind": {
+      "types": "./src/agentKind.ts",
+      "default": "./src/agentKind.ts"
     }
   },
   "scripts": {

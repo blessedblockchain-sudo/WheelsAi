@@ -878,7 +878,32 @@ receipts. Stop at the first step whose result is not the expected one.
 on Nosana, on a deployment that costs a few cents, and it confirms on our own deployment what
 the verification settled: the timeout unit (minutes), how a debit and a refund appear, and that
 `running` waits for an endpoint that is online. A training job's Nosana timeout is the run limit
-plus 15 minutes, sent in minutes.
+plus 15 minutes, sent in minutes, and with credits never less than 50 minutes.
+
+**With credits, the Nosana timeout of a training job is at least 50 minutes, whatever the run
+limit.** Nosana never assigns a credit-paid job whose timeout is under 3000 seconds: it accepts
+the create and the start, reports RUNNING, and fails every listing attempt (first live
+deployment run, 2026-10-08, in `docs/NOSANA-DEPLOY-RUN.md`). So when the API key pays, a run
+limit plus allowance under 50 minutes is sent as 50, and that is the timeout stored on the job
+and asked about in the credit check before the create. Three things follow:
+
+- **What Nosana reserves is 50 minutes of the market's price**, when a node takes the job, as a
+  `job_debit` row and as `reservedCredits`. The platform's available balance is lower by that
+  amount while the job runs.
+- **What Nosana gives back is everything the job did not use.** The trainer still ends at the
+  customer's run limit, and the platform stops the deployment when the trainer reports. The
+  unused part of the 50 minutes returns as a `job_refund` row some minutes after the stop (three to
+  ten and a half on the live deployment runs), and `settledCredits` rises by what the job cost.
+- **The customer's hold and charge do not change.** The hold is the retail price times the run
+  limit the customer chose, and the charge is for the seconds the training ran, never above the
+  hold. Neither is sized by the Nosana timeout.
+
+A run whose trainer does not end by itself is stopped by the platform ten minutes after its own
+limit (the run limit plus the allowance), as with wallet access, not at the 50 minutes Nosana
+was given.
+
+A job whose run limit plus allowance is already 50 minutes or more is sent as before, and so is
+every job with wallet access.
 
 ### The account, the balance and the key (read on 2026-10-07)
 
@@ -920,15 +945,17 @@ committed and the unit suite passes against the re-based stand-in.
 | Tier | `4070` (12 GB), $0.54 an hour retail, $0.09603 an hour on Nosana with the fee (our figure, rounded up per second, is $0.0972) | The cheapest tier the catalog allows for this model and method (planning figure: 12 GB). |
 | Dataset | `infra/training/fixtures/tiny.jsonl` eight times over (320 rows, about 46 KB) | Enough steps to read a throughput, small enough to finish in minutes. `for i in 1 2 3 4 5 6 7 8; do cat infra/training/fixtures/tiny.jsonl; done > tiny-x8.jsonl` |
 | Hyperparameters | `{"epochs": 3}`, everything else default | |
-| Run limit | 900 seconds | Hold: 900 x $0.00015 = 13.5, rounded up to **14 cents**. Nosana timeout: 1,800 s, sent as 30 (minutes). |
+| Run limit | 900 seconds | Hold: 900 x $0.00015 = 13.5, rounded up to **14 cents**. Run limit plus allowance is 1,800 s; with credits that is under the 50-minute minimum, so the Nosana timeout is **3,000 s, sent as 50** (minutes). |
 | Serving | the fine-tuned model on a `4070`, engine vLLM, 1 replica | Serving Phi-3 mini with an adapter is planned at 9 GB. Hold: one hour, **54 cents**. |
 
-Expected spend on Nosana: a `job_debit` of about $0.049 for the training job (30 minutes of a
-4070, debited whole when a node takes it), and about $0.03 for a quarter of an hour of serving.
-What is debited up front is larger than what is spent: the serving job is debited its full
-timeout at assignment (with the default `NOSANA_JOB_TIMEOUT_SECONDS` of 7200, two hours of a
-4070, about $0.193) and the unused part comes back about a minute after the stop. **$15
-available covers it with the $5 floor; today's $5.091 does not** (see above).
+Expected on Nosana: a `job_debit` of about $0.08 for the training job (50 minutes of a 4070 at
+$0.09603 an hour; about $0.073 if the debit is at the host price without the fee, as the 4090
+and 3060 debits of the live deployment runs were), reserved whole when a node takes it, and about
+$0.03 spent for a quarter of an hour of serving. What is reserved up front is larger than what
+is spent: the serving job is reserved its full timeout at assignment (with the default
+`NOSANA_JOB_TIMEOUT_SECONDS` of 7200, two hours of a 4070, about $0.193) and the unused part
+comes back some minutes after the stop (three to ten and a half on the live deployment runs). **$15
+available covers it with the $5 floor; the $4.722 left after the live deployment runs of 2026-10-08 does not** (see above).
 
 **If QLoRA fails on the node** (a `failed` event with `qlora_requires_cuda`, `cuda_unavailable`,
 `base_model_load_failed` or `unexpected` while loading): record the event, then repeat from
@@ -973,7 +1000,7 @@ charged nothing for those codes.
 | 2 | In the deployed dashboard, upload `tiny-x8.jsonl` as a new dataset and validate it. | Valid, 320 rows, format alpaca. This is also the only test of the bucket's CORS rule. Record the dataset id and its content sha256 (`sha256sum tiny-x8.jsonl` must match the dataset's page or row). |
 | 3 | `POST /api/training/estimate` with the model, method, tier and dataset (or read it on the new-job page). | A planning estimate. Record `estimate.seconds`, `estimate.cents` and `seconds.train`, to compare with what is measured. |
 | 4 | Record the organization's credit balance. Create the job: `phi-3-mini`, `qlora`, `4070`, run limit 900 s, `{"epochs": 3}`. | 201, status `pending`; `reservation.cents` 14; one `training_reservation` ledger row of -14. Record the job id and the time. **Within seconds the job must be `queued`: Nosana accepted the create.** Before the fix it answered 400 naming `job_definition/ops/0/args/required_vram`. If the job goes `failed` with `submit_failed`, find the create's error in the API log and record its body word for word (a path into `job_definition` names the key the validator refused), then stop. Nothing was debited. |
-| 5 | **Within a minute**, run the access check again. | A deployment named `wheelsai-train-<job id>-<nonce>` exists (the script finds it only with the pagination fix; the exact lookup is `GET /deployments?name=<that name>`, case-sensitive). Its `timeout` is **30, meaning minutes**; 1800 would be wrong and would debit thirty hours: stop the deployment at once. Strategy `SIMPLE`. Do not read the cost as a `reserved` change: **once a node has taken the job, a `job_debit` row of about $0.049** (30 minutes of a 4070) appears in `/credits/transactions` (the command is in the deployment run document) and available falls by it. Nothing is debited while the job waits for a node. In the API log, "Training job submitted to Nosana" gives the Nosana deployment id: record it. |
+| 5 | **Within a minute**, run the access check again. | A deployment named `wheelsai-train-<job id>-<nonce>` exists (the script finds it only with the pagination fix; the exact lookup is `GET /deployments?name=<that name>`, case-sensitive). Its `timeout` is **50, meaning minutes** (the 30 minutes of run limit plus allowance, raised to the minimum for a credit-paid job); 3000 would be wrong and would reserve fifty hours: stop the deployment at once. Strategy `SIMPLE`. **Once a node has taken the job, a `job_debit` row of about $0.08** (50 minutes of a 4070; about $0.073 at the host price) appears in `/credits/transactions` (the command is in the deployment run document), `reservedCredits` rises by it and available falls by it. Nothing is debited while the job waits for a node. In the API log, "Training job submitted to Nosana" gives the Nosana deployment id: record it. |
 | 6 | Watch the job's page. | `queued`, then `running`. Record the seconds from queued to running. If it is still queued after 30 minutes it fails with `no_capacity`, charged nothing: record that and try again later or on the `4090`. |
 | 7 | When it is `running`, look at the job's page or `GET /api/training/jobs/<id>`. | `metrics.started` names the GPU and its memory; `metrics.logSource` is `callbacks` and the phase and steps move. **This is the proof that the node pulled the image and reached `PUBLIC_API_URL`.** If the job is running on Nosana but no event ever arrives, callbacks are not getting through: let it finish and see step 9. Record the GPU name and `vramGb`. |
 | 8 | Wait for `completed`. | Record the wall time from `running` to `completed`. If it ends `failed`, record `failure.code`, `failure.message` and `failure.charged`, run step 9, and stop. |
@@ -982,7 +1009,7 @@ charged nothing for those codes.
 | 11 | `GET /api/training/jobs/<id>`: `metrics.result`. | Record `gpu.vramGb` and `gpu.peakVramGb` (the memory figures the catalog needs), `trainTokensPerSecond`, `timings` (download, load, tokenize, train, upload), `steps`, `stopReason` (`finished`), the final losses. |
 | 12 | `GET /api/training/fine-tuned-models`. | One model, `ready`, base `phi-3-mini`, method `qlora`, rank 16. Record its id, slug, `adapterBytes` and `adapterSha256`. Download the object from the bucket (`adapters/<org id>/<job id>/adapter.tar.gz`) and check its sha256 by hand: it must equal the model's. |
 | 13 | Read the job's ledger (`job.ledger` on the same response). | Three rows: `training_reservation` -14, `training_reservation_release` +14, `training_usage` -(charge), each `balanceAfter` following from the last. The charge is $0.00015 x `billedSeconds`, rounded up to a cent, at most 14. The balance fell by the charge. |
-| 14 | Five minutes later, run the access check and read the transactions. Record **B1**. | The training deployment is `STOPPED`. **A `job_refund` row, if the SIMPLE job ended before its 30-minute timeout** (ours is stopped when the trainer reports, so a refund about a minute after that stop is expected; whether a job that completes on its own, with no stop, is refunded pro rata is still open: record which case this was). `settled(B1) - settled(B0)` is what the job cost the platform (if the other project spent nothing): compare with the job's elapsed time x **$0.09603 an hour** (use `jobResult.endTime` when `timeEnd` is 0), and with the charge of step 13 (the margin). Each debit rounds up to $0.001. |
+| 14 | Twelve minutes later, run the access check and read the transactions. Record **B1**. | The training deployment is `STOPPED`. **A `job_refund` row, if the SIMPLE job ended before its 50-minute timeout** (ours is stopped when the trainer reports, so a refund some minutes after that stop is expected, three to ten and a half on the live deployment runs, with `reservedCredits` back to 0; whether a job that completes on its own, with no stop, is refunded pro rata is still open: record which case this was). `settled(B1) - settled(B0)` is what the job cost the platform (if the other project spent nothing): compare with the job's elapsed time x **$0.09603 an hour** (use `jobResult.endTime` when `timeEnd` is 0), and with the charge of step 13 (the margin). Each debit rounds up to $0.001. |
 | 15 | `GET /api/platform/compute` with the admin key, and `SELECT reason, reclaimed_at FROM nosana_orphan_deployments WHERE source_id = '<job id>'`. | Nothing untracked. If a record was written for the job (`training_completed`), it has `reclaimed_at` set within a status tick or two. |
 
 ### Steps: serving the model and one paid request
@@ -996,7 +1023,7 @@ charged nothing for those codes.
 | 20 | `GET <PUBLIC_API_URL>/v1/models` with the same key. | The deployment is listed with `wheelsai.fineTunedModel: "<slug>"` and `wheelsai.baseModel`. |
 | 21 | Wait until the GPU billing worker has ticked after the request (two minutes), then read the organization's ledger. | `gpu_usage` rows for the deployment at $0.00015 a second, the request's minute among them. **This is how the request was paid for:** a dedicated deployment is billed per GPU-second to its owner and its requests are included; no per-request charge and no x402 payment is taken for it. |
 | 22 | Stop the deployment from the dashboard. Then request the adapter URL again if you have it from the Nosana job definition, or simply repeat step 19. | The stop answers at once; the hold is returned once and the final window billed. The request now fails with `model_not_found`. |
-| 23 | Five minutes later, run the access check and read the transactions. Record **B2**. | A `job_refund` row for the unused part of the serving job's debit, about a minute after the stop. `settled(B2) - settled(B1)` is what serving cost the platform: compare with elapsed x $0.09603 an hour. Nothing running; the operator view lists nothing untracked. |
+| 23 | Twelve minutes later, run the access check and read the transactions. Record **B2**. | A `job_refund` row for the unused part of the serving job's reservation, some minutes after the stop, and `reservedCredits` back to 0. `settled(B2) - settled(B1)` is what serving cost the platform: compare with elapsed x $0.09603 an hour. Nothing running; the operator view lists nothing untracked. |
 | 24 | No spend: `DELETE /api/training/fine-tuned-models/<id>` only if you do not want to keep the model. | 200; the adapter object is removed from the bucket. Skip this to keep the model for a demo. |
 
 ### Results
@@ -1013,7 +1040,7 @@ charged nothing for those codes.
 | 2 | Dataset id; content sha256; browser upload worked (CORS) | | |
 | 3 | Estimate: seconds, cents, planned train seconds | | |
 | 4 | Job id; hold (cents); time created; **the create was accepted** (or the error body, word for word) | | |
-| 5 | Nosana deployment id and name; `timeout` as Nosana stored it (30); **the `job_debit` row (time, amount; expected about $0.049)** | | |
+| 5 | Nosana deployment id and name; `timeout` as Nosana stored it (50); **the `job_debit` row (time, amount; expected about $0.08, or $0.073 at the host price); `reservedCredits`** | | |
 | 6 | Seconds from queued to running | | |
 | 7 | **GPU name and `vramGb`; first callback arrived** | | |
 | 8 | Seconds from running to completed; final status | | |

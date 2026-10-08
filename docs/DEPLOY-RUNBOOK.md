@@ -417,6 +417,10 @@ lists them.
 | `NOSANA_MIN_CREDITS_USD` (5) | A deployment is admitted only when its estimated cost plus this floor is available in the Nosana account. |
 | `NOSANA_CREDITS_WARN_USD` (20) | Below this the operator view reports the balance as low. Raise both in proportion to what runs. |
 | `NOSANA_TIMEOUT_UNIT` (`minutes`) | The unit Nosana applies to a deployment timeout. WheelsAI keeps its settings in seconds and converts them when it submits a job. |
+| `NOSANA_JOB_TIMEOUT_SECONDS` (7200) | The timeout of a serving job; Nosana extends it while the deployment runs. 600 to 86400, and **at least 3000 with an API key**: Nosana never assigns a job paid with credits whose timeout is under 50 minutes, and the API refuses to start with a lower value. Nosana reserves the whole timeout in credits when a node takes the job and returns the unused part some minutes after a stop. |
+| `NOSANA_BATCH_JOB_TIMEOUT_SECONDS` (21600) | The longest timeout of a fine-tuning job. The same minimum of 3000 with an API key. |
+| `NOSANA_PROVISIONING_LIMIT_SECONDS` (1800) | How long a deployment may wait to start serving. After it the deployment is failed (`no_capacity` when no GPU took it, `start_timeout` when the model was not ready), stopped on Nosana and its hold returned; nothing is charged. 300 to 86400. Raise it for very large models. |
+| `INFERENCE_TIMEOUT_MS` (120000) | How long a model node may stay silent before a request fails: the time to the first byte of an answer, and the time between chunks of a streamed one. |
 | `NOSANA_NETWORK` | `mainnet` with an API key by default; otherwise taken from `SOLANA_NETWORK`. |
 | `HF_TOKEN` | Optional. Lets deployments and fine-tuning use gated Hugging Face models. It is only sent inside confidential job definitions. |
 | `MAX_ACTIVE_DEPLOYMENTS_PER_ORG` (5) | Active deployments one organization may have. |
@@ -438,13 +442,31 @@ When new deployments cannot be paid for, customers see that new GPU deployments 
 unavailable and that nothing was reserved or charged, and `/status` shows new deployments as
 paused.
 
+A deployment reads `running`, and is billed, only once a node serves it and its model has
+answered a request; expect about two minutes on a first start of a small model on the Ollama
+engine once a GPU has taken it, and about five on vLLM. The platform probes the node itself, so
+a deployment is taken as serving when its node answers even if Nosana still reports the
+endpoint offline. While a deployment is starting, or is not serving for a moment, requests to
+it are answered 503. A deployment that Nosana cannot
+place does not wait for ever. It is failed with one of three reasons, stopped on Nosana, and its
+hold is returned; the customer is told that nothing was charged.
+
+| Reason | Meaning | Where to look |
+| --- | --- | --- |
+| `nosana_list_failed` | Nosana keeps refusing to list the job. | Nosana's own message is in the API log (the error line that begins "Deployment failed: Nosana could not place it or it never became ready") and under `placementFailures` in the operator view. The usual cause is a setting Nosana does not accept. |
+| `no_capacity` | No GPU of the tier took the job within `NOSANA_PROVISIONING_LIMIT_SECONDS`. | The market's idle nodes; try again later or on another tier. |
+| `start_timeout` | A node took the job, but the model was not ready within the same limit. | The job's result and logs in Nosana's dashboard. |
+
+`placementFailures` lists what the answering process itself has seen since it started. The row's
+reason is the durable record.
+
 ## 10. Fine-tuning: storage and the training image
 
 Fine-tuning needs four things beyond the API itself:
 
 1. **GPU compute on Nosana** (section 9). A job is admitted only when the Nosana account covers
-   its whole timeout (the user's run limit plus `TRAINING_SETUP_ALLOWANCE_SECONDS`) plus the
-   floor.
+   its whole timeout (the user's run limit plus `TRAINING_SETUP_ALLOWANCE_SECONDS`, and with an
+   API key at least 50 minutes) plus the floor.
 2. **An S3-compatible bucket** for datasets and trained adapters (10.1).
 3. **The training image**, published and pinned by digest (10.2).
 4. **`PUBLIC_API_URL` reachable over HTTPS from GPU nodes.** The trainer reports progress there,
@@ -526,7 +548,7 @@ machine outside your project to confirm it is readable.
 | Setting (default) | Note |
 | --- | --- |
 | `TRAINING_QUEUE_TIMEOUT_SECONDS` (1800) | A job no GPU node takes within this time fails and costs the user nothing. |
-| `TRAINING_SETUP_ALLOWANCE_SECONDS` (900) | Added to the user's run limit in the Nosana timeout, for pulling the image. Never billed to the user. |
+| `TRAINING_SETUP_ALLOWANCE_SECONDS` (900) | Added to the user's run limit in the Nosana timeout, for pulling the image. Never billed to the user. With an API key the Nosana timeout is at least 3000 seconds whatever the run limit; the user's hold and charge do not change. |
 | `NOSANA_BATCH_JOB_TIMEOUT_SECONDS` (21600) | The longest run limit is this minus the set-up allowance. |
 | `TRAINING_MAX_ACTIVE_JOBS_PER_ORG` (2) | Unfinished jobs one organization may have. |
 | `TRAINING_FREE_FAILURES_PER_DAY` (3) | Jobs of one organization that may end failed and free of charge in 24 hours. |

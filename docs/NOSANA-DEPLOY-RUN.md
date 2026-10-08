@@ -1,6 +1,6 @@
-# Nosana deployments with an API key — what is proven, and the first paid run
+# Nosana deployments with an API key — what is proven, and the paid runs
 
-**Date:** 2026-10-07 · **Branch:** `feat/bags-launchpad` (working tree on top of `688fe21`)
+**Date:** 2026-10-07, updated 2026-10-08 after two live runs · **Branch:** `feat/bags-launchpad`
 **Migration:** `20261011100000_nosana_access_mode`
 
 The platform can pay Nosana in two ways, chosen by configuration: a Solana wallet (a vault per
@@ -8,8 +8,9 @@ deployment, funded in NOS and SOL), or a dashboard API key (prepaid USD credits,
 document has three parts:
 
 1. **What was proven on this machine**, with the commands and their output.
-2. **The checklist for the first paid run**, with a results table to fill in.
-3. **What stays unverified until that run.** Between parts 2 and 3 is a section of what the
+2. **The checklist for a paid run**, with a results table to fill in.
+3. **What stays unverified.** Between parts 2 and 3 are three sections: the first and the second
+   live run of 2026-10-08 (what each showed, settled and changed in the code), and what the
    read-only verification of 2026-10-07 settled, with its evidence.
 
 **Nothing in part 1 was run against Nosana with a credential.** The only request that reached
@@ -395,10 +396,19 @@ no usage row until the stop bills its final window.
 
 ---
 
-## 2. The first paid run — checklist
+## 2. A paid run — checklist
 
 The founder runs this with the key present. Record each result in the table at the end. Stop at
 the first step whose result is not the expected one.
+
+A first live run took place on 2026-10-08, on the 4090 market with Llama 3.2 3B. It is recorded
+in "First live run (2026-10-08)" below. This checklist has been brought into line with it: the
+timeout for a credit-paid run is 3000 seconds or more, credits are reserved when a job is listed
+and the unused part comes back some minutes after a stop, and a deployment reads `running` only
+once its model has answered a request. A second live run the same day, recorded in "Second live
+run (2026-10-08)", exercised the 3060 market, a market with no node, the vLLM engine, and the
+changes the first run led to. The steps neither run reached (an extension, a replica change, a
+restart, the paused refusal) are still to be recorded.
 
 ### The account, the balance and the key (read on 2026-10-07)
 
@@ -412,7 +422,8 @@ the first step whose result is not the expected one.
   settled (available = assigned − reserved − settled; the fields are USD, not cents). The only
   recent top-up was $5. That is not the "about $15" this checklist was written for. Against the
   $5 floor the 3060 create passes by about $0.04 ($5.0504 needed), and the 4070 serving deploy
-  of `docs/FINE-TUNE-RUN.md` ($5.097 needed) is refused.
+  of `docs/FINE-TUNE-RUN.md` ($5.097 needed) is refused. After the two live runs of 2026-10-08
+  available credit is $4.722, so with the $5 floor no create passes until a top-up.
 - **Recommended starting balance: about $15 available, so top up about $10 before step 1.**
   Each SIMPLE-EXTEND extension debits another full timeout, and with $5.091 the only headroom
   for it is the floor itself. The alternative is to lower `NOSANA_MIN_CREDITS_USD` for the run
@@ -420,8 +431,8 @@ the first step whose result is not the expected one.
   floor is also what keeps the other project's deployments from being halted by ours.
 - **Replace the key before the run.** The key now in `apps/api/.env` holds every scope,
   including `api-keys:manage` (it can read the plaintext of every key on the account),
-  `wallet:sign` and `oauth-apps:manage`. **It was also pasted into a chat, so treat it as
-  disclosed.** In deploy.nosana.com, Account, API Keys: create a new key with only
+  `wallet:sign` and `oauth-apps:manage`. **It has also been shared outside the API's
+  environment, so treat it as disclosed.** In deploy.nosana.com, Account, API Keys: create a new key with only
   `credits:read`, `deployments:read`, `deployments:write` and `jobs:read`, put it in the API's
   environment, run step 1 with it, then revoke the all-scope key. Keys carry `expiresAt: null`:
   there is no mandatory expiry, so revoking is the only way the old key stops working. A missing
@@ -445,9 +456,17 @@ until each of these is committed and the unit suite passes against the re-based 
 | The Ollama script pulls the model through a server on `127.0.0.1:11435`, ends it, and only then starts the server on the exposed port 11434. | `/api/tags` answers 200 before the model is there: the endpoint turns `online: true`, the row goes `running` and is billed, and `/v1` answers "model not found" for as long as the download takes. |
 | A halted deployment (ERROR, INSUFFICIENT_FUNDS) is failed and stopped even when its events cannot be read. | A failing `/deployments/{id}/events` (a 5xx, or a key whose scopes do not cover it) leaves the row `running` and billed, and no stop is sent. |
 | A deployment whose start failed and that still reads DRAFT stays with the reclaim sweep for 10 minutes. | A start that passed its 30 s deadline and lands afterwards runs on platform credits with a failed row and nobody billed. |
-| A row becomes `running`, and GPU billing starts, only when an endpoint reports `online: true`. | Nosana reports RUNNING as soon as the listing task is scheduled, before any node holds the job. The customer is billed through queueing, image pull and model load. |
+| A row becomes `running`, and GPU billing starts, only when an endpoint is online: Nosana reports `online: true`, or the platform's own probe of the endpoint is healthy (see the row on offline endpoints below). | Nosana reports RUNNING as soon as the listing task is scheduled, before any node holds the job. The customer is billed through queueing, image pull and model load. |
 | Jobs and events are read from `/deployments/{id}/jobs` and `/deployments/{id}/events`. | A deployment no longer embeds them. Failure reasons read `nosana_error`, and training never learns its job. |
 | `required_vram` is no longer in the training job definition. | Not this run's concern; the fine-tuning create is refused with a 400. |
+| With an API key paying, a job timeout under 3000 seconds stops the API at start-up, and a shorter per-deployment timeout is raised to 3000. | Nosana accepts the create and the start, reports RUNNING, and never assigns the job: every attempt logs `JOB_LIST_ERROR` (first live run, attempt 1). |
+| A deployment Nosana cannot place is failed with a reason (`nosana_list_failed`, `no_capacity`, `start_timeout`), stopped on Nosana and its hold returned. | The row stays `provisioning` with no reason shown, and its hold is kept until somebody stops it by hand. |
+| The Ollama container loads the model at start and keeps it loaded, a model deployment is `running` only when its model is listed by the node and has answered a one-token request from the platform, and a node that answers without its model is asked to load it by that same request. | The first request after a start waits for the model to load and for the node's first generation (42 seconds on the first live run), fails at the inference timeout, and marks the only node unhealthy. |
+| A stop repeats its read of the deployment after a network failure, and the stop itself unless the read after it shows the deployment stopping or stopped. | One name that does not resolve makes Stop answer 502 while the GPU keeps running and billing until Stop is pressed again (second live run). |
+| A vLLM deployment is `running` only once its node has answered a one-token completion from the platform. | The first request after a start can take half a minute, Nosana's health check misses meanwhile, and the deployment reads as not serving (second live run, deployment E). |
+| When Nosana reports no endpoint online, the status worker probes the endpoints itself and takes a node that answers as serving. | A deployment whose job Nosana's record still shows as queued sits in `provisioning` while its node serves, and is ended as `start_timeout` at the limit (second live run, deployment F). |
+| A deployment that is starting or degraded answers 503 `service_unavailable`. | Clients are told 404 `model_not_found` and give up on a deployment that serves again seconds later. |
+| `INFERENCE_TIMEOUT_MS` defaults to 120000. | A long answer on a small GPU is cut at 30 seconds. |
 
 One free check before any spend, on a machine with Docker:
 `docker image inspect docker.io/ollama/ollama:0.32.6 -f '{{json .Config.Entrypoint}}'` (after a
@@ -465,43 +484,49 @@ record what it prints.
 | `NOSANA_ACCESS_MODE` | `api_key` | Says which account pays. Required if the wallet key is also set. |
 | `NOSANA_NETWORK` | `mainnet` | The default with an API key; set it so it is on record. `SOLANA_NETWORK` can stay as it is. **If the wallet key is also set and its deployments are on devnet, leave this unset instead**: set, it moves the wallet to mainnet as well. |
 | `NOSANA_TIMEOUT_UNIT` | `minutes` | The default. **Settled as minutes** by the API document, the deployment-manager source and the timing of live deployments on this account (see "Settled"). Set it so it is on record and the start-up warning stops. Step 5 confirms it on a deployment of ours. |
-| `NOSANA_JOB_TIMEOUT_SECONDS` | `600` | The minimum our configuration accepts. Sent as 10 with the unit above. |
+| `NOSANA_JOB_TIMEOUT_SECONDS` | `3000` | The minimum with an API key: Nosana never assigns a credit-paid job whose timeout is under 3000 seconds, and the API does not start with a lower value. Sent as 50 with the unit above. |
+| `NOSANA_PROVISIONING_LIMIT_SECONDS` | unset (1800) | A deployment that is not serving after this long is failed, stopped on Nosana and its hold returned. |
+| `INFERENCE_TIMEOUT_MS` | unset (120000) | How long a model node may stay silent before a request fails. |
 | `NOSANA_MIN_CREDITS_USD` | `5` | The floor. |
 | `PLATFORM_ADMIN_KEY` | at least 16 characters | For the operator view. |
 | `DEPLOYMENT_STATUS_INTERVAL_MS` | above 0 | Without the status worker a deployment never reaches `running`. |
 | `GPU_BILLING_INTERVAL_MS` | `60000` | Per-second billing of the organization. |
 | `ALLOW_NOSANA_MOCK` | unset | The mock must not stand in for Nosana. |
 
-**Balance to load: the floor plus a margin, about $15 available with the $5 floor.** Today's
-$5.091 is not enough (see above): top up first. A deployment is admitted only when its estimate
+**Balance to load: the floor plus a margin, about $15 available with the $5 floor.** The
+$4.722 left after the runs of 2026-10-08 is under the floor itself: top up first. A deployment is admitted only when its estimate
 plus the floor is available, and the floor must still be there for the extensions, the restart
 and the scale-up later in the run. The run itself should cost well under $1 on the 3060 market
 (Nosana's fee-inclusive rate is $0.04796 an hour; our figure, rounded up per second, is
-$0.0504). $10 available would pass the first create and could refuse a later step.
+$0.0504). $10 available would pass the first create and could refuse a later step. While a job
+runs, its whole 50-minute reservation is out of the available balance ($0.037 for a 3060 and
+$0.303 for a 4090), and the unused part returns only some minutes after the stop.
 
-**Why `minutes` and 600 seconds for the first create.** The unit is settled as minutes, so the
-first row is the one expected. The table stays because it shows that sending 10 is the cheap way
-to be wrong:
+**Why 3000 seconds.** The unit is minutes, and Nosana refuses to assign a credit-paid job whose
+timeout is under 3000 seconds (50 minutes). It does not refuse the create or the start: the
+deployment reports RUNNING, and every listing attempt fails with `JOB_LIST_ERROR` "Credit-paid
+jobs must have a timeout of at least 3000 seconds". The first attempt of the first live run was
+made with 600 and showed exactly that; nothing was debited. So the shortest timeout a
+credit-paid run can have is 3000, sent as 50.
 
-| We send | Nosana reads it as | The job's timeout | Debited for one 3060 replica (about) |
+| We send | Nosana reads it as | The job's timeout | Reserved for one replica |
 |---|---|---|---|
-| `10` (unit set to minutes) | minutes (**settled**) | 10 minutes | $0.008 |
-| `10` (unit set to minutes) | seconds | 10 seconds; the job ends at once | $0.001 (debits round up to $0.001) |
-| `600` (unit left at seconds) | seconds | 10 minutes | $0.008 |
-| `600` (unit left at seconds) | minutes | 10 hours | $0.48 |
+| `50` (unit set to minutes) | minutes (**settled, and seen on a deployment of ours**) | 50 minutes | $0.303 on the 4090 market and $0.037 on the 3060 market (both seen): the market's host price, without the fee. |
+| `10` (unit set to minutes) | minutes | never assigned | Nothing. The deployment is failed with `nosana_list_failed`. |
+| `3000` (unit left at seconds) | minutes | 50 hours | 60 times the first row. |
 
-Sending 10 is cheap whichever way Nosana reads it. Sending 600 is the only case with a large
-debit. If the manager refuses a timeout of 10 outright, record the error and stop: the create
-schema reads "at least 1 minute", so a refusal contradicts what was settled.
+Leave `NOSANA_TIMEOUT_UNIT` at `minutes`. The third row is the only expensive mistake.
 
-**How credits move (settled; steps 5, 9 and 13 rely on it).** A job is debited price × its full
-timeout when it is **assigned to a node**, not at create or start, as a `job_debit` row in
-`/credits/transactions`. On this account debits have landed in `settledCredits`, with
-`reservedCredits` 0. Each extension debits another full timeout. After a stop the unused part
-comes back pro rata as a `job_refund` row about a minute later. Every debit rounds up to $0.001,
-and a job that ends within seconds has netted about $0.01. A transaction row carries no
-deployment id: match it by time. So measure **available**, or reserved + settled together,
-never `reserved` alone.
+**How credits move (settled; steps 5, 9 and 13 rely on it).** Nothing moves at create or start.
+When a job is **listed on a node**, Nosana writes a `job_debit` row in `/credits/transactions`
+for the price of the full timeout and shows the amount as `reservedCredits`. On the first live
+run that was $0.303 for 50 minutes of a 4090: the market's host price of $0.3636 an hour,
+without the 10% network fee. Each extension reserves another full timeout. After a stop the
+reservation stays for some minutes (3 to 10 and a half minutes on the two live runs). Then Nosana
+writes a `job_refund` row for the unused part, sets `reservedCredits` back to 0 and raises
+`settledCredits` by what the job cost. A transaction row carries no deployment id: match it by
+time. Measure **available** before and after, and read `settledCredits` only once the refund row
+is there.
 
 **Deployment to create:** tier 3060, model Llama 3.2 1B on the Ollama engine (no Hugging Face
 token needed), 1 replica, in an organization with at least $1 of WheelsAI credits.
@@ -519,17 +544,17 @@ that matter are `job_debit` and `job_refund`. Rows of the other project appear i
 | 1 | `cd apps/api && npx tsx scripts/nosana-access-check.ts`. It only reads. | Mode `api_key`, network `mainnet`, the new key's last four characters, an available balance of about $15, **exit code 0** (only with the pagination fix; before it the script printed "unreadable: HTTP 200, body is not an array" and exited non-zero). The deployment count is `pagination.total_items`: 19 from the other project at the verification, none of them `wheelsai-*`. `REJECTED` means the key is wrong or revoked; a 403 `INSUFFICIENT_SCOPE` means the new key lacks a scope: stop. Record the balance as **B0**: assigned, reserved, settled **and available**. |
 | 2 | In the same output, read "raw fields of one existing deployment". | Settled already: on this account `owner` and `vault` are the same 44-character base58 key, and `owner` parses as a Solana public key. The script prints the newest deployment (one of the other project's until step 4). **If it says NO, stop**: that contradicts the verification, and the SDK would throw on create after Nosana had created the deployment. |
 | 3 | Start the API. `GET /api/platform/compute` with `x-admin-key`. | `mode` `api_key`, `credits.state` `ok` or `low`, `timeout.unit` `minutes`, every tier `belowCost: false`, `unreachable.rows` empty. `GET /api/status` shows GPU compute operational. |
-| 3a | Is a 3060 node idle? `curl -s "https://api.nosana.com/nodes/queued-nodes?marketAddress=7AtiXMSH6R1jjBxrcYjehCkkSF7zvYWte63gwEDBcGHq"` (public, no key). | A list of idle nodes. **It was empty at the verification** (only the 4090 market had any). An empty list is not a reason to stop: the deployment waits for a node, and nothing is debited until one is assigned. Record the count. Do not use `/markets/{id}/spare-capacity` for this; it describes another feature. |
-| 4 | Create the deployment in the dashboard. Record the time. | 201; the row goes `pending` then `provisioning`; an organization hold of 36 cents (one hour of a 3060). **The row must stay `provisioning`, and the ledger must show no `gpu_usage` row, until an endpoint reports `online: true`** (the online fix). Nosana itself reports RUNNING within seconds of the start, node or no node, and lists the endpoint from create with `online: false`. Record when Nosana went RUNNING and when `online` became true (the deployment's `endpoints[].online`, in Nosana's dashboard or a GET of the deployment). If our row reads `running` while `online` is false, stop the deployment and stop the run: the customer is being billed for a GPU that is not serving. If the create fails, open the operator view after 15 minutes: `nosana.untrackedDrafts` or `nosana.untracked` names anything Nosana created anyway (`wheelsai-model-<deployment id>-r0`). Stop it in Nosana's dashboard by hand (a draft was never started and costs nothing). |
-| 5 | **Once a node has the job** (the deployment's job list shows a node, or `online` is true), run the check script again and read the newest transactions. Record **B1**. | A new `job_debit` row of **$0.008** (10 minutes of a 3060 at the fee-inclusive price), and available down by the same amount against B0. That confirms minutes on a deployment of ours. On this account the debit lands in `settledCredits`; record whether `reserved` moved at all. **No debit appears while the job waits for a node**, so nothing within a minute of create is not a failure. A debit of $0.001, or a job that ends within seconds, would mean the timeout was read as seconds, against everything settled: stop the deployment and record it. Any other figure: stop and record it. Also record the `timeout` field the script prints for the deployment (10). |
+| 3a | Is a 3060 node idle? `curl -s "https://api.nosana.com/nodes/queued-nodes?marketAddress=7AtiXMSH6R1jjBxrcYjehCkkSF7zvYWte63gwEDBcGHq"` (public, no key). | A list of idle nodes. **It was empty at the verification** (only the 4090 market had any) and again on the second live run. An empty list is not a reason to stop: the deployment waits for a node, and nothing is debited until one is assigned. Nosana logs `JOB_RESERVE_SHORTFALL` on the deployment and tries again after 30 seconds, then 1, 2 and 4 minutes; on the second live run a 3060 node came free after 30 seconds and a 4090 node after 7 and a half minutes. Record the count. Do not use `/markets/{id}/spare-capacity` for this; it describes another feature. |
+| 4 | Create the deployment in the dashboard. Record the time. | 201; the row goes `pending` then `provisioning`; an organization hold of 36 cents (one hour of a 3060). **The row must stay `provisioning`, and the ledger must show no `gpu_usage` row, until the model has answered the platform's one-token request** (the API log line "Model loaded on its node and answering"). Nosana itself reports RUNNING within seconds of the start, node or no node, and lists the endpoint from create with `online: false`. Record when Nosana went RUNNING and when `online` became true (the deployment's `endpoints[].online`, in Nosana's dashboard or a GET of the deployment). If our row reads `running` before that log line, stop the deployment and stop the run: the customer is being billed for a GPU that cannot answer yet. A row that is `running` after that log line while Nosana still shows `online: false` is the case of deployment F: record it, with Nosana's job list, and go on. If the create fails, open the operator view after 15 minutes: `nosana.untrackedDrafts` or `nosana.untracked` names anything Nosana created anyway (`wheelsai-model-<deployment id>-r0`). Stop it in Nosana's dashboard by hand (a draft was never started and costs nothing). |
+| 5 | **Once a node has the job** (the deployment's job list shows a node, or `online` is true), run the check script again and read the newest transactions. Record **B1**. | A new `job_debit` row for **50 minutes** at the market's host price without the 10% fee ($0.037 on the 3060 and $0.303 on the 4090, both seen), `reservedCredits` up by the same amount, and available down by it against B0. **No debit appears while the job waits for a node**, so nothing within a minute of create is not a failure. A job that ends within seconds would mean the timeout was read as seconds, against everything settled: stop the deployment and record it. Any other figure: stop and record it. Also record the `timeout` field the script prints for the deployment (50). |
 | 6 | In the same output, read `owner` and `vault` of the new `wheelsai-model-*` deployment. | A confirmation only: the same 44-character key as in step 2, for a deployment WheelsAI created. |
-| 7 | Wait for `running` with a healthy node. | Record three times: create to Nosana RUNNING, RUNNING to `online: true`, and the image pull if the job's result or events show it (`docker.io/ollama/ollama:0.32.6` is pre-pulled on the 3060 market, so the pull should be short; the model download is not). The container downloads the model before it opens port 11434, so `online: true` should come only after the download: if `online` turns true and the first chat answers "model not found", record it and stop the run. **This is the first time the Ollama container starts on a node.** The definition the earlier loopback runs sent could not start. If the row never leaves `provisioning`, read the deployment's events and the job's result in Nosana's dashboard and record the container's exit and last lines. There is one endpoint URL per deployment (per exposed port), load-balanced across replicas: record its host (the operator does not see node URLs in the API; read `deployment_nodes.node_url` in the database, one row per endpoint URL). |
-| 8 | Send one chat completion to `/v1/<slug>/chat/completions`. | An answer. Record the latency. |
-| 9 | Wait past one timeout (11 minutes or more after the job started). Run the check script and read the transactions. | The deployment is still `RUNNING`. **The first extension comes at about 9 minutes** (the timeout minus a buffer of 10%, at least 1 minute), then one every 10 minutes. Each is a new `job_debit` row of about $0.008. Expect RUNNING and a new debit row, not a change in `reserved`. Record the time and amount of each. If it stopped at the timeout, the strategy did not extend with credits: record it and stop. This has been read in the source only; this step is its first observation. |
-| 10 | Read the organization's ledger. | `gpu_usage` rows at $0.0001 a second for one replica, each with a consistent `balanceAfter`, **the first of them not before the time `online` became true** (step 4). |
+| 7 | Wait for `running` with a healthy node. | **Expect about two minutes on a first start once a node has the job.** On the second live run a 4090 was online 53 seconds after create and `running` 102 seconds after it; a 3060 was `running` 50 seconds after its job was listed (both with a 2 GB model). The row becomes `running` on the first status tick after the node has answered the platform's one-token request, which the status worker sends when it first finds the endpoint online (API log: "Model loaded on its node and answering" with the time it took, 49 seconds on that 4090; it is preceded by "A node answers without its model loaded; asking it to load the model" when the node did not list the model yet). Record four times: create to Nosana RUNNING, RUNNING to `online: true`, `online` to that log line, and the image pull if the job's result or events show it. The container downloads the model before it opens port 11434, starts loading it right after, and keeps it loaded. If the load inside the container does not complete, its log has the line "model preload did not complete; the model loads on the first request"; the platform's own request loads the model all the same. If the row never leaves `provisioning`, read the deployment's events and the job's result in Nosana's dashboard and record the container's exit and last lines; after `NOSANA_PROVISIONING_LIMIT_SECONDS` the row is failed with `start_timeout` and its hold returned. There is one endpoint URL per deployment (per exposed port), load-balanced across replicas: record its host (the operator does not see node URLs in the API; read `deployment_nodes.node_url` in the database, one row per endpoint URL). |
+| 8 | Send one chat completion to `/v1/<slug>/chat/completions`, as the first request after the row turned `running`. | An answer within a few seconds: the model has already answered once. Record the latency. On the second live run the first request took 1.1 s on a 3060 and 4.3 s on a 4090, and later ones 0.55 to 0.9 s. An answer that takes tens of seconds means the row turned `running` before the node could answer: record it. |
+| 9 | Wait past one timeout (51 minutes or more after the job started). Run the check script and read the transactions. | The deployment is still `RUNNING`. **The first extension comes at about 45 minutes** (the timeout minus a buffer of 10%, at least 1 and at most 5 minutes), then one every 50 minutes. Each is a new `job_debit` row for another 50 minutes. Record the time and amount of each, and how `reservedCredits` moves. If it stopped at the timeout, the strategy did not extend with credits: record it and stop. This has been read in the source only; this step is its first observation. To skip it, stop before 45 minutes and leave the row in the results table empty. |
+| 10 | Read the organization's ledger. | `gpu_usage` rows at $0.0001 a second for one replica, each with a consistent `balanceAfter`, **the first of them not before the node answered the platform's one-token request** (step 4). |
 | 11 | (Optional; doubles the cost for a few minutes.) Replicas 1 to 2, wait for the count to be confirmed, back to 1. | Nosana's replica count, our row and the billing agree; usage up to the change is billed at the old count. A second replica is a second job with its own `job_debit`. The endpoint URL does not change. |
-| 12 | Stop from the dashboard. Record the time. | Nosana accepts a stop only from RUNNING, ERROR or INSUFFICIENT_FUNDS (any other state answers 500 `INCORRECT_STATE`); the deployment is RUNNING here, so it is accepted. The stop answers at once; `fundsReleased` may be `false`. Nosana goes STOPPING, then STOPPED. Within one status tick the row's release is confirmed (`vault_reclaimed_at` set). The hold is returned once and the final window is billed. **A `job_refund` row appears about 55 seconds to a minute after the stop is confirmed**: record its time and amount. |
-| 13 | Five minutes later, run the check script and read the transactions. Record **B2**. | A `job_refund` row for the unused part of the last debit, and `settled` lowered by it. `settled(B2) - settled(B0)` is the true cost (if the other project spent nothing meanwhile). Compare it with elapsed time x **$0.04796 an hour**, Nosana's fee-inclusive 3060 rate, not our rounded $0.0504. It will not match to the cent: each debit rounds up to $0.001. If no refund row has come, record after how long it does. |
+| 12 | Stop from the dashboard. Record the time. | Nosana accepts a stop only from RUNNING, ERROR or INSUFFICIENT_FUNDS (any other state answers 500 `INCORRECT_STATE`); the deployment is RUNNING here, so it is accepted. The stop answers at once; `fundsReleased` may be `false`. Nosana goes STOPPING, then STOPPED with the event `JOB_STOPPED_CONFIRMED` (within 12 seconds on the first live run). Within one status tick the row's release is confirmed (`vault_reclaimed_at` set). The hold is returned once and the final window is billed. **`reservedCredits` does not move yet.** |
+| 13 | Twelve minutes later, run the check script and read the transactions. Record **B2**. | A `job_refund` row for the unused part of the reservation (between 3 and 10 and a half minutes after the stop on the two live runs, always on a whole minute), `reservedCredits` back to 0, and `settledCredits` raised by what the job cost. `settled(B2) - settled(B0)` is the true cost (if the other project spent nothing meanwhile). Compare it with elapsed time x the market's hourly price; on the first live run 4.1 minutes of a 4090 cost $0.026. If no refund row has come, record after how long it does. |
 | 14 | Start the same deployment again, wait for `running`, stop it. | The restart is not refused with `previous_run_winding_down`. (Nosana accepts a start from STOPPED. A run stopped within seconds of its job starting nets about $0.01, more than its pro-rata share: record the debit and the refund.) |
 | 15 | No spend: set `NOSANA_MIN_CREDITS_USD` above the balance, restart the API, try to create. | 503 `compute_capacity_unavailable`, the dashboard says "GPU deployments are paused right now. Nothing was charged.", no row, no hold; `/status` shows "New deployments paused". Restore the value. |
 | 16 | `GET /api/platform/compute` once more. | `nosana.untracked` and `nosana.untrackedDrafts` empty, `running.deployments` 0. |
@@ -537,6 +562,23 @@ that matter are `job_debit` and `job_refund`. Rows of the other project appear i
 That the job ran at all shows that a definition created with `confidential: true` reaches the
 host with our key (step 7). The other project's deployments on this account are confidential and
 ran, so this is expected.
+
+**When Nosana cannot place a deployment.** A deployment that never starts serving does not wait
+for ever, and it is never billed. It ends as `failed` in one of three ways:
+
+| Reason on the row | When | What the customer reads |
+|---|---|---|
+| `nosana_list_failed` | Nosana's listing of the job fails twice in a row with no listing in between, or one failure stands for five minutes. Events are read from 60 seconds after the submit. | "This deployment could not be started. The GPU network could not start it, and that had nothing to do with your account. Nothing was charged, and your reservation was returned. You can start it again; if it ends the same way, contact support." |
+| `no_capacity` | No job was listed within `NOSANA_PROVISIONING_LIMIT_SECONDS` (30 minutes by default). | "No GPU became available. No GPU of this type was free in time, so the deployment was not started. Nothing was charged, and your reservation was returned. You can start it again, or choose another GPU type." |
+| `start_timeout` | A node took the job, but the model was not ready within the same limit. | "The model did not finish starting. A GPU was assigned, but the model was not ready in time, so the deployment was stopped. Nothing was charged, and your reservation was returned. You can start it again." |
+
+In each case the deployment is stopped on Nosana in the same pass and the organization's hold is
+returned once. Nosana's own message (for example the 3000-second refusal) is not shown to the
+customer: it is in the API log, in the error line that begins "Deployment failed: Nosana could
+not place it or it never became ready", and in `GET /api/platform/compute` under
+`placementFailures`. If Nosana had already
+reserved credits for a job that never became ready, they come back as a `job_refund` row like
+any other stop.
 
 ### Results
 
@@ -548,38 +590,386 @@ ran, so this is expected.
 | 2, 6 | `owner` equals `vault`, a 44-character key that parses (confirmation), for a deployment WheelsAI created | | |
 | 3 | Operator view state; tiers below cost | | |
 | 3a | Idle nodes on the 3060 market before the create | | |
-| 4 | Create answered; hold taken (cents); **time Nosana went RUNNING; time `online` became true; our row stayed `provisioning` and unbilled until then** | | |
-| 5 | **B1; the `job_debit` row (time, amount; expected $0.008); available delta**; whether `reserved` moved; `timeout` as stored by Nosana | | |
-| 7 | Seconds create to RUNNING; RUNNING to `online: true`; image pull; **the Ollama container started**; endpoint host | | |
-| 8 | Chat completion answered; latency | | |
+| 4 | Create answered; hold taken (cents); **time Nosana went RUNNING; time `online` became true; time the node answered the platform's one-token request; our row stayed `provisioning` and unbilled until the node answered** | | |
+| 5 | **B1; the `job_debit` row (time, amount; expected 50 minutes of the market's price); `reservedCredits` up by the same amount; available delta**; `timeout` as stored by Nosana (50) | | |
+| 7 | Seconds create to RUNNING; RUNNING to `online: true`; `online` to model loaded and `running`; image pull; **the Ollama container started and loaded the model by itself**; endpoint host | | |
+| 8 | **The first chat completion after `running` answered; its latency (a few seconds at most expected)** | | |
 | 9 | Still running after one timeout; **time and amount of each extension's `job_debit`** | | |
-| 10 | Ledger rows consistent; first `gpu_usage` row not before `online` | | |
+| 10 | Ledger rows consistent; first `gpu_usage` row not before the node answered the platform's one-token request | | |
 | 11 | Replica change confirmed and billed at the right counts | | |
-| 12 | `fundsReleased` in the stop answer; seconds until the release was confirmed; **the `job_refund` row (time after the stop, amount)** | | |
-| 13 | **B2; settled delta (the true cost) against elapsed x $0.04796/h** | | |
+| 12 | `fundsReleased` in the stop answer; seconds until STOPPED and until the release was confirmed; hold returned once; final charge | | |
+| 13 | **The `job_refund` row (time after the stop, amount); `reservedCredits` back to 0; B2; settled delta (the true cost) against elapsed x the market's hourly price** | | |
 | 14 | Restart worked; debit and refund of the short second run | | |
 | 15 | Paused refusal: no row, no hold | | |
 | 16 | Nothing untracked | | |
-| | Each debit equals the fee-inclusive price x the timeout ($0.008 for 10 minutes of a 3060) | | |
+| | Whether a debit is the host price or the fee-inclusive price x the timeout (the 4090 debit of the first live run was the host price) | | |
 | | INSUFFICIENT_FUNDS: not expected in this run. The state is recoverable (Nosana retries and returns to RUNNING after a top-up) and a stop is accepted from it. Record it only if seen, with what the other project was running. | | |
 | | Did create, start, stop and the replica update all work through the `/api` prefix on the dashboard host? (verified for GETs only) | | |
 | | What the other project did on the account during the run (nothing, or what) | | |
 
 After the run: leave `NOSANA_TIMEOUT_UNIT=minutes` in every environment, raise
-`NOSANA_JOB_TIMEOUT_SECONDS` back to its default (7200) or leave it unset, and move what the run
-confirmed from part 3 into "Settled".
+`NOSANA_JOB_TIMEOUT_SECONDS` back to its default (7200) or leave it unset (with an API key it is
+never below 3000), and move what the run confirmed from part 3 into the run's own section.
+
+---
+
+## First live run (2026-10-08)
+
+The first deployment WheelsAI created on Nosana with a credential. The founder's Nosana account,
+API-key access paid with prepaid credits, the 4090 market, Llama 3.2 3B on the Ollama engine,
+one replica. Times are UTC. Two attempts were made.
+
+`NOSANA_MIN_CREDITS_USD` was set to 1 for this run: with the default of 5 a 4090 create is
+refused at this balance ($5 plus the estimate is more than the $5.09 available). The key in use
+was the account's all-scope key. The narrow key this checklist asks for had not been created
+yet, so the all-scope key has not been revoked.
+
+### Attempt 1: `NOSANA_JOB_TIMEOUT_SECONDS=600` (sent as 10 minutes)
+
+| What | Result |
+|---|---|
+| Create and start | Accepted. |
+| Nosana's status | RUNNING at once, with the endpoint `online: false`, `active_jobs` 0 and no job. |
+| Nosana's events | A pair every two to four minutes: `JOB_RESERVE_CONFIRMED` "Reserved 1 node(s) in market(s) <market>", then `JOB_LIST_ERROR` "Error Failed to assign job batch: Credit-paid jobs must have a timeout of at least 3000 seconds; 600 was requested." The listing task was pushed out each time. |
+| Credits | Nothing was debited. |
+| Our row | `provisioning` for ten minutes, with no reason shown anywhere. |
+| Stop | Accepted; Nosana went to STOPPED at once. |
+| The customer's money | The hold was returned once. Nothing was charged. |
+
+### Attempt 2: `NOSANA_JOB_TIMEOUT_SECONDS=3000` (sent as 50 minutes)
+
+| Time | What | Result |
+|---|---|---|
+| 00:43:05 | Create | Accepted. |
+| 00:43:06 | `JOB_RESERVE_CONFIRMED` | A node reserved. |
+| 00:43:07 | `JOB_LIST_CONFIRMED` | A job on a node. The job's `time_start` is in unix seconds. |
+| 00:43:07 | Credits | A `job_debit` row of $0.303: 50 minutes at the market's host price of $0.3636 an hour, without the 10% fee. The balance showed it as `reservedCredits` 0.303. |
+| 00:43:25 | The node | The model was pulled. |
+| 00:43:49 | Endpoint online; our row `running` | 44 seconds after create. Per-second billing started: 1 cent per 40 seconds at the 4090 price. (The watcher of the run was started later and first read `running` at 00:44:14.) |
+| 00:44:24 | First chat through our API | **Failed.** 504 `upstream_timeout` after 30.0 seconds (30,019 ms in our latency sample; `INFERENCE_TIMEOUT_MS` was 30000). The next `/v1` request answered 503 "No healthy nodes available for this deployment": a failed request marks its node unhealthy until the next probe. |
+| | The node called directly | The first completion took 42.06 seconds: Ollama loads a model into GPU memory on the first request for it. `GET /api/ps` listed no model before it and `llama3.2:3b` with `size_vram` 5.98 GB after. The second completion took 1.08 seconds. |
+| | With the model warm | Dashboard chat 1.4 s; `/v1` 0.7 s; streamed `/v1` 0.8 s, ending with `[DONE]`. |
+| 00:47:13 | Stop | Accepted. Nosana went STOPPING, then STOPPED within 12 seconds, with the event `JOB_STOPPED_CONFIRMED`. Our hold was released once and a final usage row written. **6 cents charged for 204 seconds.** |
+| 00:54:00 | Credits | 6 minutes 47 seconds after the stop: a `job_refund` row of $0.277, `reservedCredits` back to 0, `settledCredits` up by 0.026. The job cost $0.026 for the 4.1 minutes it ran. |
+
+Credit rows are listed by `GET /credits/transactions` as
+`{transactions: [{id, type, amountUsd, createdAt, method}], total}`.
+
+The 204 billed seconds are the time from 00:43:49, when the status worker moved the row to
+`running`, to the stop at 00:47:13: three ticks of the billing worker (40, 80 and 40 seconds)
+and a final window of 44. The second run confirmed the same arithmetic on three deployments.
+
+### What the run settled
+
+- **Create, start and stop work with an API key through the SDK.** The replica update was not
+  exercised.
+- **RUNNING precedes any node.** Nosana reported RUNNING with no job and nothing online, in both
+  attempts.
+- **The timeout is minutes.** 50 was sent and 50 minutes were reserved.
+- **The 3000-second rule.** Nosana does not assign a credit-paid job whose timeout is under 3000
+  seconds. The create and the start are accepted all the same; the refusal is only in the
+  deployment's events.
+- **Credits are reserved at listing, at the host price without the fee.** The amount shows as
+  `reservedCredits`, and the unused part comes back as a `job_refund` row about seven minutes
+  after a stop. Until then the whole reservation is out of the available balance.
+- **44 seconds from create to an online endpoint** on a 4090 for a 2 GB model, with the Ollama
+  container pulling the model before it opens its port.
+- **The first request is cold.** An online endpoint means the server answers, not that the model
+  can. The first request waited 42 seconds. (The second run showed what that wait is: loading the
+  model takes a few seconds; the node's first generation after its container starts takes most
+  of it.)
+
+### What it changed in the code
+
+1. **The 50-minute minimum.** With an API key paying, the API does not start when
+   `NOSANA_JOB_TIMEOUT_SECONDS` or `NOSANA_BATCH_JOB_TIMEOUT_SECONDS` is under 3000, and a
+   shorter timeout asked for a single deployment or training job is raised to 3000. Wallet
+   access keeps its 600-second minimum. The stand-in Nosana API refuses to list a credit-paid
+   job under 50 minutes the way Nosana does, and models the reservation and the later refund: a
+   `job_debit` row when a job is listed and a `job_refund` row for the unused part when the
+   reservation is settled, with the fields a live row carries.
+   A fine-tuning run that outlives its own limit (the run limit plus the set-up allowance) is
+   still stopped by the platform then, and not only at the 50-minute timeout Nosana was given.
+2. **A deployment Nosana cannot place ends with a reason.** The status worker reads a waiting
+   deployment's events from 60 seconds after the submit. A listing that keeps failing ends the
+   row as `nosana_list_failed`; a row still waiting after `NOSANA_PROVISIONING_LIMIT_SECONDS`
+   (1800 by default) ends as `no_capacity` or `start_timeout`. The deployment is stopped on
+   Nosana in the same pass, the hold is returned once, nothing is charged, and the customer
+   reads a sentence for each reason. Nosana's own message goes to the log and to
+   `GET /api/platform/compute`.
+3. **The cold first request.** The Ollama container starts loading its model right after its
+   server starts, and `OLLAMA_KEEP_ALIVE=-1` keeps it loaded. The platform's probe of an Ollama
+   node reads `GET /api/ps` (no more than 64 KB of the answer) and is healthy only when the
+   deployment's model is listed **and** the node has answered the platform's load request for
+   it. A model deployment becomes `running`, and is billed, only when an endpoint is online
+   **and** that probe is healthy. `INFERENCE_TIMEOUT_MS` defaults to 120000.
+4. **The load request.** Requests are routed only to healthy nodes, and Ollama loads a model
+   only when a request for it arrives. So when the probe finds an Ollama server that answers
+   without the deployment's model loaded, or with the model listed and not yet seen to answer,
+   the platform sends the node the smallest real generation: `POST /api/generate` with
+   `{"model": "<model>", "prompt": "Hi", "stream": false, "keep_alive": -1, "options": {"num_predict": 1}}`.
+   One such request per node at a time, in the background, with a ten-minute limit of its own
+   (the request waits for a node that sends nothing until it is done, for as long as that limit
+   and no shorter). The probe is healthy once it has been answered. A node that is already warm
+   answers in well under a second, so after a restart of the API a node that is idle is healthy
+   again within its first probe. A node that is busy with a customer's answer queues the request
+   behind it: its probe reads "not known yet", which never makes a deployment `running` and
+   leaves a node that was serving as it was, for up to a minute. What was seen answering is
+   forgotten when the node stops answering its probe, when Nosana reports the endpoint offline
+   and when the deployment leaves service, and it is asked for again after five minutes: the
+   address is the deployment's, and a new container behind it lists its model while still
+   loading. Before the first `running` this makes the load inside the container
+   a head start and not the only way the model gets loaded. Afterwards, a running deployment
+   whose model was unloaded heals within about two status ticks. vLLM was left on its `/health`
+   at this point; item 8 below gave it a load request of its own.
+
+   The request was a bare load (no prompt) until the second live run showed that a loaded
+   model's first generation is the slow part; see that run.
+
+### The start script, run locally
+
+The start script the API generates was run under `/bin/sh` (dash) with a real Ollama binary
+(version 0.9.6), an isolated model folder and the model `smollm:135m`. The script was the
+generated one with only the two port numbers and the model name changed.
+
+| What | Result |
+|---|---|
+| The pull server | Came up and pulled the model. |
+| The final server | Answered on the exposed port 21 seconds after start. |
+| The preload | One second later `GET /api/ps` listed `smollm:135m`, with no request from outside and `expires_at` in the year 2319 (never unloaded). The server's log shows the runner had started 4.5 seconds after that listing: `/api/ps` lists a model from the moment its load begins, which is why the platform does not take a listing alone as ready. |
+| What the preload sends | The request took 5.6 seconds for a load of 4.5: in a container the standard input is not a terminal, so `ollama run <model> ""` sends a prompt of one space and the model generates a short answer. It is a load followed by a first generation, not a bare load. |
+| A completion through `/v1/chat/completions` | 147 ms. |
+| The preload job | Ended by itself and was left as one defunct child of the server process. |
+| The container's log | The preload wrote Ollama's progress spinner (terminal escape sequences) to it through stderr. |
+
+After that run the script was changed in what it writes to the log, and in nothing else: the
+preload's stderr goes to `/dev/null`, a preload that does not complete writes the one line
+"model preload did not complete; the model loads on the first request", and the shell no longer
+reports the pull server it ended. Those three are covered by the shell test with a stand-in
+`ollama` binary (`apps/api/src/tests/nosanaJobDefinitions.unit.test.ts`), which also proves the
+order of calls: pull on loopback, then the exposed server, then the wait for it, then the load.
+They have not been run with a real Ollama binary.
+
+## Second live run (2026-10-08)
+
+The re-run with the changes above, the same day, on the same account with API-key access and
+prepaid credits. Seven deployments, one replica each, created and stopped through the WheelsAI
+API the way the dashboard does it: four of Llama 3.2 3B on the Ollama engine (A to D; the
+container image on the nodes was `ollama/ollama:0.32.6`) and three of Phi-3 mini on vLLM (E to
+G; `vllm/vllm-openai:v0.6.0`). Times are UTC.
+
+`NOSANA_MIN_CREDITS_USD` was 1 for this run as well (the 4090 creates were admitted with $5.06
+and less available, which the default of 5 refuses), and the key was the same all-scope key.
+
+Free nodes during the run (`GET /nodes/queued-nodes?marketAddress=<market>`): 3060 none (15 or
+16 busy), 4070 none, 4090 between none and two (81 or 82 busy), and no node at all, free or
+busy, in the A100 40GB and H100 markets.
+
+### A. The 3060 market, with no node free at the create
+
+| Time | What | Result |
+|---|---|---|
+| 06:01:16 | Create | Accepted; hold of 36 cents. Nosana RUNNING, endpoint offline, no job. |
+| 06:01:19 | `JOB_RESERVE_SHORTFALL` | "1 of 1 job(s) waiting for a matching node". Nothing listed, nothing debited. |
+| 06:01:49 | `JOB_RESERVE_CONFIRMED`, then `JOB_LIST_CONFIRMED` | A node had come free. A `job_debit` row of $0.037: 50 minutes at the market's host price of $0.0436 an hour, without the fee. |
+| 06:02:31 | The status worker's first probe of the online endpoint | The server answered with no model loaded, and the platform sent its load request (a bare load on this deployment). Answered 1.5 seconds later. |
+| 06:02:40 | Our row `running` | 84 seconds after create, 50 seconds after the job was listed. Billing started here. |
+| 06:02:54 | The first chat through our API | **200 in 1.1 seconds.** Then the dashboard chat 0.8 s, `/v1` 0.8 s, streamed `/v1` 0.9 s ending with `[DONE]`. The endpoint as the dashboard page prints it (`/v1/<slug>/chat/completions`) answered 200, and `/v1/models` listed the deployment. |
+| | The node | Ollama 0.32.6; the model loaded with a context of 4,096 and 2.55 GB of GPU memory; `expires_at` in the year 2319. |
+| | The dashboard page | Checked in a browser: `running`, 1/1 healthy nodes, 4 requests, latency median 820 ms. |
+| 06:05:11 | Stop | **Not confirmed.** The read that precedes a stop failed on the machine running the API with `getaddrinfo EAI_AGAIN` (the name did not resolve). The API answered 502 `nosana_stop_failed`, the row stayed `running`, the hold stayed, and billing went on, which is the right outcome for a stop nobody confirmed. |
+| 06:11:32 | Stop again | Accepted. Nosana STOPPED within 14 seconds. The hold was returned once. **6 cents charged for 532 seconds** (1 cent per 100 seconds; five ticks and a final window of 32). |
+| 06:22:00 | Credits | A `job_refund` row of $0.027, 10 minutes 28 seconds after the stop. The job cost $0.010 for 9.7 minutes of a 3060; pro rata at the host price is $0.007, so this looks like a $0.01 minimum. |
+
+### B. The A100 market, which had no node
+
+Run with `NOSANA_PROVISIONING_LIMIT_SECONDS=300`, to see the limit end a deployment.
+
+| Time | What | Result |
+|---|---|---|
+| 06:17:05 | Create | Accepted; hold of 288 cents. Nosana RUNNING, endpoint offline, no job. |
+| 06:17:06 to 06:20:38 | `JOB_RESERVE_SHORTFALL` four times | At 06:17:06, 06:17:37, 06:18:37 and 06:20:38: Nosana tries again after 30 seconds, then 1, 2 and 4 minutes. No job was listed and nothing was debited. |
+| 06:22:10 | The status worker | After 303 seconds: the row `failed` with `no_capacity`, the deployment stopped on Nosana (STOPPED), and the hold of 288 cents returned once. No usage row. |
+| | The customer | The dashboard page, checked in a browser: "No GPU became available. No GPU of this type was free in time, so the deployment was not started. Nothing was charged, and your reservation was returned. You can start it again, or choose another GPU type." |
+| | The operator | `GET /api/platform/compute` lists the row under `placementFailures` with `no_capacity`; the API log has the error line that begins "Deployment failed: Nosana could not place it or it never became ready", with `waitedSeconds: 303`. |
+
+### C. The 4090 market, with no node free at the create
+
+| Time | What | Result |
+|---|---|---|
+| 06:23:35 | Create | Accepted; hold of 90 cents. `JOB_RESERVE_SHORTFALL` at 06:23:36, 06:24:07, 06:25:07 and 06:27:08. |
+| 06:31:09 | `JOB_LIST_CONFIRMED` | A node after 7 minutes 34 seconds of waiting. A `job_debit` row of $0.303. The default limit of 30 minutes left the row waiting, as it should. |
+| 06:33:11 | The first probe of the online endpoint | The platform sent a bare load; answered in 6 seconds. |
+| 06:33:20 | Our row `running` | 2 minutes 11 seconds after the job was listed. |
+| 06:33:36 | The first chat through our API | **200, but in 22.1 seconds.** A second chat sent at 06:33:51 took 7.2 seconds. Both were answered at 06:33:58. The next ones took 0.55 and 0.59 seconds. |
+| | Checked on the node afterwards | Unloading the model and loading it again with a bare load took 2.5 seconds, and a chat right after it 1.7 seconds. So loading was not what the first request waited for. It waited for the node's first generation after its container had started. |
+| 06:39:05 | Stop | Accepted at once; Nosana STOPPED within 7 seconds; hold returned once. **9 cents charged for 345 seconds.** |
+| 06:46:00 | Credits | A `job_refund` row of $0.254, 6 minutes 55 seconds after the stop. The job cost $0.049 for 8 minutes of a 4090. |
+
+That deployment is what changed the load request from a bare load to one generated token.
+
+### D. The 4090 market again, with the load request as it is now
+
+| Time | What | Result |
+|---|---|---|
+| 06:44:38 | Create | Accepted; a node was free. `JOB_LIST_CONFIRMED` at 06:44:42; a `job_debit` row of $0.303. |
+| 06:45:31 | The first probe of the online endpoint | 53 seconds after create. The server answered with no model loaded, and the platform sent its one-token request. |
+| 06:46:20 | The request answered | **After 48.7 seconds**: that is what a 4090 node needed from its server answering to its first generated token. The row stayed `provisioning` and unbilled throughout. |
+| 06:46:20 | Our row `running` | 102 seconds after create. Billing started here. |
+| 06:46:28 | The first chat through our API | **200 in 4.3 seconds.** Then the dashboard chat 0.6 s, `/v1` 0.75 s, streamed `/v1` 0.9 s ending with `[DONE]`. |
+| | Checked on the node afterwards | With the container warm: unload, then the platform's one-token request took 3.5 seconds (all of it load), and a chat right after it 1.2 seconds. |
+| 06:47:52 | Stop | Accepted; Nosana STOPPED within 13 seconds; hold returned once. **3 cents charged for 92 seconds.** |
+| 06:51:00 | Credits | A `job_refund` row of $0.283, 3 minutes 8 seconds after the stop. The job cost $0.020 for 3.2 minutes of a 4090. |
+
+### E. vLLM on the 4090 market
+
+Phi-3 mini (`microsoft/Phi-3-mini-4k-instruct`) on the vLLM engine, the first vLLM deployment
+WheelsAI created on Nosana. The deploy form picks vLLM for 12 of the catalog's 21 models.
+
+| Time | What | Result |
+|---|---|---|
+| 07:00:11 | Create | Accepted: Nosana took the vLLM job definition. Hold of 90 cents. `JOB_RESERVE_SHORTFALL` at 07:00:13, a node reserved at 07:00:43, `JOB_LIST_CONFIRMED` at 07:00:44, a `job_debit` row of $0.303. |
+| 07:06:02 | Endpoint online, `/health` 200; our row `running` | 5 minutes 18 seconds after the job was listed: the 4090 market does not keep the `vllm/vllm-openai:v0.6.0` image, and the model is a 7.6 GB download. |
+| 07:06:11 | The first chat through our API | **200, but in 27.2 seconds.** |
+| 07:06:20 | Nosana reported the endpoint offline | During that first generation. Our row went `degraded`, and requests at 07:06:40 were answered **404 `model_not_found`**. |
+| 07:06:50 | Online again; our row `running` | |
+| 07:07:13 | Chats | Dashboard chat 0.28 s; `/v1` 0.23 s; streamed `/v1` 0.44 s ending with `[DONE]`, first token after 0.21 s. A one-token completion sent to the node directly took 0.85 s. |
+| 07:08:11 | Stop | Accepted; Nosana STOPPED within 14 seconds; hold returned once. **3 cents charged for 81 seconds**, the second `running` period; the 18 seconds before the row went `degraded` were not billed. |
+| 07:14:00 | Credits | A `job_refund` row of $0.257, 5 minutes 49 seconds after the stop. The job cost $0.046 for 7.5 minutes of a 4090. |
+
+That deployment is why a vLLM deployment, like an Ollama one, is now `running` only once its
+node has answered one token, and why a deployment that is not serving at the moment answers 503.
+
+### F. vLLM again: the node served and Nosana's record said it did not
+
+The same deployment, with the vLLM load request in the code.
+
+| Time | What | Result |
+|---|---|---|
+| 07:26:12 | Create | Accepted; a node was free. `JOB_LIST_CONFIRMED` at 07:26:14; a `job_debit` row of $0.303. |
+| 07:26:16 to 07:55 | Nosana's record of the deployment | **At every reading in the half hour**: the job list said `QUEUED` with `time_start` 0, `active_jobs` 0, the endpoint `online: false`. The read of the single job (`GET /deployments/{id}/jobs/{job}`) said state 1, running since 07:26:13. |
+| 07:42 to 07:56 | The node | Answered `/health` with 200 whenever it was asked; at 07:52:08 a one-token completion sent to it directly took 2.2 seconds and a chat 0.8. |
+| | Our row | `provisioning` throughout: it waited for `online`. Requests through our API were answered 503 "This deployment is still starting. Try again once it is running." |
+| 07:56:22 | The status worker | After 1,807 seconds: the row `failed` with `start_timeout`, the deployment stopped on Nosana (STOPPED), the hold of 90 cents returned once. Nothing was charged to the customer. |
+| 08:01:00 | Credits | A `job_refund` row of $0.12, 4 minutes 38 seconds after the stop. The job cost the platform $0.183 for 30 minutes of a 4090. |
+
+That deployment is why the status worker now probes an endpoint Nosana reports offline, and
+takes a node that answers as serving.
+
+### G. vLLM with the code as it is now
+
+| Time | What | Result |
+|---|---|---|
+| 08:02:30 | Create | Accepted; `JOB_LIST_CONFIRMED` at 08:02:33; a `job_debit` row of $0.303. This time Nosana's job list said RUNNING at once. |
+| 08:06:21 | The first probe that got `/health` 200 | The platform sent its one-token request. |
+| 08:06:25 | The request answered | After 3.8 seconds on this node. |
+| 08:06:30 | Our row `running` | 4 minutes after create. Billing started here. |
+| 08:06:37 | The first chat through our API | **200 in 0.74 seconds.** Then the dashboard chat 0.23 s, `/v1` 0.23 s, streamed `/v1` 0.55 s ending with `[DONE]`. |
+| 08:06 to 08:08 | Our row | `running` throughout: no drop to `degraded`. Chats at 08:08:05 took 0.31, 0.24 and 0.56 seconds. |
+| 08:08:09 | Stop | Accepted; Nosana STOPPED within 14 seconds; hold returned once. **3 cents charged for 99 seconds.** |
+| 08:15:00 | Credits | A `job_refund` row of $0.268, 6 minutes 51 seconds after the stop. The job cost $0.035 for 5.6 minutes of a 4090. |
+
+Afterwards the operator view showed nothing running, nothing untracked and no drafts, and
+listed deployments B and F under `placementFailures`; the account listed 28 deployments, nine
+of them ours, all STOPPED. Available credit went from $5.065 to $4.722: the whole run cost
+$0.343, of which $0.183 was deployment F.
+
+### What the second run settled
+
+- **Waiting for a GPU.** With no node free, Nosana logs `JOB_RESERVE_SHORTFALL` and tries again
+  after 30 seconds, then 1, 2 and 4 minutes. Nothing is listed and nothing is debited while a
+  deployment waits. The 3060 deployment got its node at the 30-second try and the 4090
+  deployment at the 4-minute one.
+- **`no_capacity` works against Nosana.** A deployment no node took was ended at the
+  provisioning limit, stopped on Nosana and its hold returned, with nothing spent on either
+  side.
+- **The debit is the host price on the 3060 market as well** ($0.037 for 50 minutes).
+- **The refund comes 3 to 10 and a half minutes after a stop**, always on a whole minute.
+- **Loaded is not ready.** On a 4090 a bare load is answered in 2.5 to 6 seconds, and the first
+  generation after a container starts came 48.7 seconds after the server first answered. On the
+  3060 the first chat, sent 21 seconds after the bare load was answered, took 1.1 seconds.
+- **`running` now means the node has answered.** With the one-token request the first chat
+  after `running` took 4.3 seconds on a cold 4090, against 22.1 with a bare load and a 504
+  after 30 seconds on the first run. Later requests took 0.55 to 0.9 seconds (one on the 3060,
+  a minute and a half later, 1.4).
+- **Billing is exact to the second.** On each deployment that served, the billed seconds are
+  the time from the row turning `running` to the stop (on E, from the second time it did).
+- **A stop that cannot be confirmed leaves everything as it was**, and says so.
+- **Container output is not available to us.** The deployment logs route returns Nosana's
+  lifecycle events; the Nosana SDK does not expose a container's stdout and stderr.
+- **vLLM deployments work.** Nosana accepts the definition, the engine starts in about five
+  minutes on a 4090 for a 7.6 GB model (the image is not kept by the market), and requests
+  take about a quarter of a second once it is warm.
+- **A vLLM node's first generation can be slow too**: 27 seconds for the first chat on E's
+  node, against 3.8 seconds for the one-token request on G's; a one-token completion sent to
+  F's node ten minutes after it came up took 2.2. While E's ran, Nosana's own health check missed and it reported the
+  endpoint offline for half a minute.
+- **Nosana's record can stay wrong for as long as a deployment lives.** On F the job list said
+  `QUEUED` and the endpoint offline at every reading in the half hour before the platform
+  ended it, while the engine answered from 07:42 at the latest. The read of the single job had
+  it right.
+- **`start_timeout` works against Nosana.** F was ended at the provisioning limit, stopped and
+  its hold returned. With `no_capacity` on B, two of the three endings have now been seen there.
+
+### What the second run changed in the code
+
+5. **The load request generates one token.** It was a bare load. See item 4 above and
+   deployments C and D.
+6. **A stop survives a network failure.** The read that precedes a stop is made up to three
+   times, 750 ms apart, when it fails on the network (a name that does not resolve, a connection
+   refused or reset, a host or network that cannot be reached). A stop request that fails the
+   same way is sent again, up to four times 2.5 s apart, unless the read after it shows the
+   deployment stopping or stopped. An answer from Nosana is never repeated. Deployment A is the
+   reason.
+7. **What a customer reads when a stop is not confirmed**: "We could not confirm the stop, so
+   the deployment may still be running. Try again in a moment."
+8. **A vLLM node is ready once it has answered one token.** `/health` 200 is no longer enough:
+   the platform sends `POST /v1/completions` with
+   `{"model": "<model>", "prompt": "Hi", "max_tokens": 1, "stream": false}` and the row turns
+   `running` when it is answered, by the same rules as for Ollama (one request per node, in the
+   background, the answer remembered and forgotten when the engine stops answering). Deployments
+   E and G.
+9. **Nosana's `online` is a hint; the platform's own probe decides.** When Nosana reports no
+   endpoint of a model deployment online, the status worker probes the endpoints all the same
+   (a waiting deployment from 60 seconds after its submit; an endpoint with no container behind
+   it answers 503 in under a second). An endpoint whose node answers counts as online: a waiting
+   deployment becomes `running`, and a running one is not moved to `degraded` on Nosana's flag
+   alone. Deployment F.
+10. **A deployment that exists and is not serving answers 503, not 404.** `/v1` and the
+    dashboard chat answer `service_unavailable` for a deployment that is still starting or is
+    degraded, which OpenAI clients try again; `model_not_found` is for one that is stopped,
+    failed or unknown. Deployment E.
+11. **A node that is busy is not marked unhealthy.** While the platform's one-token request to
+    a node that reports ready is unanswered for under a minute, a node that was healthy keeps
+    its health: after a restart of the API a warm node in the middle of a long answer is not
+    taken out of rotation, and a running deployment is not moved to `degraded` for it when
+    Nosana reports the endpoint offline at the same moment. What was seen answering is
+    forgotten when the engine stops answering, when Nosana reports the endpoint offline and the
+    node does not answer the platform's probe, and after five minutes.
+
+### Not reached by either run
+
+An extension at about 45 minutes, a replica change, a restart of a stopped deployment, the
+paused refusal, a fine-tuned adapter on vLLM, a gated model (one that needs a Hugging Face
+token), and `nosana_list_failed` against Nosana itself (covered by the stand-in). Item 9 has
+not met Nosana's stale record again: G's was right from the start. The first chat after a cold
+start can still take a few seconds longer than later ones (4.3 seconds on D).
 
 ---
 
 ## Settled by the 2026-10-07 verification
 
+The live runs of 2026-10-08 corrected two rows of this table. Credits for a job show as
+`reservedCredits` while it runs, and the refund came between 3 and 10 and a half minutes after
+the stop, not about one. The debits seen (a 4090 and a 3060) were at the market's host price,
+without the 10% fee. Both rows are left as written, with the correction here.
+
 These were in part 3. None was measured by a paid run of ours. Each was settled by reading
 Nosana's published OpenAPI document, the public deployment-manager source (`127f915`,
 2026-10-05) and node source (`3f07617`), the client packages, and read-only GETs with the
-founder's key against the shared account. Nothing was created, started or stopped. The full
-findings are in `workfiles/batch7/verification.json` of the project's Claude folder; the live
-responses were read from a scratch directory that does not outlive that session, so the file
-names below are references into the findings, not into the repository.
+founder's key against the shared account. Nothing was created, started or stopped. The live
+responses were not kept; the file names below identify the source read, not a file in this
+repository.
 
 | Settled | Evidence |
 |---|---|
@@ -605,39 +995,46 @@ names below are references into the findings, not into the repository.
 
 ---
 
-## 3. What stays unverified until that run
+## 3. What stays unverified
 
-Nothing below has been observed. What the 2026-10-07 verification settled is in the section
-above; this is what it left open, and what it added.
+What the two live runs settled is in their own sections above, and what the 2026-10-07
+verification settled is in "Settled". This is what they left open.
 
-On Nosana, for the run to show:
+On Nosana, for the rest of the checklist to show:
 
-- **Whether POST and PATCH behave through the `/api` prefix on the dashboard host** exactly as
-  on `api.nosana.com` (create, start, stop, update-replica-count), and what their response
-  bodies hold for an API-key deployment, which SDK 0.4.74 reads. Only GETs were made. The shared
-  proxy makes it very likely; the first create shows it. Steps 4, 11 and 12.
-- **That the Ollama container starts on the 3060 market** with the fixed definition and
-  `llama3.2:1b`. The image's entrypoint was not inspected locally (the free
-  `docker image inspect` before the run does that); the explicit `/bin/sh -c` entrypoint is
-  right either way. Also unproven on a node: that the server on `127.0.0.1:11435` ends on the
-  script's `kill` and the server on port 11434 then starts (run against a stand-in `ollama`
-  only). Step 7.
-- **The timing of `online`**: from create to RUNNING to an endpoint with `online: true` for
-  Ollama on the 3060 (and for vLLM 0.6.x on the 4070 in the fine-tuning run), image pull and
-  model load included. Also whether the tunnel registers before the health check passes, which
-  decides whether `online` alone means "serving". Steps 4 and 7.
+- **That a failing listing is ended by the platform on Nosana.** Attempt 1 of the first run was
+  stopped by hand. The rule that now ends it (`nosana_list_failed`, a stop, the hold returned)
+  has run against the stand-in only, with the events Nosana logged in that attempt. The
+  configuration that caused it can no longer be started. `no_capacity` and `start_timeout` were
+  both seen against Nosana on the second run (deployments B and F).
+- **That a node which answers behind an endpoint Nosana reports offline is taken as serving.**
+  The rule was written after deployment F and is covered by unit tests only, with a scripted
+  observation and probe; against the stand-in only the endpoint that does not answer has run.
+  G's record was right from the start.
+- **The first chat after a cold start.** It took 4.3 seconds on a 4090 on the second run,
+  against 0.55 to 0.9 seconds for later requests: the node has answered one token by then, and
+  its first full request is still slower than the next.
+- **The replica update through the SDK with an API key**, and what its response holds. Create,
+  start and stop are settled. Step 11.
+- **The 4070 market, and other models.** The runs used `llama3.2:3b` on Ollama (4090 and 3060)
+  and Phi-3 mini on vLLM (4090). A larger model, a model that needs a Hugging Face token, and a
+  fine-tuned adapter have not run. For vLLM 0.6.x on the 4070, see the fine-tuning run.
+- **Supply.** On 2026-10-08 the A100 40GB and H100 markets had no node, and the 3060 and 4070
+  markets none free. A deployment there waits, and is ended as `no_capacity` at the provisioning
+  limit.
+- **Whether a debit is always the host price.** The 4090 and 3060 debits were the host price x
+  50 minutes, without the 10% fee; the 6-hour debits of the other project equal the
+  fee-inclusive price.
 - **A credit-paid SIMPLE-EXTEND extension on a WheelsAI deployment**: the timing and amount of
-  the debit, and that the deployment stays RUNNING. Known from source only. Step 9.
-- **Whether `reservedCredits` is ever non-zero** while a job runs, or debits always land
-  straight in settled. Step 5.
-- **The minimum charge for a very short job** (about $0.01 observed), and whether a 10-minute
-  3060 job that runs to its end costs $0.008 or that minimum. Steps 13 and 14.
+  the debit, how `reservedCredits` moves, and that the deployment stays RUNNING. Known from
+  source only. Step 9.
+- **The minimum charge for a very short job** (about $0.01 observed on the other project, and
+  deployment A of the second run cost exactly $0.010 where pro rata was $0.007). Whether that is
+  a minimum is not confirmed. Step 14.
 - **The refund when a SIMPLE job completes on its own before its timeout.** Only refunds after a
   stop have been seen. The fine-tuning run shows it.
-- **Whether a node is free on the 3060 market at the time of the run.** There were 0 idle nodes
-  at the verification. Step 3a.
-- **That a timeout of 10 is read as minutes on a deployment of ours.** Settled from the source
-  and from other deployments on the account; step 5 is the confirmation.
+- **How long a refund takes in general.** Seven refunds of ours were seen, between 3 minutes 8
+  seconds and 10 minutes 28 seconds after the stop, each on a whole minute. Step 13.
 - **Whether an INSUFFICIENT_FUNDS deployment of ours resumes after a top-up in production.**
   The manager's defaults say so; production may override the retry cap. Not in the checklist (it
   would need the balance to run short); our handling is unit tested only.

@@ -83,17 +83,46 @@ interface FakeUsage {
   requestCount: number;
 }
 
+/** A scheduled_tasks row with everything a real one could tempt a page with. */
+interface FakeTask {
+  id: string;
+  orgId: string;
+  agentId: string;
+  taskType: string;
+  name: string;
+  createdAt: Date;
+  payload?: unknown;
+}
+
+/** A task_executions row. */
+interface FakeExecution {
+  id: string;
+  taskId: string;
+  status: string;
+  completedAt: Date | null;
+  createdAt: Date;
+  output?: unknown;
+  payload?: unknown;
+  error?: string | null;
+  delivery?: unknown;
+}
+
 function makePrismaStub(opts: {
   agents: FakeAgent[];
   payments?: FakePayment[];
   usage?: FakeUsage[];
+  tasks?: FakeTask[];
+  executions?: FakeExecution[];
 }) {
   const observed: {
     agentArgs?: any;
     aggArgs?: any;
     manyArgs?: any;
     usageAggArgs?: any;
-  } = {};
+    /** Every read of scheduled tasks and of their runs. */
+    taskArgs: any[];
+    executionArgs: any[];
+  } = { taskArgs: [], executionArgs: [] };
   return {
     observed,
     prisma: {
@@ -147,6 +176,34 @@ function makePrismaStub(opts: {
               requestCount: rows.length === 0 ? null : requestCount,
             },
           };
+        },
+      },
+      // What latestOwnResults reads (services/agentOwnSchedule.ts). Whole
+      // rows come back, as a careless select would give them: the loader
+      // must still let only the time and the text through.
+      scheduledTask: {
+        async findMany(args: any) {
+          observed.taskArgs.push(args);
+          const { where, take } = args;
+          return (opts.tasks ?? [])
+            .filter((t) => t.orgId === where.orgId && t.agentId === where.agentId && t.taskType === where.taskType)
+            .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
+            .slice(0, take);
+        },
+      },
+      taskExecution: {
+        async findMany(args: any) {
+          observed.executionArgs.push(args);
+          const { where, take } = args;
+          const task = (opts.tasks ?? []).find((t) => t.id === where.taskId);
+          if (!task || task.orgId !== where.task.orgId || task.agentId !== where.task.agentId) return [];
+          return (opts.executions ?? [])
+            .filter((e) => e.taskId === where.taskId && e.status === where.status && e.completedAt !== null)
+            .sort(
+              (a, b) =>
+                b.completedAt!.getTime() - a.completedAt!.getTime() || b.createdAt.getTime() - a.createdAt.getTime(),
+            )
+            .slice(0, take);
         },
       },
     },
@@ -723,9 +780,13 @@ const PAGE_KEY = {
 const textOf = (value: unknown) =>
   JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item));
 
-async function pageOf(agents: FakeAgent[], handle: string) {
+async function pageOf(
+  agents: FakeAgent[],
+  handle: string,
+  runs: { tasks?: FakeTask[]; executions?: FakeExecution[] } = {},
+) {
   const { loadPublicAgentByPrisma } = await import("../services/loadPublicAgent.js");
-  const stub = makePrismaStub({ agents });
+  const stub = makePrismaStub({ agents, ...runs });
   const result = await loadPublicAgentByPrisma({ handle, paymentsLimit: 10 }, makeDeps(stub).deps);
   return { result, stub };
 }
@@ -833,23 +894,192 @@ test("a task agent's page carries its form as a schema, the questions in their o
   assert.equal(Object.keys(bare.result!.use.task!.inputSchema.properties).length, 1);
 });
 
-test("a self-running agent's page says whether its results are public, with nothing in latest yet", async () => {
-  const hidden = await pageOf([{ ...baseAgent, agentKind: "scheduled" }], "eliza");
+const RESULTS_ORG = "org_results";
+const OWN_TASK: FakeTask = {
+  id: "task_own",
+  orgId: RESULTS_ORG,
+  agentId: "agent_1",
+  taskType: "agent_run",
+  name: "Eliza (schedule)",
+  createdAt: new Date("2026-09-01T00:00:00Z"),
+  payload: { prompt: "RUN_PROMPT_NEVER_SHOWN", deliver: { alertChannelId: "channel_NEVER_SHOWN" } },
+};
+
+/** A finished run of the own schedule, `day` days into October 2026. */
+const runOf = (day: number, over: Partial<FakeExecution> = {}): FakeExecution => ({
+  id: `exec_${day}`,
+  taskId: OWN_TASK.id,
+  status: "success",
+  completedAt: new Date(Date.UTC(2026, 9, day, 9, 0, 5)),
+  createdAt: new Date(Date.UTC(2026, 9, day, 9, 0, 0)),
+  output: { content: `Result of day ${day}`, input: "RUN_INPUT_NEVER_SHOWN", toolCalls: [{ name: "TOOL_CALL_NEVER_SHOWN" }] },
+  payload: { prompt: "RUN_PROMPT_NEVER_SHOWN", deliver: { alertChannelId: "channel_NEVER_SHOWN" } },
+  error: null,
+  delivery: [{ channelId: "channel_NEVER_SHOWN", name: "PLACE_NEVER_SHOWN", type: "slack", status: "sent" }],
+  ...over,
+});
+
+const scheduledAgent = (over: Partial<FakeAgent> = {}): FakeAgent => ({
+  ...baseAgent,
+  orgId: RESULTS_ORG,
+  agentKind: "scheduled",
+  publicResults: true,
+  ...over,
+});
+
+test("a self-running agent's page says whether its results are public; with the switch off nothing is read", async () => {
+  const runs = { tasks: [OWN_TASK], executions: [runOf(1), runOf(2)] };
+  const hidden = await pageOf([scheduledAgent({ publicResults: false })], "eliza", runs);
   assert.deepEqual(hidden.result?.use, {
     state: "view_only",
     key: null,
     transcriptsStored: false,
     scheduled: { resultsPublic: false, latest: [] },
   });
-  const shown = await pageOf([{ ...baseAgent, agentKind: "scheduled", publicResults: true, pageKey: PAGE_KEY }], "eliza");
-  assert.deepEqual(shown.result?.use.scheduled, { resultsPublic: true, latest: [] });
+  assert.deepEqual(hidden.stub.observed.taskArgs, [], "results that are not shown are not read");
+  assert.deepEqual(hidden.stub.observed.executionArgs, []);
+  assert.ok(!textOf(hidden.result).includes("Result of day"));
+
+  // Switched on, with no schedule yet or no finished run: an empty list.
+  const none = await pageOf([scheduledAgent({ pageKey: PAGE_KEY })], "eliza");
+  assert.deepEqual(none.result?.use.scheduled, { resultsPublic: true, latest: [] });
+  const noRuns = await pageOf([scheduledAgent()], "eliza", { tasks: [OWN_TASK], executions: [] });
+  assert.deepEqual(noRuns.result?.use.scheduled, { resultsPublic: true, latest: [] });
+
   // Its suggested schedule and what it is told at each run stay private.
   const withConfig = await pageOf(
-    [{ ...baseAgent, agentKind: "scheduled", kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *" }, prompt: "RUN_MESSAGE_SECRET" } } }],
+    [scheduledAgent({ kindConfig: { scheduled: { schedule: { cronExpression: "0 9 * * *" }, prompt: "RUN_MESSAGE_SECRET" } } })],
     "eliza",
+    runs,
   );
   assert.ok(!textOf(withConfig.result).includes("RUN_MESSAGE_SECRET"));
   assert.ok(!textOf(withConfig.result).includes("0 9 * * *"));
+});
+
+test("with the switch on, latest is the last three successful results of the own schedule, newest first", async () => {
+  const { result, stub } = await pageOf([scheduledAgent()], "eliza", {
+    tasks: [OWN_TASK],
+    executions: [
+      runOf(1),
+      runOf(2),
+      runOf(3),
+      runOf(4),
+      // Never a run that failed, was stopped, or has not finished.
+      runOf(5, { status: "failed", output: null, error: "FAILURE_REASON_NEVER_SHOWN" }),
+      runOf(6, { status: "timeout", output: null, error: "FAILURE_REASON_NEVER_SHOWN" }),
+      runOf(7, { status: "running", completedAt: null, output: null }),
+    ],
+  });
+  assert.deepEqual(result?.use.scheduled, {
+    resultsPublic: true,
+    latest: [
+      { finishedAt: new Date("2026-10-04T09:00:05Z"), text: "Result of day 4" },
+      { finishedAt: new Date("2026-10-03T09:00:05Z"), text: "Result of day 3" },
+      { finishedAt: new Date("2026-10-02T09:00:05Z"), text: "Result of day 2" },
+    ],
+  });
+  // The read is scoped by the loaded agent's own organization and id.
+  assert.deepEqual(stub.observed.taskArgs[0].where, { orgId: RESULTS_ORG, agentId: "agent_1", taskType: "agent_run" });
+  assert.deepEqual(stub.observed.executionArgs[0].where, {
+    taskId: "task_own",
+    status: "success",
+    completedAt: { not: null },
+    task: { orgId: RESULTS_ORG, agentId: "agent_1" },
+  });
+  assert.deepEqual(stub.observed.executionArgs[0].select, { completedAt: true, output: true });
+});
+
+test("each result is cut at 8,000 characters, and a success with no text is passed over", async () => {
+  const { result } = await pageOf([scheduledAgent()], "eliza", {
+    tasks: [OWN_TASK],
+    executions: [
+      runOf(1, { output: { content: "a".repeat(8_000) } }),
+      runOf(2, { output: { content: "b".repeat(20_000) } }),
+      runOf(3, { output: { content: "   " } }),
+      runOf(4, { output: null }),
+    ],
+  });
+  const latest = result!.use.scheduled!.latest;
+  assert.deepEqual(latest.map((r) => r.text.length), [8_000, 8_000]);
+  assert.equal(latest[0]!.text, "b".repeat(8_000));
+  assert.equal(latest[1]!.text, "a".repeat(8_000));
+});
+
+test("only the agent's own schedule shows: not its other tasks, another agent's, or another organization's", async () => {
+  const later: FakeTask = { ...OWN_TASK, id: "task_later", createdAt: new Date("2026-09-15T00:00:00Z") };
+  const report: FakeTask = { ...OWN_TASK, id: "task_report", taskType: "report", createdAt: new Date("2026-08-01T00:00:00Z") };
+  const otherAgent: FakeTask = { ...OWN_TASK, id: "task_other_agent", agentId: "agent_2", createdAt: new Date("2026-07-01T00:00:00Z") };
+  const otherOrg: FakeTask = { ...OWN_TASK, id: "task_other_org", orgId: "org_else", createdAt: new Date("2026-07-01T00:00:00Z") };
+  const { result } = await pageOf([scheduledAgent()], "eliza", {
+    tasks: [later, report, otherAgent, otherOrg, OWN_TASK],
+    executions: [
+      runOf(1),
+      runOf(2, { taskId: "task_later", output: { content: "LATER_TASK_RESULT" } }),
+      runOf(3, { taskId: "task_report", output: { content: "REPORT_RESULT" } }),
+      runOf(4, { taskId: "task_other_agent", output: { content: "OTHER_AGENT_RESULT" } }),
+      runOf(5, { taskId: "task_other_org", output: { content: "OTHER_ORG_RESULT" } }),
+    ],
+  });
+  assert.deepEqual(result?.use.scheduled?.latest, [
+    { finishedAt: new Date("2026-10-01T09:00:05Z"), text: "Result of day 1" },
+  ]);
+});
+
+test("results show whatever the page's use state is: showing results is its own switch", async () => {
+  const runs = { tasks: [OWN_TASK], executions: [runOf(1)] };
+  const states: Array<[string, FakeAgent["pageKey"]]> = [
+    ["view_only", null],
+    ["on", PAGE_KEY],
+    ["paused", { ...PAGE_KEY, enabled: false }],
+  ];
+  for (const [state, pageKey] of states) {
+    const { result } = await pageOf([scheduledAgent({ pageKey })], "eliza", runs);
+    assert.equal(result?.use.state, state);
+    assert.deepEqual(result?.use.scheduled?.latest.map((r) => r.text), ["Result of day 1"], state);
+  }
+});
+
+test("an agent of another kind shows no results, and a private agent nothing at all", async () => {
+  const runs = { tasks: [OWN_TASK], executions: [runOf(1)] };
+  for (const agentKind of ["conversation", "task"]) {
+    const { result, stub } = await pageOf([scheduledAgent({ agentKind })], "eliza", runs);
+    assert.equal(result?.use.scheduled, undefined, agentKind);
+    assert.deepEqual(stub.observed.taskArgs, [], agentKind);
+    assert.ok(!textOf(result).includes("Result of day"), agentKind);
+  }
+  const hidden = await pageOf([scheduledAgent({ isPublic: false })], "eliza", runs);
+  assert.equal(hidden.result, null);
+  assert.deepEqual(hidden.stub.observed.taskArgs, []);
+  assert.deepEqual(hidden.stub.observed.executionArgs, []);
+});
+
+test("of a run only when it finished and its text cross: never its input, its prompt, a failure, a place or an id", async () => {
+  const { result } = await pageOf([scheduledAgent({ pageKey: PAGE_KEY })], "eliza", {
+    tasks: [OWN_TASK],
+    executions: [runOf(1), runOf(2, { status: "failed", output: null, error: "FAILURE_REASON_NEVER_SHOWN" })],
+  });
+  const sent = textOf(result);
+  assert.ok(sent.includes("Result of day 1"));
+  for (const forbidden of [
+    "RUN_INPUT_NEVER_SHOWN",
+    "RUN_PROMPT_NEVER_SHOWN",
+    "TOOL_CALL_NEVER_SHOWN",
+    "FAILURE_REASON_NEVER_SHOWN",
+    "channel_NEVER_SHOWN",
+    "PLACE_NEVER_SHOWN",
+    "alertChannelId",
+    "delivery",
+    "task_own",
+    "exec_1",
+    "Eliza (schedule)",
+    RESULTS_ORG,
+  ]) {
+    assert.ok(!sent.includes(forbidden), forbidden);
+  }
+  assert.deepEqual(Object.keys(result!.use.scheduled!).sort(), ["latest", "resultsPublic"]);
+  for (const one of result!.use.scheduled!.latest) {
+    assert.deepEqual(Object.keys(one).sort(), ["finishedAt", "text"]);
+  }
 });
 
 test("the page key is not one of the agent's chat channels", async () => {

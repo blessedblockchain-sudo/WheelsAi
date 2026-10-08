@@ -443,3 +443,126 @@ test("GET /a/:handle drops anything private a loader might hand over beside the 
     assert.ok(!res.body.includes(forbidden), forbidden);
   }
 });
+
+// ============================================
+// A self-running agent's latest results
+// ============================================
+
+const scheduledPage = (scheduled: Record<string, unknown>, use: Record<string, unknown> = {}) => ({
+  ...fullPublicAgent,
+  agent: { ...fullPublicAgent.agent, agentKind: "scheduled" },
+  use: { state: "view_only", key: null, transcriptsStored: false, ...use, scheduled },
+});
+
+const resultOf = (day: number, extra: Record<string, unknown> = {}) => ({
+  finishedAt: new Date(Date.UTC(2026, 9, day, 9, 0, 5)),
+  text: `Result of day ${day}`,
+  ...extra,
+});
+
+test("GET /a/:handle carries a self-running agent's results as when each finished and its text", async () => {
+  for (const state of ["view_only", "on", "paused"]) {
+    const app = await makeApp({
+      loadPublicAgent: async () =>
+        scheduledPage(
+          { resultsPublic: true, latest: [resultOf(3), resultOf(2), resultOf(1)] },
+          { state, key: state === "on" ? PAGE_KEY : null },
+        ) as never,
+    });
+    const res = await app.inject({ method: "GET", url: "/a/eliza" });
+    assert.equal(res.statusCode, 200, state);
+    assert.equal(res.json().use.state, state);
+    // Whatever the page's use state is: showing results is its own switch.
+    assert.deepEqual(
+      res.json().use.scheduled,
+      {
+        resultsPublic: true,
+        latest: [
+          { finishedAt: "2026-10-03T09:00:05.000Z", text: "Result of day 3" },
+          { finishedAt: "2026-10-02T09:00:05.000Z", text: "Result of day 2" },
+          { finishedAt: "2026-10-01T09:00:05.000Z", text: "Result of day 1" },
+        ],
+      },
+      state,
+    );
+  }
+});
+
+test("GET /a/:handle holds the limits itself: three results at most, each cut at 8,000 characters, none while the switch is off", async () => {
+  const many = await makeApp({
+    loadPublicAgent: async () =>
+      scheduledPage({
+        resultsPublic: true,
+        latest: [resultOf(5, { text: "x".repeat(20_000) }), resultOf(4), resultOf(3), resultOf(2), resultOf(1)],
+      }) as never,
+  });
+  const latest = (await many.inject({ method: "GET", url: "/a/eliza" })).json().use.scheduled.latest;
+  assert.equal(latest.length, 3);
+  assert.equal(latest[0].text, "x".repeat(8_000));
+  assert.deepEqual(latest.slice(1).map((r: { text: string }) => r.text), ["Result of day 4", "Result of day 3"]);
+
+  // Even if a loader handed results over for a page that does not show them.
+  const off = await makeApp({
+    loadPublicAgent: async () => scheduledPage({ resultsPublic: false, latest: [resultOf(1)] }) as never,
+  });
+  const res = await off.inject({ method: "GET", url: "/a/eliza" });
+  assert.deepEqual(res.json().use.scheduled, { resultsPublic: false, latest: [] });
+  assert.ok(!res.body.includes("Result of day"));
+});
+
+test("GET /a/:handle sends nothing of a run but its time and text, whatever a loader hands over", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () =>
+      scheduledPage({
+        resultsPublic: true,
+        latest: [
+          resultOf(1, {
+            id: "EXECUTION_ID_NEVER_SHOWN",
+            taskId: "TASK_ID_NEVER_SHOWN",
+            input: "RUN_INPUT_NEVER_SHOWN",
+            prompt: "RUN_PROMPT_NEVER_SHOWN",
+            error: "FAILURE_REASON_NEVER_SHOWN",
+            failure: "FAILURE_SENTENCE_NEVER_SHOWN",
+            delivery: [{ channelId: "CHANNEL_NEVER_SHOWN", name: "PLACE_NEVER_SHOWN" }],
+            startedBy: "STARTED_BY_NEVER_SHOWN",
+          }),
+        ],
+        // Beside the list, too.
+        schedule: { cronExpression: "CRON_NEVER_SHOWN" },
+        taskId: "TASK_ID_NEVER_SHOWN",
+        deliver: { alertChannelId: "CHANNEL_NEVER_SHOWN" },
+        lastFailure: "FAILURE_REASON_NEVER_SHOWN",
+      }) as never,
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().use.scheduled, {
+    resultsPublic: true,
+    latest: [{ finishedAt: "2026-10-01T09:00:05.000Z", text: "Result of day 1" }],
+  });
+  for (const forbidden of [
+    "EXECUTION_ID_NEVER_SHOWN",
+    "TASK_ID_NEVER_SHOWN",
+    "RUN_INPUT_NEVER_SHOWN",
+    "RUN_PROMPT_NEVER_SHOWN",
+    "FAILURE_REASON_NEVER_SHOWN",
+    "FAILURE_SENTENCE_NEVER_SHOWN",
+    "CHANNEL_NEVER_SHOWN",
+    "PLACE_NEVER_SHOWN",
+    "STARTED_BY_NEVER_SHOWN",
+    "CRON_NEVER_SHOWN",
+    "alertChannelId",
+    "delivery",
+    "taskId",
+  ]) {
+    assert.ok(!res.body.includes(forbidden), forbidden);
+  }
+});
+
+test("GET /a/:handle answers 404 for a private self-running agent, results or not, as before", async () => {
+  // The loader answers null for a private agent whatever it holds.
+  const app = await makeApp({ loadPublicAgent: async () => null });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 404);
+  assert.deepEqual(res.json(), { error: "agent_not_found" });
+});

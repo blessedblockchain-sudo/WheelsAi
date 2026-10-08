@@ -9,7 +9,9 @@
  * It also says how the page can be used right now (`use`): view only, on
  * (with the page's publishable key), or paused, and what the panel of the
  * agent's kind needs. Never the agent's instructions, its tools, its
- * secrets' names, its organization or its daily cap.
+ * secrets' names, its organization or its daily cap. For a self-running
+ * agent whose owner shows its results, the last three of them: when each
+ * finished and its text, and nothing else of a run.
  *
  * This is the single most differentiated artifact in the product — it is
  * the visible manifestation of "agents that pay for their own compute"
@@ -29,6 +31,11 @@ import type { TaskInputSchema } from "@wheelsai/shared/agent-kind";
 import type { FastifyPluginAsync } from "fastify";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
+
+/** How many of a self-running agent's latest results its page shows. */
+export const PUBLIC_RESULTS_LIMIT = 3;
+/** Where the text of one result is cut. */
+export const PUBLIC_RESULT_MAX_CHARS = 8_000;
 
 // ============================================
 // Shapes
@@ -59,7 +66,13 @@ export interface PublicAgentUse {
     maxInputChars: number;
   };
   scheduled?: {
+    /** The owner's switch, "Show its latest results on this page". */
     resultsPublic: boolean;
+    /**
+     * The last successful results of the agent's own schedule, newest first,
+     * and only while the switch is on. When each finished and its text:
+     * never what it was told, a run that failed, or where results are sent.
+     */
     latest: Array<{ finishedAt: Date; text: string }>;
   };
 }
@@ -150,10 +163,14 @@ function serializeUse(use: PublicAgentUse) {
     ...(use.scheduled && {
       scheduled: {
         resultsPublic: use.scheduled.resultsPublic,
-        latest: use.scheduled.latest.map((result) => ({
-          finishedAt: result.finishedAt.toISOString(),
-          text: result.text,
-        })),
+        // The switch and the limits are held here too, whatever the loader
+        // carried: no result while the switch is off, three at most, each cut.
+        latest: (use.scheduled.resultsPublic ? use.scheduled.latest : [])
+          .slice(0, PUBLIC_RESULTS_LIMIT)
+          .map((result) => ({
+            finishedAt: result.finishedAt.toISOString(),
+            text: result.text.slice(0, PUBLIC_RESULT_MAX_CHARS),
+          })),
       },
     }),
   };

@@ -27,13 +27,25 @@
  *     from the agent's kind, its form and its page key, and from nothing
  *     else: no instructions, no tools, no caps.
  *
+ *   - a self-running agent's latest results are read only while its owner
+ *     shows them (Agent.publicResults): the last three successful runs of
+ *     its own schedule, each as when it finished and its text
+ *     (latestOwnResults). Whether the page can be used does not matter:
+ *     showing results is its own switch.
+ *
  * SQL trips: agent + nested includes, then the payment aggregate/list,
- * usage aggregate, and eligibility check run concurrently.
+ * usage aggregate, eligibility check and latest results run concurrently.
  */
 
 import { LIVE_CHANNEL_PLATFORMS, WEB_CHAT_CHANNEL } from "../routes/channelWebhooks.js";
-import type { PublicAgentDetail, PublicAgentUse } from "../routes/publicAgent.js";
+import {
+  PUBLIC_RESULT_MAX_CHARS,
+  PUBLIC_RESULTS_LIMIT,
+  type PublicAgentDetail,
+  type PublicAgentUse,
+} from "../routes/publicAgent.js";
 import { publicTaskForm } from "./agentKind.js";
+import { latestOwnResults, type OwnScheduleDb } from "./agentOwnSchedule.js";
 import { TASK_MAX_INPUT_CHARS } from "./agentTask.js";
 import { PUBLIC_CHAT_LIMITS } from "./publicChat.js";
 import { publicPageStateOf } from "./publicPageState.js";
@@ -42,6 +54,8 @@ const LIVE_WEBHOOK_PLATFORMS: ReadonlySet<string> = new Set(LIVE_CHANNEL_PLATFOR
 
 interface AgentRow {
   id: string;
+  /** Internal only: scopes the read of the agent's own results. */
+  orgId: string;
   isPublic: boolean;
   name: string;
   slug: string;
@@ -97,7 +111,9 @@ interface PaymentRow {
   paidAt: Date | null;
 }
 
-interface PrismaStub {
+type PublicResult = NonNullable<PublicAgentUse["scheduled"]>["latest"][number];
+
+interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution"> {
   agent: {
     findFirst: (args: {
       where: { publicHandle: string; isPublic: boolean };
@@ -148,7 +164,7 @@ export interface LoadPublicAgentDeps {
  * How the page can be used right now, and what its panel needs. Never
  * called for a page that is off: that page is a 404.
  */
-function useOf(agent: AgentRow): PublicAgentUse {
+function useOf(agent: AgentRow, latest: PublicResult[]): PublicAgentUse {
   const pageKey = agent.pageKey ?? null;
   const state = publicPageStateOf(true, pageKey);
   const use = {
@@ -167,8 +183,15 @@ function useOf(agent: AgentRow): PublicAgentUse {
     };
   }
   if (agent.agentKind === "scheduled") {
-    // A later batch fills `latest` from the agent's own schedule.
-    return { ...use, scheduled: { resultsPublic: agent.publicResults === true, latest: [] } };
+    const resultsPublic = agent.publicResults === true;
+    // Field by field: when it finished and its text, and nothing else.
+    return {
+      ...use,
+      scheduled: {
+        resultsPublic,
+        latest: resultsPublic ? latest.map((result) => ({ finishedAt: result.finishedAt, text: result.text })) : [],
+      },
+    };
   }
   return {
     ...use,
@@ -267,7 +290,7 @@ export async function loadPublicAgentByPrisma(
     ),
   );
 
-  const [paymentsPart, uptimePart, eligibilityPart] = await Promise.all([
+  const [paymentsPart, uptimePart, eligibilityPart, latestResults] = await Promise.all([
     (async () => {
       if (!treasuryRow) {
         return {
@@ -325,6 +348,18 @@ export async function loadPublicAgentByPrisma(
         return null;
       }
     })(),
+    (async (): Promise<PublicResult[]> => {
+      // Read only for a self-running agent whose owner shows its results.
+      // Scoped by the loaded agent's own organization, never a caller's. A
+      // failed read is not answered as "no results yet": it fails the page.
+      if (agent.agentKind !== "scheduled" || agent.publicResults !== true) return [];
+      return latestOwnResults(deps.prisma, {
+        orgId: agent.orgId,
+        agentId: agent.id,
+        limit: PUBLIC_RESULTS_LIMIT,
+        maxChars: PUBLIC_RESULT_MAX_CHARS,
+      });
+    })(),
   ]);
 
   return {
@@ -338,7 +373,7 @@ export async function loadPublicAgentByPrisma(
       handle: agent.publicHandle ?? input.handle,
       agentKind: agent.agentKind === "task" || agent.agentKind === "scheduled" ? agent.agentKind : "conversation",
     },
-    use: useOf(agent),
+    use: useOf(agent, latestResults),
     treasury: paymentsPart.treasury,
     uptime: uptimePart,
     eligibility: eligibilityPart,

@@ -1,5 +1,6 @@
 import { prisma, Prisma } from "@wheelsai/db";
 import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
+import { pauseAgentSchedules, type OwnScheduleDb } from "./agentOwnSchedule.js";
 import { getOrgPlan } from "./orgPlan.js";
 import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
 import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
@@ -1259,6 +1260,21 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
       where: { listingId, subscriberId: buyerId, status: { in: ["active", "past_due"] } },
       data: { status: "cancelled", cancelledAt: new Date(), cancelAtPeriodEnd: false },
     });
+    // The copy stops running on its own with the uninstall: every scheduled
+    // task of it is switched off here, so nothing keeps firing, and
+    // charging, after the buyer has stopped. The tasks and their history
+    // stay. The copy is read from the row just claimed, not from the read
+    // above, which an install in between may have pointed at a newer copy.
+    const uninstalled = await tx.agentInstall.findUnique({
+      where: { id: install.id },
+      select: { clonedAgentId: true },
+    });
+    if (uninstalled?.clonedAgentId) {
+      await pauseAgentSchedules(tx as unknown as Pick<OwnScheduleDb, "scheduledTask">, {
+        orgId: buyerId,
+        agentId: uninstalled.clonedAgentId,
+      });
+    }
     return tx.agentListing.update({
       where: { id: listingId },
       data: { activeInstalls: { decrement: 1 } },

@@ -51,6 +51,10 @@ function makeWorld(opts: {
   balance?: bigint;
   /** Extra fields of the listed agent (entrypoint, graph). */
   sourceAgent?: Row;
+  /** scheduled_tasks rows: { id, orgId, agentId, taskType, isEnabled, status }. */
+  tasks?: Row[];
+  /** Fail the write that switches scheduled tasks off. */
+  taskWriteFails?: boolean;
 }) {
   const state = {
     listing: {
@@ -94,6 +98,11 @@ function makeWorld(opts: {
     balance: opts.balance ?? 10_000n,
     ledger: [] as Row[],
     revenue: [] as Row[],
+    tasks: (opts.tasks ?? []).map((task) => ({ ...task })) as Row[],
+    /** Every write to scheduled tasks, and whether it ran inside a transaction. */
+    taskWrites: [] as Row[],
+    /** Transactions open right now. */
+    open: 0,
   };
   let seq = 0;
 
@@ -175,6 +184,16 @@ function makeWorld(opts: {
     },
     // No profile row: the reputation recalculation stops at its first read.
     publisherProfile: { findUnique: async () => null, update: async () => ({}) },
+    // What pauseAgentSchedules writes (services/agentOwnSchedule.ts).
+    scheduledTask: {
+      updateMany: async ({ where, data }: Row) => {
+        state.taskWrites.push({ where, data, inTransaction: state.open > 0 });
+        if (opts.taskWriteFails) throw new Error("the database went away");
+        const hit = state.tasks.filter((t) => matches(t, where));
+        for (const t of hit) Object.assign(t, data);
+        return { count: hit.length };
+      },
+    },
   };
 
   // One transaction at a time, as the row locks make it in Postgres: the
@@ -191,12 +210,16 @@ function makeWorld(opts: {
         balance: state.balance,
         ledger: state.ledger,
         revenue: state.revenue,
+        tasks: state.tasks,
       });
+      state.open += 1;
       try {
         return await fn(models);
       } catch (err) {
         Object.assign(state, snapshot);
         throw err;
+      } finally {
+        state.open -= 1;
       }
     });
     tail = run.catch(() => {});
@@ -904,4 +927,129 @@ test("a price that moved between the buyer seeing it and confirming is not accep
     });
   });
   assert.equal(moved.state.installs[0]!.acceptedPricePerRequestCents, 900n);
+});
+
+// ============================================
+// Uninstall: the copy stops running on its own
+// ============================================
+
+const COPY = "agent_copy";
+const taskRow = (over: Row = {}): Row => ({
+  id: "task_own",
+  orgId: BUYER,
+  agentId: COPY,
+  taskType: "agent_run",
+  isEnabled: true,
+  status: "active",
+  ...over,
+});
+
+test("uninstalling a copy switches off every schedule of that copy in the uninstall's transaction, and no other", async () => {
+  const world = makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "active", clonedAgentId: COPY },
+    agents: [COPY],
+    tasks: [
+      taskRow(),
+      // Any type of task of the copy: each one would keep firing and charging.
+      taskRow({ id: "task_report", taskType: "report" }),
+      taskRow({ id: "task_off", isEnabled: false, status: "paused" }),
+      // The buyer's other agent, and the same agent id in another organization.
+      taskRow({ id: "task_other_agent", agentId: "agent_other" }),
+      taskRow({ id: "task_other_org", orgId: "org_else" }),
+    ],
+  });
+  world.state.listing.activeInstalls = 1;
+  await withWorld(world, async ({ uninstallAgent }) => {
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+  });
+
+  assert.deepEqual(world.state.taskWrites, [
+    {
+      where: { orgId: BUYER, agentId: COPY, isEnabled: true },
+      data: { isEnabled: false, status: "paused" },
+      inTransaction: true,
+    },
+  ]);
+  assert.deepEqual(
+    world.state.tasks.map((t) => [t.id, t.isEnabled, t.status]),
+    [
+      ["task_own", false, "paused"],
+      ["task_report", false, "paused"],
+      ["task_off", false, "paused"],
+      ["task_other_agent", true, "active"],
+      ["task_other_org", true, "active"],
+    ],
+  );
+  // The tasks stay; so does everything else an uninstall did before.
+  assert.equal(world.state.tasks.length, 5);
+  assert.equal(world.state.installs[0]!.status, "uninstalled");
+  assert.equal(world.state.listing.activeInstalls, 0);
+  assert.equal(world.state.agents.length, 1, "the copy itself is left to its owner");
+});
+
+test("an uninstall of a copy with no schedule, or of an install with no copy, is as before", async () => {
+  const noTasks = makeWorld({
+    pricingModel: "monthly",
+    monthlyPriceCents: 1_000n,
+    install: { status: "suspended", clonedAgentId: COPY },
+    sub: { status: "past_due", currentPeriodEnd: new Date(Date.now() - DAY), priceCents: 1_000n },
+    agents: [COPY],
+  });
+  await withWorld(noTasks, async ({ uninstallAgent }) => {
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+  });
+  assert.equal(noTasks.state.installs[0]!.status, "uninstalled");
+  assert.equal(noTasks.state.subs[0]!.status, "cancelled");
+  assert.equal(noTasks.state.taskWrites.length, 1, "asked, and nothing to switch off: not an error");
+
+  const noCopy = makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "active", clonedAgentId: null },
+    tasks: [taskRow()],
+  });
+  await withWorld(noCopy, async ({ uninstallAgent }) => {
+    assert.deepEqual(await uninstallAgent(LISTING_ID, BUYER), { success: true });
+  });
+  assert.deepEqual(noCopy.state.taskWrites, []);
+  assert.equal(noCopy.state.tasks[0]!.isEnabled, true);
+});
+
+test("when the schedules cannot be switched off the uninstall does not happen: no half of it is kept", async () => {
+  const world = makeWorld({
+    pricingModel: "monthly",
+    monthlyPriceCents: 1_000n,
+    install: { status: "active", clonedAgentId: COPY },
+    sub: { status: "active", currentPeriodEnd: new Date(Date.now() + 10 * DAY), priceCents: 1_000n },
+    agents: [COPY],
+    tasks: [taskRow()],
+    taskWriteFails: true,
+  });
+  world.state.listing.activeInstalls = 1;
+  await withWorld(world, async ({ uninstallAgent }) => {
+    await assert.rejects(uninstallAgent(LISTING_ID, BUYER), /database went away/);
+  });
+  assert.equal(world.state.installs[0]!.status, "active");
+  assert.equal(world.state.subs[0]!.status, "active");
+  assert.equal(world.state.listing.activeInstalls, 1);
+  assert.equal(world.state.tasks[0]!.isEnabled, true);
+});
+
+test("a second uninstall switches nothing off again and moves no counter", async () => {
+  const world = makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "active", clonedAgentId: COPY },
+    agents: [COPY],
+    tasks: [taskRow()],
+  });
+  world.state.listing.activeInstalls = 1;
+  await withWorld(world, async ({ uninstallAgent }) => {
+    const results = await Promise.allSettled([uninstallAgent(LISTING_ID, BUYER), uninstallAgent(LISTING_ID, BUYER)]);
+    assert.deepEqual(outcomes(results), ["fulfilled", "rejected"]);
+  });
+  assert.equal(world.state.taskWrites.length, 1, "only the uninstall that claimed the row reaches the schedules");
+  assert.equal(world.state.listing.activeInstalls, 0);
 });

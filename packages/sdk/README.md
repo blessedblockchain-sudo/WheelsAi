@@ -182,6 +182,38 @@ Some routes need a session rather than an API key (`auth.listApiKeys`, `auth.cre
 They answer `401` to a key. The agent graph routes (`agents.getGraph`, `saveGraph`) authorize by
 user too, and answer an opaque `404` to a key.
 
+## Running a task agent and sharing it
+
+A `task` agent takes the answers to its form and gives back one result. `agents.run` sends them
+and waits for it (it asks for the JSON answer, not a stream). `input` holds one answer per
+question, keyed by the question's `key`:
+
+```ts
+const { output, billing } = await wheels.agents.run(agent.id, { code_to_review: "def f(): ..." });
+console.log(output.text);
+// Also: toolCalls (every tool the agent called and how each ended), durationMs, and billing:
+// what the run cost a buyer's copy, or null when nothing was charged.
+```
+
+Answers that do not fit the form throw a `WheelsAIError` with status 422 and code `input_invalid`;
+`error.data.details` lists each answer to fix as `{ path, field, label, message }`. An agent that
+is not a task agent answers 409 `not_a_task_agent`, and answers over 8,000 characters 413
+`input_too_large`. Nothing is counted or charged for a refused form. A run may take up to two
+minutes, so `agents.run` waits 130 seconds; pass `{ timeoutMs }` as a last argument to change that.
+
+Every agent has one public address, `/a/<handle>`, with a switch for public use:
+
+```ts
+await wheels.agents.publicLink.set(agent.id, { state: "on", dailyCap: 200 });
+// { state: "on", handle, url, dailyCap, usedToday, showResults, toolsOffForVisitors }
+const link = await wheels.agents.publicLink.get(agent.id);
+```
+
+`state` is `on` (anyone with the link can use the agent), `paused` (the page shows, use is stopped
+for now) or `off`; reading it can also give `view_only` for an agent made public before it had a
+switch. `set` also takes `handle` (3 to 40 lower-case letters, digits and hyphens; an address
+another agent has answers 409 `handle_taken`) and `showResults`.
+
 ## Errors
 
 Every failure throws a `WheelsAIError`: `status` (the HTTP status, or `0` for a network error or
@@ -194,7 +226,7 @@ a plain sentence, and `data.fields` has one sentence per field, keyed by its pat
 The `/v1` API answers in OpenAI's shape, `{ error: { message, type, param, code } }`; `message`
 and `code` are read from there too (e.g. `agent_not_found`, `plan_limit_reached`).
 Requests time out after 30 seconds (`timeoutMs`); `agents.chatCompletion`, `agents.playgroundChat`,
-`inference.chat` and `inference.chatCompletion` take `{ timeoutMs }` as a last argument for a
+`agents.run` (130 seconds by default), `inference.chat` and `inference.chatCompletion` take `{ timeoutMs }` as a last argument for a
 longer wait on one call.
 
 Ids and slugs are percent-encoded into the path. An empty one, `.` and `..` are refused (they

@@ -531,6 +531,102 @@ describe("wheelsai (the built command)", () => {
     });
   });
 
+  describe("agents run", () => {
+    const RUN_PATH = `/api/agents/${AGENT_ID}/run`;
+    const answer = (extra: Record<string, unknown> = {}) => ({
+      output: { format: "text", text: "Refunds take 5 days." },
+      toolCalls: [],
+      durationMs: 1840,
+      billing: null,
+      ...extra,
+    });
+    beforeEach(async () => {
+      await login();
+      api.routes["GET /api/agents"] = { agents: [agent({ agentKind: "task" })], total: 1 };
+      api.seen.length = 0;
+    });
+
+    it("sends the answers, asks for the JSON answer and prints the result text", async () => {
+      api.routes[`POST ${RUN_PATH}`] = answer();
+      const result = await wheelsai(["agents", "run", "my-support-bot", "--input", '{"topic":"Refunds"}']);
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /Refunds take 5 days\./);
+      assert.match(result.stdout, /Took:\s+1\.8s/);
+      assert.doesNotMatch(result.stdout, /Charged/);
+      const call = api.seen.find((s) => s.path === RUN_PATH)!;
+      assert.deepEqual(call.body, { input: { topic: "Refunds" }, stream: false });
+    });
+
+    it("reads the answers from stdin", async () => {
+      api.routes[`POST ${RUN_PATH}`] = answer();
+      const result = await wheelsai(["agents", "run", "my-support-bot", "--input-stdin"], { stdin: '{"topic":"Returns"}\n' });
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(api.seen.find((s) => s.path === RUN_PATH)!.body, { input: { topic: "Returns" }, stream: false });
+    });
+
+    it("shows the charge the API reports, and --json prints the whole result", async () => {
+      const billing = { listingTitle: "Support Pro", chargedCents: 25, creatorCents: 20 };
+      api.routes[`POST ${RUN_PATH}`] = answer({ billing });
+      const shown = await wheelsai(["agents", "run", "my-support-bot", "--input", "{}"]);
+      assert.match(shown.stdout, /Charged: \$0\.25 for this request \(marketplace listing "Support Pro"\)/);
+      const json = await wheelsai(["agents", "run", "my-support-bot", "--input", "{}", "--json"]);
+      assert.equal(JSON.parse(json.stdout).output.text, "Refunds take 5 days.");
+      assert.deepEqual(JSON.parse(json.stdout).billing, billing);
+    });
+
+    it("prints each answer to fix as '<question>: <message>' on a 422", async () => {
+      api.routes[`POST ${RUN_PATH}`] = reply(422, {
+        error: "input_invalid",
+        message: "Some answers need another look.",
+        details: [
+          { path: "/topic", field: "topic", label: "Topic", message: "This question needs an answer." },
+          { path: "/extra", field: "extra", label: null, message: "This form has no question with that name. Remove it." },
+          { path: "", field: null, label: null, message: "Send your answers as an object, with one entry for each question." },
+        ],
+      });
+      const result = await wheelsai(["agents", "run", "my-support-bot", "--input", "{}"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Some answers need another look\./);
+      assert.match(result.stderr, /^\s*Topic: This question needs an answer\.$/m);
+      assert.match(result.stderr, /^\s*extra: This form has no question with that name\. Remove it\.$/m);
+      assert.match(result.stderr, /^\s*Send your answers as an object/m);
+      assert.match(result.stderr, /HTTP 422 input_invalid/);
+    });
+
+    it("prints the API's sentence for other refusals", async () => {
+      api.routes[`POST ${RUN_PATH}`] = reply(409, { error: "not_a_task_agent", message: "This agent is not set up to run tasks. Chat with it instead." });
+      const result = await wheelsai(["agents", "run", "my-support-bot", "--input", "{}"]);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /This agent is not set up to run tasks\. Chat with it instead\./);
+      assert.match(result.stderr, /HTTP 409 not_a_task_agent/);
+    });
+
+    it("refuses input that is missing, doubled or not a JSON object before asking the API anything", async () => {
+      for (const args of [
+        ["agents", "run", "my-support-bot"],
+        ["agents", "run", "my-support-bot", "--input", "{}", "--input-stdin"],
+        ["agents", "run", "my-support-bot", "--input", "not json"],
+        ["agents", "run", "my-support-bot", "--input", '["a"]'],
+        ["agents", "run", "my-support-bot", "--input", "null"],
+      ]) {
+        const result = await wheelsai(args);
+        assert.equal(result.code, 1, args.join(" "));
+        assert.notEqual(result.stderr, "");
+      }
+      assert.equal(api.seen.length, 0);
+      const bad = await wheelsai(["agents", "run", "my-support-bot", "--input", "not json"]);
+      assert.match(bad.stderr, /--input is not valid JSON/);
+    });
+
+    it("keeps the result's text from driving the terminal", async () => {
+      api.routes[`POST ${RUN_PATH}`] = answer({ output: { format: "text", text: "safe\u001b]52;c;ZXZpbA==\u0007 text\u001b[2K" } });
+      const result = await wheelsai(["agents", "run", "my-support-bot", "--input", "{}"]);
+      assert.equal(result.code, 0, result.stderr);
+      // eslint-disable-next-line no-control-regex
+      assert.doesNotMatch(result.stdout, /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    });
+  });
+
   describe("logs", () => {
     const MODEL_DEPLOYMENT = "88888888-8888-4888-8888-888888888888";
     beforeEach(async () => {

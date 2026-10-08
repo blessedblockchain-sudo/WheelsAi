@@ -250,6 +250,7 @@ so when it prints the listing.
 wheelsai agents list                  # slug, name, latest deployment status, kind
 wheelsai agents get my-support-bot    # kind, configuration, secrets' names, every deployment
 wheelsai test my-support-bot -m "Hello" --model free/groq/llama-3.3-70b    # playground, no GPU
+wheelsai agents run code-review --input '{"code_to_review": "def f(): ..."}'    # a task agent, one result
 wheelsai logs <deployment-id>         # status and logs of an agent deployment
 wheelsai logs <deployment-id> --model # a model deployment (GET /api/deployments)
 ```
@@ -263,6 +264,22 @@ the API's own `agentKind` (`conversation`, `task` or `scheduled`) and `kindConfi
 marketplace listing priced per request, the message is charged, and the charge the API reports
 is printed (`Charged: $0.25 for this request (marketplace listing "Support Pro")`).
 
+`agents run <agent>` runs a task agent on one filled-in form and prints its result. Pass the
+answers as one JSON object with an entry for each question's key, with `--input '<json>'` or
+piped in with `--input-stdin` (`wheelsai agents run code-review --input-stdin < answers.json`).
+It waits up to `--timeout` seconds (default 150; a run may take up to two minutes) and prints
+the charge when the agent is an installed per-request listing. Answers that do not fit the form
+are refused before anything is counted or charged, and each one to fix is printed as
+`<question>: <what to do>`:
+
+```text
+✖ Some answers need another look.
+  Code to review: This question needs an answer.
+```
+
+An agent that is not a task agent is refused too (`HTTP 409 not_a_task_agent`). `--json` prints
+the API's own result: `output`, `toolCalls`, `durationMs` and `billing`.
+
 Text that comes from the API (model output, logs, error messages, names) is printed with
 control characters removed, so it cannot move the cursor or write to the clipboard. `--json`
 output is exact.
@@ -272,7 +289,7 @@ id alone, so it finds the owner by trying the agent whose newest deployment matc
 others (`--agent <slug-or-id>` skips the search), and falls back to model deployments, whose
 events are Nosana lifecycle events (`--lines 10..1000`). The API exposes no container output,
 and the CLI prints exactly the logs and last error the API has: `No logs available` when there
-are none. `--json` is available on `agents`, `whoami`, `config show`, `test`, `deploy`, `publish` and `logs`.
+are none. `--json` is available on `agents` (including `agents run`), `whoami`, `config show`, `test`, `deploy`, `publish` and `logs`.
 
 ## Exit codes and errors
 

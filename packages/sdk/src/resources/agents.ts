@@ -145,6 +145,8 @@ export interface Agent {
   version: string;
   tags: string[];
   isPublic: boolean;
+  /** The name in the agent's public address, `/a/<handle>`, unique across the platform. null until the agent has been public. */
+  publicHandle: string | null;
   agentKind: AgentKind;
   /**
    * The agent's OpenAI-compatible chat-completions URL on this API
@@ -202,6 +204,10 @@ export interface AgentDetail {
   knowledgeBaseId: string | null;
   version: string;
   isPublic: boolean;
+  /** See `Agent.publicHandle`. */
+  publicHandle: string | null;
+  /** A self-running agent's latest results show on its public page only when this is on. */
+  publicResults: boolean;
   tags: string[];
   agentKind: AgentKind;
   /** null when the agent has no settings. A task agent without a form of its own uses one long-text question. */
@@ -296,6 +302,76 @@ export interface PlaygroundChatResponse {
   billing: { listingTitle: string; chargedCents: number; creatorCents: number } | null;
   retrieval: unknown | null;
 }
+
+/** The answers to a task agent's form, by question key (`TaskField.key`). */
+export type AgentRunInput = Record<string, unknown>;
+
+/** One tool the model called during a run, and how the call ended. */
+export interface AgentRunToolCall {
+  round: number;
+  name: string;
+  /** `unavailable`: the tool is not set up on the server. */
+  status: "ok" | "unavailable" | "error" | "unknown";
+  detail: string | null;
+}
+
+/** The answer of `agents.run`. */
+export interface AgentRunResult {
+  output: { format: "text"; text: string };
+  toolCalls: AgentRunToolCall[];
+  durationMs: number;
+  /** What the run cost a buyer's copy and who it went to; null when nothing was charged. */
+  billing: { listingTitle: string; chargedCents: number; creatorCents: number } | null;
+}
+
+/** One answer of a task form that needs another look: the `details` of a 422 `input_invalid`. */
+export interface TaskInputIssue {
+  /** Where in the input, as a JSON pointer: `/topic`, `/keywords/3`; "" is the input as a whole. */
+  path: string;
+  /** The key of the question it is about, or null for the input as a whole. */
+  field: string | null;
+  /** That question's label, or null when the form has no such question. */
+  label: string | null;
+  message: string;
+}
+
+/**
+ * Where an agent's public page (`/a/<handle>`) stands. `off`: not public. `view_only`: the page
+ * shows and nobody can use the agent from it yet. `on`: anyone with the link can use it.
+ * `paused`: the page shows, and use is stopped for now.
+ */
+export type PublicLinkState = "off" | "view_only" | "on" | "paused";
+
+/** What `agents.publicLink.set` can set the link to; `view_only` is read, never asked for. */
+export type PublicLinkSwitch = "on" | "paused" | "off";
+
+export interface PublicLink {
+  state: PublicLinkState;
+  /** The agent's address, kept while the link is off. null until it has one. */
+  handle: string | null;
+  /** `<web>/a/<handle>`; null without a handle, or when the server does not know its web address. */
+  url: string | null;
+  /** Uses a day the page allows. */
+  dailyCap: number;
+  /** Uses counted today (UTC); null when the count could not be read. */
+  usedToday: number | null;
+  /** Whether a self-running agent's latest results show on its page. */
+  showResults: boolean;
+  /** The agent has a tool that visitors do not get. */
+  toolsOffForVisitors: boolean;
+}
+
+export interface PublicLinkInput {
+  state: PublicLinkSwitch;
+  /** 1 to 100,000 uses a day. */
+  dailyCap?: number;
+  /** 3 to 40 lower-case letters, digits and hyphens. Left out, the agent keeps its address or gets one made from its name. */
+  handle?: string;
+  showResults?: boolean;
+}
+
+/** A task run is allowed two minutes; the client waits a little longer by default. */
+const RUN_TIMEOUT_MS = 130_000;
 
 export interface GraphNode {
   id: string;
@@ -435,6 +511,36 @@ export function agentsResource(client: WheelsAIClient) {
      */
     chatCompletion: (agentSlug: string, request: ChatCompletionRequest, options?: RequestOptions) =>
       client.post<ChatCompletionResponse>(`/v1/agents/${seg(agentSlug)}/chat/completions`, request, options),
+
+    /**
+     * Run a task agent on one filled-in form and wait for its result: `POST /api/agents/{id}/run`
+     * with `stream: false`. `input` holds one answer per question, keyed by `TaskField.key`.
+     * A form that does not fit answers 422 `input_invalid`, and `error.data.details` lists each
+     * answer to fix as a `TaskInputIssue`; an agent that is not a task agent answers 409
+     * `not_a_task_agent`, and answers that are too long 413 `input_too_large`. Nothing is
+     * counted or charged for a refused form. A run may take up to two minutes, so the call waits
+     * 130 seconds unless `options.timeoutMs` says otherwise.
+     */
+    run: (id: string, input: AgentRunInput, options?: RequestOptions) =>
+      client.post<AgentRunResult>(
+        `/api/agents/${seg(id)}/run`,
+        { input, stream: false },
+        { timeoutMs: RUN_TIMEOUT_MS, ...options },
+      ),
+
+    /** The agent's public page, `/a/<handle>`: the switch that lets anyone with the link use the agent. */
+    publicLink: {
+      /** `GET /api/agents/{id}/public-link`. */
+      get: (id: string) => client.get<PublicLink>(`/api/agents/${seg(id)}/public-link`),
+
+      /**
+       * `PUT /api/agents/{id}/public-link`: turn the link `on`, `paused` or `off`, and optionally set
+       * the daily cap, the address or whether results show. A handle that breaks the rules answers 400
+       * `validation_failed`; one another agent has answers 409 `handle_taken`. Needs an owner or admin.
+       */
+      set: (id: string, body: PublicLinkInput) =>
+        client.put<PublicLink>(`/api/agents/${seg(id)}/public-link`, body),
+    },
 
     playgroundModels: (id: string) =>
       client.get<{ freeModels: unknown[]; externalModels: unknown[] }>(`/api/agents/${seg(id)}/playground/models`),

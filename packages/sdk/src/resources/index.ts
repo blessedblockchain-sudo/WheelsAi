@@ -43,6 +43,14 @@ export {
   type UpdateAgentInput,
   type DeployAgentInput,
   type PlaygroundChatResponse,
+  type AgentRunInput,
+  type AgentRunResult,
+  type AgentRunToolCall,
+  type TaskInputIssue,
+  type PublicLink,
+  type PublicLinkInput,
+  type PublicLinkState,
+  type PublicLinkSwitch,
 } from "./agents.js";
 export {
   deploymentsResource,

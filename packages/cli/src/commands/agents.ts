@@ -1,10 +1,15 @@
 import { Command } from "commander";
 import chalk from "chalk";
+import { WheelsAIError } from "@wheelsai/sdk";
+import type { TaskInputIssue } from "@wheelsai/sdk";
 
 import { createSession } from "../client.js";
+import { CliError } from "../errors.js";
 import { agentKindLabel, resolveAgent } from "../lib/agents.js";
+import { parseWholeNumber } from "../lib/numbers.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, colorStatus, field, printJson, shortId } from "../ui.js";
+import { describeCharge } from "./test.js";
 
 export const agentsCommand = new Command("agents").description("List and inspect your agents");
 
@@ -92,5 +97,91 @@ agentsCommand
         if (deployment.lastError) console.log(chalk.red(`      ${clean(deployment.lastError)}`));
       }
     }
+    console.log();
+  });
+
+/** All of stdin: the answers piped in with --input-stdin. */
+async function readStdin(): Promise<string> {
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
+}
+
+/** The answers to a task agent's form, from `--input` or stdin: one JSON object, one entry per question. */
+export function parseRunInput(text: string, source: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new CliError(`${source} is not valid JSON.`, {
+      hint: `Send one object with an entry per question, for example ${source === "--input" ? "--input '{\"topic\": \"Refunds\"}'" : '{"topic": "Refunds"}'}.`,
+    });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new CliError(`${source} must be a JSON object with an entry for each question.`, {
+      hint: "Run `wheelsai agents get <agent>` to see the agent's questions.",
+    });
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** Each answer that needs another look, one a line, as "<question>: <what to do>". */
+export function describeInputIssues(issues: TaskInputIssue[]): string[] {
+  return issues.map((issue) => {
+    const label = clean(issue.label ?? issue.field);
+    return label ? `${label}: ${clean(issue.message)}` : clean(issue.message);
+  });
+}
+
+agentsCommand
+  .command("run <agent>")
+  .description(
+    "Run a task agent on one filled-in form and print its result (by slug or id). " +
+      "An installed marketplace agent priced per request charges for it; the charge is shown.",
+  )
+  .option("--input <json>", "the answers, as one JSON object with an entry for each question")
+  .option("--input-stdin", "read the answers from stdin, e.g. `wheelsai agents run my-agent --input-stdin < answers.json`")
+  .option("--timeout <seconds>", "how long to wait for the result (a run may take up to two minutes)", "150")
+  .option("--json", "output as JSON")
+  .action(async (reference: string, opts: { input?: string; inputStdin?: boolean; timeout: string; json?: boolean }) => {
+    if (opts.input !== undefined && opts.inputStdin) throw new CliError("Use either --input or --input-stdin, not both.");
+    if (opts.input === undefined && !opts.inputStdin) {
+      throw new CliError("What should the agent work on? Pass the answers with --input '<json>' or --input-stdin.", {
+        hint: "Run `wheelsai agents get <agent>` to see the agent's questions.",
+      });
+    }
+    const timeoutMs = parseWholeNumber("--timeout", opts.timeout) * 1000;
+    const input = opts.inputStdin ? parseRunInput(await readStdin(), "The input from stdin") : parseRunInput(opts.input!, "--input");
+
+    const { wheels } = createSession();
+    const reporter = new Reporter(opts.json);
+    reporter.start("Running");
+    const agent = await resolveAgent(wheels, reference);
+    let result;
+    try {
+      result = await wheels.agents.run(agent.id, input, { timeoutMs });
+    } catch (err) {
+      // The form did not fit: say which answers to look at, in the form's own words.
+      if (err instanceof WheelsAIError && err.status === 422 && err.code === "input_invalid") {
+        const details = (err.data as { details?: TaskInputIssue[] } | null)?.details;
+        if (Array.isArray(details) && details.length > 0) {
+          throw new CliError([clean(err.message), ...describeInputIssues(details).map((line) => `  ${line}`)].join("\n"), {
+            detail: "HTTP 422 input_invalid",
+          });
+        }
+      }
+      throw err;
+    }
+    reporter.stop();
+
+    if (opts.json) return printJson(result);
+
+    console.log(chalk.bold("\n  Result\n"));
+    console.log(`  ${clean(result.output.text).split("\n").join("\n  ")}`);
+    console.log();
+    console.log(chalk.gray(`  Took:    ${(result.durationMs / 1000).toFixed(1)}s`));
+    const charge = describeCharge(result.billing);
+    if (charge) console.log(chalk.yellow(`  Charged: ${charge}`));
     console.log();
   });

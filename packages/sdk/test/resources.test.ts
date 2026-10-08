@@ -77,6 +77,9 @@ const cases: Case[] = [
   { name: "agents.deploymentLogs", run: (w) => w.agents.deploymentLogs(AGENT, DEP), method: "GET", path: `/api/agents/${AGENT}/deployments/${DEP}/logs` },
   { name: "agents.playgroundChat", run: (w) => w.agents.playgroundChat(AGENT, { messages: [{ role: "user", content: "hi" }], model: "free/groq/llama-3.3-70b" }), method: "POST", path: `/api/agents/${AGENT}/playground/chat`, body: { messages: [{ role: "user", content: "hi" }], model: "free/groq/llama-3.3-70b" } },
   { name: "agents.chatCompletion", run: (w) => w.agents.chatCompletion("support-bot", { messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "get_weather" } }] }), method: "POST", path: "/v1/agents/support-bot/chat/completions", body: { messages: [{ role: "user", content: "hi" }], tools: [{ type: "function", function: { name: "get_weather" } }] } },
+  { name: "agents.run", run: (w) => w.agents.run(AGENT, { topic: "Refund policy", keywords: ["refund", "returns"] }), method: "POST", path: `/api/agents/${AGENT}/run`, body: { input: { topic: "Refund policy", keywords: ["refund", "returns"] }, stream: false } },
+  { name: "agents.publicLink.get", run: (w) => w.agents.publicLink.get(AGENT), method: "GET", path: `/api/agents/${AGENT}/public-link` },
+  { name: "agents.publicLink.set", run: (w) => w.agents.publicLink.set(AGENT, { state: "on", dailyCap: 50, handle: "refund-helper", showResults: true }), method: "PUT", path: `/api/agents/${AGENT}/public-link`, body: { state: "on", dailyCap: 50, handle: "refund-helper", showResults: true } },
   { name: "agents.playgroundModels", run: (w) => w.agents.playgroundModels(AGENT), method: "GET", path: `/api/agents/${AGENT}/playground/models` },
   { name: "agents.getGraph", run: (w) => w.agents.getGraph(AGENT), method: "GET", path: `/api/agents/${AGENT}/graph` },
   { name: "agents.saveGraph", run: (w) => w.agents.saveGraph(AGENT, graph), method: "PUT", path: `/api/agents/${AGENT}/graph`, body: graph },
@@ -232,11 +235,14 @@ describe("coverage", () => {
     assert.ok(resources.length >= 13, "the client exposes its resources as own properties");
     const pinned = new Set(cases.map((c) => c.name));
     const missing: string[] = [];
-    for (const [resource, methods] of resources) {
-      for (const method of Object.keys(methods)) {
-        if (!pinned.has(`${resource}.${method}`)) missing.push(`${resource}.${method}`);
+    // A group of methods (`agents.publicLink`) is covered by a case for each method in it.
+    const check = (prefix: string, methods: Record<string, unknown>) => {
+      for (const [method, member] of Object.entries(methods)) {
+        if (typeof member === "object" && member !== null) check(`${prefix}.${method}`, member as Record<string, unknown>);
+        else if (!pinned.has(`${prefix}.${method}`)) missing.push(`${prefix}.${method}`);
       }
-    }
+    };
+    for (const [resource, methods] of resources) check(resource, methods);
     assert.deepEqual(missing, [], "add a case for each new method");
   });
 
@@ -245,8 +251,9 @@ describe("coverage", () => {
     const stale = cases
       .map((c) => c.name)
       .filter((name) => {
-        const [resource, method] = name.split(".") as [string, string];
-        return typeof wheels[resource]?.[method] !== "function";
+        let member: unknown = wheels;
+        for (const part of name.split(".")) member = (member as Record<string, unknown> | undefined)?.[part];
+        return typeof member !== "function";
       });
     assert.deepEqual(stale, []);
   });
@@ -360,6 +367,100 @@ describe("errors the API documents for agents", () => {
       assert.equal(err.status, 501);
       assert.equal(err.code, "agent_gpu_unavailable");
       assert.equal(err.message, body.message);
+      return true;
+    });
+  });
+});
+
+describe("running a task agent", () => {
+  const client = (respond: Parameters<typeof recordingFetch>[0]) => {
+    const recorded = recordingFetch(respond);
+    return { wheels: new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recorded.fetch }), calls: recorded.calls };
+  };
+  const failing = (status: number, body: unknown) => client(() => jsonResponse(body, status)).wheels;
+
+  it("asks for the JSON answer and returns the result as the API sent it", async () => {
+    const answer = {
+      output: { format: "text", text: "Refunds take 5 days." },
+      toolCalls: [{ round: 1, name: "lookup", status: "ok", detail: null }],
+      durationMs: 1840,
+      billing: { listingTitle: "Support Pro", chargedCents: 25, creatorCents: 20 },
+    };
+    const { wheels, calls } = client(() => jsonResponse(answer));
+    const result = await wheels.agents.run(AGENT, { topic: "Refunds" });
+    assert.deepEqual(result, answer);
+    assert.deepEqual(calls[0]!.body, { input: { topic: "Refunds" }, stream: false });
+  });
+
+  it("a form that does not fit answers 422 input_invalid and keeps each answer to fix", async () => {
+    const body = {
+      error: "input_invalid",
+      message: "Some answers need another look.",
+      details: [{ path: "/topic", field: "topic", label: "Topic", message: "This question needs an answer." }],
+    };
+    await assert.rejects(failing(422, body).agents.run(AGENT, {}), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 422);
+      assert.equal(err.code, "input_invalid");
+      assert.equal(err.message, body.message);
+      assert.deepEqual((err.data as { details: unknown }).details, body.details);
+      return true;
+    });
+  });
+
+  it("an agent that is not a task agent answers 409 not_a_task_agent", async () => {
+    const body = { error: "not_a_task_agent", message: "This agent is not set up to run tasks. Chat with it instead." };
+    await assert.rejects(failing(409, body).agents.run(AGENT, { topic: "x" }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "not_a_task_agent");
+      return true;
+    });
+  });
+
+  it("waits longer than an ordinary call by default, and options.timeoutMs replaces it", async () => {
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const wheels = new WheelsAI({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      timeoutMs: 30_000,
+      fetch: async (_input, init) => {
+        seen.push(init?.signal);
+        return jsonResponse({ output: { format: "text", text: "ok" }, toolCalls: [], durationMs: 1, billing: null });
+      },
+    });
+    await wheels.agents.run(AGENT, { topic: "x" });
+    await wheels.agents.run(AGENT, { topic: "x" }, { timeoutMs: 0 });
+    assert.ok(seen[0], "the default run call has a timeout");
+    assert.equal(seen[1], undefined, "timeoutMs 0 disables it");
+  });
+});
+
+describe("the public link", () => {
+  const link = {
+    state: "on",
+    handle: "refund-helper",
+    url: "https://wheelsai.example/a/refund-helper",
+    dailyCap: 100,
+    usedToday: 3,
+    showResults: false,
+    toolsOffForVisitors: true,
+  };
+
+  it("set sends the switch and returns the link as the API sent it", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse(link));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    assert.deepEqual(await wheels.agents.publicLink.set(AGENT, { state: "paused" }), link);
+    assert.deepEqual(calls[0]!.body, { state: "paused" });
+  });
+
+  it("an address another agent has answers 409 handle_taken", async () => {
+    const body = { error: "handle_taken", message: "That address is already in use. Choose another." };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 409)).fetch });
+    await assert.rejects(wheels.agents.publicLink.set(AGENT, { state: "on", handle: "taken" }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "handle_taken");
       return true;
     });
   });

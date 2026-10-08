@@ -29,6 +29,7 @@ import {
 import { OfferingCard, OfferingCardSkeleton } from "@/components/marketplace/offering-card";
 import { TokenCard, type TokenCardData } from "@/components/dashboard/token-card";
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
+import { MarketplaceNavLinks } from "@/components/marketplace/public-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -471,22 +472,15 @@ function MarketplaceContent() {
             </div>
             <span className="text-xl font-bold">WheelsAI</span>
           </Link>
-          <nav className="hidden items-center gap-6 md:flex">
-            <Link
-              href="/marketplace"
-              className="text-sm font-medium text-primary-600"
-            >
-              Marketplace
-            </Link>
-            <Link
-              href="/docs"
-              className="text-sm font-medium text-muted-foreground hover:text-foreground"
-            >
-              Docs
-            </Link>
+          <nav aria-label="Marketplace" className="hidden items-center gap-6 md:flex">
+            <MarketplaceNavLinks />
           </nav>
           <MarketplaceAuthNav />
         </div>
+        {/* The header row has no room for these on a phone, so they get a row of their own. */}
+        <nav aria-label="Marketplace" className="flex items-center gap-6 border-t px-4 py-2 sm:px-6 md:hidden">
+          <MarketplaceNavLinks />
+        </nav>
       </header>
 
       {/* Hero */}

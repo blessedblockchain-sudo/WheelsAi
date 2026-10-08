@@ -3,8 +3,44 @@ import { Cpu } from "lucide-react";
 
 import { MarketplaceAuthNav } from "@/components/marketplace/auth-nav";
 
-/** The public marketplace frame: the header and footer the browse and listing pages draw. */
-export function MarketplacePublicShell({ children }: { children: React.ReactNode }) {
+type MarketplaceSection = "marketplace" | "leaderboard";
+
+const NAV_LINKS: { id: MarketplaceSection | "docs"; label: string; href: string }[] = [
+  { id: "marketplace", label: "Marketplace", href: "/marketplace" },
+  { id: "leaderboard", label: "Leaderboard", href: "/marketplace/leaderboard" },
+  { id: "docs", label: "Docs", href: "/docs" },
+];
+
+/** The public marketplace header links. Drawn twice: in the header from md up, in a row below it on phones. */
+export function MarketplaceNavLinks({ current = "marketplace" }: { current?: MarketplaceSection }) {
+  return (
+    <>
+      {NAV_LINKS.map((link) => (
+        <Link
+          key={link.id}
+          href={link.href}
+          aria-current={link.id === current ? "page" : undefined}
+          className={
+            link.id === current
+              ? "text-sm font-medium text-primary-600"
+              : "text-sm font-medium text-muted-foreground hover:text-foreground"
+          }
+        >
+          {link.label}
+        </Link>
+      ))}
+    </>
+  );
+}
+
+/** The public marketplace frame: the header and footer the browse, listing and leaderboard pages draw. */
+export function MarketplacePublicShell({
+  children,
+  current = "marketplace",
+}: {
+  children: React.ReactNode;
+  current?: MarketplaceSection;
+}) {
   return (
     <div className="flex min-h-screen flex-col bg-background">
       <header className="border-b bg-card">
@@ -15,16 +51,15 @@ export function MarketplacePublicShell({ children }: { children: React.ReactNode
             </div>
             <span className="text-xl font-bold">WheelsAI</span>
           </Link>
-          <nav className="hidden items-center gap-6 md:flex">
-            <Link href="/marketplace" className="text-sm font-medium text-primary-600">
-              Marketplace
-            </Link>
-            <Link href="/docs" className="text-sm font-medium text-muted-foreground hover:text-foreground">
-              Docs
-            </Link>
+          <nav aria-label="Marketplace" className="hidden items-center gap-6 md:flex">
+            <MarketplaceNavLinks current={current} />
           </nav>
           <MarketplaceAuthNav />
         </div>
+        {/* The header row has no room for these on a phone, so they get a row of their own. */}
+        <nav aria-label="Marketplace" className="flex items-center gap-6 border-t px-4 py-2 sm:px-6 md:hidden">
+          <MarketplaceNavLinks current={current} />
+        </nav>
       </header>
       <main className="flex-1">{children}</main>
       <footer className="border-t bg-card py-8">

@@ -17,6 +17,7 @@ const toc = [
   { id: "sdk-auth", title: "Create a client", sub: true },
   { id: "sdk-methods", title: "Resources and methods", sub: true },
   { id: "sdk-create-agent", title: "Creating an agent", sub: true },
+  { id: "sdk-run-task", title: "Running a task and sharing it", sub: true },
   { id: "sdk-jobs", title: "Hiring an offering", sub: true },
   { id: "sdk-errors", title: "Errors and timeouts", sub: true },
   { id: "sdk-agent-chat", title: "Talking to an agent", sub: true },
@@ -155,8 +156,9 @@ if (agentGpu.available) {
                 <code>update</code> (PATCH; <code>entrypoint</code> switches between the agent&apos;s prompt and its graph),{" "}
                 <code>usage(id, period)</code>, <code>delete</code>, <code>deploy</code>, <code>getDeployment</code>,{" "}
                 <code>stopDeployment</code>, <code>deploymentLogs</code>, <code>chatCompletion(agentSlug, request)</code>,{" "}
-                <code>playgroundChat</code>, <code>playgroundModels</code>, <code>getGraph</code>, <code>saveGraph</code>,{" "}
-                <code>validateGraph</code>
+                <code>run(id, input, options?)</code>, <code>publicLink.get(id)</code>,{" "}
+                <code>publicLink.set(id, body)</code>, <code>playgroundChat</code>, <code>playgroundModels</code>,{" "}
+                <code>getGraph</code>, <code>saveGraph</code>, <code>validateGraph</code>
               </>
             ),
             endpoint: (
@@ -164,6 +166,8 @@ if (agentGpu.available) {
                 <code>/api/agents</code>, <code>/api/agents/&#123;id&#125;/usage</code>,{" "}
                 <code>/api/agents/&#123;id&#125;/deploy</code>,{" "}
                 <code>/api/agents/&#123;id&#125;/deployments/&#123;deploymentId&#125;</code>,{" "}
+                <code>POST /api/agents/&#123;id&#125;/run</code>,{" "}
+                <code>/api/agents/&#123;id&#125;/public-link</code>,{" "}
                 <code>POST /v1/agents/&#123;slug&#125;/chat/completions</code>
               </>
             ),
@@ -352,6 +356,44 @@ await wheels.agents.update(agent.id, {
         <code>emailDelivery</code>, <code>agentGpu</code> and <code>paidTasks</code> are <code>available</code>.
       </p>
 
+      <h3 id="sdk-run-task">Running a task and sharing it</h3>
+      <p>
+        <code>agents.run(id, input, options?)</code> runs a task agent on one filled-in form and waits for its result. It
+        asks the API for the JSON answer: <code>input</code> holds one answer per question, keyed by the question&apos;s{" "}
+        <code>key</code>. A run can take up to two minutes, so the call waits 130 seconds unless{" "}
+        <code>&#123; timeoutMs &#125;</code> says otherwise. See <Link href="/docs/api/agents#run-agent">run a task</Link>.
+      </p>
+      <CodeBlock
+        language="ts"
+        code={`const { output, durationMs, billing } = await wheels.agents.run(agent.id, {
+  code_to_review: "def total(items): return sum(items) / len(items)",
+  what_to_look_for: "Bugs",
+});
+console.log(output.text);
+
+// Answers that do not fit the form: a WheelsAIError with status 422 and code "input_invalid".
+try {
+  await wheels.agents.run(agent.id, {});
+} catch (err) {
+  if (err instanceof WheelsAIError && err.code === "input_invalid") {
+    for (const issue of (err.data as { details: TaskInputIssue[] }).details) {
+      console.log(\`\${issue.label}: \${issue.message}\`);
+    }
+  }
+}
+
+// The agent's public page, /a/<handle>.
+const link = await wheels.agents.publicLink.set(agent.id, { state: "on", dailyCap: 200 });
+console.log(link.url, link.usedToday);`}
+      />
+      <p>
+        <code>agents.publicLink.get(id)</code> and <code>agents.publicLink.set(id, body)</code> read and change the switch
+        that lets anyone with the agent&apos;s address use it. <code>state</code> is <code>on</code>, <code>paused</code> or{" "}
+        <code>off</code> (a read can also give <code>view_only</code>); <code>set</code> also takes <code>dailyCap</code>,{" "}
+        <code>handle</code> and <code>showResults</code>, and answers <code>409</code> <code>handle_taken</code> when another
+        agent has the address. See <Link href="/docs/api/agents#public-link">the public link</Link>.
+      </p>
+
       <h3 id="sdk-jobs">Hiring an offering</h3>
       <p>
         <code>offerings.hire</code> pays an offering&apos;s price into escrow and queues the job; poll{" "}
@@ -413,8 +455,8 @@ if (current.status === "submitted") {
       <p>
         Requests time out after 30 seconds (<code>timeoutMs</code> in the constructor; <code>0</code> disables it). A playground
         turn with tools, or a long completion, can take longer: <code>agents.chatCompletion</code>,{" "}
-        <code>agents.playgroundChat</code>, <code>inference.chat</code> and <code>inference.chatCompletion</code> accept{" "}
-        <code>&#123; timeoutMs &#125;</code> as a last argument for that one call.
+        <code>agents.playgroundChat</code>, <code>agents.run</code> (130 seconds by default), <code>inference.chat</code> and{" "}
+        <code>inference.chatCompletion</code> accept <code>&#123; timeoutMs &#125;</code> as a last argument for that one call.
       </p>
 
       <h3 id="sdk-agent-chat">Talking to an agent</h3>
@@ -607,6 +649,7 @@ wheelsai publish --agent my-support-bot --title "Support Pro" --category custome
         language="bash"
         code={`wheelsai agents list                  # slug, name, latest deployment status, kind
 wheelsai agents get my-support-bot    # kind, configuration, secret names, every deployment
+wheelsai agents run code-review --input '{"code_to_review": "def f(): ..."}'   # a task agent, one result
 wheelsai logs <deployment-id>         # an agent deployment: status and the logs the API has
 wheelsai logs <deployment-id> --model # a model deployment and its lifecycle events
 wheelsai whoami                       # who the credentials belong to
@@ -616,6 +659,12 @@ wheelsai config show                  # effective API URL, web URL and where eac
         <code>agents list</code> and <code>agents get</code> say how each agent is used: <code>Chat</code>,{" "}
         <code>Task</code> or <code>Runs on its own</code>. <code>agents get</code> also lists the questions of a task
         agent&apos;s form.
+      </p>
+      <p>
+        <code>agents run &lt;agent&gt;</code> runs a task agent on one filled-in form and prints its result. Pass the answers
+        as one JSON object with <code>--input</code>, or pipe them in with <code>--input-stdin</code>; <code>--timeout</code>{" "}
+        (default 150 seconds) sets how long to wait. Each answer that does not fit the form is printed as{" "}
+        <code>&lt;question&gt;: &lt;what to do&gt;</code>, and a per-request marketplace charge is shown.
       </p>
       <p>
         <code>logs</code> accepts the id that <code>wheelsai deploy</code> prints; <code>--agent &lt;slug-or-id&gt;</code> skips

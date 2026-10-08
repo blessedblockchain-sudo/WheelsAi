@@ -23,6 +23,7 @@ const key: WidgetKey = {
   enabled: true,
   revokedAt: null,
   lastUsedAt: null,
+  pageOfAgentId: null,
   createdAt: "2026-10-07T00:00:00.000Z",
   usageToday: 3,
   snippet: null,

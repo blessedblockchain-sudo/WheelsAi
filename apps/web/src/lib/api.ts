@@ -1,10 +1,10 @@
 // API Client for WheelsAI backend
 
-import type { AgentKind, KindConfig, TaskField, TaskFieldType } from "@wheelsai/shared/agent-kind";
+import type { AgentKind, KindConfig, TaskField, TaskFieldType, TaskInputSchema } from "@wheelsai/shared/agent-kind";
 
 import { readSseChat, type SseChatEvent } from "./sse";
 
-export type { AgentKind, KindConfig, TaskField, TaskFieldType };
+export type { AgentKind, KindConfig, TaskField, TaskFieldType, TaskInputSchema };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -995,6 +995,11 @@ export interface Agent {
   tags: string[];
   isPublic: boolean;
   /**
+   * The name in the agent's public address, `/a/<handle>`; unique across the
+   * platform. null until the agent has been public.
+   */
+  publicHandle: string | null;
+  /**
    * How people use the agent: they talk to it (`conversation`), they give it
    * a task through a short form (`task`), or it runs on its own on a
    * schedule (`scheduled`).
@@ -1082,6 +1087,8 @@ export interface AgentDetail extends Omit<Agent, "latestDeployment"> {
    * changing back loses nothing. null when there are none.
    */
   kindConfig: KindConfig | null;
+  /** A self-running agent's latest results show on its public page only when this is on. */
+  publicResults: boolean;
   deployments: AgentDeployment[];
 }
 
@@ -1174,6 +1181,72 @@ export interface DeployAgentInput {
   };
 }
 
+/**
+ * Where an agent's public page stands. `off`: the agent is not public and its
+ * page does not exist. `view_only`: the page shows and nobody can use the
+ * agent from it yet. `on`: anyone with the link can use it. `paused`: the page
+ * shows and use is stopped for now.
+ */
+export type PublicLinkState = "off" | "view_only" | "on" | "paused";
+
+/** What an owner can set the link to; `view_only` is read, never asked for. */
+export type PublicLinkSwitch = "on" | "paused" | "off";
+
+/** `GET` and `PUT /api/agents/:id/public-link`. */
+export interface PublicLink {
+  state: PublicLinkState;
+  /** The agent's address, kept while the link is off. null until it has one. */
+  handle: string | null;
+  /** `<web>/a/<handle>`; null without a handle, or when the server does not know its web address. */
+  url: string | null;
+  /** Uses a day the page allows (1 to 100,000). */
+  dailyCap: number;
+  /** Uses counted today (UTC); null when the count could not be read. */
+  usedToday: number | null;
+  /** Whether a self-running agent's latest results show on its page. */
+  showResults: boolean;
+  /** The agent has a tool that visitors do not get. */
+  toolsOffForVisitors: boolean;
+}
+
+/** What `PUT /api/agents/:id/public-link` accepts. */
+export interface PublicLinkInput {
+  state: PublicLinkSwitch;
+  /** 1 to 100,000 uses a day. */
+  dailyCap?: number;
+  /** 3 to 40 lower-case letters, digits and hyphens. Left out, the agent keeps its address or gets one made from its name. */
+  handle?: string;
+  showResults?: boolean;
+}
+
+/** One answer of a task form that needs another look (a 422 `input_invalid`). */
+export interface TaskInputIssue {
+  /** Where in the input, as a JSON pointer: `/topic`, `/keywords/3`; "" is the input as a whole. */
+  path: string;
+  /** The key of the question it is about, or null for the input as a whole. */
+  field: string | null;
+  /** That question's label, or null when the form has no such question. */
+  label: string | null;
+  message: string;
+}
+
+/** The body of a 422 from a run: every answer that needs another look, in the order of the form. */
+export interface InputInvalidBody {
+  error: "input_invalid";
+  message: string;
+  details: TaskInputIssue[];
+}
+
+/** `POST /api/agents/:id/run` with `stream: false`. */
+export interface AgentRunResult {
+  output: { format: "text"; text: string };
+  /** Every tool the model called in this run, and how each call ended. */
+  toolCalls: PlaygroundToolCall[];
+  durationMs: number;
+  /** What the run cost a buyer's copy and who it went to; null when nothing was charged. */
+  billing: { listingTitle: string; chargedCents: number; creatorCents: number } | null;
+}
+
 export const agentsApi = {
   list: () => api<{ agents: Agent[]; total: number }>("/api/agents"),
 
@@ -1190,6 +1263,22 @@ export const agentsApi = {
       method: "PATCH",
       body: updates,
     }),
+
+  /**
+   * Run a task agent on one filled-in form and wait for the result (the JSON
+   * answer; the route streams when `stream` is left out). A form that does
+   * not fit answers 422 with an `InputInvalidBody`.
+   */
+  run: (id: string, body: { input: Record<string, unknown> }) =>
+    api<AgentRunResult>(`/api/agents/${id}/run`, {
+      method: "POST",
+      body: { input: body.input, stream: false },
+    }),
+
+  getPublicLink: (id: string) => api<PublicLink>(`/api/agents/${id}/public-link`),
+
+  setPublicLink: (id: string, body: PublicLinkInput) =>
+    api<PublicLink>(`/api/agents/${id}/public-link`, { method: "PUT", body }),
 
   usage: (id: string, period: AgentUsagePeriod = "24h") =>
     api<{ usage: AgentChatUsage }>(`/api/agents/${id}/usage?period=${period}`),
@@ -1814,7 +1903,7 @@ export interface MarketplaceListing {
 }
 
 // ============================================
-// Public Agent Transparency Feed (/api/a/:slug)
+// Public Agent Page (/api/a/:handle)
 // ============================================
 
 export interface PublicAgentDetail {
@@ -1823,7 +1912,14 @@ export interface PublicAgentDetail {
     slug: string;
     framework: string;
     createdAt: string;
+    /** What the owner wrote for the public; never the instructions. */
+    description: string | null;
+    /** The name in the page's address, `/a/<handle>`. */
+    handle: string;
+    agentKind: AgentKind;
   };
+  /** How the page can be used right now, and what the panel of the agent's kind needs. */
+  use: PublicAgentUse;
   treasury: {
     address: string;
     balanceLamports: string;
@@ -1846,8 +1942,68 @@ export interface PublicAgentDetail {
   }>;
 }
 
+/** What every page says about its use, whatever the agent's kind. */
+interface PublicAgentUseBase {
+  /** `view_only`: shown, not yet usable. `on`: usable. `paused`: use is stopped for now. */
+  state: "view_only" | "on" | "paused";
+  /** The page's publishable key; set only while `state` is `on`. */
+  key: string | null;
+  /** Whether the agent's owner keeps a copy of what visitors send and receive. */
+  transcriptsStored: boolean;
+}
+
+/** Exactly one of `chat`, `task` and `scheduled` is present, the one of the agent's kind. */
+export type PublicAgentUse = PublicAgentUseBase &
+  (
+    | {
+        chat: { maxMessages: number; maxMessageChars: number; maxTotalChars: number };
+        task?: never;
+        scheduled?: never;
+      }
+    | {
+        task: { inputSchema: TaskInputSchema; maxInputChars: number };
+        chat?: never;
+        scheduled?: never;
+      }
+    | {
+        scheduled: { resultsPublic: boolean; latest: Array<{ finishedAt: string; text: string }> };
+        chat?: never;
+        task?: never;
+      }
+  );
+
+// ============================================
+// The public run (POST /api/widget/:publicKey/run)
+// ============================================
+// Called from the agent's page by a browser: no sign-in, no cookies, and an
+// Origin header the key allows. Code calls POST /api/agents/:id/run instead.
+
+/** The body of a public run. It streams unless `stream` is false. */
+export interface PublicRunRequest {
+  input: Record<string, unknown>;
+  stream?: boolean;
+}
+
+/** The JSON answer of a public run (`stream: false`). */
+export interface PublicRunResult {
+  output: { format: "text"; text: string };
+  toolCalls: Array<{ name: string; status: "ok" | "unavailable" | "error" }>;
+}
+
+/** What a visitor is told when a public run is refused, with the status it comes with. */
+export interface PublicRunRefusal {
+  error: string;
+  message: string;
+  reason?: string;
+  scope?: "ip" | "key" | "session" | "org" | "global" | "agent";
+  retryAfterSeconds?: number;
+  /** 422 `input_invalid`: each answer that needs another look. */
+  details?: TaskInputIssue[];
+}
+
 export const publicAgentApi = {
-  get: (slug: string) => api<PublicAgentDetail>(`/api/a/${slug}`),
+  /** By the agent's public handle, the name in `/a/<handle>`. */
+  get: (handle: string) => api<PublicAgentDetail>(`/api/a/${handle}`),
 };
 
 export interface MarketplaceCategory {
@@ -5552,6 +5708,11 @@ export interface WidgetKey {
   enabled: boolean;
   revokedAt: string | null;
   lastUsedAt: string | null;
+  /**
+   * Set on the one key that serves an agent's public page, to that agent's
+   * id; null on a key made for a website. Pausing it pauses public use.
+   */
+  pageOfAgentId: string | null;
   createdAt: string;
   /** Messages counted today (UTC); null when the count could not be read. */
   usageToday: number | null;

@@ -220,6 +220,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
         rows={[
           { group: <Link href="/docs/api/inference">Chat completions (OpenAI-compatible)</Link>, prefix: <code>/v1</code> },
           { group: <Link href="/docs/api/agents">Agents, GitHub import, playground and the agent API</Link>, prefix: <><code>/api/agents</code>, <code>/v1/agents</code></> },
+          { group: <><Link href="/docs/api/agents#run-agent">Run a task</Link>, <Link href="/docs/api/agents#public-link">the public link</Link> and <Link href="/docs/api/agents#public-run">the public run</Link></>, prefix: <><code>/api/agents/&#123;id&#125;/run</code>, <code>/api/agents/&#123;id&#125;/public-link</code>, <code>/api/widget/&#123;publicKey&#125;/run</code></> },
           { group: <Link href="/docs/api/deployments">Models and deployments</Link>, prefix: <><code>/api/models</code>, <code>/api/deployments</code></> },
           { group: <Link href="/docs/api/training">Fine-tuning: datasets, training jobs and fine-tuned models</Link>, prefix: <code>/api/training</code> },
           { group: <Link href="/docs/api/marketplace">Marketplace</Link>, prefix: <code>/api/marketplace</code> },
@@ -247,7 +248,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { name: "GET /api/models", type: "catalog", description: "Deployable and free models, and GPU tiers with prices." },
           { name: "GET /api/marketplace/listings", type: "catalog", description: "Published listings, with search and filters." },
           { name: "GET /api/templates", type: "catalog", description: "Published agent templates." },
-          { name: "GET /api/a/{slug}", type: "receipts", description: "A public agent's transparency feed: treasury, compute paid, recent payment signatures." },
+          { name: "GET /api/a/{handle}", type: "public page", description: <>A public agent&apos;s page, found by its public handle (the name in <code>/a/&#123;handle&#125;</code>): what it is, how it can be used right now, and its receipts (treasury, compute paid, recent payment signatures).</> },
           { name: "GET /api/status", type: "health", description: "Live platform status (the data behind /status), including response times with their distribution and error share." },
           { name: "GET /api/public/stats", type: "facts", description: "Platform facts (frameworks, models, pricing models, chat channels) and response times. Always 200; cacheable for 5 minutes." },
         ]}

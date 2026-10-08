@@ -24,6 +24,9 @@ const toc = [
   { id: "agent-usage", title: "Agent chat usage", sub: true },
   { id: "delete-agent", title: "Delete an agent", sub: true },
   { id: "deploy-agent", title: "Deploy an agent", sub: true },
+  { id: "run-agent", title: "Run a task", sub: true },
+  { id: "public-link", title: "Public link", sub: true },
+  { id: "public-run", title: "Run from a public page", sub: true },
   { id: "agent-management-errors", title: "Errors", sub: true },
   { id: "agent-api", title: "Agent API (/v1)" },
   { id: "agent-completions", title: "Create a chat completion", sub: true },
@@ -77,7 +80,8 @@ export default function AgentsApiPage() {
         <p>
           Returns <code>&#123; agents, total &#125;</code>, newest first. Each agent has <code>id</code>, <code>name</code>,{" "}
           <code>slug</code>, <code>description</code>, <code>framework</code>, <code>version</code>, <code>tags</code>,{" "}
-          <code>isPublic</code>, <code>agentKind</code> (<a href="#agent-kinds">how people use it</a>),{" "}
+          <code>isPublic</code>, <code>publicHandle</code> (the name in its <a href="#public-link">public address</a>,{" "}
+          <code>null</code> until it has been public), <code>agentKind</code> (<a href="#agent-kinds">how people use it</a>),{" "}
           <code>latestDeployment</code> and timestamps, plus where its API is:{" "}
           <code>apiEndpoint</code> (the agent&apos;s chat-completions URL), <code>openaiBaseUrl</code> (the{" "}
           <code>base_url</code> for an OpenAI client) and <code>openaiModel</code> (<code>agent/&lt;slug&gt;</code>). The two
@@ -88,7 +92,9 @@ export default function AgentsApiPage() {
       <Endpoint id="get-agent" method="GET" path="/api/agents/{agentId}" auth="API key or session" title="Get an agent">
         <p>
           Returns <code>&#123; agent &#125;</code> with its full configuration, its <code>agentKind</code> and{" "}
-          <code>kindConfig</code> (<code>null</code> when it has no settings), deployments and the same{" "}
+          <code>kindConfig</code> (<code>null</code> when it has no settings), <code>publicHandle</code>,{" "}
+          <code>publicResults</code> (whether a self-running agent&apos;s latest results show on its public page),
+          deployments and the same{" "}
           <code>apiEndpoint</code>, <code>openaiBaseUrl</code> and <code>openaiModel</code> as the list. A deployment&apos;s{" "}
           <code>endpoint</code> is the agent&apos;s <code>/v1</code> URL while it is <code>running</code> and{" "}
           <code>null</code> otherwise. Environment variables come back as their <strong>names only</strong>: values are
@@ -114,7 +120,7 @@ export default function AgentsApiPage() {
             { name: "tools", type: "array", description: <>Items <code>&#123; name, type, description?, config? &#125;</code>, <code>type</code> one of <code>function</code>, <code>api</code>, <code>mcp</code>.</> },
             { name: "env", type: "object", description: "String values, for example provider keys. Encrypted at rest; write-only." },
             { name: "tags", type: "string[]", description: "Free-form tags." },
-            { name: "isPublic", type: "boolean", description: <>Default <code>false</code>. Public agents get a transparency page at <code>/a/&#123;slug&#125;</code>.</> },
+            { name: "isPublic", type: "boolean", description: <>Default <code>false</code>. A public agent has a page at <code>/a/&#123;handle&#125;</code>; making it public gives it a handle. Nobody can use the agent from that page until you turn its <a href="#public-link">public link</a> on.</> },
             { name: "knowledgeBaseId", type: "uuid | null", description: "Ground the agent's answers in one of your knowledge bases." },
           ]}
         />
@@ -338,6 +344,215 @@ export default function AgentsApiPage() {
           <code>GET /api/agents/&#123;agentId&#125;/deployments/&#123;deploymentId&#125;</code>, read build output with{" "}
           <code>.../logs</code>, and stop it with <code>POST .../stop</code>. The agent&apos;s secrets are not included in the
           GPU job definition.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="run-agent" method="POST" path="/api/agents/{agentId}/run" auth="API key with the agents:invoke scope, or session" title="Run a task">
+        <p>
+          A <a href="#task-form">task agent&apos;s form</a>, filled in, gives one result. Call this from your code with an
+          API key that holds the <code>agents:invoke</code> scope, or from the dashboard with a session. The agent must be in
+          your organization.
+        </p>
+        <Fields
+          fields={[
+            { name: "input", type: "object", required: true, description: <>One answer per question, keyed by the question&apos;s <code>key</code>. Up to 8,000 characters of answers in all. A question that is not required may be left out.</> },
+            { name: "stream", type: "boolean", description: <>Default <code>true</code>: the result streams as it is written. <code>false</code> waits and answers JSON.</> },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/agents/$AGENT_ID/run" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "input": { "commit_messages": "fix: refund total\\nfeat: export to CSV", "audience": "Customers" },
+    "stream": false
+  }'`}
+        />
+        <p>With <code>&quot;stream&quot;: false</code> the answer is:</p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "output": { "format": "text", "text": "This week: refunds now show the right total, and you can export to CSV." },
+  "toolCalls": [],
+  "durationMs": 1840,
+  "billing": null
+}`}
+        />
+        <ul>
+          <li>
+            <code>toolCalls</code> lists every tool the agent called and how each call ended (<code>ok</code>,{" "}
+            <code>unavailable</code>, <code>error</code> or <code>unknown</code>).
+          </li>
+          <li>
+            <code>billing</code> is <code>&#123; listingTitle, chargedCents, creatorCents &#125;</code> when the agent is a
+            paid marketplace install billed per request, and <code>null</code> when nothing was charged. A run that does not
+            produce a result is refunded.
+          </li>
+          <li>
+            Streamed, the response is <code>text/event-stream</code>, in the same format as the{" "}
+            <a href="#playground-chat">playground</a>&apos;s: <code>data:</code> frames of chat-completion chunks (the text
+            is <code>choices[0].delta.content</code>), tool calls under <code>wheelsai.toolCalls</code>, and a final{" "}
+            <code>data: [DONE]</code>.
+          </li>
+          <li>
+            The answers are checked against the form before anything else happens. A refused form is never counted against a
+            free-model limit and never charged. A run stops after two minutes. Nothing is saved as history: the answer is
+            the result.
+          </li>
+        </ul>
+        <p>A form that does not fit answers <code>422</code> with every answer that needs another look, in the order of the form:</p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "error": "input_invalid",
+  "message": "Some answers need another look.",
+  "details": [
+    { "path": "/commit_messages", "field": "commit_messages", "label": "Commit messages", "message": "This question needs an answer." }
+  ]
+}`}
+        />
+        <p>
+          <code>path</code> is a JSON pointer into <code>input</code>; <code>field</code> and <code>label</code> are the
+          question&apos;s key and label, and are <code>null</code> when the answer is not for a question of the form.
+        </p>
+        <DocTable
+          caption="Run refusals"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "code", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: <code>400</code>, code: <code>validation_failed</code>, when: <>The request itself: a field other than <code>input</code> and <code>stream</code>, or an agent id that is not an id. Also an agent whose model cannot be used; the message says what to set.</> },
+            { status: <code>402</code>, code: <code>PaymentRequired</code>, when: <>A per-request marketplace install and not enough credits; with <code>requiredCents</code> and <code>balanceCents</code>.</> },
+            { status: <code>403</code>, code: <><code>LicenceRevoked</code>, <code>missing_scope</code></>, when: <>The install was removed, its subscription lapsed or its token is no longer held; or an API key without <code>agents:invoke</code>.</> },
+            { status: <code>404</code>, code: <code>Not Found</code>, when: "No agent with that id in your organization." },
+            { status: <code>409</code>, code: <code>not_a_task_agent</code>, when: <>The agent&apos;s kind is not <code>task</code>. Chat with it instead.</> },
+            { status: <code>413</code>, code: <code>input_too_large</code>, when: "The answers are too long: over 8,000 characters in all, or a request of over 64 KB." },
+            { status: <code>422</code>, code: <code>input_invalid</code>, when: <>Some answers do not fit the form; <code>details</code> lists them.</> },
+            { status: <code>429</code>, code: <><code>RateLimitExceeded</code>, <code>plan_limit_reached</code></>, when: "The free-model limit, or the plan's monthly API calls, are used up." },
+            { status: <code>501</code>, code: <code>model_provider_not_configured</code>, when: "The agent's free model is temporarily unavailable." },
+            { status: <code>502</code>, code: <code>run_failed</code>, when: "The run produced no result, or took longer than its time limit. A paid run is refunded." },
+            { status: <code>503</code>, code: <><code>hosted_model_not_running</code>, <code>ServiceUnavailable</code></>, when: "The agent's hosted model has no deployment that can serve right now, or the API is restarting." },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="public-link" method="GET" path="/api/agents/{agentId}/public-link" auth="API key or session" title="Read an agent's public link">
+        <p>
+          Every agent has one public address, <code>/a/&#123;handle&#125;</code>, unique across WheelsAI. The page shows what
+          the agent is and does, and a panel for its kind: a chat, the task form, or the latest results of a self-running
+          agent. The public link is the switch that lets anyone with the address use the agent.
+        </p>
+        <DocTable
+          caption="The four states"
+          columns={[
+            { key: "state", label: "state" },
+            { key: "means", label: "What visitors get" },
+          ]}
+          rows={[
+            { state: <code>on</code>, means: "The page shows and anyone with the link can use the agent, up to the daily limit." },
+            { state: <code>paused</code>, means: "The page shows, with a note where the panel would be. Nobody can use the agent until you turn it back on." },
+            { state: <code>off</code>, means: "The agent is not public. Its page does not exist. It keeps its address." },
+            { state: <code>view_only</code>, means: <>The page shows and nobody can use the agent from it yet. This is where an agent starts when it was made public with <code>isPublic</code>: you turn it <code>on</code> when you are ready. It is read, never set.</> },
+          ]}
+        />
+        <CodeBlock
+          language="json"
+          code={`{
+  "state": "on",
+  "handle": "release-notes-helper",
+  "url": "https://wheelsai.example/a/release-notes-helper",
+  "dailyCap": 100,
+  "usedToday": 12,
+  "showResults": false,
+  "toolsOffForVisitors": true
+}`}
+        />
+        <ul>
+          <li>
+            <code>handle</code> is the agent&apos;s address; it is kept while the link is <code>off</code> and is{" "}
+            <code>null</code> until the agent has one. <code>url</code> is the full address, or <code>null</code> without a
+            handle.
+          </li>
+          <li>
+            <code>dailyCap</code> is how many uses a day the page allows, from 1 to 100,000 (100 to begin with).{" "}
+            <code>usedToday</code> is today&apos;s count (UTC), or <code>null</code> when it cannot be read.
+          </li>
+          <li>
+            <code>showResults</code> is whether a self-running agent&apos;s latest results show on its page.{" "}
+            <code>toolsOffForVisitors</code> is <code>true</code> when the agent has a tool that visitors do not get.
+          </li>
+        </ul>
+        <p>
+          Any member of the organization can read it. Another organization&apos;s agent answers <code>404</code>{" "}
+          <code>agent_not_found</code>.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="set-public-link" method="PUT" path="/api/agents/{agentId}/public-link" auth="API key, or session (owner or admin)" title="Turn an agent's public link on, pause it or turn it off">
+        <Fields
+          fields={[
+            { name: "state", type: "enum", required: true, description: <><code>on</code>, <code>paused</code> or <code>off</code>.</> },
+            { name: "dailyCap", type: "integer", description: "Uses a day the page allows, 1 to 100,000." },
+            { name: "handle", type: "string", description: "The address, 3 to 40 lower-case letters, digits and hyphens, starting and ending with a letter or a digit. Left out, the agent keeps the address it has or gets one made from its slug." },
+            { name: "showResults", type: "boolean", description: "Show a self-running agent's latest results on its page." },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X PUT "$WHEELSAI_API_URL/api/agents/$AGENT_ID/public-link" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{ "state": "on", "dailyCap": 200 }'`}
+        />
+        <p>Answers the link as it now is, the same shape as the read above.</p>
+        <DocTable
+          caption="Public link refusals"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "code", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: <code>400</code>, code: <code>validation_failed</code>, when: <>The request itself; <code>fields</code> says which part and why. A handle that breaks the rules or is reserved is refused here.</> },
+            { status: <code>403</code>, code: "", when: "A member who is not an owner or admin." },
+            { status: <code>404</code>, code: <code>agent_not_found</code>, when: "No agent with that id in your organization." },
+            { status: <code>409</code>, code: <code>handle_taken</code>, when: "Another agent has that address." },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="public-run" method="POST" path="/api/widget/{publicKey}/run" auth="Public: the page's key, no sign-in" title="Run a task from a public page">
+        <p>
+          The form on an agent&apos;s public page sends its answers here with the page&apos;s publishable key, which{" "}
+          <code>GET /api/a/&#123;handle&#125;</code> gives while the page is <code>on</code>. It takes no cookies and needs an{" "}
+          <code>Origin</code> header that the key allows, which a browser sends and a script does not, so{" "}
+          <strong>code should call <a href="#run-agent">the run route</a> with an API key instead</strong>.
+        </p>
+        <Fields
+          fields={[
+            { name: "input", type: "object", required: true, description: "One answer per question of the form, as for the run route." },
+            { name: "stream", type: "boolean", description: <>Default <code>true</code>. <code>false</code> answers JSON.</> },
+          ]}
+        />
+        <CodeBlock
+          language="json"
+          code={`{
+  "output": { "format": "text", "text": "This week: refunds now show the right total." },
+  "toolCalls": [{ "name": "web_search", "status": "ok" }]
+}`}
+        />
+        <p>
+          A refusal is <code>&#123; error, message &#125;</code>, with <code>reason</code>, <code>scope</code> and{" "}
+          <code>retryAfterSeconds</code> (also the <code>Retry-After</code> header) when waiting helps, and{" "}
+          <code>details</code> for <code>input_invalid</code>, as above. The messages are written for a visitor and say
+          nothing about the agent&apos;s setup. <code>400</code> is a body that is not <code>&#123; input, stream? &#125;</code>;{" "}
+          <code>403</code> is an <code>Origin</code> the key does not allow; <code>404</code> is a key that is unknown or whose
+          page is not <code>on</code>; <code>409</code>, <code>413</code> and <code>422</code> are the form&apos;s, as for the run
+          route; <code>429</code> is the visitor&apos;s, the page&apos;s or the agent&apos;s limit; <code>503</code> is an agent that is
+          not available right now.
         </p>
       </Endpoint>
 

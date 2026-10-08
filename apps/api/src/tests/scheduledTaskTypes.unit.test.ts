@@ -10,8 +10,10 @@ import test from "node:test";
 import {
   EMAIL_UNAVAILABLE_REASON,
   RESTART_UNAVAILABLE_REASON,
+  RESULT_EMAIL_UNAVAILABLE_REASON,
   TASK_TYPE_IDS,
   WORKFLOW_RUNNER_UNAVAILABLE_REASON,
+  checkDeliveryChannel,
   getTaskType,
   listTaskTypes,
   taskTypeCatalogue,
@@ -174,6 +176,129 @@ test("agent_run requires an agent and a prompt; payload errors are keyed by fiel
   assert.ok(unknownKey.payload, "an unknown payload key is refused, not silently ignored");
 
   accepted(await check({ taskType: "agent_run", agentId: AGENT, payload: { prompt: "hi" } }));
+});
+
+test("agent_run declares the date stamp and the place for results as catalogue fields", () => {
+  // The Scheduler dialog rebuilds a payload from catalogue fields only, so a
+  // setting that is not a field would be dropped the first time a task is edited.
+  for (const type of ["agent_run", "inference"]) {
+    const fields = taskTypeCatalogue(ALL).find((t) => t.type === type)!.fields;
+    assert.deepEqual(
+      fields.map((f) => [f.key, f.kind, f.required]),
+      [
+        ["prompt", "textarea", true],
+        ["stampTime", "boolean", false],
+        ["deliver.alertChannelId", "alert_channel", false],
+      ],
+      type,
+    );
+  }
+  const reportField = taskTypeCatalogue(ALL)
+    .find((t) => t.type === "report")!
+    .fields.find((f) => f.key === "deliver.alertChannelId")!;
+  const runField = taskTypeCatalogue(ALL)
+    .find((t) => t.type === "agent_run")!
+    .fields.find((f) => f.key === "deliver.alertChannelId")!;
+  assert.deepEqual([runField.key, runField.kind], [reportField.key, reportField.kind], "written as report has it");
+
+  const off = taskTypeCatalogue(NONE)
+    .find((t) => t.type === "agent_run")!
+    .fields.find((f) => f.key === "deliver.alertChannelId")!;
+  assert.match(off.help!, /email delivery is unavailable right now, so a result cannot be sent/);
+});
+
+test("agent_run: a payload without the new fields is stored as it always was, and with them as sent", async () => {
+  const old = accepted(await check({ taskType: "agent_run", agentId: AGENT, payload: { prompt: "hi" } }));
+  assert.deepEqual(old.payload, { prompt: "hi" }, "no default is written into an older payload");
+
+  const full = accepted(
+    await check({
+      taskType: "agent_run",
+      agentId: AGENT,
+      payload: { prompt: "hi", stampTime: true, deliver: { alertChannelId: CHANNEL } },
+    }),
+  );
+  assert.deepEqual(full.payload, { prompt: "hi", stampTime: true, deliver: { alertChannelId: CHANNEL } });
+
+  // What the dialog sends for an untouched switch and an empty place.
+  accepted(await check({ taskType: "agent_run", agentId: AGENT, payload: { prompt: "hi", stampTime: false, deliver: {} } }));
+  accepted(await check({ taskType: "inference", agentId: AGENT, payload: { prompt: "hi", stampTime: true } }));
+
+  assert.deepEqual(
+    Object.keys(fieldErrors(await check({ taskType: "agent_run", agentId: AGENT, payload: { prompt: "hi", stampTime: "yes" } }))),
+    ["payload.stampTime"],
+  );
+  assert.deepEqual(
+    Object.keys(
+      fieldErrors(
+        await check({ taskType: "agent_run", agentId: AGENT, payload: { prompt: "hi", deliver: { alertChannelId: "not-an-id" } } }),
+      ),
+    ),
+    ["payload.deliver.alertChannelId"],
+  );
+  // A link or an address has no place in a payload: it is copied into every execution row.
+  assert.ok(
+    fieldErrors(
+      await check({
+        taskType: "agent_run",
+        agentId: AGENT,
+        payload: { prompt: "hi", deliver: { alertChannelId: CHANNEL, webhookUrl: "https://hooks.slack.example/T1" } },
+      }),
+    )["payload.deliver"],
+  );
+});
+
+test("agent_run: the place for results is held to the rule a report's channel is", async () => {
+  const payload = { prompt: "hi", deliver: { alertChannelId: CHANNEL } };
+  for (const type of ["agent_run", "inference"]) {
+    assert.equal(
+      (refusal(
+        await check({ taskType: type, agentId: AGENT, payload: { prompt: "hi", deliver: { alertChannelId: FOREIGN } } }),
+      ) as { field?: string }).field,
+      "payload.deliver.alertChannelId",
+      "another organization's channel is not found",
+    );
+
+    const emailChannel = owns({ alertChannel: async () => ({ type: "email" }) });
+    accepted(await check({ taskType: type, agentId: AGENT, payload }, { owns: emailChannel }));
+    assert.deepEqual(
+      fieldErrors(await check({ taskType: type, agentId: AGENT, payload }, { owns: emailChannel, capabilities: NONE }))[
+        "payload.deliver.alertChannelId"
+      ],
+      [RESULT_EMAIL_UNAVAILABLE_REASON],
+    );
+    const pager = fieldErrors(
+      await check({ taskType: type, agentId: AGENT, payload }, { owns: owns({ alertChannel: async () => ({ type: "pagerduty" }) }) }),
+    );
+    assert.match(pager["payload.deliver.alertChannelId"]![0]!, /PagerDuty channel opens incidents and cannot carry a result/);
+  }
+});
+
+test("checkDeliveryChannel is the one rule: no channel asks nothing, and a report reads as before", async () => {
+  let asked = 0;
+  const ctx = (type: string | null, capabilities = ALL) => ({
+    capabilities,
+    owns: {
+      alertChannel: async () => {
+        asked += 1;
+        return type ? { type } : null;
+      },
+    },
+  });
+  assert.equal(await checkDeliveryChannel(undefined, "result", ctx("slack")), null);
+  assert.equal(asked, 0);
+  assert.equal(await checkDeliveryChannel(CHANNEL, "result", ctx("slack")), null);
+  assert.equal(await checkDeliveryChannel(CHANNEL, "report", ctx("webhook")), null);
+  assert.deepEqual(await checkDeliveryChannel(CHANNEL, "report", ctx(null)), {
+    error: "invalid_task",
+    field: "payload.deliver.alertChannelId",
+    message: "alert channel not found in this organization",
+  });
+  assert.equal((await checkDeliveryChannel(CHANNEL, "report", ctx("email", NONE)))!.message, EMAIL_UNAVAILABLE_REASON);
+  assert.equal(
+    (await checkDeliveryChannel(CHANNEL, "report", ctx("pagerduty")))!.message,
+    "a PagerDuty channel opens incidents and cannot carry a report; choose a Slack, Discord, webhook or email channel",
+  );
 });
 
 test("a webhook needs no agent, and its url error is keyed payload.url", async () => {

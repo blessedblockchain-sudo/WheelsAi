@@ -48,6 +48,9 @@ export const RESTART_UNAVAILABLE_REASON =
   "restarting a deployment from a health check is unavailable right now; record the failure instead";
 export const EMAIL_UNAVAILABLE_REASON =
   "email delivery is unavailable right now, so a report cannot be sent to an email channel";
+/** The same refusal for an agent run that sends its result to a channel. */
+export const RESULT_EMAIL_UNAVAILABLE_REASON =
+  "email delivery is unavailable right now, so a result cannot be sent to an email channel";
 export const WORKFLOW_RUNNER_UNAVAILABLE_REASON =
   "workflow runs are temporarily unavailable";
 
@@ -117,7 +120,21 @@ const httpUrl = z
   .max(2048)
   .refine((value) => /^https?:\/\//i.test(value), { message: "must be an http or https URL" });
 
-const agentRunPayload = z.object({ prompt: z.string().trim().min(1).max(20_000) }).strict();
+const agentRunPayload = z
+  .object({
+    prompt: z.string().trim().min(1).max(20_000),
+    // The run's date and time, in the task's time zone, ahead of the prompt.
+    // Absent means off: a task saved before this existed runs as it did.
+    stampTime: z.boolean().optional(),
+    // Where a finished run's result is sent, written as `report` has it. A
+    // channel id and never a link or an address: the payload is copied into
+    // every execution row. Absent means the result is only stored.
+    deliver: z
+      .object({ alertChannelId: z.string().uuid().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 const webhookPayload = z
   .object({
@@ -225,6 +242,7 @@ const workflowRunPayload = z
   })
   .strict();
 
+export type AgentRunPayload = z.infer<typeof agentRunPayload>;
 export type WebhookPayload = z.infer<typeof webhookPayload>;
 export type DataSyncPayload = z.infer<typeof dataSyncPayload>;
 export type HealthCheckPayload = z.infer<typeof healthCheckPayload>;
@@ -266,7 +284,25 @@ const agentRun: TaskTypeDefinition = {
   deferred: false,
   retryable: true,
   payload: agentRunPayload,
-  fields: () => [promptField],
+  fields: (caps) => [
+    promptField,
+    {
+      key: "stampTime",
+      label: "Tell it the date and time at each run",
+      kind: "boolean",
+      required: false,
+      help: "Puts the run's date and time, in the task's time zone, ahead of the prompt.",
+    },
+    {
+      key: "deliver.alertChannelId",
+      label: "Send the result to",
+      kind: "alert_channel",
+      required: false,
+      help: caps.emailConfigured
+        ? "Slack, Discord, webhook or email channels. The result is always saved on the run as well."
+        : `Slack, Discord or webhook channels. ${RESULT_EMAIL_UNAVAILABLE_REASON}. The result is always saved on the run as well.`,
+    },
+  ],
 };
 
 const DEFINITIONS: TaskTypeDefinition[] = [
@@ -674,6 +710,36 @@ export async function validateTask(
   };
 }
 
+/**
+ * The rule for a channel a task sends to (a report, or an agent run's
+ * result): it is one of this organization's alert channels, and of a kind
+ * that can carry the message on this server. One rule for every type that
+ * has `deliver.alertChannelId`, so they cannot drift apart.
+ */
+export async function checkDeliveryChannel(
+  channelId: string | undefined,
+  what: "report" | "result",
+  ctx: { capabilities: TaskTypeCapabilities; owns: Pick<TaskOwnershipLoader, "alertChannel"> },
+): Promise<TaskRefusal | null> {
+  if (!channelId) return null;
+  const field = "payload.deliver.alertChannelId";
+  const channel = await ctx.owns.alertChannel(channelId);
+  if (!channel) return notInOrg(field, "alert channel");
+  if (channel.type === "email" && !ctx.capabilities.emailConfigured) {
+    return fieldProblem(
+      field,
+      what === "report" ? EMAIL_UNAVAILABLE_REASON : RESULT_EMAIL_UNAVAILABLE_REASON,
+    );
+  }
+  if (channel.type === "pagerduty") {
+    return fieldProblem(
+      field,
+      `a PagerDuty channel opens incidents and cannot carry a ${what}; choose a Slack, Discord, webhook or email channel`,
+    );
+  }
+  return null;
+}
+
 async function checkTypeRules(
   type: TaskTypeId,
   payload: Record<string, unknown>,
@@ -726,20 +792,12 @@ async function checkTypeRules(
         message: "summarize needs an agent: the selected agent writes the summary",
       };
     }
-    const channelId = p.deliver?.alertChannelId;
-    if (channelId) {
-      const channel = await ctx.owns.alertChannel(channelId);
-      if (!channel) return notInOrg("payload.deliver.alertChannelId", "alert channel");
-      if (channel.type === "email" && !ctx.capabilities.emailConfigured) {
-        return fieldProblem("payload.deliver.alertChannelId", EMAIL_UNAVAILABLE_REASON);
-      }
-      if (channel.type === "pagerduty") {
-        return fieldProblem(
-          "payload.deliver.alertChannelId",
-          "a PagerDuty channel opens incidents and cannot carry a report; choose a Slack, Discord, webhook or email channel",
-        );
-      }
-    }
+    return checkDeliveryChannel(p.deliver?.alertChannelId, "report", ctx);
+  }
+
+  if (type === "agent_run" || type === "inference") {
+    const p = payload as AgentRunPayload;
+    return checkDeliveryChannel(p.deliver?.alertChannelId, "result", ctx);
   }
 
   return null;

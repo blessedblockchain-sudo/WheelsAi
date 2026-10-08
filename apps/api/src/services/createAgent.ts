@@ -5,8 +5,9 @@
  *
  * In order: the template (when one is named), the input (plain-word
  * refusals, services/agentCreateInput.ts), the knowledge base's owner, the
- * plan's agent limit, then one transaction that writes the agent, its graph
- * when the template has one, and the template's use count. `alsoInTransaction`
+ * plan's agent limit, then one transaction that writes the agent, its public
+ * handle when it is created public, its graph when the template has one, and
+ * the template's use count. `alsoInTransaction`
  * is the seam for a caller that has to write more beside the agent or not at
  * all (a schedule, in a later batch): it runs inside that transaction, after
  * the agent row exists.
@@ -67,8 +68,16 @@ export interface CreateAgentDeps<TTx = unknown> {
   insertAgent(tx: TTx, row: NewAgentRow): Promise<{ id: string }>;
   insertGraph(tx: TTx, agentId: string, nodes: unknown, edges: unknown): Promise<void>;
   countTemplateUse(tx: TTx, templateId: string): Promise<void>;
+  /**
+   * Gives an agent created public its address, /a/<handle>: the first free
+   * handle made from its slug (services/agentPublicLink.ts). Never a page
+   * key: an agent made public here is view-only.
+   */
+  assignHandle(tx: TTx, agent: { id: string; slug: string }): Promise<string>;
   /** Whether a failed insert lost a race for the slug. */
   isSlugConflict(err: unknown): boolean;
+  /** Whether the transaction lost a race for the handle. */
+  isHandleConflict(err: unknown): boolean;
   /** The log line and the `agent.created` webhook. Must not throw. */
   announce(orgId: string, agent: CreatedAgent): void;
   now?(): Date;
@@ -90,7 +99,10 @@ export type CreateAgentResult =
   | { ok: false; reason: "template_not_found" }
   | { ok: false; reason: "knowledge_base_not_found" };
 
-/** Two creates of the same name at once can pick the same slug; the loser picks again. */
+/**
+ * Two creates of the same name at once can pick the same slug, and two
+ * public ones the same handle; the loser picks again.
+ */
 const SLUG_ATTEMPTS = 3;
 
 export const TEMPLATE_NOT_FOUND_MESSAGE = "This template is no longer available. Choose another one.";
@@ -145,6 +157,7 @@ export async function createAgent<TTx>(
           agentKind: data.agentKind,
           kindConfig: data.kindConfig,
         };
+        if (data.isPublic) await deps.assignHandle(tx, { id: row.id, slug });
         if (template && hasGraph) {
           await deps.insertGraph(tx, created.id, template.graphNodes, template.graphEdges);
         }
@@ -155,7 +168,7 @@ export async function createAgent<TTx>(
       deps.announce(orgId, agent);
       return { ok: true, agent };
     } catch (err) {
-      if (attempt < SLUG_ATTEMPTS && deps.isSlugConflict(err)) continue;
+      if (attempt < SLUG_ATTEMPTS && (deps.isSlugConflict(err) || deps.isHandleConflict(err))) continue;
       throw err;
     }
   }

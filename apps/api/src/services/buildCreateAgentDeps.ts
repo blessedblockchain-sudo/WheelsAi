@@ -10,6 +10,7 @@ import { Prisma, prisma as defaultPrisma, type PrismaClient } from "@wheelsai/db
 
 import { getAvailableFreeModels } from "../config/free-models.js";
 import { createLogger } from "../utils/logger.js";
+import { assignPublicHandle, isHandleConflict, type PublicLinkTx } from "./agentPublicLink.js";
 import { openAgentEnv, sealAgentEnv } from "./agentSecrets.js";
 import type { AgentTemplateSource, CreateAgentDeps } from "./createAgent.js";
 import { assertCanCreateAgent } from "./orgPlan.js";
@@ -103,7 +104,10 @@ export function buildCreateAgentDeps(
       });
     },
 
+    assignHandle: (tx, agent) => assignPublicHandle(tx as unknown as Pick<PublicLinkTx, "agent">, agent, { inTransaction: true }),
+
     isSlugConflict: isAgentSlugConflict,
+    isHandleConflict,
 
     announce: (orgId, agent) => {
       logger.info({ agentId: agent.id, orgId }, "Agent created");

@@ -45,6 +45,8 @@ interface World {
   availableFreeModelIds: string[];
   /** Fail this many inserts as a lost race for the slug. */
   slugRaces: number;
+  /** Fail this many handle writes as a lost race for the handle. */
+  handleRaces: number;
 }
 
 function newWorld(over: Partial<World> = {}): World {
@@ -58,6 +60,7 @@ function newWorld(over: Partial<World> = {}): World {
     maxAgents: null,
     availableFreeModelIds: [GROQ],
     slugRaces: 0,
+    handleRaces: 0,
     ...over,
   };
 }
@@ -74,9 +77,25 @@ function fakePrisma(world: World) {
           world.slugRaces -= 1;
           throw Object.assign(new Error("Unique constraint failed"), { code: "P2002", meta: { target: ["org_id", "slug"] } });
         }
-        const row = { id: `agent-${(ids += 1)}`, ...data };
+        // Numbered across the world, so two creates never share an id.
+        const row = { id: `agent-${(ids = Math.max(ids, world.agents.length) + 1)}`, ...data };
         world.agents.push(row);
         return row;
+      },
+      // The two calls of assignPublicHandle (services/agentPublicLink.ts).
+      findFirst: async ({ where }: any) =>
+        world.agents.find((a) =>
+          where.publicHandle !== undefined ? a.publicHandle === where.publicHandle : a.id === where.id,
+        ) ?? null,
+      updateMany: async ({ where, data }: any) => {
+        if (world.handleRaces > 0) {
+          world.handleRaces -= 1;
+          throw Object.assign(new Error("Unique constraint failed"), { code: "P2002", meta: { target: ["public_handle"] } });
+        }
+        const hit = world.agents.filter((a) => a.id === where.id && (a.publicHandle ?? null) === where.publicHandle);
+        // A copy, so a transaction that is undone takes the handle with it.
+        for (const row of hit) world.agents[world.agents.indexOf(row)] = { ...row, ...data };
+        return { count: hit.length };
       },
     },
     agentGraph: {
@@ -238,7 +257,9 @@ test("an old-style request with framework, sourceType and sourceCode stores the 
   const result = await create(world, { body });
   assert.ok(result.ok);
 
-  const { id, env, ...row } = world.agents[0]!;
+  const { id, env, publicHandle, ...row } = world.agents[0]!;
+  // Created public, so it has its address.
+  assert.equal(publicHandle, "legacy-agent");
   // What routes/agents.ts wrote before the create path moved (its
   // prisma.agent.create data), plus the two new columns at their defaults.
   assert.deepEqual(row, {
@@ -553,4 +574,35 @@ test("POST /api/agents refusals: 400 validation_failed with message and fields; 
   } finally {
     await app.close();
   }
+});
+
+test("an agent created public gets its address from its slug; a private one gets none", async () => {
+  const world = newWorld();
+  const shown = await create(world, { body: { name: "Support Bot", isPublic: true } });
+  const hidden = await create(world, { body: { name: "Back Office" } });
+  assert.ok(shown.ok && hidden.ok);
+  assert.equal(world.agents.find((a) => a.id === shown.agent.id)!.publicHandle, "support-bot");
+  assert.equal(world.agents.find((a) => a.id === hidden.agent.id)!.publicHandle, undefined);
+});
+
+test("a handle another organization's agent has is not taken twice: the next candidate carries the id", async () => {
+  const world = newWorld();
+  const first = await create(world, { body: { name: "Support Bot", isPublic: true } });
+  const second = await create(world, { body: { name: "Support Bot", isPublic: true }, orgId: "other-org" });
+  assert.ok(first.ok && second.ok);
+  assert.equal(second.agent.slug, "support-bot", "the slug is per organization");
+  const handles = world.agents.map((a) => a.publicHandle);
+  assert.equal(handles[0], "support-bot");
+  assert.equal(handles[1], `support-bot-${second.agent.id.replace(/[^a-z0-9]/g, "").slice(0, 8)}`);
+  assert.equal(new Set(handles).size, 2);
+});
+
+test("a create that loses a race for its handle runs again, and leaves one agent", async () => {
+  const world = newWorld({ handleRaces: 1 });
+  const result = await create(world, { body: { name: "Support Bot", isPublic: true } });
+  assert.ok(result.ok);
+  assert.equal(world.transactions, 2);
+  assert.equal(world.agents.length, 1);
+  assert.equal(world.agents[0]!.publicHandle, "support-bot");
+  assert.equal(world.announced.length, 1);
 });

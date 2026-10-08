@@ -11,6 +11,7 @@ import { generateAgentJobDefinition } from "../services/agent-runtime.js";
 import { mergeAgentEnv, redactAgentEnv } from "../services/agentSecrets.js";
 import { agentFieldsSchema } from "../services/agentCreateInput.js";
 import { resolveKindConfig } from "../services/agentKind.js";
+import { assignPublicHandle, setPageUse, type PublicLinkTx } from "../services/agentPublicLink.js";
 import { buildCreateAgentDeps } from "../services/buildCreateAgentDeps.js";
 import { createAgent, createAgentAnswer, type CreateAgentResult } from "../services/createAgent.js";
 import { validationFailureFromFields } from "../lib/validationFailure.js";
@@ -225,6 +226,8 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
         version: agent.version,
         tags: agent.tags,
         isPublic: agent.isPublic,
+        // The name in its public address, /a/<handle>; null until it has been public.
+        publicHandle: agent.publicHandle ?? null,
         // How people use it: conversation, task or scheduled.
         agentKind: isAgentKind(agent.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
         // What answers a chat: the agent's prompt, or its saved graph.
@@ -358,19 +361,43 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       newVersion = `${major}.${minor}.${patch + 1}`;
     }
 
+    // A page that becomes public needs an address. Given before the write
+    // that publishes it, so a public agent is never left without one; an
+    // agent that has a handle keeps it, and making it private again clears
+    // nothing. No page key is made here: an agent made public this way is
+    // view-only until its owner turns the public link on.
+    if (updates.isPublic === true && !agent.publicHandle) {
+      await assignPublicHandle(prisma as unknown as Pick<PublicLinkTx, "agent">, agent);
+    }
+
     const { env: envPatch, ...fieldUpdates } = sentFields;
-    const updatedAgent = await prisma.agent.update({
-      where: { id: agentId },
-      data: {
-        ...fieldUpdates,
-        ...(kind && { agentKind: kind.agentKind, kindConfig: kind.kindConfig ?? Prisma.DbNull }),
-        env: envPatch ? mergeAgentEnv(agent.env, envPatch) : undefined,
-        version: newVersion,
-        modelConfig: updates.modelConfig
-          ? { ...(agent.modelConfig as any), ...updates.modelConfig }
-          : undefined,
-      },
-    });
+    const writeAgent = (db: Pick<typeof prisma, "agent">) =>
+      db.agent.update({
+        where: { id: agentId },
+        data: {
+          ...fieldUpdates,
+          ...(kind && { agentKind: kind.agentKind, kindConfig: kind.kindConfig ?? Prisma.DbNull }),
+          env: envPatch ? mergeAgentEnv(agent.env, envPatch) : undefined,
+          version: newVersion,
+          modelConfig: updates.modelConfig
+            ? { ...(agent.modelConfig as any), ...updates.modelConfig }
+            : undefined,
+        },
+      });
+    // A page that stops being public takes its page key off with it, in the
+    // same transaction, as turning the public link off does
+    // (closePublicPage): the key cannot be used while the page is off, and
+    // making the page public again never reopens public use by itself. The
+    // link then reads "paused" until its owner turns it on. An agent with no
+    // page key has nothing to move, which is not an error.
+    const updatedAgent =
+      updates.isPublic === false && agent.isPublic
+        ? await prisma.$transaction(async (tx) => {
+            const updated = await writeAgent(tx);
+            await setPageUse(tx as unknown as PublicLinkTx, { orgId, agentId, enabled: false });
+            return updated;
+          })
+        : await writeAgent(prisma);
 
     triggerWebhook(
       orgId,

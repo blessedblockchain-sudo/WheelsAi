@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { loadNosanaAccessConfig, NosanaAccessConfigError } from "./nosanaAccess.js";
+import { loadNosanaDeployConfig, NosanaDeployConfigError } from "./nosanaDeploy.js";
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -586,6 +587,18 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     loadNosanaAccessConfig(raw);
   } catch (error) {
     if (error instanceof NosanaAccessConfigError) throw new EnvValidationError(error.message);
+    throw error;
+  }
+
+  // Nosana deploy settings (config/nosanaDeploy.ts parses its own variables).
+  // Checked here so a value Nosana will not run stops the boot instead of
+  // failing every deployment: above all a job timeout under Nosana's 50-minute
+  // minimum for credit-paid jobs, which Nosana accepts at create and then
+  // never assigns to a node.
+  try {
+    loadNosanaDeployConfig(raw);
+  } catch (error) {
+    if (error instanceof NosanaDeployConfigError) throw new EnvValidationError(error.message);
     throw error;
   }
 

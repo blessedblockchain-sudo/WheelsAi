@@ -477,6 +477,40 @@ test("estimate: a dataset with no tokens per row (Parquet) - the hold for a chos
 // Submit
 // ============================================
 
+test("credits pay: a short job's Nosana timeout is raised to the 50-minute minimum everywhere it is used; the run limit and the hold are not", async () => {
+  const w = makeWorld();
+  // What resolveTrainingRuntime sets when the API key is the paying credential.
+  w.runtime.nosanaMinTimeoutSeconds = 3_000;
+  const result = await createTrainingJob(w.deps, { orgId: ORG, input: { ...JOB_INPUT, maxRuntimeSeconds: 1_200 } });
+  assert.equal(result.ok, true, result.ok ? "" : result.code);
+  if (!result.ok) return;
+
+  // 20 minutes of training plus the 15-minute allowance is 35 minutes, which
+  // Nosana accepts and then never assigns. 50 minutes is asked about, stored
+  // and sent.
+  assert.deepEqual(w.nosana.calls, ["preflight:4090:batch:3000"], "the credit estimate is for what is sent");
+  const job = w.db.job(result.job.id);
+  assert.equal(job.nosanaTimeoutSeconds, 3_000, "the stored timeout is the one Nosana is given");
+  assert.equal(job.maxRuntimeSeconds, 1_200, "the trainer's own run limit is the customer's");
+  assert.equal(job.reservationCents, 30n, "the hold is the retail price times the run limit: 250 x 1200");
+  assert.deepEqual(result.reservation, { cents: 30, maxRuntimeSeconds: 1_200, pricePerSecondUsd: 0.00025 });
+
+  await w.drain();
+  const deployment = w.nosana.only();
+  assert.equal(deployment.timeoutSeconds, 3_000);
+  const env = (deployment.definition as any).ops[0].args.env;
+  assert.equal(env.MAX_RUNTIME_SECONDS, "1200", "the trainer still ends at the run limit");
+
+  // A job already above the minimum is unchanged, and so is wallet access.
+  const long = makeWorld();
+  long.runtime.nosanaMinTimeoutSeconds = 3_000;
+  const longJob = await createTrainingJob(long.deps, { orgId: ORG, input: JOB_INPUT });
+  assert.equal(longJob.ok && long.db.job(longJob.job.id).nosanaTimeoutSeconds, 4_500);
+  const wallet = makeWorld();
+  const walletJob = await createTrainingJob(wallet.deps, { orgId: ORG, input: { ...JOB_INPUT, maxRuntimeSeconds: 1_200 } });
+  assert.equal(walletJob.ok && wallet.db.job(walletJob.job.id).nosanaTimeoutSeconds, 2_100);
+});
+
 test("submit: pending -> submitting -> queued, with the id, its access mode, a deterministic name and the job's timeout", async () => {
   const w = makeWorld();
   const jobId = await admit(w);
@@ -907,6 +941,32 @@ test("running: a run far past its Nosana timeout is stopped by us", async () => 
   w.advance(4_500 + 601);
   const result = await reconcileTrainingJob(w.deps, jobId);
   assert.equal(result.action, "stop_retry");
+  assert.equal(w.nosana.only().status, "stopped");
+  assert.equal(w.db.job(jobId).status, "running", "the next tick reads how it ended");
+});
+
+test("running, credits pay: a short run whose trainer hangs is stopped at its own limit, not at the 50-minute Nosana timeout", async () => {
+  const w = makeWorld();
+  w.runtime.nosanaMinTimeoutSeconds = 3_000;
+  // 20 minutes of training plus the 15-minute allowance: 2100 seconds. The
+  // timeout Nosana was given is the 3000-second minimum.
+  const jobId = await admit(w, { maxRuntimeSeconds: 1_200 });
+  await w.drain();
+  assert.equal(w.db.job(jobId).nosanaTimeoutSeconds, 3_000);
+  const deployment = w.nosana.only();
+  deployment.status = "running";
+  deployment.jobs = [{ job: "job-address-1", status: "RUNNING" }];
+  deployment.job = { state: "running", timeStart: new Date(w.clock.now), timeEnd: null, jobResult: null };
+  assert.equal((await reconcileTrainingJob(w.deps, jobId)).to, "running");
+
+  // Within the run limit, the allowance and the grace: left alone.
+  w.advance(2_100 + 600);
+  assert.equal((await reconcileTrainingJob(w.deps, jobId)).action, "waiting");
+  assert.equal(w.nosana.only().status, "running");
+
+  // One second past it, still 299 seconds short of Nosana's own timeout.
+  w.advance(1);
+  assert.equal((await reconcileTrainingJob(w.deps, jobId)).action, "stop_retry");
   assert.equal(w.nosana.only().status, "stopped");
   assert.equal(w.db.job(jobId).status, "running", "the next tick reads how it ended");
 });

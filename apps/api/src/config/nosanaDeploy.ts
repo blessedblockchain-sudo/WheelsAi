@@ -10,7 +10,8 @@
  * Environment variables
  * ---------------------
  *
- * NOSANA_JOB_TIMEOUT_SECONDS          (default 7200 = 2h, range 600..86400)
+ * NOSANA_JOB_TIMEOUT_SECONDS          (default 7200 = 2h, range 600..86400;
+ *                                      at least 3000 when credits pay)
  *   Per-JOB timeout for long-running (service) deployments. Nosana escrows
  *   `jobPrice x timeout` per replica when a job is listed, so the timeout is the
  *   platform's worst-case exposure per replica if we ever lose control of a job.
@@ -64,9 +65,19 @@
  *   network_fee_percentage = 10 (verified 2026-09-30). Over-funding is safe
  *   (recoverable), under-funding stalls the deployment, so this errs high.
  *
- * NOSANA_BATCH_JOB_TIMEOUT_SECONDS    (default 21600 = 6h)
+ * NOSANA_BATCH_JOB_TIMEOUT_SECONDS    (default 21600 = 6h; at least 3000 when
+ *                                      credits pay)
  *   Timeout for finite batch jobs (training) created with kind "batch". These use
  *   the SIMPLE strategy and are never auto-extended.
+ *
+ * The 50-minute minimum for credit-paid jobs
+ *   Nosana refuses to assign a job paid with prepaid credits whose timeout is
+ *   under 3000 seconds (CREDIT_PAID_MIN_TIMEOUT_SECONDS). It does not refuse
+ *   the create or the start: the deployment reports RUNNING and every listing
+ *   attempt fails with JOB_LIST_ERROR, for ever (first live run, 2026-10-08).
+ *   So when the API key is the paying credential (config/nosanaAccess.ts), a
+ *   configured NOSANA_JOB_TIMEOUT_SECONDS or NOSANA_BATCH_JOB_TIMEOUT_SECONDS
+ *   below it is refused at start-up. Wallet access keeps the range above.
  *
  * NOSANA_SINGLE_JOB_TIMEOUT_SECONDS   (default 86400 = 24h)
  *   Timeout for the legacy one-shot `sdk.jobs.list` path (NosanaClient.submitJob).
@@ -107,6 +118,8 @@
 
 import { z } from "zod";
 
+import { loadNosanaAccessConfig } from "./nosanaAccess.js";
+
 export class NosanaDeployConfigError extends Error {
   constructor(message: string) {
     super(`Invalid Nosana deploy configuration: ${message}`);
@@ -144,6 +157,22 @@ export interface NosanaDeployConfig {
 
 /** The Deployment Manager's floor for an INFINITE deployment's timeout (60 minutes). */
 export const INFINITE_MIN_TIMEOUT_SECONDS = 3_600;
+
+/**
+ * Nosana's floor for the timeout of a job paid with prepaid credits (50
+ * minutes). Below it the job is never assigned: each attempt logs
+ * JOB_LIST_ERROR "Credit-paid jobs must have a timeout of at least 3000
+ * seconds" while the deployment keeps reporting RUNNING (live, 2026-10-08).
+ */
+export const CREDIT_PAID_MIN_TIMEOUT_SECONDS = 3_000;
+
+/**
+ * The timeout a credit-paid job is sent with: never under Nosana's floor. A
+ * wallet-paid job keeps the value it was given.
+ */
+export function creditPaidTimeoutSeconds(seconds: number): number {
+  return Math.max(seconds, CREDIT_PAID_MIN_TIMEOUT_SECONDS);
+}
 
 const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const TIER_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/i;
@@ -244,8 +273,31 @@ export function parseMarketOverrides(
   return out;
 }
 
+/**
+ * Whether prepaid credits pay for new deployments: the API key is the primary
+ * credential. An access configuration that does not parse is reported by its
+ * own loader (validateEnv runs it first); here it only means "not known to be
+ * credit-paid".
+ */
+function creditsPay(source: Record<string, string | undefined>): boolean {
+  try {
+    return loadNosanaAccessConfig(source).primary === "api_key";
+  } catch {
+    return false;
+  }
+}
+
+export interface LoadNosanaDeployConfigOptions {
+  /**
+   * Whether prepaid credits pay for new deployments. Default: read from the
+   * access variables of the same source (API key as the paying credential).
+   */
+  creditPaid?: boolean;
+}
+
 export function loadNosanaDeployConfig(
   source: Record<string, string | undefined> = process.env,
+  options: LoadNosanaDeployConfigOptions = {},
 ): NosanaDeployConfig {
   // Empty strings (e.g. `FOO=` in a .env file) mean "unset".
   const cleaned: Record<string, string | undefined> = {};
@@ -267,6 +319,16 @@ export function loadNosanaDeployConfig(
     throw new NosanaDeployConfigError(
       `NOSANA_DEPLOYMENT_STRATEGY=INFINITE needs NOSANA_JOB_TIMEOUT_SECONDS >= ${INFINITE_MIN_TIMEOUT_SECONDS}: Nosana refuses an INFINITE deployment with a timeout under 60 minutes`,
     );
+  }
+
+  if (options.creditPaid ?? creditsPay(source)) {
+    for (const name of ["NOSANA_JOB_TIMEOUT_SECONDS", "NOSANA_BATCH_JOB_TIMEOUT_SECONDS"] as const) {
+      if (raw[name] < CREDIT_PAID_MIN_TIMEOUT_SECONDS) {
+        throw new NosanaDeployConfigError(
+          `${name}=${raw[name]} is below ${CREDIT_PAID_MIN_TIMEOUT_SECONDS}: with API-key access (prepaid credits) Nosana never assigns a job whose timeout is under ${CREDIT_PAID_MIN_TIMEOUT_SECONDS} seconds (50 minutes). Set ${name} to ${CREDIT_PAID_MIN_TIMEOUT_SECONDS} or more`,
+        );
+      }
+    }
   }
 
   const vaultFundSeconds =

@@ -3,6 +3,7 @@ import { after, test } from "node:test";
 
 import {
   CONTAINER_RUN_ARGS_KEYS,
+  creditTimeoutListError,
   FAKE_NODE,
   startFakeNosanaApi,
   unknownJobDefinitionArgs,
@@ -291,4 +292,133 @@ test("jobs, events and tasks are paginated lists; a single job reads in the live
   fake.setJob(created.id, newer.job, { state: 2, timeStart: 1, timeEnd: 0, jobResult: { endTime: 1_781_481_239_965 } });
   assert.equal((await call("GET", `/api/deployments/${created.id}/jobs/${newer.job}`)).body.state, 2);
   assert.equal((await call("GET", `/api/deployments/${created.id}/jobs/NoSuchJob`)).status, 404);
+});
+
+// ============================================
+// Credit-paid jobs: the 50-minute minimum and the reservation (live, 2026-10-08)
+// ============================================
+
+const M4090 = "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf";
+
+async function createStarted(name: string, timeout: number, market = M4090): Promise<string> {
+  const created = await call("POST", "/api/deployments/create", {
+    name,
+    market,
+    replicas: 1,
+    timeout,
+    strategy: "SIMPLE-EXTEND",
+    confidential: true,
+    job_definition: definition(),
+  });
+  assert.equal(created.status, 200);
+  const started = await call("POST", `/api/deployments/${created.body.id}/start`);
+  assert.equal(started.status, 200);
+  return created.body.id as string;
+}
+
+const usdSum = (a: number, b: number): number => Number((a + b).toFixed(6));
+
+test("a credit-paid deployment under 50 minutes is accepted and RUNNING, logs the reserve and list-error pair on each attempt, and is never listed or debited", async () => {
+  reset();
+  fake.setBalance({ assignedCredits: 100, reservedCredits: 0, settledCredits: 0 });
+  const rowsBefore = fake.creditRows.length;
+  const id = await createStarted("wheelsai-ten-minutes", 10);
+
+  const body = (await call("GET", `/api/deployments/${id}`)).body;
+  assert.equal(body.status, "RUNNING");
+  assert.equal(body.active_jobs, 0);
+  assert.equal(body.endpoints[0].online, false);
+
+  const message = "Error Failed to assign job batch: Credit-paid jobs must have a timeout of at least 3000 seconds; 600 was requested.";
+  assert.equal(creditTimeoutListError(10), message);
+  let events = (await call("GET", `/api/deployments/${id}/events?limit=10`)).body.events;
+  assert.deepEqual(
+    events.map((e: { type: string }) => e.type),
+    ["JOB_LIST_ERROR", "JOB_RESERVE_CONFIRMED"],
+    "newest first",
+  );
+  assert.equal(events[0].message, message);
+  assert.equal(events[1].message, `Reserved 1 node(s) in market(s) ${M4090}`);
+
+  // Nosana tries again every few minutes: the same pair each time.
+  assert.equal(fake.attemptList(id), null);
+  assert.equal(fake.attemptList(id), null);
+  events = (await call("GET", `/api/deployments/${id}/events?limit=10`)).body.events;
+  assert.equal(events.length, 6);
+  assert.equal(events.filter((e: { type: string }) => e.type === "JOB_LIST_ERROR").length, 3);
+  assert.equal(events.some((e: { type: string }) => e.type === "JOB_LIST_CONFIRMED"), false);
+
+  assert.equal((await call("GET", `/api/deployments/${id}`)).body.status, "RUNNING", "it never leaves RUNNING by itself");
+  assert.equal((await call("GET", `/api/deployments/${id}/jobs?limit=10`)).body.jobs.length, 0);
+  assert.throws(() => fake.addJob(id), /never lists a credit-paid job under 50/);
+  assert.deepEqual(fake.balance(), { assignedCredits: 100, reservedCredits: 0, settledCredits: 0 }, "nothing is debited");
+  assert.equal(fake.creditRows.length, rowsBefore);
+
+  // The stop is accepted and nothing settles.
+  assert.equal((await call("POST", `/api/deployments/${id}/stop`)).status, 200);
+  fake.settle(id);
+  assert.equal(fake.settleCredits(id), 0);
+  assert.deepEqual(fake.balance(), { assignedCredits: 100, reservedCredits: 0, settledCredits: 0 });
+});
+
+test("a listed job reserves price x timeout at the host price, and a stop settles the used part later", async () => {
+  reset();
+  fake.setBalance({ assignedCredits: 100, reservedCredits: 0, settledCredits: 0 });
+  const id = await createStarted("wheelsai-fifty-minutes", 50);
+  assert.equal((await call("GET", `/api/deployments/${id}/events?limit=10`)).body.events.length, 0, "no refused attempt");
+
+  const job = fake.attemptList(id);
+  assert.ok(job);
+  const events = (await call("GET", `/api/deployments/${id}/events?limit=10`)).body.events;
+  assert.deepEqual(
+    events.map((e: { type: string }) => e.type),
+    ["JOB_LIST_CONFIRMED", "JOB_RESERVE_CONFIRMED"],
+  );
+  // 50 minutes at 0.3636 USD an hour, without the 10% fee.
+  assert.deepEqual(fake.balance(), { assignedCredits: 100, reservedCredits: 0.303, settledCredits: 0 });
+  const rowsBefore = fake.creditRows.length - 1;
+  const row = fake.creditRows.at(-1)!;
+  assert.deepEqual(
+    { type: row.type, amountUsd: row.amountUsd, deployment: row.deployment, job: row.job },
+    { type: "job_debit", amountUsd: 0.303, deployment: id, job: job.job },
+  );
+  // The fields a row of GET /credits/transactions carries live.
+  assert.equal(typeof row.id, "string");
+  assert.equal(typeof row.method, "string");
+  assert.ok(!Number.isNaN(Date.parse(row.createdAt)));
+
+  // Stopped: the reservation is still there until Nosana settles it.
+  assert.equal((await call("POST", `/api/deployments/${id}/stop`)).status, 200);
+  fake.settle(id);
+  assert.equal(fake.balance().reservedCredits, 0.303);
+  assert.equal(fake.balance().settledCredits, 0);
+
+  // A few minutes later: 258 seconds were used.
+  assert.equal(fake.settleCredits(id, { usedSeconds: 258 }), 0.027);
+  assert.deepEqual(fake.balance(), { assignedCredits: 100, reservedCredits: 0, settledCredits: 0.027 });
+  // The unused part of the reservation comes back as a job_refund row, as on
+  // the first live run (a debit of 0.303, then a refund of 0.277 for a job
+  // that cost 0.026).
+  assert.deepEqual(
+    fake.creditRows.slice(rowsBefore).map((r) => [r.type, r.amountUsd]),
+    [["job_debit", 0.303], ["job_refund", 0.276]],
+  );
+  const refund = fake.creditRows.at(-1)!;
+  assert.notEqual(refund.id, row.id);
+  assert.equal(usdSum(refund.amountUsd, 0.027), 0.303, "refund + cost = the reservation");
+  assert.equal(fake.settleCredits(id, { usedSeconds: 258 }), 0, "settled once");
+  assert.equal(fake.creditRows.length, rowsBefore + 2, "and refunded once");
+});
+
+test("a job that used its whole reservation gets no refund row", async () => {
+  reset();
+  fake.setBalance({ assignedCredits: 100, reservedCredits: 0, settledCredits: 0 });
+  const id = await createStarted("wheelsai-whole-timeout", 50);
+  assert.ok(fake.attemptList(id));
+  const rows = fake.creditRows.length;
+  assert.equal((await call("POST", `/api/deployments/${id}/stop`)).status, 200);
+  fake.settle(id);
+  assert.equal(fake.settleCredits(id, { usedSeconds: 3000 }), 0.303);
+  assert.deepEqual(fake.balance(), { assignedCredits: 100, reservedCredits: 0, settledCredits: 0.303 });
+  assert.equal(fake.creditRows.length, rows, "nothing to return");
 });

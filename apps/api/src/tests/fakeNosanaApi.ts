@@ -44,10 +44,30 @@
  * lost), and `delayNext` carries one out at once but answers late (a call the
  * caller has given up on).
  *
- * What it is NOT: a model of Nosana's scheduler. No job is listed, no node
- * takes one and no credit moves unless a test scripts it (`addJob`,
- * `updateJob`, `settle`, `setStatus`). Nothing observed here says anything
- * about the live service beyond the shapes and state rules above.
+ * Credit-paid jobs, as the first live run showed them (2026-10-08):
+ *   - `timeout` is MINUTES. A deployment whose timeout is under 50 minutes is
+ *     accepted and reported RUNNING, and every listing attempt (one at each
+ *     start, more with `attemptList`) logs the pair JOB_RESERVE_CONFIRMED,
+ *     JOB_LIST_ERROR "Credit-paid jobs must have a timeout of at least 3000
+ *     seconds; N was requested." No job is ever listed for it (`addJob`
+ *     throws) and nothing is debited.
+ *   - A listed job reserves price x timeout at the market's host price
+ *     (usd_reward_per_hour, without the network fee): reservedCredits rises
+ *     and a `job_debit` row is recorded (`creditRows`). After a stop the
+ *     reservation stays until `settleCredits` (or `creditSettleDelayMs`)
+ *     moves the used part to settledCredits and returns the rest as a
+ *     `job_refund` row (live: a debit of 0.303, then a refund of 0.277 six
+ *     minutes 47 seconds after the stop, for a job that cost 0.026).
+ *     `creditRows` carry the fields of a row of GET /credits/transactions
+ *     ({id, type, amountUsd, createdAt, method}) plus the deployment and job
+ *     they belong to, which a live row does not name. The stand-in does not
+ *     serve that route: no code of ours reads it.
+ *
+ * What it is NOT: a model of Nosana's scheduler. Beyond the refused listing
+ * above, no job is listed and no node takes one unless a test scripts it
+ * (`addJob`, `attemptList`, `updateJob`, `settle`, `setStatus`). Nothing
+ * observed here says anything about the live service beyond the shapes and
+ * rules above.
  */
 
 import { createHash } from "node:crypto";
@@ -151,6 +171,44 @@ export interface FakeNosanaApiOptions {
   balance?: FakeBalance;
   /** Body of GET /markets/. Default: two PREMIUM markets. */
   markets?: unknown[];
+  /**
+   * When set, a stop that settles (`settle`) moves the stopped jobs' credits
+   * this many milliseconds later, as `settleCredits` does. Default: only a
+   * test's own `settleCredits` call moves them.
+   */
+  creditSettleDelayMs?: number;
+}
+
+/**
+ * A credit movement the fake recorded: the reservation of a listed job
+ * (`job_debit`) or the unused part coming back (`job_refund`). The first five
+ * fields are those of a live row of GET /credits/transactions.
+ */
+export interface FakeCreditRow {
+  id: string;
+  type: "job_debit" | "job_refund";
+  /** USD; a debit is rounded up to $0.001. */
+  amountUsd: number;
+  createdAt: string;
+  /** Live rows carry this field; its values for job rows are not modelled. */
+  method: string;
+  /** Test-side only: a live row carries no deployment id. */
+  deployment: string;
+  /** Test-side only: a live row carries no job address. */
+  job: string;
+}
+
+/**
+ * Nosana's floor for the timeout of a credit-paid job, in the unit `timeout`
+ * is read in (minutes). Written out here, never imported from the services.
+ */
+export const FAKE_CREDIT_MIN_TIMEOUT_MINUTES = 50;
+
+/** The JOB_LIST_ERROR text of a credit-paid job under the floor (live, 2026-10-08). */
+export function creditTimeoutListError(timeoutMinutes: number): string {
+  return `Error Failed to assign job batch: Credit-paid jobs must have a timeout of at least ${
+    FAKE_CREDIT_MIN_TIMEOUT_MINUTES * 60
+  } seconds; ${timeoutMinutes * 60} was requested.`;
 }
 
 export interface FakeNosanaApi {
@@ -161,6 +219,25 @@ export interface FakeNosanaApi {
   deployments: Map<string, FakeDeployment>;
   /** Requests under /deployments/vaults (must stay 0 with an API key). */
   vaultCalls(): number;
+  /** The current credit balance (a copy). */
+  balance(): FakeBalance;
+  /** Every reservation made for a listed job and every refund of an unused part, oldest first. */
+  creditRows: FakeCreditRow[];
+  /**
+   * One listing attempt of Nosana's scheduler. A deployment under the
+   * credit-paid minimum logs JOB_RESERVE_CONFIRMED and JOB_LIST_ERROR and
+   * gets no job (null). Any other RUNNING deployment logs
+   * JOB_RESERVE_CONFIRMED and is listed a job as `addJob` lists it.
+   */
+  attemptList(id: string): FakeJob | null;
+  /**
+   * What Nosana does a few minutes after a stop: every reservation of the
+   * deployment whose job has ended leaves reservedCredits, and the used part
+   * (host price x the seconds the job ran, or `usedSeconds`) is added to
+   * settledCredits, and the unused part is recorded as a `job_refund` row.
+   * Returns the USD settled. Idempotent.
+   */
+  settleCredits(id: string, options?: { usedSeconds?: number }): number;
   setBalance(balance: FakeBalance): void;
   setMarkets(markets: unknown[]): void;
   /** Replace the accepted key: every request with the old one answers 401. */
@@ -189,7 +266,9 @@ export interface FakeNosanaApi {
    * Lists a job on the deployment (newest last in storage, first in the
    * default list order), records its JOB_LIST_CONFIRMED event and returns it.
    * Defaults: a fresh address, state RUNNING, a node, time_start now (unix
-   * seconds).
+   * seconds). A QUEUED or RUNNING job reserves credits (price x timeout).
+   * Throws for a deployment under the credit-paid minimum timeout: Nosana
+   * never lists a job for one.
    */
   addJob(id: string, job?: Partial<FakeJob>): FakeJob;
   /** Changes a listed job; throws when the deployment or job does not exist. */
@@ -534,6 +613,9 @@ export async function startFakeNosanaApi(options: FakeNosanaApiOptions = {}): Pr
   let jobSequence = 0;
   let vaultCalls = 0;
   let markets = options.markets ?? FAKE_MARKETS;
+  const creditRows: FakeCreditRow[] = [];
+  /** Credits held for a listed job until `settleCredits`. */
+  const reservations = new Map<string, { deployment: string; usd: number; usdPerSecond: number; endedAt: number | null }>();
   const deployments = new Map<string, FakeDeployment>();
   const jobBodies = new Map<string, unknown>();
   const requests: FakeRequest[] = [];
@@ -803,7 +885,104 @@ export async function startFakeNosanaApi(options: FakeNosanaApiOptions = {}): Pr
     if (insufficientFunds) {
       deployment.status = "INSUFFICIENT_FUNDS";
       event(deployment, "JOB_LIST_ERROR", "Error Failed to list job: Insufficient credits. Available: $0.000, Required: $0.524");
+      return;
     }
+    // The first listing attempt of a deployment Nosana will never place. One
+    // it can place is listed only when a test says so (addJob, attemptList).
+    if (underCreditMinimum(deployment)) refuseListing(deployment);
+  }
+
+  /** `timeout` is minutes: under 50 a credit-paid job is never assigned. */
+  function underCreditMinimum(deployment: FakeDeployment): boolean {
+    return deployment.timeout < FAKE_CREDIT_MIN_TIMEOUT_MINUTES;
+  }
+
+  /** The pair of events one refused listing attempt logs; RUNNING is kept. */
+  function refuseListing(deployment: FakeDeployment): void {
+    event(deployment, "JOB_RESERVE_CONFIRMED", `Reserved ${deployment.replicas} node(s) in market(s) ${deployment.market}`);
+    event(deployment, "JOB_LIST_ERROR", creditTimeoutListError(deployment.timeout));
+  }
+
+  const usd = (value: number, decimals: number): number => Number(value.toFixed(decimals));
+  /** Rounded up to $0.001, as Nosana's debits are. */
+  const debitUsd = (value: number): number => Math.ceil(usd(value, 9) * 1000) / 1000;
+
+  /** USD per second a host in this market is paid (no network fee); 0 when the market is not priced. */
+  function hostUsdPerSecond(market: string): number {
+    const row = markets.find((m) => isRecord(m) && m.address === market);
+    const perHour = isRecord(row) && typeof row.usd_reward_per_hour === "number" ? row.usd_reward_per_hour : 0;
+    return perHour / 3600;
+  }
+
+  function creditRow(type: FakeCreditRow["type"], deployment: string, job: string, amountUsd: number, createdAt: string): void {
+    creditRows.push({
+      id: `fake-credit-${creditRows.length + 1}`,
+      type,
+      amountUsd,
+      createdAt,
+      method: "credits",
+      deployment,
+      job,
+    });
+  }
+
+  /** price x timeout, reserved when the job is listed. */
+  function reserveFor(deployment: FakeDeployment, job: FakeJob): void {
+    const usdPerSecond = hostUsdPerSecond(job.market);
+    const amount = debitUsd(usdPerSecond * deployment.timeout * 60);
+    if (amount <= 0) return;
+    reservations.set(job.job, { deployment: deployment.id, usd: amount, usdPerSecond, endedAt: null });
+    balance = { ...balance, reservedCredits: usd(balance.reservedCredits + amount, 6) };
+    creditRow("job_debit", deployment.id, job.job, amount, job.created_at);
+  }
+
+  function settleCreditsOf(deployment: FakeDeployment, usedSeconds?: number): number {
+    let settled = 0;
+    for (const job of deployment.jobs) {
+      const held = reservations.get(job.job);
+      if (!held || held.endedAt === null) continue;
+      reservations.delete(job.job);
+      const ran = usedSeconds ?? Math.max(0, held.endedAt - (job.time_start ?? held.endedAt));
+      const used = Math.min(held.usd, debitUsd(held.usdPerSecond * ran));
+      settled = usd(settled + used, 6);
+      balance = {
+        ...balance,
+        reservedCredits: usd(Math.max(0, balance.reservedCredits - held.usd), 6),
+        settledCredits: usd(balance.settledCredits + used, 6),
+      };
+      // The unused part comes back as a row of its own.
+      const unused = usd(held.usd - used, 6);
+      if (unused > 0) creditRow("job_refund", deployment.id, job.job, unused, now());
+    }
+    return settled;
+  }
+
+  function listJob(deployment: FakeDeployment, job: Partial<FakeJob> = {}): FakeJob {
+    if (underCreditMinimum(deployment)) {
+      throw new Error(
+        `fake Nosana API: deployment ${deployment.id} has timeout ${deployment.timeout} (minutes); Nosana never lists a credit-paid job under ${FAKE_CREDIT_MIN_TIMEOUT_MINUTES}`,
+      );
+    }
+    jobSequence += 1;
+    const at = now();
+    const entry: FakeJob = {
+      tx: base58From(`tx:${deployment.id}:${jobSequence}`),
+      deployment: deployment.id,
+      job: base58From(`job:${deployment.id}:${jobSequence}`),
+      market: deployment.market,
+      node: FAKE_NODE,
+      revision: deployment.active_revision,
+      state: "RUNNING",
+      time_start: Math.floor(Date.now() / 1000),
+      created_at: at,
+      updated_at: at,
+      ...job,
+    };
+    deployment.jobs.push(entry);
+    const listed = event(deployment, "JOB_LIST_CONFIRMED", `Successfully listed job - ${entry.job}`);
+    listed.tx = entry.tx;
+    if (entry.state === "QUEUED" || entry.state === "RUNNING") reserveFor(deployment, entry);
+    return entry;
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -884,6 +1063,19 @@ export async function startFakeNosanaApi(options: FakeNosanaApiOptions = {}): Pr
     requests,
     deployments,
     vaultCalls: () => vaultCalls,
+    balance: () => ({ ...balance }),
+    creditRows,
+    attemptList: (id) => {
+      const deployment = mustGet(id);
+      if (deployment.status !== "RUNNING") return null;
+      if (underCreditMinimum(deployment)) {
+        refuseListing(deployment);
+        return null;
+      }
+      event(deployment, "JOB_RESERVE_CONFIRMED", `Reserved ${deployment.replicas} node(s) in market(s) ${deployment.market}`);
+      return listJob(deployment);
+    },
+    settleCredits: (id, settleOptions = {}) => settleCreditsOf(mustGet(id), settleOptions.usedSeconds),
     setBalance: (next) => {
       balance = next;
     },
@@ -910,9 +1102,15 @@ export async function startFakeNosanaApi(options: FakeNosanaApiOptions = {}): Pr
             job.state = "STOPPED";
             job.updated_at = at;
             event(deployment, "JOB_STOPPED_CONFIRMED", `Successfully stopped job ${job.job}. TX ${base58From(`stop:${job.job}`)}`);
+            // The reservation outlives the stop: Nosana settles it minutes later.
+            const held = reservations.get(job.job);
+            if (held && held.endedAt === null) held.endedAt = Math.floor(Date.now() / 1000);
           }
         }
         for (const endpoint of deployment.endpoints) endpoint.online = false;
+        if (options.creditSettleDelayMs !== undefined) {
+          setTimeout(() => settleCreditsOf(deployment), options.creditSettleDelayMs).unref();
+        }
       }
     },
     setEndpoints: (id, endpoints) => {
@@ -926,32 +1124,16 @@ export async function startFakeNosanaApi(options: FakeNosanaApiOptions = {}): Pr
     setEndpointsOnline: (id, online) => {
       for (const endpoint of mustGet(id).endpoints) endpoint.online = online;
     },
-    addJob: (id, job = {}) => {
-      const deployment = mustGet(id);
-      jobSequence += 1;
-      const at = now();
-      const entry: FakeJob = {
-        tx: base58From(`tx:${id}:${jobSequence}`),
-        deployment: id,
-        job: base58From(`job:${id}:${jobSequence}`),
-        market: deployment.market,
-        node: FAKE_NODE,
-        revision: deployment.active_revision,
-        state: "RUNNING",
-        time_start: Math.floor(Date.now() / 1000),
-        created_at: at,
-        updated_at: at,
-        ...job,
-      };
-      deployment.jobs.push(entry);
-      const listed = event(deployment, "JOB_LIST_CONFIRMED", `Successfully listed job - ${entry.job}`);
-      listed.tx = entry.tx;
-      return entry;
-    },
+    addJob: (id, job = {}) => listJob(mustGet(id), job),
     updateJob: (id, job, patch) => {
       const entry = mustGet(id).jobs.find((j) => j.job === job);
       if (!entry) throw new Error(`fake Nosana API: no job ${job} on ${id}`);
       Object.assign(entry, patch, { updated_at: patch.updated_at ?? now() });
+      // A job that ended on its own keeps its reservation until it is settled.
+      const held = reservations.get(entry.job);
+      if (held && held.endedAt === null && (entry.state === "COMPLETED" || entry.state === "STOPPED")) {
+        held.endedAt = Math.floor(Date.now() / 1000);
+      }
       return entry;
     },
     addEvent: (id, type, message, category) => event(mustGet(id), type, message, category),

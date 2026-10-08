@@ -10,7 +10,7 @@ import {
   type NosanaPrimaryMode,
   type NosanaTimeoutUnit,
 } from "../config/nosanaAccess.js";
-import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
+import { creditPaidTimeoutSeconds, getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { createLogger } from "../utils/logger.js";
 import {
   isAllowedNodeUrl,
@@ -277,7 +277,9 @@ export interface CreateDeploymentOptions {
   /**
    * Per-job timeout for THIS deployment, in seconds, instead of the configured
    * default for its kind. It sizes the vault funding (wallet) or the credit
-   * estimate (API key). Must be an integer >= 60.
+   * estimate (API key). Must be an integer >= 60. With API-key access a value
+   * under Nosana's minimum for credit-paid jobs (50 minutes) is raised to it:
+   * the create, the estimate and the preflight all use the raised value.
    */
   timeoutSeconds?: number;
 }
@@ -1030,15 +1032,22 @@ export class NosanaClient {
    * the vault funding and the credit estimate cover the timeout that is sent.
    */
   private jobTimeoutFor(kind: "service" | "batch", timeoutSeconds?: number): number {
+    // Credits pay for what the primary credential creates. Nosana never
+    // assigns a credit-paid job whose timeout is under its 50-minute floor, so
+    // a shorter one is raised to it here, in the one place the create, the
+    // credit estimate and the preflight all read. (The configured defaults are
+    // already refused below the floor at start-up.)
+    const creditPaid = this.getAccessMode() === "api_key";
+    const floor = (seconds: number) => (creditPaid ? creditPaidTimeoutSeconds(seconds) : seconds);
     if (timeoutSeconds !== undefined) {
       if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 60) {
         throw new RangeError(`timeoutSeconds must be an integer >= 60, got ${timeoutSeconds}`);
       }
-      return effectiveTimeoutSeconds(timeoutSeconds, this.timeoutUnit());
+      return effectiveTimeoutSeconds(floor(timeoutSeconds), this.timeoutUnit());
     }
     const cfg = getNosanaDeployConfig();
     return effectiveTimeoutSeconds(
-      kind === "batch" ? cfg.batchJobTimeoutSeconds : cfg.jobTimeoutSeconds,
+      floor(kind === "batch" ? cfg.batchJobTimeoutSeconds : cfg.jobTimeoutSeconds),
       this.timeoutUnit(),
     );
   }

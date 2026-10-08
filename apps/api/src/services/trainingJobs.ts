@@ -118,7 +118,7 @@ export const TRAINING_SUBMIT_TIMEOUT_SECONDS = 600;
 export const TRAINING_SUBMIT_LOOKUP_GIVE_UP_SECONDS = 3_600;
 /** How long a job that ended may wait for its result (exit code, logs) to appear. */
 export const TRAINING_RESULT_GRACE_SECONDS = 300;
-/** How far past its Nosana timeout a run may go before we stop it ourselves. */
+/** How far past its own limit (or its Nosana timeout, when shorter) a run may go before we stop it ourselves. */
 export const TRAINING_OVERRUN_GRACE_SECONDS = 600;
 /** Clock difference tolerated when a Nosana time is used for billing. */
 export const TRAINING_CLOCK_SKEW_MS = 5 * 60_000;
@@ -327,6 +327,12 @@ export interface TrainingRuntime {
   datasetMaxRows: number;
   /** NOSANA_BATCH_JOB_TIMEOUT_SECONDS: the ceiling of run limit + allowance. */
   batchJobTimeoutSeconds: number;
+  /**
+   * The shortest Nosana timeout a job may be sent with: Nosana's 50-minute
+   * floor when prepaid credits pay, 0 or absent with wallet access. A shorter
+   * run limit plus allowance is raised to it (trainingNosanaTimeoutSeconds).
+   */
+  nosanaMinTimeoutSeconds?: number;
   /** PUBLIC_API_URL without a trailing slash; null when unset. */
   publicApiUrl: string | null;
   /** The development Nosana mock is on: nothing would really run. */
@@ -2017,7 +2023,20 @@ async function reconcileRunning(deps: TrainingDeps, row: TrainingJobRow): Promis
   const jobOver = jobState === "completed" || jobState === "stopped";
   const ended = view !== null && (view.deploymentState !== "running" || jobOver);
   const ranSeconds = (now.getTime() - startedAt.getTime()) / 1000;
-  const timeoutSeconds = row.nosanaTimeoutSeconds ?? row.maxRuntimeSeconds ?? 0;
+  // When we stop a run ourselves: at its own limit (the run limit plus the
+  // set-up allowance), or at the timeout Nosana was given when that is
+  // shorter. With credits the Nosana timeout of a short run is raised to
+  // Nosana's 50-minute minimum, so it alone would leave a hung trainer up,
+  // at the platform's cost, long after the run limit the customer chose.
+  const storedTimeoutSeconds = row.nosanaTimeoutSeconds ?? row.maxRuntimeSeconds ?? 0;
+  const ownLimitSeconds =
+    row.maxRuntimeSeconds != null
+      ? trainingNosanaTimeoutSeconds(
+          { setupAllowanceSeconds: (await deps.getRuntime()).setupAllowanceSeconds },
+          row.maxRuntimeSeconds,
+        )
+      : storedTimeoutSeconds;
+  const timeoutSeconds = Math.min(storedTimeoutSeconds, ownLimitSeconds);
 
   if (!terminalEvent && !ended) {
     const patch: Data = {};
@@ -2040,7 +2059,7 @@ async function reconcileRunning(deps: TrainingDeps, row: TrainingJobRow): Promis
         return { action: failed === "lost" ? "none" : failed };
       }
       if (row.nosanaJobId) {
-        deps.log.error({ jobId: row.id, ranSeconds, timeoutSeconds }, "Training run is past its Nosana timeout - stopping it");
+        deps.log.error({ jobId: row.id, ranSeconds, timeoutSeconds }, "Training run is past its run limit and allowance - stopping it");
         await nosanaDeps(deps, row)
           .stopDeployment(row.nosanaJobId, rowAccessMode(row.nosanaAccessMode))
           .catch((err) =>

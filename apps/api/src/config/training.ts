@@ -359,12 +359,19 @@ export function trainingRunLimitBounds(
   };
 }
 
-/** The Nosana timeout of a job: the user's run limit plus the allowance. */
+/**
+ * The Nosana timeout of a job: the user's run limit plus the allowance, and
+ * never under `nosanaMinTimeoutSeconds` (Nosana's 50-minute floor for a job
+ * paid with prepaid credits; 0 or absent with wallet access). This is the
+ * value that is sent, stored on the row and sized into the credit estimate.
+ * The trainer's own run limit and the customer's hold do not depend on it:
+ * the job service stops the deployment when the run ends.
+ */
 export function trainingNosanaTimeoutSeconds(
-  config: Pick<TrainingConfig, "setupAllowanceSeconds">,
+  config: Pick<TrainingConfig, "setupAllowanceSeconds"> & { nosanaMinTimeoutSeconds?: number },
   maxRuntimeSeconds: number,
 ): number {
-  return maxRuntimeSeconds + config.setupAllowanceSeconds;
+  return Math.max(maxRuntimeSeconds + config.setupAllowanceSeconds, config.nosanaMinTimeoutSeconds ?? 0);
 }
 
 /**

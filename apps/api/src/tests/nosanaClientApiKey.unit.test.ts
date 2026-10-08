@@ -1038,10 +1038,10 @@ test("timeout unit minutes: converted at the SDK boundary only, rounding up", as
   const odd = await client.createDeployment(DEFINITION as never, "3060", 1, {
     name: "wheelsai-unit-minutes-odd",
     kind: "batch",
-    timeoutSeconds: 601,
+    timeoutSeconds: 3601,
   });
   const oddRow = fake.deployments.get(odd.id)!;
-  assert.equal(oddRow.timeout, 11);
+  assert.equal(oddRow.timeout, 61);
   assert.equal(oddRow.strategy, "SIMPLE");
 
   const updated = await client.updateDeploymentTimeout(created.id, 7201);
@@ -1079,6 +1079,47 @@ test("a per-call timeoutSeconds sizes the credit estimate", async () => {
     client.createDeployment(DEFINITION as never, "3060", 1, { timeoutSeconds: 30 }),
     RangeError,
   );
+});
+
+test("a per-call timeout under Nosana's 50-minute minimum for credit-paid jobs is raised to it, in the create and in the estimate", async () => {
+  resetFake();
+  const client = await apiClient();
+  // 30 minutes of training plus set-up would be sent as 31 minutes, which
+  // Nosana accepts and then never assigns. It is sent as 50.
+  // The estimate is for what is sent: 14 x 3000 = $0.042, plus the floor.
+  fake.setBalance({ assignedCredits: 5.041, reservedCredits: 0, settledCredits: 0 });
+  await assert.rejects(
+    client.preflightDeploy("3060", 1, "batch", { timeoutSeconds: 1_801 }),
+    coded("nosana_credits_low"),
+  );
+  await assert.rejects(
+    client.createDeployment(DEFINITION as never, "3060", 1, { name: "wheelsai-short", kind: "batch", timeoutSeconds: 1_801 }),
+    coded("nosana_credits_low"),
+  );
+  assert.equal(sent("POST", /deployments\/create$/).length, 0, "refused before any create");
+
+  fake.setBalance({ assignedCredits: 5.042, reservedCredits: 0, settledCredits: 0 });
+  await client.preflightDeploy("3060", 1, "batch", { timeoutSeconds: 1_801 });
+  const created = await client.createDeployment(DEFINITION as never, "3060", 1, {
+    name: "wheelsai-short",
+    kind: "batch",
+    timeoutSeconds: 1_801,
+  });
+  const row = fake.deployments.get(created.id)!;
+  assert.equal(row.timeout, 50, "3000 s, in minutes");
+  assert.equal(row.events.some((e) => e.type === "JOB_LIST_ERROR"), false, "Nosana can place it");
+  // A node takes it: the reservation is 50 minutes at the host price.
+  fake.addJob(created.id);
+  assert.equal(fake.balance().reservedCredits, 0.037, "0.0436 USD/h x 50 min, rounded up to $0.001");
+
+  // At or above the minimum nothing changes.
+  fake.setBalance(RICH);
+  const exact = await client.createDeployment(DEFINITION as never, "3060", 1, {
+    name: "wheelsai-exact",
+    kind: "batch",
+    timeoutSeconds: 3_000,
+  });
+  assert.equal(fake.deployments.get(exact.id)!.timeout, 50);
 });
 
 // ============================================

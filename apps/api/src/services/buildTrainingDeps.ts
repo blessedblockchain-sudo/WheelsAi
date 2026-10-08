@@ -10,7 +10,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 import { env } from "../config/env.js";
-import { getNosanaDeployConfig } from "../config/nosanaDeploy.js";
+import { CREDIT_PAID_MIN_TIMEOUT_SECONDS, getNosanaDeployConfig } from "../config/nosanaDeploy.js";
 import { getTrainingConfig } from "../config/training.js";
 import { TRAINABLE_MODELS } from "../config/trainingCatalog.js";
 import { prisma as defaultPrisma } from "../lib/prisma.js";
@@ -63,6 +63,8 @@ export async function resolveTrainingRuntime(): Promise<TrainingRuntime> {
     datasetMaxBytes: config.datasetMaxBytes,
     datasetMaxRows: config.datasetMaxRows,
     batchJobTimeoutSeconds: getNosanaDeployConfig().batchJobTimeoutSeconds,
+    // Credits pay for what the primary credential creates.
+    nosanaMinTimeoutSeconds: nosana.getAccessMode() === "api_key" ? CREDIT_PAID_MIN_TIMEOUT_SECONDS : 0,
     publicApiUrl,
     nosanaMock,
     nosanaConfigured,

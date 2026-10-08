@@ -96,6 +96,7 @@ import {
 import { playgroundRoutes } from "./routes/playground.js";
 import { createAgentRunRoutesProduction } from "./routes/agentRunBindings.js";
 import { createAgentPublicLinkRoutesProduction } from "./routes/agentPublicLinkBindings.js";
+import { createAgentScheduleRoutesProduction } from "./routes/agentScheduleBindings.js";
 import {
   cancelInFlightAgentChats,
   closeAgentChatConnections,
@@ -464,6 +465,9 @@ async function main() {
   await app.register(createAgentRunRoutesProduction(), { prefix: "/api" });
   // The owner's switch for an agent's public page: GET, PUT /api/agents/:agentId/public-link.
   await app.register(createAgentPublicLinkRoutesProduction(), { prefix: "/api/agents" });
+  // An agent's own schedule and its runs: GET, PUT /api/agents/:agentId/schedule,
+  // POST .../schedule/run, GET .../runs, POST .../runs/:runId/deliver.
+  await app.register(createAgentScheduleRoutesProduction(), { prefix: "/api/agents" });
   await app.register(skillsRoutes, { prefix: "/api" }); // GET /api/skills
   await app.register(
     createPublicStatsRoutes({

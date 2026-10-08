@@ -73,8 +73,12 @@ export function versioningResource(client: WheelsAIClient) {
     history: (agentId: string, params?: { limit?: number }) =>
       client.get<Array<Partial<AgentVersion> & { diff: unknown | null }>>(`${base(agentId)}/history`, params),
 
+    /**
+     * The new version that records the rollback. `schedulePaused` is `true` only when the rollback
+     * turned the agent's own schedule off, because the restored kind is no longer `scheduled`.
+     */
     rollback: (agentId: string, version: string) =>
-      client.post<AgentVersion>(`${base(agentId)}/versions/${seg(version)}/rollback`),
+      client.post<AgentVersion & { schedulePaused?: true }>(`${base(agentId)}/versions/${seg(version)}/rollback`),
 
     tag: (agentId: string, version: string, tags: string[]) =>
       client.post<AgentVersion>(`${base(agentId)}/versions/${seg(version)}/tag`, { tags }),

@@ -15,6 +15,8 @@ const DEP = "22222222-2222-4222-8222-222222222222";
 const LISTING = "33333333-3333-4333-8333-333333333333";
 const OFFERING = "44444444-4444-4444-8444-444444444444";
 const JOB = "55555555-5555-4555-8555-555555555555";
+const PLACE = "66666666-6666-4666-8666-666666666666";
+const RUN = "77777777-7777-4777-8777-777777777777";
 
 interface Case {
   /** `resource.method`: must match a method on the client. */
@@ -80,10 +82,20 @@ const cases: Case[] = [
   { name: "agents.run", run: (w) => w.agents.run(AGENT, { topic: "Refund policy", keywords: ["refund", "returns"] }), method: "POST", path: `/api/agents/${AGENT}/run`, body: { input: { topic: "Refund policy", keywords: ["refund", "returns"] }, stream: false } },
   { name: "agents.publicLink.get", run: (w) => w.agents.publicLink.get(AGENT), method: "GET", path: `/api/agents/${AGENT}/public-link` },
   { name: "agents.publicLink.set", run: (w) => w.agents.publicLink.set(AGENT, { state: "on", dailyCap: 50, handle: "refund-helper", showResults: true }), method: "PUT", path: `/api/agents/${AGENT}/public-link`, body: { state: "on", dailyCap: 50, handle: "refund-helper", showResults: true } },
+  { name: "agents.schedule.get", run: (w) => w.agents.schedule.get(AGENT), method: "GET", path: `/api/agents/${AGENT}/schedule` },
+  { name: "agents.schedule.set", run: (w) => w.agents.schedule.set(AGENT, { enabled: true, cronExpression: "0 9 * * 1-5", timezone: "Europe/Berlin", prompt: "Summarize the news.", stampTime: true, deliver: { channelId: PLACE }, timeoutSeconds: 120, maxRetries: 2 }), method: "PUT", path: `/api/agents/${AGENT}/schedule`, body: { enabled: true, cronExpression: "0 9 * * 1-5", timezone: "Europe/Berlin", prompt: "Summarize the news.", stampTime: true, deliver: { channelId: PLACE }, timeoutSeconds: 120, maxRetries: 2 } },
+  { name: "agents.schedule.runNow", run: (w) => w.agents.schedule.runNow(AGENT), method: "POST", path: `/api/agents/${AGENT}/schedule/run` },
+  { name: "agents.runs.list", run: (w) => w.agents.runs.list(AGENT, { limit: 10, before: RUN }), method: "GET", path: `/api/agents/${AGENT}/runs`, query: { limit: "10", before: RUN } },
+  { name: "agents.runs.resend", run: (w) => w.agents.runs.resend(AGENT, RUN), method: "POST", path: `/api/agents/${AGENT}/runs/${RUN}/deliver` },
   { name: "agents.playgroundModels", run: (w) => w.agents.playgroundModels(AGENT), method: "GET", path: `/api/agents/${AGENT}/playground/models` },
   { name: "agents.getGraph", run: (w) => w.agents.getGraph(AGENT), method: "GET", path: `/api/agents/${AGENT}/graph` },
   { name: "agents.saveGraph", run: (w) => w.agents.saveGraph(AGENT, graph), method: "PUT", path: `/api/agents/${AGENT}/graph`, body: graph },
   { name: "agents.validateGraph", run: (w) => w.agents.validateGraph(AGENT, graph), method: "POST", path: `/api/agents/${AGENT}/graph/validate`, body: graph },
+
+  // ---- destinations (where a schedule's results go) ----
+  { name: "destinations.list", run: (w) => w.destinations.list(), method: "GET", path: "/api/destinations" },
+  { name: "destinations.create", run: (w) => w.destinations.create({ type: "slack", link: "https://hooks.slack.com/services/T000/B000/XXXX", name: "Team Slack" }), method: "POST", path: "/api/destinations", body: { type: "slack", link: "https://hooks.slack.com/services/T000/B000/XXXX", name: "Team Slack" } },
+  { name: "destinations.test", run: (w) => w.destinations.test(PLACE), method: "POST", path: `/api/destinations/${PLACE}/test` },
 
   // ---- deployments (model deployments) ----
   { name: "deployments.list", run: (w) => w.deployments.list(), method: "GET", path: "/api/deployments" },
@@ -463,6 +475,66 @@ describe("the public link", () => {
       assert.equal(err.code, "handle_taken");
       return true;
     });
+  });
+});
+
+describe("an agent's schedule and its runs", () => {
+  it("create sends the schedule as given and returns the schedule the API made", async () => {
+    const made = { id: RUN, enabled: true, cronExpression: "0 9 * * *", timezone: "UTC", nextRunAt: "2026-10-09T09:00:00.000Z" };
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ agent: { id: AGENT }, schedule: made, message: "Agent created successfully" }, 201));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const input = { name: "Morning brief", agentKind: "scheduled" as const, schedule: { cronExpression: "0 9 * * *", deliver: { channelId: PLACE } } };
+    const answer = await wheels.agents.create(input);
+    assert.deepEqual(calls[0]!.body, input);
+    assert.deepEqual(answer.schedule, made);
+  });
+
+  it("update returns schedulePaused when the answer carries it", async () => {
+    const { fetch } = recordingFetch(() => jsonResponse({ agent: { id: AGENT }, schedulePaused: true }));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    assert.equal((await wheels.agents.update(AGENT, { agentKind: "conversation" })).schedulePaused, true);
+  });
+
+  it("a schedule changed somewhere else answers 409 schedule_changed", async () => {
+    const body = { error: "schedule_changed", message: "This schedule was changed somewhere else. Reload it and try again." };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 409)).fetch });
+    await assert.rejects(wheels.agents.schedule.set(AGENT, { enabled: true, cronExpression: "0 9 * * *" }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "schedule_changed");
+      return true;
+    });
+  });
+
+  it("a place that did not take a result answers 502 delivery_failed and keeps the run", async () => {
+    const run = { id: RUN, status: "finished", delivery: [{ channelId: PLACE, name: "Team Slack", type: "slack", status: "failed", reason: "it did not accept the message", at: "2026-10-08T09:00:00.000Z" }] };
+    const body = { error: "delivery_failed", message: "Not sent to Team Slack: it did not accept the message. The result is saved here.", run };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 502)).fetch });
+    await assert.rejects(wheels.agents.runs.resend(AGENT, RUN), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 502);
+      assert.equal(err.code, "delivery_failed");
+      assert.deepEqual((err.data as { run: unknown }).run, run);
+      return true;
+    });
+  });
+
+  it("a run already in flight answers 409 already_running", async () => {
+    const body = { error: "already_running", message: "This agent is already running. Wait for it to finish." };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 409)).fetch });
+    await assert.rejects(wheels.agents.schedule.runNow(AGENT), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.code, "already_running");
+      return true;
+    });
+  });
+
+  it("an email place sends no address", async () => {
+    const place = { channelId: PLACE, name: "Email to Ada", type: "email", mine: true };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(place, 201));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    assert.deepEqual(await wheels.destinations.create({ type: "email" }), place);
+    assert.deepEqual(calls[0]!.body, { type: "email" });
   });
 });
 

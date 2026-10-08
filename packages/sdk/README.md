@@ -214,6 +214,41 @@ for now) or `off`; reading it can also give `view_only` for an agent made public
 switch. `set` also takes `handle` (3 to 40 lower-case letters, digits and hyphens; an address
 another agent has answers 409 `handle_taken`) and `showResults`.
 
+## Running on a schedule
+
+A `scheduled` agent runs on its own at set times, and each run is kept. The schedule can be made
+with the agent, or set later:
+
+```ts
+// The places results can go to. Slack or Discord by the link the service gave you; an API key
+// cannot choose email, which is the signed-in person's own verified address.
+const place = await wheels.destinations.create({ type: "slack", link: slackLink, name: "Team Slack" });
+await wheels.destinations.test(place.channelId); // { sent: true }
+
+const { agent, schedule } = await wheels.agents.create({
+  name: "Morning brief",
+  agentKind: "scheduled",
+  schedule: { cronExpression: "0 9 * * 1-5", timezone: "Europe/Berlin", deliver: { channelId: place.channelId } },
+});
+// schedule: { id, enabled, cronExpression, timezone, nextRunAt }, or null without one
+
+await wheels.agents.schedule.set(agent.id, { enabled: true, cronExpression: "0 8 * * *", stampTime: true, maxRetries: 2 });
+const { schedule: current, suggested, schedulerRunning } = await wheels.agents.schedule.get(agent.id);
+
+const { run } = await wheels.agents.schedule.runNow(agent.id); // needs agents:invoke for a key
+const { runs, hasMore } = await wheels.agents.runs.list(agent.id, { limit: 20 });
+await wheels.agents.runs.resend(agent.id, runs[0].id); // posts the saved result again; runs nothing
+```
+
+A schedule is on in UTC unless you say otherwise, tells the agent the date and time at each run when
+`stampTime` is on, tries once more after a failed run and stops a run after five minutes. A run's
+`status` is `running`, `finished`, `did_not_finish` (with a plain `failure`) or `stopped`, and its
+`delivery` lists every try to send the result. A delivery that fails never changes the run and never
+runs the agent again; `runs.resend` throws 502 `delivery_failed` with the run in `error.data.run`. A
+schedule changed somewhere else answers 409 `schedule_changed`. When `agents.update` or a rollback
+moves an agent's kind away from `scheduled`, the answer carries `schedulePaused: true`: its schedule
+was turned off, and setting the kind back turns nothing on.
+
 ## Errors
 
 Every failure throws a `WheelsAIError`: `status` (the HTTP status, or `0` for a network error or
@@ -235,7 +270,7 @@ refused before anything is sent, with an error that does not repeat it.
 
 ## Resources
 
-`auth`, `agents`, `deployments` (model deployments), `models`, `billing`, `marketplace`,
+`auth`, `agents`, `destinations`, `deployments` (model deployments), `models`, `billing`, `marketplace`,
 `inference` (OpenAI-compatible `/v1`), `workflows` (definitions are read-only here: `list`, `get`,
 `run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`, `/api/capabilities`) and `skills`. Billing amounts are dollars, as the API

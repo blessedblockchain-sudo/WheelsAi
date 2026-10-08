@@ -2,6 +2,7 @@ import { WheelsAIClient, type ClientConfig } from "./client.js";
 import {
   authResource,
   agentsResource,
+  destinationsResource,
   deploymentsResource,
   modelsResource,
   billingResource,
@@ -19,6 +20,7 @@ import {
 export class WheelsAI {
   readonly auth;
   readonly agents;
+  readonly destinations;
   readonly deployments;
   readonly models;
   readonly billing;
@@ -38,6 +40,7 @@ export class WheelsAI {
     this.client = new WheelsAIClient(config);
     this.auth = authResource(this.client);
     this.agents = agentsResource(this.client);
+    this.destinations = destinationsResource(this.client);
     this.deployments = deploymentsResource(this.client);
     this.models = modelsResource(this.client);
     this.billing = billingResource(this.client);

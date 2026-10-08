@@ -254,6 +254,46 @@ export interface CreateAgentInput {
   templateId?: string;
   /** Left out, the slug is made from the name. Either way it is made unique. */
   slug?: string;
+  /**
+   * The agent's own schedule, made with the agent. Only with `agentKind: "scheduled"`, or a template
+   * of that kind; otherwise the API answers 400 `validation_failed`. Left out, the agent has none yet.
+   */
+  schedule?: CreateAgentSchedule;
+}
+
+/**
+ * The schedule a create may carry. The time limit and the number of tries keep their defaults
+ * (five minutes, one retry); change them with `agents.schedule.set`.
+ */
+export interface CreateAgentSchedule {
+  /** Five-field cron, for example `0 9 * * 1-5`. */
+  cronExpression: string;
+  /** An IANA time zone such as `Europe/Berlin`. Defaults to `UTC`. */
+  timezone?: string;
+  /** What the agent is told at each run, up to 20,000 characters. Left out, it gets a default line. */
+  prompt?: string | null;
+  /** Where results go: a place from `destinations.list`. null or left out: results are only saved on the agent's page. */
+  deliver?: { channelId: string } | null;
+  /** Defaults to `true`. */
+  enabled?: boolean;
+}
+
+/** The agent's own schedule as a create answers it. Never what it is told or where results go. */
+export interface CreatedAgentSchedule {
+  /** The scheduled task's id. */
+  id: string;
+  enabled: boolean;
+  cronExpression: string | null;
+  timezone: string;
+  nextRunAt: string | null;
+}
+
+/** The answer of `agents.create`. */
+export interface CreateAgentResult {
+  agent: CreatedAgent;
+  /** Always present: null when the agent was created without a schedule. */
+  schedule: CreatedAgentSchedule | null;
+  message: string;
 }
 
 /** The agent in the answer to a create. */
@@ -370,6 +410,96 @@ export interface PublicLinkInput {
   showResults?: boolean;
 }
 
+/** A place results can go to. Never its link or its address. */
+export interface Destination {
+  channelId: string;
+  /** "" when the place was removed after it was chosen. */
+  name: string;
+  /** `slack`, `discord`, `email` or `webhook`; `unknown` when the place was removed after it was chosen. */
+  type: string;
+  /** true only for an email place that goes to the signed-in person's own address; always false for an API key and for the other types. */
+  mine: boolean;
+}
+
+/** An agent's own schedule. */
+export interface ScheduleView {
+  id: string;
+  enabled: boolean;
+  /** null only for an older task that runs on an interval or once. */
+  cronExpression: string | null;
+  timezone: string;
+  /** What the agent is told at each run. */
+  prompt: string;
+  /** Whether the date and time are told to the agent at each run. */
+  stampTime: boolean;
+  deliver: Omit<Destination, "mine"> | null;
+  /** A run is stopped after this many seconds (5 to 3,600). */
+  timeoutSeconds: number;
+  /** Tries after a failed run (0 to 5). */
+  maxRetries: number;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+}
+
+/** The answer of `agents.schedule.get` and `agents.schedule.set`. */
+export interface ScheduleAnswer {
+  /** null until the agent has one. */
+  schedule: ScheduleView | null;
+  /** The times and the line a template or the creator suggested. */
+  suggested: { schedule?: { cronExpression: string; timezone?: string }; prompt?: string } | null;
+  /** The agent's other scheduled tasks; they are on the Scheduler page. */
+  otherTasks: number;
+  /** false while no worker fires schedules; runs can still be started by hand. */
+  schedulerRunning: boolean;
+}
+
+/** What `agents.schedule.set` sends. It creates the schedule, or changes it. */
+export interface ScheduleInput {
+  enabled: boolean;
+  cronExpression: string;
+  timezone?: string;
+  prompt?: string;
+  stampTime?: boolean;
+  /** A place from `destinations.list`; null clears it; left out, it stays as it is. */
+  deliver?: { channelId: string } | null;
+  /** 5 to 3,600. */
+  timeoutSeconds?: number;
+  /** 0 to 5. */
+  maxRetries?: number;
+}
+
+/** `running`: not done. `finished`: it has a result. `did_not_finish`: see `failure`. `stopped`: someone stopped it. */
+export type RunStatus = "running" | "finished" | "did_not_finish" | "stopped";
+
+/** How sending one result to one place went. */
+export interface RunDelivery {
+  channelId: string;
+  name: string;
+  type: string;
+  status: "sent" | "failed" | "skipped";
+  /** Present unless `status` is `sent`. */
+  reason?: string;
+  /** When it was tried (ISO). */
+  at: string;
+}
+
+/** One run of an agent's own schedule. */
+export interface RunView {
+  id: string;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  startedBy: "schedule" | "person";
+  /** The answer of a finished run; null otherwise. */
+  text: string | null;
+  /** One plain sentence when the run did not finish; null otherwise. */
+  failure: string | null;
+  /** Every try to send the result, oldest first. A failed delivery never changes `status`. */
+  delivery: RunDelivery[];
+}
+
 /** A task run is allowed two minutes; the client waits a little longer by default. */
 const RUN_TIMEOUT_MS = 130_000;
 
@@ -442,11 +572,15 @@ export function agentsResource(client: WheelsAIClient) {
      * one sentence per field, keyed by its path (`name`, `kindConfig.task.fields[0].label`).
      */
     create: (input: CreateAgentInput) =>
-      client.post<{ agent: CreatedAgent; message: string }>("/api/agents", input),
+      client.post<CreateAgentResult>("/api/agents", input),
 
-    /** `PATCH /api/agents/{id}`. The answer is the agent row alone: its deployments are not included. */
+    /**
+     * `PATCH /api/agents/{id}`. The answer is the agent row alone: its deployments are not included.
+     * `schedulePaused` is `true` only when this change turned the agent's own schedule off, by
+     * moving its kind away from `scheduled`; setting the kind back turns nothing on.
+     */
     update: (id: string, updates: UpdateAgentInput) =>
-      client.patch<{ agent: Omit<AgentDetail, "deployments"> }>(`/api/agents/${seg(id)}`, updates),
+      client.patch<{ agent: Omit<AgentDetail, "deployments">; schedulePaused?: true }>(`/api/agents/${seg(id)}`, updates),
 
     delete: (id: string) =>
       client.delete<{ message: string }>(`/api/agents/${seg(id)}`),
@@ -540,6 +674,46 @@ export function agentsResource(client: WheelsAIClient) {
        */
       set: (id: string, body: PublicLinkInput) =>
         client.put<PublicLink>(`/api/agents/${seg(id)}/public-link`, body),
+    },
+
+    /** An agent's own schedule: what it is told, when, and where the result goes. */
+    schedule: {
+      /** `GET /api/agents/{id}/schedule`. `schedule` is null until the agent has one. */
+      get: (id: string) => client.get<ScheduleAnswer>(`/api/agents/${seg(id)}/schedule`),
+
+      /**
+       * `PUT /api/agents/{id}/schedule`: creates the schedule, or changes it. Times or a time zone
+       * the API cannot read answer 400 `invalid_schedule`; a field outside its range 400
+       * `validation_failed`; a schedule changed somewhere else in the meantime 409 `schedule_changed`.
+       */
+      set: (id: string, body: ScheduleInput) =>
+        client.put<ScheduleAnswer>(`/api/agents/${seg(id)}/schedule`, body),
+
+      /**
+       * `POST /api/agents/{id}/schedule/run`: one run now, billed, bounded, recorded and delivered as
+       * a timed run is. An API key needs the `agents:invoke` scope. A run already in flight answers
+       * 409 `already_running`; an agent with no schedule 404 `schedule_not_found`.
+       */
+      runNow: (id: string) => client.post<{ run: RunView }>(`/api/agents/${seg(id)}/schedule/run`),
+    },
+
+    /** What an agent's own schedule produced. */
+    runs: {
+      /**
+       * `GET /api/agents/{id}/runs`, newest first. `limit` is 1 to 100 (default 20); `before` is the
+       * id of the last run already read, and `hasMore` says whether another page follows it.
+       */
+      list: (id: string, params?: { limit?: number; before?: string }) =>
+        client.get<{ runs: RunView[]; hasMore: boolean }>(`/api/agents/${seg(id)}/runs`, params),
+
+      /**
+       * `POST /api/agents/{id}/runs/{runId}/deliver` ("Send again"): posts the saved result of a
+       * finished run to the place the schedule names now. It runs nothing. 409 `run_not_finished`;
+       * 400 `no_place` when the schedule names no place; 502 `delivery_failed` when the place did not
+       * take it (the error's `data.run` has the run, with the failed try recorded).
+       */
+      resend: (id: string, runId: string) =>
+        client.post<{ run: RunView }>(`/api/agents/${seg(id)}/runs/${seg(runId)}/deliver`),
     },
 
     playgroundModels: (id: string) =>

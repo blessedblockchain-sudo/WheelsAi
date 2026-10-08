@@ -35,6 +35,16 @@ export {
   type GraphValidation,
   type CreateAgentInput,
   type CreatedAgent,
+  type CreatedAgentSchedule,
+  type CreateAgentResult,
+  type CreateAgentSchedule,
+  type Destination,
+  type RunDelivery,
+  type RunStatus,
+  type RunView,
+  type ScheduleAnswer,
+  type ScheduleInput,
+  type ScheduleView,
   type KindConfig,
   type KindConfigInput,
   type TaskField,
@@ -52,6 +62,7 @@ export {
   type PublicLinkState,
   type PublicLinkSwitch,
 } from "./agents.js";
+export { destinationsResource, type CreateDestinationInput, type DestinationType } from "./destinations.js";
 export {
   deploymentsResource,
   type Deployment,

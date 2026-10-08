@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
-import { FastifyInstance } from "fastify";
-import { requireAuth } from "../middleware/auth.js";
+import { FastifyInstance, type FastifyPluginAsync, type preHandlerHookHandler } from "fastify";
+import { AGENT_KINDS, isAgentKind } from "@wheelsai/shared/agent-kind";
+import { env } from "../config/env.js";
+import { validationFailureFromFields } from "../lib/validationFailure.js";
+import { requireAuth as defaultRequireAuth } from "../middleware/auth.js";
+import { createAgentAnswer, type CreateAgentResult } from "../services/createAgent.js";
 import {
   getTemplates,
   getTemplate,
@@ -57,7 +61,22 @@ function requirePlatformAdmin(
 // Agent Templates / Starter Kits Routes
 // ============================================
 
-export async function templateRoutes(app: FastifyInstance) {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface TemplateRouteDeps {
+  requireAuth?: preHandlerHookHandler;
+  /** The create path behind POST /:templateId/use (services/templates.ts). */
+  useTemplate?: (templateId: string, orgId: string, body: unknown) => Promise<CreateAgentResult>;
+  /** PUBLIC_API_URL; a function so a test can vary it per app. */
+  publicApiUrl?: () => string | undefined;
+}
+
+export function createTemplateRoutes(deps: TemplateRouteDeps = {}): FastifyPluginAsync {
+  const requireAuth = deps.requireAuth ?? defaultRequireAuth;
+  const useTemplateWith = deps.useTemplate ?? useTemplate;
+  const publicApiUrl = deps.publicApiUrl ?? (() => env.PUBLIC_API_URL);
+
+  return async (app: FastifyInstance) => {
   // Public routes (no auth required for browsing)
 
   // List templates
@@ -66,18 +85,29 @@ export async function templateRoutes(app: FastifyInstance) {
       category?: string;
       framework?: string;
       difficulty?: string;
+      agentKind?: string;
       isFeatured?: string;
       search?: string;
       limit?: string;
       offset?: string;
     };
   }>("/", { schema: { tags: ["Templates"], description: "List agent templates" } }, async (request, reply) => {
+    const { category, framework, difficulty, agentKind, isFeatured, search, limit, offset } = request.query;
+    // Each template carries agentKind and kindConfig; `agentKind` narrows the
+    // list to one kind. An unknown kind is refused, not answered with nothing.
+    if (agentKind !== undefined && agentKind !== "" && !isAgentKind(agentKind)) {
+      return reply.status(400).send(
+        validationFailureFromFields({
+          agentKind: `Choose a kind to filter by: ${AGENT_KINDS.join(", ")}.`,
+        }),
+      );
+    }
     try {
-      const { category, framework, difficulty, isFeatured, search, limit, offset } = request.query;
       const result = await getTemplates({
         category,
         framework,
         difficulty,
+        agentKind: agentKind ? agentKind : undefined,
         isFeatured: isFeatured === "true" ? true : isFeatured === "false" ? false : undefined,
         search,
         limit: limit ? parseInt(limit) : undefined,
@@ -121,17 +151,20 @@ export async function templateRoutes(app: FastifyInstance) {
 
   // Authenticated routes
 
-  // Use a template to create an agent
+  // Use a template to create an agent. Only a name is needed; the slug is
+  // optional and made unique, so one template can be used twice. The answer
+  // is the one POST /api/agents gives, never the agent row: the row carries
+  // the instructions and the sealed variables.
   app.post<{
     Params: { templateId: string };
-    Body: { name: string; slug: string; description?: string };
+    Body: { name: string; slug?: string; description?: string };
   }>("/:templateId/use", { preHandler: requireAuth, schema: { tags: ["Templates"], description: "Create agent from template" } }, async (request, reply) => {
-    try {
-      const agent = await useTemplate(request.params.templateId, request.auth!.orgId, request.body);
-      return reply.status(201).send(agent);
-    } catch (error: any) {
-      return reply.status(400).send({ error: error.message });
-    }
+    const { templateId } = request.params;
+    const result: CreateAgentResult = UUID.test(templateId)
+      ? await useTemplateWith(templateId, request.auth!.orgId, request.body)
+      : { ok: false, reason: "template_not_found" };
+    const answer = createAgentAnswer(result, publicApiUrl());
+    return reply.status(answer.status).send(answer.body);
   });
 
   // Admin: Create template
@@ -193,4 +226,7 @@ export async function templateRoutes(app: FastifyInstance) {
       }
     }
   );
+  };
 }
+
+export const templateRoutes: FastifyPluginAsync = createTemplateRoutes();

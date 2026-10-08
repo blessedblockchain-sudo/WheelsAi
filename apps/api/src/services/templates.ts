@@ -1,6 +1,7 @@
 import { prisma } from "@wheelsai/db";
-import { openAgentEnv, sealAgentEnv } from "./agentSecrets.js";
-import { assertCanCreateAgent } from "./orgPlan.js";
+import type { AgentKind } from "@wheelsai/shared/agent-kind";
+import { buildCreateAgentDeps } from "./buildCreateAgentDeps.js";
+import { createAgent, type CreateAgentResult } from "./createAgent.js";
 
 // ============================================
 // Agent Templates CRUD
@@ -10,15 +11,18 @@ export async function getTemplates(options: {
   category?: string;
   framework?: string;
   difficulty?: string;
+  /** How the agents made from the template are used: conversation, task or scheduled. */
+  agentKind?: AgentKind;
   isFeatured?: boolean;
   search?: string;
   limit?: number;
   offset?: number;
 } = {}) {
-  const { category, framework, difficulty, isFeatured, search, limit = 20, offset = 0 } = options;
+  const { category, framework, difficulty, agentKind, isFeatured, search, limit = 20, offset = 0 } = options;
   const where: any = { isPublished: true };
   if (category) where.category = category;
   if (framework) where.framework = framework;
+  if (agentKind) where.agentKind = agentKind;
   if (difficulty) where.difficulty = difficulty;
   if (isFeatured !== undefined) where.isFeatured = isFeatured;
   if (search) {
@@ -63,55 +67,20 @@ export async function getTemplateCategories() {
   return templates.map((t) => t.category);
 }
 
-export async function useTemplate(templateId: string, orgId: string, input: {
-  name: string;
-  slug: string;
-  description?: string;
-}) {
-  const template = await prisma.agentTemplate.findFirst({ where: { id: templateId, isPublished: true } });
-  if (!template) throw new Error("Template not found");
-
-  // Templates create agents too, so they count toward the plan.
-  await assertCanCreateAgent(orgId);
-
-  // Create agent from template
-  const agent = await prisma.agent.create({
-    data: {
-      orgId,
-      name: input.name,
-      slug: input.slug,
-      description: input.description || template.description,
-      framework: template.framework,
-      systemPrompt: template.systemPrompt,
-      tools: template.tools as any,
-      modelConfig: template.modelConfig as any,
-      sourceType: template.sourceType,
-      sourceCode: template.sourceCode,
-      sourceUrl: template.sourceUrl,
-      env: sealAgentEnv(openAgentEnv(template.env)),
-      tags: template.tags,
-    },
-  });
-
-  // Create visual graph if template has one
-  if (template.graphNodes && template.graphEdges) {
-    await prisma.agentGraph.create({
-      data: {
-        agentId: agent.id,
-        nodes: template.graphNodes,
-        edges: template.graphEdges,
-        isValid: true,
-      },
-    });
-  }
-
-  // Increment usage count
-  await prisma.agentTemplate.update({
-    where: { id: templateId },
-    data: { usageCount: { increment: 1 } },
-  });
-
-  return agent;
+/**
+ * An agent made from a published template. It goes through the one create
+ * path (services/createAgent.ts), as POST /api/agents does: only a name is
+ * needed, the slug is made unique (so one template can be used twice), the
+ * agent counts toward the plan, and it carries the template's kind and a copy
+ * of that kind's settings. Anything else the caller sends replaces the
+ * template's value for that field.
+ */
+export async function useTemplate(
+  templateId: string,
+  orgId: string,
+  input: unknown,
+): Promise<CreateAgentResult> {
+  return createAgent(buildCreateAgentDeps(), { orgId, body: input, templateId });
 }
 
 // ============================================

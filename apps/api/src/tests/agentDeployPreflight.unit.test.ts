@@ -87,7 +87,12 @@ async function agentsApp(deployment: Record<string, unknown> | null = null) {
   const envBefore = {
     key: (env as any).NOSANA_WALLET_PRIVATE_KEY,
     mock: (env as any).ALLOW_NOSANA_MOCK,
+    agentGpu: (env as any).AGENT_GPU_ENABLED,
   };
+  // The switch for agent GPUs is on here: these tests are about what the
+  // deploy route does past its first gate (agentDeployGate.unit.test.ts
+  // covers the 501 it answers while the switch is off).
+  (env as any).AGENT_GPU_ENABLED = true;
   (env as any).NOSANA_WALLET_PRIVATE_KEY = undefined;
   (env as any).ALLOW_NOSANA_MOCK = false;
 
@@ -112,6 +117,7 @@ async function agentsApp(deployment: Record<string, unknown> | null = null) {
       Object.assign(prisma as any, saved);
       (env as any).NOSANA_WALLET_PRIVATE_KEY = envBefore.key;
       (env as any).ALLOW_NOSANA_MOCK = envBefore.mock;
+      (env as any).AGENT_GPU_ENABLED = envBefore.agentGpu;
     },
   };
 }

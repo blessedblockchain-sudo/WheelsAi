@@ -170,6 +170,14 @@ const envSchema = z.object({
   // shutdown drain window so an in-flight chat settles or refunds before the
   // process is killed.
   AGENT_CHAT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
+  // A dedicated GPU for an agent (POST /api/agents/:id/deploy). Off until
+  // the agent runtime images exist: the route then answers 501
+  // agent_gpu_unavailable before anything is looked up, reserved or charged,
+  // and the agent keeps answering on the platform.
+  AGENT_GPU_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
 
   // Public chat: the web chat widget and Try it. These callers are anonymous,
   // so every limit here is enforced on a limiter that fails closed

@@ -27,6 +27,9 @@ process.env.NOSANA_API_URL = fake.url;
 process.env.NOSANA_CREDITS_CACHE_MS = "0";
 process.env.NOSANA_COST_CACHE_MS = "0";
 process.env.PUBLIC_API_URL = "https://api.example.com";
+// These tests drive the deploy route past its first gate: with the switch off
+// it answers 501 agent_gpu_unavailable before anything else (agentDeployGate.unit.test.ts).
+process.env.AGENT_GPU_ENABLED = "true";
 for (const name of [
   "NOSANA_WALLET_PRIVATE_KEY",
   "NOSANA_ACCESS_MODE",

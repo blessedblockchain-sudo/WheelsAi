@@ -5,7 +5,8 @@
  * than Fastify's schema option, which throws a ZodError. The handler used
  * to see no `statusCode` on it and fall through to 500 — turning every
  * invalid request body into a server error (and masking the real cause).
- * Map ZodError to a 400 with a flattened, client-readable detail.
+ * Map ZodError to a 400 with a flattened, client-readable detail, plus a
+ * plain sentence and a sentence per field (lib/validationFailure.ts).
  *
  * Order matters: ZodError first (thrown by route code), then Fastify's own
  * schema-validation errors (`error.validation`), then the statusCode-aware
@@ -15,6 +16,7 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
 import { PlanLimitError } from "../services/plans.js";
+import { validationFailure } from "./validationFailure.js";
 
 export function globalErrorHandler(
   error: FastifyError,
@@ -35,11 +37,11 @@ export function globalErrorHandler(
     });
   }
 
+  // `error` and `details` are what clients already read. `message` (one
+  // plain sentence) and `fields` (field name to plain sentence) are what a
+  // screen shows a person.
   if (error instanceof ZodError) {
-    return reply.status(400).send({
-      error: "validation_failed",
-      details: error.flatten(),
-    });
+    return reply.status(400).send(validationFailure(error));
   }
 
   if (error.validation) {

@@ -9,14 +9,19 @@ import { fileURLToPath } from "node:url";
 // caller able to bind an arbitrary UUID could read another org's
 // documents back out through chat grounding.
 //
-// These pin the guard at the route layer by source inspection: the check
-// must exist on BOTH write paths (create and patch), because a guard on
-// only one is the same leak.
+// These pin the guard by source inspection: the check must exist on BOTH
+// write paths (create and patch), because a guard on only one is the same
+// leak. PATCH checks in the route. A create (POST /api/agents and "use this
+// template" alike) checks in the one create path, services/createAgent.ts,
+// bound to the database in services/buildCreateAgentDeps.ts;
+// createAgent.unit.test.ts drives that refusal end to end.
 
-const routeSource = readFileSync(
-  fileURLToPath(new URL("../routes/agents.ts", import.meta.url)),
-  "utf8",
-);
+const source = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
+
+const routeSource = source("../routes/agents.ts");
+const createSource = source("../services/createAgent.ts");
+const createDepsSource = source("../services/buildCreateAgentDeps.ts");
+const createInputSource = source("../services/agentCreateInput.ts");
 
 test("the ownership check scopes the knowledge base lookup by orgId", () => {
   const helper = routeSource.slice(
@@ -32,64 +37,74 @@ test("the ownership check scopes the knowledge base lookup by orgId", () => {
 });
 
 test("BOTH write paths guard the binding — create and patch", () => {
-  const guards = routeSource.match(/assertKnowledgeBaseOwned\(/g) ?? [];
-  // One definition + two call sites.
+  // Create: the one create path checks ownership before the plan is read
+  // and before the transaction that inserts the agent.
+  const createGuardIdx = createSource.indexOf("!(await deps.knowledgeBaseOwned(data.knowledgeBaseId, orgId))");
+  const insertIdx = createSource.indexOf("deps.insertAgent(");
+  const transactionIdx = createSource.indexOf("deps.transaction(");
+  assert.ok(createGuardIdx > 0, "create must check who owns the knowledge base");
   assert.ok(
-    guards.length >= 3,
-    `expected the guard called on both create and patch, found ${guards.length - 1} call site(s)`,
+    createGuardIdx < transactionIdx && transactionIdx < insertIdx,
+    "create must check ownership before inserting the agent",
+  );
+  assert.equal(
+    createSource.match(/deps\.insertAgent\(/g)?.length,
+    1,
+    "one insert, so one guard covers every create",
   );
 
-  const createIdx = routeSource.indexOf("const agent = await prisma.agent.create(");
-  const createGuardIdx = routeSource.lastIndexOf(
-    "assertKnowledgeBaseOwned(",
-    createIdx,
-  );
-  assert.ok(
-    createGuardIdx > 0 && createIdx - createGuardIdx < 400,
-    "create must check ownership immediately before inserting the agent",
-  );
+  // The check behind it is scoped by the caller's organization.
+  const bound = createDepsSource.slice(createDepsSource.indexOf("knowledgeBaseOwned:"));
+  const boundBody = bound.slice(0, bound.indexOf("!== null"));
+  assert.match(boundBody, /knowledgeBase\.findFirst/);
+  assert.match(boundBody, /id: knowledgeBaseId, orgId/);
 
+  // The route creates through that path and through nothing else.
+  assert.match(routeSource, /createAgent\(buildCreateAgentDeps\(\), args\)/);
+  assert.doesNotMatch(routeSource, /prisma\.agent\.create\(/, "no insert in the route that could skip the guard");
+
+  // Patch: its own check, before the update.
   const patchIdx = routeSource.indexOf("const updatedAgent = await prisma.agent.update(");
-  const patchGuardIdx = routeSource.lastIndexOf(
-    "assertKnowledgeBaseOwned(",
-    patchIdx,
-  );
-  assert.ok(
-    patchGuardIdx > 0 && patchGuardIdx > createGuardIdx,
-    "patch must have its own ownership check before updating",
+  const patchGuardIdx = routeSource.lastIndexOf("!(await assertKnowledgeBaseOwned(", patchIdx);
+  assert.ok(patchIdx > 0);
+  assert.ok(patchGuardIdx > 0 && patchGuardIdx < patchIdx, "patch must have its own ownership check before updating");
+  assert.equal(
+    routeSource.match(/prisma\.agent\.update\(/g)?.length,
+    1,
+    "one update of an agent in the route, so one guard covers it",
   );
 });
 
 test("every rejected binding answers 400 rather than silently ignoring the field", () => {
-  // Call sites only — skip the declaration itself.
-  const declIdx = routeSource.indexOf("async function assertKnowledgeBaseOwned");
-  const callSites: number[] = [];
-  let from = 0;
-  for (;;) {
-    const idx = routeSource.indexOf("!(await assertKnowledgeBaseOwned(", from);
-    if (idx === -1) break;
-    callSites.push(idx);
-    from = idx + 1;
-  }
-  assert.ok(callSites.length >= 2, "expected a guard on create and on patch");
-  assert.ok(
-    callSites.every((i) => i !== declIdx),
-    "call sites must be distinct from the declaration",
+  // Patch: the route's call site answers at once.
+  const patchGuardIdx = routeSource.indexOf("!(await assertKnowledgeBaseOwned(");
+  assert.ok(patchGuardIdx > 0 && patchGuardIdx !== routeSource.indexOf("async function assertKnowledgeBaseOwned"));
+  assert.match(
+    routeSource.slice(patchGuardIdx, patchGuardIdx + 300),
+    /badRequest\("Knowledge base not found"\)/,
+    "the caller is told the binding failed; silently dropping it would look like success",
   );
-  for (const idx of callSites) {
-    const window = routeSource.slice(idx, idx + 300);
-    assert.match(
-      window,
-      /badRequest\("Knowledge base not found"\)/,
-      "the caller is told the binding failed; silently dropping it would look like success",
-    );
-  }
+
+  // Create: the refusal is returned, not skipped, and is answered with the
+  // same 400 body reply.badRequest() gave it.
+  const createGuardIdx = createSource.indexOf("!(await deps.knowledgeBaseOwned(");
+  assert.match(
+    createSource.slice(createGuardIdx, createGuardIdx + 200),
+    /return \{ ok: false, reason: "knowledge_base_not_found" \}/,
+  );
+  const answer = createSource.slice(createSource.indexOf('case "knowledge_base_not_found":'));
+  assert.match(
+    answer.slice(0, 300),
+    /status: 400, body: \{ statusCode: 400, error: "Bad Request", message: "Knowledge base not found" \}/,
+  );
 });
 
 test("the binding accepts null so an agent can be UNBOUND", () => {
+  // The fields a create and a PATCH both accept (PATCH takes any part of them).
   assert.match(
-    routeSource,
+    createInputSource,
     /knowledgeBaseId: z\.string\(\)\.uuid\(\)\.nullable\(\)\.optional\(\)/,
     "nullable is required — otherwise grounding can be turned on but never off",
   );
+  assert.match(routeSource, /const updateAgentSchema = agentFieldsSchema\.partial\(\)/);
 });

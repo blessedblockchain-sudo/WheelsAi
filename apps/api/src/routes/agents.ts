@@ -1,17 +1,20 @@
-import { randomBytes } from "node:crypto";
-
 import { FastifyPluginAsync, type preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 
 import { requireAuth as defaultRequireAuth } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
-import { prisma } from "@wheelsai/db";
+import { Prisma, prisma } from "@wheelsai/db";
 import { triggerWebhook } from "../services/webhooks.js";
 import { env } from "../config/env.js";
 import { rowAccessMode } from "../config/nosanaAccess.js";
 import { generateAgentJobDefinition } from "../services/agent-runtime.js";
-import { mergeAgentEnv, redactAgentEnv, sealAgentEnv } from "../services/agentSecrets.js";
-import { assertCanCreateAgent } from "../services/orgPlan.js";
+import { mergeAgentEnv, redactAgentEnv } from "../services/agentSecrets.js";
+import { agentFieldsSchema } from "../services/agentCreateInput.js";
+import { resolveKindConfig } from "../services/agentKind.js";
+import { buildCreateAgentDeps } from "../services/buildCreateAgentDeps.js";
+import { createAgent, createAgentAnswer, type CreateAgentResult } from "../services/createAgent.js";
+import { validationFailureFromFields } from "../lib/validationFailure.js";
+import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
 import {
   MarketNotConfiguredError,
   NosanaNotConfiguredError,
@@ -38,7 +41,6 @@ import {
   releaseDeploymentReservation,
   reserveDeploymentCredits,
 } from "../services/deploymentCreditGate.js";
-import { AGENT_FRAMEWORKS } from "../config/frameworks.js";
 import {
   agentApiEndpoints,
   serializeAgentDeployment,
@@ -65,44 +67,25 @@ class InsufficientCreditsError extends Error {
 // Schemas
 // ============================================
 
-const toolSchema = z.object({
-  name: z.string(),
-  type: z.enum(["function", "api", "mcp"]),
-  description: z.string().optional(),
-  config: z.record(z.any()).optional(),
-});
-
-const createAgentSchema = z.object({
-  name: z.string().min(3).max(100),
-  description: z.string().max(500).optional(),
-  framework: z.enum(AGENT_FRAMEWORKS),
-  systemPrompt: z.string().max(10000).optional(),
-  tools: z.array(toolSchema).default([]),
-  modelConfig: z.object({
-    modelId: z.string().optional(), // WheelsAI model ID
-    externalModel: z.string().optional(), // e.g., "openai/gpt-4"
-    temperature: z.number().min(0).max(2).default(0.7),
-    maxTokens: z.number().int().min(1).max(32768).default(4096),
-  }),
-  sourceType: z.enum(["inline", "github", "ipfs"]),
-  sourceUrl: z.string().url().optional(),
-  sourceCode: z.string().max(100000).optional(),
-  env: z.record(z.string()).default({}),
-  tags: z.array(z.string()).default([]),
-  isPublic: z.boolean().default(false),
-  // Optional RAG grounding (W2): bind a knowledge base and the agent's
-  // chat answers get grounded in retrieved passages. null unbinds.
-  knowledgeBaseId: z.string().uuid().nullable().optional(),
-});
-
-const updateAgentSchema = createAgentSchema.partial().extend({
+// What a create accepts is in services/agentCreateInput.ts: only a name is
+// needed there. An update accepts any part of the same fields.
+const updateAgentSchema = agentFieldsSchema.partial().extend({
   // Secrets are write-only: clients never see values, so a PATCH merges.
   // A string sets or replaces a variable; null deletes it.
   env: z.record(z.string().max(8192).nullable()).optional(),
   // What answers a chat (playground and /v1): the agent's prompt, model and
   // tools, or the graph saved in the builder.
   entrypoint: z.enum(["chat", "graph"]).optional(),
+  // How people use the agent, and that kind's settings. Read by
+  // resolveKindConfig, which answers in plain words by field. Inside
+  // kindConfig a key that is sent replaces that key and the others stay.
+  agentKind: z.unknown().optional(),
+  kindConfig: z.unknown().optional(),
 });
+
+/** What a GPU click on an agent is answered with (501) while AGENT_GPU_ENABLED is off. */
+export const AGENT_GPU_UNAVAILABLE_MESSAGE =
+  "Dedicated GPUs for agents are being built. Nothing was reserved or charged. Your agent keeps answering on WheelsAI.";
 
 /**
  * A knowledge base may only be bound by the org that owns it. Without
@@ -146,6 +129,10 @@ export interface AgentRouteDeps {
   publicApiUrl?: () => string | undefined;
   /** The usage read behind GET /:agentId/usage. */
   agentUsage?: (orgId: string, agentId: string, period: AgentUsagePeriod) => Promise<AgentChatUsage>;
+  /** The create path behind POST / (services/createAgent.ts). */
+  createAgent?: (args: { orgId: string; body: unknown }) => Promise<CreateAgentResult>;
+  /** AGENT_GPU_ENABLED; a function so a test can vary it per app. */
+  agentGpuEnabled?: () => boolean;
 }
 
 export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync {
@@ -155,6 +142,9 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
   const agentUsage =
     deps.agentUsage ??
     ((orgId: string, agentId: string, period: AgentUsagePeriod) => getAgentChatUsage(orgId, agentId, period));
+  const createAgentWith =
+    deps.createAgent ?? ((args: { orgId: string; body: unknown }) => createAgent(buildCreateAgentDeps(), args));
+  const agentGpuEnabled = deps.agentGpuEnabled ?? (() => env.AGENT_GPU_ENABLED);
 
   return async (app) => {
   /**
@@ -235,6 +225,8 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
         version: agent.version,
         tags: agent.tags,
         isPublic: agent.isPublic,
+        // How people use it: conversation, task or scheduled.
+        agentKind: isAgentKind(agent.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
         // What answers a chat: the agent's prompt, or its saved graph.
         entrypoint: agent.entrypoint ?? "chat",
         // The agent is served by this API whether or not it has a GPU
@@ -289,86 +281,13 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
    */
   app.post("/", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Create a new agent", security: [{ bearerAuth: [] }] } }, async (request, reply) => {
     const { orgId } = request.auth!;
-    const body = createAgentSchema.parse(request.body);
 
-    // Validate source
-    if (body.sourceType === "inline" && !body.sourceCode) {
-      return reply.badRequest("Source code is required for inline agents");
-    }
-    if ((body.sourceType === "github" || body.sourceType === "ipfs") && !body.sourceUrl) {
-      return reply.badRequest("Source URL is required for github/ipfs agents");
-    }
-
-    // Generate slug
-    const baseSlug = body.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-
-    // A name with no ASCII letters or digits slugifies to "", which gave the
-    // agent an empty (then "-1") slug and so no addressable /v1 path.
-    const rootSlug = baseSlug.length > 0 ? baseSlug : `agent-${randomBytes(3).toString("hex")}`;
-
-    let slug = rootSlug;
-    let counter = 0;
-    while (await prisma.agent.findUnique({ where: { orgId_slug: { orgId, slug } } })) {
-      counter++;
-      slug = `${rootSlug}-${counter}`;
-    }
-
-    if (
-      body.knowledgeBaseId &&
-      !(await assertKnowledgeBaseOwned(body.knowledgeBaseId, orgId))
-    ) {
-      return reply.badRequest("Knowledge base not found");
-    }
-
-    // Starter includes up to 3 agents (marketplace installs don't count).
-    await assertCanCreateAgent(orgId);
-
-    const agent = await prisma.agent.create({
-      data: {
-        orgId,
-        name: body.name,
-        slug,
-        description: body.description,
-        framework: body.framework,
-        systemPrompt: body.systemPrompt,
-        tools: body.tools,
-        modelConfig: body.modelConfig,
-        sourceType: body.sourceType,
-        sourceUrl: body.sourceUrl,
-        sourceCode: body.sourceCode,
-        env: sealAgentEnv(body.env),
-        tags: body.tags,
-        isPublic: body.isPublic,
-        knowledgeBaseId: body.knowledgeBaseId ?? null,
-      },
-    });
-
-    logger.info({ agentId: agent.id, orgId }, "Agent created");
-
-    // Webhook emission (Wave 1) — the 16 subscribable events existed but
-    // nothing ever fired one. Fire-and-forget, house pattern.
-    triggerWebhook(
-      orgId,
-      "agent.created",
-      { agentId: agent.id, name: agent.name, slug: agent.slug },
-      "agent",
-      agent.id,
-    ).catch((err) => logger.error({ err }, "webhook agent.created failed"));
-
-    reply.status(201);
-    return {
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        slug: agent.slug,
-        framework: agent.framework,
-        ...agentApiEndpoints(agent.slug, publicApiUrl()),
-      },
-      message: "Agent created successfully",
-    };
+    // One create path for this route and for "use this template": only a
+    // name is needed, `templateId` starts the agent from a template, and a
+    // refusal names the field in plain words.
+    const result = await createAgentWith({ orgId, body: request.body });
+    const answer = createAgentAnswer(result, publicApiUrl());
+    return reply.status(answer.status).send(answer.body);
   });
 
   /**
@@ -410,6 +329,17 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       }
     }
 
+    // The kind and its settings, only when one of them is sent. What is not
+    // sent stays as stored.
+    const { agentKind: sentKind, kindConfig: sentKindConfig, ...sentFields } = updates;
+    const kind =
+      sentKind !== undefined || sentKindConfig !== undefined
+        ? resolveKindConfig({ agentKind: sentKind, kindConfig: sentKindConfig }, { current: agent })
+        : null;
+    if (kind && !kind.ok) {
+      return reply.status(400).send(validationFailureFromFields(kind.fields, kind.message));
+    }
+
     // Increment version when behaviour actually changes (a settings save
     // that resends an unchanged prompt is not a new version).
     const differs = (key: "sourceCode" | "sourceUrl" | "systemPrompt" | "tools" | "entrypoint") =>
@@ -421,17 +351,19 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       differs("sourceUrl") ||
       differs("systemPrompt") ||
       differs("tools") ||
-      differs("entrypoint")
+      differs("entrypoint") ||
+      kind?.changed
     ) {
       const [major = 1, minor = 0, patch = 0] = agent.version.split(".").map(Number);
       newVersion = `${major}.${minor}.${patch + 1}`;
     }
 
-    const { env: envPatch, ...fieldUpdates } = updates;
+    const { env: envPatch, ...fieldUpdates } = sentFields;
     const updatedAgent = await prisma.agent.update({
       where: { id: agentId },
       data: {
         ...fieldUpdates,
+        ...(kind && { agentKind: kind.agentKind, kindConfig: kind.kindConfig ?? Prisma.DbNull }),
         env: envPatch ? mergeAgentEnv(agent.env, envPatch) : undefined,
         version: newVersion,
         modelConfig: updates.modelConfig
@@ -558,6 +490,15 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
    * Deploy agent
    */
   app.post("/:agentId/deploy", { preHandler: [requireAuth], schema: { tags: ["Agents"], description: "Deploy agent to GPU" } }, async (request, reply) => {
+    // First, before anything is read, checked or reserved: while the runtime
+    // images for agents are not built, a GPU click has nothing to start.
+    if (!agentGpuEnabled()) {
+      return reply.status(501).send({
+        error: "agent_gpu_unavailable",
+        message: AGENT_GPU_UNAVAILABLE_MESSAGE,
+      });
+    }
+
     const { orgId } = request.auth!;
     const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
     const body = deployAgentSchema.parse(request.body);

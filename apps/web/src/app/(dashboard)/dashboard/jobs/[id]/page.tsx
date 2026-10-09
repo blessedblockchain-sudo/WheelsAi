@@ -17,6 +17,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Label } from "@/components/ui/label";
+import { ResultView } from "@/components/ui/result-view";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, apiErrorCode, getErrorMessage, jobsApi, type Job } from "@/lib/api";
@@ -344,11 +345,14 @@ export default function JobPage() {
                 </CardHeader>
                 <CardContent>
                   {job.output ? (
-                    <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-4 text-sm text-foreground">
-                      {job.output.format === "json" && job.output.value !== undefined
-                        ? JSON.stringify(job.output.value, null, 2)
-                        : job.output.text}
-                    </pre>
+                    <ResultView
+                      className="max-h-[32rem] overflow-auto rounded-md bg-muted p-4 text-foreground"
+                      text={
+                        job.output.format === "json" && job.output.value !== undefined
+                          ? JSON.stringify(job.output.value, null, 2)
+                          : job.output.text
+                      }
+                    />
                   ) : (
                     <p className="text-sm text-muted-foreground">
                       {moving

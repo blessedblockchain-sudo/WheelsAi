@@ -9,6 +9,7 @@ import { getErrorMessage, schedulerApi, type ScheduledTask, type TaskExecution }
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ResultView } from "@/components/ui/result-view";
 import { formatDuration, prettyJson } from "./format";
 import { StatusBadge } from "./status-badge";
 
@@ -121,9 +122,10 @@ export function ExecutionDetailDrawer({
           <div>
             <p className="text-xs font-medium text-muted-foreground">Output</p>
             {hasOutput ? (
-              <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-muted/50 p-3 font-mono text-xs text-foreground">
-                {prettyJson(execution.output)}
-              </pre>
+              <ResultView
+                className="mt-1 max-h-96 overflow-auto rounded-md border border-border bg-muted/50 p-3 text-foreground"
+                text={prettyJson(execution.output)}
+              />
             ) : (
               <p className="mt-1 text-sm text-muted-foreground">
                 {execution.status === "running"

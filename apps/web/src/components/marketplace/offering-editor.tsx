@@ -12,6 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ResultView } from "@/components/ui/result-view";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -165,9 +166,10 @@ function TestRun({ offering, dirty }: { offering: PublisherOffering; dirty: bool
               ))}
             </ul>
             {result.output && (
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs text-foreground">
-                {result.output.text}
-              </pre>
+              <ResultView
+                className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-foreground"
+                text={result.output.text}
+              />
             )}
           </div>
         )}

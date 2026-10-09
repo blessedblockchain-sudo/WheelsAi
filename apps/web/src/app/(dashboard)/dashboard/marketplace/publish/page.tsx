@@ -727,10 +727,6 @@ function PublishWizardContent() {
                         wallet linked to their organization. Until you launch the
                         token, the listing is free to install and run.
                       </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        You can launch the token on pump.fun once the agent
-                        qualifies: reputation score &ge; 50 and 7 days of uptime.
-                      </p>
                     </div>
                   </div>
                 </RadioGroup>

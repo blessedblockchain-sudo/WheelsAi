@@ -2185,9 +2185,65 @@ export interface PublicRunRefusal {
   details?: TaskInputIssue[];
 }
 
+/**
+ * The one fetch a visitor's browser makes: no sign-in and never a cookie.
+ * The public-key routes forbid cookies (the API's CORS policy for them never
+ * allows credentials) and a public page is read the same way, so nothing a
+ * stranger's page sends goes through the shared helper, which always sends
+ * them: `credentials` is "omit", here and only here.
+ */
+function publicFetch(path: string, init: { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal } = {}): Promise<Response> {
+  const hasBody = init.body !== undefined;
+  return fetch(`${API_URL}${path}`, {
+    method: init.method ?? "GET",
+    headers: hasBody ? { "Content-Type": "application/json" } : { Accept: "application/json" },
+    ...(hasBody ? { body: JSON.stringify(init.body) } : {}),
+    credentials: "omit",
+    signal: init.signal,
+  });
+}
+
 export const publicAgentApi = {
-  /** By the agent's public handle, the name in `/a/<handle>`. */
-  get: (handle: string) => api<PublicAgentDetail>(`/api/a/${handle}`),
+  /** By the agent's public handle, the name in `/a/<handle>`. No cookie goes with it. A refusal throws an ApiError. */
+  get: async (handle: string): Promise<PublicAgentDetail> => {
+    const res = await publicFetch(`/api/a/${handle}`);
+    const data = await readBody(res);
+    if (!res.ok) throw new ApiError(res.status, res.statusText, data);
+    return data as PublicAgentDetail;
+  },
+};
+
+/** One turn of a visitor's chat on an agent's page. */
+export interface PublicChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/**
+ * One streamed request to a public-key route, through `publicFetch`. A
+ * refusal throws an ApiError whose `data` is a PublicRunRefusal before
+ * anything is yielded; a failure inside the stream arrives as an `error`
+ * event.
+ */
+async function* streamPublicUse(
+  path: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): AsyncGenerator<SseChatEvent, void, unknown> {
+  const res = await publicFetch(path, { method: "POST", body: { ...body, stream: true }, signal });
+  if (!res.ok) throw new ApiError(res.status, res.statusText, await readBody(res));
+  if (!res.body) return;
+  yield* readSseChat(res.body);
+}
+
+/** Free use of an agent from its public page: no sign-in and no cookies. */
+export const publicUseApi = {
+  /** One chat message with the conversation so far; the answer is streamed. */
+  chat: (publicKey: string, body: { messages: PublicChatTurn[]; sessionId?: string }, signal?: AbortSignal) =>
+    streamPublicUse(`/api/widget/${encodeURIComponent(publicKey)}/chat`, body, signal),
+  /** One task run from the form's answers; the result is streamed. */
+  run: (publicKey: string, body: { input: Record<string, unknown> }, signal?: AbortSignal) =>
+    streamPublicUse(`/api/widget/${encodeURIComponent(publicKey)}/run`, body, signal),
 };
 
 export interface MarketplaceCategory {
@@ -5832,7 +5888,7 @@ export const tokenApi = {
 export async function* streamPlaygroundChat(
   agentId: string,
   body: { messages: Array<{ role: string; content: string }>; model?: string },
-  options?: { onToolCalls?: (calls: PlaygroundToolCall[]) => void }
+  options?: { onToolCalls?: (calls: PlaygroundToolCall[]) => void; signal?: AbortSignal }
 ): AsyncGenerator<string, void, unknown> {
   const res = await fetch(
     `${API_URL}/api/agents/${agentId}/playground/chat`,
@@ -5841,6 +5897,7 @@ export async function* streamPlaygroundChat(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, stream: true }),
       credentials: "include",
+      signal: options?.signal,
     }
   );
 

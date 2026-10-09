@@ -33,6 +33,14 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { toast } from "sonner";
+import {
+  ALERT_CHANNEL_TARGETS,
+  ALERT_CHANNEL_TYPES,
+  alertChannelBody,
+  alertChannelServerErrors,
+  type AlertChannelErrors,
+  type AlertChannelFormType,
+} from "@/lib/alert-channel-form";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -796,90 +804,145 @@ function ChannelModal({
   onSave: () => void;
 }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState<string>("slack");
-  const [webhookUrl, setWebhookUrl] = useState("");
+  const [type, setType] = useState<AlertChannelFormType>("slack");
+  const [target, setTarget] = useState("");
+  const [errors, setErrors] = useState<AlertChannelErrors>({});
   const [saving, setSaving] = useState(false);
+  const field = ALERT_CHANNEL_TARGETS[type];
 
   async function handleSave() {
+    // Each kind of channel keeps its setting under its own name: a Slack or
+    // Discord link, a webhook address, or email addresses.
+    const { body, errors: found } = alertChannelBody({ name, type, target });
+    setErrors(found);
+    if (Object.keys(found).length > 0) return;
     setSaving(true);
     try {
-      await monitoringApi.createChannel({
-        name,
-        type: type as any,
-        config: { webhookUrl },
-      });
+      await monitoringApi.createChannel(body);
+      toast.success("Channel added");
       onSave();
       onClose();
     } catch (error) {
-      console.error("Failed to create channel:", error);
+      setErrors(alertChannelServerErrors(error));
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-card border rounded-lg p-6 w-full max-w-md">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Add Notification Channel</h2>
-          <button onClick={onClose} className="p-1 hover:bg-accent rounded">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="channel-modal-title"
+        className="w-full max-w-md rounded-lg border bg-card p-6"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 id="channel-modal-title" className="text-lg font-semibold">
+            Add Notification Channel
+          </h2>
+          <button onClick={onClose} className="rounded p-1 hover:bg-accent" aria-label="Close">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="space-y-4">
+        <form
+          className="space-y-4"
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleSave();
+          }}
+        >
           <div>
-            <label className="block text-sm font-medium mb-1">Name</label>
+            <label htmlFor="channel-name" className="mb-1 block text-sm font-medium">
+              Name
+            </label>
             <input
+              id="channel-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="My Slack Channel"
-              className="w-full px-3 py-2 bg-background border rounded-lg"
+              aria-invalid={Boolean(errors.name)}
+              aria-describedby={errors.name ? "channel-name-error" : undefined}
+              className="w-full rounded-lg border bg-background px-3 py-2"
             />
+            {errors.name && (
+              <p id="channel-name-error" className="mt-1 text-sm text-danger">
+                {errors.name}
+              </p>
+            )}
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Type</label>
+            <label htmlFor="channel-type" className="mb-1 block text-sm font-medium">
+              Type
+            </label>
             <select
+              id="channel-type"
               value={type}
-              onChange={(e) => setType(e.target.value)}
-              className="w-full px-3 py-2 bg-background border rounded-lg"
+              onChange={(e) => {
+                setType(e.target.value as AlertChannelFormType);
+                setTarget("");
+                setErrors({});
+              }}
+              className="w-full rounded-lg border bg-background px-3 py-2"
             >
-              <option value="slack">Slack</option>
-              <option value="discord">Discord</option>
-              <option value="webhook">Webhook</option>
-              <option value="email">Email</option>
+              {ALERT_CHANNEL_TYPES.map((option) => (
+                <option key={option} value={option}>
+                  {ALERT_CHANNEL_TARGETS[option].option}
+                </option>
+              ))}
             </select>
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-1">Webhook URL</label>
+            <label htmlFor="channel-target" className="mb-1 block text-sm font-medium">
+              {field.label}
+            </label>
             <input
-              type="url"
-              value={webhookUrl}
-              onChange={(e) => setWebhookUrl(e.target.value)}
-              placeholder="https://hooks.slack.com/..."
-              className="w-full px-3 py-2 bg-background border rounded-lg"
+              id="channel-target"
+              type={field.inputType}
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              placeholder={field.placeholder}
+              aria-invalid={Boolean(errors.target)}
+              aria-describedby={errors.target ? "channel-target-error" : field.hint ? "channel-target-hint" : undefined}
+              className="w-full rounded-lg border bg-background px-3 py-2"
             />
+            {errors.target ? (
+              <p id="channel-target-error" className="mt-1 text-sm text-danger">
+                {errors.target}
+              </p>
+            ) : (
+              field.hint && (
+                <p id="channel-target-hint" className="mt-1 text-xs text-muted-foreground">
+                  {field.hint}
+                </p>
+              )
+            )}
           </div>
 
+          {errors.form && (
+            <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+              {errors.form}
+            </p>
+          )}
+
           <div className="flex gap-2 pt-2">
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border rounded-lg hover:bg-accent"
-            >
+            <button type="button" onClick={onClose} className="flex-1 rounded-lg border px-4 py-2 hover:bg-accent">
               Cancel
             </button>
             <button
-              onClick={handleSave}
-              disabled={saving || !name || !webhookUrl}
-              className="flex-1 px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50"
+              type="submit"
+              disabled={saving}
+              className="flex-1 rounded-lg bg-primary px-4 py-2 text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
             >
               {saving ? "Saving..." : "Save"}
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </div>
   );

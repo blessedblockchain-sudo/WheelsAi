@@ -349,6 +349,28 @@ test("GET /api/templates returns agentKind and kindConfig on each template", asy
   }
 });
 
+test("the public catalog never returns a variable's value, only its name", async () => {
+  const { state, restore } = world();
+  const app = await appFor(state);
+  try {
+    const list = await app.inject({ method: "GET", url: "/api/templates" });
+    assert.equal(list.statusCode, 200);
+    assert.equal(list.body.includes(SECRET), false, "no value in the list");
+    for (const template of list.json().templates) assert.deepEqual(template.env, { PROVIDER_KEY: "" });
+
+    const one = await app.inject({ method: "GET", url: `/api/templates/${TASK_TEMPLATE}` });
+    assert.equal(one.statusCode, 200);
+    assert.equal(one.body.includes(SECRET), false, "no value in the detail");
+    assert.deepEqual(one.json().env, { PROVIDER_KEY: "" });
+
+    // What is stored is untouched: using the template still seals the real value.
+    assert.deepEqual(state.templates[0]!.env, { PROVIDER_KEY: SECRET });
+  } finally {
+    await app.close();
+    restore();
+  }
+});
+
 test("GET /api/templates?agentKind= narrows the list to one kind and refuses a kind that does not exist", async () => {
   const { state, restore } = world();
   const app = await appFor(state);

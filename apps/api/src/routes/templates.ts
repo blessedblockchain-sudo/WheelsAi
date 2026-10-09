@@ -17,6 +17,17 @@ import {
 } from "../services/templates.js";
 
 /**
+ * A template as anyone may read it. The catalog needs no sign-in, so a
+ * variable's value never leaves the server: the names stay, so a reader can
+ * see which secrets a template expects, and every value is blank.
+ */
+export function publicTemplate<T extends { env?: unknown }>(template: T): T {
+  const variables = template.env;
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) return template;
+  return { ...template, env: Object.fromEntries(Object.keys(variables).map((name) => [name, ""])) };
+}
+
+/**
  * Platform-admin gate for the GLOBAL template catalog (W2 security sweep).
  *
  * AgentTemplate rows are platform-wide, and `/:templateId/use` clones a
@@ -113,7 +124,7 @@ export function createTemplateRoutes(deps: TemplateRouteDeps = {}): FastifyPlugi
         limit: limit ? parseInt(limit) : undefined,
         offset: offset ? parseInt(offset) : undefined,
       });
-      return reply.send(result);
+      return reply.send({ ...result, templates: result.templates.map(publicTemplate) });
     } catch (error: any) {
       return reply.status(400).send({ error: error.message });
     }
@@ -143,7 +154,7 @@ export function createTemplateRoutes(deps: TemplateRouteDeps = {}): FastifyPlugi
   app.get<{ Params: { idOrSlug: string } }>("/:idOrSlug", async (request, reply) => {
     try {
       const template = await getTemplate(request.params.idOrSlug);
-      return reply.send(template);
+      return reply.send(publicTemplate(template));
     } catch (error: any) {
       return reply.status(404).send({ error: error.message });
     }

@@ -7,7 +7,9 @@ import { LayoutTemplate, Search } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AgentKindBadge } from "@/components/dashboard/agent-kind-badge";
 import { templateApi, type AgentTemplate } from "@/lib/api";
+import { KIND_FILTERS, filterTemplatesByKind, isKindFilter, type KindFilter } from "@/lib/agent-list";
 
 const FRAMEWORK_LABELS: Record<string, string> = {
   mastra: "Mastra",
@@ -36,6 +38,7 @@ export function TemplateGallery() {
   const [error, setError] = useState<unknown>(null);
   const [query, setQuery] = useState("");
   const [framework, setFramework] = useState("");
+  const [kind, setKind] = useState<KindFilter>("all");
 
   const load = useCallback(async () => {
     setError(null);
@@ -60,7 +63,7 @@ export function TemplateGallery() {
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (templates ?? []).filter(
+    return filterTemplatesByKind(templates ?? [], kind).filter(
       (t) =>
         (!framework || t.framework === framework) &&
         (!q ||
@@ -68,7 +71,7 @@ export function TemplateGallery() {
           t.description.toLowerCase().includes(q) ||
           t.tags.some((tag) => tag.toLowerCase().includes(q))),
     );
-  }, [templates, query, framework]);
+  }, [templates, query, framework, kind]);
 
   if (error) {
     return <ErrorState title="Could not load templates" error={error} onRetry={() => void load()} />;
@@ -116,6 +119,23 @@ export function TemplateGallery() {
             />
           </div>
         </div>
+        <div className="sm:w-48">
+          <label htmlFor="template-kind" className="text-sm font-medium text-foreground">
+            Kind
+          </label>
+          <select
+            id="template-kind"
+            value={kind}
+            onChange={(e) => setKind(isKindFilter(e.target.value) ? e.target.value : "all")}
+            className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {KIND_FILTERS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.value === "all" ? "All kinds" : f.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="sm:w-56">
           <label htmlFor="template-framework" className="text-sm font-medium text-foreground">
             Framework
@@ -149,6 +169,7 @@ export function TemplateGallery() {
           {visible.map((t) => (
             <li key={t.id} className="flex flex-col rounded-lg border border-border bg-card p-5">
               <div className="flex flex-wrap items-center gap-2 text-xs">
+                <AgentKindBadge kind={t.agentKind} />
                 <span className="rounded-full bg-primary/15 px-2 py-0.5 font-semibold text-primary">{label(t.framework)}</span>
                 <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">{label(t.category)}</span>
                 <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-muted-foreground">{label(t.difficulty)}</span>

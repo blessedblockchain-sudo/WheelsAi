@@ -1,17 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Bot, Play, Square, Code, Zap, MoreVertical } from "lucide-react";
+import { Bot, ChevronDown, FilterX } from "lucide-react";
 import { toast } from "sonner";
 
+import { AgentKindBadge } from "@/components/dashboard/agent-kind-badge";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { agentsApi, type Agent, getErrorMessage } from "@/lib/api";
+import { agentsApi, templateApi, type Agent, type AgentTemplate, getErrorMessage } from "@/lib/api";
+import {
+  KIND_CHOICES,
+  KIND_FILTERS,
+  NO_AGENT_FILTERS,
+  countByKind,
+  filterAgents,
+  frameworkCounts,
+  frameworkLabel,
+  hasActiveFilters,
+  newAgentHref,
+  quickStartTemplates,
+  showsFrameworkChip,
+  type AgentFilters,
+  type KindFilter,
+} from "@/lib/agent-list";
 import { NEW_AGENT_BUTTON } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
@@ -71,6 +87,10 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
+  const [filters, setFilters] = useState<AgentFilters>(NO_AGENT_FILTERS);
+  // The starter templates are a convenience: when they cannot be loaded the
+  // three ways to start are still shown.
+  const [templates, setTemplates] = useState<AgentTemplate[] | null>(null);
 
   const loadAgents = useCallback(async () => {
     setIsLoading(true);
@@ -90,6 +110,25 @@ export default function AgentsPage() {
     loadAgents();
   }, [loadAgents]);
 
+  useEffect(() => {
+    let cancelled = false;
+    templateApi
+      .list({ limit: 12 })
+      .then((res) => {
+        if (!cancelled) setTemplates(quickStartTemplates(res.templates ?? []));
+      })
+      .catch(() => {
+        if (!cancelled) setTemplates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const kindCounts = useMemo(() => countByKind(agents), [agents]);
+  const frameworks = useMemo(() => frameworkCounts(agents), [agents]);
+  const visible = useMemo(() => filterAgents(agents, filters), [agents, filters]);
+
   return (
     <div className="flex flex-col">
       <Header
@@ -99,34 +138,59 @@ export default function AgentsPage() {
       />
 
       <div className="p-8">
-        {/* Framework overview: counts come from the list, so it is hidden
-            (not shown as zeros) when the list failed to load. */}
-        {loadError === null && (
-          <div className="mb-8 grid gap-4 md:grid-cols-4">
-            {[
-              { name: "Mastra", count: agents.filter((a) => a.framework === "mastra").length, color: "purple" },
-              { name: "LangChain", count: agents.filter((a) => a.framework === "langchain").length, color: "green" },
-              { name: "AutoGen", count: agents.filter((a) => a.framework === "autogen").length, color: "blue" },
-              { name: "Custom", count: agents.filter((a) => a.framework === "custom").length, color: "gray" },
-            ].map((fw) => (
-              <Card key={fw.name}>
-                <CardContent className="py-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm text-muted-foreground">{fw.name} Agents</p>
-                      {isLoading ? (
-                        <Skeleton className="my-1 h-6 w-10" />
-                      ) : (
-                        <p className="text-2xl font-bold">{fw.count}</p>
-                      )}
-                    </div>
-                    <div className={cn("flex h-10 w-10 items-center justify-center rounded-lg", `bg-${fw.color}-100`)}>
-                      <Bot className={cn("h-5 w-5", `text-${fw.color}-600`)} />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+        {/* Filters: by how the agent is used, and by framework. Hidden while
+            loading and when the list failed, so they never show zeros. */}
+        {loadError === null && !isLoading && agents.length > 0 && (
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div role="group" aria-label="Filter by kind" className="flex flex-wrap gap-2">
+              {KIND_FILTERS.map((f) => {
+                const pressed = filters.kind === f.value;
+                return (
+                  <button
+                    key={f.value}
+                    type="button"
+                    aria-pressed={pressed}
+                    onClick={() => setFilters((cur) => ({ ...cur, kind: f.value as KindFilter }))}
+                    className={cn(
+                      "inline-flex h-9 items-center gap-2 rounded-full border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      pressed
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border bg-card text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {f.label}
+                    <span className="text-xs tabular-nums opacity-80">{kindCounts[f.value]}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {frameworks.length > 1 && (
+              <div className="sm:w-56">
+                <label htmlFor="agent-framework-filter" className="text-sm font-medium text-foreground">
+                  Framework
+                </label>
+                <div className="relative mt-1.5">
+                  <select
+                    id="agent-framework-filter"
+                    value={filters.framework}
+                    onChange={(e) => setFilters((cur) => ({ ...cur, framework: e.target.value }))}
+                    className="h-10 w-full appearance-none rounded-md border border-input bg-background px-3 pr-8 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="">All frameworks ({agents.length})</option>
+                    {frameworks.map((f) => (
+                      <option key={f.framework} value={f.framework}>
+                        {frameworkLabel(f.framework)} ({f.count})
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -152,9 +216,17 @@ export default function AgentsPage() {
             actionLabel={NEW_AGENT_BUTTON.label}
             actionHref={NEW_AGENT_BUTTON.href}
           />
+        ) : visible.length === 0 ? (
+          <EmptyState
+            icon={FilterX}
+            title="No agents match"
+            description="None of your agents fit these filters."
+            actionLabel="Clear filters"
+            onAction={() => setFilters(NO_AGENT_FILTERS)}
+          />
         ) : (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {agents.map((agent) => (
+            {visible.map((agent) => (
               <Link key={agent.id} href={`/dashboard/agents/${agent.id}`}>
                 <Card className="h-full transition-shadow hover:shadow-md">
                   <CardHeader>
@@ -165,10 +237,13 @@ export default function AgentsPage() {
                         </div>
                         <div>
                           <CardTitle className="text-base">{agent.name}</CardTitle>
-                          <div className="mt-1 flex items-center gap-2">
-                            <span className={cn("rounded px-2 py-0.5 text-xs font-medium", frameworkColors[agent.framework])}>
-                              {agent.framework}
-                            </span>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <AgentKindBadge kind={agent.agentKind} />
+                            {showsFrameworkChip(agent) && (
+                              <span className={cn("rounded px-2 py-0.5 text-xs font-medium", frameworkColors[agent.framework])}>
+                                {frameworkLabel(agent.framework)}
+                              </span>
+                            )}
                             <span className="text-xs text-muted-foreground">v{agent.version}</span>
                           </div>
                         </div>
@@ -219,57 +294,68 @@ export default function AgentsPage() {
           </div>
         )}
 
-        {/* Quick start templates */}
+        {/* Ways to start: the three kinds, then real templates */}
         <Card className="mt-8">
           <CardHeader>
-            <CardTitle className="text-base">Quick Start Templates</CardTitle>
-            <CardDescription>
-              Start with a pre-built agent template
-            </CardDescription>
+            <CardTitle className="text-base">Start something new</CardTitle>
+            <CardDescription>Pick how people will use it, or start from a template.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <div className="grid gap-4 md:grid-cols-3">
-              {[
-                {
-                  name: "Customer Support",
-                  description: "Handle customer inquiries with RAG-powered responses",
-                  framework: "langchain",
-                  icon: "💬",
-                },
-                {
-                  name: "Code Assistant",
-                  description: "Generate, review, and explain code",
-                  framework: "mastra",
-                  icon: "💻",
-                },
-                {
-                  name: "Research Agent",
-                  description: "Search the web and synthesize information",
-                  framework: "autogen",
-                  icon: "🔍",
-                },
-              ].map((template) => (
-                <Link
-                  key={template.name}
-                  href={`/dashboard/agents/new?template=${encodeURIComponent(template.name.toLowerCase().replace(" ", "-"))}`}
-                >
-                  <div className="rounded-lg border p-4 transition-colors hover:border-primary/40 hover:bg-primary/10">
-                    <div className="flex items-center gap-3">
-                      <span className="text-2xl">{template.icon}</span>
-                      <div>
-                        <p className="font-medium">{template.name}</p>
-                        <p className="text-sm text-muted-foreground">{template.description}</p>
-                      </div>
+          <CardContent className="space-y-6">
+            <ul className="grid gap-4 md:grid-cols-3">
+              {KIND_CHOICES.map((choice) => (
+                <li key={choice.kind}>
+                  <Link
+                    href={newAgentHref({ kind: choice.kind })}
+                    className="flex h-full flex-col gap-2 rounded-lg border p-4 transition-colors hover:border-primary/40 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium">{choice.title}</p>
+                      <AgentKindBadge kind={choice.kind} />
                     </div>
-                    <div className="mt-3">
-                      <span className={cn("rounded px-2 py-0.5 text-xs font-medium", frameworkColors[template.framework])}>
-                        {template.framework}
-                      </span>
-                    </div>
-                  </div>
-                </Link>
+                    <p className="text-sm text-muted-foreground">{choice.description}</p>
+                  </Link>
+                </li>
               ))}
-            </div>
+            </ul>
+
+            {templates === null ? (
+              <div className="grid gap-4 md:grid-cols-3" aria-busy="true">
+                <span className="sr-only">Loading templates</span>
+                {[1, 2, 3].map((i) => (
+                  <Skeleton key={i} className="h-24 w-full" />
+                ))}
+              </div>
+            ) : (
+              templates.length > 0 && (
+                <div>
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h2 className="text-sm font-medium">Start from a template</h2>
+                    <Link
+                      href="/dashboard/templates"
+                      className="text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      Browse all templates
+                    </Link>
+                  </div>
+                  <ul className="grid gap-4 md:grid-cols-3">
+                    {templates.map((template) => (
+                      <li key={template.id}>
+                        <Link
+                          href={newAgentHref({ template: template.id })}
+                          className="flex h-full flex-col gap-2 rounded-lg border p-4 transition-colors hover:border-primary/40 hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="font-medium">{template.title}</p>
+                            <AgentKindBadge kind={template.agentKind} />
+                          </div>
+                          <p className="line-clamp-2 text-sm text-muted-foreground">{template.description}</p>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            )}
           </CardContent>
         </Card>
       </div>

@@ -9,8 +9,8 @@ import {
   Users,
   Sparkles,
   Rocket,
-  X,
   Loader2,
+  ChevronRight,
   LayoutTemplate,
   ChevronDown,
   Bot,
@@ -20,7 +20,13 @@ import {
   Palette,
   HelpCircle,
 } from "lucide-react";
-import { templateApi, type AgentTemplate, getErrorMessage } from "@/lib/api";
+import { AgentKindBadge } from "@/components/dashboard/agent-kind-badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { templateApi, type AgentTemplate, getErrorMessage, getValidationError } from "@/lib/api";
+import { KIND_FILTERS, type KindFilter } from "@/lib/agent-list";
 import { NEW_AGENT_BUTTON } from "@/lib/nav";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -48,6 +54,11 @@ const FRAMEWORKS = [
   { value: "custom", label: "Custom" },
   { value: "elizaos", label: "ElizaOS" },
 ] as const;
+
+const KINDS = KIND_FILTERS.map((f) => ({
+  value: f.value === "all" ? "" : f.value,
+  label: f.value === "all" ? "All kinds" : f.label,
+}));
 
 const DIFFICULTIES = [
   { value: "", label: "All Levels" },
@@ -97,13 +108,6 @@ function categoryLabel(cat: string): string {
     .split("-")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
-}
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -164,14 +168,18 @@ function SelectDropdown({
   value,
   onChange,
   options,
+  label,
 }: {
   value: string;
   onChange: (v: string) => void;
+  /** The select's accessible name. */
+  label: string;
   options: ReadonlyArray<{ value: string; label: string }>;
 }) {
   return (
     <div className="relative">
       <select
+        aria-label={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="appearance-none rounded-lg border border-border bg-card px-3 py-2 pr-8 text-sm text-gray-200 outline-none transition-colors focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
@@ -238,6 +246,7 @@ function TemplateCard({
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
+        <AgentKindBadge kind={template.agentKind} />
         <CategoryBadge category={template.category} />
         <FrameworkBadge framework={template.framework} />
         <DifficultyBadge difficulty={template.difficulty} />
@@ -281,126 +290,129 @@ function UseTemplateModal({
 }) {
   const router = useRouter();
   const [name, setName] = useState(template.title);
-  const [agentSlug, setAgentSlug] = useState(slugify(template.title));
-  const [description, setDescription] = useState(template.description);
+  const [agentSlug, setAgentSlug] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    setAgentSlug(slugify(name));
-  }, [name]);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !agentSlug.trim()) return;
+    if (submitting) return;
+    if (name.trim().length < 3) {
+      setFieldErrors({ name: "Give your agent a name of at least 3 characters." });
+      return;
+    }
 
     setSubmitting(true);
     setError("");
+    setFieldErrors({});
 
     try {
+      // Only a name is needed. The address is optional: left out, it is made
+      // from the name and made unique, so one template can be used twice.
       const created = await templateApi.use(template.id, {
         name: name.trim(),
-        slug: agentSlug.trim(),
-        description: description.trim() || undefined,
+        ...(agentSlug.trim() ? { slug: agentSlug.trim() } : {}),
       });
       // Land the user on their new agent instead of silently closing the
       // modal over the gallery (INT-B2).
       router.push(`/dashboard/agents/${created.agent.id}`);
     } catch (err) {
-      setError(getErrorMessage(err, "Failed to create agent from template"));
+      const invalid = getValidationError(err);
+      if (invalid && Object.keys(invalid.fields).length > 0) {
+        setFieldErrors(invalid.fields);
+        if (invalid.fields.slug) setAdvancedOpen(true);
+      } else {
+        setError(invalid?.message ?? getErrorMessage(err, "Failed to create agent from template"));
+      }
       setSubmitting(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-
-      <div className="relative z-10 w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-2xl">
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-gray-100">Create Agent from Template</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Using <span className="text-primary">{template.title}</span>
-            </p>
+    <Dialog open onOpenChange={(open) => !open && !submitting && onClose()}>
+      <DialogContent
+        className="mx-4 max-w-lg"
+        aria-labelledby="use-template-title"
+        aria-describedby="use-template-description"
+        hideClose={submitting}
+      >
+        <DialogHeader>
+          <DialogTitle id="use-template-title">Create agent from template</DialogTitle>
+          <DialogDescription id="use-template-description">
+            Using <span className="font-medium text-primary">{template.title}</span>
+          </DialogDescription>
+          <div className="pt-1">
+            <AgentKindBadge kind={template.agentKind} />
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-gray-300"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        </div>
+        </DialogHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-300">
-              Agent Name <span className="text-red-400">*</span>
-            </label>
-            <input
+          <div className="space-y-1.5">
+            <Label htmlFor="use-template-name">Name</Label>
+            <Input
+              id="use-template-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-gray-200 outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-              placeholder="My Agent"
-              required
+              placeholder="My agent"
+              maxLength={100}
+              error={fieldErrors.name}
             />
           </div>
 
           <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-300">
-              Slug <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="text"
-              value={agentSlug}
-              onChange={(e) => setAgentSlug(e.target.value)}
-              className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm font-mono text-gray-200 outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-              placeholder="my-agent"
-              required
-            />
-            <p className="mt-1 text-xs text-muted-foreground">URL-safe identifier for your agent</p>
-          </div>
-
-          <div>
-            <label className="mb-1.5 block text-sm font-medium text-gray-300">
-              Description
-            </label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:ring-1 focus:ring-primary/30"
-              placeholder="Describe what your agent does..."
-            />
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((open) => !open)}
+              aria-expanded={advancedOpen}
+              aria-controls="use-template-advanced"
+              className="inline-flex items-center gap-1 rounded-sm text-sm font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronRight
+                className={`h-4 w-4 transition-transform ${advancedOpen ? "rotate-90" : ""}`}
+                aria-hidden="true"
+              />
+              Advanced
+            </button>
+            {advancedOpen && (
+              <div id="use-template-advanced" className="mt-3 space-y-1.5">
+                <Label htmlFor="use-template-slug">Address (optional)</Label>
+                <Input
+                  id="use-template-slug"
+                  type="text"
+                  value={agentSlug}
+                  onChange={(e) => setAgentSlug(e.target.value)}
+                  className="font-mono"
+                  placeholder="my-agent"
+                  error={fieldErrors.slug}
+                />
+                <p className="text-xs text-muted-foreground">
+                  The short name in your agent&apos;s web address. Left empty, it is made from the name.
+                </p>
+              </div>
+            )}
           </div>
 
           {error && (
-            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+            <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
               {error}
             </div>
           )}
 
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-lg px-4 py-2 text-sm font-medium text-gray-400 transition-colors hover:bg-muted hover:text-gray-200"
-            >
+          <DialogFooter className="gap-2 pt-2 sm:space-x-0">
+            <Button type="button" variant="ghost" onClick={onClose} disabled={submitting}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting || !name.trim() || !agentSlug.trim()}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-all hover:shadow-[0_0_20px_rgba(0,255,0,0.4)] disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-              Create Agent
-            </button>
-          </div>
+            </Button>
+            <Button type="submit" disabled={submitting || !name.trim()}>
+              {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+              Create agent
+            </Button>
+          </DialogFooter>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -415,6 +427,7 @@ export default function TemplatesPage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("");
   const [framework, setFramework] = useState("");
+  const [kind, setKind] = useState<KindFilter>("all");
   const [difficulty, setDifficulty] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null);
 
@@ -422,7 +435,7 @@ export default function TemplatesPage() {
     loadTemplates();
     // The search text is applied on submit, not on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, framework, difficulty]);
+  }, [category, framework, kind, difficulty]);
 
   async function loadTemplates() {
     try {
@@ -431,6 +444,7 @@ export default function TemplatesPage() {
       const res = await templateApi.list({
         category: category || undefined,
         framework: framework || undefined,
+        agentKind: kind === "all" ? undefined : kind,
         difficulty: difficulty || undefined,
         search: search || undefined,
         limit: 50,
@@ -479,6 +493,7 @@ export default function TemplatesPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <input
               type="text"
+              aria-label="Search templates"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search templates..."
@@ -490,9 +505,10 @@ export default function TemplatesPage() {
             <Filter className="h-4 w-4 text-muted-foreground" />
           </div>
 
-          <SelectDropdown value={category} onChange={setCategory} options={CATEGORIES} />
-          <SelectDropdown value={framework} onChange={setFramework} options={FRAMEWORKS} />
-          <SelectDropdown value={difficulty} onChange={setDifficulty} options={DIFFICULTIES} />
+          <SelectDropdown label="Filter by kind" value={kind === "all" ? "" : kind} onChange={(v) => setKind((v || "all") as KindFilter)} options={KINDS} />
+          <SelectDropdown label="Filter by category" value={category} onChange={setCategory} options={CATEGORIES} />
+          <SelectDropdown label="Filter by framework" value={framework} onChange={setFramework} options={FRAMEWORKS} />
+          <SelectDropdown label="Filter by level" value={difficulty} onChange={setDifficulty} options={DIFFICULTIES} />
 
           <button
             type="submit"
@@ -580,7 +596,8 @@ export default function TemplatesPage() {
               </section>
             )}
 
-            {/* All Templates */}
+            {/* All Templates: left out when every template shown is a featured one. */}
+            {(featured.length === 0 || regular.length > 0) && (
             <section className="mt-8">
               {featured.length > 0 && (
                 <div className="mb-4 flex items-center gap-2">
@@ -601,6 +618,7 @@ export default function TemplatesPage() {
                 ))}
               </div>
             </section>
+            )}
           </>
         )}
       </div>

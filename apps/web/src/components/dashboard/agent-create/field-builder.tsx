@@ -57,7 +57,11 @@ const iconButton =
 export function FieldBuilder({ value, onChange, issues = {}, formIssue, showAllProblems, disabled }: FieldBuilderProps) {
   const uid = useId();
   const counter = useRef(0);
-  /** Questions whose label has been worked on: their problems are shown. */
+  /**
+   * The inputs a person has worked on and left, as "<question id>:<part>".
+   * A problem is shown under an input only after that, so choosing "Choice"
+   * does not flag the options box before anyone has typed in it.
+   */
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [advancedOpen, setAdvancedOpen] = useState<Set<string>>(new Set());
   const [previewValues, setPreviewValues] = useState<FormValues>({});
@@ -66,7 +70,8 @@ export function FieldBuilder({ value, onChange, issues = {}, formIssue, showAllP
   const schema = useMemo(() => taskInputSchema(check.fields), [check.fields]);
   const full = !canAddField(value);
 
-  const touch = (id: string) => setTouched((seen) => (seen.has(id) ? seen : new Set(seen).add(id)));
+  const touch = (id: string, part: "label" | "options") =>
+    setTouched((seen) => (seen.has(`${id}:${part}`) ? seen : new Set(seen).add(`${id}:${part}`)));
   const toggleAdvanced = (id: string) =>
     setAdvancedOpen((open) => {
       const next = new Set(open);
@@ -77,7 +82,15 @@ export function FieldBuilder({ value, onChange, issues = {}, formIssue, showAllP
 
   function problemsOf(draft: FieldDraft): FieldIssues {
     const own = check.issues[draft.id] ?? {};
-    const shown: FieldIssues = showAllProblems || touched.has(draft.id) ? { ...own } : {};
+    const worked = (part: "label" | "options") => showAllProblems || touched.has(`${draft.id}:${part}`);
+    const shown: FieldIssues = {};
+    if (own.label && worked("label")) shown.label = own.label;
+    if (own.options && worked("options")) shown.options = own.options;
+    if (worked("label") || worked("options")) {
+      if (own.type) shown.type = own.type;
+      if (own.help) shown.help = own.help;
+      if (own.key) shown.key = own.key;
+    }
     // Two questions with one name in code is said at once: either could be the one meant.
     if (own.key && !shown.key) shown.key = own.key;
     return { ...shown, ...(issues[draft.id] ?? {}) };
@@ -141,7 +154,7 @@ export function FieldBuilder({ value, onChange, issues = {}, formIssue, showAllP
                       error={problems.label}
                       onChange={(e) => onChange(editField(value, draft.id, { label: e.target.value }))}
                       onBlur={() => {
-                        touch(draft.id);
+                        touch(draft.id, "label");
                         // The name in code is made from the first label, then kept.
                         if (!draft.key.trim() && draft.label.trim()) onChange(settleKeys(value, draft.id));
                       }}
@@ -175,7 +188,7 @@ export function FieldBuilder({ value, onChange, issues = {}, formIssue, showAllP
                       disabled={disabled}
                       error={problems.options}
                       onChange={(e) => onChange(editField(value, draft.id, { options: e.target.value }))}
-                      onBlur={() => touch(draft.id)}
+                      onBlur={() => touch(draft.id, "options")}
                     />
                   </div>
                 )}

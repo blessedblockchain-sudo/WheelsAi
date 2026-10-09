@@ -19,6 +19,7 @@ import {
   type AgentEntrypoint,
   type AgentUsagePeriod,
 } from "@/lib/api";
+import { usageSourceLabel } from "@/lib/agent-page";
 import type { AgentTabProps } from "./types";
 
 const ENTRYPOINTS: Array<{ id: AgentEntrypoint; label: string; detail: string }> = [
@@ -111,8 +112,6 @@ const PERIODS: Array<{ id: AgentUsagePeriod; label: string }> = [
   { id: "7d", label: "7 days" },
   { id: "30d", label: "30 days" },
 ];
-
-const SOURCE_LABELS: Record<string, string> = { api: "API (/v1)", playground: "Playground", widget: "Widget" };
 
 // The one way a measured latency is written (packages/shared/src/latency.ts).
 const ms = formatLatencyMs;
@@ -224,7 +223,7 @@ export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
                 <tbody>
                   {Object.entries(usage?.bySource ?? {}).map(([source, row]) => (
                     <tr key={source} className="border-b last:border-0">
-                      <td className="py-2 pr-4 text-foreground">{SOURCE_LABELS[source] ?? source}</td>
+                      <td className="py-2 pr-4 text-foreground">{usageSourceLabel(source)}</td>
                       <td className="py-2 pr-4 font-mono tabular-nums">{row.requests.toLocaleString("en-US")}</td>
                       <td className="py-2 pr-4 font-mono tabular-nums">{row.errors.toLocaleString("en-US")}</td>
                       <td className="py-2 pr-4 font-mono tabular-nums">{row.toolCalls.toLocaleString("en-US")}</td>

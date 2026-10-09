@@ -1,9 +1,14 @@
 export { OverviewTab } from "./overview-tab";
-export type { OverviewTabProps, DeployConfig } from "./overview-tab";
+export type { OverviewTabProps } from "./overview-tab";
 export { ApiTab } from "./api-tab";
-export { DeploymentsTab } from "./deployments-tab";
+export { GpuTab } from "./gpu-tab";
+export type { DeployConfig } from "./gpu-tab";
 export { VersionsTab } from "./versions-tab";
 export { CodeTab } from "./code-tab";
 export { LogsTab } from "./logs-tab";
 export { SettingsTab } from "./settings-tab";
+export { RunTab } from "./run-tab";
+export { RunsTab } from "./runs-tab";
+export { SellTab } from "./sell-tab";
+export { ShareTab } from "./share-tab";
 export type { AgentTabProps } from "./types";

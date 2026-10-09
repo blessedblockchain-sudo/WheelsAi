@@ -29,6 +29,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { agentsApi, marketplaceApi, type Agent, type CreateListingInput, getErrorMessage } from "@/lib/api";
 import { LIST_AGENT_BUTTON, NEW_AGENT_BUTTON } from "@/lib/nav";
+import { LIST_AGENT_PARAM, agentToListFirst } from "@/lib/agent-page";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
@@ -125,6 +126,8 @@ function PublishWizardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams.get("edit");
+  // "List this agent" on an agent's Sell tab: the wizard starts with that agent chosen.
+  const agentParam = searchParams.get(LIST_AGENT_PARAM);
 
   const [currentStep, setCurrentStep] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -164,6 +167,12 @@ function PublishWizardContent() {
       setIsLoadingAgents(false);
     }
   }
+
+  // `?agent=`: once the person's agents are known, and only while none is chosen yet.
+  useEffect(() => {
+    const first = agentToListFirst(agentParam, agents, Boolean(editId));
+    if (first) setFormData((prev) => (prev.agentId ? prev : { ...prev, agentId: first }));
+  }, [agentParam, agents, editId]);
 
   // Load existing listing if editing
   useEffect(() => {

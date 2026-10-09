@@ -22,6 +22,7 @@ import {
   type WidgetKey,
   type WidgetKeyList,
 } from "@/lib/api";
+import { shareTabHref } from "@/lib/agent-share";
 import { LIVE_CHAT_CHANNELS, chatChannelLabel } from "@/lib/chat-channels";
 import { usageLabel } from "@/lib/web-channel";
 import { EmbedSnippet } from "./embed-snippet";
@@ -233,12 +234,18 @@ export function WebChatKeys() {
           />
         ) : (
           <ul className="space-y-4">
-            {list.keys.map((key) => (
+            {list.keys.map((key) => {
+              // The one key that serves an agent's public page: it is that
+              // page's switch, not something to paste into a site.
+              const isPageKey = key.pageOfAgentId !== null;
+              return (
               <li key={key.id} className="space-y-4 rounded-lg border bg-card p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-foreground">{key.name}</span>
+                      <span className="font-medium text-foreground">
+                        {isPageKey ? `Public page of ${key.agentName}` : key.name}
+                      </span>
                       <span
                         className={`rounded px-2 py-0.5 text-xs ${
                           key.enabled ? "bg-success/10 text-success" : "bg-muted text-muted-foreground"
@@ -261,11 +268,26 @@ export function WebChatKeys() {
                       checked={key.enabled}
                       onCheckedChange={() => void toggle(key)}
                       aria-labelledby={`enabled-${key.id}`}
-                      aria-label={`${key.enabled ? "Pause" : "Resume"} ${key.name}`}
+                      aria-label={`${key.enabled ? "Pause" : "Resume"} ${
+                        isPageKey ? `the public page of ${key.agentName}` : key.name
+                      }`}
                     />
                   </div>
                 </div>
 
+                {isPageKey && key.pageOfAgentId && (
+                  <p className="text-sm text-muted-foreground">
+                    Anyone with the agent's public link uses it through this key, so pausing it here pauses the link.{" "}
+                    <Link
+                      href={shareTabHref(key.pageOfAgentId)}
+                      className="text-primary underline-offset-4 hover:underline"
+                    >
+                      Open its Share tab
+                    </Link>
+                  </p>
+                )}
+
+                {!isPageKey && (
                 <div>
                   <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Allowed sites</h3>
                   {key.allowedOrigins.length === 0 ? (
@@ -282,12 +304,17 @@ export function WebChatKeys() {
                     </ul>
                   )}
                 </div>
+                )}
 
+                {!isPageKey && (
                 <div>
                   <h3 className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Snippet</h3>
                   <EmbedSnippet snippet={key.snippet} unavailableReason={key.snippetUnavailableReason} />
                 </div>
+                )}
 
+                {/* A page's key is its page's switch: it is not previewed, edited, rotated or revoked here. */}
+                {!isPageKey && (
                 <div className="flex flex-wrap gap-2">
                   {previewing === key.id ? (
                     <Button variant="outline" size="sm" onClick={stopPreview}>
@@ -320,6 +347,7 @@ export function WebChatKeys() {
                     Revoke
                   </Button>
                 </div>
+                )}
                 {previewing === key.id && (
                   <p className="text-xs text-muted-foreground" role="status">
                     The widget is open in the corner of this page. Messages you send in the preview are real: they
@@ -327,7 +355,8 @@ export function WebChatKeys() {
                   </p>
                 )}
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </section>

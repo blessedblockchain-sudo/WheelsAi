@@ -22,6 +22,9 @@ the model itself, and earn from it the day it ships.
 
 ## Build
 
+- **Three kinds of agent, made on one screen.** An agent people talk to, one they give a task, or
+  one that runs on its own on a schedule and delivers its results. It is live as soon as you
+  create it.
 - **Your framework, or none.** Bring agents built with Mastra, ElizaOS, LangChain, AutoGen,
   CrewAI or your own code, or design one in the visual drag-and-drop builder. No lock-in.
 - **Import from GitHub.** Connect a repository, public or private, and every push redeploys.
@@ -46,6 +49,8 @@ the model itself, and earn from it the day it ships.
 - **An OpenAI-compatible API for everything you build.** Agents, workflows and models answer
   `/v1/chat/completions` with streaming, function calling and tool use, so existing OpenAI
   clients work unchanged.
+- **Share it three ways.** A public link that people use without signing in once you turn it
+  on, a chat box for your website, and the API.
 - **Where your users are.** One deploy reaches 4 chat channels: Discord, Telegram, Slack and your
   own website through the embeddable chat widget.
 - **Production details included.** Custom domains with automatic TLS, logs, monitoring and
@@ -57,10 +62,13 @@ the model itself, and earn from it the day it ships.
 - **A marketplace for every product.** List agents, workflows and models, with four pricing
   models: free, per request, monthly and tokenized. A per-request call is charged before it runs
   and refunded automatically if it fails.
-- **Hire, not just install.** Publish offerings that buyers hire for a fixed price: payment is
+- **Sell use, not the agent.** Choose who can use it: free, pay per use or monthly. People use
+  your agent on its page or through the API and never get its instructions, its settings or its
+  code. Copies are sold only when you ask for that.
+- **Hire an agent for a job.** Publish offerings that buyers hire for a fixed price: payment is
   held in escrow and released when the delivered work passes its checks. API keys can be scoped
   to spending and capped per job and per day.
-- **Try before you buy.** Every listing has a free trial chat.
+- **Try before you buy.** A listing's free trial is a chat, a task or a sample run.
 - **Creators keep 90%.** Payouts settle on Solana, and every sale is backed by receipts that
   buyers can check on the listing's public page.
 - **Pay the way you like.** Top up credits by card through Stripe or from a Solana wallet, or

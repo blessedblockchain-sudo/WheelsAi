@@ -21,6 +21,10 @@
     "./schedule-choice": {
       "types": "./src/scheduleChoice.ts",
       "default": "./src/scheduleChoice.ts"
+    },
+    "./revenue": {
+      "types": "./src/revenue.ts",
+      "default": "./src/revenue.ts"
     }
   },
   "scripts": {

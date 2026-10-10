@@ -1,14 +1,14 @@
 import { createHmac, randomUUID } from "crypto";
 
-import { Connection, type SignatureStatus } from "@solana/web3.js";
+import { type Connection, type SignatureStatus } from "@solana/web3.js";
 import { prisma, type X402Payment } from "@wheelsai/db";
 
 import { env } from "../config/env.js";
+import { getSolanaConnection } from "../lib/solana.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("x402-settlement-worker");
 
-let connectionInstance: Connection | null = null;
 let isTickRunning = false;
 let lastMetricsPruneAt: number | null = null;
 const lastCriticalAlertNotificationAt = new Map<string, number>();
@@ -506,15 +506,7 @@ async function markFailed(
 }
 
 function getConnection(): Connection {
-  if (!connectionInstance) {
-    const endpoint =
-      env.SOLANA_NETWORK === "mainnet-beta"
-        ? env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com"
-        : "https://api.devnet.solana.com";
-
-    connectionInstance = new Connection(endpoint, "confirmed");
-  }
-  return connectionInstance;
+  return getSolanaConnection();
 }
 
 function shouldRunMetricsPrune(): boolean {

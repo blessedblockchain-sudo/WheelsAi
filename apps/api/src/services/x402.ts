@@ -8,7 +8,7 @@
 import { randomUUID } from "crypto";
 
 import {
-  Connection,
+  type Connection,
   PublicKey,
   Transaction,
   SystemProgram,
@@ -19,6 +19,8 @@ import bs58 from "bs58";
 
 import { createLogger } from "../utils/logger.js";
 import { env } from "../config/env.js";
+import { getSolanaConnection } from "../lib/solana.js";
+import { NOS_MINT, USDC_MINT } from "../lib/solanaAssets.js";
 
 const logger = createLogger("x402");
 
@@ -26,18 +28,10 @@ const logger = createLogger("x402");
 // Constants
 // ============================================
 
-// USDC token addresses. Exported: the wallet top-up rail (B2/T5) uses
-// the same mints — one source so the rails can't drift.
-export const USDC_MINT = {
-  mainnet: new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"),
-  devnet: new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"),
-};
-
-// NOS token address
-const NOS_MINT = {
-  mainnet: new PublicKey("nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7"),
-  devnet: new PublicKey("nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7"),
-};
+// USDC and NOS token addresses live in lib/solanaAssets.ts. USDC_MINT is
+// re-exported here under the same name for the modules that import it
+// from this file.
+export { USDC_MINT };
 
 // WheelsAI treasury address
 const TREASURY_ADDRESS = new PublicKey(env.TREASURY_WALLET_ADDRESS);
@@ -488,18 +482,8 @@ async function verifyPaymentInstruction(
 // Solana Connection
 // ============================================
 
-let connectionInstance: Connection | null = null;
-
 function getConnection(): Connection {
-  if (!connectionInstance) {
-    const endpoint =
-      env.SOLANA_NETWORK === "mainnet-beta"
-        ? env.SOLANA_RPC_URL || "https://api.mainnet-beta.solana.com"
-        : "https://api.devnet.solana.com";
-
-    connectionInstance = new Connection(endpoint, "confirmed");
-  }
-  return connectionInstance;
+  return getSolanaConnection();
 }
 
 // ============================================

@@ -4,10 +4,10 @@ import { PublicKey } from "@solana/web3.js";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { getSolanaConnection } from "../lib/solana.js";
+import { USDC_MINT } from "../lib/solanaAssets.js";
 import { buildPayoutExecutorTickDeps } from "../services/buildPayoutExecutorTickDeps.js";
 import { derivePayoutKeypair } from "../services/payoutKeypair.js";
 import { runPayoutExecutorTick } from "../services/runPayoutExecutorTick.js";
-import { USDC_MINT } from "../services/x402.js";
 import { createLogger } from "../utils/logger.js";
 import { getQueueConnectionOpts } from "./connection.js";
 

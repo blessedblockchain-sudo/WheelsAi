@@ -15,12 +15,12 @@
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { getSolanaConnection } from "../lib/solana.js";
+import { USDC_MINT } from "../lib/solanaAssets.js";
 import { deriveTopupDepositKeypair } from "../services/topupKeypairs.js";
 import {
   makeCreditTopup,
   type TopupCreditDb,
 } from "../services/walletTopup.js";
-import { USDC_MINT } from "../services/x402.js";
 import {
   createWalletTopupRoutes,
   type WalletTopupRouteDeps,

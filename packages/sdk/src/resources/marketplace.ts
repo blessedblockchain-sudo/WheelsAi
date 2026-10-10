@@ -209,11 +209,70 @@ export type UpdateListingInput = Partial<Omit<CreateListingInput, "agentId">>;
 
 export type PayoutStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
 
+/**
+ * How a payout is taken: as `credits` on the platform, or sent to a Solana wallet in USDC
+ * (`crypto_usdc`) or SOL (`crypto_sol`). The last two are the wallet methods.
+ */
+export type PayoutMethod = "credits" | "crypto_usdc" | "crypto_sol";
+
+/** What a payout request may ask for right now. Every amount is in whole cents. */
+export interface PayoutLimits {
+  /** The smallest payout, for every method. */
+  minimumCents: number;
+  /** The most one payout to a wallet may be. Credits have no such limit. */
+  perPayoutCents: number;
+  /** The most that may be requested to a wallet in one UTC day. */
+  perDayCents: number;
+  /** What today's wallet payouts already count for against `perDayCents`. */
+  usedTodayCents: number;
+  /**
+   * The largest amount a request can take right now: as credits, and to a wallet. Either can be
+   * under `minimumCents`; then nothing can be requested that way yet.
+   */
+  largestNowCents: { credits: number; wallet: number };
+  /** The methods offered now. `crypto_sol` is left out while SOL payouts are not available. */
+  methods: PayoutMethod[];
+}
+
+/**
+ * The answer of `revenue`: your earnings across listings and jobs, and what a payout may ask for.
+ * Fields not named here are read as `unknown`.
+ */
+export interface PublisherRevenue {
+  totalRevenueCents: number;
+  /** Earnings you can take out now. */
+  pendingPayoutCents: number;
+  totalListings: number;
+  totalInstalls: number;
+  payoutLimits: PayoutLimits;
+  [field: string]: unknown;
+}
+
+export interface RequestPayoutInput {
+  payoutMethod: PayoutMethod;
+  /** The Solana wallet to pay. Needed for `crypto_usdc` and `crypto_sol`; left out for credits. */
+  payoutAddress?: string;
+  /**
+   * The amount to take out, in whole cents. Left out, the request takes the largest amount
+   * allowed right now for the method (`payoutLimits.largestNowCents`).
+   */
+  amountCents?: number;
+}
+
+/** The answer of `requestPayout`. */
+export interface RequestedPayout {
+  payout: CreatorPayout;
+  /** What stays in your earnings after this request. */
+  remainingCents: number;
+  /** A plain sentence about the request, written for the creator. */
+  message: string;
+}
+
 /** One payout request of a creator's earnings. */
 export interface CreatorPayout {
   id: string;
   amountCents: number;
-  payoutMethod: "credits" | "crypto_usdc" | "crypto_sol";
+  payoutMethod: PayoutMethod;
   payoutAddress: string | null;
   status: PayoutStatus;
   txSignature: string | null;
@@ -228,6 +287,12 @@ export interface CreatorPayout {
    * when it did not fail. A failed payout's amount is already back in the earnings.
    */
   failureReason: string | null;
+  /**
+   * A plain sentence about where the payout stands, written for the creator: that a pending
+   * payout is waiting to be sent, or why a failed one did not go through. Null when there is
+   * nothing to say.
+   */
+  message: string | null;
   /** True while `cancelPayout` can still take it back: requested and not yet being sent. */
   cancellable: boolean;
 }
@@ -375,8 +440,27 @@ export function marketplaceResource(client: WheelsAIClient) {
     resumeSubscription: (listingId: string) =>
       client.post<{ subscription: unknown }>(`/api/marketplace/subscriptions/${seg(listingId)}/resume`),
 
+    /**
+     * Your earnings, and in `payoutLimits` what a payout may ask for right now: the minimum, the
+     * limits for a wallet, what was used today, the largest amount and the methods offered.
+     */
     revenue: () =>
-      client.get<Record<string, unknown>>("/api/marketplace/revenue"),
+      client.get<PublisherRevenue>("/api/marketplace/revenue"),
+
+    /**
+     * Requests a payout of your earnings as credits, or to a Solana wallet in USDC or SOL. Leave
+     * `amountCents` out to take the largest amount allowed right now. Needs a session token of an
+     * owner or admin (an API key is refused). One payout can be open at a time.
+     *
+     * A refusal is a `WheelsAIError` whose `message` is a plain sentence to show as it comes, and
+     * whose `code` is one of: `payouts_unavailable` (503), `invalid_payload`,
+     * `payout_method_unavailable`, `payout_below_minimum`, `payout_above_balance`,
+     * `payout_above_limit`, `payout_address_required`, `invalid_payout_address` (400),
+     * `payout_in_progress`, `payout_daily_limit`, `payout_reservation_conflict` (409) or
+     * `payout_check_unavailable` (503). Nothing is reserved by a refused request.
+     */
+    requestPayout: (input: RequestPayoutInput) =>
+      client.post<RequestedPayout>("/api/marketplace/payouts", input),
 
     /** Your payout requests, newest first. */
     payouts: () =>

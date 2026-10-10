@@ -215,6 +215,49 @@ edited, until `offerings.update(id, { fromAgentForm: true })` shows buyers the n
 
 ### Payouts
 
+Take your earnings out as credits, or to a Solana wallet in USDC or SOL. `revenue()` says what a
+request may ask for right now:
+
+```ts
+const { pendingPayoutCents, payoutLimits } = await wheels.marketplace.revenue();
+// payoutLimits: { minimumCents, perPayoutCents, perDayCents, usedTodayCents,
+//                 largestNowCents: { credits, wallet }, methods }
+
+if (payoutLimits.methods.includes("crypto_usdc") && payoutLimits.largestNowCents.wallet >= payoutLimits.minimumCents) {
+  const { payout, remainingCents, message } = await wheels.marketplace.requestPayout({
+    payoutMethod: "crypto_usdc",
+    payoutAddress: "<your Solana wallet address>",
+    amountCents: payoutLimits.largestNowCents.wallet, // leave out to take the largest allowed
+  });
+  console.log(message, remainingCents, payout.status);
+}
+```
+
+Amounts are whole cents. The smallest payout is $5.00 for every method; read it from
+`minimumCents`. Credits can take any amount from the minimum up to your earnings. A
+payout to a wallet also has a limit per payout and per UTC day (`perPayoutCents`, `perDayCents`,
+with `usedTodayCents` already counted), and `methods` lists what is offered now. One payout can be
+open at a time. Requesting needs a session token (`auth.login`) of an owner or admin; an API key
+is refused.
+
+A refused request reserves nothing and throws a `WheelsAIError` whose `message` is a sentence you
+can show as it comes:
+
+| `code` | Status | When |
+| --- | --- | --- |
+| `payouts_unavailable` | 503 | Payouts are not running. |
+| `invalid_payload` | 400 | The request could not be read. |
+| `payout_method_unavailable` | 400 | The method is not offered right now. |
+| `payout_in_progress` | 409 | You already have an open payout. |
+| `payout_below_minimum` | 400 | The amount, or your earnings, is under the minimum. |
+| `payout_above_balance` | 400 | The amount is more than your earnings. |
+| `payout_above_limit` | 400 | More than one payout to a wallet may be. |
+| `payout_daily_limit` | 409 | Today's limit for payouts to a wallet is reached. |
+| `payout_address_required` | 400 | A wallet method with no `payoutAddress`. |
+| `invalid_payout_address` | 400 | The address is not a Solana wallet address, is a token account or a program, or belongs to WheelsAI. |
+| `payout_check_unavailable` | 503 | The address could not be checked. Try again shortly. |
+| `payout_reservation_conflict` | 409 | Your earnings changed during the request. Try again. |
+
 ```ts
 const { payouts } = await wheels.marketplace.payouts();
 const waiting = payouts.find((p) => p.cancellable);
@@ -222,9 +265,10 @@ if (waiting) await wheels.marketplace.cancelPayout(waiting.id); // the amount go
 ```
 
 `cancellable` is true while a payout is requested and not yet being sent; after that
-`cancelPayout` answers 409 `payout_not_cancellable`. A failed payout carries `failureReason`, a
-plain sentence, and its amount is already back in your earnings. Cancelling needs a session token
-(`auth.login`) of an owner or admin.
+`cancelPayout` answers 409 `payout_not_cancellable`. A payout carries `message`, a plain sentence
+when there is something to say (a payout waiting to be sent, or one that failed) and `null`
+otherwise. A failed payout also carries `failureReason`, and its amount is already back in your
+earnings. Cancelling needs a session token (`auth.login`) of an owner or admin.
 
 ### Adding credits from a wallet
 

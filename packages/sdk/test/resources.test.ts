@@ -163,6 +163,7 @@ const cases: Case[] = [
   { name: "marketplace.cancelSubscription", run: (w) => w.marketplace.cancelSubscription(LISTING), method: "POST", path: `/api/marketplace/subscriptions/${LISTING}/cancel` },
   { name: "marketplace.resumeSubscription", run: (w) => w.marketplace.resumeSubscription(LISTING), method: "POST", path: `/api/marketplace/subscriptions/${LISTING}/resume` },
   { name: "marketplace.revenue", run: (w) => w.marketplace.revenue(), method: "GET", path: "/api/marketplace/revenue" },
+  { name: "marketplace.requestPayout", run: (w) => w.marketplace.requestPayout({ payoutMethod: "crypto_usdc", payoutAddress: PAYER, amountCents: 4120 }), method: "POST", path: "/api/marketplace/payouts", body: { payoutMethod: "crypto_usdc", payoutAddress: PAYER, amountCents: 4120 } },
   { name: "marketplace.payouts", run: (w) => w.marketplace.payouts(), method: "GET", path: "/api/marketplace/payouts" },
   { name: "marketplace.cancelPayout", run: (w) => w.marketplace.cancelPayout(PAYOUT), method: "POST", path: `/api/marketplace/payouts/${PAYOUT}/cancel` },
 
@@ -807,6 +808,131 @@ describe("payouts and an offering's form", () => {
     const result = await wheels.marketplace.payouts();
     assert.equal(result.payouts[0]!.cancellable, true);
     assert.equal(result.payouts[1]!.failureReason, payouts[1]!.failureReason);
+  });
+
+  it("payouts carries the sentence of a payout that is waiting to be sent", async () => {
+    const waiting = "This payout is waiting to be sent. You can cancel it and keep your earnings.";
+    const payouts = [
+      { id: PAYOUT, status: "pending", cancellable: true, failureReason: null, message: waiting },
+      { id: RUN, status: "completed", cancellable: false, failureReason: null, message: null },
+    ];
+    const { fetch } = recordingFetch(() => jsonResponse({ payouts }));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const result = await wheels.marketplace.payouts();
+    assert.equal(result.payouts[0]!.message, waiting);
+    assert.equal(result.payouts[1]!.message, null);
+  });
+
+  it("requestPayout sends the amount asked for and answers the payout, what remains and a sentence", async () => {
+    const answer = {
+      payout: {
+        id: PAYOUT,
+        amountCents: 4120,
+        payoutMethod: "crypto_usdc",
+        payoutAddress: PAYER,
+        status: "pending",
+        txSignature: null,
+        grossRevenueCents: 4578,
+        platformFeeCents: 458,
+        periodStart: "2026-10-01T00:00:00.000Z",
+        periodEnd: "2026-10-09T00:00:00.000Z",
+        requestedAt: "2026-10-09T10:00:00.000Z",
+        processedAt: null,
+        failureReason: null,
+        message: null,
+        cancellable: true,
+      },
+      remainingCents: 0,
+      message: "Payout of $41.20 requested. It is usually sent within a few minutes.",
+    };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(answer, 201));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, token: "session-token", fetch });
+    const result = await wheels.marketplace.requestPayout({
+      payoutMethod: "crypto_usdc",
+      payoutAddress: PAYER,
+      amountCents: 4120,
+    });
+    assert.deepEqual(result, answer);
+    assert.equal(result.payout.cancellable, true);
+    assert.equal(result.remainingCents, 0);
+    assert.equal(result.message, answer.message);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.method, "POST");
+    assert.equal(calls[0]!.url.pathname, "/api/marketplace/payouts");
+    assert.deepEqual(calls[0]!.body, { payoutMethod: "crypto_usdc", payoutAddress: PAYER, amountCents: 4120 });
+  });
+
+  it("requestPayout with no amount sends none, so the API takes the largest allowed", async () => {
+    const { fetch, calls } = recordingFetch(() =>
+      jsonResponse({ payout: { id: PAYOUT }, remainingCents: 0, message: "Payout of $41.20 requested as credits." }, 201),
+    );
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, token: "session-token", fetch });
+    const result = await wheels.marketplace.requestPayout({ payoutMethod: "credits" });
+    assert.deepEqual(calls[0]!.body, { payoutMethod: "credits" });
+    assert.equal("amountCents" in (calls[0]!.body as object), false);
+    assert.equal("payoutAddress" in (calls[0]!.body as object), false);
+    assert.equal(result.message, "Payout of $41.20 requested as credits.");
+  });
+
+  it("requestPayout keeps the code, the status and the sentence of each refusal", async () => {
+    const refusals = [
+      { status: 503, error: "payouts_unavailable", message: "Payouts are temporarily unavailable. Nothing was reserved and your earnings are unchanged. Try again later." },
+      { status: 400, error: "invalid_payload", message: "We could not read that request. Check the amount and try again." },
+      { status: 400, error: "payout_method_unavailable", message: "SOL payouts are not available right now. Choose USDC or credits." },
+      { status: 409, error: "payout_in_progress", message: "You already have a payout in progress. Wait for it to finish, or cancel it if it has not been sent." },
+      { status: 400, error: "payout_below_minimum", message: "The smallest payout is $5.00. You have $3.10 available." },
+      { status: 400, error: "payout_above_balance", message: "You have $41.20 available. Request that amount or less." },
+      { status: 400, error: "payout_above_limit", message: "The most for one payout to a wallet is $500.00. Request that amount or less; the rest stays in your earnings." },
+      { status: 409, error: "payout_daily_limit", message: "You have reached today's limit for payouts to a wallet. You can request more after midnight UTC, or take a payout as credits now." },
+      { status: 400, error: "payout_address_required", message: "Enter the wallet address to send this payout to." },
+      { status: 400, error: "invalid_payout_address", message: "That is not a Solana wallet address. Check it and try again." },
+      { status: 503, error: "payout_check_unavailable", message: "Payouts to a wallet are paused for a moment. Nothing was reserved and your earnings are unchanged. Try again shortly." },
+      { status: 409, error: "payout_reservation_conflict", message: "Your payout balance changed while this request was processing. Please try again." },
+    ];
+    assert.equal(new Set(refusals.map((refusal) => refusal.error)).size, 12);
+    for (const refusal of refusals) {
+      const { fetch } = recordingFetch(() => jsonResponse({ error: refusal.error, message: refusal.message }, refusal.status));
+      const wheels = new WheelsAI({ baseUrl: BASE_URL, token: "session-token", fetch });
+      await assert.rejects(
+        wheels.marketplace.requestPayout({ payoutMethod: "crypto_sol", payoutAddress: PAYER, amountCents: 4120 }),
+        (err: unknown) => {
+          assert.ok(err instanceof WheelsAIError, refusal.error);
+          assert.equal(err.status, refusal.status, refusal.error);
+          assert.equal(err.code, refusal.error);
+          assert.equal(err.message, refusal.message);
+          return true;
+        },
+      );
+    }
+  });
+
+  it("revenue answers payoutLimits beside the earnings", async () => {
+    const answer = {
+      totalRevenueCents: 90000,
+      pendingPayoutCents: 74000,
+      totalListings: 2,
+      totalInstalls: 31,
+      revenueByListing: [],
+      recentTransactions: [],
+      payoutLimits: {
+        minimumCents: 500,
+        perPayoutCents: 50000,
+        perDayCents: 100000,
+        usedTodayCents: 12000,
+        largestNowCents: { credits: 74000, wallet: 50000 },
+        methods: ["credits", "crypto_usdc", "crypto_sol"],
+      },
+    };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(answer));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const revenue = await wheels.marketplace.revenue();
+    assert.deepEqual(revenue, answer);
+    assert.equal(revenue.payoutLimits.minimumCents, 500);
+    assert.equal(revenue.payoutLimits.largestNowCents.wallet, 50000);
+    assert.equal(revenue.payoutLimits.largestNowCents.credits, revenue.pendingPayoutCents);
+    assert.equal(revenue.payoutLimits.methods.includes("crypto_sol"), true);
+    assert.equal(calls[0]!.method, "GET");
+    assert.equal(calls[0]!.url.pathname, "/api/marketplace/revenue");
   });
 
   it("create and update send fromAgentForm, and the offering answers formInSync", async () => {

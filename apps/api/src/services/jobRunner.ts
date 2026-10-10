@@ -166,15 +166,24 @@ export const FAILURE = {
 } as const;
 
 /**
- * What tokens on the platform's keys cost, in whole cents, rounded up: a
- * run that used any is never free.
+ * What tokens on the platform's keys cost, in millionths of a cent: tokens
+ * times cents per million tokens. Nothing is rounded up to a cent here; a
+ * fraction of a millionth counts as one.
  */
-export function platformModelCostCents(usage: TokenUsage, rates: PlatformModelRates): bigint {
+export function platformModelCostMicros(usage: TokenUsage, rates: PlatformModelRates): bigint {
   const micro =
     Math.max(0, usage.inputTokens) * Math.max(0, rates.inputCentsPerMTok) +
     Math.max(0, usage.outputTokens) * Math.max(0, rates.outputCentsPerMTok);
   if (!Number.isFinite(micro) || micro <= 0) return 0n;
-  return BigInt(Math.ceil(micro / 1_000_000));
+  return BigInt(Math.ceil(micro));
+}
+
+/**
+ * What tokens on the platform's keys cost, in whole cents, rounded up: a
+ * run that used any is never free.
+ */
+export function platformModelCostCents(usage: TokenUsage, rates: PlatformModelRates): bigint {
+  return (platformModelCostMicros(usage, rates) + 999_999n) / 1_000_000n;
 }
 
 /** A result row for something that is not one of the offering's checks. */

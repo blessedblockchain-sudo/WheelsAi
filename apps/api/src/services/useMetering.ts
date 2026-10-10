@@ -1,0 +1,351 @@
+/**
+ * What one paid use of a creator's agent costs, and the charge for it.
+ *
+ * A buyer who pays to use an agent holds a licence (AgentInstall, kind
+ * "use") and no copy. This module decides, from the licence, its access
+ * (services/useAccess.ts) and the listing, what one use is:
+ *
+ *   free        a free use listing. Anyone may use it; no licence is needed
+ *   subscribed  inside a paid month: it runs and nothing is charged
+ *   refused     with the reason, the status and what the caller is told
+ *   billable    per use, at the listing's price, which is never above the
+ *               price the buyer accepted
+ *
+ * Only per use is billable, and the caller's own listing never is.
+ *
+ * The money itself moves through services/marketplaceMetering.ts, the same
+ * functions a metered copy uses, so a paid use is a per_request revenue row
+ * with one marketplace_usage ledger line, settled exactly once when the
+ * answer is delivered or refunded exactly once in every other ending:
+ *
+ *   chargeUse  ONE transaction: the debit, the pending revenue row and its
+ *              ledger line, then, when an API key pays, the key's spend
+ *              reservation. A refused reservation rolls the debit back, so
+ *              there is no debit, no row and no ledger line.
+ *   settleUse  pending -> settled, with the model cost the run noted.
+ *   refundUse  pending -> refunded.
+ *
+ * Pure over the injected transaction runner.
+ */
+import { ApiKeyUseCapError, reserveApiKeySpend, type ApiKeySpendTx } from "./apiKeySpend.js";
+import {
+  chargeMarketplaceRequest,
+  refundMarketplaceRequest,
+  settleMarketplaceRequest,
+  type MarketplaceCharge,
+  type MeteredInstall,
+  type MeteringChargePrisma,
+  type MeteringRefundPrisma,
+  type MeteringSettlePrisma,
+  type RefundResult,
+  type SettleResult,
+} from "./marketplaceMetering.js";
+import { useAccess, useDecision, type UseAccess, type UseSubscription } from "./useAccess.js";
+
+/** What one use is called where the buyer reads it: a chat message, or a task run. */
+export type UseUnit = "message" | "run";
+
+const dollars = (cents: bigint) => `$${(Number(cents) / 100).toFixed(2)}`;
+
+// ============================================
+// Resolution
+// ============================================
+
+export interface UseBillingListing {
+  id: string;
+  title: string;
+  /** The creator's organization. */
+  publisherId: string;
+  status: string;
+  sells: string;
+  pricingModel: string;
+  pricePerRequestCents?: bigint | null;
+  /** Only read to word a refusal. */
+  monthlyPriceCents?: bigint | null;
+}
+
+export interface UseBillingLicence {
+  id: string;
+  buyerId: string;
+  kind: string;
+  status: string;
+  acceptedPricingModel?: string | null;
+  acceptedPricePerRequestCents?: bigint | null;
+}
+
+export interface UseBillingInput {
+  /** The organization that is asking, and that would pay. */
+  callerOrgId: string;
+  listing: UseBillingListing;
+  /** The caller's licence row for this listing, or null. */
+  licence: UseBillingLicence | null;
+  /** The caller's subscription to this listing, or null. */
+  sub: UseSubscription | null;
+  /** Words the refusals: "per message" or "per run". Default "message". */
+  unit?: UseUnit;
+}
+
+export type UseRefusalReason =
+  | "own_agent"
+  | "not_for_sale"
+  | "use_not_started"
+  | "pricing_changed"
+  | "subscription_lapsed"
+  | "not_offered";
+
+export type UseBilling =
+  | { kind: "free" }
+  | { kind: "subscribed"; access: "subscribed" }
+  | {
+      kind: "refused";
+      reason: UseRefusalReason;
+      status: 402 | 403 | 409;
+      /** The same word as `reason`: the error code the caller is sent. */
+      code: UseRefusalReason;
+      /** Plain words for the buyer. */
+      message: string;
+      /** Absent for own_agent, which is decided before the licence is read. */
+      access?: UseAccess;
+    }
+  | {
+      kind: "billable";
+      access: "listing_pricing";
+      /** What this use costs: the listing's price now, at or below the accepted one. */
+      priceCents: bigint;
+      /** The charge target, with kind "use". */
+      install: MeteredInstall;
+    };
+
+function pricingChangedMessage(input: UseBillingInput): string {
+  const { listing, licence } = input;
+  const unit = input.unit ?? "message";
+  if (listing.pricingModel === "per_request") {
+    const price = dollars(listing.pricePerRequestCents ?? 0n);
+    return licence?.acceptedPricingModel === "per_request" && licence.acceptedPricePerRequestCents != null
+      ? `The owner changed the price to ${price} per ${unit}. You agreed to ${dollars(licence.acceptedPricePerRequestCents)}. Nothing is charged until you accept the new price.`
+      : `This agent is now sold per ${unit} (${price}). Nothing is charged until you accept the new price.`;
+  }
+  if (listing.pricingModel === "monthly") {
+    return listing.monthlyPriceCents != null
+      ? `This agent is now sold by the month (${dollars(listing.monthlyPriceCents)}). Nothing is charged until you subscribe.`
+      : "This agent is now sold by the month. Nothing is charged until you subscribe.";
+  }
+  return "The owner changed how this agent is sold. Nothing is charged until you accept the new terms.";
+}
+
+const REFUSAL_MESSAGE: Record<Exclude<UseRefusalReason, "pricing_changed">, string> = {
+  own_agent: "This is your own agent, so there is nothing to pay for. Use it from your dashboard.",
+  not_for_sale: "Use of this agent is not for sale.",
+  use_not_started:
+    "You have not started using this agent. Start on its page, or ask an owner or admin of your organization to start.",
+  subscription_lapsed: "Your subscription has ended. Subscribe again to keep using it.",
+  not_offered: "This agent is no longer offered. You will not be charged again.",
+};
+
+/**
+ * What one use by `callerOrgId` is, from the rows as they are now. Decided
+ * at each request, so a price the creator raised a second ago is never
+ * charged to a buyer who agreed to less.
+ */
+export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()): UseBilling {
+  const { listing } = input;
+  // The creator's own organization never pays itself, whatever rows exist.
+  if (listing.publisherId === input.callerOrgId) {
+    return {
+      kind: "refused",
+      reason: "own_agent",
+      status: 409,
+      code: "own_agent",
+      message: REFUSAL_MESSAGE.own_agent,
+    };
+  }
+  const onSaleForUse = listing.status === "published" && listing.sells === "use";
+  // Free use is the agent's public page: no licence, no charge.
+  if (onSaleForUse && listing.pricingModel === "free") return { kind: "free" };
+
+  // A licence that is not this caller's is no licence.
+  const licence = input.licence && input.licence.buyerId === input.callerOrgId ? input.licence : null;
+  const access = useAccess(
+    {
+      licence: licence && {
+        kind: licence.kind,
+        status: licence.status,
+        accepted: {
+          pricingModel: licence.acceptedPricingModel,
+          pricePerRequestCents: licence.acceptedPricePerRequestCents,
+        },
+      },
+      listing,
+      sub: licence ? input.sub : null,
+    },
+    now,
+  );
+  const decision = useDecision(access, listing);
+
+  if (!decision.runs) {
+    // Never started, on something that is not sold for use: there are no
+    // terms to show, so it is not "start first".
+    const reason: UseRefusalReason = access === "none" && !onSaleForUse ? "not_for_sale" : decision.code;
+    return {
+      kind: "refused",
+      reason,
+      status: reason === "not_for_sale" ? 409 : decision.status,
+      code: reason,
+      message: reason === "pricing_changed" ? pricingChangedMessage(input) : REFUSAL_MESSAGE[reason],
+      access,
+    };
+  }
+  if (access === "subscribed") return { kind: "subscribed", access };
+  // listing_pricing from here, and so a licence.
+  if (!decision.charged || !licence) return { kind: "free" };
+
+  const priceCents = listing.pricePerRequestCents ?? 0n;
+  const accepted = licence.acceptedPricePerRequestCents;
+  // useAccess has already refused a price above the accepted one. Held
+  // again here, where the amount is fixed: a charge above what the buyer
+  // agreed to must be impossible, not merely unexpected.
+  if (accepted == null || priceCents > accepted) {
+    return {
+      kind: "refused",
+      reason: "pricing_changed",
+      status: 409,
+      code: "pricing_changed",
+      message: pricingChangedMessage(input),
+      access: "pricing_changed",
+    };
+  }
+  return {
+    kind: "billable",
+    access: "listing_pricing",
+    priceCents,
+    install: {
+      installId: licence.id,
+      listingId: listing.id,
+      listingTitle: listing.title,
+      publisherId: listing.publisherId,
+      buyerId: licence.buyerId,
+      pricePerRequestCents: priceCents,
+      kind: "use",
+    },
+  };
+}
+
+// ============================================
+// Charge, settle, refund
+// ============================================
+
+/** Everything one charge, settle or refund of a use touches. A Prisma transaction has all of it. */
+export type UseMeteringTx = MeteringChargePrisma & ApiKeySpendTx & MeteringSettlePrisma & MeteringRefundPrisma;
+
+export interface UseMeteringDeps {
+  /** Runs `fn` in one database transaction; a throw rolls all of it back. */
+  transaction<T>(fn: (tx: UseMeteringTx) => Promise<T>): Promise<T>;
+  now?: () => Date;
+}
+
+export type UseChargeResult =
+  | { ok: true; charge: MarketplaceCharge }
+  | {
+      ok: false;
+      reason: "insufficient_credits";
+      status: 402;
+      code: "insufficient_credits";
+      message: string;
+      requiredCents: bigint;
+      balanceCents: bigint;
+    }
+  | {
+      ok: false;
+      reason: "api_key_cap";
+      status: 403;
+      code: ApiKeyUseCapError["code"];
+      message: string;
+      extra: Record<string, number>;
+    }
+  | { ok: false; reason: "own_agent"; status: 409; code: "own_agent"; message: string };
+
+/**
+ * Take the price of one use, before it runs. One transaction: the buyer's
+ * debit with its pending revenue row and ledger line, and then, when an API
+ * key is paying, the key's reservation against its per-use and daily caps.
+ * A refused reservation throws inside the transaction, so the debit, the
+ * row and the ledger line are rolled back with it.
+ *
+ * Every `ok: false` leaves nothing behind.
+ */
+export async function chargeUse(
+  deps: UseMeteringDeps,
+  args: {
+    /** From resolveUseBilling's `billable`. */
+    install: MeteredInstall;
+    /** The API key that is paying, when one is. A session pays without a reservation. */
+    apiKeyId?: string | null;
+    unit?: UseUnit;
+  },
+): Promise<UseChargeResult> {
+  const { install } = args;
+  if (install.kind !== "use") {
+    // A copy is charged by marketplaceMeteringProduction, not here.
+    throw new Error("chargeUse was given a licence that is not for use");
+  }
+  if (install.publisherId === install.buyerId) {
+    return { ok: false, reason: "own_agent", status: 409, code: "own_agent", message: REFUSAL_MESSAGE.own_agent };
+  }
+  try {
+    return await deps.transaction(async (tx): Promise<UseChargeResult> => {
+      const charged = await chargeMarketplaceRequest(tx, { install });
+      if (!charged.ok) {
+        return {
+          ok: false,
+          reason: "insufficient_credits",
+          status: 402,
+          code: "insufficient_credits",
+          message: `You do not have enough credits for this ${args.unit ?? "message"} (${dollars(charged.requiredCents)}). Nothing was charged. Add credits to continue.`,
+          requiredCents: charged.requiredCents,
+          balanceCents: charged.balanceCents,
+        };
+      }
+      if (args.apiKeyId) {
+        await reserveApiKeySpend(tx, {
+          apiKeyId: args.apiKeyId,
+          orgId: install.buyerId,
+          priceCents: charged.charge.grossCents,
+          cap: "use",
+          now: deps.now?.(),
+        });
+      }
+      return charged;
+    });
+  } catch (err) {
+    if (err instanceof ApiKeyUseCapError) {
+      return { ok: false, reason: "api_key_cap", status: 403, code: err.code, message: err.message, extra: err.extra };
+    }
+    throw err;
+  }
+}
+
+/**
+ * The answer was delivered: the creator is credited, less the whole cents of
+ * model cost this use has taken the listing's running total across. A
+ * second settle, or a settle after a refund, does nothing.
+ */
+export function settleUse(
+  deps: UseMeteringDeps,
+  args: {
+    charge: MarketplaceCharge;
+    /** What the run cost on the platform's model keys, in millionths of a cent. 0 or absent on the creator's own key. */
+    modelCostMicros?: bigint;
+  },
+): Promise<SettleResult> {
+  return deps.transaction((tx) =>
+    settleMarketplaceRequest(tx, { charge: args.charge, now: deps.now, modelCostMicros: args.modelCostMicros }),
+  );
+}
+
+/** No answer was delivered: the buyer gets the price back. A second refund, or a refund after a settle, does nothing. */
+export function refundUse(
+  deps: UseMeteringDeps,
+  args: { charge: MarketplaceCharge; reason: string },
+): Promise<RefundResult> {
+  return deps.transaction((tx) => refundMarketplaceRequest(tx, { charge: args.charge, reason: args.reason }));
+}

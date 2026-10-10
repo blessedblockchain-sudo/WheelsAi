@@ -129,6 +129,12 @@ export interface MeteredInstall {
   publisherId: string;
   buyerId: string;
   pricePerRequestCents: bigint;
+  /**
+   * What the licence is for. Absent means a copy, which is every install
+   * resolveInstallBilling returns. "use" is a buyer paying to use the
+   * creator's own agent (services/useMetering.ts).
+   */
+  kind?: "copy" | "use";
 }
 
 export interface MeteringLookupPrisma {
@@ -462,7 +468,10 @@ export async function chargeMarketplaceRequest(
       orgId: args.install.buyerId,
       amountCents: -split.grossCents,
       type: "marketplace_usage",
-      description: `Marketplace request — ${args.install.listingTitle}`,
+      description:
+        args.install.kind === "use"
+          ? `Paid use: ${args.install.listingTitle}`
+          : `Marketplace request — ${args.install.listingTitle}`,
       // The revenue row, so a buyer's debit and the creator's credit are
       // correlatable from either side.
       referenceId: revenue.id,
@@ -519,8 +528,42 @@ export interface MeteringSettlePrisma {
 }
 
 export type SettleResult =
-  | { settled: true; creatorCents: bigint }
+  /** modelCostCents is present only when a use's model cost was noted. */
+  | { settled: true; creatorCents: bigint; modelCostCents?: bigint }
   | { settled: false; reason: "not_pending" };
+
+/** Millionths of a cent in one cent. */
+export const MICROS_PER_CENT = 1_000_000n;
+
+/**
+ * What a settled use adds to the model cost its listing has run up, and the
+ * row it is taken from. The same transaction as the settle; a real Prisma
+ * transaction has both statements.
+ */
+export interface MeteringUseCostPrisma {
+  agentListing: {
+    update(args: {
+      where: { id: string };
+      data: { useModelCostMicros: { increment: bigint } };
+      select: { useModelCostMicros: true };
+    }): Promise<{ useModelCostMicros: bigint }>;
+  };
+  marketplaceRevenue: {
+    update(args: {
+      where: { id: string };
+      data: { platformFeeCents: { increment: bigint }; creatorAmountCents: { decrement: bigint } };
+    }): Promise<unknown>;
+  };
+}
+
+/**
+ * The whole cents a running total has just crossed by growing `addedMicros`
+ * to `totalMicros`. Pure.
+ */
+export function centsCrossed(totalMicros: bigint, addedMicros: bigint): bigint {
+  if (addedMicros <= 0n || totalMicros < addedMicros) return 0n;
+  return totalMicros / MICROS_PER_CENT - (totalMicros - addedMicros) / MICROS_PER_CENT;
+}
 
 /**
  * Turn a paid-for, delivered request into creator earnings. Run INSIDE a
@@ -533,7 +576,17 @@ export type SettleResult =
  */
 export async function settleMarketplaceRequest(
   tx: MeteringSettlePrisma,
-  args: { charge: MarketplaceCharge; now?: () => Date },
+  args: {
+    charge: MarketplaceCharge;
+    now?: () => Date;
+    /**
+     * What this delivered use cost on the platform's model keys, in
+     * millionths of a cent. Counted only for a licence of kind "use";
+     * absent, zero, or on a copy, this function issues exactly the
+     * statements it always has.
+     */
+    modelCostMicros?: bigint;
+  },
 ): Promise<SettleResult> {
   const now = (args.now ?? (() => new Date()))();
 
@@ -545,12 +598,45 @@ export async function settleMarketplaceRequest(
     return { settled: false, reason: "not_pending" };
   }
 
+  // A paid use that ran on the platform's model keys repays what the model
+  // cost, out of the creator's share. Not rounded up per use: a 5-cent
+  // message would lose a quarter of the creator's share to a fraction of a
+  // cent. Each settle adds its millionths to the listing's running total,
+  // and only the whole cents that total has just crossed move from the
+  // creator's amount to the platform on this row, never more than the row
+  // has for the creator. Past the CAS, so it happens once per charge.
+  let creatorCents = args.charge.creatorCents;
+  let modelCostCents: bigint | undefined;
+  if (args.charge.install.kind === "use" && args.modelCostMicros !== undefined && args.modelCostMicros > 0n) {
+    const cost = tx as unknown as MeteringUseCostPrisma;
+    // The increment and the read are one statement, so two settles of the
+    // same listing at once each see a total that includes the other or does
+    // not, and no cent is taken twice or missed.
+    const listing = await cost.agentListing.update({
+      where: { id: args.charge.install.listingId },
+      data: { useModelCostMicros: { increment: args.modelCostMicros } },
+      select: { useModelCostMicros: true },
+    });
+    const crossed = centsCrossed(listing.useModelCostMicros, args.modelCostMicros);
+    modelCostCents = crossed > creatorCents ? creatorCents : crossed;
+    if (modelCostCents > 0n) {
+      await cost.marketplaceRevenue.update({
+        where: { id: args.charge.revenueId },
+        data: {
+          platformFeeCents: { increment: modelCostCents },
+          creatorAmountCents: { decrement: modelCostCents },
+        },
+      });
+      creatorCents -= modelCostCents;
+    }
+  }
+
   // Accepted contributors are paid their shares; the publisher keeps the rest.
   const { publisherCents } = await splitCreatorRevenue(tx as unknown as Partial<ContributorSplitTx>, {
     revenueId: args.charge.revenueId,
     listingId: args.charge.install.listingId,
     publisherId: args.charge.install.publisherId,
-    creatorCents: args.charge.creatorCents,
+    creatorCents,
   });
 
   await tx.publisherProfile.update({
@@ -574,7 +660,9 @@ export async function settleMarketplaceRequest(
     data: { totalRequests: { increment: BigInt(args.charge.requestCount) } },
   });
 
-  return { settled: true, creatorCents: args.charge.creatorCents };
+  return modelCostCents === undefined
+    ? { settled: true, creatorCents }
+    : { settled: true, creatorCents, modelCostCents };
 }
 
 export interface MeteringRefundPrisma {
@@ -622,7 +710,10 @@ export async function refundMarketplaceRequest(
       orgId: args.charge.install.buyerId,
       amountCents: args.charge.grossCents,
       type: "marketplace_refund",
-      description: `Marketplace request refunded — ${args.charge.install.listingTitle} (${args.reason})`,
+      description:
+        args.charge.install.kind === "use"
+          ? `Paid use refunded: ${args.charge.install.listingTitle}`
+          : `Marketplace request refunded — ${args.charge.install.listingTitle} (${args.reason})`,
       referenceId: args.charge.revenueId,
       balanceAfter: after.balanceCents,
     },

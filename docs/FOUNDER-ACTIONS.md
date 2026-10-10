@@ -16,8 +16,9 @@ Updated 2026-10-06. Tick items off here as they land.
 - [ ] **Stripe account.** Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_PRO_PRICE_ID` (a recurring $49/month Price). This unlocks card checkout for credits, the Pro plan and trial, and the billing portal.
 - [ ] **Wallet top-ups in USDC and SOL.** Set `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`, and `SOL_PRICE_SOURCE=pyth` to offer SOL. Production takes them only on mainnet: `SOLANA_NETWORK=mainnet-beta` with a mainnet `SOLANA_RPC_URL`.
 - [ ] **Creator payouts.**
-  - Set `PAYOUTS_ENABLED=true` and `PAYOUT_EXECUTOR_INTERVAL_MS`. Crypto payouts also need a funded payout wallet derived from `WALLET_MASTER_KEY`, and `PAYOUT_SOL_PRICE_USD` for SOL.
-  - A payout compliance provider (KYC and sanctions screening) is still to be chosen.
+  - Set `PAYOUTS_ENABLED=true` and `PAYOUT_EXECUTOR_INTERVAL_MS`. Payouts to a wallet also need the paying wallet derived from `WALLET_MASTER_KEY` to hold USDC, SOL and a little SOL for fees (the API logs its address at start), and `SOL_PRICE_SOURCE=pyth` to offer SOL.
+  - Decide the limits if the defaults do not suit: $500 a payout, $1,000 a creator a day, $5,000 a day in all (`PAYOUT_MAX_PER_PAYOUT_USD`, `PAYOUT_MAX_PER_DAY_USD`, `PAYOUT_PLATFORM_MAX_PER_DAY_USD`).
+  - Compliance (checking wallets against the US sanctions list, and identity checks) was deferred on 2026-10-10. No check of who is paid exists yet.
 - [ ] **x402.** Set `X402_ENABLED`, `X402_INFERENCE_MODE`, `X402_SUBMIT_TRANSACTIONS` and the settlement worker flags once the receiving treasury is live (`TREASURY_WALLET_ADDRESS`).
 
 ## 3. Nosana compute (mainnet)

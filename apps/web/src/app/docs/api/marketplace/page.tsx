@@ -326,35 +326,87 @@ export default function MarketplaceApiPage() {
           yet. <code>unlistedJobRevenue</code> is settled job revenue on products with no listing. Your share is 90% of what buyers paid; each revenue row
           splits the gross exactly into the creator share and the 10% platform fee, in whole cents.
         </p>
+        <p>
+          <code>payoutLimits</code> says what a payout request may ask for right now. Read the minimum and the limits
+          from it instead of writing them into your own code. Every amount is in whole cents.
+        </p>
+        <Fields
+          title="payoutLimits"
+          fields={[
+            { name: "minimumCents", type: "integer", description: "The smallest payout, for every method." },
+            { name: "perPayoutCents", type: "integer", description: "The most one payout to a wallet may be. Credits have no such limit." },
+            { name: "perDayCents", type: "integer", description: "The most you may request to a wallet in one UTC day." },
+            { name: "usedTodayCents", type: "integer", description: <>What counts against <code>perDayCents</code> so far today: your wallet payouts requested today that are pending, processing or completed.</> },
+            { name: "largestNowCents", type: "object", description: <><code>&#123; credits, wallet &#125;</code>: the largest amount a request can take right now as credits, and to a wallet. Either can be under <code>minimumCents</code>; then nothing can be requested that way yet.</> },
+            { name: "methods", type: "string[]", description: <>The methods offered now, from <code>credits</code>, <code>crypto_usdc</code> and <code>crypto_sol</code>.</> },
+          ]}
+        />
       </Endpoint>
 
       <Endpoint id="payouts" method="POST" path="/api/marketplace/payouts" auth="Session only, owner or admin" title="Request a payout">
         <Fields
           fields={[
-            { name: "payoutMethod", type: "enum", required: true, description: <><code>credits</code>, <code>crypto_usdc</code> or <code>crypto_sol</code>.</> },
-            { name: "payoutAddress", type: "string", description: "Required for crypto payouts: the Solana address to pay." },
+            { name: "payoutMethod", type: "enum", required: true, description: <><code>credits</code>, <code>crypto_usdc</code> or <code>crypto_sol</code>. The last two pay a Solana wallet.</> },
+            { name: "payoutAddress", type: "string", description: "Required for a payout to a wallet: your Solana wallet address. Give the wallet address itself, not a token account." },
+            { name: "amountCents", type: "integer", description: <>The amount to take out, in whole cents. Left out, the request takes the largest amount allowed right now for the method (<code>payoutLimits.largestNowCents</code>).</> },
           ]}
         />
         <p>
-          Pays out your whole pending balance, which must be at least $10.00. Only one payout can be open at a time; a
-          concurrent request that loses the race gets <code>409</code> <code>payout_reservation_conflict</code> and writes
-          nothing. API keys are refused, so a leaked key cannot redirect earnings.
+          Takes earnings out of your pending balance. The smallest payout is $5.00 for every method. As credits you can
+          take any amount from the minimum up to your balance. A payout to a wallet also has a limit per payout and per
+          UTC day; both are in <code>payoutLimits</code> on <code>GET /api/marketplace/revenue</code>. Only one payout
+          can be open at a time. API keys are refused, so a leaked key cannot redirect earnings.
         </p>
         <p>
-          While payouts are not running, a request answers <code>503</code> <code>payouts_unavailable</code> before
-          anything is reserved, with the message &quot;Payouts are temporarily unavailable. Nothing was reserved and your
-          earnings are unchanged. Try again later.&quot; <code>GET /api/capabilities</code> says whether they are running
-          now, in <code>payouts.available</code>.
+          Answers <code>201</code> with{" "}
+          <code>&#123; payout, remainingCents, message &#125;</code>: the payout as the list below returns it, what
+          stays in your earnings, and a sentence you can show as it comes, such as &quot;Payout of $41.20 requested. It
+          is usually sent within a few minutes.&quot;
         </p>
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/payouts" \\
+  -H "Authorization: Bearer $SESSION_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"payoutMethod":"crypto_usdc","payoutAddress":"'"$WALLET_ADDRESS"'","amountCents":4120}'`}
+        />
+        <p>
+          A refused request reserves nothing and leaves your earnings unchanged. Each refusal is{" "}
+          <code>&#123; error, message &#125;</code>, and <code>message</code> is a plain sentence to show as it comes.
+          They are checked in this order:
+        </p>
+        <DocTable
+          caption="Refusals of a payout request"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "503", error: <code>payouts_unavailable</code>, when: <>Payouts are not running. <code>GET /api/capabilities</code> says whether they are running now, in <code>payouts.available</code>.</> },
+            { status: "400", error: <code>invalid_payload</code>, when: "The request could not be read. Check the method and the amount." },
+            { status: "400", error: <code>payout_method_unavailable</code>, when: <>The method is not offered right now. <code>payoutLimits.methods</code> lists the ones that are.</> },
+            { status: "409", error: <code>payout_in_progress</code>, when: "You already have an open payout. Wait for it to finish, or cancel it if it has not been sent." },
+            { status: "400", error: <code>payout_below_minimum</code>, when: "The amount asked for, or your balance, is under the minimum." },
+            { status: "400", error: <code>payout_above_balance</code>, when: "The amount asked for is more than your balance." },
+            { status: "400", error: <code>payout_above_limit</code>, when: "A wallet method: the amount is more than one payout to a wallet may be. The rest stays in your earnings." },
+            { status: "409", error: <code>payout_daily_limit</code>, when: "A wallet method: today's limit is reached. You can request more after midnight UTC, or take a payout as credits now." },
+            { status: "400", error: <code>payout_address_required</code>, when: <>A wallet method with no <code>payoutAddress</code>.</> },
+            { status: "400", error: <code>invalid_payout_address</code>, when: "The address is not a Solana wallet address, is a token account or a program, or belongs to WheelsAI. The message says which." },
+            { status: "503", error: <code>payout_check_unavailable</code>, when: "The address could not be checked just now. Try again shortly." },
+            { status: "409", error: <code>payout_reservation_conflict</code>, when: "Your balance changed while the request was being made. Nothing was written; request again." },
+          ]}
+        />
         <p>
           <code>GET /api/marketplace/payouts</code> (API key or session) lists your payouts, newest first. Each carries
           its <code>status</code> (<code>pending</code>, <code>processing</code>, <code>completed</code>,{" "}
-          <code>failed</code> or <code>cancelled</code>) and two fields written for you:
+          <code>failed</code> or <code>cancelled</code>) and three fields written for you:
         </p>
         <Fields
           title="On each payout"
           fields={[
             { name: "cancellable", type: "boolean", description: "True while the payout is requested and not yet being sent, so it can still be cancelled." },
+            { name: "message", type: "string | null", description: "A plain sentence about where the payout stands, to show as it comes: a pending payout that is waiting to be sent says so, and a failed one says why. Null when there is nothing to say." },
             { name: "failureReason", type: "string | null", description: "Why a failed payout did not go through, as a plain sentence you can show as it comes. Null for a payout that did not fail. A failed payout's amount is already back in your earnings." },
           ]}
         />

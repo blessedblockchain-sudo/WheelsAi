@@ -392,16 +392,34 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
       <h2 id="payouts">Getting paid</h2>
       <p>
         Your earnings accrue as a pending payout balance, visible on the <strong>Earnings</strong> page, in the menu
-        under Monetize. Once it reaches
-        $10.00 you can request a payout as credits, USDC or SOL (crypto payouts need a destination address). One payout request
-        can be open at a time, and requesting a payout requires a signed-in owner or admin: API keys cannot request payouts, so a
-        leaked key cannot redirect your earnings. Crypto payouts are sent on-chain to the destination address you give.
+        under Monetize. From $5.00 you can take them out, and you choose how:
+      </p>
+      <ul>
+        <li>
+          <strong>USDC</strong> or <strong>SOL</strong>, sent on-chain to the Solana wallet address you give. Enter the
+          wallet address itself, not a token account.
+        </li>
+        <li>
+          <strong>Credits</strong>, added to your WheelsAI balance to spend on the platform.
+        </li>
+      </ul>
+      <p>
+        You can take out everything available or a smaller amount; what you leave stays in your earnings. Credits can
+        take any amount from $5.00 up to your balance. A payout to a wallet has a limit per payout and per day, shown
+        on your Earnings page with what you have used today. The day runs on UTC time, and a payout as credits is
+        still open to you once the wallet limit for the day is reached.
       </p>
       <p>
-        A payout that has not started to be sent shows <strong>Cancel</strong>: cancelling it puts the amount back in
-        your earnings. While payouts are temporarily unavailable the page does not offer the request, nothing is reserved
-        and your earnings are unchanged. A payout that did not go through says why in a plain sentence, and its amount is
-        already back in your earnings.
+        One payout can be open at a time, and requesting a payout requires a signed-in owner or admin: API keys cannot
+        request payouts, so a leaked key cannot redirect your earnings.
+      </p>
+      <p>
+        A payout can be cancelled until it is sent. While it is waiting it shows <strong>Cancel</strong>, and
+        cancelling it puts the amount back in your earnings. A request that is refused reserves nothing and says why
+        in a plain sentence. While payouts are temporarily unavailable the page does not offer the request, nothing is
+        reserved and your earnings are unchanged. A payout that did not go through says why in a plain sentence, and
+        its amount is already back in your earnings. The endpoints are in the{" "}
+        <Link href="/docs/api/marketplace#payouts">marketplace reference</Link>.
       </p>
 
       <h2 id="receipts">Public receipts</h2>

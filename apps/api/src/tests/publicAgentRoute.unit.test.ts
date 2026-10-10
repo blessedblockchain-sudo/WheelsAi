@@ -340,6 +340,8 @@ test("GET /a/:handle adds the description, the handle, the kind and how the page
     state: "view_only",
     key: null,
     transcriptsStored: false,
+    // null in every state but "paid".
+    paid: null,
     chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
   });
 });
@@ -398,6 +400,7 @@ test("GET /a/:handle carries a task agent's form in order, and a self-running ag
     state: "view_only",
     key: null,
     transcriptsStored: false,
+    paid: null,
     scheduled: { resultsPublic: true, latest: [] },
   });
 });
@@ -565,4 +568,176 @@ test("GET /a/:handle answers 404 for a private self-running agent, results or no
   const res = await app.inject({ method: "GET", url: "/a/eliza" });
   assert.equal(res.statusCode, 404);
   assert.deepEqual(res.json(), { error: "agent_not_found" });
+});
+
+// ============================================
+// The fifth state: use of the agent is sold at a price
+// ============================================
+
+const PAID_TERMS = {
+  listingId: "listing_use",
+  listingSlug: "eliza-for-hire",
+  pricingModel: "per_request",
+  priceCents: 5n,
+  unit: "message",
+  perMinute: 10,
+  perDay: 200,
+  transcriptsStored: true,
+  sendsRequests: true,
+};
+
+const paidPage = (use: Record<string, unknown> = {}, paid: Record<string, unknown> = {}) => ({
+  ...fullPublicAgent,
+  use: { ...fullPublicAgent.use, state: "paid", key: null, transcriptsStored: true, paid: { ...PAID_TERMS, ...paid }, ...use },
+});
+
+test("GET /a/:handle in the paid state carries the terms, the price as a number of cents, and a null key", async () => {
+  // The loader hands the key over, as an enabled key row would tempt it to.
+  const app = await makeApp({ loadPublicAgent: async () => paidPage({ key: PAGE_KEY }) });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().use, {
+    state: "paid",
+    key: null,
+    transcriptsStored: true,
+    paid: {
+      listingId: "listing_use",
+      listingSlug: "eliza-for-hire",
+      pricingModel: "per_request",
+      priceCents: 5,
+      unit: "message",
+      perMinute: 10,
+      perDay: 200,
+      transcriptsStored: true,
+      sendsRequests: true,
+    },
+    chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
+  });
+  assert.ok(!res.body.includes(PAGE_KEY), "the key of a page whose use is sold is never sent");
+});
+
+test("GET /a/:handle answers paid: null in every other state, whatever a loader hands over", async () => {
+  for (const state of ["on", "paused", "view_only"]) {
+    const app = await makeApp({
+      loadPublicAgent: async () => ({ ...fullPublicAgent, use: { ...fullPublicAgent.use, state, paid: PAID_TERMS } }),
+    });
+    const res = await app.inject({ method: "GET", url: "/a/eliza" });
+    assert.equal(res.json().use.state, state);
+    assert.equal(res.json().use.paid, null, state);
+    assert.ok(!res.body.includes("eliza-for-hire"), state);
+  }
+  // A paid state with no terms is not sent as one: the page loads, and nobody uses it free.
+  const bare = await makeApp({
+    loadPublicAgent: async () => ({ ...fullPublicAgent, use: { ...fullPublicAgent.use, state: "paid", key: PAGE_KEY, paid: null } }),
+  });
+  const res = await bare.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.json().use.state, "paused");
+  assert.equal(res.json().use.key, null);
+  assert.equal(res.json().use.paid, null);
+});
+
+test("GET /a/:handle sends nothing of a sale but its terms: no other buyer's price, no count of buyers, no allowance, no cap", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () =>
+      paidPage(
+        { dailyCap: 37113, usedToday: 41417, creatorAllowance: 59359, buyers: 71717 },
+        {
+          publisherId: "PUBLISHER_NEVER_SHOWN",
+          title: "TITLE_NEVER_SHOWN",
+          useAllowedTools: ["TOOL_NEVER_SHOWN"],
+          buyers: { copies: 81818, using: 82828, subscribed: 83838 },
+          acceptedPriceCents: 91919,
+          otherBuyerPriceCents: 92929,
+          freeModelDailyAllowance: 93939,
+          useModelCostMicros: 94949n,
+          totalRevenueCents: 95959n,
+        },
+      ),
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  for (const forbidden of [
+    "PUBLISHER_NEVER_SHOWN",
+    "TITLE_NEVER_SHOWN",
+    "TOOL_NEVER_SHOWN",
+    "37113",
+    "41417",
+    "59359",
+    "71717",
+    "81818",
+    "82828",
+    "83838",
+    "91919",
+    "92929",
+    "93939",
+    "94949",
+    "95959",
+    "buyers",
+    "Allowance",
+    "dailyCap",
+    "usedToday",
+    "publisherId",
+  ]) {
+    assert.ok(!res.body.includes(forbidden), forbidden);
+  }
+  assert.deepEqual(Object.keys(res.json().use.paid), [
+    "listingId",
+    "listingSlug",
+    "pricingModel",
+    "priceCents",
+    "unit",
+    "perMinute",
+    "perDay",
+    "transcriptsStored",
+    "sendsRequests",
+  ]);
+});
+
+test("GET /a/:handle for a sold self-running agent sends result dates without text, the latest date and the schedule", async () => {
+  const sold = (scheduled: Record<string, unknown>) => ({
+    ...paidPage({}, { pricingModel: "monthly", priceCents: 900n, unit: "month" }),
+    agent: { ...fullPublicAgent.agent, agentKind: "scheduled" },
+    use: {
+      state: "paid",
+      key: null,
+      transcriptsStored: false,
+      paid: { ...PAID_TERMS, pricingModel: "monthly", priceCents: 900n, unit: "month" },
+      scheduled,
+    },
+  });
+  const app = await makeApp({
+    loadPublicAgent: async () =>
+      sold({
+        // Even a loader that carried the text, and said the results are public.
+        resultsPublic: true,
+        latest: [resultOf(5), resultOf(4), resultOf(3), resultOf(2), resultOf(1)],
+        lastResultAt: new Date(Date.UTC(2026, 9, 5, 9, 0, 5)),
+        schedule: { cronExpression: "0 9 * * *", timezone: "Europe/Berlin", prompt: "RUN_PROMPT_NEVER_SHOWN", id: "TASK_ID_NEVER_SHOWN" },
+        deliver: { alertChannelId: "CHANNEL_NEVER_SHOWN" },
+      }) as never,
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().use.scheduled, {
+    resultsPublic: false,
+    latest: [
+      { finishedAt: "2026-10-05T09:00:05.000Z" },
+      { finishedAt: "2026-10-04T09:00:05.000Z" },
+      { finishedAt: "2026-10-03T09:00:05.000Z" },
+    ],
+    lastResultAt: "2026-10-05T09:00:05.000Z",
+    schedule: { cronExpression: "0 9 * * *", timezone: "Europe/Berlin" },
+  });
+  assert.equal(res.json().use.paid.priceCents, 900);
+  for (const forbidden of ["Result of day", "RUN_PROMPT_NEVER_SHOWN", "TASK_ID_NEVER_SHOWN", "CHANNEL_NEVER_SHOWN"]) {
+    assert.ok(!res.body.includes(forbidden), forbidden);
+  }
+
+  const none = await makeApp({ loadPublicAgent: async () => sold({ resultsPublic: false, latest: [] }) as never });
+  assert.deepEqual((await none.inject({ method: "GET", url: "/a/eliza" })).json().use.scheduled, {
+    resultsPublic: false,
+    latest: [],
+    lastResultAt: null,
+    schedule: null,
+  });
 });

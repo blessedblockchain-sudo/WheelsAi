@@ -92,6 +92,26 @@ interface FakeTask {
   name: string;
   createdAt: Date;
   payload?: unknown;
+  isEnabled?: boolean;
+  scheduleType?: string;
+  cronExpression?: string | null;
+  timezone?: string;
+}
+
+/** An agent_listings row, with more on it than a page may show. */
+interface FakeListing {
+  id: string;
+  slug: string;
+  title: string;
+  agentId: string;
+  publisherId: string;
+  status: string;
+  sells: string;
+  pricingModel: string;
+  pricePerRequestCents: bigint | null;
+  monthlyPriceCents: bigint | null;
+  useAllowedTools: string[];
+  [extra: string]: unknown;
 }
 
 /** A task_executions row. */
@@ -113,8 +133,12 @@ function makePrismaStub(opts: {
   usage?: FakeUsage[];
   tasks?: FakeTask[];
   executions?: FakeExecution[];
+  listings?: FakeListing[];
+  listingReadFails?: boolean;
 }) {
   const observed: {
+    /** Every read of the listing that sells use. */
+    listingArgs: any[];
     agentArgs?: any;
     aggArgs?: any;
     manyArgs?: any;
@@ -122,7 +146,7 @@ function makePrismaStub(opts: {
     /** Every read of scheduled tasks and of their runs. */
     taskArgs: any[];
     executionArgs: any[];
-  } = { taskArgs: [], executionArgs: [] };
+  } = { taskArgs: [], executionArgs: [], listingArgs: [] };
   return {
     observed,
     prisma: {
@@ -136,6 +160,20 @@ function makePrismaStub(opts: {
                 // keeps the slug as its handle, as these fixtures do.
                 (a.publicHandle ?? a.slug) === where.publicHandle &&
                 (where.isPublic === undefined || a.isPublic === where.isPublic),
+            ) ?? null
+          );
+        },
+      },
+      // What findUseListing reads (services/useListing.ts). Whole rows come
+      // back, as a careless select would give them.
+      agentListing: {
+        async findFirst(args: any) {
+          observed.listingArgs.push(args);
+          if (opts.listingReadFails) throw new Error("the listing could not be read");
+          const { where } = args;
+          return (
+            (opts.listings ?? []).find(
+              (l) => l.agentId === where.agentId && l.status === where.status && l.sells === where.sells,
             ) ?? null
           );
         },
@@ -189,6 +227,9 @@ function makePrismaStub(opts: {
             .filter((t) => t.orgId === where.orgId && t.agentId === where.agentId && t.taskType === where.taskType)
             .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id))
             .slice(0, take);
+        },
+        async count({ where }: any) {
+          return (opts.tasks ?? []).filter((t) => t.orgId === where.orgId && t.agentId === where.agentId).length;
         },
       },
       taskExecution: {
@@ -783,7 +824,7 @@ const textOf = (value: unknown) =>
 async function pageOf(
   agents: FakeAgent[],
   handle: string,
-  runs: { tasks?: FakeTask[]; executions?: FakeExecution[] } = {},
+  runs: { tasks?: FakeTask[]; executions?: FakeExecution[]; listings?: FakeListing[]; listingReadFails?: boolean } = {},
 ) {
   const { loadPublicAgentByPrisma } = await import("../services/loadPublicAgent.js");
   const stub = makePrismaStub({ agents, ...runs });
@@ -1000,7 +1041,7 @@ test("each result is cut at 8,000 characters, and a success with no text is pass
     ],
   });
   const latest = result!.use.scheduled!.latest;
-  assert.deepEqual(latest.map((r) => r.text.length), [8_000, 8_000]);
+  assert.deepEqual(latest.map((r) => r.text?.length), [8_000, 8_000]);
   assert.equal(latest[0]!.text, "b".repeat(8_000));
   assert.equal(latest[1]!.text, "a".repeat(8_000));
 });
@@ -1136,6 +1177,226 @@ test("nothing private is in the answer, whatever the row holds", async () => {
       "handle",
       "name",
       "slug",
+    ]);
+  }
+});
+
+// ============================================
+// The fifth state: use of the agent is sold at a price
+// ============================================
+
+const listingOf = (over: Partial<FakeListing> = {}): FakeListing => ({
+  id: "listing_use",
+  slug: "eliza-for-hire",
+  title: "Eliza",
+  agentId: "agent_1",
+  publisherId: "org_PUBLISHER_NEVER_SHOWN",
+  status: "published",
+  sells: "use",
+  pricingModel: "per_request",
+  pricePerRequestCents: 5n,
+  monthlyPriceCents: null,
+  useAllowedTools: [],
+  // A real row has more; none of it may cross.
+  totalInstalls: 4_711,
+  totalRevenueCents: 987_654n,
+  useModelCostMicros: 123_456_789n,
+  ...over,
+});
+const MONTHLY_LISTING = listingOf({ pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900n });
+
+test("a published listing that sells use at a price: the state is paid, with its terms, and the key is never sent", async () => {
+  // The key row is enabled, as a hand-edited or raced row could be.
+  const { result, stub } = await pageOf([{ ...baseAgent, pageKey: { ...PAGE_KEY, storeTranscripts: true } }], "eliza", {
+    listings: [listingOf({ useAllowedTools: ["http_request"] })],
+  });
+  assert.deepEqual(result?.use, {
+    state: "paid",
+    key: null,
+    transcriptsStored: true,
+    paid: {
+      listingId: "listing_use",
+      listingSlug: "eliza-for-hire",
+      pricingModel: "per_request",
+      priceCents: 5n,
+      unit: "message",
+      perMinute: 10,
+      perDay: 200,
+      transcriptsStored: true,
+      sendsRequests: true,
+    },
+    chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
+  });
+  assert.ok(!textOf(result).includes(PAGE_KEY.publicKey), "the key of a page whose use is sold is never sent");
+  // Read as everywhere else: the published listing that sells use of this agent.
+  assert.deepEqual(stub.observed.listingArgs[0].where, { agentId: "agent_1", status: "published", sells: "use" });
+});
+
+test("the unit follows the kind and the pricing: a message, a run, a month", async () => {
+  const unitOf = async (agentKind: string, listing: FakeListing) =>
+    (await pageOf([{ ...baseAgent, orgId: RESULTS_ORG, agentKind, pageKey: { ...PAGE_KEY, enabled: false } }], "eliza", { listings: [listing] }))
+      .result?.use.paid;
+  assert.equal((await unitOf("conversation", listingOf()))?.unit, "message");
+  assert.equal((await unitOf("task", listingOf()))?.unit, "run");
+  for (const agentKind of ["conversation", "task", "scheduled"]) {
+    const paid = await unitOf(agentKind, MONTHLY_LISTING);
+    assert.equal(paid?.unit, "month", agentKind);
+    assert.equal(paid?.priceCents, 900n);
+    assert.equal(paid?.pricingModel, "monthly");
+  }
+  // No outbound tool allowed, no copy kept.
+  const plain = await unitOf("task", listingOf());
+  assert.equal(plain?.sendsRequests, false);
+  assert.equal(plain?.transcriptsStored, false);
+});
+
+test("a free use listing changes nothing: the page is on as before, with its key and no terms", async () => {
+  for (const listing of [
+    listingOf({ pricingModel: "free", pricePerRequestCents: null }),
+    listingOf({ pricingModel: "per_request", pricePerRequestCents: 0n }),
+    listingOf({ pricingModel: "tokenized", pricePerRequestCents: null }),
+  ]) {
+    const { result } = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listing] });
+    assert.deepEqual(result?.use, {
+      state: "on",
+      key: PAGE_KEY.publicKey,
+      transcriptsStored: false,
+      chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
+    });
+  }
+});
+
+test("a listing that sells copies, a draft and an archived one change nothing", async () => {
+  for (const listing of [
+    listingOf({ sells: "copies" }),
+    listingOf({ status: "draft" }),
+    listingOf({ status: "archived" }),
+    listingOf({ agentId: "agent_other" }),
+  ]) {
+    const { result } = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listing] });
+    assert.equal(result?.use.state, "on");
+    assert.equal(result?.use.key, PAGE_KEY.publicKey);
+    assert.equal(result?.use.paid, undefined);
+  }
+});
+
+test("a listing that cannot be read fails the page: the key is not handed out on a guess", async () => {
+  await assert.rejects(pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listingReadFails: true }), /could not be read/);
+});
+
+const CRON_TASK: FakeTask = { ...OWN_TASK, isEnabled: true, scheduleType: "cron", cronExpression: "0 9 * * *", timezone: "Europe/Berlin" };
+
+test("a self-running agent sold by the month: the dates of its last results without their text, the latest and its schedule", async () => {
+  // The owner's switch is off, and it does not decide this: the dates are for everyone.
+  for (const publicResults of [false, true]) {
+    const { result, stub } = await pageOf([scheduledAgent({ publicResults, pageKey: { ...PAGE_KEY, enabled: false } })], "eliza", {
+      listings: [MONTHLY_LISTING],
+      tasks: [CRON_TASK],
+      executions: [runOf(1), runOf(2), runOf(3), runOf(4), runOf(5, { status: "failed", output: null, error: "FAILURE_REASON_NEVER_SHOWN" })],
+    });
+    assert.equal(result?.use.state, "paid");
+    assert.equal(result?.use.paid?.unit, "month");
+    assert.deepEqual(result?.use.scheduled, {
+      resultsPublic: false,
+      latest: [
+        { finishedAt: new Date("2026-10-04T09:00:05Z") },
+        { finishedAt: new Date("2026-10-03T09:00:05Z") },
+        { finishedAt: new Date("2026-10-02T09:00:05Z") },
+      ],
+      lastResultAt: new Date("2026-10-04T09:00:05Z"),
+      schedule: { cronExpression: "0 9 * * *", timezone: "Europe/Berlin" },
+    });
+    const sent = textOf(result);
+    for (const forbidden of [
+      "Result of day",
+      "RUN_PROMPT_NEVER_SHOWN",
+      "RUN_INPUT_NEVER_SHOWN",
+      "FAILURE_REASON_NEVER_SHOWN",
+      "channel_NEVER_SHOWN",
+      "task_own",
+      "Eliza (schedule)",
+      RESULTS_ORG,
+    ]) {
+      assert.ok(!sent.includes(forbidden), forbidden);
+    }
+    // The text is cut to nothing as it is read: none of it is held.
+    assert.equal(stub.observed.executionArgs.length, 1);
+  }
+});
+
+test("sold with no schedule, a schedule that is off, or no result yet: null and an empty list, never a guess", async () => {
+  const sold = (tasks: FakeTask[], executions: FakeExecution[] = []) =>
+    pageOf([scheduledAgent({ publicResults: true })], "eliza", { listings: [MONTHLY_LISTING], tasks, executions });
+  assert.deepEqual((await sold([])).result?.use.scheduled, { resultsPublic: false, latest: [], lastResultAt: null, schedule: null });
+  const off = await sold([{ ...CRON_TASK, isEnabled: false }], [runOf(1)]);
+  assert.equal(off.result?.use.scheduled?.schedule, null);
+  assert.deepEqual(off.result?.use.scheduled?.lastResultAt, new Date("2026-10-01T09:00:05Z"));
+  const interval = await sold([{ ...CRON_TASK, scheduleType: "interval", cronExpression: null }]);
+  assert.equal(interval.result?.use.scheduled?.schedule, null);
+});
+
+test("a free or unlisted self-running agent keeps today's rule: text only while its owner shows it, and no schedule", async () => {
+  const runs = { tasks: [CRON_TASK], executions: [runOf(1)] };
+  for (const listings of [[], [listingOf({ pricingModel: "free", pricePerRequestCents: null })]]) {
+    const shown = await pageOf([scheduledAgent({ publicResults: true })], "eliza", { ...runs, listings });
+    assert.deepEqual(shown.result?.use.scheduled, {
+      resultsPublic: true,
+      latest: [{ finishedAt: new Date("2026-10-01T09:00:05Z"), text: "Result of day 1" }],
+    });
+    assert.ok(!textOf(shown.result).includes("0 9 * * *"));
+    const hidden = await pageOf([scheduledAgent({ publicResults: false })], "eliza", { ...runs, listings });
+    assert.deepEqual(hidden.result?.use.scheduled, { resultsPublic: false, latest: [] });
+    assert.deepEqual(hidden.stub.observed.taskArgs, []);
+  }
+});
+
+test("of a listing only its id, slug, pricing and price cross: never its publisher, its buyers or its money", async () => {
+  for (const agentKind of ["conversation", "task", "scheduled"]) {
+    const { result } = await pageOf(
+      [
+        {
+          ...baseAgent,
+          agentKind,
+          orgId: "org_NEVER_SHOWN",
+          systemPrompt: "INSTRUCTIONS_NEVER_SHOWN",
+          tools: [{ name: "http_request", config: { url: "https://internal.example/TOOL_SETTING" } }],
+          pageKey: PAGE_KEY,
+        },
+      ],
+      "eliza",
+      { listings: [listingOf({ pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900n, useAllowedTools: ["http_request"] })] },
+    );
+    const sent = textOf(result);
+    for (const forbidden of [
+      "org_PUBLISHER_NEVER_SHOWN",
+      "publisherId",
+      "org_NEVER_SHOWN",
+      "INSTRUCTIONS_NEVER_SHOWN",
+      "TOOL_SETTING",
+      "http_request",
+      "useAllowedTools",
+      "4711",
+      "totalInstalls",
+      "987654",
+      "totalRevenueCents",
+      "123456789",
+      "useModelCostMicros",
+      "37113",
+      "dailyMessageCap",
+      PAGE_KEY.publicKey,
+    ]) {
+      assert.ok(!sent.includes(forbidden), `${agentKind}: ${forbidden}`);
+    }
+    assert.deepEqual(Object.keys(result!.use.paid!).sort(), [
+      "listingId",
+      "listingSlug",
+      "perDay",
+      "perMinute",
+      "priceCents",
+      "pricingModel",
+      "sendsRequests",
+      "transcriptsStored",
+      "unit",
     ]);
   }
 });

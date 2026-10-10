@@ -3,7 +3,8 @@
  *
  *   GET /api/capabilities   (mounted with prefix "/api/capabilities")
  *
- * Signed-in session or API key. The answer is five facts:
+ * Signed-in session or API key. The answer is five facts and the numbers
+ * of paid use:
  *
  *   chat           the models an agent can answer on now, in the order the
  *                  platform tries them, and the one an agent with no model
@@ -12,6 +13,11 @@
  *   emailDelivery  results can be sent by email
  *   agentGpu       an agent can be put on a dedicated GPU
  *   paidTasks      a paid task can be run
+ *   paidUse        what a Sell screen and a buyer's page say of paid use:
+ *                  how often one buyer may use an agent (a minute, a day),
+ *                  the smallest price of one use, and how many answers a
+ *                  day the caller's own organization gets on the platform's
+ *                  models (null when that cannot be read)
  *
  * It says WHAT is available and never why: no key names, setting names,
  * addresses or reasons. The body is built field by field from the answers
@@ -24,6 +30,9 @@
  */
 
 import type { FastifyPluginAsync, preHandlerAsyncHookHandler } from "fastify";
+
+import { PAID_USE_PER_BUYER_PER_DAY, PAID_USE_PER_BUYER_PER_MINUTE } from "../services/publicPageState.js";
+import { MIN_PRICE_PER_USE_CENTS } from "../services/useListing.js";
 
 // ============================================
 // Types
@@ -51,6 +60,27 @@ export interface Capabilities {
   paidTasks: Availability;
 }
 
+/** The numbers of paid use. The first three are the same for everyone. */
+export interface PaidUseCapability {
+  perBuyerPerMinute: number;
+  perBuyerPerDay: number;
+  /** Cents. */
+  minPricePerUseCents: number;
+  /** The caller's organization, on its plan; null when it cannot be read. */
+  freeModelDailyAllowance: number | null;
+}
+
+/** The whole answer. */
+export interface CapabilitiesAnswer extends Capabilities {
+  paidUse: PaidUseCapability;
+}
+
+/** The read behind `paidUse.freeModelDailyAllowance`. */
+export interface PaidUseReads {
+  /** Answers a day on the platform's models for this organization, as the chat core counts them. */
+  freeModelDailyAllowance(orgId: string): Promise<number>;
+}
+
 /** The reads behind the answer. Each is asked on every request. */
 export interface CapabilitiesReads {
   /** Models whose provider the platform can reach now, in the order they are tried. */
@@ -61,7 +91,7 @@ export interface CapabilitiesReads {
   paidTasks(): boolean;
 }
 
-export interface CapabilitiesRouteDeps extends CapabilitiesReads {
+export interface CapabilitiesRouteDeps extends CapabilitiesReads, PaidUseReads {
   guards: { auth: preHandlerAsyncHookHandler };
 }
 
@@ -114,17 +144,34 @@ export function readCapabilities(reads: CapabilitiesReads): Capabilities {
   };
 }
 
+export async function readPaidUse(reads: PaidUseReads, orgId: string): Promise<PaidUseCapability> {
+  let allowance: number | null = null;
+  try {
+    const read = await reads.freeModelDailyAllowance(orgId);
+    // Only a whole number that is not negative is an allowance.
+    if (typeof read === "number" && Number.isFinite(read) && read >= 0) allowance = Math.floor(read);
+  } catch {
+    allowance = null;
+  }
+  return {
+    perBuyerPerMinute: PAID_USE_PER_BUYER_PER_MINUTE,
+    perBuyerPerDay: PAID_USE_PER_BUYER_PER_DAY,
+    minPricePerUseCents: Number(MIN_PRICE_PER_USE_CENTS),
+    freeModelDailyAllowance: allowance,
+  };
+}
+
 // ============================================
 // Routes
 // ============================================
 
 export function createCapabilitiesRoutes(deps: CapabilitiesRouteDeps): FastifyPluginAsync {
   return async (app) => {
-    app.get("/", { preHandler: [deps.guards.auth] }, async (_request, reply) => {
+    app.get("/", { preHandler: [deps.guards.auth] }, async (request, reply): Promise<CapabilitiesAnswer> => {
       // It changes when an operator changes the configuration, and it is the
       // same for everyone, but it is still an answer to a signed-in caller.
       reply.header("Cache-Control", "private, no-store");
-      return readCapabilities(deps);
+      return { ...readCapabilities(deps), paidUse: await readPaidUse(deps, request.auth!.orgId) };
     });
   };
 }

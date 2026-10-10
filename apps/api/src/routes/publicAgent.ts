@@ -13,6 +13,14 @@
  * agent whose owner shows its results, the last three of them: when each
  * finished and its text, and nothing else of a run.
  *
+ * While a published listing sells use of the agent at a price the state is
+ * "paid": the key is never sent, and `use.paid` carries the terms a person
+ * sees before paying (the listing, the price, the limits per buyer, whether
+ * the owner keeps a copy, whether the agent sends requests out). Never what
+ * another buyer pays or uses, how many buyers there are, or the owner's
+ * allowance. A self-running agent that is sold shows when its results
+ * arrived and its schedule, and never their text: that is what is sold.
+ *
  * This is the single most differentiated artifact in the product — it is
  * the visible manifestation of "agents that pay for their own compute"
  * and the first surface a regulator or holder lands on. Privacy
@@ -30,12 +38,13 @@
 import type { TaskInputSchema } from "@wheelsai/shared/agent-kind";
 import type { FastifyPluginAsync } from "fastify";
 
+import { PUBLIC_RESULT_MAX_CHARS, PUBLIC_RESULTS_LIMIT } from "../services/publicPageState.js";
+
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
-/** How many of a self-running agent's latest results its page shows. */
-export const PUBLIC_RESULTS_LIMIT = 3;
-/** Where the text of one result is cut. */
-export const PUBLIC_RESULT_MAX_CHARS = 8_000;
+// The page's two result limits live with the page's states, where the paid
+// routes read them too (a free listing's results are the page's).
+export { PUBLIC_RESULT_MAX_CHARS, PUBLIC_RESULTS_LIMIT };
 
 // ============================================
 // Shapes
@@ -48,17 +57,38 @@ export interface PublicAgentChatUse {
   maxTotalChars: number;
 }
 
+/** The terms of paid use, as a person sees them before paying. */
+export interface PublicAgentPaidUse {
+  listingId: string;
+  listingSlug: string;
+  /** per_request or monthly. */
+  pricingModel: string;
+  /** The price of one unit, in cents. */
+  priceCents: bigint;
+  /** What one payment buys. */
+  unit: "message" | "run" | "month";
+  /** The most one buyer may use it in a minute, and in a day. */
+  perMinute: number;
+  perDay: number;
+  /** Whether the owner keeps a copy of what buyers send and get back. */
+  transcriptsStored: boolean;
+  /** Whether the agent may send requests to other websites for a buyer. */
+  sendsRequests: boolean;
+}
+
 /**
  * How the page can be used right now. `off` is not a state here: a page
  * that is off answers 404. Exactly one of chat, task and scheduled is set,
  * by the agent's kind.
  */
 export interface PublicAgentUse {
-  state: "view_only" | "on" | "paused";
+  state: "view_only" | "on" | "paused" | "paid";
   /** The page's publishable key, only while state is "on". */
   key: string | null;
   /** Whether the owner keeps a copy of what visitors send and get back. */
   transcriptsStored: boolean;
+  /** Set while state is "paid", and only then. */
+  paid?: PublicAgentPaidUse | null;
   chat?: PublicAgentChatUse;
   task?: {
     /** The form as a JSON Schema, its properties in the order of the questions. */
@@ -73,7 +103,11 @@ export interface PublicAgentUse {
      * and only while the switch is on. When each finished and its text:
      * never what it was told, a run that failed, or where results are sent.
      */
-    latest: Array<{ finishedAt: Date; text: string }>;
+    latest: Array<{ finishedAt: Date; text?: string }>;
+    /** Only while state is "paid": when the latest result arrived. */
+    lastResultAt?: Date | null;
+    /** Only while state is "paid": when it runs, for a schedule that is on. */
+    schedule?: { cronExpression: string; timezone: string } | null;
   };
 }
 
@@ -146,10 +180,29 @@ function lamportsToSol4dp(lamports: bigint): number {
 
 /** Field by field, like the rest of this answer: nothing the loader carries extra crosses. */
 function serializeUse(use: PublicAgentUse) {
+  // The terms exist only in the paid state, and the paid state only with them.
+  // A paid state that arrives without them is answered as paused: the page
+  // loads, and nobody uses it free.
+  const paid = use.state === "paid" ? (use.paid ?? null) : null;
+  const state = use.state === "paid" && !paid ? "paused" : use.state;
+  const sold = use.state === "paid";
   return {
-    state: use.state,
-    key: use.state === "on" ? use.key : null,
+    state,
+    key: state === "on" ? use.key : null,
     transcriptsStored: use.transcriptsStored,
+    paid: paid
+      ? {
+          listingId: paid.listingId,
+          listingSlug: paid.listingSlug,
+          pricingModel: paid.pricingModel,
+          priceCents: Number(paid.priceCents),
+          unit: paid.unit,
+          perMinute: paid.perMinute,
+          perDay: paid.perDay,
+          transcriptsStored: paid.transcriptsStored,
+          sendsRequests: paid.sendsRequests,
+        }
+      : null,
     ...(use.chat && {
       chat: {
         maxMessages: use.chat.maxMessages,
@@ -160,19 +213,39 @@ function serializeUse(use: PublicAgentUse) {
     ...(use.task && {
       task: { inputSchema: use.task.inputSchema, maxInputChars: use.task.maxInputChars },
     }),
-    ...(use.scheduled && {
-      scheduled: {
-        resultsPublic: use.scheduled.resultsPublic,
-        // The switch and the limits are held here too, whatever the loader
-        // carried: no result while the switch is off, three at most, each cut.
-        latest: (use.scheduled.resultsPublic ? use.scheduled.latest : [])
-          .slice(0, PUBLIC_RESULTS_LIMIT)
-          .map((result) => ({
-            finishedAt: result.finishedAt.toISOString(),
-            text: result.text.slice(0, PUBLIC_RESULT_MAX_CHARS),
-          })),
-      },
-    }),
+    ...(use.scheduled &&
+      !sold && {
+        scheduled: {
+          resultsPublic: use.scheduled.resultsPublic,
+          // The switch and the limits are held here too, whatever the loader
+          // carried: no result while the switch is off, three at most, each cut.
+          latest: (use.scheduled.resultsPublic ? use.scheduled.latest : [])
+            .slice(0, PUBLIC_RESULTS_LIMIT)
+            .map((result) => ({
+              finishedAt: result.finishedAt.toISOString(),
+              text: (result.text ?? "").slice(0, PUBLIC_RESULT_MAX_CHARS),
+            })),
+        },
+      }),
+    // Sold: the text of a result is what a subscriber pays for, so only when
+    // each arrived crosses, whatever the loader carried and whatever the
+    // owner's switch says. With it, when the latest arrived and the schedule.
+    ...(use.scheduled &&
+      sold && {
+        scheduled: {
+          resultsPublic: false,
+          latest: use.scheduled.latest
+            .slice(0, PUBLIC_RESULTS_LIMIT)
+            .map((result) => ({ finishedAt: result.finishedAt.toISOString() })),
+          lastResultAt: use.scheduled.lastResultAt ? use.scheduled.lastResultAt.toISOString() : null,
+          schedule: use.scheduled.schedule
+            ? {
+                cronExpression: use.scheduled.schedule.cronExpression,
+                timezone: use.scheduled.schedule.timezone,
+              }
+            : null,
+        },
+      }),
   };
 }
 

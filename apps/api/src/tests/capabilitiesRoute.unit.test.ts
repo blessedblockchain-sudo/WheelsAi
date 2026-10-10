@@ -4,7 +4,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 
-import { createCapabilitiesRoutes, readCapabilities, type CapabilitiesReads } from "../routes/capabilities.js";
+import {
+  createCapabilitiesRoutes,
+  readCapabilities,
+  readPaidUse,
+  type CapabilitiesReads,
+} from "../routes/capabilities.js";
 import { buildCapabilitiesDeps, type CapabilitiesEnv } from "../routes/capabilitiesBindings.js";
 import { resolveAgentModelId } from "../services/agentModelResolution.js";
 import { installTestAuth } from "./jobsApiFakes.js";
@@ -53,6 +58,8 @@ async function build() {
     env: { ...ALL_OFF } as CapabilitiesEnv,
     models: [] as Array<typeof GROQ | typeof GEMINI>,
     email: false,
+    /** The plan's multiple of the free-model limits, per organization. */
+    multiplier: (async () => 1) as (orgId: string) => Promise<number>,
   };
   const app = Fastify();
   installTestAuth(app);
@@ -62,6 +69,7 @@ async function build() {
         env: () => world.env,
         availableFreeModels: () => world.models,
         emailConfigured: () => world.email,
+        planRateMultiplier: (orgId) => world.multiplier(orgId),
         auth: async (request: FastifyRequest, reply: FastifyReply) => {
           if (!request.auth) return reply.status(401).send({ error: "Unauthorized", message: "Authentication required" });
         },
@@ -84,6 +92,8 @@ test("with nothing switched on, nothing is available and the shape is still whol
     emailDelivery: { available: false },
     agentGpu: { available: false },
     paidTasks: { available: false },
+    // Numbers, not switches: they hold whatever is on. ALL_OFF names no daily limit.
+    paidUse: { perBuyerPerMinute: 10, perBuyerPerDay: 200, minPricePerUseCents: 5, freeModelDailyAllowance: null },
   });
   await app.close();
 });
@@ -175,7 +185,7 @@ test("a caller with no credentials gets 401 and nothing is read; a session and a
   assert.equal((await get(OWNER)).statusCode, 200);
   const byKey = await get(API_KEY);
   assert.equal(byKey.statusCode, 200);
-  assert.deepEqual(Object.keys(byKey.json()), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks"]);
+  assert.deepEqual(Object.keys(byKey.json()), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks", "paidUse"]);
   assert.ok(reads > 0);
   await app.close();
 });
@@ -203,7 +213,13 @@ test("the body names no key, setting, address or reason, whatever is on or off",
 
     // Every leaf is one of the documented ones.
     const json = JSON.parse(body) as Record<string, any>;
-    assert.deepEqual(Object.keys(json), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks"]);
+    assert.deepEqual(Object.keys(json), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks", "paidUse"]);
+    assert.deepEqual(Object.keys(json.paidUse), [
+      "perBuyerPerMinute",
+      "perBuyerPerDay",
+      "minPricePerUseCents",
+      "freeModelDailyAllowance",
+    ]);
     assert.deepEqual(Object.keys(json.chat), ["models", "defaultModel"]);
     for (const model of json.chat.models) assert.deepEqual(Object.keys(model), ["id", "label"]);
     for (const key of ["payouts", "emailDelivery", "agentGpu", "paidTasks"]) {
@@ -250,4 +266,55 @@ test("only the id and the label of a model leave the server", () => {
     { id: "free/x/y", label: "free/x/y" },
   ]);
   assert.equal(body.chat.defaultModel, GROQ.id);
+});
+
+// ============================================
+// paidUse: the numbers a Sell screen and a buyer's page show
+// ============================================
+
+test("paidUse carries the buyer's limits, the smallest price of a use, and the caller's own allowance on its plan", async () => {
+  const { app, world, get } = await build();
+  const asked: string[] = [];
+  world.env = { ...ALL_OFF, FREE_TIER_RPD: 200 };
+  world.multiplier = async (orgId) => {
+    asked.push(orgId);
+    return 1;
+  };
+  assert.deepEqual((await get()).json().paidUse, {
+    perBuyerPerMinute: 10,
+    perBuyerPerDay: 200,
+    minPricePerUseCents: 5,
+    freeModelDailyAllowance: 200,
+  });
+  // The caller's organization, never one named in the request.
+  assert.deepEqual(asked, ["org_1"]);
+
+  // A plan with a multiple, as the chat core's own check multiplies it.
+  world.multiplier = async () => 5;
+  assert.equal((await get(API_KEY)).json().paidUse.freeModelDailyAllowance, 1000);
+
+  // A plan that cannot be read counts as the Starter multiple, as it does there.
+  world.multiplier = async () => {
+    throw new Error("PLAN_LOOKUP_NEVER_SHOWN");
+  };
+  const res = await get();
+  assert.equal(res.json().paidUse.freeModelDailyAllowance, 200);
+  assert.ok(!res.body.includes("PLAN_LOOKUP_NEVER_SHOWN"));
+  await app.close();
+});
+
+test("paidUse fails closed on the allowance alone: an unreadable or senseless number is null, the limits stay", async () => {
+  const fixed = { perBuyerPerMinute: 10, perBuyerPerDay: 200, minPricePerUseCents: 5 };
+  const boom = async () => {
+    throw new Error("down");
+  };
+  assert.deepEqual(await readPaidUse({ freeModelDailyAllowance: boom }, "org_1"), { ...fixed, freeModelDailyAllowance: null });
+  for (const senseless of [Number.NaN, Number.POSITIVE_INFINITY, -1, "200" as unknown as number]) {
+    assert.deepEqual(await readPaidUse({ freeModelDailyAllowance: async () => senseless }, "org_1"), {
+      ...fixed,
+      freeModelDailyAllowance: null,
+    });
+  }
+  assert.equal((await readPaidUse({ freeModelDailyAllowance: async () => 0 }, "org_1")).freeModelDailyAllowance, 0);
+  assert.equal((await readPaidUse({ freeModelDailyAllowance: async () => 300.9 }, "org_1")).freeModelDailyAllowance, 300);
 });

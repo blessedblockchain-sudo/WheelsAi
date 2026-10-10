@@ -33,8 +33,20 @@
  *     (latestOwnResults). Whether the page can be used does not matter:
  *     showing results is its own switch.
  *
- * SQL trips: agent + nested includes, then the payment aggregate/list,
- * usage aggregate, eligibility check and latest results run concurrently.
+ *   - while a published listing sells use of the agent at a price
+ *     (findUseListing, isPaidUse) the state is "paid": the key is never
+ *     sent, whatever the key row says, and `paid` carries the terms. A free
+ *     use listing changes nothing here, and neither does one that sells
+ *     copies. A listing read that fails fails the page: a page that cannot
+ *     tell whether use is sold must not hand out its key.
+ *
+ *   - a self-running agent that is sold shows when its last results
+ *     arrived, never their text, with when the latest arrived and the
+ *     schedule while it is on. The owner's switch does not decide it.
+ *
+ * SQL trips: agent + nested includes, the listing that sells use, then the
+ * payment aggregate/list, usage aggregate, eligibility check, latest results
+ * and (sold, self-running) the schedule run concurrently.
  */
 
 import { LIVE_CHANNEL_PLATFORMS, WEB_CHAT_CHANNEL } from "../routes/channelWebhooks.js";
@@ -45,10 +57,22 @@ import {
   type PublicAgentUse,
 } from "../routes/publicAgent.js";
 import { publicTaskForm } from "./agentKind.js";
-import { latestOwnResults, type OwnScheduleDb } from "./agentOwnSchedule.js";
+import { findOwnSchedule, latestOwnResults, type OwnScheduleDb } from "./agentOwnSchedule.js";
 import { TASK_MAX_INPUT_CHARS } from "./agentTask.js";
 import { PUBLIC_CHAT_LIMITS } from "./publicChat.js";
-import { publicPageStateOf } from "./publicPageState.js";
+import {
+  PAID_USE_PER_BUYER_PER_DAY,
+  PAID_USE_PER_BUYER_PER_MINUTE,
+  publicPageStateOf,
+} from "./publicPageState.js";
+import {
+  findUseListing,
+  isPaidUse,
+  usePriceCents,
+  useUnitOf,
+  type UseListingDb,
+  type UseListingRow,
+} from "./useListing.js";
 
 const LIVE_WEBHOOK_PLATFORMS: ReadonlySet<string> = new Set(LIVE_CHANNEL_PLATFORMS);
 
@@ -113,7 +137,9 @@ interface PaymentRow {
 
 type PublicResult = NonNullable<PublicAgentUse["scheduled"]>["latest"][number];
 
-interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution"> {
+type PublicSchedule = NonNullable<NonNullable<PublicAgentUse["scheduled"]>["schedule"]>;
+
+interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution">, UseListingDb {
   agent: {
     findFirst: (args: {
       where: { publicHandle: string; isPublic: boolean };
@@ -161,18 +187,48 @@ export interface LoadPublicAgentDeps {
 }
 
 /**
+ * The terms of paid use, from the listing that sells it. null unless a
+ * price is set: a free use listing is the public link as it is.
+ */
+function paidOf(agent: AgentRow, listing: UseListingRow | null): PublicAgentUse["paid"] {
+  if (!listing || !isPaidUse(listing)) return null;
+  const priceCents = usePriceCents(listing);
+  if (priceCents === null) return null;
+  // Field by field: the listing row also holds its publisher.
+  return {
+    listingId: listing.id,
+    listingSlug: listing.slug,
+    pricingModel: listing.pricingModel,
+    priceCents,
+    unit: useUnitOf(agent.agentKind, listing.pricingModel),
+    perMinute: PAID_USE_PER_BUYER_PER_MINUTE,
+    perDay: PAID_USE_PER_BUYER_PER_DAY,
+    transcriptsStored: agent.pageKey && !agent.pageKey.revokedAt ? agent.pageKey.storeTranscripts : false,
+    sendsRequests: listing.useAllowedTools.length > 0,
+  };
+}
+
+/**
  * How the page can be used right now, and what its panel needs. Never
  * called for a page that is off: that page is a 404.
  */
-function useOf(agent: AgentRow, latest: PublicResult[]): PublicAgentUse {
+function useOf(
+  agent: AgentRow,
+  paid: PublicAgentUse["paid"],
+  latest: PublicResult[],
+  schedule: PublicSchedule | null,
+): PublicAgentUse {
   const pageKey = agent.pageKey ?? null;
-  const state = publicPageStateOf(true, pageKey);
+  const state = publicPageStateOf(true, pageKey, Boolean(paid));
+  const live = pageKey && !pageKey.revokedAt ? pageKey : null;
   const use = {
     // "off" cannot happen for an agent that was found public.
     state: state === "off" ? "view_only" : state,
-    // The key is sent only while it can be used: a paused page has none.
+    // The key is sent only while it can be used: a paused page has none,
+    // and a page whose use is sold never has one.
     key: state === "on" && pageKey ? pageKey.publicKey : null,
-    transcriptsStored: state === "view_only" || !pageKey ? false : pageKey.storeTranscripts,
+    transcriptsStored: live ? live.storeTranscripts : false,
+    ...(paid ? { paid } : {}),
   } as const;
   if (agent.agentKind === "task") {
     return {
@@ -183,6 +239,18 @@ function useOf(agent: AgentRow, latest: PublicResult[]): PublicAgentUse {
     };
   }
   if (agent.agentKind === "scheduled") {
+    if (paid) {
+      // Sold: when each result arrived, and never its text.
+      return {
+        ...use,
+        scheduled: {
+          resultsPublic: false,
+          latest: latest.map((result) => ({ finishedAt: result.finishedAt })),
+          lastResultAt: latest[0]?.finishedAt ?? null,
+          schedule,
+        },
+      };
+    }
     const resultsPublic = agent.publicResults === true;
     // Field by field: when it finished and its text, and nothing else.
     return {
@@ -257,6 +325,11 @@ export async function loadPublicAgentByPrisma(
 
   if (!agent) return null;
 
+  // Before anything of the page is decided: whether use of it is sold at a
+  // price. Not caught: without this answer the key must not be sent.
+  const paid = paidOf(agent, await findUseListing(deps.prisma, agent.id));
+  const soldSchedule = Boolean(paid) && agent.agentKind === "scheduled";
+
   const treasuryRow = agent.listing?.agentToken?.treasury ?? null;
   // A key with no allowed origin answers only the dashboard's preview and
   // 403 everywhere else, so it is a channel set up, not one a visitor can
@@ -290,7 +363,7 @@ export async function loadPublicAgentByPrisma(
     ),
   );
 
-  const [paymentsPart, uptimePart, eligibilityPart, latestResults] = await Promise.all([
+  const [paymentsPart, uptimePart, eligibilityPart, latestResults, schedulePart] = await Promise.all([
     (async () => {
       if (!treasuryRow) {
         return {
@@ -352,13 +425,25 @@ export async function loadPublicAgentByPrisma(
       // Read only for a self-running agent whose owner shows its results.
       // Scoped by the loaded agent's own organization, never a caller's. A
       // failed read is not answered as "no results yet": it fails the page.
-      if (agent.agentKind !== "scheduled" || agent.publicResults !== true) return [];
+      // When its results are sold, only the times are wanted: the text is
+      // cut to nothing as it is read, so none of it is held here.
+      if (agent.agentKind !== "scheduled") return [];
+      if (!soldSchedule && agent.publicResults !== true) return [];
       return latestOwnResults(deps.prisma, {
         orgId: agent.orgId,
         agentId: agent.id,
         limit: PUBLIC_RESULTS_LIMIT,
-        maxChars: PUBLIC_RESULT_MAX_CHARS,
+        maxChars: soldSchedule ? 0 : PUBLIC_RESULT_MAX_CHARS,
       });
+    })(),
+    (async (): Promise<PublicSchedule | null> => {
+      // Only for a self-running agent that is sold: a buyer is told when it
+      // runs. Of the schedule only its times and its zone leave here, and
+      // only while it is on: never what it is told, where results go, or an id.
+      if (!soldSchedule) return null;
+      const { schedule } = await findOwnSchedule(deps.prisma, { orgId: agent.orgId, agentId: agent.id });
+      if (!schedule || !schedule.enabled || schedule.scheduleType !== "cron" || !schedule.cronExpression) return null;
+      return { cronExpression: schedule.cronExpression, timezone: schedule.timezone };
     })(),
   ]);
 
@@ -373,7 +458,7 @@ export async function loadPublicAgentByPrisma(
       handle: agent.publicHandle ?? input.handle,
       agentKind: agent.agentKind === "task" || agent.agentKind === "scheduled" ? agent.agentKind : "conversation",
     },
-    use: useOf(agent, latestResults),
+    use: useOf(agent, paid, latestResults, schedulePart),
     treasury: paymentsPart.treasury,
     uptime: uptimePart,
     eligibility: eligibilityPart,

@@ -1247,6 +1247,8 @@ export interface PublicLink {
   showResults: boolean;
   /** The agent has a tool that visitors do not get. */
   toolsOffForVisitors: boolean;
+  /** Present while a published listing sells use of this agent; `paid` is whether a price is set. */
+  sale?: { paid: boolean; listingSlug: string };
 }
 
 /** What `PUT /api/agents/:id/public-link` accepts. */
@@ -2012,7 +2014,7 @@ export interface MarketplaceSubscription {
    */
   priceCents: number | null;
   /** Set when the publisher's side ended it; the buyer must accept the new pricing. */
-  endReason: "pricing_changed" | "listing_archived" | null;
+  endReason: "pricing_changed" | "listing_archived" | "use_ended" | null;
 }
 
 /**
@@ -2031,7 +2033,24 @@ export type MarketplaceInstallAccess =
   | "unlisted"
   | "subscription_lapsed"
   | "pricing_changed"
-  | "uninstalled";
+  | "uninstalled"
+  // Use of the creator's agent (kind "use"): no licence yet, or the listing no longer offers it.
+  | "none"
+  | "not_offered";
+
+/** What a listing sells: use of the creator's own agent, or a copy the buyer owns. */
+export type MarketplaceSells = "use" | "copies";
+
+/** The agent a licence is for, as its buyer may know it. Never its instructions. */
+export interface MarketplaceLicenceAgent {
+  /** The name in `/a/<handle>`; null when the agent has no page. */
+  handle: string | null;
+  name: string;
+  agentKind: AgentKind;
+}
+
+/** The buyer's licence: their own copy, or the right to use the creator's agent. */
+export type MarketplaceInstallKind = "copy" | "use";
 
 /** The pricing a buyer agreed to when they installed or last accepted a change. */
 export interface MarketplaceAcceptedPricing {
@@ -2061,6 +2080,14 @@ export interface MarketplaceListing {
   pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents: number | null;
   monthlyPriceCents: number | null;
+  /** What the listing sells. */
+  sells: MarketplaceSells;
+  /** What one payment buys; null for a free listing, a copy or a token listing. */
+  unit: "message" | "run" | "month" | null;
+  /** Owner's views only (create, update, my-listings): the tools the agent may use for people who pay. */
+  allowedTools?: string[];
+  /** `getMyListings` only: how many people have a copy, use it, or are subscribed. */
+  buyers?: { copies: number; using: number; subscribed: number };
   publisherId: string;
   publisherName: string;
   status: "draft" | "pending_review" | "published" | "archived";
@@ -2085,6 +2112,8 @@ export interface MarketplaceListing {
     // used to link to the public /a/:slug transparency page.
     slug?: string;
     isPublic?: boolean;
+    /** The name in the agent's page address, `/a/<handle>`; null when it has no page. */
+    handle?: string | null;
   };
 }
 
@@ -2130,12 +2159,33 @@ export interface PublicAgentDetail {
 
 /** What every page says about its use, whatever the agent's kind. */
 interface PublicAgentUseBase {
-  /** `view_only`: shown, not yet usable. `on`: usable. `paused`: use is stopped for now. */
-  state: "view_only" | "on" | "paused";
-  /** The page's publishable key; set only while `state` is `on`. */
+  /**
+   * `view_only`: shown, not yet usable. `on`: usable. `paused`: use is stopped
+   * for now. `paid`: people sign in and pay to use it; `paid` carries the terms.
+   */
+  state: "view_only" | "on" | "paused" | "paid";
+  /** The page's publishable key; set only while `state` is `on`, null while `paid`. */
   key: string | null;
   /** Whether the agent's owner keeps a copy of what visitors send and receive. */
   transcriptsStored: boolean;
+  /** The terms of paid use; null unless `state` is `paid`. */
+  paid: PublicAgentPaidTerms | null;
+}
+
+/** What a person sees before paying to use an agent. */
+export interface PublicAgentPaidTerms {
+  listingId: string;
+  listingSlug: string;
+  pricingModel: "per_request" | "monthly";
+  priceCents: number;
+  unit: "message" | "run" | "month";
+  /** The most one buyer may use it in a minute, and in a day. */
+  perMinute: number;
+  perDay: number;
+  /** Whether the owner keeps a copy of what buyers send and receive. */
+  transcriptsStored: boolean;
+  /** Whether the agent may send requests to other websites as part of its answers. */
+  sendsRequests: boolean;
 }
 
 /** Exactly one of `chat`, `task` and `scheduled` is present, the one of the agent's kind. */
@@ -2152,8 +2202,17 @@ export type PublicAgentUse = PublicAgentUseBase &
         scheduled?: never;
       }
     | {
-        /** `latest`: at most 3 results of at most 8,000 characters, newest first, only while `resultsPublic`; otherwise empty. */
-        scheduled: { resultsPublic: boolean; latest: Array<{ finishedAt: string; text: string }> };
+        /**
+         * `latest`: at most 3 results of at most 8,000 characters, newest first, only while `resultsPublic`; otherwise empty.
+         * While the page is `paid` the results are the buyers': `latest` has dates only (no `text`), `lastResultAt` is when
+         * the latest arrived and `schedule` when it runs (both present only then).
+         */
+        scheduled: {
+          resultsPublic: boolean;
+          latest: Array<{ finishedAt: string; text?: string }>;
+          lastResultAt?: string | null;
+          schedule?: { cronExpression: string; timezone: string } | null;
+        };
         chat?: never;
         task?: never;
       }
@@ -2249,6 +2308,153 @@ export const publicUseApi = {
     streamPublicUse(`/api/widget/${encodeURIComponent(publicKey)}/run`, body, signal),
 };
 
+/** `POST /api/marketplace/listings/:id/use`: where the buyer stands after starting. */
+export interface MarketplaceUseState {
+  access: MarketplaceInstallAccess;
+  acceptedPricing: MarketplaceAcceptedPricing | null;
+  subscription: MarketplaceSubscription | null;
+  agent: MarketplaceLicenceAgent;
+}
+
+// ============================================
+// Paid use of an agent (/api/a/:handle/...)
+// ============================================
+// The signed-in buyer uses a creator's own agent and pays from their credits.
+// These go through the app's `api()` helper, which sends the session cookie.
+// Chat and run send `stream: false`: the answer arrives whole as JSON.
+
+/** Where a buyer stands with an agent. */
+export type PaidUseAccess = MarketplaceInstallAccess | "own_agent";
+
+/** What the listing asks for one use, as the buyer is shown it. */
+export interface PaidUseTerms {
+  pricingModel: "per_request" | "monthly" | (string & {});
+  pricePerRequestCents: number | null;
+  monthlyPriceCents: number | null;
+  /** What one payment buys. */
+  unit: "message" | "run" | "month";
+  /** Whether the agent's owner keeps a copy of what is sent and answered. */
+  keepsCopy: boolean;
+}
+
+/** `GET /api/a/:handle/access`. */
+export interface PaidUseAccessState {
+  access: PaidUseAccess;
+  listingId: string;
+  /** What the listing asks now; null when use of it is not on sale. */
+  terms: PaidUseTerms | null;
+  /** What the caller agreed to; null when they have not started. */
+  accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
+  subscription: { status: string; currentPeriodEnd: string; cancelAtPeriodEnd: boolean } | null;
+  /** The caller's credits, in cents. */
+  balanceCents: number;
+  /** Whether the caller may agree to a price: an owner or admin of their organization. */
+  canAccept: boolean;
+  /**
+   * Set while the caller holds a copy of this agent with a month paid for: starting to use it waits
+   * until `until` (an ISO date), and `canAccept` is false. Null otherwise.
+   */
+  startBlocked: { code: "copy_subscription_active"; message: string; until: string } | null;
+}
+
+/** What a use cost. */
+export interface PaidUseBilling {
+  /** 0 inside a paid month. */
+  chargedCents: number;
+  /** The buyer's credits after it; null when they could not be read just now. */
+  balanceCents: number | null;
+  access: "subscribed" | "listing_pricing";
+}
+
+export interface PaidUseToolCall {
+  name: string;
+  status: "ok" | "unavailable" | "error";
+}
+
+/** `POST /api/a/:handle/chat` with `stream: false`. */
+export interface PaidChatResult {
+  message: { role: "assistant"; content: string };
+  toolCalls: PaidUseToolCall[];
+  billing: PaidUseBilling;
+}
+
+/** `POST /api/a/:handle/run` with `stream: false`. */
+export interface PaidRunResult {
+  output: { format: "text"; text: string };
+  toolCalls: PaidUseToolCall[];
+  billing: PaidUseBilling;
+}
+
+/** `GET /api/a/:handle/results`: a subscriber's read of a self-running agent's results, newest first. */
+export interface PaidResults {
+  results: Array<{ finishedAt: string; text: string }>;
+  hasMore: boolean;
+}
+
+/**
+ * The body of a refused paid use. Show `message` as it comes. The other
+ * fields are present only for the refusals they belong to.
+ */
+export interface PaidUseRefusal {
+  /**
+   * The refusal's code. Two to know: `not_a_member` (403), the caller is no longer a member of the
+   * paying organization; `copy_subscription_active` (409, on starting to use), the caller holds a
+   * copy with a month paid for.
+   */
+  error: "copy_subscription_active" | "not_a_member" | (string & {});
+  message: string;
+  /** copy_subscription_active: when the copy's paid month ends (an ISO date). */
+  until?: string;
+  /** rate_limited: `org` is the buyer's own limit, `agent` the agent's. */
+  scope?: "org" | "agent";
+  retryAfterSeconds?: number;
+  /** 422 input_invalid: each answer that needs another look. */
+  details?: TaskInputIssue[];
+  /** The buyer's access, where the licence decided. */
+  access?: PaidUseAccess;
+  /** use_not_started and pricing_changed: what the listing asks now. */
+  terms?: PaidUseTerms;
+  /** insufficient_credits: the price of this use and the buyer's credits. */
+  priceCents?: number;
+  balanceCents?: number;
+  /** model_error and answer_withheld: what was charged and given back. */
+  refundedCents?: number;
+}
+
+/** The refusal body of an error thrown by `paidUseApi`, or null when it is not one. */
+export function paidUseRefusalOf(error: unknown): PaidUseRefusal | null {
+  if (!(error instanceof ApiError)) return null;
+  const data = error.data as Partial<PaidUseRefusal> | null;
+  if (!data || typeof data !== "object" || typeof data.error !== "string" || typeof data.message !== "string") {
+    return null;
+  }
+  return data as PaidUseRefusal;
+}
+
+/** Use of an agent you pay for. A refusal throws an ApiError whose `data` is a PaidUseRefusal. */
+export const paidUseApi = {
+  access: (handle: string) =>
+    api<PaidUseAccessState>(`/api/a/${encodeURIComponent(handle)}/access`),
+
+  /** One chat message with the conversation so far; charged when sent, refunded if no answer is delivered. */
+  chat: (handle: string, body: { messages: PublicChatTurn[]; sessionId?: string }) =>
+    api<PaidChatResult>(`/api/a/${encodeURIComponent(handle)}/chat`, {
+      method: "POST",
+      body: { ...body, stream: false },
+    }),
+
+  /** One task run from the form's answers. */
+  run: (handle: string, body: { input: Record<string, unknown> }) =>
+    api<PaidRunResult>(`/api/a/${encodeURIComponent(handle)}/run`, {
+      method: "POST",
+      body: { ...body, stream: false },
+    }),
+
+  /** A self-running agent's latest results, for a subscriber. */
+  results: (handle: string) =>
+    api<PaidResults>(`/api/a/${encodeURIComponent(handle)}/results`),
+};
+
 export interface MarketplaceCategory {
   id: string;
   label: string;
@@ -2303,6 +2509,12 @@ export interface CreateListingInput {
   pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents?: number;
   monthlyPriceCents?: number;
+  /** What the listing sells. Left out, a new listing sells use of the agent. */
+  sells?: "use" | "copies";
+  /** Skill keys (such as `http_request`) the agent may use for people who pay; at most 50. */
+  allowedTools?: string[];
+  /** Publish in the same request. */
+  publish?: boolean;
 }
 
 export interface SearchListingsParams {
@@ -2422,6 +2634,22 @@ export const marketplaceApi = {
         : {}),
     }),
 
+  /**
+   * Start using the creator's agent (a listing that sells use), or accept
+   * its new pricing. `expected` is the pricing the buyer was shown: it is
+   * their consent, and a listing that has moved answers 409 `pricing_changed`
+   * with nothing charged. A monthly price charges the first 30 days now.
+   */
+  startUsing: (
+    listingId: string,
+    body: { expected: MarketplacePricingTerms; acceptNewPricing?: boolean },
+  ) =>
+    api<MarketplaceUseState>(`/api/marketplace/listings/${listingId}/use`, {
+      method: "POST",
+      body,
+    }),
+
+  /** Stop using an agent, or remove a copy. A subscription ends now and is not refunded. */
   uninstallAgent: (listingId: string) =>
     api<{ message: string }>(`/api/marketplace/listings/${listingId}/uninstall`, {
       method: "POST",
@@ -2433,7 +2661,11 @@ export const marketplaceApi = {
       install: {
         id: string;
         status: string;
-        clonedAgentId: string;
+        kind: MarketplaceInstallKind;
+        /** null for a licence to use the creator's agent: there is no copy. */
+        clonedAgentId: string | null;
+        agent: MarketplaceLicenceAgent;
+        access: MarketplaceInstallAccess;
         installedAt: string;
       } | null;
     }>(`/api/marketplace/listings/${listingId}/install-status`),
@@ -2443,7 +2675,10 @@ export const marketplaceApi = {
       installs: Array<{
         id: string;
         listingId: string;
-        clonedAgentId: string;
+        kind: MarketplaceInstallKind;
+        /** null when `kind` is "use": the buyer uses the creator's agent and has no copy. */
+        clonedAgentId: string | null;
+        agent: MarketplaceLicenceAgent;
         status: string;
         totalRequests: number;
         totalSpentCents: number;
@@ -5558,6 +5793,16 @@ export interface Capabilities {
   agentGpu: { available: boolean };
   /** A paid task can be run. */
   paidTasks: { available: boolean };
+  /** What a Sell screen and a buyer's page say of paid use of an agent. */
+  paidUse: {
+    /** How often one buyer may use an agent. */
+    perBuyerPerMinute: number;
+    perBuyerPerDay: number;
+    /** The smallest price of one use, in cents. */
+    minPricePerUseCents: number;
+    /** Answers a day on the platform's models for the caller's organization; null when it cannot be read. */
+    freeModelDailyAllowance: number | null;
+  };
 }
 
 export const capabilitiesApi = {
@@ -6012,6 +6257,10 @@ export type TryItGate = "session" | "turnstile" | "signin";
 
 export interface TryItAvailability {
   enabled: boolean;
+  /** How people use the listed agent. */
+  agentKind: AgentKind;
+  /** A task agent's form; null for any other kind. */
+  inputSchema: TaskInputSchema | null;
   disabledReason: "graph_agent_preview" | "no_model_available" | null;
   gate: TryItGate;
   turnstileSiteKey: string | null;

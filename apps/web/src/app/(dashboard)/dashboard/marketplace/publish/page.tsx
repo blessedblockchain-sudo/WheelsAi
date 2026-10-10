@@ -271,8 +271,9 @@ function PublishWizardContent() {
           toast.success("Listing updated!");
         }
       } else {
-        // Create new listing
-        const { listing } = await marketplaceApi.createListing(formData);
+        // Create new listing. This form sells copies, so it says so: the
+        // API sells use of the agent unless copies are asked for by name.
+        const { listing } = await marketplaceApi.createListing({ ...formData, sells: "copies" });
 
         if (publish) {
           await marketplaceApi.publishListing(listing.id);

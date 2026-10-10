@@ -118,7 +118,10 @@ function UsePanel({ detail }: { detail: PublicAgentDetail }) {
         />
       )}
       {use.scheduled && (
-        <PublicResultsPanel resultsPublic={use.scheduled.resultsPublic} latest={use.scheduled.latest} />
+        <PublicResultsPanel
+          resultsPublic={use.scheduled.resultsPublic}
+          latest={use.scheduled.latest.map((result) => ({ finishedAt: result.finishedAt, text: result.text ?? "" }))}
+        />
       )}
     </section>
   );

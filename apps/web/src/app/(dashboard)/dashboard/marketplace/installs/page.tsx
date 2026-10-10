@@ -40,6 +40,8 @@ import {
   marketplaceApi,
   type MarketplaceAcceptedPricing,
   type MarketplaceInstallAccess,
+  type MarketplaceInstallKind,
+  type MarketplaceLicenceAgent,
   type MarketplaceListing,
   type MarketplaceSubscription,
   ApiError,
@@ -50,7 +52,11 @@ import { useConfirm } from "@/components/ui/confirm-dialog";
 interface Install {
   id: string;
   listingId: string;
-  clonedAgentId: string;
+  /** "use": the buyer uses the creator's agent on its page and has no copy. */
+  kind: MarketplaceInstallKind;
+  /** null for a "use" row: there is no copy to open. */
+  clonedAgentId: string | null;
+  agent: MarketplaceLicenceAgent;
   status: string;
   totalRequests: number;
   totalSpentCents: number;
@@ -59,6 +65,16 @@ interface Install {
   acceptedPricing: MarketplaceAcceptedPricing;
   listing: MarketplaceListing;
   subscription: MarketplaceSubscription | null;
+}
+
+/**
+ * Where a row's agent is opened: a copy in the buyer's dashboard, the
+ * creator's agent (which a "use" row has no copy of) on its own page. null
+ * when there is nowhere to go.
+ */
+function agentLinkOf(install: Install): string | null {
+  if (install.kind === "use") return install.agent.handle ? `/a/${install.agent.handle}` : null;
+  return install.clonedAgentId ? `/dashboard/agents/${install.clonedAgentId}` : null;
 }
 
 function formatMonthly(cents: number): string {
@@ -470,12 +486,14 @@ export default function InstalledAgentsPage() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem asChild>
-                                <Link href={`/dashboard/agents/${install.clonedAgentId}`}>
-                                  <Bot className="mr-2 h-4 w-4" />
-                                  View Agent
-                                </Link>
-                              </DropdownMenuItem>
+                              {agentLinkOf(install) && (
+                                <DropdownMenuItem asChild>
+                                  <Link href={agentLinkOf(install)!}>
+                                    <Bot className="mr-2 h-4 w-4" />
+                                    View Agent
+                                  </Link>
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem asChild>
                                 <Link
                                   href={`/marketplace/${install.listing.slug}`}

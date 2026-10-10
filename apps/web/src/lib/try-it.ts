@@ -108,6 +108,13 @@ export function tryItNotice(status: number, body: TryItRefusalBody | null, now: 
       ended: false,
     };
   }
+  if (code === "answer_withheld") {
+    return {
+      message: typeof body?.message === "string" && body.message ? body.message : "This answer could not be shown. Try asking in another way.",
+      action: "none",
+      ended: false,
+    };
+  }
   if (status === 502) return { message: "The agent could not answer just now. Try again.", action: "none", ended: false };
   return { message: "Something went wrong. Try again.", action: "none", ended: false };
 }

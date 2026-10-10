@@ -453,6 +453,9 @@ export default function ListingDetailPage() {
   const hasToken = listing?.pricingModel === "tokenized" && tokenData !== null;
   const isMonthly = listing?.pricingModel === "monthly" && !!listing?.monthlyPriceCents;
   const monthlyPrice = isMonthly ? `$${(listing!.monthlyPriceCents! / 100).toFixed(2)}` : "";
+  // A listing that sells use is used on the agent's own page; the buyer gets no copy.
+  const sellsUse = listing?.sells === "use";
+  const agentHandle = listing?.agent?.handle ?? null;
 
   if (isLoading) {
     return <ListingDetailSkeleton />;
@@ -1049,7 +1052,17 @@ export default function ListingDetailPage() {
               </div>
 
               {/* Install CTA (INT-M1) — the buyer conversion */}
-              {authed && installState?.installed ? (
+              {sellsUse ? (
+                agentHandle && (
+                  <Link
+                    href={`/a/${agentHandle}`}
+                    className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700"
+                  >
+                    <Play className="h-4 w-4" />
+                    Use this agent
+                  </Link>
+                )
+              ) : authed && installState?.installed ? (
                 <Link
                   href={
                     installState.clonedAgentId
@@ -1096,9 +1109,9 @@ export default function ListingDetailPage() {
                 </button>
               )}
 
-              {listing.agent?.slug && listing.agent?.isPublic && (
+              {(agentHandle ?? listing.agent?.slug) && listing.agent?.isPublic && (
                 <Link
-                  href={`/a/${listing.agent.slug}`}
+                  href={`/a/${agentHandle ?? listing.agent?.slug}`}
                   className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-2.5 text-sm font-medium text-green-500 hover:bg-green-500/10"
                 >
                   <ShieldCheck className="h-4 w-4" />
@@ -1107,7 +1120,9 @@ export default function ListingDetailPage() {
               )}
 
               <p className="mt-3 text-center text-xs text-muted-foreground">
-                {authed
+                {sellsUse
+                  ? "You use it on its page. You do not get a copy."
+                  : authed
                   ? installState?.installed
                     ? "Installed as a private copy in your workspace."
                     : isMonthly

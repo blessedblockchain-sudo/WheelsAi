@@ -67,3 +67,13 @@ test("why a listing has no preview", () => {
   assert.match(tryItDisabledMessage("no_model_available"), /free model/);
   assert.match(tryItDisabledMessage(null), /cannot be previewed/);
 });
+
+test("an answer that was withheld says so and lets the visitor ask again", () => {
+  const notice = tryItNotice(502, { error: "answer_withheld", message: "This answer could not be shown. Try asking in another way." });
+  assert.equal(notice.message, "This answer could not be shown. Try asking in another way.");
+  assert.equal(notice.action, "none");
+  assert.equal(notice.ended, false);
+  assert.equal(tryItNotice(502, { error: "answer_withheld" }).message, "This answer could not be shown. Try asking in another way.");
+  // Any other 502 is still the generic sentence.
+  assert.equal(tryItNotice(502, { error: "model_error" }).message, "The agent could not answer just now. Try again.");
+});

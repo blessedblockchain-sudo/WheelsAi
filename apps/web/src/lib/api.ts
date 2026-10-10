@@ -2754,6 +2754,8 @@ export const marketplaceApi = {
         jobId?: string | null;
         escrow?: EscrowState | null;
         modelCostCents?: number;
+        /** What the row's licence is for: use of your agent, or a buyer's copy. Null when no licence is behind it. */
+        licenceKind?: "use" | "copy" | null;
         createdAt: string;
       }>;
       /** Job payments buyers have paid that are not yours yet. */
@@ -2796,9 +2798,22 @@ export const marketplaceApi = {
         periodEnd: string;
         requestedAt: string;
         processedAt: string | null;
+        /** Why a payout did not go through, as a plain sentence for the creator. */
         failureReason: string | null;
+        /** True while the payout can still be cancelled: requested and not yet being sent. */
+        cancellable?: boolean;
       }>;
     }>("/api/marketplace/payouts"),
+
+  /**
+   * Cancels a payout that has not started to be sent: the amount goes back to the earnings it was
+   * taken from. 409 `payout_not_cancellable` once it is being sent or is finished.
+   */
+  cancelPayout: (payoutId: string) =>
+    api<{ payout: { id: string; amountCents: number; payoutMethod: string; status: string; requestedAt: string } }>(
+      `/api/marketplace/payouts/${payoutId}/cancel`,
+      { method: "POST" },
+    ),
 };
 
 // ============================================
@@ -2873,6 +2888,12 @@ export interface PublisherOffering extends PublicOffering {
   publishedAt: string | null;
   updatedAt: string;
   stats: { jobs: Record<string, number> };
+  /**
+   * For an offering whose form was taken from its agent's own task form: whether buyers still see
+   * the form the agent has now. False after the agent's form was edited; saving with
+   * `fromAgentForm: true` shows buyers the new one. Null for an offering with a form of its own.
+   */
+  formInSync?: boolean | null;
 }
 
 export interface OfferingContentInput {
@@ -2881,6 +2902,11 @@ export interface OfferingContentInput {
   priceCents: number;
   slaSeconds: number;
   inputSchema?: Record<string, unknown> | null;
+  /**
+   * Take the form buyers fill in from the agent's own task form, in its order. Sent in place of
+   * `inputSchema` (sending both is refused), and only for a task agent (409 `not_a_task_agent`).
+   */
+  fromAgentForm?: boolean;
   sampleInputs?: Array<Record<string, unknown>>;
   instructions?: string | null;
   deliverableChecks?: DeliverableCheck[];

@@ -485,7 +485,29 @@ model WalletTopUp {
   // guard: one on-chain transaction can never credit two rows.
   txSignature    String?   @unique @map("tx_signature")
   status         String    @default("prepared") // 'prepared' | 'submitting' | 'submitted' | 'credited' | 'failed' | 'expired'
+  // The chain's or the node's own words about a failure, kept for
+  // operators. Never sent to a customer: the customer's sentence is
+  // chosen from failureCode.
   failureReason  String?   @map("failure_reason")
+  // Why the row ended, as a code (services/topupSentences.ts):
+  // 'unsigned_expired' | 'never_landed' | 'failed_on_chain'. Null on rows
+  // from before the codes existed.
+  failureCode    String?   @map("failure_code")
+  // The signed transaction exactly as the wallet returned it, stored by
+  // the same compare-and-set that records txSignature, BEFORE broadcast.
+  // A wallet may add its own fee and guard instructions, so these bytes
+  // can differ from unsignedMessageB64. They are what is sent again while
+  // the transaction can still land.
+  signedTxB64    String?   @map("signed_tx_b64")
+  // SOL only: the exact price the amount was worked out from, in
+  // micro-dollars per SOL after the lean, the price's own publish time,
+  // and where it came from ('pyth' | 'static'). quotedSolPriceUsd above
+  // is the same figure as a number, for display.
+  quotePriceMicroUsd BigInt?   @map("quote_price_micro_usd")
+  quotePublishTime   DateTime? @map("quote_publish_time")
+  quoteSource        String?   @map("quote_source")
+  // When the signed transfer was first handed to the network.
+  submittedAt    DateTime? @map("submitted_at")
   // Blockhash validity horizon: past this, the prepared tx can never
   // land and the row is re-preparable, never revivable. expiresAt is the
   // wall-clock UX horizon; lastValidBlockHeight is the CHAIN truth —

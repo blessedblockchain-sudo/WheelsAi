@@ -124,6 +124,8 @@ export interface RunChatOptions {
   mode?: ToolMode;
   /** `hired` runs only: the outbound skills the offering allows by name. */
   outboundAllowed?: readonly string[];
+  /** The tools leave knowledge-base document titles out of what they answer (ToolContext.hideSourceTitles). */
+  hideSourceTitles?: boolean;
   signal?: AbortSignal;
   maxToolRounds?: number;
   /**
@@ -619,6 +621,7 @@ async function runToolChat(
     agentId: options.agentId ?? "",
     orgId: options.orgId ?? "",
     ...(options.outboundAllowed && { outboundAllowed: options.outboundAllowed }),
+    ...(options.hideSourceTitles === true && { hideSourceTitles: true }),
   };
   const registry = plan.registry;
 

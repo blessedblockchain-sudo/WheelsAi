@@ -605,6 +605,7 @@ test("openAiError maps every refusal to status, type and code, sets x-should-ret
     ["marketplace_payment_required", 402, "payment_required", true],
     ["licence_revoked", 403, "permission_error", true],
     ["insufficient_scope", 403, "permission_error", true],
+    ["not_a_member", 403, "permission_error", true],
     ["agent_not_found", 404, "invalid_request_error", true],
     ["model_not_found", 404, "invalid_request_error", true],
     ["request_too_large", 413, "invalid_request_error", true],

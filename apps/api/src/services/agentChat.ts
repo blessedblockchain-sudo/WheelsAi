@@ -59,7 +59,7 @@
  */
 
 import type { RateLimitResult } from "../middleware/free-tier-limit.js";
-import type { RetrievalResult } from "./agentRetrieval.js";
+import { buildContextBlock, type RetrievalResult } from "./agentRetrieval.js";
 import { CLIENT_GONE, type SettleableMeter } from "./chatStreamSettlement.js";
 import type { BeginMeteringResult } from "./marketplaceMeteringProduction.js";
 import type { GateToken, RevocationReason } from "./marketplaceMetering.js";
@@ -112,7 +112,8 @@ export type AgentChatSource =
   | "scheduled"
   | "job"
   | "test"
-  | "hired";
+  | "hired"
+  | "paid";
 
 export type AgentRef = { id: string } | { slug: string };
 
@@ -150,6 +151,14 @@ export interface AgentChatInput {
    * outbound tools the offering allows by name (ToolContext.outboundAllowed).
    */
   toolAllowlist?: string[];
+  /**
+   * Keeps the titles of knowledge-base documents from the model: passages
+   * are numbered and untitled, and knowledge_search answers without titles.
+   * Set for a paid use and for the free sample of a listing that sells use,
+   * where the person asking must not learn what the creator's documents are
+   * called. Set by server code, never from a request body.
+   */
+  hideSourceTitles?: boolean;
   /**
    * The platform pays for this chat (a listing's Try it). It runs on this
    * free model whatever the agent configures, with none of the agent's own
@@ -539,6 +548,8 @@ const TOOL_MODE_BASE: Record<AgentChatSource, ToolMode> = {
   test: "test",
   // A buyer's input drives the publisher's agent: nothing may spend or write.
   hired: "hired",
+  // A buyer who pays to use the creator's own agent: held as a paid job is.
+  paid: "hired",
 };
 
 function cappedTokens(configured: number, ceiling: number | undefined): number {
@@ -546,6 +557,16 @@ function cappedTokens(configured: number, ceiling: number | undefined): number {
 }
 
 /** The agent's tools, narrowed to an allowlist when one is given. */
+/**
+ * The grounding turn the model reads. Retrieval's own block as it is, or,
+ * when the asker must not learn what the documents are called, the same
+ * passages numbered and untitled.
+ */
+function groundingBlock(retrieval: RetrievalResult, hideSourceTitles: boolean | undefined): string {
+  if (hideSourceTitles !== true) return retrieval.contextBlock;
+  return buildContextBlock(retrieval.sources, { titles: false });
+}
+
 function allowedTools(tools: unknown, allowlist: string[] | undefined): AgentPlaygroundConfig["tools"] {
   const all = Array.isArray(tools) ? (tools as NonNullable<AgentPlaygroundConfig["tools"]>) : [];
   if (!allowlist || allowlist.length === 0) return all;
@@ -896,7 +917,7 @@ export async function prepareAgentChat(
     // instructions follow it: the last word before the buyer's input is the
     // publisher's.
     chatMessages = [
-      ...(retrieval ? [{ role: "system" as const, content: retrieval.contextBlock }] : []),
+      ...(retrieval ? [{ role: "system" as const, content: groundingBlock(retrieval, input.hideSourceTitles) }] : []),
       ...(input.systemAddendum ? [{ role: "system" as const, content: input.systemAddendum }] : []),
       ...spliced,
     ];
@@ -938,6 +959,8 @@ export async function prepareAgentChat(
     // What the publisher named, and nothing implied: with no allowlist an
     // outbound tool does not run in a paid job.
     ...(toolMode === "hired" && { outboundAllowed: input.toolAllowlist ?? [] }),
+    // knowledge_search answers the model the way the grounding turn does.
+    ...(input.hideSourceTitles === true && { hideSourceTitles: true }),
     requestParams,
     ...(input.maxToolRounds !== undefined && { maxToolRounds: input.maxToolRounds }),
     clientTools,

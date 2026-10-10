@@ -538,6 +538,38 @@ test("retrieval failure answers ungrounded and grounding precedes the caller mes
   assert.ok(!unbound.log.includes("retrieval"));
 });
 
+test("with hideSourceTitles the model is given numbered passages without document titles, and the tools are told the same", async () => {
+  const title = "Acme 2026 price list - internal.pdf";
+  const sources = [
+    { chunkId: "c1", documentId: "d1", documentTitle: title, score: 0.9, excerpt: "The Pro plan is 49 dollars a month." },
+  ];
+  const titledBlock = `RETRIEVAL'S OWN BLOCK\n[1] ${title}\nThe Pro plan is 49 dollars a month.`;
+  const run = async (over: Partial<AgentChatInput>) => {
+    const h = harness({
+      agents: [{ ...AGENT, knowledgeBaseId: "kb-1" }],
+      retrieveContext: async () => ({ contextBlock: titledBlock, mode: "semantic", fallbackReason: null, sources }),
+    });
+    const session = await sessionOf(h, over);
+    await session.complete();
+    return { call: h.chatCalls[0]!, session };
+  };
+
+  const hidden = await run({ source: "paid", hideSourceTitles: true });
+  const turn = hidden.call.messages[0]!;
+  assert.equal(turn.role, "system");
+  assert.ok(typeof turn.content === "string" && !turn.content.includes(title), String(turn.content));
+  assert.match(String(turn.content), /--- retrieved passages ---\n\[1\]\nThe Pro plan is 49 dollars a month\.\n--- end passages ---$/);
+  assert.equal(hidden.call.options.hideSourceTitles, true);
+  assert.ok(!JSON.stringify(hidden.call.messages).includes(title));
+
+  // Absent or false: retrieval's own block, untouched, and no flag on the run.
+  for (const over of [{}, { hideSourceTitles: false }, { source: "paid" as const }]) {
+    const shown = await run(over);
+    assert.deepEqual(shown.call.messages[0], { role: "system", content: titledBlock });
+    assert.ok(!("hideSourceTitles" in shown.call.options), JSON.stringify(over));
+  }
+});
+
 test("marketplace clones run in trial mode", async () => {
   const h = harness({ resolveToolMode: async () => "trial" });
   const session = await sessionOf(h);
@@ -1243,6 +1275,7 @@ test("every source has its own base tool mode, and the install check sits on top
     job: "job",
     test: "test",
     hired: "hired",
+    paid: "hired",
   } as const;
   for (const [source, mode] of Object.entries(expected)) {
     const h = harness();
@@ -1264,6 +1297,7 @@ test("a graph runs as from the builder for a person, and in the caller's own mod
     job: "job",
     test: "test",
     hired: "hired",
+    paid: "hired",
   } as const;
   for (const [source, mode] of Object.entries(expected)) {
     const modes: string[] = [];

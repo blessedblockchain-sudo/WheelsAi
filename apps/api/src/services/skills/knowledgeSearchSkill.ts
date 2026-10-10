@@ -92,13 +92,23 @@ export function createKnowledgeSearchSkill(deps: BuiltinSkillDeps): SkillDefinit
           : `retrieval mode: keyword (word-overlap matching, not semantic${
               fallbackReason ? ` - ${fallbackReason}` : ""
             })`;
-      const passages = found.sources.map(
-        (s, i) => `[${i + 1}] ${s.documentTitle} (score ${s.score.toFixed(2)})\n${s.excerpt}`,
+      // The asker of this run must not learn what the documents are called:
+      // the title is left out of the line the model reads and of the data.
+      const untitled = ctx.hideSourceTitles === true;
+      const passages = found.sources.map((s, i) =>
+        untitled
+          ? `[${i + 1}] (score ${s.score.toFixed(2)})\n${s.excerpt}`
+          : `[${i + 1}] ${s.documentTitle} (score ${s.score.toFixed(2)})\n${s.excerpt}`,
       );
       return {
         status: "ok",
         output: `${modeLine}\n\n${passages.join("\n\n")}`,
-        data: { mode: found.mode, sources: found.sources },
+        data: {
+          mode: found.mode,
+          sources: untitled
+            ? found.sources.map(({ documentTitle: _title, ...source }) => source)
+            : found.sources,
+        },
       };
     },
   };

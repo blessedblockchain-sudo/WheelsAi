@@ -84,11 +84,21 @@ const DEFAULT_LIMIT = 4;
 const DEFAULT_MIN_SCORE = 0.15;
 const DEFAULT_MAX_CONTEXT_CHARS = 6_000;
 
-export function buildContextBlock(sources: RetrievedSource[]): string {
+export interface ContextBlockOptions {
+  /**
+   * false = each passage is its number and its excerpt, with no document
+   * title: for a chat whose asker must not learn what the documents are
+   * called (AgentChatInput.hideSourceTitles). Default true.
+   */
+  titles?: boolean;
+}
+
+export function buildContextBlock(sources: RetrievedSource[], options: ContextBlockOptions = {}): string {
+  const titled = options.titles !== false;
   const passages = sources
     .map(
       (s, i) =>
-        `[${i + 1}] ${s.documentTitle}\n${s.excerpt}`,
+        titled ? `[${i + 1}] ${s.documentTitle}\n${s.excerpt}` : `[${i + 1}]\n${s.excerpt}`,
     )
     .join("\n\n");
 

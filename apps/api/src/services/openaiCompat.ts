@@ -136,6 +136,15 @@ export type OpenAiErrorCode =
   | "x402_payment_required"
   | "payment_already_used"
   | "licence_revoked"
+  | "use_not_started"
+  | "not_a_member"
+  | "pricing_changed"
+  | "own_agent"
+  | "not_for_sale"
+  | "answer_withheld"
+  | "api_key_use_price_cap_exceeded"
+  | "api_key_daily_cap_exceeded"
+  | "api_key_spend_caps_missing"
   | "insufficient_scope"
   | "agent_not_found"
   | "model_not_found"
@@ -237,6 +246,44 @@ const ERROR_RULES: Record<OpenAiErrorCode, ErrorRule> = {
     type: "permission_error",
     retry: false,
     message: "The licence for this agent is no longer active.",
+  },
+  // Paid use of somebody else's agent (`model: "a/<handle>"`). None of these
+  // is retried: the same request meets the same licence, price or key, and
+  // an answer that was withheld was charged and refunded once already.
+  use_not_started: {
+    status: 403,
+    type: "permission_error",
+    retry: false,
+    message: "You have not started using this agent.",
+  },
+  // A session whose person was removed from the organization that pays.
+  not_a_member: {
+    status: 403,
+    type: "permission_error",
+    retry: false,
+    message: "You are no longer a member of this organization.",
+  },
+  pricing_changed: invalid(409, "The price of this agent changed. Nothing is charged until the new price is accepted.", false),
+  own_agent: invalid(409, "This is your own agent, so there is nothing to pay for.", false),
+  not_for_sale: invalid(409, "Use of this agent is not for sale.", false),
+  answer_withheld: server(502, "This answer could not be shown.", false),
+  api_key_use_price_cap_exceeded: {
+    status: 403,
+    type: "permission_error",
+    retry: false,
+    message: "This use costs more than this API key may spend on one use.",
+  },
+  api_key_daily_cap_exceeded: {
+    status: 403,
+    type: "permission_error",
+    retry: false,
+    message: "This use would take this API key past what it may spend in one day.",
+  },
+  api_key_spend_caps_missing: {
+    status: 403,
+    type: "permission_error",
+    retry: false,
+    message: "This API key has no spend caps for paid agents.",
   },
   insufficient_scope: {
     status: 403,
@@ -359,6 +406,80 @@ export function openAiError(code: OpenAiErrorCode, detail: OpenAiErrorDetail = {
       },
     },
   };
+}
+
+/**
+ * A refusal of a paid use (services/paidUse.ts), structurally: this module
+ * imports no service.
+ */
+export interface PaidUseRefusalLike {
+  code: string;
+  message: string;
+  retryAfterSeconds?: number;
+  access?: string;
+  terms?: unknown;
+  priceCents?: number;
+  balanceCents?: number;
+  refundedCents?: number;
+  caps?: Record<string, number>;
+}
+
+const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
+  invalid_request: "validation_failed",
+  agent_not_found: "agent_not_found",
+  own_agent: "own_agent",
+  not_for_sale: "not_for_sale",
+  // Not on sale any more, or sold as results only: for a caller of /v1
+  // both are "this cannot be bought here".
+  not_offered: "not_for_sale",
+  results_only: "not_for_sale",
+  use_not_started: "use_not_started",
+  not_a_member: "not_a_member",
+  pricing_changed: "pricing_changed",
+  insufficient_credits: "marketplace_payment_required",
+  subscription_lapsed: "marketplace_payment_required",
+  api_key_use_price_cap_exceeded: "api_key_use_price_cap_exceeded",
+  api_key_daily_cap_exceeded: "api_key_daily_cap_exceeded",
+  api_key_spend_caps_missing: "api_key_spend_caps_missing",
+  rate_limited: "rate_limit_exceeded",
+  too_many_refunds: "rate_limit_exceeded",
+  client_closed_request: "client_closed_request",
+  model_error: "upstream_error",
+  answer_withheld: "answer_withheld",
+  agent_unavailable: "service_unavailable",
+  rate_limiter_unavailable: "service_unavailable",
+  // A run's refusals: not reachable from a chat completion.
+  not_a_task_agent: "validation_failed",
+  not_a_scheduled_agent: "validation_failed",
+  input_too_large: "validation_failed",
+  input_invalid: "validation_failed",
+};
+
+/**
+ * A paid use's refusal in OpenAI's shape. The sentence is the paid
+ * service's own, written for the payer; the machine-readable fields it
+ * carries (the terms, the price and the balance, what was refunded, a
+ * key's cap) ride on the error object. A code this table does not know is
+ * a 500 that says nothing: never a refusal passed through unread.
+ */
+export function paidUseOpenAiError(refusal: PaidUseRefusalLike): OpenAiErrorResponse {
+  const code = Object.hasOwn(PAID_USE_ERROR_CODES, refusal.code) ? PAID_USE_ERROR_CODES[refusal.code]! : null;
+  if (!code) return openAiError("internal_error");
+  const extra: Record<string, unknown> = {
+    ...refusal.caps,
+    ...(refusal.access !== undefined && { access: refusal.access }),
+    ...(refusal.terms !== undefined && { terms: refusal.terms }),
+    ...(refusal.priceCents !== undefined && { priceCents: refusal.priceCents }),
+    ...(refusal.balanceCents !== undefined && { balanceCents: refusal.balanceCents }),
+    ...(refusal.refundedCents !== undefined && { refundedCents: refusal.refundedCents }),
+    // What the paid service called it, when /v1 folds several into one code.
+    ...(code !== refusal.code && { reason: refusal.code }),
+  };
+  return openAiError(code, {
+    message: refusal.message,
+    ...(refusal.retryAfterSeconds !== undefined && { retryAfterSeconds: refusal.retryAfterSeconds }),
+    extra,
+  });
 }
 
 // ============================================

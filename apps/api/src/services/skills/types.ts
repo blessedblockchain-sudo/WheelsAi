@@ -74,6 +74,12 @@ export interface ToolContext {
    * agent every other tool it has - it never implies an outbound one.
    */
   outboundAllowed?: readonly string[];
+  /**
+   * The run's asker must not learn what the agent's knowledge-base documents
+   * are called (AgentChatInput.hideSourceTitles): knowledge_search leaves
+   * the title out of what it answers. Absent = titles are given, as ever.
+   */
+  hideSourceTitles?: boolean;
 }
 
 export type SkillResult =

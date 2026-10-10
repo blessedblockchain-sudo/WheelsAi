@@ -42,6 +42,7 @@ Updated 2026-10-08.
 - API-key scopes are enforced on `/v1` (`agents:invoke`, `workflows:invoke`), on offerings and jobs, and on installing a listing (`marketplace:install`). Spend scopes must be granted by name. On the rest of the API `requireRole` still lets every API key through, so a key cut down to one scope can still call the routes that have no scope of their own.
 - A key granted `jobs:review` or `marketplace:install` has no spend cap; only `jobs:hire` carries caps. Accepting releases money already in escrow and an install charges at most the listing's price, so the exposure is bounded by what the organization already committed or by one listing price per call.
 - Rolling an agent back to a version that has no graph snapshot leaves the current graph in place.
+- Removing a member does not revoke their sessions (`removeMember` in `apps/api/src/services/enterprise.ts` deletes the membership row and blocklists no token), so a removed member's token keeps working on every member-level session route until it expires. Paid use of a creator's agent (`POST /api/a/:handle/chat`, `/run` and `/v1/chat/completions` with `model: "a/<handle>"`) now reads the membership again at each use and answers `403 not_a_member`; the other member-level routes do not, among them agent chat on a metered copy, which spends the same credits. The fix for all of them is to revoke or version a member's sessions on removal.
 
 ## Skills, tool loop and graph engine
 

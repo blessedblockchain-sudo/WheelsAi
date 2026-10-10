@@ -348,7 +348,7 @@ model CreditTransaction {
   id           String   @id @default(uuid()) @db.Uuid
   orgId        String   @map("org_id") @db.Uuid
   amountCents  BigInt   @map("amount_cents") // Positive = credit, negative = debit
-  type         String // 'purchase', 'usage', 'refund', 'adjustment', 'bonus', 'marketplace_job', 'marketplace_job_refund'
+  type         String // 'purchase', 'bonus', 'payout_credit' (a creator's payout taken as credits), 'usage', 'refund', 'adjustment', 'marketplace_job', 'marketplace_job_refund' and the other charge and refund types the API writes
   description  String?
   referenceId  String?  @map("reference_id") // Stripe charge ID, usage period, etc.
   balanceAfter BigInt   @map("balance_after")
@@ -1362,7 +1362,45 @@ model CreatorPayout {
 
   requestedAt       DateTime  @default(now()) @map("requested_at")
   processedAt       DateTime? @map("processed_at")
+  // The chain's or the node's own words about a failure, kept for
+  // operators. Never sent to a creator: their sentence is chosen from
+  // failureCode (services/payoutSentences.ts).
   failureReason     String?   @map("failure_reason")
+  // Why a failed payout failed, as a code: 'could_not_send' |
+  // 'invalid_address' | 'missing_address' | 'unsupported_method'. Null on
+  // rows from before the codes existed.
+  failureCode       String?   @map("failure_code")
+  // Why a pending wallet payout has not been sent yet, as a code:
+  // 'wallet_low' | 'daily_limit_reached' | 'price_unavailable' |
+  // 'chain_unavailable'. Null when nothing is holding it. A payout that is
+  // waiting is still pending, so its creator can cancel it.
+  waitingReason     String?   @map("waiting_reason")
+
+  // The send, claim first (the shape compute payments use). The signed
+  // transfer is stored by the same compare-and-set that moves the payout
+  // pending -> processing, BEFORE it is broadcast: whatever happens next,
+  // the record of "these exact bytes may be in flight" exists, and the
+  // same bytes are what is sent again while they can still land.
+  signedTxB64          String?   @map("signed_tx_b64")
+  // The last block height at which that transfer can land. Past it (with
+  // a margin, and its signature unseen) the transfer is dead and a fresh
+  // one may be made. Null on a row sent before this column existed.
+  lastValidBlockHeight BigInt?   @map("last_valid_block_height")
+  claimedAt            DateTime? @map("claimed_at")
+  // How many transfers have been signed for this payout. At
+  // PAYOUT_MAX_ATTEMPTS a dead or failed one ends the payout and the
+  // earnings go back.
+  attemptCount         Int       @default(0) @map("attempt_count")
+  // Signatures of earlier transfers for this payout that failed on the
+  // chain or can no longer land. Kept so each can still be looked up.
+  expiredSignatures    String[]  @default([]) @map("expired_signatures")
+  // What was sent, in base units (lamports, or USDC with 6 decimals), and
+  // for SOL the exact price it was worked out from (micro-dollars per
+  // SOL), that price's publish time and its source.
+  amountRaw            String?   @map("amount_raw")
+  quotePriceMicroUsd   BigInt?   @map("quote_price_micro_usd")
+  quotePublishTime     DateTime? @map("quote_publish_time")
+  quoteSource          String?   @map("quote_source")
 
   publisher         Organization @relation("CreatorPayouts", fields: [publisherId], references: [id])
 

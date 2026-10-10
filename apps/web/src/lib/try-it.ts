@@ -7,6 +7,11 @@
  * next.
  */
 
+import { inputAsText, runLineOf, type TaskField } from "@wheelsai/shared/agent-kind";
+
+import { PUBLIC_USE_MESSAGES } from "./public-use";
+import { fieldsFromSchema } from "./schema-form";
+
 export interface TryItRefusalBody {
   error?: unknown;
   message?: unknown;
@@ -32,7 +37,23 @@ function wait(seconds: number): string {
   return `${hours} hour${hours === 1 ? "" : "s"}`;
 }
 
-export function tryItNotice(status: number, body: TryItRefusalBody | null, now: Date = new Date()): TryItNotice {
+/**
+ * What a visitor does once a preview is used up: install or hire for a
+ * listing that sells copies, use it on its page for one that sells use.
+ */
+export function previewUsedUpLine(sells?: "use" | "copies" | null): string {
+  return sells === "use"
+    ? "You have used every message in this preview. Use the agent on its page to keep going."
+    : "You have used every message in this preview. Install or hire the agent to keep going.";
+}
+
+export function tryItNotice(
+  status: number,
+  body: TryItRefusalBody | null,
+  now: Date = new Date(),
+  sells?: "use" | "copies" | null,
+): TryItNotice {
+  const stillCan = sells === "use" ? "You can still use it on its page." : "You can still install or hire it.";
   const code = typeof body?.error === "string" ? body.error : "";
   const reason = typeof body?.reason === "string" ? body.reason : "";
   const scope = typeof body?.scope === "string" ? body.scope : "";
@@ -65,8 +86,8 @@ export function tryItNotice(status: number, body: TryItRefusalBody | null, now: 
     return {
       message:
         seconds !== null && seconds > 0
-          ? `This agent's free previews are used up for today. They start again in ${wait(seconds)}. You can still install or hire it.`
-          : "This agent's free previews are used up for today. You can still install or hire it.",
+          ? `This agent's free previews are used up for today. They start again in ${wait(seconds)}. ${stillCan}`
+          : `This agent's free previews are used up for today. ${stillCan}`,
       action: "none",
       ended: true,
     };
@@ -74,7 +95,7 @@ export function tryItNotice(status: number, body: TryItRefusalBody | null, now: 
   if (status === 429) {
     if (scope === "session") {
       return {
-        message: "You have used every message in this preview. Install or hire the agent to keep going.",
+        message: previewUsedUpLine(sells),
         action: "none",
         ended: true,
       };
@@ -128,4 +149,69 @@ export function tryItDisabledMessage(reason: string | null): string {
     return "Previews run on a free model that WheelsAI provides, which is temporarily unavailable. Try again later.";
   }
   return "This agent cannot be previewed right now.";
+}
+
+// ============================================
+// What the panel draws, and what it sends
+// ============================================
+
+/** `chat`: a conversation. `form`: the agent's form and one result. `sample`: one button and one result. */
+export type TryItMode = "chat" | "form" | "sample";
+
+/**
+ * Which of the three the panel draws for a listing's agent. A task agent
+ * whose form cannot be drawn (no schema, or one with no questions) is
+ * tried as a chat: a typed message is what its default form asks for.
+ */
+export function tryItMode(agentKind: string | null | undefined, inputSchema: unknown): TryItMode {
+  if (agentKind === "scheduled") return "sample";
+  if (agentKind === "task") return fieldsFromSchema(inputSchema).freeform ? "chat" : "form";
+  return "chat";
+}
+
+/**
+ * A form's answers as the one message Try it sends, worded as a run of the
+ * agent words them (inputAsText): each answer under its question's label,
+ * in the form's order, unanswered questions left out, and a form with one
+ * question is just its answer. "" when nothing was answered.
+ */
+export function tryItFormMessage(inputSchema: unknown, input: Record<string, unknown> | null | undefined): string {
+  const fields: TaskField[] = fieldsFromSchema(inputSchema).fields.map((field) => ({
+    key: field.name,
+    label: field.title,
+    type: "short_text",
+    required: field.required,
+  }));
+  return inputAsText(fields, input);
+}
+
+/** The one message "Run a sample" sends: what a self-running agent is told at each run. */
+export function tryItSampleMessage(): string {
+  return runLineOf(null);
+}
+
+export const TRY_IT_WORDS = {
+  runSample: "Run a sample",
+  useListing:
+    "This sample runs on a free model that WheelsAI provides. The agent itself may use a different model, so its answers can differ.",
+  answersInvalid: PUBLIC_USE_MESSAGES.answersInvalid,
+  answersTooLong: PUBLIC_USE_MESSAGES.answersTooLong,
+  answersEmpty: "Answer at least one question to run it.",
+  formHint: "Fill in the form to see what the agent gives back.",
+  sampleHint: "This agent runs on its own. Run a sample to see what it produces.",
+} as const;
+
+/** The sentence under the heading on a listing that sells use; null on any other listing. */
+export function tryItUseSentence(sells: "use" | "copies" | null | undefined): string | null {
+  return sells === "use" ? TRY_IT_WORDS.useListing : null;
+}
+
+/**
+ * What stands in the way of sending a form's answers: null when the message
+ * can go. `maxMessageChars` is the server's limit for one message.
+ */
+export function tryItFormProblem(message: string, maxMessageChars: number): string | null {
+  if (message.trim() === "") return TRY_IT_WORDS.answersEmpty;
+  if (message.length > maxMessageChars) return TRY_IT_WORDS.answersTooLong;
+  return null;
 }

@@ -1,18 +1,33 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Info, LogIn, MessageSquare, Send } from "lucide-react";
+import { Info, LogIn, MessageSquare, Play, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
+import { CopyTextButton, ResultView } from "@/components/ui/result-view";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { SchemaForm } from "@/components/marketplace/schema-form";
 import { Turnstile } from "@/components/marketplace/turnstile";
 import { useSession } from "@/hooks/use-session";
 import { ApiError, tryItApi, type TryItAvailability, type TryItSession } from "@/lib/api";
-import { tryItDisabledMessage, tryItNotice, type TryItNotice, type TryItRefusalBody } from "@/lib/try-it";
+import { buildInput, initialValues, type FormValues } from "@/lib/schema-form";
+import {
+  TRY_IT_WORDS,
+  tryItDisabledMessage,
+  tryItFormMessage,
+  tryItFormProblem,
+  tryItMode,
+  previewUsedUpLine,
+  tryItNotice,
+  tryItSampleMessage,
+  tryItUseSentence,
+  type TryItNotice,
+  type TryItRefusalBody,
+} from "@/lib/try-it";
 
 /** The action the server verifies a Turnstile token against (services/turnstile.ts). */
 const TURNSTILE_ACTION = "try_it";
@@ -22,10 +37,10 @@ interface ChatMessage {
   content: string;
 }
 
-function noticeOf(error: unknown): TryItNotice {
+function noticeOf(error: unknown, sells?: "use" | "copies"): TryItNotice {
   if (error instanceof ApiError) {
     const body = typeof error.data === "object" && error.data !== null ? (error.data as TryItRefusalBody) : null;
-    return tryItNotice(error.status, body);
+    return tryItNotice(error.status, body, new Date(), sells);
   }
   return { message: "WheelsAI could not be reached. Check your connection and try again.", action: "none", ended: false };
 }
@@ -46,14 +61,27 @@ function outgoing(messages: ChatMessage[], limits: TryItAvailability["limits"]):
 
 /**
  * Try it: a free, limited chat with a listing's agent before installing or
- * hiring it.
+ * hiring it. An agent that is not a chat is tried the way it is used: a task
+ * agent by its form, a self-running one by one sample run. Either goes out
+ * as one message on the same route, under the same limits.
  *
  * The server decides everything this panel shows: whether the listing can be
  * previewed, who may start (someone signed in, or an anonymous visitor who
  * passed a human check; with no check configured, sign-in only), which model
  * answers, and every limit. Nothing here charges anyone.
  */
-export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; listingId: string; listingTitle: string }) {
+export function TryItPanel({
+  slug,
+  listingId,
+  listingTitle,
+  sells,
+}: {
+  slug: string;
+  listingId: string;
+  listingTitle: string;
+  /** What the listing sells. On a listing that sells use, Try it is the free sample. */
+  sells?: "use" | "copies";
+}) {
   const { authed } = useSession();
   const [availability, setAvailability] = useState<TryItAvailability | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -65,8 +93,13 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<TryItNotice | null>(null);
+  // A task agent's form: what was typed, and what needs another look before it is sent.
+  const [formValues, setFormValues] = useState<FormValues>({});
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [formProblem, setFormProblem] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
   const logEnd = useRef<HTMLDivElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
   const signInHref = `/login?next=${encodeURIComponent(`/marketplace/${slug}#try`)}`;
 
   const load = useCallback(async () => {
@@ -88,6 +121,17 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
 
   useEffect(() => () => abort.current?.abort(), []);
 
+  const mode = tryItMode(availability?.agentKind, availability?.inputSchema);
+  const inputSchema = availability?.inputSchema ?? null;
+  // The form starts from its questions, and again when they change under the page.
+  const schemaKey = useMemo(() => JSON.stringify(inputSchema), [inputSchema]);
+  useEffect(() => {
+    setFormValues(initialValues(inputSchema));
+    setFormErrors({});
+    setFormProblem(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the schema's content, not its identity
+  }, [schemaKey]);
+
   useEffect(() => {
     logEnd.current?.scrollIntoView({ block: "nearest" });
   }, [messages, streaming]);
@@ -102,7 +146,7 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
         return started;
       } catch (error) {
         setSession(null);
-        setNotice(noticeOf(error));
+        setNotice(noticeOf(error, sells));
         return null;
       }
     },
@@ -156,10 +200,11 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
       if (!finished || text === "") throw new Error("stream_failed");
       setMessages([...history, { role: "assistant", content: text }]);
       setRemaining((left) => (left === null ? left : Math.max(0, left - 1)));
+      resultRef.current?.focus();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       if (error instanceof ApiError) {
-        const said = noticeOf(error);
+        const said = noticeOf(error, sells);
         if (said.action === "session") setSession(null);
         setNotice(said);
       } else if (error instanceof Error && error.message === "stream_failed") {
@@ -169,7 +214,7 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
           ended: false,
         });
       } else {
-        setNotice(noticeOf(error));
+        setNotice(noticeOf(error, sells));
       }
     } finally {
       setStreaming(null);
@@ -186,6 +231,30 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
     setMessages(history);
     setDraft("");
     void send(history);
+  }
+
+  /** One message that stands on its own: a form's answers, or the request for a sample run. */
+  function sendOne(text: string) {
+    if (busy || !availability) return;
+    const history: ChatMessage[] = [{ role: "user", content: text }];
+    setMessages(history);
+    void send(history);
+  }
+
+  function submitForm(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy || !availability) return;
+    const built = buildInput(inputSchema, formValues);
+    if (Object.keys(built.errors).length > 0) {
+      setFormErrors(built.errors);
+      setFormProblem(TRY_IT_WORDS.answersInvalid);
+      return;
+    }
+    const text = tryItFormMessage(inputSchema, built.input);
+    const problem = tryItFormProblem(text, availability.limits.maxMessageChars);
+    setFormErrors({});
+    setFormProblem(problem);
+    if (problem === null) sendOne(text);
   }
 
   if (authed === null || (availability === null && loadError === null)) {
@@ -220,6 +289,10 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
   const ended = Boolean(notice?.ended) || outOfMessages;
   const needsCheck = gate === "turnstile" && session === null;
   const canType = gate !== "signin" && !needsCheck && !ended;
+  const useSentence = tryItUseSentence(sells);
+  // For a form or a sample: the one result, as it arrives and once it is whole.
+  const last = messages[messages.length - 1];
+  const result = streaming !== null ? streaming : last?.role === "assistant" ? last.content : null;
 
   return (
     <div className="space-y-4">
@@ -230,6 +303,7 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
             <p className="mt-1 text-sm text-muted-foreground">
               A free preview: {limits.messagesPerSession} messages a session, and you are never charged.
             </p>
+            {useSentence && <p className="mt-1 text-sm text-muted-foreground">{useSentence}</p>}
           </div>
           {remaining !== null && (
             <span className="rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground" data-testid="try-it-remaining">
@@ -277,38 +351,98 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
           </div>
         ) : (
           <>
-            <div
-              className="mt-6 max-h-96 min-h-[10rem] space-y-3 overflow-y-auto rounded-lg border bg-background p-4"
-              role="log"
-              aria-label="Preview conversation"
-            >
-              {messages.length === 0 && streaming === null && (
-                <p className="text-sm text-muted-foreground">Ask the agent something to see how it answers.</p>
-              )}
-              {messages.map((message, index) => (
-                <div key={index} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <p
-                    className={`max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-sm ${
-                      message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
-                    }`}
-                  >
-                    <span className="sr-only">{message.role === "user" ? "You: " : "Agent: "}</span>
-                    {message.content}
+            {mode === "form" && (
+              <form onSubmit={submitForm} className="mt-6 space-y-5" noValidate>
+                <p className="text-sm text-muted-foreground">{TRY_IT_WORDS.formHint}</p>
+                <SchemaForm
+                  schema={inputSchema}
+                  values={formValues}
+                  onChange={setFormValues}
+                  errors={formErrors}
+                  disabled={busy || !canType}
+                  idPrefix="try-it-form"
+                />
+                {formProblem && (
+                  <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+                    {formProblem}
                   </p>
+                )}
+                <Button type="submit" isLoading={busy} disabled={!canType || busy}>
+                  {!busy && <Play className="mr-2 h-4 w-4" aria-hidden="true" />}
+                  {busy ? "Working on it" : result !== null ? "Run again" : "Run"}
+                </Button>
+              </form>
+            )}
+
+            {mode === "sample" && (
+              <div className="mt-6 space-y-3">
+                <p className="text-sm text-muted-foreground">{TRY_IT_WORDS.sampleHint}</p>
+                <Button
+                  type="button"
+                  isLoading={busy}
+                  disabled={!canType || busy}
+                  onClick={() => sendOne(tryItSampleMessage())}
+                >
+                  {!busy && <Play className="mr-2 h-4 w-4" aria-hidden="true" />}
+                  {TRY_IT_WORDS.runSample}
+                </Button>
+              </div>
+            )}
+
+            {mode !== "chat" && result !== null && result !== "" && (
+              <div
+                ref={resultRef}
+                tabIndex={-1}
+                aria-live="polite"
+                aria-busy={busy}
+                data-testid="try-it-result"
+                className="mt-4 rounded-lg border bg-muted/40 p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <div className="mb-2 flex min-h-7 items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold text-foreground">Result</h3>
+                  {streaming === null && <CopyTextButton text={result} />}
                 </div>
-              ))}
-              {toolNotes.length > 0 && (
-                <p className="text-center text-xs text-muted-foreground">Used: {toolNotes.join(", ")}</p>
-              )}
-              {streaming !== null && (
-                <div className="flex justify-start">
-                  <p className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 text-sm text-foreground">
-                    {streaming === "" ? <span className="italic text-muted-foreground">Thinking...</span> : streaming}
-                  </p>
-                </div>
-              )}
-              <div ref={logEnd} />
-            </div>
+                <ResultView text={result} />
+                {toolNotes.length > 0 && (
+                  <p className="mt-3 text-xs text-muted-foreground">Used: {toolNotes.join(", ")}</p>
+                )}
+              </div>
+            )}
+
+            {mode === "chat" && (
+              <div
+                className="mt-6 max-h-96 min-h-[10rem] space-y-3 overflow-y-auto rounded-lg border bg-background p-4"
+                role="log"
+                aria-label="Preview conversation"
+              >
+                {messages.length === 0 && streaming === null && (
+                  <p className="text-sm text-muted-foreground">Ask the agent something to see how it answers.</p>
+                )}
+                {messages.map((message, index) => (
+                  <div key={index} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <p
+                      className={`max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 text-sm ${
+                        message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"
+                      }`}
+                    >
+                      <span className="sr-only">{message.role === "user" ? "You: " : "Agent: "}</span>
+                      {message.content}
+                    </p>
+                  </div>
+                ))}
+                {toolNotes.length > 0 && (
+                  <p className="text-center text-xs text-muted-foreground">Used: {toolNotes.join(", ")}</p>
+                )}
+                {streaming !== null && (
+                  <div className="flex justify-start">
+                    <p className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 text-sm text-foreground">
+                      {streaming === "" ? <span className="italic text-muted-foreground">Thinking...</span> : streaming}
+                    </p>
+                  </div>
+                )}
+                <div ref={logEnd} />
+              </div>
+            )}
 
             {needsCheck && availability.turnstileSiteKey && (
               <div className="mt-4">
@@ -361,34 +495,36 @@ export function TryItPanel({ slug, listingId, listingTitle }: { slug: string; li
             )}
             {outOfMessages && !notice && (
               <p role="status" className="mt-4 rounded-lg border px-4 py-3 text-sm text-muted-foreground">
-                You have used every message in this preview. Install or hire the agent to keep going.
+                {previewUsedUpLine(sells)}
               </p>
             )}
 
-            <form onSubmit={submit} className="mt-4 flex items-end gap-2">
-              <label htmlFor="try-it-input" className="sr-only">
-                Your message
-              </label>
-              <Textarea
-                id="try-it-input"
-                rows={2}
-                className="min-h-[2.5rem] flex-1 resize-none"
-                value={draft}
-                maxLength={limits.maxMessageChars}
-                disabled={!canType || busy}
-                placeholder={needsCheck ? "Complete the check above first" : "Type a message"}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
-                  }
-                }}
-              />
-              <Button type="submit" disabled={!canType || busy || draft.trim() === ""} aria-label="Send message">
-                <Send className="h-4 w-4" />
-              </Button>
-            </form>
+            {mode === "chat" && (
+              <form onSubmit={submit} className="mt-4 flex items-end gap-2">
+                <label htmlFor="try-it-input" className="sr-only">
+                  Your message
+                </label>
+                <Textarea
+                  id="try-it-input"
+                  rows={2}
+                  className="min-h-[2.5rem] flex-1 resize-none"
+                  value={draft}
+                  maxLength={limits.maxMessageChars}
+                  disabled={!canType || busy}
+                  placeholder={needsCheck ? "Complete the check above first" : "Type a message"}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                />
+                <Button type="submit" disabled={!canType || busy || draft.trim() === ""} aria-label="Send message">
+                  <Send className="h-4 w-4" />
+                </Button>
+              </form>
+            )}
           </>
         )}
       </div>

@@ -63,6 +63,7 @@
 
 import { z } from "zod";
 
+import { holdUntilChecked } from "../lib/heldAnswer.js";
 import { PUBLIC_MODEL_ERROR, publicToolCalls, toPublicStream, type PublicToolCall } from "../lib/publicSse.js";
 import {
   settleOnce,
@@ -73,6 +74,7 @@ import {
 } from "./agentChat.js";
 import type { SettleableMeter } from "./chatStreamSettlement.js";
 import type { TaskInputIssue } from "./agentTask.js";
+import { detectInstructionLeak } from "./assertions.js";
 import type { FailClosedLimiter, LimitRule } from "./failClosedLimiter.js";
 import type { ChatStream, StreamOutcome } from "./mastra-runtime.js";
 import { pageKeyUsable } from "./publicPageState.js";
@@ -220,6 +222,15 @@ export interface TrialListing {
   agentEntrypoint: string | null;
   /** Publisher-funded messages a day, above the platform's. */
   trialFundedDailyCap: number;
+  /**
+   * What the listing sells: "use" or "copies". On a listing that sells use
+   * Try it is the free sample of an agent whose instructions are never
+   * handed over, so its answer is held and checked like a paid answer.
+   * Absent = copies.
+   */
+  sells?: string;
+  /** The agent's instructions: what a held answer is checked against. Never sent to a visitor. */
+  agentInstructions?: string | null;
 }
 
 // ============================================
@@ -330,6 +341,8 @@ export type PublicChatErrorCode =
   | "client_closed_request"
   | "not_supported"
   | "model_error"
+  /** Try it on a listing that sells use: the answer repeated the agent's instructions. */
+  | "answer_withheld"
   | "rate_limiter_unavailable"
   | "agent_unavailable"
   /** A task run (services/publicTask.ts): the three refusals of checkTaskInput. */
@@ -503,6 +516,12 @@ const MODEL_ERROR: PublicChatRefusal = {
   status: 502,
   code: PUBLIC_MODEL_ERROR.code,
   message: PUBLIC_MODEL_ERROR.message,
+};
+
+const ANSWER_WITHHELD: PublicChatRefusal = {
+  status: 502,
+  code: "answer_withheld",
+  message: "This answer could not be shown. Try asking in another way.",
 };
 
 const SCOPES = new Set<string>(["ip", "key", "session", "org", "global", "agent"]);
@@ -881,6 +900,10 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
       agent: { id: listing.agentId },
       source: "trial",
       platformFunded: { modelId },
+      // The free sample of an agent whose use is sold: the visitor does not
+      // learn what its knowledge-base documents are called, as a buyer does
+      // not. A listing that sells copies hands the documents over anyway.
+      ...(listing.sells === "use" && { hideSourceTitles: true }),
       // 6. The session and the platform's shared capacity, then who pays.
       admit: async () => {
         const sessionLimit = await consume([
@@ -998,6 +1021,54 @@ export async function runPublicChat(input: PublicChatInput, deps: PublicChatDeps
         .catch((err) => deps.logger?.warn({ err, widgetKeyId: widgetKey?.id }, "failed to store a widget transcript"));
     }
   };
+
+  // Try it on a listing that sells use is the free sample of an agent whose
+  // instructions a buyer never gets, so the sample must not be a way to read
+  // them: the answer is produced whole, held, and checked like a paid answer
+  // (lib/heldAnswer.ts). Always on the stream, which leaves every charge
+  // open until the check is over. A copy listing and the widget go on below
+  // exactly as they always have.
+  if (trialListing && trialListing.sells === "use") {
+    const charges = joinMeters([session.meter, heldFunding()]);
+    const started = await session.stream();
+    if (!started.ok) {
+      await heldFunding()?.refund("the chat produced no answer");
+      return refused(
+        started.refusal ? publicRefusalOf(started.refusal, notFound, nowSeconds) : publicFailureOf(started.failure),
+      );
+    }
+    const instructions = [trialListing.agentInstructions];
+    const held = await holdUntilChecked(started.chat, (text) => !detectInstructionLeak(text, instructions).leaked);
+    if (!held.ok) {
+      // Nothing of the answer was released. A publisher-funded hold goes back.
+      await charges?.refund(held.code === "answer_withheld" ? "the answer was withheld" : held.outcome.error);
+      if (held.code === "answer_withheld") return refused(ANSWER_WITHHELD);
+      return refused(held.outcome.code === "client_gone" || input.signal.aborted ? CLIENT_GONE_REFUSAL : MODEL_ERROR);
+    }
+    if (body.stream === false) {
+      // Produced and checked, but the visitor left while it was.
+      if (input.signal.aborted) {
+        await charges?.refund("the visitor left before the answer was delivered");
+        return refused(CLIENT_GONE_REFUSAL);
+      }
+      await charges?.settle();
+      await delivered(held.text);
+      return {
+        kind: "answer",
+        message: { role: "assistant", content: held.text },
+        toolCalls: publicToolCalls(held.outcome.toolCalls),
+      };
+    }
+    return {
+      kind: "stream",
+      // The whole checked answer, in the public encoding.
+      chat: toPublicStream(held.chat),
+      meter: charges,
+      finished: async (outcome) => {
+        if (outcome.ok) await delivered(held.text);
+      },
+    };
+  }
 
   // 7. The chat. Streaming is the default: it is what a chat window wants.
   if (body.stream === false) {

@@ -13,6 +13,7 @@ import type { FastifyPluginAsync } from "fastify";
 
 import { env } from "../config/env.js";
 import { getAllFreeModels, getAvailableFreeModels } from "../config/free-models.js";
+import { publicTaskForm } from "../services/agentKind.js";
 import { resolveAgentModelId } from "../services/agentModelResolution.js";
 import { productionPublicChatDeps, publicChatLimiter } from "../services/buildPublicChatDeps.js";
 import {
@@ -79,6 +80,9 @@ export function buildTryItRouteDeps(): TryItRouteDeps {
             availableFreeModelIds: getAvailableFreeModels().map((model) => model.id),
           }),
           agentTools: preview.agentTools,
+          agentKind: preview.agentKind,
+          // A task agent's form as anyone may see it; no other kind has one.
+          inputSchema: preview.agentKind === "task" ? publicTaskForm(preview.agentKindConfig).schema : null,
         };
       },
       // Asked of the registry that runs the tools, in the mode a preview

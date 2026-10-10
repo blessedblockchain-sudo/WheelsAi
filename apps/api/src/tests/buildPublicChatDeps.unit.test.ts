@@ -179,6 +179,9 @@ test("Try it reads published listings only, and runs the agent in the agent's ow
     publisherId: "org-publisher",
     agentEntrypoint: "chat",
     trialFundedDailyCap: 25,
+    // What the listing sells, and what a held answer is checked against.
+    sells: "use",
+    agentInstructions: "Be brief.",
   });
   assert.equal(await deps.loadTrialListing("draft-listing"), null);
   assert.deepEqual(calls[0]![1].where, { slug: "support-pro", status: "published" });

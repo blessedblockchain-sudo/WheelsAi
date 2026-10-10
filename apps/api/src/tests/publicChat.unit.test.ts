@@ -1000,6 +1000,142 @@ test("a publisher-funded message is settled or refunded exactly once, whatever h
 });
 
 // ============================================
+// Try it on a listing that sells use: the answer is held and checked
+// ============================================
+
+const USE_INSTRUCTIONS =
+  "You are Support Pro. Always greet the customer by name and never mention the internal escalation code seven four two.";
+const COPIED = "Sure: always greet the customer by name and never mention the internal escalation code.";
+const USE_LISTING: TrialListing = { ...LISTING, sells: "use", agentInstructions: USE_INSTRUCTIONS };
+const contentEvent = (content: string) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+const copiedStream = {
+  streamEvents: [contentEvent(COPIED.slice(0, 30)), contentEvent(COPIED.slice(30))],
+  streamOutcome: { ok: true as const, usage: null, toolCalls: [], content: COPIED },
+};
+
+const cleanStream = {
+  streamEvents: [contentEvent("Happy to "), contentEvent("help you.")],
+  streamOutcome: { ok: true as const, usage: null, toolCalls: [], content: "Happy to help you." },
+};
+
+test("Try it on a listing that sells use delivers a clean answer whole, after the check", async () => {
+  const h = harness({ listing: USE_LISTING, ...cleanStream });
+  const result = await runPublicChat(trial(), h.deps);
+  assert.ok(result.kind === "answer");
+  // Read from the stream's own bytes: the answer is always produced on the stream, so it can be held.
+  assert.equal(result.message.content, "Happy to help you.");
+  assert.ok(h.log.includes("stream"));
+  assert.ok(!h.log.includes("complete"));
+  assert.ok(h.log.includes(`base:${LISTING.id}:${DAY}`), "a delivered platform-funded message is recorded as before");
+
+  // Asked for as a stream, it is the same answer in the public encoding, whole.
+  const streamed = harness({ listing: USE_LISTING, ...cleanStream });
+  const stream = await runPublicChat(
+    trial({ body: { messages: MESSAGES, sessionToken: sessionToken().token, stream: true } }),
+    streamed.deps,
+  );
+  assert.ok(stream.kind === "stream");
+  const reader = stream.chat.stream.getReader();
+  let sent = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    sent += new TextDecoder().decode(value);
+  }
+  assert.ok(sent.includes("Happy to ") && sent.includes("help you."));
+  assert.ok(sent.endsWith("data: [DONE]\n\n"));
+});
+
+test("Try it on a listing that sells use withholds a copied answer and gives a publisher-funded hold back", async () => {
+  const listing = { ...USE_LISTING, trialFundedDailyCap: 10 };
+  const limits = { ...LIMITS, trial: { ...LIMITS.trial, baseDailyMessages: 0 } };
+  const money = (h: Harness) => h.log.filter((entry) => entry.startsWith("funded:"));
+
+  for (const stream of [false, true]) {
+    const h = harness({ funding: "ok", listing, limits, ...copiedStream });
+    const result = await runPublicChat(
+      trial({ body: { messages: MESSAGES, sessionToken: sessionToken({ orgId: null }).token, stream } }),
+      h.deps,
+    );
+    // Held before the first byte, so a stream is refused as plain HTTP too.
+    const refusal = refusalOf(result);
+    assert.equal(refusal.status, 502);
+    assert.equal(refusal.code, "answer_withheld");
+    assert.equal(refusal.message, "This answer could not be shown. Try asking in another way.");
+    assert.ok(!JSON.stringify(result).includes("greet the customer"));
+    assert.deepEqual(money(h), ["funded:refund:the answer was withheld"]);
+    assert.deepEqual(h.transcripts, []);
+  }
+
+  // A platform-funded message that was withheld is not recorded as answered.
+  const platform = harness({ listing: USE_LISTING, ...copiedStream });
+  assert.equal(refusalOf(await runPublicChat(trial(), platform.deps)).code, "answer_withheld");
+  assert.ok(!platform.log.some((entry) => entry.startsWith("base:")));
+
+  // A clean funded answer settles the hold once.
+  const clean = harness({ funding: "ok", listing, limits, ...cleanStream });
+  const answered = await runPublicChat(
+    trial({ body: { messages: MESSAGES, sessionToken: sessionToken({ orgId: null }).token, stream: false } }),
+    clean.deps,
+  );
+  assert.equal(answered.kind, "answer");
+  assert.deepEqual(money(clean), ["funded:settle"]);
+
+  // A model failure on the held path gives the hold back too.
+  const failed = harness({
+    funding: "ok",
+    listing,
+    limits,
+    streamOutcome: { ok: false, error: "provider error", toolCalls: [], code: "provider_error" },
+  });
+  const failure = refusalOf(
+    await runPublicChat(
+      trial({ body: { messages: MESSAGES, sessionToken: sessionToken({ orgId: null }).token, stream: false } }),
+      failed.deps,
+    ),
+  );
+  assert.equal(failure.code, "model_error");
+  assert.deepEqual(money(failed), ["funded:refund:provider error"]);
+});
+
+test("Try it on a listing that sells use keeps knowledge-base document titles from the model; a copy listing and the widget do not ask for that", async () => {
+  const use = harness({ listing: USE_LISTING, ...cleanStream });
+  assert.equal((await runPublicChat(trial(), use.deps)).kind, "answer");
+  assert.equal(use.chatInputs[0]!.hideSourceTitles, true);
+
+  for (const listing of [LISTING, { ...LISTING, sells: "copies", agentInstructions: USE_INSTRUCTIONS }]) {
+    const copies = harness({ listing });
+    assert.equal((await runPublicChat(trial(), copies.deps)).kind, "answer");
+    assert.ok(!("hideSourceTitles" in copies.chatInputs[0]!));
+  }
+
+  const site = harness();
+  assert.equal((await runPublicChat(widget(), site.deps)).kind, "answer");
+  assert.ok(!("hideSourceTitles" in site.chatInputs[0]!));
+});
+
+test("the hold is for use listings only: a copy listing and the widget answer as they always have", async () => {
+  // The same copied words on a listing that sells copies: its buyers get the instructions anyway.
+  for (const listing of [LISTING, { ...LISTING, sells: "copies", agentInstructions: USE_INSTRUCTIONS }]) {
+    const copies = harness({ listing, ...copiedStream });
+    const result = await runPublicChat(trial(), copies.deps);
+    assert.equal(result.kind, "answer");
+    assert.ok(copies.log.includes("complete"), "the unstreamed path, as before");
+    assert.ok(!copies.log.includes("stream"));
+  }
+
+  const site = harness({ ...copiedStream });
+  const answered = await runPublicChat(widget(), site.deps);
+  assert.equal(answered.kind, "answer");
+  assert.ok(site.log.includes("complete"));
+  assert.ok(!site.log.includes("stream"));
+  // A widget stream is forwarded as it comes, not held.
+  const live = harness({ ...copiedStream });
+  const streamed = await runPublicChat(widget({ body: { messages: MESSAGES } }), live.deps);
+  assert.equal(streamed.kind, "stream");
+});
+
+// ============================================
 // The whole order, on the real agent-chat core
 // ============================================
 

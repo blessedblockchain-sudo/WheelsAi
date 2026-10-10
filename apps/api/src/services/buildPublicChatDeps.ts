@@ -148,7 +148,8 @@ interface TrialListingRow {
   agentId: string;
   publisherId: string;
   trialFundedDailyCap: number;
-  agent: { orgId: string; entrypoint: string | null };
+  sells: string;
+  agent: { orgId: string; entrypoint: string | null; systemPrompt: string | null };
 }
 
 interface TranscriptTx {
@@ -191,7 +192,8 @@ export interface PublicChatPrisma {
         agentId: true;
         publisherId: true;
         trialFundedDailyCap: true;
-        agent: { select: { orgId: true; entrypoint: true } };
+        sells: true;
+        agent: { select: { orgId: true; entrypoint: true; systemPrompt: true } };
       };
     }): Promise<TrialListingRow | null>;
   };
@@ -346,7 +348,10 @@ export function bindPublicChatDeps(bindings: PublicChatBindings): PublicChatDeps
           agentId: true,
           publisherId: true,
           trialFundedDailyCap: true,
-          agent: { select: { orgId: true, entrypoint: true } },
+          // What the listing sells, and the instructions a held answer is
+          // checked against when it sells use. Neither reaches a visitor.
+          sells: true,
+          agent: { select: { orgId: true, entrypoint: true, systemPrompt: true } },
         },
       });
       if (!listing) return null;
@@ -358,6 +363,8 @@ export function bindPublicChatDeps(bindings: PublicChatBindings): PublicChatDeps
         publisherId: listing.publisherId,
         agentEntrypoint: listing.agent.entrypoint,
         trialFundedDailyCap: listing.trialFundedDailyCap,
+        sells: listing.sells,
+        agentInstructions: listing.agent.systemPrompt,
       };
     },
 

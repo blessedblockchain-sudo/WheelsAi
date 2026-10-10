@@ -52,6 +52,10 @@ export interface TrialPreview {
   agentModelId: string | null;
   /** The names of the agent's tools. */
   agentTools: string[];
+  /** conversation, task or scheduled: which sample the panel draws. Absent = conversation. */
+  agentKind?: string;
+  /** A task agent's form (publicTaskForm's schema); null for every other kind. */
+  inputSchema?: unknown;
 }
 
 export interface ListingTrialSettings {
@@ -170,6 +174,10 @@ export function createTryItRoutes(deps: TryItRouteDeps): FastifyPluginAsync {
           maxTotalChars: PUBLIC_CHAT_LIMITS.maxTotalChars,
         },
         disabledTools: await listings.disabledTools(preview.agentTools),
+        // What the panel draws: a chat, the form of a task, or one "Run a
+        // sample" button. The answers are sent as one message on this route.
+        agentKind: preview.agentKind ?? "conversation",
+        inputSchema: preview.inputSchema ?? null,
       };
     });
 

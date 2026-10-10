@@ -170,7 +170,20 @@ test("availability: on for a published listing, on a platform free model, and it
     },
     limits: { messagesPerSession: 3, maxMessageChars: 4000, maxMessages: 20, maxTotalChars: 16000 },
     disabledTools: ["http_request", "file_read", "file_write"],
+    // A listing whose preview names no kind is a chat, with no form.
+    agentKind: "conversation",
+    inputSchema: null,
   });
+
+  // A task listing says so and carries its form, so the panel can draw it.
+  const form = { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] };
+  const task = await server({ preview: { ...PREVIEW, agentKind: "task", inputSchema: form } });
+  const taskBody = (await task.app.inject({ method: "GET", url: `/api/marketplace/listings/${SLUG}/try` })).json();
+  assert.equal(taskBody.agentKind, "task");
+  assert.deepEqual(taskBody.inputSchema, form);
+  const scheduled = await server({ preview: { ...PREVIEW, agentKind: "scheduled", inputSchema: null } });
+  const scheduledBody = (await scheduled.app.inject({ method: "GET", url: `/api/marketplace/listings/${SLUG}/try` })).json();
+  assert.deepEqual([scheduledBody.agentKind, scheduledBody.inputSchema], ["scheduled", null]);
   assert.equal(res.headers["cache-control"], "private, no-store");
   // The listing's own model is the publisher's business.
   assert.ok(!res.body.includes("gpt-4o"));

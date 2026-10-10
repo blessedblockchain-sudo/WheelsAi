@@ -40,6 +40,7 @@ import {
   type PublicWidgetKey,
 } from "./publicChat.js";
 import { createTrialFunding, type TrialFundingDb } from "./trialFunding.js";
+import { findUseListing, isPaidUse, type UseListingDb } from "./useListing.js";
 import { verifyTrialSession } from "./trialSession.js";
 import { hashBucket, ipBucket } from "./widgetKeys.js";
 
@@ -178,6 +179,10 @@ export interface PublicChatPrisma {
     }): Promise<unknown>;
   };
   agentListing: {
+    /** The published listing that sells use of a page key's agent (findUseListing). */
+    findFirst(
+      args: Parameters<UseListingDb["agentListing"]["findFirst"]>[0],
+    ): ReturnType<UseListingDb["agentListing"]["findFirst"]>;
     findFirst(args: {
       where: { slug: string; status: "published" };
       select: {
@@ -230,6 +235,18 @@ export interface PublicChatBindings {
   holdFundedMessage?: PublicChatDeps["holdFundedMessage"];
   now?: () => Date;
   logger?: PublicChatDeps["logger"];
+}
+
+/**
+ * Whether a published listing sells use of this agent at a price right now.
+ * A page key (WidgetKey.pageOfAgentId) is held to it at every use: the key's
+ * own switch is kept right when a listing is published or repriced, and this
+ * read is what holds when two such edits cross. Throws when the listing
+ * cannot be read; the caller then treats the key as not found.
+ */
+export async function pageSoldAtAPrice(db: UseListingDb, agentId: string): Promise<boolean> {
+  const listing = await findUseListing(db, agentId);
+  return listing !== null && isPaidUse(listing);
 }
 
 /** How a widget conversation is filed: one per key and visitor session. */
@@ -299,7 +316,26 @@ export function bindPublicChatDeps(bindings: PublicChatBindings): PublicChatDeps
     // scope by. The agent it names is then loaded scoped to the key's own
     // organization (prepareAgentChat), so a key can only ever reach an agent
     // of the organization that created it.
-    loadWidgetKey: (publicKey) => db.widgetKey.findUnique({ where: { publicKey }, select: WIDGET_KEY_COLUMNS }),
+    //
+    // The key of an agent's public page also carries whether use of that
+    // agent is sold at a price, which loadLiveWidgetKey holds it to. A key
+    // that is switched off or revoked answers nobody already, and a key
+    // made for a website is not held to the listing: neither costs a read.
+    // A listing that cannot be read leaves the page key not found: free
+    // use of a priced agent is never the fallback.
+    loadWidgetKey: async (publicKey) => {
+      const key = await db.widgetKey.findUnique({ where: { publicKey }, select: WIDGET_KEY_COLUMNS });
+      if (!key || key.pageOfAgentId == null || !key.enabled || key.revokedAt !== null) return key;
+      try {
+        return { ...key, soldAtAPrice: await pageSoldAtAPrice(db, key.pageOfAgentId) };
+      } catch (err) {
+        (bindings.logger ?? logger).error(
+          { err, widgetKeyId: key.id },
+          "a page key was refused: the listing of its agent could not be read",
+        );
+        return null;
+      }
+    },
 
     loadTrialListing: async (slug) => {
       const listing = await db.agentListing.findFirst({

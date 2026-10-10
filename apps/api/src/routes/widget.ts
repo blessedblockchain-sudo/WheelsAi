@@ -61,6 +61,12 @@ export interface WidgetKeyConfig {
   pageOfAgentId?: string | null;
   /** Whether that agent's page is public: what a page key is held to. */
   agentIsPublic?: boolean;
+  /**
+   * On a page key: whether a published listing sells use of its agent at a
+   * price right now. While it does, the key is not found, as for a chat and
+   * a run. Absent on a key made for a website.
+   */
+  soldAtAPrice?: boolean;
 }
 
 export interface WidgetRouteDeps {
@@ -122,10 +128,10 @@ export function createWidgetRoutes(deps: WidgetRouteDeps): FastifyPluginAsync {
       // Revoked and disabled keys are as unknown as a wrong one.
       if (!key || !key.enabled || key.revokedAt !== null) return sendPublicRefusal(reply, KEY_NOT_FOUND);
       // So is the key of an agent's public page while that page is not on,
-      // as for a chat and a run (loadLiveWidgetKey). It fails closed: a page
-      // key whose agent was not read is not found. A key made for a website
-      // does not depend on isPublic.
-      if (key.pageOfAgentId != null && !pageKeyUsable(key.agentIsPublic === true, key)) {
+      // or while use of that agent is sold at a price, as for a chat and a
+      // run (loadLiveWidgetKey). It fails closed: a page key whose agent was
+      // not read is not found. A key made for a website depends on neither.
+      if (key.pageOfAgentId != null && !pageKeyUsable(key.agentIsPublic === true, key, key.soldAtAPrice === true)) {
         return sendPublicRefusal(reply, KEY_NOT_FOUND);
       }
       if (!originAllowed(request.headers.origin, key.allowedOrigins, deps.chat.appOrigins)) {

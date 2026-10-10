@@ -192,6 +192,13 @@ export interface PublicWidgetKey {
    * Never sent to a visitor.
    */
   agent?: PublicWidgetKeyAgent | null;
+  /**
+   * On a page key: whether a published listing sells use of its agent at a
+   * price right now, read with the key (services/useListing.ts). While it
+   * does, the key answers nobody, whatever its own switch says. Absent on
+   * an ordinary website key, which is not held to the listing.
+   */
+  soldAtAPrice?: boolean;
 }
 
 export interface PublicWidgetKeyAgent {
@@ -654,9 +661,13 @@ export function widgetAddressRules(limits: PublicChatLimitConfig, bucket: string
  *
  * The key of an agent's public page (pageOfAgentId set) is live only while
  * that page is on (pageKeyUsable): an agent that is no longer public cannot
- * be used through the key its page left behind. It fails closed: a page key
- * whose agent was not read is not live. An ordinary website key does not
- * depend on isPublic.
+ * be used through the key its page left behind, and neither can an agent
+ * whose use is sold at a price, even if the key's own switch was left on:
+ * the listing is read at every use, so no order of edits opens free use of
+ * a priced agent. It fails closed: a page key whose agent was not read is
+ * not live, and one whose listing could not be read is not handed over at
+ * all (loadWidgetKey answers null). An ordinary website key depends on
+ * neither isPublic nor the listing.
  */
 export async function loadLiveWidgetKey(
   deps: Pick<PublicChatDeps, "loadWidgetKey">,
@@ -664,7 +675,9 @@ export async function loadLiveWidgetKey(
 ): Promise<PublicWidgetKey | null> {
   const key = await deps.loadWidgetKey(publicKey);
   if (!key || !key.enabled || key.revokedAt !== null) return null;
-  if (key.pageOfAgentId != null && !pageKeyUsable(key.agent?.isPublic === true, key)) return null;
+  if (key.pageOfAgentId != null && !pageKeyUsable(key.agent?.isPublic === true, key, key.soldAtAPrice === true)) {
+    return null;
+  }
   return key;
 }
 

@@ -71,8 +71,15 @@ test("the queues barrel exports the reaper's start and stop", async () => {
 test("the widget's production deps read the key through Prisma, by its public key", async () => {
   const p = await getPrisma();
   const original = p.widgetKey.findUnique;
+  const originalListing = p.agentListing.findFirst;
   const queried: any[] = [];
+  const listingQueries: any[] = [];
   try {
+    // A page key is held to its agent's listing; this agent has none.
+    p.agentListing.findFirst = async (args: any) => {
+      listingQueries.push(args.where);
+      return null;
+    };
     p.widgetKey.findUnique = async (args: any) => {
       queried.push(args);
       if (args.where.publicKey !== "wpk_known") return null;
@@ -109,6 +116,9 @@ test("the widget's production deps read the key through Prisma, by its public ke
     assert.deepEqual(configQuery.select.agent, { select: { name: true, isPublic: true } });
     assert.equal(config?.pageOfAgentId, "agent-1");
     assert.equal(config?.agentIsPublic, true);
+    // And whether use of that agent is sold at a price, read through Prisma.
+    assert.deepEqual(listingQueries, [{ agentId: "agent-1", status: "published", sells: "use" }]);
+    assert.equal(config?.soldAtAPrice, false);
     assert.equal(await deps.config.loadKeyConfig("wpk_unknown"), null);
 
     // The chat side: the same table, through the public chat composition root.
@@ -120,6 +130,7 @@ test("the widget's production deps read the key through Prisma, by its public ke
     );
   } finally {
     p.widgetKey.findUnique = original;
+    p.agentListing.findFirst = originalListing;
   }
 });
 

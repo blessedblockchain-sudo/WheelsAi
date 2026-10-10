@@ -62,7 +62,9 @@ function fakePrisma() {
       },
     },
     agentListing: {
-      findFirst: async (args) => {
+      // Two readers: Try it by slug, and a page key's use listing by agent
+      // (covered in pageKeySoldAtAPrice.unit.test.ts).
+      findFirst: (async (args: { where: { slug?: string } }) => {
         calls.push(["agentListing.findFirst", args]);
         if (args.where.slug !== "support-pro") return null;
         return {
@@ -71,9 +73,10 @@ function fakePrisma() {
           agentId: "agent-pub",
           publisherId: "org-publisher",
           trialFundedDailyCap: 25,
-          agent: { orgId: "org-publisher", entrypoint: "chat" },
+          sells: "use",
+          agent: { orgId: "org-publisher", entrypoint: "chat", systemPrompt: "Be brief." },
         };
-      },
+      }) as PublicChatPrisma["agentListing"]["findFirst"],
     },
     conversation: {
       upsert: async (args) => {
@@ -141,6 +144,8 @@ test("a widget key is found by its publishable key, with only the columns chat r
   const { deps, calls } = bindings();
   assert.deepEqual(await deps.loadWidgetKey(PUBLIC_KEY), KEY_ROW);
   assert.equal(await deps.loadWidgetKey(`wpk_${"c".repeat(32)}`), null);
+  // A key made for a website is not held to a listing: no listing is read.
+  assert.deepEqual(calls.map(([name]) => name), ["widgetKey.findUnique", "widgetKey.findUnique"]);
   const [, args] = calls[0]!;
   assert.deepEqual(args.where, { publicKey: PUBLIC_KEY });
   assert.deepEqual(Object.keys(args.select).sort(), [

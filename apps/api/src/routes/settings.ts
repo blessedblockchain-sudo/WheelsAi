@@ -1,12 +1,12 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { brandingSchema } from "@wheelsai/types";
-import { PublicKey } from "@solana/web3.js";
-import nacl from "tweetnacl";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { hashPassword, verifyPassword, generateNonce, claimNonce } from "../services/auth.js";
+import { hashPassword, verifyPassword } from "../services/auth.js";
 import { sendVerificationEmail } from "./emailAuth.js";
+import { createLinkWalletRoutes } from "./linkWallet.js";
+import { buildLinkWalletDeps } from "./linkWalletBindings.js";
 
 const updateProfileSchema = z.object({
   displayName: z.string().max(100).optional(),
@@ -34,12 +34,6 @@ const updateSettingsSchema = z.object({
     timezone: z.string().max(50).optional(),
   }).optional(),
 }).strict();
-
-const linkWalletSchema = z.object({
-  walletAddress: z.string().min(32).max(44),
-  signature: z.string().min(1),
-  nonce: z.string().min(1),
-});
 
 export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // Apply auth middleware to all settings routes
@@ -242,87 +236,10 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
     return { message: "Password updated successfully" };
   });
 
-  // Request nonce for wallet linking
-  fastify.post("/link-wallet/nonce", async (request, _reply) => {
-    const body = z.object({ walletAddress: z.string().min(32).max(44) }).parse(request.body);
-    const nonce = await generateNonce(body.walletAddress, "link-wallet");
-    return { nonce, walletAddress: body.walletAddress };
-  });
-
-  // Link Solana wallet (with nonce-based replay protection)
-  fastify.post("/link-wallet", async (request, reply) => {
-    const { userId } = request.user!;
-    const { walletAddress, signature, nonce } = linkWalletSchema.parse(request.body);
-
-    // One-time claim of a link-wallet nonce this server issued for this
-    // wallet (prevents replay, including of sign-in messages).
-    if (!(await claimNonce(walletAddress, nonce, "link-wallet"))) {
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Invalid or expired nonce. Request a new one via POST /link-wallet/nonce",
-      });
-    }
-
-    // Verify the wallet address is a valid Solana public key
-    let pubkey: PublicKey;
-    try {
-      pubkey = new PublicKey(walletAddress);
-    } catch {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "Invalid Solana wallet address",
-      });
-    }
-
-    // Verify ed25519 signature over the nonce
-    let isValid = false;
-    try {
-      const messageBytes = new TextEncoder().encode(nonce);
-      const signatureBytes = Buffer.from(signature, "base64");
-      isValid = nacl.sign.detached.verify(
-        messageBytes,
-        signatureBytes,
-        pubkey.toBytes()
-      );
-    } catch {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "Invalid wallet signature",
-      });
-    }
-
-    if (!isValid) {
-      return reply.status(400).send({
-        error: "Bad Request",
-        message: "Invalid wallet signature",
-      });
-    }
-
-    // Check if another user already has this wallet linked
-    const existing = await prisma.user.findFirst({
-      where: {
-        walletAddress,
-        id: { not: userId },
-      },
-    });
-
-    if (existing) {
-      return reply.status(409).send({
-        error: "Conflict",
-        message: "This wallet is already linked to another account",
-      });
-    }
-
-    await prisma.user.update({
-      where: { id: userId },
-      data: { walletAddress },
-    });
-
-    return {
-      walletAddress,
-      message: "Wallet linked successfully",
-    };
-  });
+  // Wallet linking: POST /link-wallet/nonce and POST /link-wallet
+  // (routes/linkWallet.ts). Registered here so the paths stay under
+  // /api/settings and the auth hook above covers them.
+  await fastify.register(createLinkWalletRoutes(buildLinkWalletDeps()));
 
   // ============================================
   // Branding / White-label

@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, publicAgentApi, type PublicAgentDetail } from "@/lib/api";
 import { PUBLIC_USE_MESSAGES } from "@/lib/public-use";
 import { useHydrated } from "./local-time";
+import { PaidGate } from "./paid-gate";
 import { PublicChatPanel } from "./public-chat-panel";
 import { PublicReceipts, PublicReceiptsSkeleton } from "./public-receipts";
 import { PublicResultsPanel } from "./public-results-panel";
@@ -74,6 +75,10 @@ function UsePanel({ detail }: { detail: PublicAgentDetail }) {
   if (use.state === "view_only") return null;
 
   const kind = use.chat ? "chat" : use.task ? "task" : "scheduled";
+  // Sold: people sign in and pay to use it. The price, the sign-in and the panel are the gate's.
+  if (use.state === "paid" && use.paid) {
+    return <PaidGate detail={detail} terms={use.paid} title={PANEL_TITLES[kind](agent.name)} />;
+  }
   const usable = use.state === "on" && !stopped && (kind === "scheduled" || key !== null);
   const titleId = "public-use-title";
 
@@ -129,8 +134,8 @@ function UsePanel({ detail }: { detail: PublicAgentDetail }) {
 
 /**
  * An agent's public page: its name, how it is used, what it does, the panel
- * of its kind, then its receipts. Anyone with the link can open it; nothing
- * here needs a sign-in.
+ * of its kind, then its receipts. Anyone with the link can open it; only
+ * using an agent that is sold needs a sign-in.
  */
 export function PublicAgentView({ handle, initial }: PublicAgentViewProps) {
   const hydrated = useHydrated();

@@ -284,6 +284,8 @@ async function main() {
         shortDescription: agentData.description.slice(0, 280),
         longDescription: agentData.description,
         category: agentData.category,
+        // What these listings have always sold: a copy for the buyer.
+        sells: "copies",
         pricingModel: "tokenized",
         publisherId: org.id,
         publisherName: org.name,

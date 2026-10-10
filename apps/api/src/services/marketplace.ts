@@ -591,6 +591,9 @@ export async function createListing(
   const listing = await prisma.agentListing.create({
     data: {
       priorityPlacement: planLimits.priorityPlacement,
+      // Every listing has sold copies until now. What a listing sells has no
+      // default in the data, so each place that creates one says.
+      sells: "copies",
       agentId: params.agentId,
       title: params.title,
       slug,

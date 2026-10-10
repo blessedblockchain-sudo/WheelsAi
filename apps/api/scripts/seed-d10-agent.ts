@@ -94,6 +94,7 @@ async function main() {
         shortDescription:
           "The WheelsAI reference agent. Tokenized on devnet; every compute payment it makes is publicly verifiable.",
         category: "other",
+        sells: "copies",
         pricingModel: "tokenized",
         publisherId: org.id,
         publisherName: org.name,

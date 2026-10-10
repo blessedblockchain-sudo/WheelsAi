@@ -130,6 +130,9 @@ model ApiKey {
   // the key may spend in one UTC day (ApiKeySpendWindow).
   maxJobPriceCents   BigInt?   @map("max_job_price_cents")
   dailySpendCapCents BigInt?   @map("daily_spend_cap_cents")
+  // Set on a key granted agents:use: the most one paid use of somebody
+  // else's agent may cost. The day's cap above is shared with jobs.
+  maxUsePriceCents   BigInt?   @map("max_use_price_cents")
   lastUsedAt DateTime? @map("last_used_at")
   expiresAt  DateTime? @map("expires_at")
   createdAt  DateTime  @default(now()) @map("created_at")
@@ -1146,6 +1149,19 @@ model AgentListing {
   pricePerRequestCents BigInt? @map("price_per_request_cents")
   monthlyPriceCents BigInt?   @map("monthly_price_cents")
 
+  // What a buyer gets: 'use' (they use the creator's own agent on its page
+  // or through the API and never see its instructions) or 'copies' (their
+  // own copy, instructions included). No default on purpose: code that
+  // creates a listing must say what it sells. CHECK in the migration.
+  sells             String
+  // Outbound tools the creator allows for people who pay to use the agent,
+  // by name. Empty = none.
+  useAllowedTools   String[]  @default([]) @map("use_allowed_tools")
+  // Running total, in millionths of a cent, of what delivered paid uses cost
+  // on the platform's model keys. Each settle adds to it, and only the whole
+  // cents it has just crossed leave the creator's amount (marketplaceMetering).
+  useModelCostMicros BigInt   @default(0) @map("use_model_cost_micros")
+
   // Try it: every published listing can be tried for free on the platform's
   // models, up to a platform-funded number of messages a day. This is how
   // many MORE messages a day the publisher pays for (0 = none).
@@ -1210,6 +1226,9 @@ model AgentInstall {
   buyerId         String    @map("buyer_id") @db.Uuid
   clonedAgentId   String?   @map("cloned_agent_id") @db.Uuid // The cloned agent in buyer's account
   status          String    @default("active") // 'active', 'stopped', 'uninstalled'
+  // The buyer's licence: 'copy' (their own copy, clonedAgentId) or 'use' (use
+  // of the creator's agent; clonedAgentId stays null). CHECK in the migration.
+  kind            String    @default("copy")
   totalRequests   BigInt    @default(0) @map("total_requests")
   totalSpentCents BigInt    @default(0) @map("total_spent_cents")
   // The pricing the buyer agreed to (at install, or when they last accepted

@@ -70,6 +70,8 @@ async function main() {
       slug: `${RUN}-listing`,
       shortDescription: "Proof listing",
       category: "customer-support",
+      // The proof installs a copy and meters it.
+      sells: "copies",
       pricingModel: "per_request",
       pricePerRequestCents: 250n,
       publisherId: publisherOrg.id,

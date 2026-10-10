@@ -950,19 +950,19 @@ export default function BillingPage() {
                       <div
                         className={cn(
                           "flex h-10 w-10 items-center justify-center rounded-lg",
-                          tx.type === "purchase" || tx.type === "bonus"
+                          tx.amount > 0
                             ? "bg-green-500/10"
                             : "bg-red-500/10"
                         )}
                       >
-                        {tx.type === "purchase" || tx.type === "bonus" ? (
+                        {tx.amount > 0 ? (
                           <ArrowDownRight className="h-5 w-5 text-green-600" />
                         ) : (
                           <ArrowUpRight className="h-5 w-5 text-red-600" />
                         )}
                       </div>
                       <div>
-                        <p className="font-medium capitalize">{tx.type}</p>
+                        <p className="font-medium capitalize">{tx.type.replace(/_/g, " ")}</p>
                         <p className="text-sm text-muted-foreground">{tx.description}</p>
                       </div>
                     </div>
@@ -971,12 +971,12 @@ export default function BillingPage() {
                       <p
                         className={cn(
                           "text-lg font-semibold",
-                          tx.type === "purchase" || tx.type === "bonus"
+                          tx.amount > 0
                             ? "text-green-600"
                             : "text-red-600"
                         )}
                       >
-                        {tx.type === "purchase" || tx.type === "bonus" ? "+" : "-"}
+                        {tx.amount > 0 ? "+" : "-"}
                         {formatCurrency(Math.abs(tx.amount))}
                       </p>
                       <p className="text-sm text-muted-foreground">

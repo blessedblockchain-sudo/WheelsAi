@@ -1,0 +1,21 @@
+{
+  "capturedOn": "2026-10-10",
+  "note": "Pyth SOL/USD price account and the clock sysvar, read together from each public RPC. Reading only. Used as real bytes for the decoder tests.",
+  "account": "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+  "clusters": {
+    "mainnet-beta": {
+      "genesisHash": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      "contextSlot": 455391024,
+      "owner": "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ",
+      "priceAccountDataBase64": "IvEjY51+9M1gMUcENA3t3zcf1CRyFI8kjp0abRpesqw6zYt/1dayQwHvDYtv2izrpB2hXUCV0do5Kg0vjtDGx7wPTPrIwoC1bZASr5ECAAAA/jQvAAAAAAD4////E6PKagAAAAASo8pqAAAAAA7xMJECAAAA3SUuAAAAAABjtiQbAAAAAAA=",
+      "clockDataBase64": "MLckGwAAAABXbcpqAAAAAB4EAAAAAAAAHwQAAAAAAAA/o8pqAAAAAA=="
+    },
+    "devnet": {
+      "genesisHash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+      "contextSlot": 509664453,
+      "owner": "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ",
+      "priceAccountDataBase64": "IvEjY51+9M1gMUcENA3t3zcf1CRyFI8kjp0abRpesqw6zYt/1dayQwHvDYtv2izrpB2hXUCV0do5Kg0vjtDGx7wPTPrIwoC1bUFthpECAAAAznApAAAAAAD4////PaPKagAAAAA8o8pqAAAAAA5AMpECAAAAsxkuAAAAAAC43GAeAAAAAAA=",
+      "clockDataBase64": "xdxgHgAAAAAFaclqAAAAAJsEAAAAAAAAnAQAAAAAAABBo8pqAAAAAA=="
+    }
+  }
+}

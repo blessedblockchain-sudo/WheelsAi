@@ -95,6 +95,7 @@ model Organization {
   agentInstalls      AgentInstall[]     @relation("AgentInstalls")
   agentSubscriptions AgentSubscription[] @relation("AgentSubscriptions")
   creatorPayouts     CreatorPayout[]    @relation("CreatorPayouts")
+  earningsTransactions EarningsTransaction[]
   offerings          Offering[]          @relation("PublishedOfferings")
   jobsHired          Job[]               @relation("JobsHired")
   jobsReceived       Job[]               @relation("JobsReceived")
@@ -1367,6 +1368,29 @@ model CreatorPayout {
 
   @@index([publisherId, status])
   @@map("creator_payouts")
+}
+
+// What a creator is owed, change by change. One row for every change to
+// publisher_profiles.pending_payout_cents, written in the same transaction
+// by services/earningsLedger.ts, the only code that may change that number.
+// An organization's rows add up to it, from an 'opening_balance' row the
+// migration wrote for every creator who was owed something before the
+// ledger existed.
+model EarningsTransaction {
+  id           String   @id @default(uuid()) @db.Uuid
+  orgId        String   @map("org_id") @db.Uuid
+  amountCents  BigInt   @map("amount_cents") // Above zero = owed more, below zero = owed less
+  type         String // 'sale' | 'subscription' | 'job' | 'contributor_share' | 'payout_reserved' | 'payout_restored' | 'opening_balance'
+  description  String?
+  referenceId  String?  @map("reference_id") // The revenue row, payout or contributor earning the change belongs to
+  balanceAfter BigInt   @map("balance_after")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Restrict: a record of money owed. Same reasoning as credit_transactions.
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  @@index([orgId, createdAt])
+  @@map("earnings_transactions")
 }
 
 // Revenue tracking for marketplace transactions

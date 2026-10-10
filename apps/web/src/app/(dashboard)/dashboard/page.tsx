@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Box, Bot, Cpu, Zap, DollarSign, ArrowRight, Github } from "lucide-react";
+import { Box, Bot, Cpu, Zap, DollarSign, ArrowRight } from "lucide-react";
 import { Header } from "@/components/dashboard/header";
 import { GetStarted } from "@/components/dashboard/get-started";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,18 +15,12 @@ import {
   agentsApi,
   deploymentsApi,
   billingApi,
+  capabilitiesApi,
   type Agent,
+  type BillingRails,
   type Deployment,
 } from "@/lib/api";
-
-const frameworkColors: Record<string, string> = {
-  mastra: "bg-purple-500/10 text-purple-500",
-  langchain: "bg-green-500/10 text-green-500",
-  autogen: "bg-blue-500/10 text-blue-500",
-  elizaos: "bg-cyan-500/10 text-cyan-500",
-  crewai: "bg-orange-500/10 text-orange-500",
-  custom: "bg-muted text-foreground",
-};
+import { canAddCredits, cutOffByLeaving } from "@/lib/home";
 
 function formatCurrency(amount: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -49,22 +43,6 @@ const statusColors: Record<string, "success" | "warning" | "destructive" | "seco
   stopped: "secondary",
   failed: "destructive",
 };
-
-/** Placeholder shaped like one Recent Agents row. */
-function AgentRowSkeleton() {
-  return (
-    <Card>
-      <CardContent className="flex items-center justify-between py-3">
-        <div className="flex items-center gap-3">
-          <Skeleton className="h-9 w-9 rounded-lg" />
-          <Skeleton className="h-5 w-32" />
-          <Skeleton className="h-5 w-16" />
-        </div>
-        <Skeleton className="h-5 w-5" />
-      </CardContent>
-    </Card>
-  );
-}
 
 /** Placeholder shaped like one Recent Deployments row. */
 function DeploymentRowSkeleton() {
@@ -99,12 +77,19 @@ export default function DashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   // The agents call is allowed to fail on its own (the rest of the page still
-  // loads); Recent Agents then says so instead of claiming there are none.
+  // loads); Your agents then says so instead of showing nothing.
   const [agentsError, setAgentsError] = useState<unknown>(null);
+  // What can happen right now, read once. null means the answer could not be
+  // read, and Home then promises nothing about email or about paying.
+  const [emailDelivery, setEmailDelivery] = useState<boolean | null>(null);
+  const [rails, setRails] = useState<BillingRails | null>(null);
+  // True once the person is leaving Home: a request the browser drops then is
+  // not a failure, and is neither shown nor written to the console.
+  const leaving = useRef(false);
 
   async function loadData() {
     try {
-      const [agentsData, deploymentsData, balanceData, usageData] = await Promise.all([
+      const [agentsData, deploymentsData, balanceData, usageData, capabilities, packages] = await Promise.all([
         agentsApi.list().catch((error: unknown) => {
           setAgentsError(error);
           return { agents: [], total: 0 };
@@ -112,16 +97,23 @@ export default function DashboardPage() {
         deploymentsApi.list(),
         billingApi.getBalance().catch(() => ({ balance: { available: 0 } })),
         billingApi.getUsage().catch(() => ({ usage: { requests: 0 } })),
+        capabilitiesApi.get().catch(() => null),
+        billingApi.getPackages().catch(() => null),
       ]);
+      // An answer that arrived is drawn even if a leave was started: the
+      // person may still be here (a leave that was cancelled).
       setAgents(agentsData.agents);
       setAgentTotal(agentsData.total);
       setDeployments(deploymentsData.deployments);
       setCreditBalance(balanceData.balance.available);
       setTotalRequests(usageData.usage.requests);
+      setEmailDelivery(capabilities ? capabilities.emailDelivery?.available === true : null);
+      setRails(packages?.rails ?? null);
+      setIsLoading(false);
     } catch (error) {
-      console.error("Failed to load dashboard data:", error);
+      // Cut off by leaving the page: nothing to show, and nothing to log.
+      if (cutOffByLeaving(error, leaving.current)) return;
       setLoadError(error);
-    } finally {
       setIsLoading(false);
     }
   }
@@ -134,7 +126,25 @@ export default function DashboardPage() {
   }
 
   useEffect(() => {
+    leaving.current = false;
+    const leave = () => {
+      leaving.current = true;
+    };
+    // Back on the page (a cancelled leave, or a return from the back cache).
+    const stay = () => {
+      leaving.current = false;
+    };
+    window.addEventListener("beforeunload", leave);
+    window.addEventListener("pagehide", leave);
+    window.addEventListener("pageshow", stay);
     loadData();
+    return () => {
+      leaving.current = true;
+      window.removeEventListener("beforeunload", leave);
+      window.removeEventListener("pagehide", leave);
+      window.removeEventListener("pageshow", stay);
+    };
+    // Loads once, when Home opens.
   }, []);
 
   const runningDeployments = deployments.filter((d) => d.status === "running");
@@ -156,12 +166,16 @@ export default function DashboardPage() {
           />
         ) : (
           <>
-            {/* Entry points for the three product types, then the first-run
-                checklist. BUILD leads the page because BUILD leads. */}
+            {/* Creating an agent leads; then the person's agents, the two
+                other things to build, and the checklist of what is next. */}
             <GetStarted
-              agentCount={agentTotal}
-              deploymentCount={deployments.length}
+              agents={isLoading || agentsError !== null ? null : agents}
+              agentsLoading={isLoading}
+              agentsError={agentsError}
+              onRetry={retryLoad}
               creditCents={Math.round(creditBalance * 100)}
+              emailDelivery={emailDelivery}
+              rails={rails}
             />
 
             {/* Stats */}
@@ -224,7 +238,7 @@ export default function DashboardPage() {
                     href="/dashboard/billing"
                     className="text-xs text-primary-600 hover:underline"
                   >
-                    Add credits
+                    {canAddCredits(rails) ? "Add credits" : "View billing"}
                   </Link>
                 </CardContent>
               </Card>
@@ -255,77 +269,6 @@ export default function DashboardPage() {
                   </Link>
                 </CardContent>
               </Card>
-            </div>
-
-            {/* Recent Agents — first list on the page (BUILD leads) */}
-            <div className="mt-8">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-foreground">
-                  Recent Agents
-                </h2>
-                <Link
-                  href="/dashboard/agents"
-                  className="text-sm text-primary-600 hover:underline"
-                >
-                  View all
-                </Link>
-              </div>
-
-              {isLoading ? (
-                <div className="mt-4 space-y-3" aria-busy="true">
-                  {[1, 2].map((i) => (
-                    <AgentRowSkeleton key={i} />
-                  ))}
-                  <span className="sr-only">Loading agents</span>
-                </div>
-              ) : agentsError !== null ? (
-                <div className="mt-4">
-                  <ErrorState
-                    title="Couldn't load agents"
-                    error={agentsError}
-                    onRetry={retryLoad}
-                  />
-                </div>
-              ) : agents.length === 0 ? (
-                <div className="mt-4">
-                  <EmptyState
-                    icon={Bot}
-                    title="No agents yet"
-                    description="Import one from GitHub or start from a template."
-                    actionLabel={NEW_AGENT_BUTTON.label}
-                    actionHref={NEW_AGENT_BUTTON.href}
-                  />
-                </div>
-              ) : (
-                <div className="mt-4 space-y-3">
-                  {agents.slice(0, 5).map((agent) => (
-                    <Link key={agent.id} href={`/dashboard/agents/${agent.id}`}>
-                      <Card className="transition-shadow hover:shadow-md">
-                        <CardContent className="flex items-center justify-between py-3">
-                          <div className="flex items-center gap-3">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/15">
-                              <Bot className="h-5 w-5 text-primary-600 dark:text-primary-400" />
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium text-foreground">
-                                {agent.name}
-                              </span>
-                              <span
-                                className={`rounded px-2 py-0.5 text-xs font-medium ${
-                                  frameworkColors[agent.framework] ?? frameworkColors.custom
-                                }`}
-                              >
-                                {agent.framework}
-                              </span>
-                            </div>
-                          </div>
-                          <ArrowRight className="h-5 w-5 text-gray-400" />
-                        </CardContent>
-                      </Card>
-                    </Link>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* Recent Deployments */}
@@ -392,7 +335,7 @@ export default function DashboardPage() {
                                 {deployment.endpoint}
                               </code>
                             )}
-                            <ArrowRight className="h-5 w-5 text-gray-400" />
+                            <ArrowRight className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
                           </div>
                         </CardContent>
                       </Card>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, Suspense } from "react";
+import { useCallback, useEffect, useRef, useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ArrowLeft,
@@ -10,12 +10,14 @@ import {
   FileText,
   DollarSign,
   Eye,
-  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { readPageKey, saveKeepCopy } from "@/components/dashboard/sell/page-key";
+import { WhoCanUse } from "@/components/dashboard/sell/who-can-use";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,15 +29,56 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
-import { agentsApi, marketplaceApi, type Agent, type CreateListingInput, getErrorMessage } from "@/lib/api";
+import {
+  agentsApi,
+  capabilitiesApi,
+  marketplaceApi,
+  type Agent,
+  type AgentDetail,
+  type Capabilities,
+  type MarketplaceListing,
+  getErrorMessage,
+  getValidationError,
+} from "@/lib/api";
 import { LIST_AGENT_BUTTON, NEW_AGENT_BUTTON } from "@/lib/nav";
-import { LIST_AGENT_PARAM, agentToListFirst } from "@/lib/agent-page";
+import { LIST_AGENT_PARAM, agentToListFirst, listingStatus } from "@/lib/agent-page";
+import {
+  LISTED_AGENT_BADGE,
+  LISTED_AGENT_NOTE,
+  WIZARD_STEPS,
+  agentRows,
+  createListingBody,
+  detailsOfListing,
+  editListingHref,
+  emptyDetails,
+  pickAgent,
+  previewSellsLine,
+  stepProblem,
+  submitButtons,
+  updateListingBody,
+  type ListingCategory,
+  type ListingDetails,
+  type SubmitButton,
+} from "@/lib/listing-draft";
+import {
+  asksForPayment,
+  buildSellSave,
+  earningsLine,
+  emptySellForm,
+  formOfListing,
+  salePriceText,
+  sellChoices,
+  sellFieldErrors,
+  sellLimitsOf,
+  type SellErrors,
+  type SellForm,
+} from "@/lib/sell-choice";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
   { id: "agent", label: "Select Agent", icon: Bot },
   { id: "details", label: "Listing Details", icon: FileText },
-  { id: "pricing", label: "Pricing", icon: DollarSign },
+  { id: "pricing", label: "Who can use it?", icon: DollarSign },
   { id: "preview", label: "Preview", icon: Eye },
 ];
 
@@ -122,123 +165,144 @@ export default function PublishWizardPage() {
   );
 }
 
+
+interface WizardData {
+  agents: Agent[];
+  /** The organization's own listings, with who holds what: they mark the agents that are listed. */
+  listings: MarketplaceListing[];
+  /** null when it could not be read: the step then names no limit it does not know. */
+  capabilities: Capabilities | null;
+}
+
 function PublishWizardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams.get("edit");
-  // "List this agent" on an agent's Sell tab: the wizard starts with that agent chosen.
+  // "List this agent" on an agent's page: the wizard starts with that agent chosen.
   const agentParam = searchParams.get(LIST_AGENT_PARAM);
 
   const [currentStep, setCurrentStep] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [isLoadingAgents, setIsLoadingAgents] = useState(true);
-  const [agentsError, setAgentsError] = useState<unknown>(null);
-  const [isLoadingListing, setIsLoadingListing] = useState(!!editId);
-  const [listingLoadError, setListingLoadError] = useState<unknown>(null);
+  const [isSaving, setIsSaving] = useState<SubmitButton["id"] | null>(null);
+  const [data, setData] = useState<WizardData | null>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
 
   // Form state
-  const [formData, setFormData] = useState<CreateListingInput>({
-    agentId: "",
-    title: "",
-    shortDescription: "",
-    longDescription: "",
-    category: "other",
-    pricingModel: "free",
-    pricePerRequestCents: undefined,
-    monthlyPriceCents: undefined,
-  });
+  const [details, setDetails] = useState<ListingDetails>(() => emptyDetails());
+  const [sell, setSell] = useState<SellForm>(() => emptySellForm());
+  const [sellErrors, setSellErrors] = useState<SellErrors>({});
+  const [keepCopy, setKeepCopy] = useState(false);
 
-  // Load agents on mount
-  useEffect(() => {
-    loadAgents();
+  // The chosen agent with its tools, which the list of agents does not carry.
+  const [agentDetail, setAgentDetail] = useState<AgentDetail | null>(null);
+  const [agentDetailError, setAgentDetailError] = useState<unknown>(null);
+  const [agentDetailAttempt, setAgentDetailAttempt] = useState(0);
+
+  /** Which listing, or new listing, the form was last filled for. */
+  const filledFor = useRef<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const [{ agents }, { listings }, capabilities] = await Promise.all([
+        agentsApi.list(),
+        marketplaceApi.getMyListings(),
+        capabilitiesApi.get().catch(() => null),
+      ]);
+      setData({ agents, listings, capabilities });
+    } catch (error) {
+      setLoadError(error);
+      toast.error(getErrorMessage(error, "Failed to load agents"));
+    }
   }, []);
 
-  async function loadAgents() {
-    setIsLoadingAgents(true);
-    setAgentsError(null);
-    try {
-      const { agents } = await agentsApi.list();
-      setAgents(agents);
-    } catch (error) {
-      setAgentsError(error);
-      toast.error(getErrorMessage(error, "Failed to load agents"));
-    } finally {
-      setIsLoadingAgents(false);
-    }
-  }
-
-  // `?agent=`: once the person's agents are known, and only while none is chosen yet.
   useEffect(() => {
-    const first = agentToListFirst(agentParam, agents, Boolean(editId));
-    if (first) setFormData((prev) => (prev.agentId ? prev : { ...prev, agentId: first }));
-  }, [agentParam, agents, editId]);
+    void load();
+  }, [load]);
 
-  // Load existing listing if editing
+  const agents = data?.agents ?? [];
+  const listings = data?.listings ?? [];
+  const editing = editId && data ? (listings.find((listing) => listing.id === editId) ?? null) : null;
+  const editMissing = Boolean(editId) && data !== null && editing === null;
+
+  // Fill the form once for each listing that is opened, and empty it when an edit is left for a new listing.
   useEffect(() => {
+    if (!data) return;
+    const key = editId ? `edit:${editId}` : "new";
+    if (filledFor.current === key) return;
     if (editId) {
-      loadListing(editId);
+      if (!editing) return;
+      const kind = editing.agent?.agentKind ?? data.agents.find((agent) => agent.id === editing.agentId)?.agentKind;
+      setDetails(detailsOfListing(editing));
+      setSell(formOfListing(editing, kind));
+    } else if (filledFor.current !== null) {
+      setDetails(emptyDetails());
+      setSell(emptySellForm());
     }
-  }, [editId]);
+    setSellErrors({});
+    setCurrentStep(0);
+    filledFor.current = key;
+  }, [data, editId, editing]);
 
-  async function loadListing(id: string) {
-    setIsLoadingListing(true);
-    setListingLoadError(null);
-    try {
-      const { listing } = await marketplaceApi.getListing(id);
-      setFormData({
-        agentId: listing.agentId,
-        title: listing.title,
-        shortDescription: listing.shortDescription,
-        longDescription: listing.longDescription || "",
-        category: listing.category as any,
-        pricingModel: listing.pricingModel,
-        pricePerRequestCents: listing.pricePerRequestCents || undefined,
-        monthlyPriceCents: listing.monthlyPriceCents || undefined,
-      });
-    } catch (error) {
-      setListingLoadError(error);
-      toast.error(getErrorMessage(error, "Failed to load listing"));
-    } finally {
-      setIsLoadingListing(false);
+  // `?agent=`: once the person's agents are known, and only while none is chosen yet. An agent that
+  // already has a listing opens that listing instead: an agent has one.
+  useEffect(() => {
+    if (!data || editId) return;
+    const first = agentToListFirst(agentParam, data.agents, false);
+    if (!first) return;
+    const pick = pickAgent(first, data.listings, null);
+    if (pick.kind === "go") {
+      router.replace(pick.href);
+      return;
     }
-  }
+    setDetails((prev) => (prev.agentId ? prev : { ...prev, agentId: first }));
+  }, [agentParam, data, editId, router]);
 
-  function retryListing() {
-    if (editId) loadListing(editId);
-  }
-
-  const updateForm = (updates: Partial<CreateListingInput>) => {
-    setFormData((prev) => ({ ...prev, ...updates }));
-  };
-
-  const canProceed = () => {
-    switch (currentStep) {
-      case 0:
-        return !!formData.agentId;
-      case 1:
-        return (
-          formData.title.length >= 3 &&
-          formData.shortDescription.length >= 10 &&
-          formData.category
+  // The chosen agent's tools and whether its page keeps a copy of what people send.
+  const agentId = details.agentId;
+  useEffect(() => {
+    if (!agentId) return;
+    let current = true;
+    setAgentDetailError(null);
+    Promise.all([agentsApi.get(agentId), readPageKey(agentId).catch(() => null)])
+      .then(([{ agent }, pageKey]) => {
+        if (!current) return;
+        setAgentDetail(agent);
+        setKeepCopy(pageKey?.storeTranscripts ?? false);
+        // A choice this kind of agent does not have falls back to Free.
+        setSell((prev) =>
+          prev.sells === "use" && !sellChoices(agent.agentKind).some((choice) => choice.id === prev.choice && choice.selectable)
+            ? { ...prev, choice: "free" }
+            : prev,
         );
-      case 2:
-        if (formData.pricingModel === "per_request") {
-          return (formData.pricePerRequestCents ?? 0) > 0;
-        }
-        if (formData.pricingModel === "monthly") {
-          return (formData.monthlyPriceCents ?? 0) > 0;
-        }
-        return true;
-      case 3:
-        return true;
-      default:
-        return false;
-    }
+      })
+      .catch((error) => {
+        if (current) setAgentDetailError(error);
+      });
+    return () => {
+      current = false;
+    };
+  }, [agentId, agentDetailAttempt]);
+
+  const chosenAgent = agentDetail && agentDetail.id === agentId ? agentDetail : null;
+  const limits = sellLimitsOf(data?.capabilities);
+  const selectedAgent = agents.find((a) => a.id === agentId);
+  const agentKind = chosenAgent?.agentKind ?? selectedAgent?.agentKind;
+
+  const updateForm = (updates: Partial<ListingDetails>) => {
+    setDetails((prev) => ({ ...prev, ...updates }));
   };
+
+  function chooseAgent(id: string) {
+    const pick = pickAgent(id, listings, editId);
+    if (pick.kind === "go") router.replace(pick.href);
+    else updateForm({ agentId: id });
+  }
+
+  const step = WIZARD_STEPS[currentStep] ?? "agent";
+  const problem = stepProblem(step, { details, sell, agent: chosenAgent, limits });
 
   const handleNext = () => {
-    if (currentStep < STEPS.length - 1) {
+    if (!problem && currentStep < STEPS.length - 1) {
       setCurrentStep((prev) => prev + 1);
     }
   };
@@ -249,49 +313,49 @@ function PublishWizardContent() {
     }
   };
 
-  const handleSubmit = async (publish: boolean) => {
-    setIsLoading(true);
+  const built = chosenAgent ? buildSellSave(sell, chosenAgent, limits) : null;
+
+  const handleSubmit = async (button: SubmitButton) => {
+    if (!chosenAgent || !built) return;
+    if (!built.ok) {
+      setSellErrors(built.errors);
+      setCurrentStep(2);
+      return;
+    }
+    setIsSaving(button.id);
     try {
       if (editId) {
-        // Update existing listing
-        const { listing } = await marketplaceApi.updateListing(editId, {
-          title: formData.title,
-          shortDescription: formData.shortDescription,
-          longDescription: formData.longDescription,
-          category: formData.category,
-          pricingModel: formData.pricingModel,
-          pricePerRequestCents: formData.pricePerRequestCents,
-          monthlyPriceCents: formData.monthlyPriceCents,
-        });
-
-        if (publish) {
-          await marketplaceApi.publishListing(listing.id);
-          toast.success("Listing updated and published!");
-        } else {
-          toast.success("Listing updated!");
-        }
+        await marketplaceApi.updateListing(editId, updateListingBody(details, built.save, button.publish));
       } else {
-        // Create new listing. This form sells copies, so it says so: the
-        // API sells use of the agent unless copies are asked for by name.
-        const { listing } = await marketplaceApi.createListing({ ...formData, sells: "copies" });
-
-        if (publish) {
-          await marketplaceApi.publishListing(listing.id);
-          toast.success("Agent published to marketplace!");
-        } else {
-          toast.success("Listing saved as draft");
-        }
+        // What the listing sells is named: use of the agent, unless copies were chosen under More options.
+        await marketplaceApi.createListing(createListingBody(details, built.save, button.publish));
       }
-
-      router.push("/dashboard/marketplace");
-    } catch (error: any) {
+    } catch (error) {
+      const fields = getValidationError(error)?.fields;
+      const fieldErrors = fields ? sellFieldErrors(fields) : {};
+      if (Object.keys(fieldErrors).length > 0) {
+        setSellErrors(fieldErrors);
+        setCurrentStep(2);
+      }
       toast.error(getErrorMessage(error, "Failed to save listing"));
-    } finally {
-      setIsLoading(false);
+      setIsSaving(null);
+      return;
     }
-  };
 
-  const selectedAgent = agents.find((a) => a.id === formData.agentId);
+    toast.success(button.done);
+    // The copy setting lives on the agent's page, which the agent has once it is on sale.
+    if (asksForPayment(sell)) {
+      try {
+        const kept = await saveKeepCopy(agentId, keepCopy);
+        if (kept === "no_page" && keepCopy) {
+          toast.message("Keeping a copy is set once the agent is on sale. Turn it on from the agent's Sell tab then.");
+        }
+      } catch (error) {
+        toast.error(`The setting to keep a copy was not saved: ${getErrorMessage(error, "Try again from the agent's Sell tab.")}`);
+      }
+    }
+    router.push("/dashboard/marketplace");
+  };
 
   const header = (
     <Header
@@ -302,17 +366,24 @@ function PublishWizardContent() {
 
   // When editing, the wizard stays hidden until the listing has loaded, so it
   // never shows blank fields in place of the listing's own.
-  if (editId && (listingLoadError !== null || isLoadingListing)) {
+  if (editId && (loadError !== null || data === null || editMissing)) {
     return (
       <div className="flex flex-col">
         {header}
 
         <div className="p-8">
-          {listingLoadError !== null ? (
+          {loadError !== null ? (
             <ErrorState
               title="Couldn't load listing"
-              error={listingLoadError}
-              onRetry={retryListing}
+              error={loadError}
+              onRetry={() => void load()}
+            />
+          ) : editMissing ? (
+            <ErrorState
+              title="Couldn't load listing"
+              description="This listing was not found among your organization's listings."
+              actionLabel={LIST_AGENT_BUTTON.label}
+              actionHref={LIST_AGENT_BUTTON.href}
             />
           ) : (
             <WizardSkeleton />
@@ -322,6 +393,12 @@ function PublishWizardContent() {
     );
   }
 
+  const buttons = submitButtons(editing);
+  const price = built?.ok
+    ? salePriceText(built.save, agentKind)
+    : null;
+  const earnings = earningsLine(sell, agentKind, limits);
+
   return (
     <div className="flex flex-col">
       {header}
@@ -329,9 +406,13 @@ function PublishWizardContent() {
       <div className="p-8">
         {/* Progress Steps */}
         <div className="mb-8">
-          <div className="flex items-center justify-center">
+          <ol className="flex items-center justify-center">
             {STEPS.map((step, index) => (
-              <div key={step.id} className="flex items-center">
+              <li
+                key={step.id}
+                className="flex items-center"
+                aria-current={index === currentStep ? "step" : undefined}
+              >
                 <div
                   className={cn(
                     "flex items-center gap-2 rounded-full px-4 py-2",
@@ -343,25 +424,26 @@ function PublishWizardContent() {
                   )}
                 >
                   {index < currentStep ? (
-                    <Check className="h-4 w-4" />
+                    <Check className="h-4 w-4" aria-hidden="true" />
                   ) : (
-                    <step.icon className="h-4 w-4" />
+                    <step.icon className="h-4 w-4" aria-hidden="true" />
                   )}
-                  <span className="hidden text-sm font-medium sm:inline">
+                  <span className="sr-only sm:not-sr-only sm:text-sm sm:font-medium">
                     {step.label}
                   </span>
                 </div>
                 {index < STEPS.length - 1 && (
                   <div
+                    aria-hidden="true"
                     className={cn(
                       "mx-2 h-0.5 w-8 sm:w-16",
                       index < currentStep ? "bg-green-300" : "bg-muted"
                     )}
                   />
                 )}
-              </div>
+              </li>
             ))}
-          </div>
+          </ol>
         </div>
 
         {/* Step Content */}
@@ -377,14 +459,14 @@ function PublishWizardContent() {
                   </p>
                 </div>
 
-                {isLoadingAgents ? (
-                  <AgentOptionsSkeleton />
-                ) : agentsError !== null ? (
+                {loadError !== null ? (
                   <ErrorState
                     title="Couldn't load agents"
-                    error={agentsError}
-                    onRetry={loadAgents}
+                    error={loadError}
+                    onRetry={() => void load()}
                   />
+                ) : data === null ? (
+                  <AgentOptionsSkeleton />
                 ) : agents.length === 0 ? (
                   <EmptyState
                     icon={Bot}
@@ -395,35 +477,53 @@ function PublishWizardContent() {
                   />
                 ) : (
                   <RadioGroup
-                    value={formData.agentId}
-                    onValueChange={(value) => updateForm({ agentId: value })}
+                    value={agentId}
+                    onValueChange={chooseAgent}
                     className="space-y-3"
                   >
-                    {agents.map((agent) => (
+                    {agentRows(agents, listings).map(({ agent, listing }) => (
                       <div
                         key={agent.id}
                         className={cn(
                           "flex cursor-pointer items-center gap-4 rounded-lg border p-4 transition-colors",
-                          formData.agentId === agent.id
+                          agentId === agent.id
                             ? "border-primary-500 bg-primary/10"
                             : "hover:bg-muted"
                         )}
-                        onClick={() => updateForm({ agentId: agent.id })}
+                        onClick={() => chooseAgent(agent.id)}
                       >
-                        <RadioGroupItem value={agent.id} id={agent.id} />
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted">
-                          <Bot className="h-5 w-5 text-muted-foreground" />
+                        <RadioGroupItem
+                          value={agent.id}
+                          id={agent.id}
+                          className="shrink-0"
+                          aria-describedby={listing ? `${agent.id}-listed` : undefined}
+                          onClick={(event) => {
+                            // The row's own click chooses; without this the agent would be chosen twice.
+                            event.stopPropagation();
+                            chooseAgent(agent.id);
+                          }}
+                        />
+                        <div className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted sm:flex">
+                          <Bot className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
                         </div>
-                        <div className="flex-1">
-                          <label
-                            htmlFor={agent.id}
-                            className="cursor-pointer font-medium text-foreground"
-                          >
-                            {agent.name}
-                          </label>
-                          <p className="text-sm text-muted-foreground">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label
+                              htmlFor={agent.id}
+                              className="min-w-0 cursor-pointer break-words font-medium text-foreground"
+                            >
+                              {agent.name}
+                            </label>
+                            {listing && <Badge variant="secondary">{LISTED_AGENT_BADGE}</Badge>}
+                          </div>
+                          <p className="break-words text-sm text-muted-foreground">
                             {agent.framework} &middot; {agent.description || "No description"}
                           </p>
+                          {listing && (
+                            <p id={`${agent.id}-listed`} className="mt-1 text-sm text-muted-foreground">
+                              {listingStatus(listing.status).label}. {LISTED_AGENT_NOTE}
+                            </p>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -447,14 +547,14 @@ function PublishWizardContent() {
                     <Label htmlFor="title">Title *</Label>
                     <Input
                       id="title"
-                      value={formData.title}
+                      value={details.title}
                       onChange={(e) => updateForm({ title: e.target.value })}
                       placeholder="e.g., Customer Support Bot"
                       className="mt-1"
                       maxLength={100}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {formData.title.length}/100 characters
+                      {details.title.length}/100 characters
                     </p>
                   </div>
 
@@ -462,7 +562,7 @@ function PublishWizardContent() {
                     <Label htmlFor="shortDescription">Short Description *</Label>
                     <Textarea
                       id="shortDescription"
-                      value={formData.shortDescription}
+                      value={details.shortDescription}
                       onChange={(e) =>
                         updateForm({ shortDescription: e.target.value })
                       }
@@ -472,7 +572,7 @@ function PublishWizardContent() {
                       maxLength={280}
                     />
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {formData.shortDescription.length}/280 characters
+                      {details.shortDescription.length}/280 characters
                     </p>
                   </div>
 
@@ -480,7 +580,7 @@ function PublishWizardContent() {
                     <Label htmlFor="longDescription">Full Description</Label>
                     <Textarea
                       id="longDescription"
-                      value={formData.longDescription}
+                      value={details.longDescription}
                       onChange={(e) =>
                         updateForm({ longDescription: e.target.value })
                       }
@@ -494,9 +594,9 @@ function PublishWizardContent() {
                     <Label htmlFor="category">Category *</Label>
                     <Select
                       id="category"
-                      value={formData.category}
+                      value={details.category}
                       onChange={(e) =>
-                        updateForm({ category: e.target.value as CreateListingInput["category"] })
+                        updateForm({ category: e.target.value as ListingCategory })
                       }
                       className="mt-1"
                     >
@@ -511,228 +611,39 @@ function PublishWizardContent() {
               </div>
             )}
 
-            {/* Step 3: Pricing */}
-            {currentStep === 2 && (
-              <div className="space-y-6">
-                <div>
-                  <h2 className="text-lg font-semibold">Pricing</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Choose how you want to monetize your agent. You'll earn 90%
-                    of all revenue.
-                  </p>
+            {/* Step 3: Who can use it? The same question as on the agent's Sell tab. */}
+            {currentStep === 2 &&
+              (chosenAgent ? (
+                <WhoCanUse
+                  agent={chosenAgent}
+                  form={sell}
+                  onChange={(next) => {
+                    setSell(next);
+                    setSellErrors({});
+                  }}
+                  errors={sellErrors}
+                  limits={limits}
+                  capacity={data?.capabilities?.paidUse.freeModelDailyAllowance ?? null}
+                  keepCopy={{ checked: keepCopy, onChange: setKeepCopy }}
+                  listing={editing}
+                  disabled={isSaving !== null}
+                />
+              ) : agentDetailError !== null ? (
+                <ErrorState
+                  title="Couldn't load this agent"
+                  error={agentDetailError}
+                  onRetry={() => setAgentDetailAttempt((attempt) => attempt + 1)}
+                />
+              ) : (
+                <div className="space-y-3" aria-busy="true">
+                  <span className="sr-only">Loading</span>
+                  <Skeleton className="h-6 w-48 max-w-full" />
+                  <Skeleton className="h-4 w-full max-w-lg" />
+                  <Skeleton className="h-20 w-full" />
+                  <Skeleton className="h-20 w-full" />
+                  <Skeleton className="h-20 w-full" />
                 </div>
-
-                <RadioGroup
-                  value={formData.pricingModel}
-                  onValueChange={(value: string) =>
-                    updateForm({
-                      pricingModel: value as CreateListingInput["pricingModel"],
-                      pricePerRequestCents: undefined,
-                      monthlyPriceCents: undefined,
-                    })
-                  }
-                  className="space-y-3"
-                >
-                  <div
-                    className={cn(
-                      "flex cursor-pointer items-start gap-4 rounded-lg border p-4 transition-colors",
-                      formData.pricingModel === "free"
-                        ? "border-primary-500 bg-primary/10"
-                        : "hover:bg-muted"
-                    )}
-                    onClick={() =>
-                      updateForm({
-                        pricingModel: "free",
-                        pricePerRequestCents: undefined,
-                        monthlyPriceCents: undefined,
-                      })
-                    }
-                  >
-                    <RadioGroupItem value="free" id="free" className="mt-1" />
-                    <div>
-                      <label
-                        htmlFor="free"
-                        className="cursor-pointer font-medium text-foreground"
-                      >
-                        Free
-                      </label>
-                      <p className="text-sm text-muted-foreground">
-                        Anyone can use your agent for free. Great for building reputation.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div
-                    className={cn(
-                      "rounded-lg border p-4 transition-colors",
-                      formData.pricingModel === "per_request"
-                        ? "border-primary-500 bg-primary/10"
-                        : "hover:bg-muted"
-                    )}
-                  >
-                    <div
-                      className="flex cursor-pointer items-start gap-4"
-                      onClick={() => updateForm({ pricingModel: "per_request" })}
-                    >
-                      <RadioGroupItem
-                        value="per_request"
-                        id="per_request"
-                        className="mt-1"
-                      />
-                      <div className="flex-1">
-                        <label
-                          htmlFor="per_request"
-                          className="cursor-pointer font-medium text-foreground"
-                        >
-                          Pay per Request
-                        </label>
-                        <p className="text-sm text-muted-foreground">
-                          Users pay for each request. Best for usage-based billing.
-                        </p>
-                      </div>
-                    </div>
-                    {formData.pricingModel === "per_request" && (
-                      <div className="ml-8 mt-4">
-                        <Label htmlFor="perRequestPrice">Price per Request</Label>
-                        <div className="mt-1 flex items-center gap-2">
-                          <span className="text-muted-foreground">$</span>
-                          <Input
-                            id="perRequestPrice"
-                            type="number"
-                            step="0.0001"
-                            min="0.0001"
-                            max="1000"
-                            value={
-                              formData.pricePerRequestCents
-                                ? formData.pricePerRequestCents / 100
-                                : ""
-                            }
-                            onChange={(e) =>
-                              updateForm({
-                                pricePerRequestCents: Math.round(
-                                  parseFloat(e.target.value || "0") * 100
-                                ),
-                              })
-                            }
-                            placeholder="0.01"
-                            className="w-32"
-                          />
-                          <span className="text-sm text-muted-foreground">per request</span>
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          You'll earn $
-                          {(
-                            ((formData.pricePerRequestCents || 0) / 100) *
-                            0.9
-                          ).toFixed(4)}{" "}
-                          per request (90%)
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div
-                    className={cn(
-                      "rounded-lg border p-4 transition-colors",
-                      formData.pricingModel === "monthly"
-                        ? "border-primary-500 bg-primary/10"
-                        : "hover:bg-muted"
-                    )}
-                  >
-                    <div
-                      className="flex cursor-pointer items-start gap-4"
-                      onClick={() => updateForm({ pricingModel: "monthly" })}
-                    >
-                      <RadioGroupItem
-                        value="monthly"
-                        id="monthly"
-                        className="mt-1"
-                      />
-                      <div className="flex-1">
-                        <label
-                          htmlFor="monthly"
-                          className="cursor-pointer font-medium text-foreground"
-                        >
-                          Monthly Subscription
-                        </label>
-                        <p className="text-sm text-muted-foreground">
-                          Users pay a fixed monthly fee. Best for predictable revenue.
-                        </p>
-                      </div>
-                    </div>
-                    {formData.pricingModel === "monthly" && (
-                      <div className="ml-8 mt-4">
-                        <Label htmlFor="monthlyPrice">Monthly Price</Label>
-                        <div className="mt-1 flex items-center gap-2">
-                          <span className="text-muted-foreground">$</span>
-                          <Input
-                            id="monthlyPrice"
-                            type="number"
-                            step="1"
-                            min="1"
-                            max="100000"
-                            value={
-                              formData.monthlyPriceCents
-                                ? formData.monthlyPriceCents / 100
-                                : ""
-                            }
-                            onChange={(e) =>
-                              updateForm({
-                                monthlyPriceCents: Math.round(
-                                  parseFloat(e.target.value || "0") * 100
-                                ),
-                              })
-                            }
-                            placeholder="9.99"
-                            className="w-32"
-                          />
-                          <span className="text-sm text-muted-foreground">per month</span>
-                        </div>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          You'll earn $
-                          {(
-                            ((formData.monthlyPriceCents || 0) / 100) *
-                            0.9
-                          ).toFixed(2)}{" "}
-                          per subscriber (90%)
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div
-                    className={cn(
-                      "flex cursor-pointer items-start gap-4 rounded-lg border p-4 transition-colors",
-                      formData.pricingModel === "tokenized"
-                        ? "border-primary-500 bg-primary/10"
-                        : "hover:bg-muted"
-                    )}
-                    onClick={() =>
-                      updateForm({
-                        pricingModel: "tokenized",
-                        pricePerRequestCents: undefined,
-                        monthlyPriceCents: undefined,
-                      })
-                    }
-                  >
-                    <RadioGroupItem value="tokenized" id="tokenized" className="mt-1" />
-                    <div>
-                      <label
-                        htmlFor="tokenized"
-                        className="cursor-pointer font-medium text-foreground"
-                      >
-                        Token Gated
-                      </label>
-                      <p className="text-sm text-muted-foreground">
-                        Buyers need at least 1 of your agent&apos;s token, held in a
-                        wallet linked to their organization. Until you launch the
-                        token, the listing is free to install and run.
-                      </p>
-                    </div>
-                  </div>
-                </RadioGroup>
-              </div>
-            )}
+              ))}
 
             {/* Step 4: Preview */}
             {currentStep === 3 && (
@@ -746,12 +657,12 @@ function PublishWizardContent() {
 
                 <div className="rounded-lg border bg-muted p-6">
                   <div className="flex items-start gap-4">
-                    <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/25">
-                      <Bot className="h-8 w-8 text-primary-600" />
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary/15 to-primary/25">
+                      <Bot className="h-8 w-8 text-primary-600" aria-hidden="true" />
                     </div>
-                    <div>
-                      <h3 className="text-xl font-bold text-foreground">
-                        {formData.title || "Untitled"}
+                    <div className="min-w-0">
+                      <h3 className="break-words text-xl font-bold text-foreground">
+                        {details.title || "Untitled"}
                       </h3>
                       <p className="text-muted-foreground">
                         by Your Organization &middot;{" "}
@@ -760,31 +671,30 @@ function PublishWizardContent() {
                     </div>
                   </div>
 
-                  <p className="mt-4 text-foreground">
-                    {formData.shortDescription || "No description"}
+                  <p className="mt-4 break-words text-foreground">
+                    {details.shortDescription || "No description"}
                   </p>
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     <span className="rounded-full bg-card px-3 py-1 text-sm text-muted-foreground">
-                      {CATEGORIES.find((c) => c.value === formData.category)?.label}
+                      {CATEGORIES.find((c) => c.value === details.category)?.label}
                     </span>
-                    <span
-                      className={cn(
-                        "rounded-full px-3 py-1 text-sm font-medium",
-                        formData.pricingModel === "free"
-                          ? "bg-green-500/10 text-green-500"
-                          : "bg-primary/15 text-primary-700"
-                      )}
-                    >
-                      {formData.pricingModel === "free"
-                        ? "Free"
-                        : formData.pricingModel === "tokenized"
-                          ? "Token Gated"
-                          : formData.pricingModel === "per_request"
-                            ? `$${((formData.pricePerRequestCents || 0) / 100).toFixed(4)}/req`
-                            : `$${((formData.monthlyPriceCents || 0) / 100).toFixed(2)}/mo`}
-                    </span>
+                    {price && (
+                      <span
+                        className={cn(
+                          "rounded-full px-3 py-1 text-sm font-medium",
+                          price === "Free"
+                            ? "bg-green-500/10 text-green-500"
+                            : "bg-primary/15 text-primary-700"
+                        )}
+                      >
+                        {price}
+                      </span>
+                    )}
                   </div>
+
+                  <p className="mt-4 text-sm text-muted-foreground">{previewSellsLine(sell)}</p>
+                  {earnings && <p className="mt-1 text-sm text-muted-foreground">{earnings}</p>}
                 </div>
 
                 <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
@@ -798,46 +708,52 @@ function PublishWizardContent() {
             )}
 
             {/* Navigation */}
-            <div className="mt-8 flex items-center justify-between">
+            <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
               <Button
                 variant="outline"
                 onClick={handleBack}
-                disabled={currentStep === 0}
+                disabled={currentStep === 0 || isSaving !== null}
               >
-                <ArrowLeft className="mr-2 h-4 w-4" />
+                <ArrowLeft className="mr-2 h-4 w-4" aria-hidden="true" />
                 Back
               </Button>
 
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 {currentStep === STEPS.length - 1 ? (
-                  <>
+                  buttons.map((button) => (
                     <Button
-                      variant="outline"
-                      onClick={() => handleSubmit(false)}
-                      disabled={isLoading}
+                      key={button.id}
+                      variant={button.primary ? "default" : "outline"}
+                      onClick={() => void handleSubmit(button)}
+                      isLoading={isSaving === button.id}
+                      disabled={isSaving !== null || !built}
                     >
-                      {isLoading ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : null}
-                      Save as Draft
-                    </Button>
-                    <Button onClick={() => handleSubmit(true)} disabled={isLoading}>
-                      {isLoading ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <Check className="mr-2 h-4 w-4" />
+                      {button.primary && isSaving !== button.id && (
+                        <Check className="mr-2 h-4 w-4" aria-hidden="true" />
                       )}
-                      Publish Now
+                      {button.label}
                     </Button>
-                  </>
+                  ))
                 ) : (
-                  <Button onClick={handleNext} disabled={!canProceed()}>
+                  <Button
+                    onClick={handleNext}
+                    disabled={problem !== null}
+                    aria-describedby={problem ? "wizard-next-why" : undefined}
+                  >
                     Next
-                    <ArrowRight className="ml-2 h-4 w-4" />
+                    <ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" />
                   </Button>
                 )}
               </div>
             </div>
+            {/* A disabled Next says why. */}
+            <p
+              id="wizard-next-why"
+              role="status"
+              className="mt-2 min-h-5 text-right text-sm text-muted-foreground"
+            >
+              {currentStep < STEPS.length - 1 ? problem : null}
+            </p>
           </CardContent>
         </Card>
       </div>

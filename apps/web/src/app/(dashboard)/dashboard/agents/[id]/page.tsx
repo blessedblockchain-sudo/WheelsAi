@@ -486,7 +486,7 @@ function AgentDetailView() {
           )}
           {(activeTab === "runs" || activeTab === "schedule") && <RunsTab agent={agent} />}
           {activeTab === "share" && <ShareTab agent={agent} onAgentChanged={loadAgent} />}
-          {activeTab === "sell" && <SellTab agent={agent} />}
+          {activeTab === "sell" && <SellTab agent={agent} onAgentChanged={loadAgent} />}
           {activeTab === "settings" && <SettingsTab agent={agent} agentId={agentId} loadAgent={loadAgent} />}
           {activeTab === "api" && <ApiTab agent={agent} agentId={agentId} loadAgent={loadAgent} />}
           {activeTab === "versions" && <VersionsTab agent={agent} agentId={agentId} loadAgent={loadAgent} />}

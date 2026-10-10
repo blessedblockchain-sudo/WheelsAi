@@ -41,12 +41,24 @@ import {
   EARNINGS_WORDS,
   PAYOUTS_UNAVAILABLE_CODE,
   PAYOUTS_UNAVAILABLE_MESSAGE,
+  PAYOUT_IN_PROGRESS_CODE,
+  PAYOUT_METHOD_LABELS,
   PAYOUT_NOT_CANCELLABLE_CODE,
   cancelPayoutDescription,
+  defaultAmountText,
+  defaultPayoutMethod,
+  formatCents,
   payoutCancelledMessage,
+  payoutDialog,
+  payoutRefusal,
   payoutRequest,
+  payoutRequestedMessage,
   payoutRow,
+  payoutSubmission,
+  readPayoutLimits,
   revenueRow,
+  type PayoutMethod,
+  type PayoutRefusal,
 } from "@/lib/earnings";
 import { ContributionsCard } from "@/components/marketplace/contributions-card";
 import { EscrowBadge } from "@/components/marketplace/escrow-badge";
@@ -59,7 +71,7 @@ type RevenueData = Awaited<ReturnType<typeof marketplaceApi.getRevenue>>;
 type Payout = Awaited<ReturnType<typeof marketplaceApi.getPayoutHistory>>["payouts"][number];
 
 function formatCurrency(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
+  return formatCents(cents);
 }
 
 function formatDate(dateString: string): string {
@@ -70,11 +82,7 @@ function formatDate(dateString: string): string {
   });
 }
 
-const payoutMethodLabels: Record<string, string> = {
-  credits: "Platform Credits",
-  crypto_usdc: "USDC (Solana)",
-  crypto_sol: "SOL",
-};
+const payoutMethodLabels: Record<string, string> = PAYOUT_METHOD_LABELS;
 
 /** Placeholder shaped like the loaded page: stats, payout CTA, two lists, transactions table. */
 function RevenuePageSkeleton() {
@@ -143,8 +151,13 @@ export default function RevenueDashboardPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [showPayoutDialog, setShowPayoutDialog] = useState(false);
-  const [payoutMethod, setPayoutMethod] = useState<"credits" | "crypto_usdc" | "crypto_sol">("credits");
+  const [payoutMethod, setPayoutMethod] = useState<PayoutMethod | null>(null);
+  const [payoutAmount, setPayoutAmount] = useState("");
   const [payoutAddress, setPayoutAddress] = useState("");
+  // What the dialog was last refused for, and the field it is about. Any edit clears it.
+  const [refusal, setRefusal] = useState<PayoutRefusal | null>(null);
+  // The API's sentence for the payout just requested.
+  const [requestedMessage, setRequestedMessage] = useState<string | null>(null);
   const [isRequestingPayout, setIsRequestingPayout] = useState(false);
   // Whether payouts are running now; null until read, and when it could not be read.
   const [payoutsAvailable, setPayoutsAvailable] = useState<boolean | null>(null);
@@ -180,31 +193,69 @@ export default function RevenueDashboardPage() {
     loadData();
   }
 
+  // The limits as the API answered them; null when the answer carries none the page can read.
+  const limits = readPayoutLimits(revenue?.payoutLimits);
+  const availableCents = revenue?.pendingPayoutCents ?? 0;
+  const dialog = limits
+    ? payoutDialog({ limits, availableCents, method: payoutMethod, amountText: payoutAmount })
+    : null;
+
+  /** A method starts at the largest amount it allows right now. */
+  function choosePayoutMethod(method: PayoutMethod) {
+    if (!limits) return;
+    setPayoutMethod(method);
+    setPayoutAmount(defaultAmountText(limits, method));
+    setRefusal(null);
+  }
+
+  function openPayoutDialog() {
+    if (!limits) return;
+    const method = defaultPayoutMethod(limits);
+    setPayoutMethod(method);
+    setPayoutAmount(method ? defaultAmountText(limits, method) : "");
+    setRefusal(null);
+    // The sentence for an earlier request is not about this one.
+    setRequestedMessage(null);
+    setShowPayoutDialog(true);
+  }
+
   async function handleRequestPayout() {
-    if (payoutMethod !== "credits" && !payoutAddress) {
-      toast.error("Please enter a wallet address");
+    if (!dialog) return;
+    const submission = payoutSubmission(dialog, payoutAddress);
+    if (!submission.ok) {
+      setRefusal(submission.refusal);
       return;
     }
 
     setIsRequestingPayout(true);
+    setRefusal(null);
     try {
-      await marketplaceApi.requestPayout(
-        payoutMethod,
-        payoutMethod !== "credits" ? payoutAddress : undefined
-      );
-      toast.success("Payout requested successfully!");
+      const answer = await marketplaceApi.requestPayout(submission.body);
+      const said = payoutRequestedMessage(answer.message, answer.payout.amountCents);
+      toast.success(said);
+      setRequestedMessage(said);
       setShowPayoutDialog(false);
       loadData();
     } catch (error) {
-      if (apiErrorCode(error) === PAYOUTS_UNAVAILABLE_CODE) {
+      const code = apiErrorCode(error);
+      if (code === PAYOUTS_UNAVAILABLE_CODE) {
         // Nothing was reserved. The button goes until payouts are back.
         toast.error(getErrorMessage(error, PAYOUTS_UNAVAILABLE_MESSAGE));
         setShowPayoutDialog(false);
         setPayoutsAvailable(false);
         loadData();
-      } else {
-        toast.error(getErrorMessage(error, "Failed to request payout"));
+        return;
       }
+      // Only a sentence the API wrote is shown; anything else gets the page's own.
+      const refused = payoutRefusal(code, code === null ? null : getErrorMessage(error, ""));
+      if (code === PAYOUT_IN_PROGRESS_CODE) {
+        // The payout in progress is in the history: show it there.
+        toast.error(refused.message);
+        setShowPayoutDialog(false);
+      } else {
+        setRefusal({ field: refused.field, message: refused.message });
+      }
+      if (refused.reload) loadData();
     } finally {
       setIsRequestingPayout(false);
     }
@@ -221,6 +272,8 @@ export default function RevenueDashboardPage() {
       await loadData();
       return;
     }
+    // The card must not go on saying a cancelled payout was requested.
+    setRequestedMessage(null);
     toast.success(payoutCancelledMessage(payout.amountCents));
     await loadData();
   }
@@ -228,8 +281,9 @@ export default function RevenueDashboardPage() {
   const hasPendingPayout = Boolean(revenue?.pendingPayouts && revenue.pendingPayouts.length > 0);
   const request = payoutRequest({
     payoutsAvailable,
-    availableCents: revenue?.pendingPayoutCents ?? 0,
+    availableCents,
     hasPendingPayout,
+    limits,
   });
 
   return (
@@ -343,10 +397,15 @@ export default function RevenueDashboardPage() {
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="min-w-0">
                     <h3 className="font-semibold text-foreground">Request Payout</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">{request.line}</p>
+                    <p className="mt-1 break-words text-sm text-muted-foreground">{request.line}</p>
+                    {requestedMessage && (
+                      <p role="status" className="mt-2 break-words text-sm text-foreground">
+                        {requestedMessage}
+                      </p>
+                    )}
                   </div>
                   {request.offered && (
-                    <Button onClick={() => setShowPayoutDialog(true)} disabled={!request.enabled}>
+                    <Button onClick={openPayoutDialog} disabled={!request.enabled}>
                       <DollarSign className="mr-2 h-4 w-4" />
                       {request.buttonLabel}
                     </Button>
@@ -588,107 +647,156 @@ export default function RevenueDashboardPage() {
 
       {/* Payout Dialog */}
       <Dialog open={showPayoutDialog} onOpenChange={setShowPayoutDialog}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto" aria-labelledby="payout-dialog-title">
           <DialogHeader>
-            <DialogTitle>Request Payout</DialogTitle>
+            <DialogTitle id="payout-dialog-title">{EARNINGS_WORDS.dialogTitle}</DialogTitle>
             <DialogDescription>
-              Choose how you'd like to receive your earnings of{" "}
-              {revenue && formatCurrency(revenue.pendingPayoutCents)}
+              You have {formatCurrency(availableCents)} in earnings. Choose how to receive it and how much to
+              take out.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <RadioGroup
-              value={payoutMethod}
-              onValueChange={(v) => setPayoutMethod(v as typeof payoutMethod)}
+          {dialog && (
+            <form
+              noValidate
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!isRequestingPayout) handleRequestPayout();
+              }}
             >
-              <div
-                className={cn(
-                  "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                  payoutMethod === "credits" && "border-primary-500 bg-primary/10"
-                )}
-                onClick={() => setPayoutMethod("credits")}
-              >
-                <RadioGroupItem value="credits" id="credits" className="mt-1" />
-                <div>
-                  <label htmlFor="credits" className="cursor-pointer font-medium">
-                    Platform Credits
-                  </label>
-                  <p className="text-sm text-muted-foreground">
-                    Add to your WheelsAI balance instantly
+              <div className="space-y-4 py-4">
+                <div role="group" aria-labelledby="payout-method-legend">
+                  <p id="payout-method-legend" className="mb-2 text-sm font-medium text-foreground">
+                    {EARNINGS_WORDS.methodLegend}
                   </p>
+                  <RadioGroup
+                    value={dialog.method ?? ""}
+                    onValueChange={(v) => choosePayoutMethod(v as PayoutMethod)}
+                  >
+                    {dialog.options.map((option) => {
+                      const id = `payout-method-${option.value}`;
+                      return (
+                        <div
+                          key={option.value}
+                          className={cn(
+                            "flex items-start gap-3 rounded-lg border p-3",
+                            option.enabled ? "cursor-pointer" : "opacity-60",
+                            dialog.method === option.value && "border-primary bg-primary/10"
+                          )}
+                          onClick={() => {
+                            if (option.enabled && dialog.method !== option.value) choosePayoutMethod(option.value);
+                          }}
+                        >
+                          <RadioGroupItem
+                            value={option.value}
+                            id={id}
+                            className="mt-1 shrink-0"
+                            disabled={!option.enabled}
+                            aria-describedby={`${id}-about`}
+                            onClick={(e) => {
+                              // The row's own click chooses; one click is one choice.
+                              e.stopPropagation();
+                              if (option.enabled && dialog.method !== option.value) choosePayoutMethod(option.value);
+                            }}
+                          />
+                          <div className="min-w-0">
+                            <label
+                              htmlFor={id}
+                              className={cn("font-medium text-foreground", option.enabled && "cursor-pointer")}
+                            >
+                              {option.label}
+                            </label>
+                            <p id={`${id}-about`} className="break-words text-sm text-muted-foreground">
+                              {option.description}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </RadioGroup>
+                  {refusal?.field === "method" && (
+                    <p role="alert" className="mt-2 break-words text-sm text-destructive">
+                      {refusal.message}
+                    </p>
+                  )}
                 </div>
-              </div>
 
-              <div
-                className={cn(
-                  "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                  payoutMethod === "crypto_usdc" && "border-primary-500 bg-primary/10"
+                {dialog.method !== null && (
+                  <div>
+                    <Label htmlFor="payout-amount">{EARNINGS_WORDS.amountLabel}</Label>
+                    <Input
+                      id="payout-amount"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      value={payoutAmount}
+                      onChange={(e) => {
+                        setPayoutAmount(e.target.value);
+                        setRefusal(null);
+                      }}
+                      aria-invalid={Boolean(dialog.amountError) || refusal?.field === "amount"}
+                      aria-describedby="payout-amount-help payout-amount-error"
+                      className="mt-1"
+                    />
+                    <p id="payout-amount-help" className="mt-1 break-words text-sm text-muted-foreground">
+                      {dialog.amountHelp}
+                      {dialog.limitsLine && <> {dialog.limitsLine}</>}
+                    </p>
+                    <p id="payout-amount-error" role="alert" className="break-words text-sm text-destructive">
+                      {refusal?.field === "amount" ? refusal.message : dialog.amountError}
+                    </p>
+                  </div>
                 )}
-                onClick={() => setPayoutMethod("crypto_usdc")}
-              >
-                <RadioGroupItem value="crypto_usdc" id="crypto_usdc" className="mt-1" />
-                <div>
-                  <label htmlFor="crypto_usdc" className="cursor-pointer font-medium">
-                    USDC (Solana)
-                  </label>
-                  <p className="text-sm text-muted-foreground">
-                    Receive USDC to your Solana wallet (1-3 business days)
-                  </p>
-                </div>
-              </div>
 
-              <div
-                className={cn(
-                  "flex cursor-pointer items-start gap-3 rounded-lg border p-3",
-                  payoutMethod === "crypto_sol" && "border-primary-500 bg-primary/10"
+                {dialog.needsAddress && (
+                  <div>
+                    <Label htmlFor="wallet-address">{EARNINGS_WORDS.addressLabel}</Label>
+                    <Input
+                      id="wallet-address"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={payoutAddress}
+                      onChange={(e) => {
+                        setPayoutAddress(e.target.value);
+                        setRefusal(null);
+                      }}
+                      placeholder={EARNINGS_WORDS.addressPlaceholder}
+                      aria-invalid={refusal?.field === "address"}
+                      aria-describedby="wallet-address-error"
+                      className="mt-1"
+                    />
+                    <p id="wallet-address-error" role="alert" className="mt-1 break-words text-sm text-destructive">
+                      {refusal?.field === "address" ? refusal.message : null}
+                    </p>
+                  </div>
                 )}
-                onClick={() => setPayoutMethod("crypto_sol")}
-              >
-                <RadioGroupItem value="crypto_sol" id="crypto_sol" className="mt-1" />
-                <div>
-                  <label htmlFor="crypto_sol" className="cursor-pointer font-medium">
-                    SOL
-                  </label>
-                  <p className="text-sm text-muted-foreground">
-                    Receive SOL to your Solana wallet (1-3 business days)
+
+                {refusal?.field === "form" && (
+                  <p role="alert" className="break-words text-sm text-destructive">
+                    {refusal.message}
                   </p>
-                </div>
+                )}
               </div>
-            </RadioGroup>
 
-            {payoutMethod !== "credits" && (
-              <div>
-                <Label htmlFor="wallet-address">Solana Wallet Address</Label>
-                <Input
-                  id="wallet-address"
-                  value={payoutAddress}
-                  onChange={(e) => setPayoutAddress(e.target.value)}
-                  placeholder="Enter your Solana wallet address"
-                  className="mt-1"
-                />
+              <div className="flex flex-wrap justify-end gap-3">
+                <Button type="button" variant="outline" onClick={() => setShowPayoutDialog(false)}>
+                  {EARNINGS_WORDS.dialogCancel}
+                </Button>
+                <Button type="submit" disabled={isRequestingPayout || !dialog.canSubmit}>
+                  {isRequestingPayout ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {EARNINGS_WORDS.submitting}
+                    </>
+                  ) : (
+                    <>
+                      {dialog.submitLabel}
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </>
+                  )}
+                </Button>
               </div>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-3">
-            <Button variant="outline" onClick={() => setShowPayoutDialog(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleRequestPayout} disabled={isRequestingPayout}>
-              {isRequestingPayout ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Requesting...
-                </>
-              ) : (
-                <>
-                  Request {revenue && formatCurrency(revenue.pendingPayoutCents)}
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </>
-              )}
-            </Button>
-          </div>
+            </form>
+          )}
         </DialogContent>
       </Dialog>
     </div>

@@ -2,6 +2,7 @@
 
 import type { AgentKind, KindConfig, TaskField, TaskFieldType, TaskInputSchema } from "@wheelsai/shared/agent-kind";
 
+import type { PayoutLimits, PayoutMethod } from "./earnings";
 import { readSseChat, type SseChatEvent } from "./sse";
 
 export type { AgentKind, KindConfig, TaskField, TaskFieldType, TaskInputSchema };
@@ -2822,9 +2823,19 @@ export const marketplaceApi = {
         status: string;
         requestedAt: string;
       }>;
+      /**
+       * What a payout can be requested for right now: the minimum, the limits for a wallet, what
+       * today has used, the largest amount each way and the methods offered. Read it through
+       * readPayoutLimits (lib/earnings), which answers null when it is absent or not whole.
+       */
+      payoutLimits?: PayoutLimits;
     }>("/api/marketplace/revenue"),
 
-  requestPayout: (payoutMethod: "credits" | "crypto_usdc" | "crypto_sol", payoutAddress?: string) =>
+  /**
+   * Requests a payout. Without `amountCents` the API takes the largest amount allowed right now for
+   * the method. A refusal is `{ error, message }`: the code, and the sentence to show.
+   */
+  requestPayout: (request: { payoutMethod: PayoutMethod; payoutAddress?: string; amountCents?: number }) =>
     api<{
       payout: {
         id: string;
@@ -2832,10 +2843,15 @@ export const marketplaceApi = {
         payoutMethod: string;
         status: string;
         requestedAt: string;
+        message?: string | null;
       };
+      /** What stays in the earnings after this payout was reserved. */
+      remainingCents?: number;
+      /** The sentence to show the creator: what was requested and when it is sent. */
+      message?: string;
     }>("/api/marketplace/payouts", {
       method: "POST",
-      body: { payoutMethod, payoutAddress },
+      body: request,
     }),
 
   getPayoutHistory: () =>
@@ -2857,6 +2873,8 @@ export const marketplaceApi = {
         failureReason: string | null;
         /** True while the payout can still be cancelled: requested and not yet being sent. */
         cancellable?: boolean;
+        /** A sentence for the creator: a pending payout that is waiting, or why one failed. Else null. */
+        message?: string | null;
       }>;
     }>("/api/marketplace/payouts"),
 

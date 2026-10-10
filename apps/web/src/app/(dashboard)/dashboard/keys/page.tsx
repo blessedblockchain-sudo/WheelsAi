@@ -21,6 +21,7 @@ import {
   SPEND_SCOPES,
   describeKeyAccess,
   dollarsToCents,
+  describeKeyCaps,
   formatCents,
   keyGrantProblem,
   type ScopeOption,
@@ -79,6 +80,7 @@ export default function ApiKeysPage() {
   const [access, setAccess] = useState<AccessChoice | null>(null);
   const [scopes, setScopes] = useState<string[]>([]);
   const [maxJobPrice, setMaxJobPrice] = useState("");
+  const [maxUsePrice, setMaxUsePrice] = useState("");
   const [dailySpendCap, setDailySpendCap] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -92,12 +94,14 @@ export default function ApiKeysPage() {
     setAccess(null);
     setScopes([]);
     setMaxJobPrice("");
+    setMaxUsePrice("");
     setDailySpendCap("");
     setCreateError(null);
   }
 
   const spendChosen = SPEND_SCOPES.filter((option) => scopes.includes(option.scope));
   const canHire = scopes.includes("jobs:hire");
+  const canUse = scopes.includes("agents:use");
 
   async function loadApiKeys() {
     setIsLoading(true);
@@ -134,22 +138,33 @@ export default function ApiKeysPage() {
       setCreateError("Choose at least one thing this key can do.");
       return;
     }
-    const problem = keyGrantProblem({ scopes: spend, maxJobPrice, dailySpendCap });
+    const problem = keyGrantProblem({ scopes: spend, maxJobPrice, maxUsePrice, dailySpendCap });
     if (problem) {
       setCreateError(problem);
       return;
     }
     // "All except spending" is "*"; spend scopes are always listed by name.
     const granted = [...(access === "all" ? ["*"] : ordinary), ...spend];
-    const caps = canHire
-      ? { maxJobPriceCents: dollarsToCents(maxJobPrice)!, dailySpendCapCents: dollarsToCents(dailySpendCap)! }
-      : undefined;
+    const caps =
+      canHire || canUse
+        ? {
+            ...(canHire ? { maxJobPriceCents: dollarsToCents(maxJobPrice)! } : {}),
+            ...(canUse ? { maxUsePriceCents: dollarsToCents(maxUsePrice)! } : {}),
+            dailySpendCapCents: dollarsToCents(dailySpendCap)!,
+          }
+        : undefined;
 
     if (spend.length > 0) {
       const ok = await confirmAction({
         title: "Create a key that can spend?",
         description: caps
-          ? `Anyone holding this key can hire jobs from your credits: up to ${formatCents(caps.maxJobPriceCents)} a job and ${formatCents(caps.dailySpendCapCents)} a day. A refund does not give the day's allowance back.`
+          ? `Anyone holding this key can spend your credits${
+              caps.maxJobPriceCents !== undefined ? `: up to ${formatCents(caps.maxJobPriceCents)} on a job` : ""
+            }${
+              caps.maxUsePriceCents !== undefined
+                ? `${caps.maxJobPriceCents !== undefined ? " and" : ":"} up to ${formatCents(caps.maxUsePriceCents)} on one use of a paid agent`
+                : ""
+            }, and ${formatCents(caps.dailySpendCapCents)} a day in all. A refund does not give the day's allowance back.`
           : "Anyone holding this key can move your organization's money with it. Keep it as safe as a password.",
         confirmLabel: "Create spending key",
       });
@@ -269,14 +284,14 @@ export default function ApiKeysPage() {
     {
       key: "spendCaps",
       header: "Spend caps",
-      render: (apiKey) =>
-        apiKey.maxJobPriceCents != null && apiKey.dailySpendCapCents != null ? (
-          <span className="whitespace-nowrap text-sm text-foreground">
-            {formatCents(apiKey.maxJobPriceCents)} a job · {formatCents(apiKey.dailySpendCapCents)} a day
-          </span>
+      render: (apiKey) => {
+        const caps = describeKeyCaps(apiKey);
+        return caps ? (
+          <span className="whitespace-nowrap text-sm text-foreground">{caps}</span>
         ) : (
           <span className="text-sm text-muted-foreground">Cannot hire</span>
-        ),
+        );
+      },
     },
     {
       key: "status",
@@ -470,21 +485,38 @@ export default function ApiKeysPage() {
                         onChange={(on) => toggleScope(option.scope, on)}
                       />
                     ))}
-                    {canHire && (
+                    {(canHire || canUse) && (
                       <div className="grid gap-4 pt-2 sm:grid-cols-2">
+                        {canHire && (
+                          <div>
+                            <Label htmlFor="key-max-job">Most one job may cost (USD)</Label>
+                            <Input
+                              id="key-max-job"
+                              className="mt-1"
+                              inputMode="decimal"
+                              value={maxJobPrice}
+                              onChange={(e) => setMaxJobPrice(e.target.value)}
+                              placeholder="5.00"
+                            />
+                          </div>
+                        )}
+                        {canUse && (
+                          <div>
+                            <Label htmlFor="key-max-use">The most one use may cost (USD)</Label>
+                            <Input
+                              id="key-max-use"
+                              className="mt-1"
+                              inputMode="decimal"
+                              value={maxUsePrice}
+                              onChange={(e) => setMaxUsePrice(e.target.value)}
+                              placeholder="0.50"
+                            />
+                          </div>
+                        )}
                         <div>
-                          <Label htmlFor="key-max-job">Most one job may cost (USD)</Label>
-                          <Input
-                            id="key-max-job"
-                            className="mt-1"
-                            inputMode="decimal"
-                            value={maxJobPrice}
-                            onChange={(e) => setMaxJobPrice(e.target.value)}
-                            placeholder="5.00"
-                          />
-                        </div>
-                        <div>
-                          <Label htmlFor="key-daily-cap">Most it may spend in a day (USD)</Label>
+                          <Label htmlFor="key-daily-cap">
+                            {canHire ? "Most it may spend in a day (USD)" : "The most this key may spend in a day (USD)"}
+                          </Label>
                           <Input
                             id="key-daily-cap"
                             className="mt-1"
@@ -495,7 +527,11 @@ export default function ApiKeysPage() {
                             aria-describedby="key-daily-cap-hint"
                           />
                           <p id="key-daily-cap-hint" className="mt-1 text-xs text-muted-foreground">
-                            A day is a UTC day. Both caps are required for a key that can hire.
+                            {canHire && canUse
+                              ? "A day is a UTC day. Hiring and using paid agents share it, and both prices are required."
+                              : canUse
+                                ? "A day is a UTC day. Both caps are required for a key that can use paid agents."
+                                : "A day is a UTC day. Both caps are required for a key that can hire."}
                           </p>
                         </div>
                       </div>

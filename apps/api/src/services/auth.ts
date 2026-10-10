@@ -300,9 +300,14 @@ export async function generateApiKey(
   orgId: string,
   name?: string,
   scopes: string[] = [],
-  // A key granted jobs:hire carries both; the caller has validated them
-  // (config/apiKeyScopes.ts checkKeyGrant).
-  caps: { maxJobPriceCents?: number | null; dailySpendCapCents?: number | null } = {}
+  // A key granted jobs:hire carries the per-job cap and the day's; one
+  // granted agents:use carries the per-use cap and the day's. The caller has
+  // validated them (config/apiKeyScopes.ts checkKeyGrant).
+  caps: {
+    maxJobPriceCents?: number | null;
+    maxUsePriceCents?: number | null;
+    dailySpendCapCents?: number | null;
+  } = {}
 ): Promise<{ key: string; keyId: string }> {
   // Generate a secure random key
   const keyBody = nanoid(32);
@@ -320,6 +325,7 @@ export async function generateApiKey(
       name,
       scopes,
       ...(caps.maxJobPriceCents != null && { maxJobPriceCents: BigInt(caps.maxJobPriceCents) }),
+      ...(caps.maxUsePriceCents != null && { maxUsePriceCents: BigInt(caps.maxUsePriceCents) }),
       ...(caps.dailySpendCapCents != null && { dailySpendCapCents: BigInt(caps.dailySpendCapCents) }),
     },
   });
@@ -394,6 +400,7 @@ export async function listApiKeys(orgId: string) {
       name: true,
       scopes: true,
       maxJobPriceCents: true,
+      maxUsePriceCents: true,
       dailySpendCapCents: true,
       lastUsedAt: true,
       expiresAt: true,
@@ -405,6 +412,7 @@ export async function listApiKeys(orgId: string) {
   return keys.map((key) => ({
     ...key,
     maxJobPriceCents: key.maxJobPriceCents === null ? null : Number(key.maxJobPriceCents),
+    maxUsePriceCents: key.maxUsePriceCents === null ? null : Number(key.maxUsePriceCents),
     dailySpendCapCents: key.dailySpendCapCents === null ? null : Number(key.dailySpendCapCents),
   }));
 }

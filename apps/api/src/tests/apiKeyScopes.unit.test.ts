@@ -168,3 +168,61 @@ test("creating a key: unknown scopes are refused, and jobs:hire needs both caps"
   // Caps on a key that cannot hire would be a promise nothing keeps.
   assert.equal(checkKeyGrant({ scopes: ["jobs:read"], maxJobPriceCents: 500 })?.code, "invalid_spend_cap");
 });
+
+test("agents:use is a spend scope: * never grants it, and it does not come with agents:invoke", () => {
+  assert.equal(SPEND_SCOPES.includes("agents:use"), true);
+  assert.equal(isSpendScope("agents:use"), true);
+  assert.equal(grantsScope(["*"], "agents:use"), false);
+  assert.equal(grantsScope([], "agents:use"), false);
+  assert.equal(grantsScope(undefined, "agents:use"), false);
+  // Running your own agents is not paying for somebody else's.
+  assert.equal(grantsScope(["agents:invoke"], "agents:use"), false);
+  assert.equal(grantsScope(["jobs:hire", "marketplace:install"], "agents:use"), false);
+  assert.equal(grantsScope(["agents:use"], "agents:use"), true);
+  assert.equal(principalHasScope({ type: "api_key", scopes: ["*"] }, "agents:use"), false);
+  assert.equal(principalHasScope({ type: "api_key", scopes: ["agents:use"] }, "agents:use"), true);
+  // A key cut down to agents:use is held to it.
+  assert.equal(grantsScope(["agents:use"], "agents:invoke"), false);
+});
+
+test("creating a key with agents:use needs both of its caps", () => {
+  const scopes = ["agents:use"];
+  assert.equal(checkKeyGrant({ scopes })?.code, "spend_caps_required");
+  assert.equal(checkKeyGrant({ scopes, maxUsePriceCents: 25 })?.code, "spend_caps_required");
+  assert.equal(checkKeyGrant({ scopes, dailySpendCapCents: 500 })?.code, "spend_caps_required");
+  // The cap for a job is not the cap for a use.
+  assert.equal(checkKeyGrant({ scopes, maxJobPriceCents: 25, dailySpendCapCents: 500 })?.code, "spend_caps_required");
+  assert.equal(checkKeyGrant({ scopes, maxUsePriceCents: 25, dailySpendCapCents: 500 }), null);
+  assert.match(checkKeyGrant({ scopes })!.message, /agents:use.*maxUsePriceCents.*dailySpendCapCents/);
+
+  // Whole cents within bounds, the per-use one no larger than the day's.
+  for (const maxUsePriceCents of [0, -1, 2.5, 100_001]) {
+    assert.equal(
+      checkKeyGrant({ scopes, maxUsePriceCents, dailySpendCapCents: 200_000 })?.code,
+      "invalid_spend_cap",
+      String(maxUsePriceCents),
+    );
+  }
+  assert.equal(checkKeyGrant({ scopes, maxUsePriceCents: 25, dailySpendCapCents: 0 })?.code, "invalid_spend_cap");
+  assert.equal(checkKeyGrant({ scopes, maxUsePriceCents: 600, dailySpendCapCents: 500 })?.code, "invalid_spend_cap");
+  // A cap for something the key cannot do would be a promise nothing keeps.
+  assert.equal(
+    checkKeyGrant({ scopes, maxUsePriceCents: 25, maxJobPriceCents: 500, dailySpendCapCents: 500 })?.code,
+    "invalid_spend_cap",
+  );
+  assert.equal(checkKeyGrant({ scopes: ["jobs:read"], maxUsePriceCents: 25 })?.code, "invalid_spend_cap");
+  assert.equal(
+    checkKeyGrant({ scopes: ["jobs:hire"], maxJobPriceCents: 500, maxUsePriceCents: 25, dailySpendCapCents: 2_000 })?.code,
+    "invalid_spend_cap",
+  );
+  assert.equal(checkKeyGrant({ scopes: ["agents:invoke"], dailySpendCapCents: 500 })?.code, "invalid_spend_cap");
+
+  // A key that does both carries all three, and the day's cap is the one total.
+  const both = ["jobs:hire", "agents:use"];
+  assert.equal(checkKeyGrant({ scopes: both, maxJobPriceCents: 500, dailySpendCapCents: 2_000 })?.code, "spend_caps_required");
+  assert.equal(checkKeyGrant({ scopes: both, maxUsePriceCents: 25, dailySpendCapCents: 2_000 })?.code, "spend_caps_required");
+  assert.equal(
+    checkKeyGrant({ scopes: both, maxJobPriceCents: 500, maxUsePriceCents: 25, dailySpendCapCents: 2_000 }),
+    null,
+  );
+});

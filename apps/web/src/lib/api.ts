@@ -513,6 +513,9 @@ export interface ApiKey {
   scopes: string[];
   /** Spend caps of a key granted jobs:hire; null on any other key. */
   maxJobPriceCents?: number | null;
+  /** The most one use of a paid agent may cost; set on a key granted agents:use, null on any other. */
+  maxUsePriceCents?: number | null;
+  /** The most the key may spend in a UTC day; shared by hiring and paid use. */
   dailySpendCapCents?: number | null;
   status: "active" | "revoked";
   lastUsedAt: string | null;
@@ -526,7 +529,7 @@ export const apiKeysApi = {
   create: (
     name: string,
     scopes?: string[],
-    caps?: { maxJobPriceCents: number; dailySpendCapCents: number },
+    caps?: { maxJobPriceCents?: number; maxUsePriceCents?: number; dailySpendCapCents: number },
   ) =>
     api<{ apiKey: ApiKey; key: string }>("/api/auth/keys", {
       method: "POST",

@@ -13,6 +13,7 @@ import {
   ORDINARY_SCOPES,
   SPEND_SCOPES,
   describeKeyAccess,
+  describeKeyCaps,
   dollarsToCents,
   formatCents,
   formatDuration,
@@ -128,6 +129,45 @@ test("a key that can hire needs both caps, in range and in order", () => {
   assert.match(keyGrantProblem({ scopes: ["jobs:hire"], maxJobPrice: "5", dailySpendCap: "100000.01" })!, /daily cap/);
   assert.match(keyGrantProblem({ scopes: ["jobs:hire"], maxJobPrice: "20", dailySpendCap: "10" })!, /cannot be more/);
   assert.equal(keyGrantProblem({ scopes: ["jobs:hire"], maxJobPrice: "5", dailySpendCap: "20" }), null);
+});
+
+test("a key that can use paid agents needs the most one use may cost and the daily cap", () => {
+  const use = { scopes: ["agents:use"], maxJobPrice: "" };
+  assert.match(keyGrantProblem({ ...use, maxUsePrice: "", dailySpendCap: "10" })!, /use paid agents needs both spend caps/);
+  assert.match(keyGrantProblem({ ...use, maxUsePrice: "0.50", dailySpendCap: "" })!, /use paid agents needs both spend caps/);
+  assert.match(keyGrantProblem({ ...use, dailySpendCap: "10" })!, /use paid agents needs both spend caps/);
+  assert.match(keyGrantProblem({ ...use, maxUsePrice: "0", dailySpendCap: "10" })!, /one use may cost must be between/);
+  assert.match(keyGrantProblem({ ...use, maxUsePrice: "1000.01", dailySpendCap: "5000" })!, /one use may cost must be between/);
+  assert.match(keyGrantProblem({ ...use, maxUsePrice: "0.50", dailySpendCap: "100000.01" })!, /daily cap/);
+  assert.match(keyGrantProblem({ ...use, maxUsePrice: "20", dailySpendCap: "10" })!, /one use may cost cannot be more/);
+  assert.equal(keyGrantProblem({ ...use, maxUsePrice: "0.50", dailySpendCap: "10" }), null);
+  // A job price is not asked for from a key that only uses agents.
+  assert.equal(keyGrantProblem({ ...use, maxJobPrice: "abc", maxUsePrice: "0.50", dailySpendCap: "10" }), null);
+  // Both scopes share one day: each price is checked against it.
+  const both = { scopes: ["jobs:hire", "agents:use"], maxJobPrice: "5", maxUsePrice: "0.50", dailySpendCap: "20" };
+  assert.equal(keyGrantProblem(both), null);
+  assert.match(keyGrantProblem({ ...both, maxUsePrice: "" })!, /use paid agents needs both spend caps/);
+  assert.match(keyGrantProblem({ ...both, maxJobPrice: "" })!, /can hire needs both spend caps/);
+  assert.match(keyGrantProblem({ ...both, maxUsePrice: "30" })!, /one use may cost cannot be more/);
+});
+
+test("a listed key says what its caps are", () => {
+  assert.equal(describeKeyCaps({}), null);
+  assert.equal(describeKeyCaps({ maxJobPriceCents: null, dailySpendCapCents: null }), null);
+  assert.equal(describeKeyCaps({ maxJobPriceCents: 500, dailySpendCapCents: 2000 }), "$5.00 a job · $20.00 a day");
+  assert.equal(describeKeyCaps({ maxUsePriceCents: 50, dailySpendCapCents: 2000 }), "$0.50 a use · $20.00 a day");
+  assert.equal(
+    describeKeyCaps({ maxJobPriceCents: 500, maxUsePriceCents: 50, dailySpendCapCents: 2000 }),
+    "$5.00 a job · $0.50 a use · $20.00 a day",
+  );
+});
+
+test("using paid agents is a spend scope with the words on screen", () => {
+  const option = SPEND_SCOPES.find((o) => o.scope === "agents:use")!;
+  assert.equal(option.label, "Use paid agents");
+  assert.equal(option.description, "Pay to use other people's agents, inside the caps below.");
+  assert.deepEqual(describeKeyAccess(["*", "agents:use"]), { summary: "All except spending", spends: ["agents:use"] });
+  assert.deepEqual(describeKeyAccess(["agents:invoke", "agents:use"]), { summary: "Limited", spends: ["agents:use"] });
 });
 
 test("the scopes the page offers are the scopes the API defines, spend scopes apart", () => {

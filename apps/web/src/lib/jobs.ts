@@ -200,9 +200,11 @@ export const SPEND_SCOPES: ScopeOption[] = [
   { scope: "jobs:hire", label: "Hire offerings", description: "Pay for jobs from your credits, inside the caps below." },
   { scope: "jobs:review", label: "Accept and reject", description: "Release a job's escrow to the publisher, or take the refund." },
   { scope: "marketplace:install", label: "Install agents", description: "Install marketplace agents; a monthly one charges at install." },
+  { scope: "agents:use", label: "Use paid agents", description: "Pay to use other people's agents, inside the caps below." },
 ];
 
 export const MAX_JOB_PRICE_CAP_CENTS = 100_000;
+export const MAX_USE_PRICE_CAP_CENTS = 100_000;
 export const MAX_DAILY_SPEND_CAP_CENTS = 10_000_000;
 
 /** What a stored key can do, in words. A key never spends unless a spend scope is listed by name. */
@@ -225,19 +227,56 @@ export function keyGrantProblem(grant: {
   scopes: string[];
   maxJobPrice: string;
   dailySpendCap: string;
+  /** The most one use of a paid agent may cost; read only for a key granted agents:use. */
+  maxUsePrice?: string;
 }): string | null {
-  if (!grant.scopes.includes("jobs:hire")) return null;
-  const perJob = dollarsToCents(grant.maxJobPrice);
+  const hires = grant.scopes.includes("jobs:hire");
+  const uses = grant.scopes.includes("agents:use");
+  if (!hires && !uses) return null;
   const perDay = dollarsToCents(grant.dailySpendCap);
-  if (perJob === null || perDay === null) return "A key that can hire needs both spend caps, as dollar amounts.";
-  if (perJob < 1 || perJob > MAX_JOB_PRICE_CAP_CENTS) {
-    return `The most one job may cost must be between $0.01 and ${formatCents(MAX_JOB_PRICE_CAP_CENTS)}.`;
+  if (hires) {
+    const perJob = dollarsToCents(grant.maxJobPrice);
+    if (perJob === null || perDay === null) return "A key that can hire needs both spend caps, as dollar amounts.";
+    if (perJob < 1 || perJob > MAX_JOB_PRICE_CAP_CENTS) {
+      return `The most one job may cost must be between $0.01 and ${formatCents(MAX_JOB_PRICE_CAP_CENTS)}.`;
+    }
   }
-  if (perDay < 1 || perDay > MAX_DAILY_SPEND_CAP_CENTS) {
+  if (uses) {
+    const perUse = dollarsToCents(grant.maxUsePrice ?? "");
+    if (perUse === null || perDay === null) {
+      return "A key that can use paid agents needs both spend caps, as dollar amounts.";
+    }
+    if (perUse < 1 || perUse > MAX_USE_PRICE_CAP_CENTS) {
+      return `The most one use may cost must be between $0.01 and ${formatCents(MAX_USE_PRICE_CAP_CENTS)}.`;
+    }
+  }
+  if (perDay === null || perDay < 1 || perDay > MAX_DAILY_SPEND_CAP_CENTS) {
     return `The daily cap must be between $0.01 and ${formatCents(MAX_DAILY_SPEND_CAP_CENTS)}.`;
   }
-  if (perJob > perDay) return "The most one job may cost cannot be more than the daily cap.";
+  const perJobCents = hires ? dollarsToCents(grant.maxJobPrice) : null;
+  if (perJobCents !== null && perJobCents > perDay) return "The most one job may cost cannot be more than the daily cap.";
+  const perUseCents = uses ? dollarsToCents(grant.maxUsePrice ?? "") : null;
+  if (perUseCents !== null && perUseCents > perDay) return "The most one use may cost cannot be more than the daily cap.";
   return null;
+}
+
+/**
+ * The caps a listed key carries, in words: "$5.00 a job · $20.00 a day",
+ * "$0.50 a use · $20.00 a day", or both prices before the day. null when
+ * the key has no caps (it cannot hire or use paid agents).
+ */
+export function describeKeyCaps(key: {
+  maxJobPriceCents?: number | null;
+  maxUsePriceCents?: number | null;
+  dailySpendCapCents?: number | null;
+}): string | null {
+  if (key.dailySpendCapCents == null) return null;
+  const parts: string[] = [];
+  if (key.maxJobPriceCents != null) parts.push(`${formatCents(key.maxJobPriceCents)} a job`);
+  if (key.maxUsePriceCents != null) parts.push(`${formatCents(key.maxUsePriceCents)} a use`);
+  if (parts.length === 0) return null;
+  parts.push(`${formatCents(key.dailySpendCapCents)} a day`);
+  return parts.join(" · ");
 }
 
 // ---- Deliverable checks ----

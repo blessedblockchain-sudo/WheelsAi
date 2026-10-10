@@ -58,8 +58,10 @@ const walletVerifySchema = z.object({
 const createApiKeySchema = z.object({
   name: z.string().max(100).optional(),
   scopes: z.array(z.string().max(64)).max(16).default([]),
-  // Required with jobs:hire, refused without it (checkKeyGrant).
+  // maxJobPriceCents is required with jobs:hire and maxUsePriceCents with
+  // agents:use, each with dailySpendCapCents; refused otherwise (checkKeyGrant).
   maxJobPriceCents: z.number().optional(),
+  maxUsePriceCents: z.number().optional(),
   dailySpendCapCents: z.number().optional(),
 });
 
@@ -600,7 +602,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     const scopes = [...new Set(body.scopes)];
 
     // Scopes used to be free text nobody checked. A key now gets only scopes
-    // that exist, and a key that can hire always has its spend caps.
+    // that exist, and a key that can hire, or pay to use agents, always has
+    // its spend caps.
     const problem = checkKeyGrant({ ...body, scopes });
     if (problem) {
       return reply.status(problem.code === "invalid_scope" ? 400 : 422).send({
@@ -626,6 +629,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
     const { key, keyId } = await generateApiKey(orgId, body.name, scopes, {
       maxJobPriceCents: body.maxJobPriceCents,
+      maxUsePriceCents: body.maxUsePriceCents,
       dailySpendCapCents: body.dailySpendCapCents,
     });
     const createdKey = (await listApiKeys(orgId)).find((candidate) => candidate.id === keyId);
@@ -640,6 +644,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
           name: body.name ?? null,
           scopes,
           maxJobPriceCents: body.maxJobPriceCents ?? null,
+          maxUsePriceCents: body.maxUsePriceCents ?? null,
           dailySpendCapCents: body.dailySpendCapCents ?? null,
           lastUsedAt: null,
           expiresAt: null,

@@ -187,3 +187,22 @@ test("the run path has the widget's policy: any origin echoed, never credentials
     assert.equal(options.credentials, true, url);
   }
 });
+
+test("paid use takes the app's policy: one origin with credentials, never the widget's", () => {
+  for (const url of [
+    "/api/a/support-bot/access",
+    "/api/a/support-bot/chat",
+    "/api/a/support-bot/run",
+    "/api/a/support-bot/results",
+    "/api/a/support-bot/chat?stream=1",
+    // A handle that looks like a widget path's parts is still not one.
+    "/api/a/widget/chat",
+    "/api/a/config/run",
+  ]) {
+    assert.equal(isWidgetPath(url), false, url);
+    const options = corsOptionsFor({ url }, PROD);
+    assert.equal(options.origin, "https://app.wheelsai.test", url);
+    assert.equal(options.credentials, true, url);
+    assert.ok((options.exposedHeaders as string[]).includes("Retry-After"), url);
+  }
+});

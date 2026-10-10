@@ -95,6 +95,7 @@ import {
 } from "./routes/transparencyBindings.js";
 import { playgroundRoutes } from "./routes/playground.js";
 import { createAgentRunRoutesProduction } from "./routes/agentRunBindings.js";
+import { createPaidUseRoutesProduction } from "./routes/paidUseBindings.js";
 import { createAgentPublicLinkRoutesProduction } from "./routes/agentPublicLinkBindings.js";
 import { createAgentScheduleRoutesProduction } from "./routes/agentScheduleBindings.js";
 import { createDestinationsRoutesProduction } from "./routes/destinationsBindings.js";
@@ -458,6 +459,9 @@ async function main() {
   // /api/feed because their /agents and /agents/:slug paths would collide
   // with the legacy id-keyed agentRoutes at /api/agents.
   await app.register(createPublicAgentRoutesProduction(), { prefix: "/api" });
+  // Paid use of a creator's agent, by the handle on its page:
+  // /api/a/:handle/{access,chat,run,results}. Signed in, unlike the page.
+  await app.register(createPaidUseRoutesProduction(), { prefix: "/api" });
   await app.register(createAgentListRoutesProduction(), { prefix: "/api/feed" });
   await app.register(createAgentDetailRoutesProduction(), { prefix: "/api/feed" });
 

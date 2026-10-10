@@ -82,6 +82,9 @@ test("GET /v1/models: the id stays the deployment slug; root and wheelsai say wh
       },
       agent: { findMany: async () => [] },
       orchestration: { findMany: async () => [] },
+      // The list also reads the agents this organization pays to use: none here.
+      agentInstall: { findMany: async () => [] },
+      agentSubscription: { findMany: async () => [] },
     },
     () => app.inject({ method: "GET", url: "/v1/models" }),
   );

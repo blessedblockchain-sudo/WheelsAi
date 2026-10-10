@@ -207,6 +207,25 @@ await wheels.auth.createApiKey({
 Publishers use `offerings.create`, `update`, `validate`, `testRun`, `activate`, `pause` and
 `archive`, and read incoming jobs with `jobs.list({ role: "publisher" })`.
 
+An offering's form is its `inputSchema`, and its questions keep the order you saved them in. For a
+task agent, `offerings.create({ ..., fromAgentForm: true })` takes the agent's own form in place of
+an `inputSchema` (both together are a 400; an agent that is not a task agent is 409
+`not_a_task_agent`). Your offering then answers `formInSync`: `false` once the agent's form was
+edited, until `offerings.update(id, { fromAgentForm: true })` shows buyers the new one.
+
+### Payouts
+
+```ts
+const { payouts } = await wheels.marketplace.payouts();
+const waiting = payouts.find((p) => p.cancellable);
+if (waiting) await wheels.marketplace.cancelPayout(waiting.id); // the amount goes back to your earnings
+```
+
+`cancellable` is true while a payout is requested and not yet being sent; after that
+`cancelPayout` answers 409 `payout_not_cancellable`. A failed payout carries `failureReason`, a
+plain sentence, and its amount is already back in your earnings. Cancelling needs a session token
+(`auth.login`) of an owner or admin.
+
 ## Authentication
 
 An API key (`apiKey`) and a session token (`token`, from `auth.login`) are both sent as

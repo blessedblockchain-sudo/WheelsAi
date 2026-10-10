@@ -207,6 +207,31 @@ export interface CreateListingInput {
 
 export type UpdateListingInput = Partial<Omit<CreateListingInput, "agentId">>;
 
+export type PayoutStatus = "pending" | "processing" | "completed" | "failed" | "cancelled";
+
+/** One payout request of a creator's earnings. */
+export interface CreatorPayout {
+  id: string;
+  amountCents: number;
+  payoutMethod: "credits" | "crypto_usdc" | "crypto_sol";
+  payoutAddress: string | null;
+  status: PayoutStatus;
+  txSignature: string | null;
+  grossRevenueCents: number;
+  platformFeeCents: number;
+  periodStart: string;
+  periodEnd: string;
+  requestedAt: string;
+  processedAt: string | null;
+  /**
+   * Why a failed payout did not go through, as a plain sentence written for the creator; null
+   * when it did not fail. A failed payout's amount is already back in the earnings.
+   */
+  failureReason: string | null;
+  /** True while `cancelPayout` can still take it back: requested and not yet being sent. */
+  cancellable: boolean;
+}
+
 export function marketplaceResource(client: WheelsAIClient) {
   return {
     // ---- public ----
@@ -353,7 +378,17 @@ export function marketplaceResource(client: WheelsAIClient) {
     revenue: () =>
       client.get<Record<string, unknown>>("/api/marketplace/revenue"),
 
+    /** Your payout requests, newest first. */
     payouts: () =>
-      client.get<{ payouts: unknown[] }>("/api/marketplace/payouts"),
+      client.get<{ payouts: CreatorPayout[] }>("/api/marketplace/payouts"),
+
+    /**
+     * Cancels a payout that has not started to be sent: it becomes `cancelled` and its amount goes
+     * back to the earnings it was taken from. Needs a session token of an owner or admin (an API
+     * key is refused). 404 `payout_not_found`; 409 `payout_not_cancellable` once the payout is
+     * being sent or is finished (`error.message` says which).
+     */
+    cancelPayout: (payoutId: string) =>
+      client.post<{ payout: CreatorPayout }>(`/api/marketplace/payouts/${seg(payoutId)}/cancel`),
   };
 }

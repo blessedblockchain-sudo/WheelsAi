@@ -37,7 +37,10 @@ export interface Offering {
   termsVersion: string;
   /** How long the buyer has to accept or reject a deliverable; after it the job completes by itself. */
   reviewWindowHours: number;
-  /** JSON Schema (draft-07 or 2020-12) for `hire`'s `input`; null accepts any object. */
+  /**
+   * JSON Schema (draft-07 or 2020-12) for `hire`'s `input`; null accepts any object. Its
+   * `properties` come in the order the publisher saved them: the order of the form's questions.
+   */
   inputSchema: Record<string, unknown> | null;
   sampleInputs: Array<Record<string, unknown>>;
   deliverableChecks: DeliverableCheck[];
@@ -80,6 +83,13 @@ export interface OwnedOffering extends Offering {
   publishedAt: string | null;
   updatedAt: string;
   stats: { jobs: Record<string, number> };
+  /**
+   * For an offering whose form was taken from its agent's own task form (`fromAgentForm`): true
+   * while buyers see the form the agent has now, false after the agent's form was edited. Saving
+   * with `fromAgentForm: true` again shows buyers the new form and changes `termsVersion`. Null
+   * for an offering whose `inputSchema` was written by hand.
+   */
+  formInSync: boolean | null;
 }
 
 export interface OfferingContentInput {
@@ -88,7 +98,16 @@ export interface OfferingContentInput {
   priceCents: number;
   /** 300 (5 minutes) to 604,800 (7 days). */
   slaSeconds: number;
+  /** The form buyers fill in. Its questions keep the order of `properties` as you send it. */
   inputSchema?: Record<string, unknown> | null;
+  /**
+   * Take the form from the agent's own task form, in the agent's field order, in place of
+   * `inputSchema`. Sending both is refused (400), and so is an agent that is not a task agent
+   * (409 `not_a_task_agent`). The form is stored with the offering: editing the agent's form
+   * later does not change what buyers see until you save with `fromAgentForm: true` again
+   * (`formInSync` on your offering says when the two differ).
+   */
+  fromAgentForm?: boolean;
   /** Up to 5 example inputs; each must match `inputSchema`. */
   sampleInputs?: Array<Record<string, unknown>>;
   instructions?: string | null;
@@ -181,10 +200,16 @@ export function offeringsResource(client: WheelsAIClient) {
 
     /**
      * Creates a draft on one of your own products. A product installed from the marketplace, or
-     * a workflow that uses one, is refused (409 `product_not_sellable`).
+     * a workflow that uses one, is refused (409 `product_not_sellable`). `fromAgentForm: true`
+     * takes the buyers' form from a task agent's own form; with `inputSchema` as well it is a
+     * 400, and for an agent that is not a task agent 409 `not_a_task_agent`.
      */
     create: (input: CreateOfferingInput) => client.post<{ offering: OwnedOffering }>("/api/offerings", input),
 
+    /**
+     * Changes a draft, active or paused offering. `{ fromAgentForm: true }` takes the agent's
+     * task form as it is now (the same two refusals as `create`).
+     */
     update: (offeringId: string, updates: UpdateOfferingInput) =>
       client.patch<{ offering: OwnedOffering }>(`/api/offerings/${seg(offeringId)}`, updates),
 

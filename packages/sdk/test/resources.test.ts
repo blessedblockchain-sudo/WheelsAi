@@ -17,6 +17,7 @@ const OFFERING = "44444444-4444-4444-8444-444444444444";
 const JOB = "55555555-5555-4555-8555-555555555555";
 const PLACE = "66666666-6666-4666-8666-666666666666";
 const RUN = "77777777-7777-4777-8777-777777777777";
+const PAYOUT = "88888888-8888-4888-8888-888888888888";
 
 interface Case {
   /** `resource.method`: must match a method on the client. */
@@ -155,6 +156,7 @@ const cases: Case[] = [
   { name: "marketplace.resumeSubscription", run: (w) => w.marketplace.resumeSubscription(LISTING), method: "POST", path: `/api/marketplace/subscriptions/${LISTING}/resume` },
   { name: "marketplace.revenue", run: (w) => w.marketplace.revenue(), method: "GET", path: "/api/marketplace/revenue" },
   { name: "marketplace.payouts", run: (w) => w.marketplace.payouts(), method: "GET", path: "/api/marketplace/payouts" },
+  { name: "marketplace.cancelPayout", run: (w) => w.marketplace.cancelPayout(PAYOUT), method: "POST", path: `/api/marketplace/payouts/${PAYOUT}/cancel` },
 
   // ---- inference (OpenAI-compatible) ----
   { name: "inference.chatCompletion", run: (w) => w.inference.chatCompletion("my-chat", { messages: [{ role: "user", content: "hi" }], max_tokens: 64 }), method: "POST", path: "/v1/my-chat/chat/completions", body: { messages: [{ role: "user", content: "hi" }], max_tokens: 64 } },
@@ -725,5 +727,102 @@ describe("agents.resolve and agents.findBySlug", () => {
     assert.equal((await client().agents.resolve("MY-BOT"))?.id, AGENT);
     assert.equal(await client().agents.resolve("nope"), null);
     assert.equal(await client().agents.findBySlug("nope"), null);
+  });
+});
+
+describe("payouts and an offering's form", () => {
+  it("cancelPayout answers the cancelled payout and sends no body", async () => {
+    const payout = {
+      id: PAYOUT,
+      amountCents: 1200,
+      payoutMethod: "credits",
+      payoutAddress: null,
+      status: "cancelled",
+      txSignature: null,
+      grossRevenueCents: 1334,
+      platformFeeCents: 134,
+      periodStart: "2026-10-01T00:00:00.000Z",
+      periodEnd: "2026-10-09T00:00:00.000Z",
+      requestedAt: "2026-10-09T10:00:00.000Z",
+      processedAt: null,
+      failureReason: null,
+      cancellable: false,
+    };
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ payout }));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const result = await wheels.marketplace.cancelPayout(PAYOUT);
+    assert.deepEqual(result, { payout });
+    assert.equal(result.payout.status, "cancelled");
+    assert.equal(result.payout.cancellable, false);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.method, "POST");
+    assert.equal(calls[0]!.url.pathname, `/api/marketplace/payouts/${PAYOUT}/cancel`);
+    assert.equal(calls[0]!.rawBody, undefined);
+  });
+
+  it("cancelPayout keeps the 409 of a payout that is already being sent", async () => {
+    const body = {
+      error: "payout_not_cancellable",
+      message: "This payout is already being sent and can no longer be cancelled.",
+    };
+    const { fetch } = recordingFetch(() => jsonResponse(body, 409));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    await assert.rejects(wheels.marketplace.cancelPayout(PAYOUT), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "payout_not_cancellable");
+      assert.equal(err.message, body.message);
+      return true;
+    });
+  });
+
+  it("cancelPayout escapes the id it is given", async () => {
+    const { fetch, calls } = recordingFetch();
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    await wheels.marketplace.cancelPayout("a/b?c");
+    assert.equal(calls[0]!.url.pathname, "/api/marketplace/payouts/a%2Fb%3Fc/cancel");
+    assert.equal(calls[0]!.url.search, "");
+  });
+
+  it("payouts lists each payout with cancellable and its failure sentence", async () => {
+    const payouts = [
+      { id: PAYOUT, status: "pending", cancellable: true, failureReason: null },
+      {
+        id: RUN,
+        status: "failed",
+        cancellable: false,
+        failureReason: "This payout could not be sent. The amount is back in your earnings. You can request it again.",
+      },
+    ];
+    const { fetch } = recordingFetch(() => jsonResponse({ payouts }));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const result = await wheels.marketplace.payouts();
+    assert.equal(result.payouts[0]!.cancellable, true);
+    assert.equal(result.payouts[1]!.failureReason, payouts[1]!.failureReason);
+  });
+
+  it("create and update send fromAgentForm, and the offering answers formInSync", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse({ offering: { id: OFFERING, formInSync: true } }, 201));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const input = { ...offeringInput, fromAgentForm: true };
+    const created = await wheels.offerings.create(input);
+    const updated = await wheels.offerings.update(OFFERING, { fromAgentForm: true });
+    assert.deepEqual(calls[0]!.body, input);
+    assert.equal("inputSchema" in (calls[0]!.body as object), false);
+    assert.deepEqual(calls[1]!.body, { fromAgentForm: true });
+    assert.equal(created.offering.formInSync, true);
+    assert.equal(updated.offering.formInSync, true);
+  });
+
+  it("keeps the 409 of an agent that is not a task agent", async () => {
+    const body = { error: "not_a_task_agent", message: "Only a task agent has a form to take." };
+    const { fetch } = recordingFetch(() => jsonResponse(body, 409));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    await assert.rejects(wheels.offerings.update(OFFERING, { fromAgentForm: true }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "not_a_task_agent");
+      return true;
+    });
   });
 });

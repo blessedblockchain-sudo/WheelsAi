@@ -14,6 +14,7 @@ import {
   XCircle,
   Loader2,
   ArrowRight,
+  Ban,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -34,7 +35,19 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton, SkeletonTable } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
-import { marketplaceApi, getErrorMessage } from "@/lib/api";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { apiErrorCode, capabilitiesApi, marketplaceApi, getErrorMessage } from "@/lib/api";
+import {
+  EARNINGS_WORDS,
+  PAYOUTS_UNAVAILABLE_CODE,
+  PAYOUTS_UNAVAILABLE_MESSAGE,
+  PAYOUT_NOT_CANCELLABLE_CODE,
+  cancelPayoutDescription,
+  payoutCancelledMessage,
+  payoutRequest,
+  payoutRow,
+  revenueRow,
+} from "@/lib/earnings";
 import { ContributionsCard } from "@/components/marketplace/contributions-card";
 import { EscrowBadge } from "@/components/marketplace/escrow-badge";
 import { JOBS_RECEIVED_HREF, JOBS_TAB_PARAM, JOBS_TAB_RECEIVED } from "@/lib/nav";
@@ -43,16 +56,7 @@ import { cn } from "@/lib/utils";
 // The one shape the API client declares, so a field added there reaches this page.
 type RevenueData = Awaited<ReturnType<typeof marketplaceApi.getRevenue>>;
 
-interface Payout {
-  id: string;
-  amountCents: number;
-  payoutMethod: string;
-  payoutAddress: string | null;
-  status: string;
-  txSignature: string | null;
-  requestedAt: string;
-  processedAt: string | null;
-}
+type Payout = Awaited<ReturnType<typeof marketplaceApi.getPayoutHistory>>["payouts"][number];
 
 function formatCurrency(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -65,14 +69,6 @@ function formatDate(dateString: string): string {
     day: "numeric",
   });
 }
-
-const statusColors: Record<string, "success" | "warning" | "destructive" | "secondary"> = {
-  completed: "success",
-  processing: "warning",
-  pending: "secondary",
-  failed: "destructive",
-  settled: "success",
-};
 
 const payoutMethodLabels: Record<string, string> = {
   credits: "Platform Credits",
@@ -150,6 +146,9 @@ export default function RevenueDashboardPage() {
   const [payoutMethod, setPayoutMethod] = useState<"credits" | "crypto_usdc" | "crypto_sol">("credits");
   const [payoutAddress, setPayoutAddress] = useState("");
   const [isRequestingPayout, setIsRequestingPayout] = useState(false);
+  // Whether payouts are running now; null until read, and when it could not be read.
+  const [payoutsAvailable, setPayoutsAvailable] = useState<boolean | null>(null);
+  const [payoutToCancel, setPayoutToCancel] = useState<Payout | null>(null);
 
   useEffect(() => {
     loadData();
@@ -157,12 +156,15 @@ export default function RevenueDashboardPage() {
 
   async function loadData() {
     try {
-      const [revenueData, payoutsData] = await Promise.all([
+      const [revenueData, payoutsData, capabilities] = await Promise.all([
         marketplaceApi.getRevenue(),
         marketplaceApi.getPayoutHistory(),
+        // Its failure does not hide the earnings: the page then offers no request button and says why.
+        capabilitiesApi.get().catch(() => null),
       ]);
       setRevenue(revenueData);
       setPayoutHistory(payoutsData.payouts);
+      setPayoutsAvailable(capabilities ? capabilities.payouts.available === true : null);
       setLoadError(null);
     } catch (error) {
       setLoadError(error);
@@ -193,15 +195,42 @@ export default function RevenueDashboardPage() {
       toast.success("Payout requested successfully!");
       setShowPayoutDialog(false);
       loadData();
-    } catch (error: any) {
-      toast.error(getErrorMessage(error, "Failed to request payout"));
+    } catch (error) {
+      if (apiErrorCode(error) === PAYOUTS_UNAVAILABLE_CODE) {
+        // Nothing was reserved. The button goes until payouts are back.
+        toast.error(getErrorMessage(error, PAYOUTS_UNAVAILABLE_MESSAGE));
+        setShowPayoutDialog(false);
+        setPayoutsAvailable(false);
+        loadData();
+      } else {
+        toast.error(getErrorMessage(error, "Failed to request payout"));
+      }
     } finally {
       setIsRequestingPayout(false);
     }
   }
 
-  const canRequestPayout = revenue && revenue.pendingPayoutCents >= 1000;
-  const hasPendingPayout = revenue?.pendingPayouts && revenue.pendingPayouts.length > 0;
+  /** Runs inside the confirm dialog, which stays open and shows the error when this throws. */
+  async function handleCancelPayout(payout: Payout) {
+    try {
+      await marketplaceApi.cancelPayout(payout.id);
+    } catch (error) {
+      if (apiErrorCode(error) !== PAYOUT_NOT_CANCELLABLE_CODE) throw error;
+      // It is being sent or is finished: say so in the API's words and show the row as it is now.
+      toast.error(getErrorMessage(error, "This payout can no longer be cancelled."));
+      await loadData();
+      return;
+    }
+    toast.success(payoutCancelledMessage(payout.amountCents));
+    await loadData();
+  }
+
+  const hasPendingPayout = Boolean(revenue?.pendingPayouts && revenue.pendingPayouts.length > 0);
+  const request = payoutRequest({
+    payoutsAvailable,
+    availableCents: revenue?.pendingPayoutCents ?? 0,
+    hasPendingPayout,
+  });
 
   return (
     <div className="flex flex-col">
@@ -311,22 +340,17 @@ export default function RevenueDashboardPage() {
             {/* Payout CTA */}
             <Card className="mb-8">
               <CardContent className="py-6">
-                <div className="flex items-center justify-between">
-                  <div>
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="min-w-0">
                     <h3 className="font-semibold text-foreground">Request Payout</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {canRequestPayout
-                        ? `You have ${formatCurrency(revenue.pendingPayoutCents)} available for withdrawal`
-                        : "Minimum payout amount is $10.00"}
-                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">{request.line}</p>
                   </div>
-                  <Button
-                    onClick={() => setShowPayoutDialog(true)}
-                    disabled={!canRequestPayout || hasPendingPayout}
-                  >
-                    <DollarSign className="mr-2 h-4 w-4" />
-                    {hasPendingPayout ? "Payout Pending" : "Request Payout"}
-                  </Button>
+                  {request.offered && (
+                    <Button onClick={() => setShowPayoutDialog(true)} disabled={!request.enabled}>
+                      <DollarSign className="mr-2 h-4 w-4" />
+                      {request.buttonLabel}
+                    </Button>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -400,34 +424,51 @@ export default function RevenueDashboardPage() {
                     />
                   ) : (
                     <div className="space-y-3">
-                      {payoutHistory.slice(0, 5).map((payout) => (
-                        <div
-                          key={payout.id}
-                          className="flex items-center justify-between rounded-lg border p-3"
-                        >
-                          <div className="flex items-center gap-3">
-                            {payout.status === "completed" ? (
-                              <CheckCircle className="h-5 w-5 text-green-500" />
-                            ) : payout.status === "failed" ? (
-                              <XCircle className="h-5 w-5 text-red-500" />
-                            ) : (
-                              <Clock className="h-5 w-5 text-yellow-500" />
-                            )}
-                            <div>
-                              <p className="font-medium text-foreground">
-                                {formatCurrency(payout.amountCents)}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {payoutMethodLabels[payout.payoutMethod]} &middot;{" "}
-                                {formatDate(payout.requestedAt)}
-                              </p>
+                      {payoutHistory.slice(0, 5).map((payout) => {
+                        const row = payoutRow(payout);
+                        return (
+                          <div key={payout.id} className="rounded-lg border p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                {row.icon === "done" ? (
+                                  <CheckCircle className="h-5 w-5 shrink-0 text-green-500" aria-hidden="true" />
+                                ) : row.icon === "failed" ? (
+                                  <XCircle className="h-5 w-5 shrink-0 text-red-500" aria-hidden="true" />
+                                ) : row.icon === "cancelled" ? (
+                                  <Ban className="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                                ) : (
+                                  <Clock className="h-5 w-5 shrink-0 text-yellow-500" aria-hidden="true" />
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-medium text-foreground">
+                                    {formatCurrency(payout.amountCents)}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {payoutMethodLabels[payout.payoutMethod] ?? payout.payoutMethod} &middot;{" "}
+                                    {formatDate(payout.requestedAt)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge variant={row.tone}>{row.statusLabel}</Badge>
+                                {row.canCancel && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setPayoutToCancel(payout)}
+                                    aria-label={`Cancel the ${formatCurrency(payout.amountCents)} payout`}
+                                  >
+                                    {EARNINGS_WORDS.cancel}
+                                  </Button>
+                                )}
+                              </div>
                             </div>
+                            {row.note && (
+                              <p className="mt-2 break-words text-sm text-muted-foreground">{row.note}</p>
+                            )}
                           </div>
-                          <Badge variant={statusColors[payout.status]}>
-                            {payout.status}
-                          </Badge>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
@@ -462,18 +503,25 @@ export default function RevenueDashboardPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y">
-                        {revenue.recentTransactions.map((tx) => (
+                        {revenue.recentTransactions.map((tx) => {
+                          const row = revenueRow(tx);
+                          return (
                           <tr key={tx.id}>
-                            <td className="py-3 capitalize">
-                              {tx.jobId ? (
+                            <td className="py-3 pr-4">
+                              {row.jobId ? (
                                 <Link
-                                  href={`/dashboard/jobs/${tx.jobId}?${JOBS_TAB_PARAM}=${JOBS_TAB_RECEIVED}`}
+                                  href={`/dashboard/jobs/${row.jobId}?${JOBS_TAB_PARAM}=${JOBS_TAB_RECEIVED}`}
                                   className="text-primary underline underline-offset-2"
                                 >
-                                  Job
+                                  {row.label}
                                 </Link>
                               ) : (
-                                tx.type.replace("_", " ")
+                                row.label
+                              )}
+                              {row.modelCostCents !== null && (
+                                <span className="ml-2 whitespace-nowrap text-xs text-muted-foreground">
+                                  {EARNINGS_WORDS.modelCost} {formatCurrency(row.modelCostCents)}
+                                </span>
                               )}
                             </td>
                             <td className="py-3">{tx.requestCount}</td>
@@ -511,7 +559,8 @@ export default function RevenueDashboardPage() {
                               {formatDate(tx.createdAt)}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -521,6 +570,21 @@ export default function RevenueDashboardPage() {
           </>
         )}
       </div>
+
+      {/* Cancel a payout that has not started to be sent */}
+      <ConfirmDialog
+        open={payoutToCancel !== null}
+        onOpenChange={(open) => {
+          if (!open) setPayoutToCancel(null);
+        }}
+        title={EARNINGS_WORDS.cancelTitle}
+        description={payoutToCancel ? cancelPayoutDescription(payoutToCancel.amountCents) : undefined}
+        confirmLabel={EARNINGS_WORDS.cancelConfirm}
+        cancelLabel={EARNINGS_WORDS.cancelKeep}
+        onConfirm={async () => {
+          if (payoutToCancel) await handleCancelPayout(payoutToCancel);
+        }}
+      />
 
       {/* Payout Dialog */}
       <Dialog open={showPayoutDialog} onOpenChange={setShowPayoutDialog}>

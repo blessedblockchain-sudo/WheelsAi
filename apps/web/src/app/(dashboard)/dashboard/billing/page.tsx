@@ -38,6 +38,7 @@ import {
   type CreditPackage,
   getErrorMessage,
 } from "@/lib/api";
+import { packPayment } from "@/lib/credit-purchase";
 import { cn } from "@/lib/utils";
 
 // Fallback only — the real ladder is served by GET /api/billing/packages
@@ -163,6 +164,7 @@ export default function BillingPage() {
   const [isPurchasing, setIsPurchasing] = useState<number | null>(null);
   const [isWalletPaying, setIsWalletPaying] = useState<number | null>(null);
   const [rails, setRails] = useState<BillingRails | null>(null);
+  const [railsReadFailed, setRailsReadFailed] = useState(false);
   const { publicKey, connected, signTransaction } = useWallet();
   const { setVisible } = useWalletModal();
 
@@ -213,8 +215,10 @@ export default function BillingPage() {
       .then((res) => {
         setCreditPackages(res.packages);
         setRails(res.rails ?? null);
+        // An answer without rails cannot say what is live either.
+        setRailsReadFailed(!res.rails);
       })
-      .catch(() => {});
+      .catch(() => setRailsReadFailed(true));
   }, []);
 
   // Pricing page "Start Pro Trial" lands on ?upgrade=pro after sign-up;
@@ -344,6 +348,9 @@ export default function BillingPage() {
       currency: "USD",
     }).format(amount);
   }
+
+  // Which buttons a pack shows: only a rail that is live gets one.
+  const payment = packPayment(rails, railsReadFailed);
 
   const x402Trend = x402History.slice(-24);
   const maxPending = Math.max(
@@ -480,17 +487,19 @@ export default function BillingPage() {
                   <p className="mt-2 text-sm text-muted-foreground">
                     {formatCurrency(pkg.amount + pkg.bonus)} total
                   </p>
-                  <Button
-                    className="mt-4 w-full"
-                    variant={pkg.popular ? "default" : "outline"}
-                    onClick={() => handlePurchase(index)}
-                    isLoading={isPurchasing === index}
-                  >
-                    Purchase
-                  </Button>
-                  {rails?.wallet && rails.walletAssets.length > 0 && (
+                  {payment.card && (
                     <Button
-                      className="mt-2 w-full"
+                      className="mt-4 w-full"
+                      variant={pkg.popular ? "default" : "outline"}
+                      onClick={() => handlePurchase(index)}
+                      isLoading={isPurchasing === index}
+                    >
+                      Purchase
+                    </Button>
+                  )}
+                  {payment.wallet && (
+                    <Button
+                      className={cn("w-full", payment.card ? "mt-2" : "mt-4")}
                       variant="outline"
                       onClick={() => handleWalletPurchase(index)}
                       isLoading={isWalletPaying === index}
@@ -503,6 +512,12 @@ export default function BillingPage() {
               ))}
             </div>
 
+            {payment.notice && (
+              <p className="mt-4 text-center text-sm text-foreground" role="status">
+                {payment.notice}
+              </p>
+            )}
+
             <p className="mt-4 text-center text-sm text-muted-foreground">
               {rails?.wallet && rails.walletAssets.length > 0 ? (
                 <>
@@ -511,14 +526,19 @@ export default function BillingPage() {
                   your wallet signs the exact transfer WheelsAI prepares.{" "}
                   {rails.stripeCheckout
                     ? "Card payments go through Stripe."
-                    : "Card payments are temporarily unavailable."}{" "}
+                    : payment.card
+                      ? ""
+                      : "Card payments are temporarily unavailable."}{" "}
                   Credits never expire.
                 </>
               ) : (
                 <>
+                  {/* Said only when the server has reported no card rail, never while that is unknown. */}
                   {rails?.stripeCheckout
                     ? "Card payments go through Stripe."
-                    : "Card payments are temporarily unavailable."}{" "}
+                    : rails && !payment.card
+                      ? "Card payments are temporarily unavailable."
+                      : ""}{" "}
                   Credits never expire.
                 </>
               )}

@@ -28,6 +28,7 @@ const toc = [
   { id: "earn", title: "Revenue and payouts" },
   { id: "revenue", title: "Revenue", sub: true },
   { id: "payouts", title: "Payouts", sub: true },
+  { id: "cancel-payout", title: "Cancel a payout", sub: true },
 ];
 
 export default function MarketplaceApiPage() {
@@ -337,9 +338,46 @@ export default function MarketplaceApiPage() {
         <p>
           Pays out your whole pending balance, which must be at least $10.00. Only one payout can be open at a time; a
           concurrent request that loses the race gets <code>409</code> <code>payout_reservation_conflict</code> and writes
-          nothing. API keys are refused, so a leaked key cannot redirect earnings. <code>GET /api/marketplace/payouts</code>{" "}
-          lists your payout history.
+          nothing. API keys are refused, so a leaked key cannot redirect earnings.
         </p>
+        <p>
+          While payouts are not running, a request answers <code>503</code> <code>payouts_unavailable</code> before
+          anything is reserved, with the message &quot;Payouts are temporarily unavailable. Nothing was reserved and your
+          earnings are unchanged. Try again later.&quot; <code>GET /api/capabilities</code> says whether they are running
+          now, in <code>payouts.available</code>.
+        </p>
+        <p>
+          <code>GET /api/marketplace/payouts</code> (API key or session) lists your payouts, newest first. Each carries
+          its <code>status</code> (<code>pending</code>, <code>processing</code>, <code>completed</code>,{" "}
+          <code>failed</code> or <code>cancelled</code>) and two fields written for you:
+        </p>
+        <Fields
+          title="On each payout"
+          fields={[
+            { name: "cancellable", type: "boolean", description: "True while the payout is requested and not yet being sent, so it can still be cancelled." },
+            { name: "failureReason", type: "string | null", description: "Why a failed payout did not go through, as a plain sentence you can show as it comes. Null for a payout that did not fail. A failed payout's amount is already back in your earnings." },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="cancel-payout" method="POST" path="/api/marketplace/payouts/{id}/cancel" auth="Session only, owner or admin" title="Cancel a payout">
+        <p>
+          Takes back a payout that is still <code>pending</code>: it becomes <code>cancelled</code> and its amount goes back
+          to the earnings it was taken from, in one step. Answers <code>200</code> with <code>&#123; payout &#125;</code>. It
+          works while payouts are not running too, so a request never leaves earnings reserved.
+        </p>
+        <ul>
+          <li><code>404</code> <code>payout_not_found</code>: no payout of your organization has this id.</li>
+          <li>
+            <code>409</code> <code>payout_not_cancellable</code>: the payout is already being sent, or is finished. The{" "}
+            <code>message</code> says which; show it as it comes.
+          </li>
+        </ul>
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/payouts/$PAYOUT_ID/cancel" \\
+  -H "Authorization: Bearer $SESSION_TOKEN"`}
+        />
       </Endpoint>
     </DocPage>
   );

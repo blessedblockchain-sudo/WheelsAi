@@ -12,6 +12,10 @@ export const metadata: Metadata = {
 };
 
 const toc = [
+  { id: "sell", title: "Sell from the agent's page" },
+  { id: "who-can-use", title: "Who can use it?", sub: true },
+  { id: "earn", title: "What you earn", sub: true },
+  { id: "guaranteed", title: "Guaranteed delivery", sub: true },
   { id: "publish", title: "Publish a listing" },
   { id: "pricing", title: "Pricing models" },
   { id: "free", title: "Free", sub: true },
@@ -36,6 +40,72 @@ export default function MarketplaceGuidePage() {
       lead="Turn an agent into a product other teams can use. You choose how buyers pay; WheelsAI meters every use, keeps a ledger row for every cent, and pays out your share."
       toc={toc}
     >
+      <h2 id="sell">Sell from the agent&apos;s page</h2>
+      <p>
+        Open one of your agents and choose its <strong>Sell</strong> tab. It asks one question,{" "}
+        <strong>Who can use it?</strong>, and saving your answer puts the agent on sale. People use your agent on its page
+        or through the API. They never get its instructions, its settings or its code.
+      </p>
+
+      <h3 id="who-can-use">Who can use it?</h3>
+      <p>Use is sold in three ways:</p>
+      <DocTable
+        caption="The three ways use is sold"
+        columns={[
+          { key: "choice", label: "Choice" },
+          { key: "what", label: "What it means" },
+          { key: "price", label: "Price" },
+        ]}
+        rows={[
+          {
+            choice: "Free",
+            what: "Anyone with the link can use it. No sign-in. Their use counts toward your plan.",
+            price: "None",
+          },
+          {
+            choice: "Pay per use",
+            what: "People pay for each message, or for each run of a task agent, from their WheelsAI credits. Charged when they send it. Refunded if your agent does not answer.",
+            price: "From $0.05",
+          },
+          {
+            choice: "Monthly",
+            what: "People pay every 30 days and can use it up to 200 times a day. For an agent that runs on its own, they pay every 30 days to read its results on its page and through the API.",
+            price: "From $1.00",
+          },
+        ]}
+      />
+      <p>
+        An agent you talk to is sold free, per message or by the month. A task agent is sold free, per run or by the month.
+        An agent that runs on its own is sold free or by the month. People sign in to pay, and they pay from WheelsAI
+        credits. Setting a price turns off free use on the agent&apos;s page.
+      </p>
+      <p>
+        Your agent cannot save files for people who pay, and cannot send requests to other websites unless you allow it
+        on the Sell tab.
+      </p>
+
+      <h3 id="earn">What you earn</h3>
+      <p>
+        You keep 90% of each payment, worked out in whole cents: at $0.05 a message you earn $0.04, and at $9.00 a month
+        you earn $8.10. When your agent runs on WheelsAI&apos;s models, the cost of the model comes out of your share. Each
+        sale is a row under <strong>Earnings</strong>: a per-use sale reads <strong>Paid use</strong>, with its model
+        cost beside it when there is one.
+      </p>
+
+      <h3 id="guaranteed">Guaranteed delivery</h3>
+      <p>
+        A task agent can also be sold with guaranteed delivery, under <strong>More options</strong> on the Sell tab: a
+        fixed price per task, from $0.50, held until the result is delivered and checked, and refunded if it is late. The
+        buyer fills in your agent&apos;s own form. If you change that form after putting the agent on sale, buyers still
+        see the earlier form until you choose <strong>Show buyers the new form</strong>. This is an{" "}
+        <a href="#offerings">offering</a> made from the agent&apos;s form.
+      </p>
+      <p>
+        Copies are sold only when you ask for them. <strong>Sell copies instead</strong>, also under More options, gives
+        each buyer their own copy, including its instructions, and you cannot take a copy back; see{" "}
+        <a href="#use-or-copies">Sell use, or sell copies</a>.
+      </p>
+
       <h2 id="publish">Publish a listing</h2>
       <p>
         In the dashboard go to <strong>Marketplace → Publish</strong> (<code>/dashboard/marketplace/publish</code>), pick one of
@@ -174,7 +244,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
 
       <h2 id="offerings">Sell a fixed task (offerings)</h2>
       <p>
-        A listing sells a copy of an agent. An <strong>offering</strong> sells one piece of work: a fixed task that your
+        A listing sells use of an agent, or copies of it. An <strong>offering</strong> sells one piece of work: a fixed task that your
         agent, your workflow or your model deployment runs for a buyer at a price you set, from $0.50 to $1,000. Create one
         under <strong>Monetize → Offerings</strong>: pick the product, describe what the buyer sends (a JSON Schema the hire
         form is drawn from), write your private instructions, add the checks a result must pass, and promise a delivery
@@ -304,6 +374,12 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         $10.00 you can request a payout as credits, USDC or SOL (crypto payouts need a destination address). One payout request
         can be open at a time, and requesting a payout requires a signed-in owner or admin: API keys cannot request payouts, so a
         leaked key cannot redirect your earnings. Crypto payouts are sent on-chain to the destination address you give.
+      </p>
+      <p>
+        A payout that has not started to be sent shows <strong>Cancel</strong>: cancelling it puts the amount back in
+        your earnings. While payouts are temporarily unavailable the page does not offer the request, nothing is reserved
+        and your earnings are unchanged. A payout that did not go through says why in a plain sentence, and its amount is
+        already back in your earnings.
       </p>
 
       <h2 id="receipts">Public receipts</h2>

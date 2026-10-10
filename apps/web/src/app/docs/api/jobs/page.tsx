@@ -27,6 +27,7 @@ const toc = [
   { id: "rate", title: "Rate", sub: true },
   { id: "sell", title: "Sell" },
   { id: "create-offering", title: "Create an offering", sub: true },
+  { id: "agent-form", title: "The agent's own form", sub: true },
   { id: "manage-offering", title: "Update, publish, pause, archive", sub: true },
   { id: "validate", title: "Validate and test-run", sub: true },
   { id: "events", title: "Webhook events" },
@@ -399,7 +400,18 @@ export default function JobsApiPage() {
             { name: "description", type: "string", required: true, description: "10 to 5,000 characters." },
             { name: "priceCents", type: "integer", required: true, description: "50 to 100,000." },
             { name: "slaSeconds", type: "integer", required: true, description: "300 to 604,800." },
-            { name: "inputSchema", type: "object | null", description: "JSON Schema (draft-07 or 2020-12) with an object at its root, up to 32 KB and 500 subschemas. Unknown keywords and formats are refused; see the limits below." },
+            { name: "inputSchema", type: "object | null", description: "JSON Schema (draft-07 or 2020-12) with an object at its root, up to 32 KB and 500 subschemas. Unknown keywords and formats are refused; see the limits below. Its properties are the questions of the form buyers fill in, and they keep the order you send them in." },
+            {
+              name: "fromAgentForm",
+              type: "boolean",
+              description: (
+                <>
+                  <code>true</code> takes the form from the agent&apos;s own task form, in the agent&apos;s field order, in
+                  place of <code>inputSchema</code>. For an offering of a task agent only; see{" "}
+                  <a href="#agent-form">the agent&apos;s own form</a>.
+                </>
+              ),
+            },
             { name: "sampleInputs", type: "object[]", description: "Up to 5 examples; each must match inputSchema." },
             { name: "instructions", type: "string", description: "Private. Sent to your product with every job, never shown to buyers. Up to 20,000 characters." },
             { name: "deliverableChecks", type: "object[]", description: "Up to 10 checks; see below." },
@@ -426,6 +438,35 @@ export default function JobsApiPage() {
           <code>422</code> <code>invalid_input_schema</code>, <code>invalid_sample_input</code>,{" "}
           <code>invalid_deliverable_check</code> or <code>validation_too_expensive</code>, each with{" "}
           <code>details: [&#123; path, message &#125;]</code>.
+        </p>
+        <h3 id="agent-form">The agent&apos;s own form</h3>
+        <p>
+          A form keeps the order it was saved in. Every read of an offering gives the <code>properties</code> of its{" "}
+          <code>inputSchema</code> in the order you sent them, and the brief a hired job gives the model lists the
+          buyer&apos;s answers in that order.
+        </p>
+        <p>
+          A task agent already has a form: the questions people answer to run it. Send <code>fromAgentForm: true</code>{" "}
+          and the offering takes that form, in the agent&apos;s field order, and stores it. It passes the same checks as a
+          schema you write.
+        </p>
+        <ul>
+          <li>
+            <code>400</code> when <code>inputSchema</code> and <code>fromAgentForm</code> are sent together: an offering has
+            one form. <code>fromAgentForm</code> on a workflow or model offering is refused with <code>400</code> too.
+          </li>
+          <li>
+            <code>409</code> <code>not_a_task_agent</code> when the offering&apos;s agent is not a task agent, so it has no
+            form to take.
+          </li>
+        </ul>
+        <p>
+          The stored form does not follow the agent. Your own reads of the offering (<code>POST</code>, <code>PATCH</code>{" "}
+          and <code>GET /api/offerings/mine</code>) answer <code>formInSync</code>: <code>true</code> while the stored form
+          is the form the agent has now, <code>false</code> after the agent&apos;s form was edited, and <code>null</code>{" "}
+          for an offering whose form was written by hand. While it is <code>false</code>, buyers still see the earlier
+          form. <code>PATCH</code> with <code>fromAgentForm: true</code> again shows buyers the new form and changes{" "}
+          <code>termsVersion</code>, like any other change to the form.
         </p>
         <p>
           A schema you write is run by the API on input a stranger sends, so one validation has a fixed amount of work it

@@ -6,8 +6,9 @@
  * file only wires them:
  *   - claim: CAS pending → processing (single-flight).
  *   - settleCredits / settleCrypto: the exactly-once settlers.
- *   - failAndRestore: mark failed AND restore pendingPayoutCents in one
- *     transaction — releasing the reservation requestPayout took.
+ *   - failAndRestore: mark failed AND put the amount back on the creator's
+ *     earnings (through the earnings ledger) in one transaction, releasing
+ *     the reservation requestPayout took.
  */
 
 import type { PrismaClient } from "@prisma/client";
@@ -19,6 +20,7 @@ import {
   type PayoutCreditsDb,
   type PayoutSettleResult,
 } from "./payoutExecutor.js";
+import { moveEarnings } from "./earningsLedger.js";
 import type {
   ClaimablePayoutRow,
   PayoutExecutorTickDeps,
@@ -133,12 +135,20 @@ export function buildPayoutExecutorTickDeps(
           data: { status: "failed", failureReason: reason },
         });
         // Only restore the reservation if THIS call is the one that failed
-        // the row — never double-credit pendingPayoutCents on a retry.
+        // the row: never credit the balance twice on a retry.
         if (failed.count === 1) {
-          await tx.publisherProfile.update({
-            where: { orgId: row.publisherId },
-            data: { pendingPayoutCents: { increment: row.amountCents } },
+          const restored = await moveEarnings(tx, {
+            orgId: row.publisherId,
+            amountCents: row.amountCents,
+            type: "payout_restored",
+            referenceId: row.id,
+            description: "Payout failed, amount returned",
           });
+          // No profile to put the amount back on: throw, so the payout is
+          // not marked failed without its amount given back.
+          if (!restored.moved) {
+            throw new Error(`payout ${row.id}: earnings could not be restored (${restored.reason})`);
+          }
         }
       });
     },

@@ -9,12 +9,20 @@ process.env.JWT_SECRET ??= "12345678901234567890123456789012";
 // Launch review #25 (P0): requestPayout checked for an open payout OUTSIDE
 // the transaction and decremented pendingPayoutCents unconditionally, so two
 // concurrent requests could both reserve the full balance (negative balance,
-// two payable rows). The reservation is now a conditional decrement.
+// two payable rows). The reservation is now a conditional decrement, made
+// by the earnings ledger (services/earningsLedger.ts moveEarnings), which
+// also writes one "payout_reserved" row that names the payout.
 
 const ORG = "7f5c1d9e-2a3b-4c5d-8e9f-0a1b2c3d4e5f";
 
 function installFakeDb(prisma: any, startBalance: bigint) {
-  const state = { balance: startBalance, payouts: [] as any[] };
+  const state = {
+    balance: startBalance,
+    payouts: [] as any[],
+    ledger: [] as any[],
+    /** False: the profile row is gone by the time the transaction runs. */
+    profileExists: true,
+  };
   prisma.publisherProfile = {
     // Snapshot read: both racing requests see the same starting balance.
     findUnique: async () => ({ orgId: ORG, pendingPayoutCents: startBalance }),
@@ -24,20 +32,26 @@ function installFakeDb(prisma: any, startBalance: bigint) {
     findFirst: async () => null,
   };
   // Serialise transactions the way row locks do: the second writer runs
-  // against the first writer's committed state.
+  // against the first writer's committed state. A transaction that throws
+  // commits nothing: not the balance, not the payout row, not the ledger row.
   let chain: Promise<unknown> = Promise.resolve();
   prisma.$transaction = (fn: (tx: any) => Promise<unknown>) => {
     const run = chain.then(() => {
-      const draft = { balance: state.balance, payouts: [...state.payouts] };
+      const draft = { balance: state.balance, payouts: [...state.payouts], ledger: [...state.ledger] };
       const tx = {
         publisherProfile: {
           updateMany: async ({ where, data }: any) => {
-            if (where.orgId !== ORG || draft.balance < where.pendingPayoutCents.gte) {
+            // The reservation must stay conditional on the balance covering it.
+            assert.equal(typeof where.pendingPayoutCents?.gte, "bigint", "the reservation must be conditional");
+            if (!state.profileExists || where.orgId !== ORG || draft.balance < where.pendingPayoutCents.gte) {
               return { count: 0 };
             }
             draft.balance -= data.pendingPayoutCents.decrement;
             return { count: 1 };
           },
+          // The balance as this transaction sees it, after its own write.
+          findUnique: async ({ where }: any) =>
+            state.profileExists && where.orgId === ORG ? { pendingPayoutCents: draft.balance } : null,
           update: async () => {
             throw new Error("unconditional update must not be used for the reservation");
           },
@@ -49,10 +63,17 @@ function installFakeDb(prisma: any, startBalance: bigint) {
             return row;
           },
         },
+        earningsTransaction: {
+          create: async ({ data }: any) => {
+            draft.ledger.push(data);
+            return data;
+          },
+        },
       };
       return fn(tx).then((result) => {
         state.balance = draft.balance; // commit
         state.payouts = draft.payouts;
+        state.ledger = draft.ledger;
         return result;
       });
     });
@@ -86,6 +107,23 @@ test("two concurrent payout requests: exactly one reserves, balance never negati
     assert.equal(state.balance, 0n);
     assert.equal(state.payouts.length, 1);
     assert.equal(state.payouts[0].amountCents, 2500n);
+    // One ledger row for the one reservation, naming the payout it is for.
+    assert.deepEqual(state.ledger, [
+      {
+        orgId: ORG,
+        amountCents: -2500n,
+        type: "payout_reserved",
+        referenceId: state.payouts[0].id,
+        description: "Payout requested",
+        balanceAfter: 0n,
+      },
+    ]);
+    // The answer is the payout that was reserved.
+    const won = (ok[0] as PromiseFulfilledResult<any>).value;
+    assert.deepEqual(
+      { id: won.payout.id, amountCents: won.payout.amountCents, status: won.payout.status },
+      { id: state.payouts[0].id, amountCents: 2500, status: "pending" },
+    );
   } finally {
     Object.assign(prisma as any, saved);
   }
@@ -108,6 +146,29 @@ test("a reservation that loses the race writes no payout row", async () => {
     await assert.rejects(requestPayout(ORG, "credits"), PayoutReservationConflictError);
     assert.equal(state.balance, 900n);
     assert.equal(state.payouts.length, 0);
+    assert.equal(state.ledger.length, 0, "no ledger row for a reservation that did not happen");
+  } finally {
+    Object.assign(prisma as any, saved);
+  }
+});
+
+test("a profile that is gone at the reservation: the same conflict, and nothing is written", async () => {
+  const { prisma } = await import("@wheelsai/db");
+  const saved = {
+    publisherProfile: (prisma as any).publisherProfile,
+    creatorPayout: (prisma as any).creatorPayout,
+    $transaction: (prisma as any).$transaction,
+  };
+  const state = installFakeDb(prisma, 2500n);
+  state.profileExists = false;
+  try {
+    const { requestPayout, PayoutReservationConflictError } = await import(
+      "../services/marketplace.js"
+    );
+    await assert.rejects(requestPayout(ORG, "credits"), PayoutReservationConflictError);
+    assert.equal(state.balance, 2500n);
+    assert.equal(state.payouts.length, 0);
+    assert.equal(state.ledger.length, 0);
   } finally {
     Object.assign(prisma as any, saved);
   }

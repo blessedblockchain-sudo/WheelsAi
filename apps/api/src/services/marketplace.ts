@@ -32,6 +32,7 @@ import { validationFailureFromFields, type ValidationFailureBody } from "../lib/
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
 import { buildCancelPayoutDeps, cancelPayout, payoutView, type CancelPayoutDb } from "./payoutRequests.js";
+import { moveEarnings } from "./earningsLedger.js";
 
 const logger = createLogger("marketplace-service");
 
@@ -2553,29 +2554,28 @@ export async function requestPayout(
   const platformFee = grossRevenue - pendingAmount;
 
   // Requesting a payout RESERVES the pending balance into the payout row:
-  // create the row AND zero pendingPayoutCents in ONE transaction. Before
-  // this was two separate writes, so a crash between them either lost the
-  // reservation (row exists, balance still pending → double-payable) or
-  // stranded it. The reservation is released back to pendingPayoutCents
-  // only if the executor later fails the payout (see the payout-executor
-  // tick's failAndRestore). Deducting off the CURRENT balance inside the
-  // transaction also prevents a payout that races with fresh revenue from
-  // zeroing income that accrued after the amount was snapshotted.
+  // create the row AND take the amount out of the balance in ONE
+  // transaction. Before this was two separate writes, so a crash between
+  // them either lost the reservation (row exists, balance still pending →
+  // double-payable) or stranded it. The reservation is released back to the
+  // balance only if the executor later fails the payout (see the
+  // payout-executor tick's failAndRestore) or the creator cancels it.
+  // Taking off the CURRENT balance inside the transaction also prevents a
+  // payout that races with fresh revenue from zeroing income that accrued
+  // after the amount was snapshotted.
   //
-  // The decrement is CONDITIONAL on the balance still covering the amount.
-  // An unconditional decrement let two concurrent requests both pass the
-  // pending-payout check above, both reserve the full balance, drive
-  // pendingPayoutCents negative, and get paid twice by the executor. Under
-  // Postgres row locking the second request re-reads the committed balance
-  // and matches zero rows, so exactly one reservation wins.
+  // The reservation goes through the earnings ledger (moveEarnings), which
+  // takes the amount only if the balance still covers it. An unconditional
+  // take let two concurrent requests both pass the pending-payout check
+  // above, both reserve the full balance, drive the balance negative, and
+  // get paid twice by the executor. Under Postgres row locking the second
+  // request re-reads the committed balance and does not move, so exactly
+  // one reservation wins.
+  //
+  // The payout row is written first so the ledger row can carry its id. A
+  // reservation that does not move throws, which rolls the new payout row
+  // back with it: nothing is written.
   const payout = await prisma.$transaction(async (tx) => {
-    const reserved = await tx.publisherProfile.updateMany({
-      where: { orgId: publisherId, pendingPayoutCents: { gte: BigInt(pendingAmount) } },
-      data: { pendingPayoutCents: { decrement: BigInt(pendingAmount) } },
-    });
-    if (reserved.count !== 1) {
-      throw new PayoutReservationConflictError();
-    }
     const created = await tx.creatorPayout.create({
       data: {
         publisherId,
@@ -2589,6 +2589,16 @@ export async function requestPayout(
         periodEnd: new Date(),
       },
     });
+    const reserved = await moveEarnings(tx, {
+      orgId: publisherId,
+      amountCents: -BigInt(pendingAmount),
+      type: "payout_reserved",
+      referenceId: created.id,
+      description: "Payout requested",
+    });
+    if (!reserved.moved) {
+      throw new PayoutReservationConflictError();
+    }
     return created;
   });
 

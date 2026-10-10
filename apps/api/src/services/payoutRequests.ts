@@ -21,8 +21,11 @@
  *     writes nothing.
  *
  * Pure core: everything it reads or writes is passed in.
- * buildCancelPayoutDeps binds it to a Prisma client handed to it.
+ * buildCancelPayoutDeps binds it to a Prisma client handed to it, and puts
+ * the amount back through the earnings ledger (services/earningsLedger.ts).
  */
+
+import { moveEarnings, type EarningsLedgerTx } from "./earningsLedger.js";
 
 // ============================================
 // Availability
@@ -211,8 +214,11 @@ export interface CancelPayoutTx {
    * True only when THIS call changed the row.
    */
   cancelIfPending(payoutId: string, orgId: string): Promise<boolean>;
-  /** Put the amount back on the earnings it was reserved from. Throws when there is no such balance. */
-  restoreEarnings(orgId: string, amountCents: bigint): Promise<void>;
+  /**
+   * Put the payout's amount back on the earnings it was reserved from, with
+   * a ledger row that names the payout. Throws when there is no such balance.
+   */
+  restoreEarnings(orgId: string, amountCents: bigint, payoutId: string): Promise<void>;
 }
 
 export interface CancelPayoutDeps {
@@ -251,7 +257,7 @@ export async function cancelPayout(
     // Only restore the reservation if THIS call is the one that cancelled
     // the row: never credit the balance twice, and never credit it for a
     // payout the executor has claimed and is sending.
-    if (won) await tx.restoreEarnings(orgId, row.amountCents);
+    if (won) await tx.restoreEarnings(orgId, row.amountCents, payoutId);
     return won;
   });
 
@@ -268,20 +274,17 @@ export async function cancelPayout(
 // Prisma binding
 // ============================================
 
-/** The part of a Prisma client (or transaction client) a cancel touches. */
-export interface CancelPayoutDbClient {
+/**
+ * The part of a Prisma client (or transaction client) a cancel touches: the
+ * payout row, and what the earnings ledger needs to put the amount back.
+ */
+export interface CancelPayoutDbClient extends EarningsLedgerTx {
   creatorPayout: {
     findFirst(args: { where: { id: string; publisherId: string } }): Promise<PayoutRow | null>;
     updateMany(args: {
       where: { id: string; publisherId: string; status: "pending" };
       data: { status: "cancelled" };
     }): Promise<{ count: number }>;
-  };
-  publisherProfile: {
-    update(args: {
-      where: { orgId: string };
-      data: { pendingPayoutCents: { increment: bigint } };
-    }): Promise<unknown>;
   };
 }
 
@@ -304,15 +307,21 @@ export function buildCancelPayoutDeps(db: CancelPayoutDb): CancelPayoutDeps {
             });
             return res.count === 1;
           },
-          // The row requestPayout decremented and failAndRestore increments.
-          // `update` throws when the profile is gone, which rolls the
-          // cancel back: the payout stays pending rather than losing its
-          // amount.
-          restoreEarnings: async (orgId, amountCents) => {
-            await tx.publisherProfile.update({
-              where: { orgId },
-              data: { pendingPayoutCents: { increment: amountCents } },
+          // The balance requestPayout reserved from and failAndRestore
+          // gives back to, changed through the earnings ledger. A profile
+          // that is gone throws, which rolls the cancel back: the payout
+          // stays pending rather than losing its amount.
+          restoreEarnings: async (orgId, amountCents, payoutId) => {
+            const restored = await moveEarnings(tx, {
+              orgId,
+              amountCents,
+              type: "payout_restored",
+              referenceId: payoutId,
+              description: "Payout cancelled, amount returned",
             });
+            if (!restored.moved) {
+              throw new Error(`payout ${payoutId}: earnings could not be restored (${restored.reason})`);
+            }
           },
         }),
       ),

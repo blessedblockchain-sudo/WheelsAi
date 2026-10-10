@@ -49,19 +49,30 @@ function payoutRow(over: Partial<PayoutRow> = {}): PayoutRow {
   };
 }
 
+/** An earnings_transactions row, as the earnings ledger writes it. */
+type LedgerRow = {
+  orgId: string;
+  amountCents: bigint;
+  type: string;
+  referenceId: string | null;
+  description: string | null;
+  balanceAfter: bigint;
+};
+
 /**
- * An in-memory creator_payouts + publisher_profiles pair. Transactions are
- * serialised the way row locks serialise them and commit or roll back as a
- * whole; every balance write is counted.
+ * An in-memory creator_payouts + publisher_profiles + earnings_transactions
+ * set. Transactions are serialised the way row locks serialise them and
+ * commit or roll back as a whole; every balance write is counted.
  */
 function fakeDb(rows: PayoutRow[], balances: Record<string, bigint>) {
   const state = {
     payouts: rows.map((r) => ({ ...r })),
     balances: { ...balances },
+    ledger: [] as LedgerRow[],
     balanceWrites: 0,
     payoutWrites: 0,
   };
-  type Draft = { payouts: PayoutRow[]; balances: Record<string, bigint> };
+  type Draft = { payouts: PayoutRow[]; balances: Record<string, bigint>; ledger: LedgerRow[] };
 
   const client = (draft: () => Draft) => ({
     creatorPayout: {
@@ -81,12 +92,29 @@ function fakeDb(rows: PayoutRow[], balances: Record<string, bigint>) {
       },
     },
     publisherProfile: {
-      update: async ({ where, data }: any) => {
+      // What the earnings ledger uses to put an amount back. A restore is
+      // not income: it must never add to lifetime revenue.
+      updateMany: async ({ where, data }: any) => {
         const d = draft();
-        if (!(where.orgId in d.balances)) throw new Error("Record to update not found.");
+        assert.deepEqual(Object.keys(data), ["pendingPayoutCents"], "a restore changes the balance only");
+        assert.equal(where.pendingPayoutCents, undefined, "a restore is not conditional on the balance");
+        if (!(where.orgId in d.balances)) return { count: 0 };
         d.balances[where.orgId] = d.balances[where.orgId]! + data.pendingPayoutCents.increment;
         state.balanceWrites += 1;
-        return {};
+        return { count: 1 };
+      },
+      findUnique: async ({ where }: any) => {
+        const d = draft();
+        return where.orgId in d.balances ? { pendingPayoutCents: d.balances[where.orgId]! } : null;
+      },
+      update: async () => {
+        throw new Error("the balance changes only through the earnings ledger");
+      },
+    },
+    earningsTransaction: {
+      create: async ({ data }: any) => {
+        draft().ledger.push({ ...data });
+        return data;
       },
     },
   });
@@ -100,10 +128,12 @@ function fakeDb(rows: PayoutRow[], balances: Record<string, bigint>) {
         const draft: Draft = {
           payouts: state.payouts.map((p) => ({ ...p })),
           balances: { ...state.balances },
+          ledger: [...state.ledger],
         };
         const result = await fn(client(() => draft));
         state.payouts = draft.payouts; // commit
         state.balances = draft.balances;
+        state.ledger = draft.ledger;
         return result;
       });
       chain = run.catch(() => undefined);
@@ -111,6 +141,19 @@ function fakeDb(rows: PayoutRow[], balances: Record<string, bigint>) {
     },
   };
   return { state, db: db as unknown as CancelPayoutDb };
+}
+
+/** The one ledger row a cancelled payout leaves: its amount, put back. */
+function cancelledRow(balanceAfter: bigint, over: Partial<LedgerRow> = {}): LedgerRow {
+  return {
+    orgId: ORG,
+    amountCents: 2500n,
+    type: "payout_restored",
+    referenceId: PAYOUT,
+    description: "Payout cancelled, amount returned",
+    balanceAfter,
+    ...over,
+  };
 }
 
 /** The executor's own claim (pending → processing), bound to the same rows. */
@@ -176,12 +219,14 @@ test("cancel restores the amount once, and a second cancel does nothing", async 
   assert.equal(state.payouts[0]!.status, "cancelled");
   assert.equal(state.balances[ORG], 2800n);
   assert.equal(state.balanceWrites, 1);
+  assert.deepEqual(state.ledger, [cancelledRow(2800n)]);
 
   const second = await cancelPayout(deps, { payoutId: PAYOUT, orgId: ORG });
   assert.deepEqual(second, { outcome: "not_cancellable", status: "cancelled" });
   assert.equal(state.balances[ORG], 2800n);
   assert.equal(state.balanceWrites, 1, "the balance is credited exactly once");
   assert.equal(state.payoutWrites, 1);
+  assert.deepEqual(state.ledger, [cancelledRow(2800n)], "one ledger row, not two");
 });
 
 test("two cancels at once: one restores, the other writes nothing", async () => {
@@ -194,6 +239,7 @@ test("two cancels at once: one restores, the other writes nothing", async () => 
   assert.deepEqual(results.map((r) => r.outcome).sort(), ["cancelled", "not_cancellable"]);
   assert.equal(state.balances[ORG], 2500n);
   assert.equal(state.balanceWrites, 1);
+  assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
 });
 
 test("cancel against the executor's claim: the claim wins, nothing is restored", async () => {
@@ -207,6 +253,7 @@ test("cancel against the executor's claim: the claim wins, nothing is restored",
   assert.equal(state.payouts[0]!.status, "processing");
   assert.equal(state.balances[ORG], 0n, "a payout being sent is never also given back");
   assert.equal(state.balanceWrites, 0);
+  assert.equal(state.ledger.length, 0);
 });
 
 test("cancel against the executor's claim: the cancel wins, the claim does nothing", async () => {
@@ -220,6 +267,7 @@ test("cancel against the executor's claim: the cancel wins, the claim does nothi
   assert.equal(state.payouts[0]!.status, "cancelled");
   assert.equal(state.balances[ORG], 2500n);
   assert.equal(state.balanceWrites, 1);
+  assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
 
   // A tick that loaded the row while it was still pending and then fails it
   // must not restore a second time.
@@ -227,6 +275,42 @@ test("cancel against the executor's claim: the cancel wins, the claim does nothi
   assert.equal(state.payouts[0]!.status, "cancelled");
   assert.equal(state.balances[ORG], 2500n);
   assert.equal(state.balanceWrites, 1);
+  assert.deepEqual(state.ledger, [cancelledRow(2500n)], "no second ledger row");
+});
+
+test("the executor fails a payout: the amount is restored once, with one ledger row", async () => {
+  for (const status of ["pending", "processing"]) {
+    const { state, db } = fakeDb([payoutRow({ status })], { [ORG]: 300n });
+    const executor = executorOver(db);
+    const loaded = { ...payoutRow({ status }) } as any;
+
+    await executor.failAndRestore(loaded, "invalid payout address");
+    assert.equal(state.payouts[0]!.status, "failed");
+    assert.equal(state.payouts[0]!.failureReason, "invalid payout address");
+    assert.equal(state.balances[ORG], 2800n);
+    assert.equal(state.balanceWrites, 1);
+    assert.deepEqual(state.ledger, [
+      cancelledRow(2800n, { description: "Payout failed, amount returned" }),
+    ]);
+
+    // A retry of the same failure, and a cancel after it, restore nothing more.
+    await executor.failAndRestore(loaded, "invalid payout address");
+    const cancel = await cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG });
+    assert.deepEqual(cancel, { outcome: "not_cancellable", status: "failed" });
+    assert.equal(state.balances[ORG], 2800n);
+    assert.equal(state.balanceWrites, 1, "the balance is credited exactly once");
+    assert.equal(state.ledger.length, 1);
+  }
+});
+
+test("if the earnings cannot be restored the executor's failure rolls back: the payout is not failed", async () => {
+  // No balance row for the organization: the restore throws.
+  const { state, db } = fakeDb([payoutRow({ status: "processing" })], {});
+  const executor = executorOver(db);
+  await assert.rejects(executor.failAndRestore({ ...payoutRow({ status: "processing" }) } as any, "invalid payout address"));
+  assert.equal(state.payouts[0]!.status, "processing", "never failed without its amount given back");
+  assert.equal(state.payouts[0]!.failureReason, null);
+  assert.equal(state.ledger.length, 0);
 });
 
 test("the claim lands between the cancel's read and its write: the cancel loses and writes nothing", async () => {
@@ -248,6 +332,7 @@ test("the claim lands between the cancel's read and its write: the cancel loses 
   assert.equal(state.payouts[0]!.status, "processing");
   assert.equal(state.balances[ORG], 0n);
   assert.equal(state.balanceWrites, 0);
+  assert.equal(state.ledger.length, 0);
 });
 
 test("claim and cancel fired together: exactly one of them happens", async () => {
@@ -268,6 +353,7 @@ test("claim and cancel fired together: exactly one of them happens", async () =>
     assert.equal(state.payouts[0]!.status, cancelled ? "cancelled" : "processing");
     assert.equal(state.balances[ORG], cancelled ? 2500n : 0n);
     assert.equal(state.balanceWrites, cancelled ? 1 : 0);
+    assert.deepEqual(state.ledger, cancelled ? [cancelledRow(2500n)] : []);
   }
 });
 
@@ -278,6 +364,7 @@ test("another organization cannot cancel: not found, nothing changes", async () 
   assert.equal(state.payouts[0]!.status, "pending");
   assert.deepEqual(state.balances, { [ORG]: 0n, [OTHER_ORG]: 0n });
   assert.equal(state.balanceWrites + state.payoutWrites, 0);
+  assert.equal(state.ledger.length, 0);
 });
 
 test("a lookup that forgot the organization still cannot hand a payout across", async () => {
@@ -310,6 +397,7 @@ test("a payout that is being sent or is finished is not cancellable", async () =
     const result = await cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG });
     assert.deepEqual(result, { outcome: "not_cancellable", status });
     assert.equal(state.balanceWrites + state.payoutWrites, 0);
+    assert.equal(state.ledger.length, 0);
   }
 });
 
@@ -318,6 +406,7 @@ test("if the earnings cannot be restored the cancel rolls back: the payout stays
   const { state, db } = fakeDb([payoutRow()], {});
   await assert.rejects(cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG }));
   assert.equal(state.payouts[0]!.status, "pending", "never cancelled without its amount given back");
+  assert.equal(state.ledger.length, 0);
 });
 
 test("an amount that cannot be read is never put on a balance", async () => {
@@ -326,6 +415,7 @@ test("an amount that cannot be read is never put on a balance", async () => {
     await assert.rejects(cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG }));
     assert.equal(state.payouts[0]!.status, "pending");
     assert.equal(state.balances[ORG], 0n);
+    assert.equal(state.ledger.length, 0);
   }
 });
 
@@ -589,6 +679,7 @@ test("POST /payouts/:id/cancel works while payouts are off: 200, then 409, the a
       assert.equal(again.json().message, payoutNotCancellableMessage("cancelled"));
       assert.equal(state.balances[ORG], 2500n);
       assert.equal(state.balanceWrites, 1);
+      assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
 
       const list = await app.inject({ method: "GET", url: "/payouts" });
       assert.equal(list.statusCode, 200);

@@ -69,6 +69,10 @@ export {
   stopPayoutExecutorQueue,
 } from "./payout-executor.queue.js";
 export {
+  startTopupReconcileQueue,
+  stopTopupReconcileQueue,
+} from "./topup-reconcile.queue.js";
+export {
   startEmbeddingBackfillQueue,
   stopEmbeddingBackfillQueue,
 } from "./embedding-backfill.queue.js";

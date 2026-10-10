@@ -14,6 +14,7 @@ import {
   type UseBillingListing,
   type UseMeteringDeps,
 } from "../services/useMetering.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // One paid use of a creator's agent. What these pin: only a per-use price is
 // billable; a subscriber and the creator are never charged; a buyer is never
@@ -234,6 +235,8 @@ interface State {
   apiKeys: Record<string, { orgId: string; maxJobPriceCents: bigint | null; maxUsePriceCents: bigint | null; dailySpendCapCents: bigint | null }>;
   windows: Record<string, bigint>;
   publisherPending: bigint;
+  /** The creator's ledger: one row for every change to what they are owed. */
+  earnings: EarningsRow[];
   installSpent: bigint;
   listing: { requests: bigint; useModelCostMicros: bigint };
 }
@@ -254,6 +257,7 @@ function makeDb(opts: { balance?: bigint; perUse?: bigint | null; perDay?: bigin
     },
     windows: {},
     publisherPending: 0n,
+    earnings: [],
     installSpent: 0n,
     listing: { requests: 0n, useModelCostMicros: 0n },
   };
@@ -341,13 +345,19 @@ function makeDb(opts: { balance?: bigint; perUse?: bigint | null; perDay?: bigin
         return { count: 1 };
       },
     },
-    publisherProfile: {
-      update: async (args: { data: { pendingPayoutCents: { increment: bigint } } }) => {
+    // The creator is credited through the ledger (moveEarnings): the change
+    // to the balance and the row for it are both writes.
+    ...earningsStandIn({
+      pending: () => state.publisherPending,
+      add: (_orgId, pending) => {
         counts.writes++;
-        state.publisherPending += args.data.pendingPayoutCents.increment;
-        return {};
+        state.publisherPending += pending;
       },
-    },
+      write: (row) => {
+        counts.writes++;
+        state.earnings.push(row);
+      },
+    }),
     agentInstall: {
       update: async (args: { data: { totalSpentCents: { increment: bigint } } }) => {
         counts.writes++;
@@ -533,6 +543,15 @@ test("a delivered use settles once, with the model cost it noted", async () => {
   });
   assert.equal(db.state.listing.useModelCostMicros, 1_200_000n);
   assert.equal(db.state.publisherPending, 7n);
+  // One ledger row per settle, for what the creator was credited after the
+  // model cost, each against its revenue row.
+  assert.deepEqual(
+    db.state.earnings.map((row) => [row.orgId, row.type, row.amountCents, row.referenceId, row.balanceAfter]),
+    [
+      ["org_pub", "sale", 4n, db.state.revenue[0]!.id, 4n],
+      ["org_pub", "sale", 3n, db.state.revenue[1]!.id, 7n],
+    ],
+  );
   assert.deepEqual(db.state.revenue.map((r) => [r.status, r.platformFee, r.creator]), [
     ["settled", 1n, 4n],
     ["settled", 2n, 3n],

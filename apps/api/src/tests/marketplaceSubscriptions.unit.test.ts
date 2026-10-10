@@ -14,6 +14,7 @@ import {
 import { resolveInstallBilling } from "../services/marketplaceMetering.js";
 import { runSubscriptionRenewalTick } from "../services/runSubscriptionRenewalTick.js";
 import { installAccess, subscriptionGrantsAccess } from "../services/subscriptionAccess.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // Monthly marketplace subscriptions (claims ledger M1). What these pin:
 // the first period is paid at install, a period is never charged twice,
@@ -40,7 +41,12 @@ interface State {
   subs: Map<string, SubscriptionRow & { cancelledAt?: Date | null; lastRenewalAttemptAt?: Date | null }>;
   revenue: Array<Record<string, unknown>>;
   ledger: Array<Record<string, unknown>>;
+  /** What each publisher is owed. */
   accrued: Map<string, bigint>;
+  /** Each publisher's lifetime revenue. */
+  lifetime: Map<string, bigint>;
+  /** The publishers' ledger: one row for every change to what they are owed. */
+  earnings: EarningsRow[];
   installs: Array<{ listingId: string; buyerId: string; status: string }>;
 }
 
@@ -55,18 +61,30 @@ function matches(row: Record<string, unknown>, where: Record<string, unknown>): 
   });
 }
 
-function makeDb(opts: { balance?: bigint } = {}) {
+function makeDb(opts: { balance?: bigint; noProfile?: boolean } = {}) {
   const state: State = {
     balances: new Map([["org_buyer", opts.balance ?? 10_000n]]),
     subs: new Map(),
     revenue: [],
     ledger: [],
     accrued: new Map(),
+    lifetime: new Map(),
+    earnings: [],
     installs: [{ listingId: "lst_1", buyerId: "org_buyer", status: "active" }],
   };
   let seq = 0;
 
   const tx: SubscriptionTx = {
+    // The publisher is credited through the ledger (moveEarnings). Every
+    // organization has a profile here unless `noProfile` says none does.
+    ...earningsStandIn({
+      pending: (orgId) => (opts.noProfile ? undefined : (state.accrued.get(orgId) ?? 0n)),
+      add: (orgId, pending, total) => {
+        state.accrued.set(orgId, (state.accrued.get(orgId) ?? 0n) + pending);
+        state.lifetime.set(orgId, (state.lifetime.get(orgId) ?? 0n) + total);
+      },
+      write: (row) => state.earnings.push(row),
+    }),
     creditBalance: {
       async updateMany({ where, data }) {
         const bal = state.balances.get(where.orgId) ?? 0n;
@@ -90,12 +108,6 @@ function makeDb(opts: { balance?: bigint } = {}) {
         const row = { id: `rev_${++seq}`, ...data };
         state.revenue.push(row);
         return row;
-      },
-    },
-    publisherProfile: {
-      async update({ where, data }) {
-        state.accrued.set(where.orgId, (state.accrued.get(where.orgId) ?? 0n) + data.pendingPayoutCents.increment);
-        return {};
       },
     },
     agentSubscription: {
@@ -149,6 +161,8 @@ function makeDb(opts: { balance?: bigint } = {}) {
       revenue: state.revenue,
       ledger: state.ledger,
       accrued: state.accrued,
+      lifetime: state.lifetime,
+      earnings: state.earnings,
       installs: state.installs,
     });
     try {
@@ -186,6 +200,20 @@ test("subscribing charges the first period once and opens a 30-day period", asyn
     { type: "subscription", status: "settled", gross: 1500n, fee: 150n, creator: 1350n, installId: "ins_1" },
   );
   assert.equal(state.accrued.get("org_pub"), 1350n);
+  assert.equal(state.lifetime.get("org_pub"), 1350n);
+  // The credit has its ledger row: a subscription, against the revenue row
+  // the buyer's debit points at, with the balance it left.
+  assert.deepEqual(state.earnings, [
+    {
+      orgId: "org_pub",
+      amountCents: 1350n,
+      type: "subscription",
+      referenceId: state.revenue[0]!.id,
+      description: "Subscription: Research Analyst",
+      balanceAfter: 1350n,
+    },
+  ]);
+  assert.equal(state.ledger[0]!.referenceId, state.revenue[0]!.id);
   assert.equal(state.ledger.length, 1);
   assert.equal(state.ledger[0]!.amountCents, -1500n);
   assert.equal(state.ledger[0]!.balanceAfter, 8_500n);
@@ -207,6 +235,21 @@ test("a buyer who cannot pay gets no subscription and no charge", async () => {
   assert.equal(state.subs.size, 0);
   assert.equal(state.revenue.length, 0);
   assert.equal(state.ledger.length, 0);
+  assert.equal(state.earnings.length, 0);
+});
+
+test("a period for a publisher with no profile throws, and the whole charge rolls back", async () => {
+  const { state, inTransaction } = makeDb({ noProfile: true });
+  await assert.rejects(
+    inTransaction((tx) => startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: T0 })),
+    /No publisher profile to credit a subscription to \(organization org_pub\)/,
+  );
+  assert.equal(state.balances.get("org_buyer"), 10_000n);
+  assert.equal(state.subs.size, 0);
+  assert.equal(state.revenue.length, 0);
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.earnings.length, 0);
+  assert.equal(state.accrued.size, 0);
 });
 
 test("a listing without a monthly price cannot start a subscription", async () => {
@@ -248,6 +291,16 @@ test("a due subscription renews from the old period end, charged as a renewal", 
   assert.equal(state.balances.get("org_buyer"), 7_000n);
   assert.equal(state.revenue[1]!.type, "subscription_renewal");
   assert.equal(state.accrued.get("org_pub"), 2_700n);
+  assert.equal(state.lifetime.get("org_pub"), 2_700n);
+  // The renewal is a second row, against its own revenue row, carrying
+  // the balance the two periods left.
+  assert.deepEqual(
+    state.earnings.map((row) => [row.type, row.amountCents, row.referenceId, row.description, row.balanceAfter]),
+    [
+      ["subscription", 1350n, state.revenue[0]!.id, "Subscription: Research Analyst", 1350n],
+      ["subscription", 1350n, state.revenue[1]!.id, "Renewal: Research Analyst", 2_700n],
+    ],
+  );
 });
 
 test("two workers renewing the same period charge it once", async () => {

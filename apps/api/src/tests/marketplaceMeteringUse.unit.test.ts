@@ -10,6 +10,7 @@ import {
   type MarketplaceCharge,
   type MeteredInstall,
 } from "../services/marketplaceMetering.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // The model cost of a paid use, taken from the creator's share at settle.
 // What these pin: a copy, and a use with no model cost, issue exactly the
@@ -42,6 +43,8 @@ interface State {
   ledger: Array<{ type: string; amountCents: bigint; referenceId: string }>;
   revenue: Map<string, { status: string; platformFee: bigint; creator: bigint; gross: bigint }>;
   publisher: { total: bigint; pending: bigint };
+  /** The creator's ledger: one row for every change to what they are owed. */
+  earnings: EarningsRow[];
   install: { requests: bigint; spent: bigint };
   listing: { requests: bigint; useModelCostMicros: bigint };
 }
@@ -56,6 +59,7 @@ function makeDb(opts: { balance?: bigint; startMicros?: bigint; failPublisherUpd
     ledger: [],
     revenue: new Map(),
     publisher: { total: 0n, pending: 0n },
+    earnings: [],
     install: { requests: 0n, spent: 0n },
     listing: { requests: 0n, useModelCostMicros: opts.startMicros ?? 0n },
   };
@@ -64,6 +68,18 @@ function makeDb(opts: { balance?: bigint; startMicros?: bigint; failPublisherUpd
   const record = (model: string, op: string, args: unknown) => statements.push({ model, op, args });
 
   const tx = {
+    // The publisher is credited through the ledger (moveEarnings): a
+    // conditional update, a read of the balance it left, and the row.
+    // `failPublisherUpdate` is a publisher whose profile is gone.
+    ...earningsStandIn({
+      pending: (orgId) => (opts.failPublisherUpdate || orgId !== COPY.publisherId ? undefined : state.publisher.pending),
+      add: (_orgId, pending, total) => {
+        state.publisher.pending += pending;
+        state.publisher.total += total;
+      },
+      write: (row) => state.earnings.push(row),
+      record,
+    }),
     creditBalance: {
       updateMany: async (args: { where: { balanceCents: { gte: bigint } }; data: { balanceCents: { decrement: bigint } } }) => {
         record("creditBalance", "updateMany", args);
@@ -117,17 +133,6 @@ function makeDb(opts: { balance?: bigint; startMicros?: bigint; failPublisherUpd
         const row = state.revenue.get(args.where.id)!;
         row.platformFee += args.data.platformFeeCents.increment;
         row.creator -= args.data.creatorAmountCents.decrement;
-        return {};
-      },
-    },
-    publisherProfile: {
-      update: async (args: {
-        data: { totalRevenueCents: { increment: bigint }; pendingPayoutCents: { increment: bigint } };
-      }) => {
-        record("publisherProfile", "update", args);
-        if (opts.failPublisherUpdate) throw new Error("publisher profile is gone");
-        state.publisher.total += args.data.totalRevenueCents.increment;
-        state.publisher.pending += args.data.pendingPayoutCents.increment;
         return {};
       },
     },
@@ -197,10 +202,31 @@ const TODAYS_SETTLE: Statement[] = [
     op: "updateMany",
     args: { where: { id: "rev_1", status: "pending" }, data: { status: "settled", settledAt: SETTLED_AT } },
   },
+  // The credit, through the ledger: the same amount to the same two
+  // counters, then the balance it left, then the row for it.
   {
     model: "publisherProfile",
-    op: "update",
-    args: { where: { orgId: "org_pub" }, data: { totalRevenueCents: { increment: 4n }, pendingPayoutCents: { increment: 4n } } },
+    op: "updateMany",
+    args: { where: { orgId: "org_pub" }, data: { pendingPayoutCents: { increment: 4n }, totalRevenueCents: { increment: 4n } } },
+  },
+  {
+    model: "publisherProfile",
+    op: "findUnique",
+    args: { where: { orgId: "org_pub" }, select: { pendingPayoutCents: true } },
+  },
+  {
+    model: "earningsTransaction",
+    op: "create",
+    args: {
+      data: {
+        orgId: "org_pub",
+        amountCents: 4n,
+        type: "sale",
+        referenceId: "rev_1",
+        description: "Sale: Support Bot",
+        balanceAfter: 4n,
+      },
+    },
   },
   {
     model: "agentInstall",
@@ -305,6 +331,15 @@ test("a cent moves only when the running total crosses one", async () => {
   // Rounding up per use would have taken a cent from each: 9 for the creator, not 11.
   assert.equal(db.state.publisher.pending, 11n);
   assert.equal(db.state.publisher.total, 11n);
+  // One ledger row per settle, and the rows add up to the balance.
+  assert.deepEqual(
+    db.state.earnings.map((row) => [row.type, row.amountCents, row.referenceId, row.balanceAfter]),
+    [
+      ["sale", 4n, "rev_1", 4n],
+      ["sale", 4n, "rev_2", 8n],
+      ["sale", 3n, "rev_3", 11n],
+    ],
+  );
   // Every row still adds up, and every cent the creator can withdraw came from the buyer.
   for (const row of db.state.revenue.values()) assert.equal(row.platformFee + row.creator, row.gross);
   assert.equal(db.state.publisher.pending + 4n, 1_000n - db.state.balance);
@@ -324,7 +359,9 @@ test("the row is moved by one statement, after the total and before the creator 
       "marketplaceRevenue.updateMany",
       "agentListing.update",
       "marketplaceRevenue.update",
-      "publisherProfile.update",
+      "publisherProfile.updateMany",
+      "publisherProfile.findUnique",
+      "earningsTransaction.create",
       "agentInstall.update",
       "agentListing.update",
     ],
@@ -340,7 +377,19 @@ test("the row is moved by one statement, after the total and before the creator 
   });
   assert.deepEqual(issued[3]!.args, {
     where: { orgId: "org_pub" },
-    data: { totalRevenueCents: { increment: 3n }, pendingPayoutCents: { increment: 3n } },
+    data: { pendingPayoutCents: { increment: 3n }, totalRevenueCents: { increment: 3n } },
+  });
+  // The ledger row is for what the creator was credited, after the model
+  // cost, and points at the revenue row.
+  assert.deepEqual(issued[5]!.args, {
+    data: {
+      orgId: "org_pub",
+      amountCents: 3n,
+      type: "sale",
+      referenceId: "rev_1",
+      description: "Sale: Support Bot",
+      balanceAfter: 3n,
+    },
   });
 
   // A settle that crosses no cent does not touch the revenue row again.
@@ -395,7 +444,8 @@ test("settle after refund and refund after settle do nothing, and the total move
 test("the running total is updated in the same transaction as the settle", async () => {
   const db = makeDb({ startMicros: 900_000n, failPublisherUpdate: true });
   const c = await charge(db, USE);
-  await assert.rejects(settle(db, c, 250_000n), /publisher profile is gone/);
+  await assert.rejects(settle(db, c, 250_000n), /No publisher profile to credit a sale to/);
+  assert.deepEqual(db.state.earnings, []);
   // The settle did not commit, so neither did its model cost: the charge is
   // still pending, the row is whole, and a retry will cross the cent once.
   assert.equal(db.state.listing.useModelCostMicros, 900_000n);

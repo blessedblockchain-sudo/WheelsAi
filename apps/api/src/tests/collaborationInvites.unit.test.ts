@@ -34,6 +34,8 @@ function makeWorld() {
     contributors: [] as Row[],
     profiles: [] as Row[],
     earnings: [] as Row[],
+    /** The recipients' ledger: one row for every change to what they are owed. */
+    ledger: [] as Row[],
     userReads: 0,
     profileCreateFailures: [] as string[], // unique targets to fail the next creates with
   };
@@ -151,11 +153,20 @@ function makeWorld() {
         state.profiles.push(row);
         return row;
       },
-      update: async ({ where, data }: Row) => {
+      // What moveEarnings issues: the credit, then (above) the read of the
+      // balance it left.
+      updateMany: async ({ where, data }: Row) => {
         const row = state.profiles.find((p) => p.orgId === where.orgId);
-        if (!row) throw new Error("Record to update not found");
+        if (!row) return { count: 0 };
         row.pendingPayoutCents += data.pendingPayoutCents.increment;
-        return row;
+        row.totalRevenueCents = (row.totalRevenueCents ?? 0n) + (data.totalRevenueCents?.increment ?? 0n);
+        return { count: 1 };
+      },
+    },
+    earningsTransaction: {
+      create: async ({ data }: Row) => {
+        state.ledger.push({ ...data });
+        return data;
       },
     },
     $transaction: async (fn: (tx: Row) => Promise<unknown>) => fn(models),
@@ -364,11 +375,33 @@ test("a contributor accepted before profiles were created gets one, and their ow
     assert.equal(mine!.earnedCents, 270);
     const profile = world.state.profiles.find((p) => p.orgId === "org_alice")!;
     assert.equal(profile.pendingPayoutCents, 270n);
+    assert.equal(profile.totalRevenueCents, 270n);
     assert.ok(world.state.earnings.every((e) => e.accruedAt !== null && e.recipientOrgId === "org_alice"));
+    // Each share credited has its ledger row, against the earning it pays,
+    // with the balance it left.
+    assert.deepEqual(world.state.ledger, [
+      {
+        orgId: "org_alice",
+        amountCents: 180n,
+        type: "contributor_share",
+        referenceId: "e1",
+        description: "Contributor share owed from an earlier sale",
+        balanceAfter: 180n,
+      },
+      {
+        orgId: "org_alice",
+        amountCents: 90n,
+        type: "contributor_share",
+        referenceId: "e2",
+        description: "Contributor share owed from an earlier sale",
+        balanceAfter: 270n,
+      },
+    ]);
 
     // Opening the page again credits nothing more.
     await listMyContributions("u_alice");
     assert.equal(profile.pendingPayoutCents, 270n);
+    assert.equal(world.state.ledger.length, 2);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   type MarketplaceCharge,
   type MeteredInstall,
 } from "../services/marketplaceMetering.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // Marketplace per-request metering (W2) — the money-IN half. The thing
 // these tests exist to prevent is the bug they replaced: revenue accrued
@@ -171,6 +172,8 @@ interface FakeState {
   ledger: Array<{ type: string; amountCents: bigint; referenceId: string; balanceAfter: bigint }>;
   revenue: Map<string, { status: string; settledAt: Date | null; gross: bigint; creator: bigint }>;
   publisher: { total: bigint; pending: bigint };
+  /** The creator's ledger: one row for every change to what they are owed. */
+  earnings: EarningsRow[];
   installCounters: { requests: bigint; spent: bigint };
   listingCounters: { requests: bigint };
   nextRevenueId: number;
@@ -182,12 +185,22 @@ function makeDb(startBalance: bigint) {
     ledger: [],
     revenue: new Map(),
     publisher: { total: 0n, pending: 0n },
+    earnings: [],
     installCounters: { requests: 0n, spent: 0n },
     listingCounters: { requests: 0n },
     nextRevenueId: 1,
   };
 
   const tx = {
+    // The publisher is credited through the ledger (moveEarnings).
+    ...earningsStandIn({
+      pending: (orgId) => (orgId === INSTALL.publisherId ? state.publisher.pending : undefined),
+      add: (_orgId, pending, total) => {
+        state.publisher.pending += pending;
+        state.publisher.total += total;
+      },
+      write: (row) => state.earnings.push(row),
+    }),
     creditBalance: {
       updateMany: async (args: {
         where: { orgId: string; balanceCents: { gte: bigint } };
@@ -241,18 +254,6 @@ function makeDb(startBalance: bigint) {
         return { count: 1 };
       },
     },
-    publisherProfile: {
-      update: async (args: {
-        data: {
-          totalRevenueCents: { increment: bigint };
-          pendingPayoutCents: { increment: bigint };
-        };
-      }) => {
-        state.publisher.total += args.data.totalRevenueCents.increment;
-        state.publisher.pending += args.data.pendingPayoutCents.increment;
-        return {};
-      },
-    },
     agentInstall: {
       update: async (args: {
         data: { totalRequests: { increment: bigint }; totalSpentCents: { increment: bigint } };
@@ -298,6 +299,7 @@ test("charging debits the buyer and opens a PENDING revenue row", async () => {
 
   // Nothing has accrued to the publisher yet — the agent has not run.
   assert.equal(state.publisher.pending, 0n);
+  assert.deepEqual(state.earnings, []);
   assert.equal(state.installCounters.requests, 0n);
 });
 
@@ -358,6 +360,19 @@ test("settling accrues the creator's share and counts the delivered request", as
   assert.equal(state.revenue.get("rev_1")!.status, "settled");
   assert.equal(state.publisher.pending, 225n);
   assert.equal(state.publisher.total, 225n);
+  // The credit has its ledger row: a sale, against the revenue row the
+  // buyer's debit points at, with the balance it left.
+  assert.deepEqual(state.earnings, [
+    {
+      orgId: "org_pub",
+      amountCents: 225n,
+      type: "sale",
+      referenceId: "rev_1",
+      description: "Sale: Support Triage",
+      balanceAfter: 225n,
+    },
+  ]);
+  assert.equal(state.earnings[0]!.referenceId, state.ledger[0]!.referenceId);
   assert.equal(state.installCounters.requests, 1n);
   assert.equal(state.installCounters.spent, 250n);
   assert.equal(state.listingCounters.requests, 1n);
@@ -374,7 +389,38 @@ test("settling twice credits the publisher once", async () => {
 
   assert.deepEqual(second, { settled: false, reason: "not_pending" });
   assert.equal(state.publisher.pending, 225n);
+  assert.equal(state.earnings.length, 1);
   assert.equal(state.installCounters.requests, 1n);
+});
+
+test("a second sale's row carries the balance the two sales left", async () => {
+  const { state, tx, charge } = await charged();
+  await settleMarketplaceRequest(tx as never, { charge });
+  const next = await chargeMarketplaceRequest(tx as never, { install: INSTALL });
+  assert.equal(next.ok, true);
+  if (!next.ok) throw new Error("unreachable");
+  await settleMarketplaceRequest(tx as never, { charge: next.charge as MarketplaceCharge });
+
+  assert.equal(state.publisher.pending, 450n);
+  assert.deepEqual(
+    state.earnings.map((row) => [row.type, row.amountCents, row.referenceId, row.balanceAfter]),
+    [
+      ["sale", 225n, "rev_1", 225n],
+      ["sale", 225n, "rev_2", 450n],
+    ],
+  );
+});
+
+test("settling for a publisher with no profile throws, so the settle rolls back", async () => {
+  const { state, tx, charge } = await charged();
+  await assert.rejects(
+    settleMarketplaceRequest(tx as never, {
+      charge: { ...charge, install: { ...charge.install, publisherId: "org_gone" } },
+    }),
+    /No publisher profile to credit a sale to \(organization org_gone\)/,
+  );
+  assert.equal(state.publisher.pending, 0n);
+  assert.deepEqual(state.earnings, []);
 });
 
 // ============================================
@@ -392,6 +438,8 @@ test("a failed request is refunded in full and never becomes revenue", async () 
   assert.equal(state.balance, 1_000n);
   assert.equal(state.revenue.get("rev_1")!.status, "refunded");
   assert.equal(state.publisher.pending, 0n);
+  // The publisher was never credited, so their ledger has nothing to undo.
+  assert.deepEqual(state.earnings, []);
   assert.equal(state.installCounters.requests, 0n);
 
   const refundEntry = state.ledger.at(-1)!;
@@ -430,6 +478,7 @@ test("a settled charge cannot then be refunded, and vice versa", async () => {
   });
   assert.deepEqual(lateSettle, { settled: false, reason: "not_pending" });
   assert.equal(refundedFirst.state.publisher.pending, 0n);
+  assert.deepEqual(refundedFirst.state.earnings, []);
 });
 
 // ============================================

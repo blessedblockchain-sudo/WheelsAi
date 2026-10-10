@@ -6,6 +6,7 @@
 
 import type { ApiKeySpendTx } from "../services/apiKeySpend.js";
 import type { EscrowTx } from "../services/jobEscrow.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 export type Row = Record<string, unknown>;
 
@@ -63,7 +64,12 @@ export function makeJobsDb(opts: JobsDbOptions = {}) {
     ]),
     profiles: new Set<string>(opts.noProfile ? [] : ["org_pub"]),
     ledger: [] as Row[],
+    /** What each publisher is owed. An organization that was never credited has no entry. */
     accrued: new Map<string, bigint>(),
+    /** Each publisher's lifetime revenue. */
+    lifetime: new Map<string, bigint>(),
+    /** The publishers' ledger: one row for every change to what they are owed. */
+    earnings: [] as EarningsRow[],
     apiKeys: new Map(Object.entries(opts.apiKeys ?? {})),
     /** `${apiKeyId}|${day ISO}` -> cents spent. */
     spendWindows: new Map<string, bigint>(),
@@ -78,7 +84,31 @@ export function makeJobsDb(opts: JobsDbOptions = {}) {
       const before = Object.fromEntries(Object.keys(data).map((k) => [k, row[k]]));
       undo.push(() => Object.assign(row, before));
     };
+    // A publisher is credited through the ledger (moveEarnings).
+    const earnings = earningsStandIn({
+      pending: (orgId) => (state.profiles.has(orgId) ? (state.accrued.get(orgId) ?? 0n) : undefined),
+      add: (orgId, pending, total) => {
+        const before = { accrued: state.accrued.get(orgId), lifetime: state.lifetime.get(orgId) };
+        state.accrued.set(orgId, (before.accrued ?? 0n) + pending);
+        state.lifetime.set(orgId, (before.lifetime ?? 0n) + total);
+        undo.push(() => {
+          const accrued = (state.accrued.get(orgId) ?? 0n) - pending;
+          const lifetime = (state.lifetime.get(orgId) ?? 0n) - total;
+          // An organization this transaction was the first to credit goes
+          // back to having no entry.
+          if (before.accrued === undefined && accrued === 0n) state.accrued.delete(orgId);
+          else state.accrued.set(orgId, accrued);
+          if (before.lifetime === undefined && lifetime === 0n) state.lifetime.delete(orgId);
+          else state.lifetime.set(orgId, lifetime);
+        });
+      },
+      write: (row) => {
+        state.earnings.push(row);
+        undo.push(() => void state.earnings.splice(state.earnings.indexOf(row), 1));
+      },
+    });
     return {
+      ...earnings,
       creditBalance: {
         async updateMany({ where, data }) {
           const bal = state.balances.get(where.orgId) ?? 0n;
@@ -217,15 +247,6 @@ export function makeJobsDb(opts: JobsDbOptions = {}) {
           if (spent === undefined || spent > where.spentCents.lte) return { count: 0 };
           state.spendWindows.set(key, spent + data.spentCents.increment);
           undo.push(() => state.spendWindows.set(key, (state.spendWindows.get(key) ?? 0n) - data.spentCents.increment));
-          return { count: 1 };
-        },
-      },
-      publisherProfile: {
-        async updateMany({ where, data }) {
-          if (!state.profiles.has(where.orgId)) return { count: 0 };
-          const inc = data.pendingPayoutCents.increment;
-          state.accrued.set(where.orgId, (state.accrued.get(where.orgId) ?? 0n) + inc);
-          undo.push(() => state.accrued.set(where.orgId, (state.accrued.get(where.orgId) ?? 0n) - inc));
           return { count: 1 };
         },
       },

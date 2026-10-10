@@ -42,6 +42,7 @@
 import { installAccess } from "./subscriptionAccess.js";
 import { orgHoldsToken, tokenRequiredMessage, type TokenAccessDb } from "./tokenAccess.js";
 import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
+import { moveEarnings, type EarningsLedgerTx } from "./earningsLedger.js";
 
 /** Platform's cut in basis points. Mirrors PLATFORM_FEE_SHARE = 0.1. */
 export const PLATFORM_FEE_BPS = 1000n;
@@ -494,21 +495,13 @@ export async function chargeMarketplaceRequest(
 // Settle / refund
 // ============================================
 
-export interface MeteringSettlePrisma {
+/** With what moveEarnings needs: the settle credits the publisher through the ledger. */
+export interface MeteringSettlePrisma extends EarningsLedgerTx {
   marketplaceRevenue: {
     updateMany(args: {
       where: { id: string; status: string };
       data: { status: string; settledAt?: Date };
     }): Promise<{ count: number }>;
-  };
-  publisherProfile: {
-    update(args: {
-      where: { orgId: string };
-      data: {
-        totalRevenueCents: { increment: bigint };
-        pendingPayoutCents: { increment: bigint };
-      };
-    }): Promise<unknown>;
   };
   agentInstall: {
     update(args: {
@@ -639,13 +632,18 @@ export async function settleMarketplaceRequest(
     creatorCents,
   });
 
-  await tx.publisherProfile.update({
-    where: { orgId: args.charge.install.publisherId },
-    data: {
-      totalRevenueCents: { increment: publisherCents },
-      pendingPayoutCents: { increment: publisherCents },
-    },
+  const credited = await moveEarnings(tx, {
+    orgId: args.charge.install.publisherId,
+    amountCents: publisherCents,
+    type: "sale",
+    referenceId: args.charge.revenueId,
+    description: `Sale: ${args.charge.install.listingTitle}`,
   });
+  // Thrown, so the transaction (the claim above with it) rolls back, as an
+  // update of a missing profile did.
+  if (!credited.moved) {
+    throw new Error(`No publisher profile to credit a sale to (organization ${args.charge.install.publisherId})`);
+  }
 
   await tx.agentInstall.update({
     where: { id: args.charge.install.installId },

@@ -27,6 +27,7 @@ import type { PublicChatTranscript } from "../services/publicChat.js";
 import type { UseListingRow } from "../services/useListing.js";
 import type { UseBillingLicence, UseMeteringTx } from "../services/useMetering.js";
 import { beginUseMetering, type BeginUseMeteringArgs } from "../services/useMeteringProduction.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 export const NOW = new Date("2026-10-10T12:00:00.000Z");
 export const DAY = "2026-10-10";
@@ -186,6 +187,8 @@ export interface PaidHarness {
     ledger: Array<{ type: string; amountCents: bigint; description: string }>;
     revenue: Array<{ id: string; status: string; gross: bigint; creator: bigint; platformFee: bigint }>;
     publisherPending: bigint;
+    /** The creator's ledger: one row for every change to what they are owed. */
+    earnings: EarningsRow[];
     keySpent: bigint;
     useModelCostMicros: bigint;
   };
@@ -213,6 +216,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     ledger: [],
     revenue: [],
     publisherPending: 0n,
+    earnings: [],
     keySpent: options.keyCaps?.spent ?? 0n,
     useModelCostMicros: 0n,
   };
@@ -267,12 +271,14 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
         return {};
       },
     },
-    publisherProfile: {
-      update: async (args: { data: { pendingPayoutCents: { increment: bigint } } }) => {
-        money.publisherPending += args.data.pendingPayoutCents.increment;
-        return {};
+    // The creator is credited through the ledger (moveEarnings).
+    ...earningsStandIn({
+      pending: () => money.publisherPending,
+      add: (_orgId, pending) => {
+        money.publisherPending += pending;
       },
-    },
+      write: (row) => money.earnings.push(row),
+    }),
     agentInstall: { update: async () => ({}) },
     agentListing: {
       update: async (args: { data: { useModelCostMicros?: { increment: bigint } } }) => {

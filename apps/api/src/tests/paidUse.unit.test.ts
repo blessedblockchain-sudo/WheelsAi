@@ -129,6 +129,12 @@ test("a delivered answer is one charge and one settle, in the order of the eleve
     ["settled"],
   );
   assert.equal(h.money.publisherPending, 4n);
+  // The creator's ledger row for the use: a sale of 4 cents, leaving 4.
+  assert.deepEqual(
+    h.money.earnings.map((row) => [row.type, row.amountCents, row.description, row.balanceAfter]),
+    [["sale", 4n, "Sale: Support Bot", 4n]],
+  );
+  assert.equal(h.money.earnings[0]!.referenceId, h.money.revenue[0]!.id);
   assert.equal(h.allowanceCounted(), 1);
 });
 

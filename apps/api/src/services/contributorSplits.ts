@@ -18,11 +18,26 @@
  * accruedAt null. accruePendingContributorEarnings adds it to the
  * recipient's balance later, exactly once, outside the money transaction
  * (which must never insert a profile: a unique violation would abort it).
+ *
+ * Every amount added to a balance here goes through moveEarnings, which
+ * writes the ledger row for it in the same transaction.
  */
+
+import { moveEarnings, type EarningsLedgerTx } from "./earningsLedger.js";
 
 export const BPS_DENOMINATOR = 10_000n;
 
+/** A share could not be added to its recipient's balance: the profile is gone. */
+export class ContributorShareError extends Error {
+  constructor(public readonly orgId: string) {
+    super(`No publisher profile to credit a contributor share to (organization ${orgId})`);
+    this.name = "ContributorShareError";
+  }
+}
+
 export interface ContributorSplitTx {
+  /** The ledger row of each share that is added to a balance. */
+  earningsTransaction: EarningsLedgerTx["earningsTransaction"];
   agentListing: {
     findUnique(args: { where: { id: string }; select: { agentId: true } }): Promise<{ agentId: string } | null>;
   };
@@ -40,12 +55,9 @@ export interface ContributorSplitTx {
       select: { id: true; name: true };
     }): Promise<{ id: string; name: string } | null>;
   };
-  publisherProfile: {
+  /** What moveEarnings needs, and the check that the recipient has a profile. */
+  publisherProfile: EarningsLedgerTx["publisherProfile"] & {
     findUnique(args: { where: { orgId: string }; select: { orgId: true } }): Promise<{ orgId: string } | null>;
-    update(args: {
-      where: { orgId: string };
-      data: { totalRevenueCents: { increment: bigint }; pendingPayoutCents: { increment: bigint } };
-    }): Promise<unknown>;
   };
   contributorEarning: {
     create(args: {
@@ -172,10 +184,16 @@ export async function splitCreatorRevenue(
       ? await tx.publisherProfile.findUnique({ where: { orgId: org.id }, select: { orgId: true } })
       : null;
     if (org && profile) {
-      await tx.publisherProfile.update({
-        where: { orgId: org.id },
-        data: { totalRevenueCents: { increment: amountCents }, pendingPayoutCents: { increment: amountCents } },
+      const moved = await moveEarnings(tx as ContributorSplitTx, {
+        orgId: org.id,
+        amountCents,
+        type: "contributor_share",
+        referenceId: args.revenueId,
+        description: "Contributor share of a sale",
       });
+      // The profile was there a statement ago. Thrown, so the whole money
+      // transaction rolls back, as an update of a missing row did.
+      if (!moved.moved) throw new ContributorShareError(org.id);
     }
     await tx.contributorEarning.create({
       data: {
@@ -204,18 +222,12 @@ export async function splitCreatorRevenue(
 // Accruing owed shares
 // ============================================
 
-export interface PendingAccrualTx {
+export interface PendingAccrualTx extends EarningsLedgerTx {
   contributorEarning: {
     updateMany(args: {
       where: { id: string; accruedAt: null };
       data: { accruedAt: Date; recipientOrgId: string };
     }): Promise<{ count: number }>;
-  };
-  publisherProfile: {
-    update(args: {
-      where: { orgId: string };
-      data: { totalRevenueCents: { increment: bigint }; pendingPayoutCents: { increment: bigint } };
-    }): Promise<unknown>;
   };
 }
 
@@ -245,13 +257,15 @@ export async function accruePendingContributorEarnings(
         data: { accruedAt: now, recipientOrgId: args.recipientOrgId },
       });
       if (claimed.count !== 1) return false;
-      await tx.publisherProfile.update({
-        where: { orgId: args.recipientOrgId },
-        data: {
-          totalRevenueCents: { increment: earning.amountCents },
-          pendingPayoutCents: { increment: earning.amountCents },
-        },
+      const moved = await moveEarnings(tx, {
+        orgId: args.recipientOrgId,
+        amountCents: earning.amountCents,
+        type: "contributor_share",
+        referenceId: earning.id,
+        description: "Contributor share owed from an earlier sale",
       });
+      // Thrown, so the claim above rolls back and the share stays owed.
+      if (!moved.moved) throw new ContributorShareError(args.recipientOrgId);
       return true;
     });
     if (credited) {

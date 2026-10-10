@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// A test stand-in that imports types only: no app module loads before the env below is set.
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
+
 process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
 process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? "error";
 process.env.DATABASE_URL =
@@ -98,6 +101,9 @@ function makeWorld(opts: {
     balance: opts.balance ?? 10_000n,
     ledger: [] as Row[],
     revenue: [] as Row[],
+    /** What the publisher is owed, and the ledger rows that add up to it. */
+    accrued: 0n,
+    earnings: [] as EarningsRow[],
     tasks: (opts.tasks ?? []).map((task) => ({ ...task })) as Row[],
     /** Every write to scheduled tasks, and whether it ran inside a transaction. */
     taskWrites: [] as Row[],
@@ -105,6 +111,15 @@ function makeWorld(opts: {
     open: 0,
   };
   let seq = 0;
+
+  // The publisher is credited through the ledger (moveEarnings).
+  const earnings = earningsStandIn({
+    pending: () => state.accrued,
+    add: (_orgId, pending) => {
+      state.accrued += pending;
+    },
+    write: (row) => state.earnings.push(row),
+  });
 
   const models: Row = {
     agentListing: {
@@ -182,8 +197,17 @@ function makeWorld(opts: {
         return row;
       },
     },
-    // No profile row: the reputation recalculation stops at its first read.
-    publisherProfile: { findUnique: async () => null, update: async () => ({}) },
+    // No profile row for the reputation recalculation, which stops at its
+    // first read (a read of the whole row). The ledger's read of the balance
+    // names the one column it wants and is answered.
+    publisherProfile: {
+      ...earnings.publisherProfile,
+      findUnique: async (args: Row) =>
+        args?.select?.pendingPayoutCents ? earnings.publisherProfile.findUnique(args as never) : null,
+      // The listing and install counts the publisher's stats keep: no money.
+      update: async () => ({}),
+    },
+    earningsTransaction: earnings.earningsTransaction,
     // What pauseAgentSchedules writes (services/agentOwnSchedule.ts).
     scheduledTask: {
       updateMany: async ({ where, data }: Row) => {
@@ -210,6 +234,8 @@ function makeWorld(opts: {
         balance: state.balance,
         ledger: state.ledger,
         revenue: state.revenue,
+        accrued: state.accrued,
+        earnings: state.earnings,
         tasks: state.tasks,
       });
       state.open += 1;
@@ -270,6 +296,12 @@ test("two concurrent subscribes on an active install with no subscription charge
   assert.equal(world.state.ledger.length, 1);
   assert.equal(world.state.revenue.length, 1);
   assert.equal(world.state.subs.length, 1);
+  // The publisher was credited once too, with one ledger row for the month.
+  assert.equal(world.state.accrued, 900n);
+  assert.deepEqual(
+    world.state.earnings.map((row) => [row.type, row.amountCents, row.referenceId, row.balanceAfter]),
+    [["subscription", 900n, world.state.revenue[0]!.id, 900n]],
+  );
 });
 
 test("two concurrent resubscribes on an active install with a lapsed subscription charge once", async () => {

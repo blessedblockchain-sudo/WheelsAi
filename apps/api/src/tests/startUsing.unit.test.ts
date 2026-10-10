@@ -3,6 +3,8 @@ import test from "node:test";
 
 import "./unitEnv.js";
 
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
+
 // Starting and stopping USE of a creator's agent, against an in-memory
 // database. What these pin: no copy of the agent is ever written into the
 // buyer's organization, a price per use charges nothing at start, a month is
@@ -103,9 +105,20 @@ function makeWorld(opts: {
     ledger: [] as Row[],
     revenue: [] as Row[],
     accrued: 0n,
+    /** The publisher's ledger: one row for every change to what they are owed. */
+    earnings: [] as EarningsRow[],
     taskWrites: [] as Row[],
   };
   let seq = 0;
+
+  // The publisher is credited through the ledger (moveEarnings).
+  const earnings = earningsStandIn({
+    pending: () => state.accrued,
+    add: (_orgId, pending) => {
+      state.accrued += pending;
+    },
+    write: (row) => state.earnings.push(row),
+  });
 
   const models: Row = {
     agentListing: {
@@ -189,14 +202,17 @@ function makeWorld(opts: {
         return row;
       },
     },
-    // No profile row: the reputation recalculation stops at its first read.
+    // No profile row for the reputation recalculation, which stops at its
+    // first read (a read of the whole row). The ledger's read of the balance
+    // names the one column it wants and is answered.
     publisherProfile: {
-      findUnique: async () => null,
-      update: async ({ data }: Row) => {
-        state.accrued += data.pendingPayoutCents?.increment ?? 0n;
-        return {};
-      },
+      ...earnings.publisherProfile,
+      findUnique: async (args: Row) =>
+        args?.select?.pendingPayoutCents ? earnings.publisherProfile.findUnique(args as never) : null,
+      // The listing and install counts the publisher's stats keep: no money.
+      update: async () => ({}),
     },
+    earningsTransaction: earnings.earningsTransaction,
     scheduledTask: {
       updateMany: async (args: Row) => {
         state.taskWrites.push(args);
@@ -221,6 +237,7 @@ function makeWorld(opts: {
         ledger: state.ledger,
         revenue: state.revenue,
         accrued: state.accrued,
+        earnings: state.earnings,
       });
       try {
         return await fn(models);
@@ -311,6 +328,13 @@ test("starting on a monthly price charges the first 30 days once, with its ledge
   assert.equal(world.state.revenue[0]!.type, "subscription");
   assert.equal(world.state.revenue[0]!.installId, world.state.installs[0]!.id);
   assert.equal(world.state.accrued, 810n);
+  // The publisher's own ledger row for the month, against the same revenue
+  // row as the buyer's debit, with the balance it left.
+  assert.deepEqual(
+    world.state.earnings.map((row) => [row.orgId, row.type, row.amountCents, row.referenceId, row.balanceAfter]),
+    [[PUBLISHER, "subscription", 810n, world.state.revenue[0]!.id, 810n]],
+  );
+  assert.equal(world.state.ledger[0]!.referenceId, world.state.revenue[0]!.id);
   assert.equal(world.state.installs[0]!.kind, "use");
   assert.equal(world.state.installs[0]!.clonedAgentId, null);
   assert.equal(world.state.installs[0]!.acceptedPricingModel, "monthly");
@@ -605,6 +629,7 @@ const moneyAndRows = (world: World) =>
     ledger: world.state.ledger,
     revenue: world.state.revenue,
     accrued: world.state.accrued,
+    earnings: world.state.earnings,
     agents: world.state.agents,
     counters: [world.state.listing.totalInstalls, world.state.listing.activeInstalls],
   });

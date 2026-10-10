@@ -4,11 +4,13 @@ import test from "node:test";
 import {
   accruePendingContributorEarnings,
   computeContributorSplit,
+  ContributorShareError,
   splitCreatorRevenue,
   type ContributorSplitTx,
   type PendingAccrualTx,
 } from "../services/contributorSplits.js";
 import { settleMarketplaceRequest, type MarketplaceCharge } from "../services/marketplaceMetering.js";
+import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // Contributor revenue splits (claims ledger M7). Accepted contributors are
 // paid their share of creator revenue into the org they own, at the moment
@@ -34,7 +36,18 @@ function makeTx(opts: { contributors: Contributor[]; ownedOrgs: Record<string, s
     (opts.profiles ?? ["org_pub"]).map((orgId) => [orgId, { total: 0n, pending: 0n }]),
   );
   const earnings: Array<Record<string, unknown>> = [];
+  // The ledger rows: one for every amount added to a balance.
+  const ledger: EarningsRow[] = [];
   const tx: ContributorSplitTx = {
+    ...earningsStandIn({
+      pending: (orgId) => profiles.get(orgId)?.pending,
+      add: (orgId, pending, total) => {
+        const p = profiles.get(orgId)!;
+        p.pending += pending;
+        p.total += total;
+      },
+      write: (row) => ledger.push(row),
+    }),
     agentListing: { findUnique: async () => ({ agentId: "agent_1" }) },
     agentContributor: {
       findMany: async ({ where }) =>
@@ -46,16 +59,6 @@ function makeTx(opts: { contributors: Contributor[]; ownedOrgs: Record<string, s
       findFirst: async ({ where }) =>
         opts.ownedOrgs[where.ownerId] ? { id: opts.ownedOrgs[where.ownerId]!, name: "Contributor Org" } : null,
     },
-    publisherProfile: {
-      findUnique: async ({ where }) => (profiles.has(where.orgId) ? { orgId: where.orgId } : null),
-      update: async ({ where, data }) => {
-        const p = profiles.get(where.orgId);
-        if (!p) throw new Error(`no profile for ${where.orgId}`);
-        p.total += data.totalRevenueCents.increment;
-        p.pending += data.pendingPayoutCents.increment;
-        return p;
-      },
-    },
     contributorEarning: {
       create: async ({ data }) => {
         earnings.push(data);
@@ -63,14 +66,14 @@ function makeTx(opts: { contributors: Contributor[]; ownedOrgs: Record<string, s
       },
     },
   };
-  return { tx, profiles, earnings };
+  return { tx, profiles, earnings, ledger };
 }
 
 const NOW = new Date("2026-10-06T12:00:00Z");
 const ARGS = { revenueId: "rev_1", listingId: "lst_1", publisherId: "org_pub", creatorCents: 900n, now: NOW };
 
 test("accepted contributors are paid into the org they own, with an earning row each", async () => {
-  const { tx, profiles, earnings } = makeTx({
+  const { tx, profiles, earnings, ledger } = makeTx({
     contributors: [
       { id: "c1", userId: "u_alice", revenueShareBps: 2_000, accepted: true },
       { id: "c2", userId: "u_bob", revenueShareBps: 1_000, accepted: true },
@@ -88,6 +91,30 @@ test("accepted contributors are paid into the org they own, with an earning row 
   );
   assert.equal(profiles.get("org_alice")!.pending, 180n);
   assert.equal(profiles.get("org_bob")!.pending, 90n);
+  // A share is income: it counts toward the contributor's lifetime revenue too.
+  assert.equal(profiles.get("org_alice")!.total, 180n);
+  assert.equal(profiles.get("org_bob")!.total, 90n);
+  // One ledger row per share, against the revenue row it came from. The
+  // publisher's own amount is the caller's to credit: no row for it here.
+  assert.deepEqual(ledger, [
+    {
+      orgId: "org_alice",
+      amountCents: 180n,
+      type: "contributor_share",
+      referenceId: "rev_1",
+      description: "Contributor share of a sale",
+      balanceAfter: 180n,
+    },
+    {
+      orgId: "org_bob",
+      amountCents: 90n,
+      type: "contributor_share",
+      referenceId: "rev_1",
+      description: "Contributor share of a sale",
+      balanceAfter: 90n,
+    },
+  ]);
+  assert.equal(profiles.get("org_pub")!.pending, 0n);
   assert.deepEqual(earnings[0], {
     revenueId: "rev_1",
     agentId: "agent_1",
@@ -103,7 +130,7 @@ test("accepted contributors are paid into the org they own, with an earning row 
 });
 
 test("a contributor without a payout profile is still owed their share: recorded, not kept by the publisher", async () => {
-  const { tx, earnings, profiles } = makeTx({
+  const { tx, earnings, profiles, ledger } = makeTx({
     contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 2_000, accepted: true }],
     ownedOrgs: { u_alice: "org_alice" },
     profiles: ["org_pub"],
@@ -121,10 +148,38 @@ test("a contributor without a payout profile is still owed their share: recorded
     { amount: 180n, org: "org_alice", accruedAt: null },
   );
   assert.equal(profiles.has("org_alice"), false);
+  // Nothing was added to any balance, so the ledger has no row.
+  assert.deepEqual(ledger, []);
+});
+
+test("a profile that vanishes between the check and the credit throws, so the money transaction rolls back", async () => {
+  const { tx, earnings, ledger } = makeTx({
+    contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 2_000, accepted: true }],
+    ownedOrgs: { u_alice: "org_alice" },
+    profiles: ["org_pub", "org_alice"],
+  });
+  // The check sees the profile; the credit a statement later does not.
+  const gone: ContributorSplitTx = {
+    ...tx,
+    publisherProfile: { ...tx.publisherProfile, updateMany: async () => ({ count: 0 }) },
+  };
+  // The ledger's own read after a failed credit finds no profile either.
+  const findUnique = tx.publisherProfile.findUnique as (args: {
+    where: { orgId: string };
+    select: object;
+  }) => Promise<unknown>;
+  gone.publisherProfile.findUnique = (async (args: { where: { orgId: string }; select: object }) =>
+    "orgId" in args.select ? findUnique(args) : null) as ContributorSplitTx["publisherProfile"]["findUnique"];
+  await assert.rejects(
+    splitCreatorRevenue(gone, ARGS),
+    (err: unknown) => err instanceof ContributorShareError && err.orgId === "org_alice",
+  );
+  assert.deepEqual(ledger, []);
+  assert.equal(earnings.length, 0);
 });
 
 test("pending invitations and shares owned by the publisher pay nothing; a contributor with no org yet is owed", async () => {
-  const { tx, earnings } = makeTx({
+  const { tx, earnings, ledger } = makeTx({
     contributors: [
       { id: "c1", userId: "u_pending", revenueShareBps: 5_000, accepted: false },
       { id: "c2", userId: "u_owner", revenueShareBps: 2_000, accepted: true },
@@ -137,6 +192,7 @@ test("pending invitations and shares owned by the publisher pay nothing; a contr
   assert.deepEqual(result.pending, [{ userId: "u_orgless", recipientOrgId: null, amountCents: 90n }]);
   assert.equal(earnings.length, 1);
   assert.equal(earnings[0]!.accruedAt, null);
+  assert.deepEqual(ledger, []);
 });
 
 // An invitation sent to an email has no account until it is accepted;
@@ -158,20 +214,23 @@ test("a contributor row bound to no account is skipped", async () => {
 function makeAccrual(rows: Array<{ id: string; amountCents: bigint; accruedAt?: Date | null }>, profiles: string[]) {
   const earnings = new Map(rows.map((r) => [r.id, { accruedAt: null as Date | null, recipientOrgId: null as string | null, ...r }]));
   const balances = new Map(profiles.map((orgId) => [orgId, 0n]));
+  const totals = new Map(profiles.map((orgId) => [orgId, 0n]));
+  const ledger: EarningsRow[] = [];
   const tx: PendingAccrualTx = {
+    ...earningsStandIn({
+      pending: (orgId) => balances.get(orgId),
+      add: (orgId, pending, total) => {
+        balances.set(orgId, balances.get(orgId)! + pending);
+        totals.set(orgId, totals.get(orgId)! + total);
+      },
+      write: (row) => ledger.push(row),
+    }),
     contributorEarning: {
       updateMany: async ({ where, data }) => {
         const row = earnings.get(where.id);
         if (!row || row.accruedAt !== null) return { count: 0 };
         Object.assign(row, data);
         return { count: 1 };
-      },
-    },
-    publisherProfile: {
-      update: async ({ where, data }) => {
-        if (!balances.has(where.orgId)) throw new Error("Record to update not found");
-        balances.set(where.orgId, balances.get(where.orgId)! + data.pendingPayoutCents.increment);
-        return {};
       },
     },
   };
@@ -190,11 +249,11 @@ function makeAccrual(rows: Array<{ id: string; amountCents: bigint; accruedAt?: 
       }
     },
   };
-  return { earnings, balances, deps };
+  return { earnings, balances, totals, ledger, deps };
 }
 
 test("owed shares are credited once the payout profile exists, each exactly once", async () => {
-  const { earnings, balances, deps } = makeAccrual(
+  const { earnings, balances, totals, ledger, deps } = makeAccrual(
     [
       { id: "e1", amountCents: 180n },
       { id: "e2", amountCents: 90n },
@@ -212,21 +271,54 @@ test("owed shares are credited once the payout profile exists, each exactly once
   assert.equal(a.accrued + b.accrued, 2);
   assert.equal(a.amountCents + b.amountCents, 270n);
   assert.equal(balances.get("org_alice"), 270n);
+  assert.equal(totals.get("org_alice"), 270n);
+  // One ledger row per earning credited, against the earning itself, each
+  // with the balance it left; the two callers wrote two rows between them.
+  assert.deepEqual(
+    [...ledger].sort((x, y) => String(x.referenceId).localeCompare(String(y.referenceId))).map((row) => ({
+      ...row,
+      balanceAfter: undefined,
+    })),
+    [
+      {
+        orgId: "org_alice",
+        amountCents: 180n,
+        type: "contributor_share",
+        referenceId: "e1",
+        description: "Contributor share owed from an earlier sale",
+        balanceAfter: undefined,
+      },
+      {
+        orgId: "org_alice",
+        amountCents: 90n,
+        type: "contributor_share",
+        referenceId: "e2",
+        description: "Contributor share owed from an earlier sale",
+        balanceAfter: undefined,
+      },
+    ],
+  );
+  // The rows add up to the balance, and the last one written carries it.
+  assert.equal(ledger.reduce((sum, row) => sum + row.amountCents, 0n), 270n);
+  assert.equal(ledger.at(-1)!.balanceAfter, 270n);
+  assert.equal(ledger[0]!.balanceAfter, ledger[0]!.amountCents);
   assert.equal(earnings.get("e1")!.accruedAt, NOW);
   assert.equal(earnings.get("e1")!.recipientOrgId, "org_alice");
 
   // Nothing is left, and a repeat credits nothing.
   assert.deepEqual(await accruePendingContributorEarnings(deps, args), { accrued: 0, amountCents: 0n });
   assert.equal(balances.get("org_alice"), 270n);
+  assert.equal(ledger.length, 2);
 });
 
 test("a share that cannot be credited stays owed", async () => {
-  const { earnings, deps } = makeAccrual([{ id: "e1", amountCents: 180n }], []);
+  const { earnings, ledger, deps } = makeAccrual([{ id: "e1", amountCents: 180n }], []);
   await assert.rejects(
     accruePendingContributorEarnings(deps, { userId: "u_alice", recipientOrgId: "org_alice", now: NOW }),
-    /not found/,
+    (err: unknown) => err instanceof ContributorShareError && err.orgId === "org_alice",
   );
   assert.equal(earnings.get("e1")!.accruedAt, null);
+  assert.deepEqual(ledger, []);
 });
 
 test("a surface without contributor tables leaves everything with the publisher", async () => {
@@ -234,7 +326,7 @@ test("a surface without contributor tables leaves everything with the publisher"
 });
 
 test("settling a per-request charge credits the publisher only with what contributors leave", async () => {
-  const { tx, profiles } = makeTx({
+  const { tx, profiles, ledger } = makeTx({
     contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 5_000, accepted: true }],
     ownedOrgs: { u_alice: "org_alice" },
     profiles: ["org_pub", "org_alice"],
@@ -265,10 +357,30 @@ test("settling a per-request charge credits the publisher only with what contrib
   assert.deepEqual(result, { settled: true, creatorCents: 225n });
   assert.equal(profiles.get("org_alice")!.pending, 112n);
   assert.equal(profiles.get("org_pub")!.pending, 113n);
+  // Two organizations, two rows, both against the one revenue row: the
+  // contributor's share first, then the publisher's sale.
+  assert.deepEqual(ledger, [
+    {
+      orgId: "org_alice",
+      amountCents: 112n,
+      type: "contributor_share",
+      referenceId: "rev_9",
+      description: "Contributor share of a sale",
+      balanceAfter: 112n,
+    },
+    {
+      orgId: "org_pub",
+      amountCents: 113n,
+      type: "sale",
+      referenceId: "rev_9",
+      description: "Sale: Support Triage",
+      balanceAfter: 113n,
+    },
+  ]);
 });
 
 test("job revenue on an agent with no listing pays its contributors by the agent itself", async () => {
-  const { tx, profiles, earnings } = makeTx({
+  const { tx, profiles, earnings, ledger } = makeTx({
     contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 2_500, accepted: true }],
     ownedOrgs: { u_alice: "org_alice" },
     profiles: ["org_pub", "org_alice"],
@@ -289,4 +401,8 @@ test("job revenue on an agent with no listing pays its contributors by the agent
   assert.equal(earnings.length, 1);
   assert.equal(earnings[0]!.agentId, "agent_9");
   assert.equal(earnings[0]!.revenueId, "rev_job");
+  assert.deepEqual(
+    ledger.map((row) => [row.orgId, row.amountCents, row.type, row.referenceId, row.balanceAfter]),
+    [["org_alice", 450n, "contributor_share", "rev_job", 450n]],
+  );
 });

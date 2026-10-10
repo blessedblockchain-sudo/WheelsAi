@@ -37,6 +37,7 @@
  */
 import { splitRevenue } from "./marketplaceMetering.js";
 import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
+import { moveEarnings, type EarningsLedgerTx } from "./earningsLedger.js";
 import {
   PAST_DUE_GRACE_DAYS,
   SUBSCRIPTION_PERIOD_DAYS,
@@ -97,7 +98,8 @@ export interface ListingForBilling {
   sells?: string;
 }
 
-export interface SubscriptionTx {
+/** With what moveEarnings needs: each period credits the publisher through the ledger. */
+export interface SubscriptionTx extends EarningsLedgerTx {
   creditBalance: {
     updateMany(args: {
       where: { orgId: string; balanceCents: { gte: bigint } };
@@ -133,15 +135,6 @@ export interface SubscriptionTx {
         settledAt: Date;
       };
     }): Promise<{ id: string }>;
-  };
-  publisherProfile: {
-    update(args: {
-      where: { orgId: string };
-      data: {
-        totalRevenueCents: { increment: bigint };
-        pendingPayoutCents: { increment: bigint };
-      };
-    }): Promise<unknown>;
   };
   agentSubscription: {
     findUnique(args: {
@@ -203,13 +196,18 @@ async function chargePeriod(
     publisherId: args.listing.publisherId,
     creatorCents: split.creatorCents,
   });
-  await tx.publisherProfile.update({
-    where: { orgId: args.listing.publisherId },
-    data: {
-      totalRevenueCents: { increment: publisherCents },
-      pendingPayoutCents: { increment: publisherCents },
-    },
+  const credited = await moveEarnings(tx, {
+    orgId: args.listing.publisherId,
+    amountCents: publisherCents,
+    type: "subscription",
+    referenceId: revenue.id,
+    description: `${args.type === "subscription" ? "Subscription" : "Renewal"}: ${args.listing.title}`,
   });
+  // Thrown, so the period's charge rolls back, as an update of a missing
+  // profile did.
+  if (!credited.moved) {
+    throw new Error(`No publisher profile to credit a subscription to (organization ${args.listing.publisherId})`);
+  }
   const after = await tx.creditBalance.findUnique({ where: { orgId: args.buyerId } });
   await tx.creditTransaction.create({
     data: {

@@ -41,6 +41,7 @@
  * surface.
  */
 import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
+import { moveEarnings, type EarningsLedgerTx } from "./earningsLedger.js";
 import { splitRevenue } from "./marketplaceMetering.js";
 
 export const JOB_REVIEW_WINDOW_MS = 72 * 60 * 60 * 1000;
@@ -154,7 +155,8 @@ export interface JobTerms {
 
 type DateBound = { gt: Date } | { lte: Date };
 
-export interface EscrowTx {
+/** With what moveEarnings needs: a settled job credits the publisher through the ledger. */
+export interface EscrowTx extends EarningsLedgerTx {
   creditBalance: {
     updateMany(args: {
       where: { orgId: string; balanceCents: { gte: bigint } };
@@ -230,12 +232,6 @@ export interface EscrowTx {
         modelCostCents: bigint;
       };
     }): Promise<unknown>;
-  };
-  publisherProfile: {
-    updateMany(args: {
-      where: { orgId: string };
-      data: { totalRevenueCents: { increment: bigint }; pendingPayoutCents: { increment: bigint } };
-    }): Promise<{ count: number }>;
   };
 }
 
@@ -537,13 +533,16 @@ async function settleEscrow(tx: EscrowTx, jobId: string, now: Date): Promise<big
         })
       : { publisherCents: creatorCents };
 
-  const accrued = await tx.publisherProfile.updateMany({
-    where: { orgId: revenue.publisherId },
-    data: { totalRevenueCents: { increment: publisherCents }, pendingPayoutCents: { increment: publisherCents } },
+  const accrued = await moveEarnings(tx, {
+    orgId: revenue.publisherId,
+    amountCents: publisherCents,
+    type: "job",
+    referenceId: revenue.id,
+    description: "Job settled",
   });
   // Thrown, so the whole transaction (the job's completion and the escrow
   // claim above) rolls back and the escrow is still held.
-  if (accrued.count !== 1) throw new JobSettlementError(revenue.publisherId);
+  if (!accrued.moved) throw new JobSettlementError(revenue.publisherId);
   return creatorCents;
 }
 

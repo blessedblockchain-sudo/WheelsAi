@@ -126,12 +126,27 @@ test("accepting a submitted job pays the creator exactly once", async () => {
   assert.equal(job(jobId).rating, 5); // clamped to 1-5
   assert.equal(escrow(jobId).status, "settled");
   assert.equal(state.accrued.get("org_pub"), 1_800n);
+  assert.equal(state.lifetime.get("org_pub"), 1_800n);
+  // The credit has its ledger row: a job, against the escrow's revenue
+  // row, with the balance it left.
+  assert.deepEqual(state.earnings, [
+    {
+      orgId: "org_pub",
+      amountCents: 1_800n,
+      type: "job",
+      referenceId: escrow(jobId).id,
+      description: "Job settled",
+      balanceAfter: 1_800n,
+    },
+  ]);
+  assert.ok(escrow(jobId).id);
 
   await assert.rejects(
     inTransaction((tx) => completeJob(tx, { jobId, buyerId: "org_buyer", now: at(3) })),
     JobTransitionError,
   );
   assert.equal(state.accrued.get("org_pub"), 1_800n);
+  assert.equal(state.earnings.length, 1);
 });
 
 test("only the buyer can accept, and only once the job is submitted", async () => {
@@ -481,12 +496,17 @@ test("settling for a publisher with no payout profile rolls back whole: the escr
   assert.equal(db.job(db.jobId).rating, null);
   assert.equal(db.escrow(db.jobId).status, "pending");
   assert.equal(db.state.accrued.size, 0);
+  assert.equal(db.state.earnings.length, 0);
 
   // Once the profile exists the same accept settles, once.
   db.state.profiles.add("org_pub");
   await db.inTransaction((tx) => completeJob(tx, { jobId: db.jobId, buyerId: "org_buyer", now: at(3) }));
   assert.equal(db.escrow(db.jobId).status, "settled");
   assert.equal(db.state.accrued.get("org_pub"), 1_800n);
+  assert.deepEqual(
+    db.state.earnings.map((row) => [row.type, row.amountCents, row.referenceId, row.balanceAfter]),
+    [["job", 1_800n, db.escrow(db.jobId).id, 1_800n]],
+  );
 });
 
 // ============================================
@@ -574,6 +594,11 @@ test("model usage recorded with the submit comes out of the creator's share at s
   assert.equal(row.modelCostCents, 12n);
   assert.equal((row.platformFeeCents as bigint) + (row.creatorAmountCents as bigint), row.grossAmountCents);
   assert.equal(db.state.accrued.get("org_pub"), 1_788n);
+  // The ledger row is for what the creator was credited, after the model cost.
+  assert.deepEqual(
+    db.state.earnings.map((r) => [r.type, r.amountCents, r.referenceId, r.balanceAfter]),
+    [["job", 1_788n, row.id, 1_788n]],
+  );
 });
 
 test("model cost can never take more than the creator's share", async () => {
@@ -593,7 +618,36 @@ test("model cost can never take more than the creator's share", async () => {
   );
   assert.equal(creatorCents, 0n);
   assert.equal(db.escrow(db.jobId).platformFeeCents, 2_000n);
-  assert.equal(db.state.accrued.get("org_pub"), 0n);
+  assert.equal(db.escrow(db.jobId).status, "settled");
+  // Nothing was owed, so the balance did not change and the ledger has no
+  // row for it: a change of zero is not written.
+  assert.equal(db.state.accrued.get("org_pub") ?? 0n, 0n);
+  assert.equal(db.state.lifetime.get("org_pub") ?? 0n, 0n);
+  assert.deepEqual(db.state.earnings, []);
+});
+
+test("a job that leaves the creator nothing still needs a payout profile to settle", async () => {
+  const db = await hired({ noProfile: true });
+  await db.inTransaction((tx) => startJob(tx, { jobId: db.jobId, now: at(0.1) }));
+  await db.inTransaction((tx) =>
+    submitJob(tx, {
+      jobId: db.jobId,
+      output: {},
+      checkResults: [],
+      now: at(0.5),
+      modelUsage: { inputTokens: 1, outputTokens: 1, costCents: 999_999n },
+    }),
+  );
+  // A credit of zero writes nothing, but a missing profile is still an
+  // answer the settle must not ignore: the escrow stays held.
+  await assert.rejects(
+    db.inTransaction((tx) => completeJob(tx, { jobId: db.jobId, buyerId: "org_buyer", now: at(1) })),
+    (err: unknown) => err instanceof JobSettlementError && err.publisherId === "org_pub",
+  );
+  assert.equal(db.job(db.jobId).status, "submitted");
+  assert.equal(db.escrow(db.jobId).status, "pending");
+  assert.equal(db.state.accrued.size, 0);
+  assert.deepEqual(db.state.earnings, []);
 });
 
 test("a failed job that used the platform's model still refunds the buyer in full", async () => {
@@ -615,6 +669,7 @@ test("a failed job that used the platform's model still refunds the buyer in ful
   assert.equal(db.job(db.jobId).modelCostCents, 1n);
   assert.equal(db.escrow(db.jobId).status, "refunded");
   assert.equal(db.state.accrued.size, 0);
+  assert.deepEqual(db.state.earnings, []);
 });
 
 test("a worker that gives up its lease lets another take the job over at once", async () => {

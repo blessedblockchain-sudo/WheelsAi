@@ -1,47 +1,64 @@
 /**
- * W2 money keystone proof: ONE creator payout end-to-end on devnet
- * through the PRODUCTION request + executor code.
+ * ONE creator payout end to end on devnet, through the PRODUCTION request
+ * and worker code.
  *
  * Cycle:
- *   1. Seed the publisher's pendingPayoutCents (the ONE documented seam —
- *      the real money-in caller, per-request marketplace metering, is a
- *      separate keystone; the audit pairs metering + executor and this
- *      proves the executor leg, exactly as D10 seeded usage/trades).
- *   2. requestPayout(publisherId, "crypto_sol", recipient) — production
- *      code: RESERVES the balance into a CreatorPayout row in one
- *      transaction (the fund-loss fix), zeroing pendingPayoutCents.
- *   3. Fund the HKDF platform payout wallet from the devnet payer.
- *   4. runPayoutExecutorTick over buildPayoutExecutorTickDeps — the exact
- *      objects the BullMQ worker runs: claim (pending -> processing),
- *      build + sign + record-sig-before-broadcast + confirm + complete.
- *   5. Verify from primary sources: row completed with a signature;
- *      pendingPayoutCents stayed 0 (reservation consumed, not stranded);
- *      on-chain the recipient received exactly the quoted lamports.
+ *   1. Seed the creator's earnings through the earnings ledger (the ONE
+ *      documented seam: the real money-in caller, a sale, is proven
+ *      elsewhere). The seed is a ledger row like any other, so the balance
+ *      still adds up from its rows.
+ *   2. requestPayoutProduction (routes/payoutBindings.ts): the route's own
+ *      checks, then ONE transaction that creates the payout row and
+ *      reserves the amount.
+ *   3. Fund the paying wallet from the devnet payer (SOL payouts only; for
+ *      USDC put devnet USDC in it by hand, and watch the payout wait as
+ *      `wallet_low` until you do).
+ *   4. runPayoutExecutorTick over buildPayoutExecutorTickDeps, wired as
+ *      queues/payout-executor.queue.ts wires it: the checks, the claim that
+ *      stores the signed transfer BEFORE it is sent, the send, and on later
+ *      runs what the chain says became of the signature.
+ *   5. Verify from primary sources: the row is completed with a signature;
+ *      the earnings are what they were before the seed (the reservation was
+ *      consumed, not given back); on the chain the receiving wallet got
+ *      exactly the base units stored on the row.
  *
  * Usage:
- *   npx tsx scripts/run-payout-devnet.ts <publisherOrgId> [amountUsd]
+ *   npx tsx scripts/run-payout-devnet.ts <publisherOrgId> [amountUsd] [crypto_sol|crypto_usdc]
  *
  * Env: DATABASE_URL, WALLET_MASTER_KEY, SOLANA_NETWORK=devnet,
- *      PAYOUT_SOL_PRICE_USD, PAYOUT_PAYER_KEYPAIR (default
- *      ../../.devnet/payer.json).
+ *      SOLANA_RPC_URL, and for a SOL payout a price: SOL_PRICE_SOURCE=pyth,
+ *      or on a local chain SOL_PRICE_SOURCE=static with SOL_PRICE_STATIC_USD.
+ *      There is no fallback price: with SOL_PRICE_SOURCE=off a SOL payout is
+ *      not offered and this script stops before it reserves anything.
+ *      PAYOUT_MAX_PER_PAYOUT_USD, PAYOUT_MAX_PER_DAY_USD,
+ *      PAYOUT_PLATFORM_MAX_PER_DAY_USD and PAYOUT_MAX_ATTEMPTS apply as they
+ *      do in the API. PAYOUT_PAYER_KEYPAIR (default ../../.devnet/payer.json)
+ *      is the devnet wallet that fills the paying wallet.
  */
 
 import { readFileSync } from "node:fs";
 
-import {
-  Keypair,
-  PublicKey,
-  SystemProgram,
-  Transaction,
-} from "@solana/web3.js";
+import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
 
+import { env } from "../src/config/env.js";
 import { prisma } from "../src/lib/prisma.js";
-import { getSolanaConnection } from "../src/lib/solana.js";
-import { buildPayoutExecutorTickDeps } from "../src/services/buildPayoutExecutorTickDeps.js";
+import { ensureSolanaCluster, getSolanaConnection } from "../src/lib/solana.js";
+import { usdcMintForNetwork } from "../src/lib/solanaAssets.js";
+import { requestPayoutProduction } from "../src/routes/payoutBindings.js";
+import {
+  buildPayoutExecutorTickDeps,
+  type PayoutExecutorDb,
+} from "../src/services/buildPayoutExecutorTickDeps.js";
+import { readSignatureFate } from "../src/services/buildSignatureFateDeps.js";
+import { getSolQuote, getSolQuoteMarginBps } from "../src/services/buildSolPriceDeps.js";
+import { moveEarnings } from "../src/services/earningsLedger.js";
+import {
+  PAYING_WALLET_KEEP_LAMPORTS,
+  PAYOUT_FEE_LAMPORTS,
+  solPayoutAmount,
+} from "../src/services/payoutExecutor.js";
 import { derivePayoutKeypair } from "../src/services/payoutKeypair.js";
-import { requestPayout } from "../src/services/marketplace.js";
 import { runPayoutExecutorTick } from "../src/services/runPayoutExecutorTick.js";
-import { USDC_MINT } from "../src/services/x402.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,17 +68,23 @@ function fail(msg: string): never {
 }
 
 async function main() {
-  const [, , publisherId, amountArg] = process.argv;
+  const [, , publisherId, amountArg, methodArg] = process.argv;
   if (!publisherId) {
-    console.error("usage: npx tsx scripts/run-payout-devnet.ts <publisherOrgId> [amountUsd]");
+    console.error(
+      "usage: npx tsx scripts/run-payout-devnet.ts <publisherOrgId> [amountUsd] [crypto_sol|crypto_usdc]",
+    );
     process.exit(2);
   }
   const amountUsd = amountArg ? Number(amountArg) : 50;
-  const amountCents = Math.round(amountUsd * 100);
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0) fail(`amountUsd is not a number above zero: ${amountArg}`);
+  const amountCents = BigInt(Math.round(amountUsd * 100));
+  const method = methodArg ?? "crypto_sol";
+  if (method !== "crypto_sol" && method !== "crypto_usdc") fail(`unknown method ${method}`);
 
-  const masterKey = process.env.WALLET_MASTER_KEY;
-  if (!masterKey) fail("WALLET_MASTER_KEY required");
-  const solPrice = Number(process.env.PAYOUT_SOL_PRICE_USD ?? "200");
+  if (env.SOLANA_NETWORK !== "devnet") fail("this proof runs on devnet only: set SOLANA_NETWORK=devnet");
+  const cluster = await ensureSolanaCluster();
+  if (!cluster.ok) fail(`the node behind SOLANA_RPC_URL is not usable: ${cluster.reason}`);
+  if (!env.WALLET_MASTER_KEY) fail("WALLET_MASTER_KEY required");
 
   const payer = Keypair.fromSecretKey(
     Uint8Array.from(
@@ -73,92 +96,128 @@ async function main() {
       ),
     ),
   );
-  const payoutWallet = derivePayoutKeypair(masterKey);
+  const payoutWallet = derivePayoutKeypair(env.WALLET_MASTER_KEY);
   const recipient = Keypair.generate(); // a fresh creator wallet to receive
   const connection = getSolanaConnection();
 
-  console.log(`payout wallet (HKDF): ${payoutWallet.publicKey.toBase58()}`);
+  console.log(`paying wallet (HKDF): ${payoutWallet.publicKey.toBase58()}`);
   console.log(`recipient (creator):  ${recipient.publicKey.toBase58()}`);
 
-  // ---- 1. seed the publisher's pending balance (documented seam) ----
-  // Upsert a minimal PublisherProfile if the org doesn't have one — part
-  // of the documented seed, standing in for the real money-in caller.
+  // ---- 1. seed the creator's earnings (documented seam) ----
   const org = await prisma.organization.findUnique({ where: { id: publisherId } });
   if (!org) fail(`no organization ${publisherId}`);
   await prisma.publisherProfile.upsert({
     where: { orgId: publisherId },
-    update: { pendingPayoutCents: BigInt(amountCents) },
+    update: {},
     create: {
       orgId: publisherId,
       displayName: org.name,
       slug: `payout-proof-${publisherId.slice(0, 8)}`,
-      pendingPayoutCents: BigInt(amountCents),
     },
   });
-  console.log(`\n[1] seeded pendingPayoutCents = ${amountCents} (documented money-in seam)`);
-
-  // ---- 2. request the payout (production reservation) ----
-  const requested = await requestPayout(
-    publisherId,
-    "crypto_sol",
-    recipient.publicKey.toBase58(),
+  const before = await prisma.publisherProfile.findUnique({ where: { orgId: publisherId } });
+  const balanceBefore = before?.pendingPayoutCents ?? 0n;
+  const seeded = await prisma.$transaction((tx) =>
+    moveEarnings(tx, {
+      orgId: publisherId,
+      amountCents,
+      type: "sale",
+      referenceId: null,
+      description: "[devnet-proof] seeded earnings",
+    }),
   );
-  const payoutId = requested.payout.id;
-  const afterReserve = await prisma.publisherProfile.findUnique({
-    where: { orgId: publisherId },
+  if (!seeded.moved) fail(`could not seed the earnings: ${seeded.reason}`);
+  console.log(`\n[1] seeded ${amountCents} cents of earnings through the ledger (balance ${seeded.balanceAfterCents})`);
+
+  // ---- 2. request the payout (production checks and reservation) ----
+  const requested = await requestPayoutProduction({
+    orgId: publisherId,
+    payoutMethod: method,
+    payoutAddress: recipient.publicKey.toBase58(),
+    amountCents,
   });
+  if (requested.outcome !== "requested") {
+    fail(`the request was refused: ${JSON.stringify(requested.refusal)}`);
+  }
+  const payoutId = requested.payout.id;
   console.log(`[2] requested payout ${payoutId}`);
-  console.log(`    pendingPayoutCents after reserve: ${afterReserve?.pendingPayoutCents} (must be 0)`);
-  if (Number(afterReserve?.pendingPayoutCents) !== 0) {
-    fail("reservation did not zero pendingPayoutCents");
+  console.log(`    earnings after the reservation: ${requested.remainingCents} (must be ${balanceBefore})`);
+  if (requested.remainingCents !== balanceBefore) {
+    fail("the reservation did not take exactly the amount requested");
   }
 
-  // ---- 3. fund the payout wallet on devnet ----
-  const balance = await connection.getBalance(payoutWallet.publicKey);
-  const needLamports = Math.round((amountUsd / solPrice) * 1e9) + 10_000_000; // amount + fees/rent buffer
-  if (balance < needLamports) {
-    const top = needLamports - balance;
-    console.log(`[3] funding payout wallet with ${top} lamports from payer…`);
-    const { blockhash, lastValidBlockHeight } =
-      await connection.getLatestBlockhash("confirmed");
-    const fund = new Transaction({
-      feePayer: payer.publicKey,
-      blockhash,
-      lastValidBlockHeight,
-    }).add(
-      SystemProgram.transfer({
-        fromPubkey: payer.publicKey,
-        toPubkey: payoutWallet.publicKey,
-        lamports: top,
-      }),
-    );
-    fund.sign(payer);
-    const sig = await connection.sendRawTransaction(fund.serialize());
-    await connection.confirmTransaction(
-      { signature: sig, blockhash, lastValidBlockHeight },
-      "confirmed",
-    );
-    console.log(`    funded: ${sig}`);
+  // ---- 3. fund the paying wallet on devnet ----
+  let expectedRaw: bigint | null = null;
+  if (method === "crypto_sol") {
+    // The amount the worker will work out a moment from now may differ by
+    // a little (a newer price), so this is filled with room to spare.
+    const quoted = solPayoutAmount(await getSolQuote(), amountCents, getSolQuoteMarginBps());
+    if (!quoted.ok) fail(`no SOL price, so no amount: ${quoted.detail}`);
+    const needLamports =
+      (quoted.lamports * 11n) / 10n + PAYOUT_FEE_LAMPORTS + PAYING_WALLET_KEEP_LAMPORTS;
+    const balance = BigInt(await connection.getBalance(payoutWallet.publicKey));
+    if (balance < needLamports) {
+      const top = needLamports - balance;
+      console.log(`[3] funding the paying wallet with ${top} lamports from the payer…`);
+      const { blockhash, lastValidBlockHeight } =
+        await connection.getLatestBlockhash("confirmed");
+      const fund = new Transaction({
+        feePayer: payer.publicKey,
+        blockhash,
+        lastValidBlockHeight,
+      }).add(
+        SystemProgram.transfer({
+          fromPubkey: payer.publicKey,
+          toPubkey: payoutWallet.publicKey,
+          lamports: top,
+        }),
+      );
+      fund.sign(payer);
+      const sig = await connection.sendRawTransaction(fund.serialize());
+      await connection.confirmTransaction(
+        { signature: sig, blockhash, lastValidBlockHeight },
+        "confirmed",
+      );
+      console.log(`    funded: ${sig}`);
+    } else {
+      console.log(`[3] the paying wallet is already funded (${balance} lamports)`);
+    }
   } else {
-    console.log(`[3] payout wallet already funded (${balance} lamports)`);
+    expectedRaw = amountCents * 10_000n;
+    console.log(
+      `[3] USDC payout: the paying wallet needs ${expectedRaw} base units of devnet USDC and some SOL for the fee. ` +
+        "It is filled by hand; while it is short the payout waits as wallet_low.",
+    );
   }
-  const recipientBefore = await connection.getBalance(recipient.publicKey);
+  const recipientBefore = BigInt(await connection.getBalance(recipient.publicKey));
 
-  // ---- 4. run the production executor tick ----
+  // ---- 4. run the production worker ----
   const deps = buildPayoutExecutorTickDeps({
-    prisma,
+    prisma: prisma as unknown as PayoutExecutorDb,
     connection,
     payoutWallet,
-    solPriceUsd: solPrice,
-    usdcMint: new PublicKey(USDC_MINT.devnet.toBase58()),
+    usdcMint: usdcMintForNetwork(env.SOLANA_NETWORK),
+    maxAttempts: env.PAYOUT_MAX_ATTEMPTS,
+    platformMaxPerDayUsd: env.PAYOUT_PLATFORM_MAX_PER_DAY_USD,
+    checkCluster: ensureSolanaCluster,
+    getSolQuote,
+    solQuoteMarginBps: getSolQuoteMarginBps,
+    readSignatureFate,
+    log: (event) => console.log(`    ${JSON.stringify(event)}`),
   });
-  let tickResult = await runPayoutExecutorTick({ limit: 10 }, deps);
-  console.log(`\n[4] executor tick: ${JSON.stringify(tickResult)}`);
-  // If the first tick left it pending_confirmation, run again after a beat.
-  for (let i = 0; i < 5 && tickResult.pending > 0; i++) {
+  console.log(`\n[4] worker runs`);
+  // The first run claims and sends. Later runs ask the chain what became of
+  // the signature: the payout completes once the transfer is confirmed.
+  for (let i = 0; i < 20; i++) {
+    const tick = await runPayoutExecutorTick({ limit: env.PAYOUT_EXECUTOR_BATCH_SIZE }, deps);
+    console.log(`    run ${i + 1}: ${JSON.stringify(tick)}`);
+    const row = await prisma.creatorPayout.findUnique({ where: { id: payoutId } });
+    if (!row) fail("the payout row is gone");
+    if (row.status === "completed" || row.status === "failed" || row.status === "cancelled") break;
+    if (row.status === "pending" && row.waitingReason) {
+      console.log(`    waiting: ${row.waitingReason}`);
+    }
     await sleep(3_000);
-    tickResult = await runPayoutExecutorTick({ limit: 10 }, deps);
-    console.log(`    retry tick: ${JSON.stringify(tickResult)}`);
   }
 
   // ---- 5. verify ----
@@ -166,16 +225,25 @@ async function main() {
     where: { id: payoutId },
   });
   if (!finalRow || finalRow.status !== "completed" || !finalRow.txSignature) {
-    fail(`payout not completed: ${JSON.stringify(finalRow)}`);
+    fail(
+      `payout not completed: ${JSON.stringify(finalRow, (_key, value) =>
+        typeof value === "bigint" ? value.toString() : value,
+      )}`,
+    );
   }
   const finalProfile = await prisma.publisherProfile.findUnique({
     where: { orgId: publisherId },
   });
   console.log(`\n[5] verification`);
-  console.log(`    row status: ${finalRow.status}, tx: ${finalRow.txSignature}`);
-  console.log(`    pendingPayoutCents: ${finalProfile?.pendingPayoutCents} (stays 0 — reservation consumed)`);
-  if (Number(finalProfile?.pendingPayoutCents) !== 0) {
-    fail("pendingPayoutCents was wrongly restored on a SUCCESSFUL payout");
+  console.log(`    row status: ${finalRow.status}, tx: ${finalRow.txSignature}, attempts: ${finalRow.attemptCount}`);
+  console.log(`    earnings: ${finalProfile?.pendingPayoutCents} (stays ${balanceBefore}: the reservation was consumed)`);
+  if (finalProfile?.pendingPayoutCents !== balanceBefore) {
+    fail("the earnings were wrongly given back on a SUCCESSFUL payout");
+  }
+  if (!finalRow.amountRaw) fail("the row does not say what was sent");
+  const sentRaw = BigInt(finalRow.amountRaw);
+  if (expectedRaw !== null && sentRaw !== expectedRaw) {
+    fail(`the row says ${sentRaw} base units were sent, not ${expectedRaw}`);
   }
 
   const parsed = await connection.getParsedTransaction(finalRow.txSignature, {
@@ -185,12 +253,22 @@ async function main() {
   if (!parsed || parsed.meta?.err) {
     fail(`on-chain tx missing or errored: ${JSON.stringify(parsed?.meta?.err)}`);
   }
-  const recipientAfter = await connection.getBalance(recipient.publicKey);
-  const received = recipientAfter - recipientBefore;
-  const expectedLamports = Math.round((amountUsd / solPrice) * 1e9);
-  console.log(`    recipient received: ${received} lamports (expected ${expectedLamports})`);
-  if (received !== expectedLamports) {
-    fail("recipient did not receive the quoted amount");
+  if (method === "crypto_sol") {
+    const recipientAfter = BigInt(await connection.getBalance(recipient.publicKey));
+    const received = recipientAfter - recipientBefore;
+    console.log(
+      `    recipient received: ${received} lamports (the row says ${sentRaw}, at ${finalRow.quotePriceMicroUsd} micro-dollars per SOL from ${finalRow.quoteSource})`,
+    );
+    if (received !== sentRaw) {
+      fail("the recipient did not receive the amount stored on the row");
+    }
+  } else {
+    const balances = parsed.meta?.postTokenBalances ?? [];
+    const got = balances.find((b) => b.owner === recipient.publicKey.toBase58());
+    console.log(`    recipient USDC after the transfer: ${got?.uiTokenAmount.amount ?? "not found"} base units`);
+    if (!got || BigInt(got.uiTokenAmount.amount) !== sentRaw) {
+      fail("the recipient did not receive the amount stored on the row");
+    }
   }
 
   console.log(`\n✅ creator payout proven end-to-end on devnet`);

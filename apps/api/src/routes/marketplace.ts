@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth, requireJwtAuth, requireRole, requireScope, requireSpend } from "../middleware/auth.js";
+import { requireAuth, requireScope, requireSpend } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import {
@@ -30,10 +30,6 @@ import {
   getMyInstalls,
   checkInstallStatus,
   getPublisherRevenue,
-  requestPayout,
-  PayoutReservationConflictError,
-  getPayoutHistory,
-  cancelPayoutRequest,
   getMySubscriptions,
   setSubscriptionCancelAtPeriodEnd,
   SubscriptionNotFoundError,
@@ -41,14 +37,6 @@ import {
 } from "../services/marketplace.js";
 import { InsufficientCreditsError, SubscriptionClaimLostError } from "../services/marketplaceSubscriptions.js";
 import { TokenRequiredError } from "../services/tokenAccess.js";
-import { env } from "../config/env.js";
-import {
-  payoutAvailability,
-  payoutNotCancellableMessage,
-  PAYOUT_NOT_CANCELLABLE_CODE,
-  PAYOUTS_UNAVAILABLE_CODE,
-  PAYOUTS_UNAVAILABLE_MESSAGE,
-} from "../services/payoutRequests.js";
 
 const logger = createLogger("marketplace-routes");
 
@@ -675,7 +663,7 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
   }
 
   // ==========================================
-  // Revenue & Payout Routes
+  // Revenue Routes
   // ==========================================
 
   /**
@@ -691,86 +679,6 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
-  /**
-   * POST /payouts - Request a payout
-   */
-  // Human sessions only: the caller supplies the payout address, so an
-  // API key (which bypasses role checks) must never be able to redirect a
-  // creator's earnings.
-  app.post(
-    "/payouts",
-    { preHandler: [requireAuth, requireJwtAuth, requireRole("owner", "admin")] },
-    async (request, reply) => {
-      const { orgId } = request.auth!;
-
-      // A request reserves the creator's earnings into the payout row, and
-      // only the payout worker moves that row on. While it is not running
-      // (the rule GET /api/capabilities answers `payouts.available` with)
-      // refuse here, before anything is read, reserved or written.
-      if (!payoutAvailability(() => env).available) {
-        return reply
-          .status(503)
-          .send({ error: PAYOUTS_UNAVAILABLE_CODE, message: PAYOUTS_UNAVAILABLE_MESSAGE });
-      }
-
-      const body = z
-        .object({
-          payoutMethod: z.enum(["credits", "crypto_usdc", "crypto_sol"]),
-          payoutAddress: z.string().optional(),
-        })
-        .parse(request.body);
-
-      try {
-        const result = await requestPayout(orgId, body.payoutMethod, body.payoutAddress);
-        return reply.status(201).send(result);
-      } catch (error: any) {
-        if (error instanceof PayoutReservationConflictError) {
-          return reply.status(409).send({ error: error.code, message: error.message });
-        }
-        logger.error({ error, orgId }, "Failed to request payout");
-        return reply.badRequest(error.message);
-      }
-    }
-  );
-
-  /**
-   * POST /payouts/:id/cancel - Take back a payout that is still pending
-   */
-  // The same people who may request a payout may cancel one. It is NOT
-  // refused while payouts are off: that is exactly when a pending payout
-  // has to be cancellable, or its amount stays reserved.
-  app.post(
-    "/payouts/:id/cancel",
-    { preHandler: [requireAuth, requireJwtAuth, requireRole("owner", "admin")] },
-    async (request, reply) => {
-      const { orgId } = request.auth!;
-      const notFound = { error: "payout_not_found", message: "Payout not found" };
-
-      const params = z.object({ id: z.string().uuid() }).safeParse(request.params);
-      if (!params.success) return reply.status(404).send(notFound);
-
-      const result = await cancelPayoutRequest(orgId, params.data.id);
-      if (result.outcome === "not_found") return reply.status(404).send(notFound);
-      if (result.outcome === "not_cancellable") {
-        return reply.status(409).send({
-          error: PAYOUT_NOT_CANCELLABLE_CODE,
-          message: payoutNotCancellableMessage(result.status),
-        });
-      }
-      return { payout: result.payout };
-    }
-  );
-
-  /**
-   * GET /payouts - Get payout history
-   */
-  app.get(
-    "/payouts",
-    { preHandler: [requireAuth] },
-    async (request) => {
-      const { orgId } = request.auth!;
-      const payouts = await getPayoutHistory(orgId);
-      return { payouts };
-    }
-  );
+  // Requesting, cancelling and listing payouts: routes/payouts.ts, mounted
+  // under this same prefix (index.ts).
 };

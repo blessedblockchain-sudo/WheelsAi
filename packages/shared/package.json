@@ -25,6 +25,10 @@
     "./revenue": {
       "types": "./src/revenue.ts",
       "default": "./src/revenue.ts"
+    },
+    "./payouts": {
+      "types": "./src/payouts.ts",
+      "default": "./src/payouts.ts"
     }
   },
   "scripts": {

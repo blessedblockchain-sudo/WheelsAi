@@ -13,136 +13,30 @@ import {
   payoutsRunning,
   payoutView,
   PAYOUTS_UNAVAILABLE_MESSAGE,
-  type CancelPayoutDb,
-  type PayoutRow,
 } from "../services/payoutRequests.js";
+import { PAYOUT_WAITING_MESSAGE } from "../services/payoutSentences.js";
+import {
+  fakeDb,
+  ORG,
+  OTHER_ORG,
+  PAYOUT,
+  payoutApp,
+  payoutRow,
+  routeDepsOver,
+  standInClaim,
+  type LedgerRow,
+} from "./payoutFakes.js";
 
 // A payout requested while the payout worker is off used to stay "pending"
 // for ever, with the creator's earnings reserved inside it and no way to
 // take it back. A request is now refused before anything is reserved while
 // payouts are not running, and a pending payout can be cancelled: the row
 // becomes cancelled and its amount returns to the earnings in one
-// transaction, racing the worker's claim with exactly one winner. The
-// worker's side of the race is tested with the worker; here its claim is a
-// stand-in, one compare-and-set.
-
-const ORG = "7f5c1d9e-2a3b-4c5d-8e9f-0a1b2c3d4e5f";
-const OTHER_ORG = "11111111-2222-4333-8444-555555555555";
-const PAYOUT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-
-function payoutRow(over: Partial<PayoutRow> = {}): PayoutRow {
-  return {
-    id: PAYOUT,
-    publisherId: ORG,
-    amountCents: 2500n,
-    payoutMethod: "credits",
-    payoutAddress: null,
-    status: "pending",
-    txSignature: null,
-    grossRevenueCents: 2778n,
-    platformFeeCents: 278n,
-    periodStart: new Date("2026-09-10T00:00:00Z"),
-    periodEnd: new Date("2026-10-10T00:00:00Z"),
-    requestedAt: new Date("2026-10-10T00:00:00Z"),
-    processedAt: null,
-    failureReason: null,
-    ...over,
-  };
-}
-
-/** An earnings_transactions row, as the earnings ledger writes it. */
-type LedgerRow = {
-  orgId: string;
-  amountCents: bigint;
-  type: string;
-  referenceId: string | null;
-  description: string | null;
-  balanceAfter: bigint;
-};
-
-/**
- * An in-memory creator_payouts + publisher_profiles + earnings_transactions
- * set. Transactions are serialised the way row locks serialise them and
- * commit or roll back as a whole; every balance write is counted.
- */
-function fakeDb(rows: PayoutRow[], balances: Record<string, bigint>) {
-  const state = {
-    payouts: rows.map((r) => ({ ...r })),
-    balances: { ...balances },
-    ledger: [] as LedgerRow[],
-    balanceWrites: 0,
-    payoutWrites: 0,
-  };
-  type Draft = { payouts: PayoutRow[]; balances: Record<string, bigint>; ledger: LedgerRow[] };
-
-  const client = (draft: () => Draft) => ({
-    creatorPayout: {
-      findFirst: async ({ where }: any) =>
-        draft().payouts.find((p) => p.id === where.id && p.publisherId === where.publisherId) ?? null,
-      updateMany: async ({ where, data }: any) => {
-        const statuses: string[] = typeof where.status === "string" ? [where.status] : where.status.in;
-        const hit = draft().payouts.filter(
-          (p) =>
-            p.id === where.id &&
-            (where.publisherId === undefined || p.publisherId === where.publisherId) &&
-            statuses.includes(p.status),
-        );
-        for (const p of hit) Object.assign(p, data);
-        state.payoutWrites += hit.length;
-        return { count: hit.length };
-      },
-    },
-    publisherProfile: {
-      // What the earnings ledger uses to put an amount back. A restore is
-      // not income: it must never add to lifetime revenue.
-      updateMany: async ({ where, data }: any) => {
-        const d = draft();
-        assert.deepEqual(Object.keys(data), ["pendingPayoutCents"], "a restore changes the balance only");
-        assert.equal(where.pendingPayoutCents, undefined, "a restore is not conditional on the balance");
-        if (!(where.orgId in d.balances)) return { count: 0 };
-        d.balances[where.orgId] = d.balances[where.orgId]! + data.pendingPayoutCents.increment;
-        state.balanceWrites += 1;
-        return { count: 1 };
-      },
-      findUnique: async ({ where }: any) => {
-        const d = draft();
-        return where.orgId in d.balances ? { pendingPayoutCents: d.balances[where.orgId]! } : null;
-      },
-      update: async () => {
-        throw new Error("the balance changes only through the earnings ledger");
-      },
-    },
-    earningsTransaction: {
-      create: async ({ data }: any) => {
-        draft().ledger.push({ ...data });
-        return data;
-      },
-    },
-  });
-
-  let chain: Promise<unknown> = Promise.resolve();
-  const db = {
-    // Outside a transaction a write lands at once, as a single statement does.
-    ...client(() => state),
-    $transaction: (fn: (tx: any) => Promise<unknown>) => {
-      const run = chain.then(async () => {
-        const draft: Draft = {
-          payouts: state.payouts.map((p) => ({ ...p })),
-          balances: { ...state.balances },
-          ledger: [...state.ledger],
-        };
-        const result = await fn(client(() => draft));
-        state.payouts = draft.payouts; // commit
-        state.balances = draft.balances;
-        state.ledger = draft.ledger;
-        return result;
-      });
-      chain = run.catch(() => undefined);
-      return run;
-    },
-  };
-  return { state, db: db as unknown as CancelPayoutDb };
-}
+// transaction, racing the worker's claim with exactly one winner.
+//
+// The request itself is in payoutReservation.unit.test.ts (the core) and
+// payoutRoutes.unit.test.ts (the route). The worker's side of the race is
+// tested with the worker; here its claim is a stand-in, one compare-and-set.
 
 /** The one ledger row a cancelled payout leaves: its amount, put back. */
 function cancelledRow(balanceAfter: bigint, over: Partial<LedgerRow> = {}): LedgerRow {
@@ -154,20 +48,6 @@ function cancelledRow(balanceAfter: bigint, over: Partial<LedgerRow> = {}): Ledg
     description: "Payout cancelled, amount returned",
     balanceAfter,
     ...over,
-  };
-}
-
-/**
- * The worker's claim, as a stand-in: one compare-and-set, pending →
- * processing. The worker's own claim is tested with the worker.
- */
-function standInClaim(db: CancelPayoutDb) {
-  return async (payoutId: string): Promise<boolean> => {
-    const res = await (db as any).creatorPayout.updateMany({
-      where: { id: payoutId, status: "pending" },
-      data: { status: "processing" },
-    });
-    return res.count === 1;
   };
 }
 
@@ -476,11 +356,13 @@ test("a payout in the list keeps every field it had, plus cancellable, and a pla
     "processedAt",
     "failureReason",
     "cancellable",
+    "message",
   ]);
   assert.equal(failed.amountCents, 2500);
   assert.equal(failed.grossRevenueCents, 2778);
   assert.equal(failed.platformFeeCents, 278);
   assert.equal(failed.failureReason, payoutFailureMessage(raw));
+  assert.equal(failed.message, payoutFailureMessage(raw), "a failed payout's message is its failure sentence");
   assert.ok(!JSON.stringify(failed).includes("InstructionError"));
 
   // It did not fail: no sentence, whatever the column holds.
@@ -491,263 +373,248 @@ test("a payout in the list keeps every field it had, plus cancellable, and a pla
   assert.equal(payoutView(payoutRow({ status: "failed" })).failureReason, payoutFailureMessage(null));
 });
 
-// ---------------------------------------------------------------
-// Routes
-// ---------------------------------------------------------------
-
-async function marketplaceApp(orgId = ORG) {
-  const Fastify = (await import("fastify")).default;
-  const sensible = await import("@fastify/sensible");
-  const { marketplaceRoutes } = await import("../routes/marketplace.js");
-  const app = Fastify();
-  await app.register(sensible.default);
-  app.decorateRequest("auth", null);
-  app.addHook("onRequest", async (request) => {
-    (request as unknown as { auth: unknown }).auth = { userId: "u1", orgId, type: "jwt", role: "owner" };
-  });
-  await app.register(marketplaceRoutes);
-  return app;
-}
-
-/** Swaps the global Prisma models the payout routes touch, and the two payout settings. */
-async function withWorld<T>(
-  input: { rows: PayoutRow[]; balances: Record<string, bigint>; running: boolean },
-  run: (world: { state: ReturnType<typeof fakeDb>["state"]; requestWrites: () => number }) => Promise<T>,
-): Promise<T> {
-  const { prisma } = await import("@wheelsai/db");
-  const { env } = await import("../config/env.js");
-  const p = prisma as any;
-  const e = env as any;
-  const saved = {
-    member: p.orgMember.findUnique,
-    subscription: p.orgSubscription.findUnique,
-    publisherProfile: p.publisherProfile,
-    creatorPayout: p.creatorPayout,
-    $transaction: p.$transaction,
-    enabled: e.PAYOUTS_ENABLED,
-    interval: e.PAYOUT_EXECUTOR_INTERVAL_MS,
-  };
-  const { state, db } = fakeDb(input.rows, input.balances);
-  const fake = db as any;
-  let requestWrites = 0;
-  p.orgMember.findUnique = async () => ({ role: "owner" });
-  // An API key's call is metered against the plan; a plan that cannot be
-  // read lets the call through without a counter, so no database or Redis.
-  p.orgSubscription.findUnique = async () => {
-    throw new Error("no plan lookup in this test");
-  };
-  p.publisherProfile = {
-    ...fake.publisherProfile,
-    findUnique: async ({ where }: any) =>
-      where.orgId in state.balances ? { orgId: where.orgId, pendingPayoutCents: state.balances[where.orgId] } : null,
-    updateMany: async () => {
-      requestWrites += 1;
-      return { count: 0 };
-    },
-  };
-  p.creatorPayout = {
-    ...fake.creatorPayout,
-    findMany: async ({ where }: any) => state.payouts.filter((row) => row.publisherId === where.publisherId),
-    create: async () => {
-      requestWrites += 1;
-      throw new Error("no payout row may be written here");
-    },
-  };
-  p.$transaction = (fn: any) => {
-    // requestPayout's own transaction: it reaches the stubs above.
-    if (fn.length === 1 && String(fn).includes("reserved")) {
-      requestWrites += 1;
-      return fn(p);
-    }
-    return fake.$transaction(fn);
-  };
-  e.PAYOUTS_ENABLED = input.running;
-  e.PAYOUT_EXECUTOR_INTERVAL_MS = input.running ? 60000 : 0;
-  try {
-    return await run({ state, requestWrites: () => requestWrites });
-  } finally {
-    p.orgMember.findUnique = saved.member;
-    p.orgSubscription.findUnique = saved.subscription;
-    p.publisherProfile = saved.publisherProfile;
-    p.creatorPayout = saved.creatorPayout;
-    p.$transaction = saved.$transaction;
-    e.PAYOUTS_ENABLED = saved.enabled;
-    e.PAYOUT_EXECUTOR_INTERVAL_MS = saved.interval;
+test("message: the waiting sentence for a held pending payout, the failure sentence for a failed one, else null", () => {
+  // Pending and not held: nothing to say.
+  assert.equal(payoutView(payoutRow()).message, null);
+  assert.equal(payoutView(payoutRow({ waitingReason: null })).message, null);
+  // Pending and held, whatever is holding it: one sentence, and still cancellable.
+  for (const waitingReason of ["wallet_low", "daily_limit_reached", "price_unavailable", "chain_unavailable", "a code from later"]) {
+    const held = payoutView(payoutRow({ payoutMethod: "crypto_usdc", waitingReason }));
+    assert.equal(held.message, PAYOUT_WAITING_MESSAGE);
+    assert.equal(held.message, "This payout is waiting to be sent. You can cancel it and keep your earnings.");
+    assert.equal(held.cancellable, true);
+    assert.equal(held.failureReason, null);
+    assert.ok(!JSON.stringify(held).includes(waitingReason), "the code itself is not sent");
   }
-}
-
-test("POST /payouts while payouts are off: 503, the balance is left and nothing is written", async () => {
-  await withWorld({ rows: [], balances: { [ORG]: 2500n }, running: false }, async ({ state, requestWrites }) => {
-    const { prisma } = await import("@wheelsai/db");
-    const p = prisma as any;
-    let read = false;
-    const findUnique = p.publisherProfile.findUnique;
-    p.publisherProfile.findUnique = async (args: unknown) => {
-      read = true;
-      return findUnique(args);
-    };
-
-    const app = await marketplaceApp();
-    try {
-      // Even a body that would be refused answers 503 first: nothing is looked at.
-      for (const payload of [{ payoutMethod: "credits" }, { payoutMethod: "crypto_sol" }, {}]) {
-        const res = await app.inject({ method: "POST", url: "/payouts", payload });
-        assert.equal(res.statusCode, 503);
-        assert.deepEqual(res.json(), { error: "payouts_unavailable", message: PAYOUTS_UNAVAILABLE_MESSAGE });
-      }
-      assert.equal(
-        PAYOUTS_UNAVAILABLE_MESSAGE,
-        "Payouts are temporarily unavailable. Nothing was reserved and your earnings are unchanged. Try again later.",
-      );
-      assert.equal(read, false, "the payout service does not run at all");
-      assert.equal(requestWrites(), 0);
-      assert.equal(state.balances[ORG], 2500n);
-      assert.equal(state.payouts.length, 0);
-    } finally {
-      await app.close();
-    }
-  });
+  // A waiting reason left on a row that has moved on says nothing.
+  for (const status of ["processing", "completed", "cancelled"]) {
+    assert.equal(payoutView(payoutRow({ status, waitingReason: "wallet_low" })).message, null);
+  }
+  // Failed with a code: the code's sentence, in both fields, and never the recorded text.
+  const raw = 'SendTransactionError: {"InstructionError":[0,{"Custom":1}]}';
+  const failed = payoutView(payoutRow({ status: "failed", failureCode: "could_not_send", failureReason: raw }));
+  assert.equal(
+    failed.message,
+    "This payout could not be sent to that wallet address. The amount is back in your earnings.",
+  );
+  assert.equal(failed.failureReason, failed.message);
+  assert.ok(!JSON.stringify(failed).includes("InstructionError"));
+  assert.ok(!("failureCode" in failed) && !("waitingReason" in failed));
+  // Failed with no code (an older row): the older matcher.
+  const older = payoutView(payoutRow({ status: "failed", failureReason: "invalid payout address" }));
+  assert.match(older.message!, /not valid/);
+  assert.equal(older.failureReason, older.message);
 });
 
-test("POST /payouts while payouts are running goes on to the payout service, as before", async () => {
-  // Below the minimum: the service's own refusal shows the guard let it through.
-  await withWorld({ rows: [], balances: { [ORG]: 900n }, running: true }, async ({ state }) => {
-    const app = await marketplaceApp();
-    try {
-      const res = await app.inject({ method: "POST", url: "/payouts", payload: { payoutMethod: "credits" } });
-      assert.equal(res.statusCode, 400);
-      assert.match(res.json().message, /Minimum payout amount/);
-      assert.equal(state.balances[ORG], 900n);
-    } finally {
-      await app.close();
-    }
+// ---------------------------------------------------------------
+// Routes: availability, the cancel, the list
+// ---------------------------------------------------------------
+
+test("POST /payouts while payouts are off: 503, the balance is left and nothing is read or written", async () => {
+  const { state, db } = fakeDb([], { [ORG]: 2500n });
+  const { routeDeps, chainReads } = routeDepsOver(db, { running: false });
+  let ran = false;
+  const app = await payoutApp({
+    ...routeDeps,
+    requestPayout: async (input) => {
+      ran = true;
+      return routeDeps.requestPayout(input);
+    },
   });
+  try {
+    // Even a body that would be refused answers 503 first: nothing is looked at.
+    for (const payload of [{ payoutMethod: "credits" }, { payoutMethod: "crypto_sol" }, {}]) {
+      const res = await app.inject({ method: "POST", url: "/payouts", payload });
+      assert.equal(res.statusCode, 503);
+      assert.deepEqual(res.json(), { error: "payouts_unavailable", message: PAYOUTS_UNAVAILABLE_MESSAGE });
+    }
+    assert.equal(
+      PAYOUTS_UNAVAILABLE_MESSAGE,
+      "Payouts are temporarily unavailable. Nothing was reserved and your earnings are unchanged. Try again later.",
+    );
+    assert.equal(ran, false, "the payout service does not run at all");
+    assert.equal(chainReads.length, 0);
+    assert.equal(state.balanceWrites + state.payoutInserts, 0);
+    assert.equal(state.balances[ORG], 2500n);
+    assert.equal(state.payouts.length, 0);
+  } finally {
+    await app.close();
+  }
 });
 
 test("POST /payouts/:id/cancel works while payouts are off: 200, then 409, the amount restored once", async () => {
-  await withWorld({ rows: [payoutRow()], balances: { [ORG]: 0n }, running: false }, async ({ state }) => {
-    const app = await marketplaceApp();
-    try {
-      const res = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
-      assert.equal(res.statusCode, 200);
-      const { payout } = res.json();
-      assert.equal(payout.id, PAYOUT);
-      assert.equal(payout.status, "cancelled");
-      assert.equal(payout.amountCents, 2500);
-      assert.equal(payout.payoutMethod, "credits");
-      assert.equal(payout.cancellable, false);
-      assert.equal(payout.failureReason, null);
-      assert.equal(typeof payout.requestedAt, "string");
-      assert.equal(state.balances[ORG], 2500n);
+  const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
+  const app = await payoutApp(routeDepsOver(db, { running: false }).routeDeps);
+  try {
+    const res = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
+    assert.equal(res.statusCode, 200);
+    const { payout } = res.json();
+    assert.equal(payout.id, PAYOUT);
+    assert.equal(payout.status, "cancelled");
+    assert.equal(payout.amountCents, 2500);
+    assert.equal(payout.payoutMethod, "credits");
+    assert.equal(payout.cancellable, false);
+    assert.equal(payout.failureReason, null);
+    assert.equal(payout.message, null);
+    assert.equal(typeof payout.requestedAt, "string");
+    assert.equal(state.balances[ORG], 2500n);
 
-      const again = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
-      assert.equal(again.statusCode, 409);
-      assert.equal(again.json().error, "payout_not_cancellable");
-      assert.equal(again.json().message, payoutNotCancellableMessage("cancelled"));
-      assert.equal(state.balances[ORG], 2500n);
-      assert.equal(state.balanceWrites, 1);
-      assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
+    const again = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
+    assert.equal(again.statusCode, 409);
+    assert.equal(again.json().error, "payout_not_cancellable");
+    assert.equal(again.json().message, payoutNotCancellableMessage("cancelled"));
+    assert.equal(state.balances[ORG], 2500n);
+    assert.equal(state.balanceWrites, 1);
+    assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
 
-      const list = await app.inject({ method: "GET", url: "/payouts" });
-      assert.equal(list.statusCode, 200);
-      assert.equal(list.json().payouts[0].status, "cancelled");
-      assert.equal(list.json().payouts[0].cancellable, false);
-    } finally {
-      await app.close();
-    }
-  });
+    const list = await app.inject({ method: "GET", url: "/payouts" });
+    assert.equal(list.statusCode, 200);
+    assert.equal(list.json().payouts[0].status, "cancelled");
+    assert.equal(list.json().payouts[0].cancellable, false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("a payout the worker is holding can be cancelled: its amount comes back once", async () => {
+  const held = payoutRow({ payoutMethod: "crypto_usdc", waitingReason: "wallet_low" });
+  const { state, db } = fakeDb([held], { [ORG]: 0n });
+  const app = await payoutApp(routeDepsOver(db).routeDeps);
+  try {
+    const list = await app.inject({ method: "GET", url: "/payouts" });
+    assert.equal(list.json().payouts[0].message, PAYOUT_WAITING_MESSAGE);
+    assert.equal(list.json().payouts[0].cancellable, true);
+
+    const res = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().payout.status, "cancelled");
+    assert.equal(res.json().payout.message, null);
+    assert.equal(state.balances[ORG], 2500n);
+    assert.equal(state.balanceWrites, 1);
+  } finally {
+    await app.close();
+  }
 });
 
 test("POST /payouts/:id/cancel: 409 once it is being sent, 404 for unknown, foreign and malformed ids", async () => {
   const sending = payoutRow({ status: "processing" });
   const foreign = payoutRow({ id: "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee", publisherId: OTHER_ORG });
-  await withWorld(
-    { rows: [sending, foreign], balances: { [ORG]: 0n, [OTHER_ORG]: 0n }, running: true },
-    async ({ state }) => {
-      const app = await marketplaceApp();
-      try {
-        const busy = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
-        assert.equal(busy.statusCode, 409);
-        assert.deepEqual(busy.json(), {
-          error: "payout_not_cancellable",
-          message: "This payout is already being sent and can no longer be cancelled.",
-        });
+  const { state, db } = fakeDb([sending, foreign], { [ORG]: 0n, [OTHER_ORG]: 0n });
+  const app = await payoutApp(routeDepsOver(db).routeDeps);
+  try {
+    const busy = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
+    assert.equal(busy.statusCode, 409);
+    assert.deepEqual(busy.json(), {
+      error: "payout_not_cancellable",
+      message: "This payout is already being sent and can no longer be cancelled.",
+    });
 
-        for (const id of [foreign.id, "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee", "not-an-id"]) {
-          const res = await app.inject({ method: "POST", url: `/payouts/${id}/cancel` });
-          assert.equal(res.statusCode, 404, id);
-          assert.equal(res.json().error, "payout_not_found");
-        }
-        assert.equal(state.payouts[1]!.status, "pending", "the other organization's payout is untouched");
-        assert.equal(state.balanceWrites + state.payoutWrites, 0);
-      } finally {
-        await app.close();
-      }
-    },
-  );
+    for (const id of [foreign.id, "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee", "not-an-id"]) {
+      const res = await app.inject({ method: "POST", url: `/payouts/${id}/cancel` });
+      assert.equal(res.statusCode, 404, id);
+      assert.equal(res.json().error, "payout_not_found");
+    }
+    assert.equal(state.payouts[1]!.status, "pending", "the other organization's payout is untouched");
+    assert.equal(state.balanceWrites + state.payoutWrites, 0);
+  } finally {
+    await app.close();
+  }
 });
 
 test("an API key and a plain member cannot cancel a payout", async () => {
-  await withWorld({ rows: [payoutRow()], balances: { [ORG]: 0n }, running: true }, async ({ state }) => {
-    const Fastify = (await import("fastify")).default;
-    const sensible = await import("@fastify/sensible");
-    const { marketplaceRoutes } = await import("../routes/marketplace.js");
-    const { prisma } = await import("@wheelsai/db");
-    const cases: Array<{ principal: Record<string, unknown>; role: string; status: number }> = [
-      { principal: { userId: null, orgId: ORG, type: "api_key", scopes: ["*"] }, role: "owner", status: 401 },
-      { principal: { userId: "u1", orgId: ORG, type: "jwt", role: "member" }, role: "member", status: 403 },
-    ];
-    for (const { principal, role, status } of cases) {
-      (prisma as any).orgMember.findUnique = async () => ({ role });
-      const app = Fastify();
-      await app.register(sensible.default);
-      app.decorateRequest("auth", null);
-      app.addHook("onRequest", async (request) => {
-        (request as unknown as { auth: unknown }).auth = principal;
-      });
-      await app.register(marketplaceRoutes);
-      const res = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
-      assert.equal(res.statusCode, status);
-      await app.close();
-    }
-    assert.equal(state.payouts[0]!.status, "pending");
-    assert.equal(state.balanceWrites, 0);
-  });
+  const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
+  const cases: Array<{ principal: Record<string, unknown>; role: string; status: number }> = [
+    { principal: { userId: null, orgId: ORG, type: "api_key", scopes: ["*"] }, role: "owner", status: 401 },
+    { principal: { userId: "u1", orgId: ORG, type: "jwt", role: "member" }, role: "member", status: 403 },
+  ];
+  for (const { principal, role, status } of cases) {
+    const app = await payoutApp(routeDepsOver(db).routeDeps, principal, role);
+    const res = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
+    assert.equal(res.statusCode, status);
+    await app.close();
+  }
+  assert.equal(state.payouts[0]!.status, "pending");
+  assert.equal(state.balanceWrites, 0);
+});
+
+test("a cancel that fails in the database answers a fixed sentence, never the error's text", async () => {
+  const { state, db } = fakeDb([payoutRow()], {}); // no balance row: the restore throws
+  const app = await payoutApp(routeDepsOver(db).routeDeps);
+  try {
+    const res = await app.inject({ method: "POST", url: `/payouts/${PAYOUT}/cancel` });
+    assert.equal(res.statusCode, 500);
+    assert.deepEqual(res.json(), {
+      error: "internal_error",
+      message: "Something went wrong on our side. Try again shortly.",
+    });
+    assert.ok(!res.body.includes("restored") && !res.body.includes(PAYOUT));
+    assert.equal(state.payouts[0]!.status, "pending", "rolled back: still pending, still cancellable");
+  } finally {
+    await app.close();
+  }
 });
 
 test("GET /payouts: cancellable only while pending, and failureReason is a sentence, never the recorded text", async () => {
   const raw = 'payout tx failed on-chain: {"InstructionError":[0,{"Custom":1}]}';
+  const at = (minute: number) => new Date(Date.UTC(2026, 9, 10, 0, 10 - minute));
   const rows = [
-    payoutRow({ id: "00000000-0000-4000-8000-000000000001", status: "pending" }),
-    payoutRow({ id: "00000000-0000-4000-8000-000000000002", status: "processing" }),
-    payoutRow({ id: "00000000-0000-4000-8000-000000000003", status: "completed" }),
-    payoutRow({ id: "00000000-0000-4000-8000-000000000004", status: "failed", failureReason: raw }),
-    payoutRow({ id: "00000000-0000-4000-8000-000000000005", status: "cancelled" }),
+    payoutRow({ id: "00000000-0000-4000-8000-000000000001", status: "pending", requestedAt: at(1) }),
+    payoutRow({ id: "00000000-0000-4000-8000-000000000002", status: "processing", requestedAt: at(2) }),
+    payoutRow({ id: "00000000-0000-4000-8000-000000000003", status: "completed", requestedAt: at(3) }),
+    payoutRow({ id: "00000000-0000-4000-8000-000000000004", status: "failed", failureReason: raw, requestedAt: at(4) }),
+    payoutRow({ id: "00000000-0000-4000-8000-000000000005", status: "cancelled", requestedAt: at(5) }),
+    payoutRow({ id: "00000000-0000-4000-8000-000000000006", publisherId: OTHER_ORG, requestedAt: at(0) }),
   ];
-  await withWorld({ rows, balances: { [ORG]: 0n }, running: false }, async () => {
-    const app = await marketplaceApp();
-    try {
-      const res = await app.inject({ method: "GET", url: "/payouts" });
-      assert.equal(res.statusCode, 200);
-      const { payouts } = res.json();
-      assert.deepEqual(
-        payouts.map((p: any) => [p.status, p.cancellable]),
-        [
-          ["pending", true],
-          ["processing", false],
-          ["completed", false],
-          ["failed", false],
-          ["cancelled", false],
-        ],
-      );
-      assert.deepEqual(
-        payouts.map((p: any) => p.failureReason),
-        [null, null, null, payoutFailureMessage(raw), null],
-      );
-      assert.ok(!res.body.includes("InstructionError"));
-      assert.ok(!res.body.includes("on-chain"));
-    } finally {
-      await app.close();
-    }
-  });
+  const { db } = fakeDb(rows, { [ORG]: 0n });
+  // A signed-in member may read the history; payouts being off changes nothing.
+  const app = await payoutApp(
+    routeDepsOver(db, { running: false }).routeDeps,
+    { userId: "u2", orgId: ORG, type: "jwt", role: "member" },
+    "member",
+  );
+  try {
+    const res = await app.inject({ method: "GET", url: "/payouts" });
+    assert.equal(res.statusCode, 200);
+    const { payouts } = res.json();
+    assert.deepEqual(
+      payouts.map((p: any) => [p.status, p.cancellable]),
+      [
+        ["pending", true],
+        ["processing", false],
+        ["completed", false],
+        ["failed", false],
+        ["cancelled", false],
+      ],
+    );
+    assert.deepEqual(
+      payouts.map((p: any) => p.failureReason),
+      [null, null, null, payoutFailureMessage(raw), null],
+    );
+    assert.deepEqual(
+      payouts.map((p: any) => p.message),
+      [null, null, null, payoutFailureMessage(raw), null],
+    );
+    assert.ok(!res.body.includes("InstructionError"));
+    assert.ok(!res.body.includes("on-chain"));
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /payouts needs a signed-in caller, and a database error is a fixed sentence", async () => {
+  const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
+  const anonymous = await payoutApp(routeDepsOver(db).routeDeps, null);
+  assert.equal((await anonymous.inject({ method: "GET", url: "/payouts" })).statusCode, 401);
+  await anonymous.close();
+
+  state.payoutsBroken = new Error("Invalid `prisma.creatorPayout.findMany()` invocation: P1001 at db.internal:5432");
+  const app = await payoutApp(routeDepsOver(db).routeDeps);
+  try {
+    const res = await app.inject({ method: "GET", url: "/payouts" });
+    assert.equal(res.statusCode, 500);
+    assert.equal(res.json().error, "internal_error");
+    assert.ok(!/prisma|P1001|5432/i.test(res.body));
+  } finally {
+    await app.close();
+  }
 });

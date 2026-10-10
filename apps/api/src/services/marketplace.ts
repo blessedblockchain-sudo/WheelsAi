@@ -31,8 +31,8 @@ import { isPaidUse, MIN_PRICE_PER_USE_CENTS, useUnitOf, type UseUnit } from "./u
 import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
-import { buildCancelPayoutDeps, cancelPayout, payoutView, type CancelPayoutDb } from "./payoutRequests.js";
-import { moveEarnings } from "./earningsLedger.js";
+import { payoutRequestSettingsFromEnv, readPayoutLimits, type PayoutReadsDb } from "./payoutRequests.js";
+import { env } from "../config/env.js";
 
 const logger = createLogger("marketplace-service");
 
@@ -2389,6 +2389,16 @@ export async function getPublisherRevenue(publisherId: string) {
     where: { orgId: publisherId },
   });
 
+  // What can be requested as a payout right now, and the limits it is
+  // held to (services/payoutRules.ts). A creator with no profile is owed
+  // nothing and has taken nothing out today.
+  const payoutLimits = await readPayoutLimits(prisma as unknown as PayoutReadsDb, {
+    orgId: publisherId,
+    balanceCents: profile?.pendingPayoutCents ?? 0n,
+    settings: payoutRequestSettingsFromEnv(env),
+    now: new Date(),
+  });
+
   if (!profile) {
     return {
       totalRevenueCents: 0,
@@ -2397,6 +2407,7 @@ export async function getPublisherRevenue(publisherId: string) {
       totalInstalls: 0,
       revenueByListing: [],
       recentTransactions: [],
+      payoutLimits,
     };
   }
 
@@ -2496,155 +2507,8 @@ export async function getPublisherRevenue(publisherId: string) {
       status: p.status,
       requestedAt: p.requestedAt,
     })),
+    payoutLimits,
   };
-}
-
-/**
- * The balance changed between the snapshot and the reservation (a
- * concurrent payout request won, or revenue was restored/adjusted).
- * Nothing was written; the caller may retry and will see the new balance.
- */
-export class PayoutReservationConflictError extends Error {
-  readonly code = "payout_reservation_conflict";
-  constructor() {
-    super("Your payout balance changed while this request was processing. Please try again.");
-    this.name = "PayoutReservationConflictError";
-  }
-}
-
-export async function requestPayout(
-  publisherId: string,
-  payoutMethod: "credits" | "crypto_usdc" | "crypto_sol",
-  payoutAddress?: string
-) {
-  // Get publisher profile
-  const profile = await prisma.publisherProfile.findUnique({
-    where: { orgId: publisherId },
-  });
-
-  if (!profile) {
-    throw new Error("Publisher profile not found");
-  }
-
-  const pendingAmount = Number(profile.pendingPayoutCents);
-
-  if (pendingAmount < 1000) {
-    // Minimum $10 payout
-    throw new Error("Minimum payout amount is $10.00");
-  }
-
-  if (payoutMethod !== "credits" && !payoutAddress) {
-    throw new Error("Payout address is required for crypto payouts");
-  }
-
-  // Check for existing pending payout
-  const existingPayout = await prisma.creatorPayout.findFirst({
-    where: {
-      publisherId,
-      status: { in: ["pending", "processing"] },
-    },
-  });
-
-  if (existingPayout) {
-    throw new Error("You already have a pending payout request");
-  }
-
-  // Calculate revenue breakdown
-  const grossRevenue = Math.round(pendingAmount / CREATOR_REVENUE_SHARE);
-  const platformFee = grossRevenue - pendingAmount;
-
-  // Requesting a payout RESERVES the pending balance into the payout row:
-  // create the row AND take the amount out of the balance in ONE
-  // transaction. Before this was two separate writes, so a crash between
-  // them either lost the reservation (row exists, balance still pending →
-  // double-payable) or stranded it. The reservation is released back to the
-  // balance only if the executor later fails the payout (see the
-  // payout-executor tick's failAndRestore) or the creator cancels it.
-  // Taking off the CURRENT balance inside the transaction also prevents a
-  // payout that races with fresh revenue from zeroing income that accrued
-  // after the amount was snapshotted.
-  //
-  // The reservation goes through the earnings ledger (moveEarnings), which
-  // takes the amount only if the balance still covers it. An unconditional
-  // take let two concurrent requests both pass the pending-payout check
-  // above, both reserve the full balance, drive the balance negative, and
-  // get paid twice by the executor. Under Postgres row locking the second
-  // request re-reads the committed balance and does not move, so exactly
-  // one reservation wins.
-  //
-  // The payout row is written first so the ledger row can carry its id. A
-  // reservation that does not move throws, which rolls the new payout row
-  // back with it: nothing is written.
-  const payout = await prisma.$transaction(async (tx) => {
-    const created = await tx.creatorPayout.create({
-      data: {
-        publisherId,
-        amountCents: BigInt(pendingAmount),
-        payoutMethod,
-        payoutAddress,
-        status: "pending",
-        grossRevenueCents: BigInt(grossRevenue),
-        platformFeeCents: BigInt(platformFee),
-        periodStart: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // Last 30 days
-        periodEnd: new Date(),
-      },
-    });
-    const reserved = await moveEarnings(tx, {
-      orgId: publisherId,
-      amountCents: -BigInt(pendingAmount),
-      type: "payout_reserved",
-      referenceId: created.id,
-      description: "Payout requested",
-    });
-    if (!reserved.moved) {
-      throw new PayoutReservationConflictError();
-    }
-    return created;
-  });
-
-  logger.info({ publisherId, payoutId: payout.id, amount: pendingAmount }, "Payout requested");
-
-  return {
-    payout: {
-      id: payout.id,
-      amountCents: Number(payout.amountCents),
-      payoutMethod: payout.payoutMethod,
-      status: payout.status,
-      requestedAt: payout.requestedAt,
-    },
-  };
-}
-
-export async function getPayoutHistory(publisherId: string) {
-  const payouts = await prisma.creatorPayout.findMany({
-    where: { publisherId },
-    orderBy: { requestedAt: "desc" },
-    take: 50,
-  });
-
-  // payoutView adds `cancellable` and turns the recorded failure reason
-  // into a sentence written for the creator (services/payoutRequests.ts).
-  return payouts.map((p) => payoutView(p));
-}
-
-/**
- * Takes back a payout request that has not started to be sent: the row
- * becomes cancelled and its amount returns to pendingPayoutCents in one
- * transaction (services/payoutRequests.ts cancelPayout).
- */
-export async function cancelPayoutRequest(publisherId: string, payoutId: string) {
-  const result = await cancelPayout(buildCancelPayoutDeps(prisma as unknown as CancelPayoutDb), {
-    payoutId,
-    orgId: publisherId,
-  });
-  if (result.outcome === "cancelled") {
-    logger.info(
-      { publisherId, payoutId, amount: Number(result.payout.amountCents) },
-      "Payout cancelled, earnings restored",
-    );
-    return { outcome: "cancelled" as const, payout: payoutView(result.payout) };
-  }
-  return result;
 }
 
 /**

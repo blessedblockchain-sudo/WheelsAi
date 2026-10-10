@@ -10,18 +10,32 @@ type Row = Record<string, any>;
 
 const ORG = "org_publisher";
 
-async function revenueWith(rows: Row[], licences: Row[]) {
+async function revenueWith(
+  rows: Row[],
+  licences: Row[],
+  payouts: { balanceCents?: bigint; walletUsedTodayCents?: bigint | null; hasProfile?: boolean } = {},
+) {
   const { prisma } = await import("../lib/prisma.js");
   const { getPublisherRevenue } = await import("../services/marketplace.js");
   const p = prisma as unknown as Record<string, Row>;
   const saved: Record<string, Row> = {};
   const licenceReads: Row[] = [];
+  const usedTodayReads: Row[] = [];
   const swap = (model: string, stub: Row) => {
     saved[model] = { ...p[model] };
     Object.assign(p[model]!, stub);
   };
   swap("publisherProfile", {
-    findUnique: async () => ({ orgId: ORG, totalRevenueCents: 0n, pendingPayoutCents: 0n, totalListings: 1, totalInstalls: 2 }),
+    findUnique: async () =>
+      payouts.hasProfile === false
+        ? null
+        : {
+            orgId: ORG,
+            totalRevenueCents: 0n,
+            pendingPayoutCents: payouts.balanceCents ?? 0n,
+            totalListings: 1,
+            totalInstalls: 2,
+          },
   });
   swap("marketplaceRevenue", {
     groupBy: async () => [],
@@ -35,9 +49,16 @@ async function revenueWith(rows: Row[], licences: Row[]) {
       return licences.filter((licence) => args.where.id.in.includes(licence.id));
     },
   });
-  swap("creatorPayout", { findMany: async () => [] });
+  swap("creatorPayout", {
+    findMany: async () => [],
+    // What this creator has taken to a wallet today, for `payoutLimits`.
+    aggregate: async (args: Row) => {
+      usedTodayReads.push(args);
+      return { _sum: { amountCents: payouts.walletUsedTodayCents ?? null } };
+    },
+  });
   try {
-    return { revenue: (await getPublisherRevenue(ORG)) as Row, licenceReads };
+    return { revenue: (await getPublisherRevenue(ORG)) as Row, licenceReads, usedTodayReads };
   } finally {
     for (const [model, methods] of Object.entries(saved)) Object.assign(p[model]!, methods);
   }
@@ -86,4 +107,67 @@ test("with no licence behind any row, no licence is read", async () => {
   const { revenue, licenceReads } = await revenueWith([row({ id: "rev_job", type: "job", jobId: "job_1" })], []);
   assert.equal(licenceReads.length, 0);
   assert.equal(revenue.recentTransactions[0].licenceKind, null);
+});
+
+// ---------------------------------------------------------------
+// payoutLimits: what can be taken out right now
+// ---------------------------------------------------------------
+
+test("the revenue answer carries payoutLimits, worked out from the balance, the settings and today's wallet payouts", async () => {
+  const { env } = await import("../config/env.js");
+  const e = env as unknown as Record<string, unknown>;
+  const saved = {
+    perPayout: e.PAYOUT_MAX_PER_PAYOUT_USD,
+    perDay: e.PAYOUT_MAX_PER_DAY_USD,
+    source: e.SOL_PRICE_SOURCE,
+  };
+  e.PAYOUT_MAX_PER_PAYOUT_USD = 500;
+  e.PAYOUT_MAX_PER_DAY_USD = 1000;
+  try {
+    e.SOL_PRICE_SOURCE = "off";
+    const { revenue, usedTodayReads } = await revenueWith([], [], { balanceCents: 74_000n, walletUsedTodayCents: 12_000n });
+    assert.equal(revenue.pendingPayoutCents, 74_000, "today's answer is still there");
+    assert.deepEqual(revenue.payoutLimits, {
+      minimumCents: 500,
+      perPayoutCents: 50_000,
+      perDayCents: 100_000,
+      usedTodayCents: 12_000,
+      largestNowCents: { credits: 74_000, wallet: 50_000 },
+      methods: ["credits", "crypto_usdc"],
+    });
+    // One read: this creator's wallet payouts since midnight UTC that were not given back.
+    assert.equal(usedTodayReads.length, 1);
+    const where = usedTodayReads[0]!.where;
+    assert.equal(where.publisherId, ORG);
+    assert.deepEqual(where.payoutMethod, { in: ["crypto_usdc", "crypto_sol"] });
+    assert.deepEqual(where.status, { in: ["pending", "processing", "completed"] });
+    const midnight = new Date();
+    midnight.setUTCHours(0, 0, 0, 0);
+    assert.ok(Math.abs(where.requestedAt.gte.getTime() - midnight.getTime()) < 2000, "since midnight UTC");
+    assert.equal(where.requestedAt.gte.getUTCHours() + where.requestedAt.gte.getUTCMinutes(), 0);
+
+    // SOL is offered once it can be priced.
+    e.SOL_PRICE_SOURCE = "pyth";
+    const priced = await revenueWith([], [], { balanceCents: 310n });
+    assert.deepEqual(priced.revenue.payoutLimits.methods, ["credits", "crypto_usdc", "crypto_sol"]);
+    assert.deepEqual(priced.revenue.payoutLimits.largestNowCents, { credits: 310, wallet: 310 });
+    assert.equal(priced.revenue.payoutLimits.usedTodayCents, 0);
+
+    // What is left of the day holds the wallet amount, not credits.
+    const late = await revenueWith([], [], { balanceCents: 74_000n, walletUsedTodayCents: 97_000n });
+    assert.deepEqual(late.revenue.payoutLimits.largestNowCents, { credits: 74_000, wallet: 3_000 });
+  } finally {
+    e.PAYOUT_MAX_PER_PAYOUT_USD = saved.perPayout;
+    e.PAYOUT_MAX_PER_DAY_USD = saved.perDay;
+    e.SOL_PRICE_SOURCE = saved.source;
+  }
+});
+
+test("a creator with no profile still gets payoutLimits: nothing to take, the limits as they are", async () => {
+  const { revenue } = await revenueWith([], [], { hasProfile: false });
+  assert.equal(revenue.pendingPayoutCents, 0);
+  assert.equal(revenue.payoutLimits.minimumCents, 500);
+  assert.deepEqual(revenue.payoutLimits.largestNowCents, { credits: 0, wallet: 0 });
+  assert.equal(revenue.payoutLimits.usedTodayCents, 0);
+  assert.ok(revenue.payoutLimits.methods.includes("credits") && revenue.payoutLimits.methods.includes("crypto_usdc"));
 });

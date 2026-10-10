@@ -38,16 +38,37 @@ for (const [name, override] of [
   });
 }
 
-test("staging may run the devnet SOL top-up rail; production may not", () => {
-  assert.doesNotThrow(() => validateEnv({ ...STAGING, ALLOW_DEVNET_WALLET_TOPUPS: "true" }));
+test("the retired SOL test settings are ignored, and said to be", async () => {
+  const { retiredSettingsIn } = await import("../config/env.js");
+  const old = { ALLOW_DEVNET_WALLET_TOPUPS: "true", WALLET_TOPUP_SOL_PRICE_USD: "150" };
+  // An old value can change nothing, so it never stops the start.
+  for (const base of [STAGING, { ...STAGING, NODE_ENV: "production" }]) {
+    const data = validateEnv({ ...base, ...old }) as Record<string, unknown>;
+    assert.equal("ALLOW_DEVNET_WALLET_TOPUPS" in data, false);
+    assert.equal("WALLET_TOPUP_SOL_PRICE_USD" in data, false);
+    assert.equal(data.SOL_PRICE_SOURCE, "off", "an old price never switches SOL on");
+  }
+  const lines = retiredSettingsIn(old);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0]!, /^ALLOW_DEVNET_WALLET_TOPUPS is no longer a setting and is ignored: .*SOL_PRICE_SOURCE/);
+  assert.match(lines[1]!, /^WALLET_TOPUP_SOL_PRICE_USD is no longer a setting and is ignored: .*SOL_PRICE_STATIC_USD/);
+  for (const line of lines) assert.doesNotMatch(line, /150|true/, "a retired setting's value is never repeated");
+  assert.deepEqual(retiredSettingsIn({}), []);
+  assert.deepEqual(retiredSettingsIn({ ALLOW_DEVNET_WALLET_TOPUPS: "" }), []);
+});
+
+test("outside development the wallet rail needs the worker that finishes top-ups", () => {
+  const rail = { WALLET_TOPUPS_ENABLED: "true", WALLET_MASTER_KEY: "c".repeat(48) };
+  assert.doesNotThrow(() => validateEnv({ ...STAGING, ...rail }));
   assert.throws(
-    () =>
-      validateEnv({
-        ...STAGING,
-        NODE_ENV: "production",
-        ALLOW_DEVNET_WALLET_TOPUPS: "true",
-      }),
-    EnvValidationError,
+    () => validateEnv({ ...STAGING, ...rail, TOPUP_RECONCILE_INTERVAL_MS: "0" }),
+    /WALLET_TOPUPS_ENABLED requires TOPUP_RECONCILE_INTERVAL_MS above 0/,
+  );
+  // With the rail off, the worker may be off.
+  assert.doesNotThrow(() => validateEnv({ ...STAGING, TOPUP_RECONCILE_INTERVAL_MS: "0" }));
+  // Development may run the rail by hand, without the worker.
+  assert.doesNotThrow(() =>
+    validateEnv({ ...STAGING, NODE_ENV: "development", ...rail, TOPUP_RECONCILE_INTERVAL_MS: "0" }),
   );
 });
 

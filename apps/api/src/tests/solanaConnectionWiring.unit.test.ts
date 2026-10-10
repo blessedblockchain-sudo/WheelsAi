@@ -149,9 +149,12 @@ test("the mints have one home", () => {
   assert.match(x402, /from "\.\.\/lib\/solanaAssets\.js"/);
   assert.match(x402, /export \{ USDC_MINT \}/);
 
+  // Whoever needs the mint takes it from that one home, by the constant or
+  // by the helper that picks it for a network, and never spells it out.
   for (const file of ["routes/walletTopupBindings.ts", "queues/payout-executor.queue.ts"]) {
-    const code = readFileSync(path.join(SRC, file), "utf8");
-    assert.match(code, /import \{ USDC_MINT \} from "\.\.\/lib\/solanaAssets\.js"/, file);
+    const code = withoutComments(readFileSync(path.join(SRC, file), "utf8"));
+    assert.match(code, /import \{ (USDC_MINT|usdcMintForNetwork) \} from "\.\.\/lib\/solanaAssets\.js"/, file);
+    assert.ok(!code.includes(usdcMainnet) && !code.includes(usdcDevnet), file);
   }
 });
 

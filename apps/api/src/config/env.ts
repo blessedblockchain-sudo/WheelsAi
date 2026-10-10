@@ -273,18 +273,14 @@ const envSchema = z.object({
     .union([z.boolean(), z.string()])
     .transform((value) => value === true || value === "true")
     .default(false),
-  // Dev-only: enables the SOL asset on the top-up rail, priced by the
-  // operator-stated WALLET_TOPUP_SOL_PRICE_USD quote instead of an
-  // oracle. This is the devnet TESTING rail — forbidden in production,
-  // where the wallet rail is USDC-only (1 USDC = $1, no oracle needed).
-  ALLOW_DEVNET_WALLET_TOPUPS: z
-    .union([z.boolean(), z.string()])
-    .transform((value) => value === true || value === "true")
-    .default(false),
-  // SOL/USD quote for the devnet SOL rail. Deliberately operator-stated,
-  // not defaulted — a made-up default price would grant made-up credit
-  // amounts. Recorded on every WalletTopUp row as quotedSolPriceUsd.
-  WALLET_TOPUP_SOL_PRICE_USD: z.coerce.number().positive().optional(),
+  // The worker that finishes wallet top-ups from what the chain says
+  // (queues/topup-reconcile.queue.ts): it credits a transfer that landed
+  // after the page was closed, sends a signed transfer again while it can
+  // still land, and ends one that can no longer land. 0 turns it off;
+  // outside development the wallet rail refuses to start without it
+  // (checked below), because a top-up would then depend on the customer
+  // keeping the page open.
+  TOPUP_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(0).default(15_000),
 
   // GitHub Integration
   GITHUB_TOKEN: z.string().optional(),
@@ -613,10 +609,16 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError("EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM");
   }
 
-  // Production only: staging may run the devnet SOL test rail.
-  if (data.NODE_ENV === "production" && data.ALLOW_DEVNET_WALLET_TOPUPS) {
+  // A top-up is finished by the reconcile worker whenever the request that
+  // sent it could not wait for the chain. Without the worker a customer
+  // who closes the page can pay and stay uncredited.
+  if (
+    data.NODE_ENV !== "development" &&
+    data.WALLET_TOPUPS_ENABLED &&
+    data.TOPUP_RECONCILE_INTERVAL_MS <= 0
+  ) {
     throw new EnvValidationError(
-      "ALLOW_DEVNET_WALLET_TOPUPS must not be enabled in production — the SOL rail grants credits from an operator-stated quote, not an oracle"
+      "WALLET_TOPUPS_ENABLED requires TOPUP_RECONCILE_INTERVAL_MS above 0 outside development: the worker is what credits a transfer that lands after the page is closed"
     );
   }
 
@@ -844,8 +846,28 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   return data;
 }
 
+/**
+ * Settings that no longer exist. A value left in the environment is
+ * ignored; it does not stop the start, because an old value can change
+ * nothing: SOL is priced by SOL_PRICE_SOURCE or not offered at all.
+ */
+export const RETIRED_SETTINGS: Record<string, string> = {
+  ALLOW_DEVNET_WALLET_TOPUPS:
+    "SOL top-ups are offered whenever SOL_PRICE_SOURCE is pyth, or static on a local chain",
+  WALLET_TOPUP_SOL_PRICE_USD:
+    "use SOL_PRICE_SOURCE=static with SOL_PRICE_STATIC_USD on a local chain, or SOL_PRICE_SOURCE=pyth",
+};
+
+/** The retired settings that are still set, each with what replaced it. */
+export function retiredSettingsIn(raw: Record<string, string | undefined>): string[] {
+  return Object.entries(RETIRED_SETTINGS)
+    .filter(([name]) => raw[name] !== undefined && raw[name] !== "")
+    .map(([name, instead]) => `${name} is no longer a setting and is ignored: ${instead}`);
+}
+
 function parseEnv() {
   try {
+    for (const line of retiredSettingsIn(process.env)) console.warn(line);
     return validateEnv(process.env);
   } catch (error) {
     console.error(error instanceof EnvValidationError ? error.message : error);

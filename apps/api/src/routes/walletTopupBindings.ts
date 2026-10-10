@@ -1,21 +1,41 @@
 /**
- * Production wiring for the wallet top-up rail (B2/T5).
+ * Production wiring for the wallet top-up rail.
  *
  * Always mounted under /api/billing — when WALLET_TOPUPS_ENABLED is
- * false the routes answer 501 honestly (mirroring the checkout gate)
- * instead of 404ing, so a probe tells the truth about why.
+ * false the routes answer 501 instead of 404ing, so a probe tells the
+ * truth about why.
  *
- * env.ts enforces the config invariants at boot:
- *   - WALLET_TOPUPS_ENABLED ⇒ WALLET_MASTER_KEY present (deposit
- *     addresses derive from it), in every environment.
- *   - ALLOW_DEVNET_WALLET_TOPUPS is boot-fatal in production — the SOL
- *     rail prices from an operator quote, not an oracle.
+ * Three parts, so each can be given a stand-in:
+ *   - buildWalletTopupStore(db): every read and write of wallet_topups.
+ *     Each status change is a compare-and-set with the count checked.
+ *   - buildWalletTopupChain(getConnection): the reads and the one send
+ *     against the shared Solana connection.
+ *   - buildProductionWalletTopupDeps(): the two above, bound to Prisma,
+ *     the connection and config/env.ts, plus the quote, the fate and the
+ *     cluster check from batch 1.
+ *
+ * SOL is offered when SOL_PRICE_SOURCE is not "off"; its price is the
+ * live quote and nothing else. env.ts enforces at start that
+ * WALLET_TOPUPS_ENABLED has WALLET_MASTER_KEY (deposit addresses derive
+ * from it) and, outside development, the reconcile worker.
  */
+
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { PublicKey, type Connection } from "@solana/web3.js";
+import type { FastifyPluginAsync } from "fastify";
 
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
-import { getSolanaConnection } from "../lib/solana.js";
-import { USDC_MINT } from "../lib/solanaAssets.js";
+import { ensureSolanaCluster, getSolanaConnection } from "../lib/solana.js";
+import { usdcMintForNetwork } from "../lib/solanaAssets.js";
+import { readSignatureFate } from "../services/buildSignatureFateDeps.js";
+import {
+  errorDetail,
+  getSolQuote,
+  getSolQuoteMarginBps,
+} from "../services/buildSolPriceDeps.js";
+import { derivePayoutKeypair } from "../services/payoutKeypair.js";
+import { TOPUP_FAILURE_CODES } from "../services/topupSentences.js";
 import { deriveTopupDepositKeypair } from "../services/topupKeypairs.js";
 import {
   makeCreditTopup,
@@ -23,41 +43,102 @@ import {
 } from "../services/walletTopup.js";
 import {
   createWalletTopupRoutes,
+  type PayerBalances,
+  type TopupRowView,
   type WalletTopupRouteDeps,
 } from "./walletTopup.js";
-import type { FastifyPluginAsync } from "fastify";
 
-export function buildProductionWalletTopupDeps(): WalletTopupRouteDeps {
-  const connection = () => getSolanaConnection();
-  const network = env.SOLANA_NETWORK;
+/** The longest a submit waits for the node before it answers 202. */
+export const TOPUP_CONFIRM_WAIT_MS = 30_000;
 
+// ============================================
+// The store
+// ============================================
+
+/** The columns of wallet_topups the routes read. */
+export interface TopupDbRow {
+  id: string;
+  orgId: string;
+  asset: string;
+  network: string;
+  amountUsdCents: bigint;
+  bonusCents: bigint;
+  amountRaw: string;
+  quotedSolPriceUsd: number | null;
+  payerAddress: string;
+  depositAddress: string;
+  unsignedMessageB64: string;
+  txSignature: string | null;
+  status: string;
+  failureCode: string | null;
+  createdAt: Date;
+  expiresAt: Date;
+  lastValidBlockHeight: bigint;
+}
+
+/** The part of the Prisma client the store uses. */
+export interface TopupStoreDb {
+  walletTopUp: {
+    create: (args: { data: Record<string, unknown> }) => Promise<unknown>;
+    findFirst: (args: {
+      where: { id: string; orgId: string };
+    }) => Promise<TopupDbRow | null>;
+    findMany: (args: {
+      where: { orgId: string };
+      orderBy: { createdAt: "desc" };
+      take: number;
+    }) => Promise<TopupDbRow[]>;
+    updateMany: (args: {
+      where: Record<string, unknown>;
+      data: Record<string, unknown>;
+    }) => Promise<{ count: number }>;
+  };
+  creditBalance: {
+    findUnique: (args: {
+      where: { orgId: string };
+    }) => Promise<{ balanceCents: bigint } | null>;
+  };
+}
+
+export type WalletTopupStore = Pick<
+  WalletTopupRouteDeps,
+  | "createTopup"
+  | "findTopup"
+  | "listTopups"
+  | "claimForSubmit"
+  | "markStatus"
+  | "expireStalePrepared"
+  | "readBalanceCents"
+>;
+
+/** Field by field, so a column added to the table (failure_reason among
+ * them) never rides along into an answer. */
+function toView(row: TopupDbRow): TopupRowView {
   return {
-    enabled: env.WALLET_TOPUPS_ENABLED,
-    network,
-    devnetSolRailEnabled:
-      env.ALLOW_DEVNET_WALLET_TOPUPS && network === "devnet",
-    solPriceUsd: env.WALLET_TOPUP_SOL_PRICE_USD,
-    usdcMint:
-      network === "mainnet-beta"
-        ? USDC_MINT.mainnet.toBase58()
-        : USDC_MINT.devnet.toBase58(),
+    id: row.id,
+    orgId: row.orgId,
+    asset: row.asset,
+    network: row.network,
+    amountUsdCents: row.amountUsdCents,
+    bonusCents: row.bonusCents,
+    amountRaw: row.amountRaw,
+    quotedSolPriceUsd: row.quotedSolPriceUsd,
+    payerAddress: row.payerAddress,
+    depositAddress: row.depositAddress,
+    unsignedMessageB64: row.unsignedMessageB64,
+    txSignature: row.txSignature,
+    status: row.status,
+    failureCode: row.failureCode,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    lastValidBlockHeight: row.lastValidBlockHeight,
+  };
+}
 
-    deriveDepositAddress: (orgId) =>
-      deriveTopupDepositKeypair({
-        // enabled ⇒ present, enforced by env.ts; the fallback only makes
-        // the closure safe to construct while the rail is disabled.
-        masterKey: env.WALLET_MASTER_KEY ?? "",
-        orgId,
-      }).publicKey.toBase58(),
-
-    getLatestBlockhash: async () => {
-      const { blockhash, lastValidBlockHeight } =
-        await connection().getLatestBlockhash("confirmed");
-      return { blockhash, lastValidBlockHeight };
-    },
-
+export function buildWalletTopupStore(db: TopupStoreDb): WalletTopupStore {
+  return {
     createTopup: async (data) => {
-      await prisma.walletTopUp.create({
+      await db.walletTopUp.create({
         data: {
           id: data.id,
           orgId: data.orgId,
@@ -67,6 +148,9 @@ export function buildProductionWalletTopupDeps(): WalletTopupRouteDeps {
           bonusCents: data.bonusCents,
           amountRaw: data.amountRaw,
           quotedSolPriceUsd: data.quotedSolPriceUsd,
+          quotePriceMicroUsd: data.quotePriceMicroUsd,
+          quotePublishTime: data.quotePublishTime,
+          quoteSource: data.quoteSource,
           payerAddress: data.payerAddress,
           depositAddress: data.depositAddress,
           unsignedMessageB64: data.unsignedMessageB64,
@@ -77,35 +161,31 @@ export function buildProductionWalletTopupDeps(): WalletTopupRouteDeps {
     },
 
     findTopup: async ({ id, orgId }) => {
-      const row = await prisma.walletTopUp.findFirst({
-        where: { id, orgId },
-      });
-      if (!row) return null;
-      return {
-        id: row.id,
-        orgId: row.orgId,
-        asset: row.asset,
-        network: row.network,
-        amountUsdCents: row.amountUsdCents,
-        bonusCents: row.bonusCents,
-        amountRaw: row.amountRaw,
-        quotedSolPriceUsd: row.quotedSolPriceUsd,
-        payerAddress: row.payerAddress,
-        depositAddress: row.depositAddress,
-        unsignedMessageB64: row.unsignedMessageB64,
-        txSignature: row.txSignature,
-        status: row.status,
-        failureReason: row.failureReason,
-        expiresAt: row.expiresAt,
-        lastValidBlockHeight: row.lastValidBlockHeight,
-      };
+      const row = await db.walletTopUp.findFirst({ where: { id, orgId } });
+      return row ? toView(row) : null;
     },
 
-    claimForSubmit: async ({ id, txSignature }) => {
+    listTopups: async ({ orgId, limit }) => {
+      const rows = await db.walletTopUp.findMany({
+        where: { orgId },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      });
+      return rows.map(toView);
+    },
+
+    // The claim stores the signature, the signed bytes and the time in
+    // the same compare-and-set that takes the row, BEFORE the send.
+    claimForSubmit: async ({ id, txSignature, signedTxB64, submittedAt }) => {
       try {
-        const result = await prisma.walletTopUp.updateMany({
+        const result = await db.walletTopUp.updateMany({
           where: { id, status: "prepared" },
-          data: { status: "submitting", txSignature },
+          data: {
+            status: "submitting",
+            txSignature,
+            signedTxB64,
+            submittedAt,
+          },
         });
         return result.count === 1 ? "claimed" : "lost";
       } catch (err) {
@@ -116,79 +196,209 @@ export function buildProductionWalletTopupDeps(): WalletTopupRouteDeps {
       }
     },
 
-    markStatus: async ({ id, from, to, failureReason }) => {
-      const result = await prisma.walletTopUp.updateMany({
+    markStatus: async ({ id, from, to, failureCode, failureReason }) => {
+      const result = await db.walletTopUp.updateMany({
         where: { id, status: { in: from } },
         data: {
           status: to,
+          ...(failureCode !== undefined ? { failureCode } : {}),
           ...(failureReason !== undefined ? { failureReason } : {}),
         },
       });
       return result.count === 1;
     },
 
+    // Only rows that were never signed: a row with a signature is ended
+    // by the chain and by nothing else.
     expireStalePrepared: async ({ orgId, now }) => {
-      await prisma.walletTopUp.updateMany({
-        where: { orgId, status: "prepared", expiresAt: { lt: now } },
-        data: { status: "expired" },
+      await db.walletTopUp.updateMany({
+        where: {
+          orgId,
+          status: "prepared",
+          txSignature: null,
+          expiresAt: { lt: now },
+        },
+        data: {
+          status: "expired",
+          failureCode: TOPUP_FAILURE_CODES.unsignedExpired,
+        },
       });
     },
 
+    readBalanceCents: async (orgId) => {
+      const balance = await db.creditBalance.findUnique({ where: { orgId } });
+      return balance ? balance.balanceCents : 0n;
+    },
+  };
+}
+
+// ============================================
+// The chain
+// ============================================
+
+export type TopupConnection = Pick<
+  Connection,
+  | "getLatestBlockhash"
+  | "getMultipleAccountsInfo"
+  | "sendRawTransaction"
+  | "confirmTransaction"
+>;
+
+export type WalletTopupChain = Pick<
+  WalletTopupRouteDeps,
+  | "getLatestBlockhash"
+  | "readPayerBalances"
+  | "sendRawTransaction"
+  | "waitForConfirmation"
+>;
+
+// A token account's amount: a u64, little-endian, after the mint and the
+// owner (32 bytes each).
+const TOKEN_ACCOUNT_AMOUNT_OFFSET = 64;
+
+function tokenAmount(
+  account: { owner: PublicKey; data: Uint8Array } | null,
+): bigint | null {
+  // No token account is a balance of nothing.
+  if (!account) return 0n;
+  if (
+    !account.owner.equals(TOKEN_PROGRAM_ID) ||
+    account.data.byteLength < TOKEN_ACCOUNT_AMOUNT_OFFSET + 8
+  ) {
+    return null;
+  }
+  return new DataView(
+    account.data.buffer,
+    account.data.byteOffset,
+    account.data.byteLength,
+  ).getBigUint64(TOKEN_ACCOUNT_AMOUNT_OFFSET, true);
+}
+
+export function buildWalletTopupChain(input: {
+  getConnection: () => TopupConnection;
+  usdcMint: PublicKey;
+  confirmWaitMs?: number;
+}): WalletTopupChain {
+  const { getConnection, usdcMint } = input;
+  const confirmWaitMs = input.confirmWaitMs ?? TOPUP_CONFIRM_WAIT_MS;
+
+  return {
+    getLatestBlockhash: async () => {
+      const { blockhash, lastValidBlockHeight } =
+        await getConnection().getLatestBlockhash("confirmed");
+      return { blockhash, lastValidBlockHeight };
+    },
+
+    // ONE call for everything the check needs: the payer, and for USDC
+    // the payer's token account and the organization's.
+    readPayerBalances: async ({ payerAddress, depositAddress, asset }) => {
+      const payer = new PublicKey(payerAddress);
+      const keys = [payer];
+      if (asset === "USDC") {
+        keys.push(
+          getAssociatedTokenAddressSync(usdcMint, payer),
+          getAssociatedTokenAddressSync(usdcMint, new PublicKey(depositAddress)),
+        );
+      }
+      const infos = await getConnection().getMultipleAccountsInfo(
+        keys,
+        "confirmed",
+      );
+      if (!Array.isArray(infos) || infos.length !== keys.length) {
+        throw new Error("the node did not answer for every account");
+      }
+      const balances: PayerBalances = {
+        lamports: BigInt(infos[0]?.lamports ?? 0),
+        usdcRaw: null,
+        depositUsdcAccountExists: null,
+      };
+      if (asset === "USDC") {
+        balances.usdcRaw = tokenAmount(infos[1] ?? null);
+        balances.depositUsdcAccountExists = (infos[2] ?? null) !== null;
+      }
+      return balances;
+    },
+
+    // A refusal here says nothing about the chain: a node can refuse or
+    // time out on a transaction that another node has already taken.
     sendRawTransaction: async (rawTxBase64) => {
       try {
-        await connection().sendRawTransaction(
+        await getConnection().sendRawTransaction(
           Buffer.from(rawTxBase64, "base64"),
           { skipPreflight: false, maxRetries: 3 },
         );
         return { ok: true };
       } catch (err) {
-        const message = (err as Error).message ?? String(err);
-        return {
-          ok: false,
-          kind: /blockhash not found/i.test(message)
-            ? "blockhash_expired"
-            : "rejected",
-          message,
-        };
+        return { ok: false, detail: errorDetail(err) };
       }
     },
 
-    confirmTransaction: async ({ signature, blockhash, lastValidBlockHeight }) => {
-      try {
-        const res = await connection().confirmTransaction(
-          { signature, blockhash, lastValidBlockHeight },
-          "confirmed",
-        );
-        if (res.value.err) {
-          return {
-            outcome: "failed_on_chain",
-            err: JSON.stringify(res.value.err),
-          };
-        }
-        return { outcome: "confirmed" };
-      } catch {
-        // Expiry watchers and websocket hiccups both land here. The row
-        // stays 'submitted'; reconcile settles it against the chain.
-        return { outcome: "unresolved" };
-      }
-    },
-
-    getSignatureStatus: async (signature) => {
-      const res = await connection().getSignatureStatuses([signature], {
-        searchTransactionHistory: true,
+    // Waits for the node, at most confirmWaitMs. Whatever it says or
+    // throws decides nothing: the caller reads the signature's fate.
+    waitForConfirmation: async ({ signature, blockhash, lastValidBlockHeight }) => {
+      let timer: NodeJS.Timeout | undefined;
+      const limit = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, confirmWaitMs);
+        timer.unref?.();
       });
-      const status = res.value[0];
-      if (!status) return { found: false, confirmed: false, err: null };
-      return {
-        found: true,
-        confirmed:
-          status.confirmationStatus === "confirmed" ||
-          status.confirmationStatus === "finalized",
-        err: status.err ? JSON.stringify(status.err) : null,
-      };
+      const confirmed = Promise.resolve()
+        .then(() =>
+          getConnection().confirmTransaction(
+            { signature, blockhash, lastValidBlockHeight },
+            "confirmed",
+          ),
+        )
+        .then(
+          () => undefined,
+          () => undefined,
+        );
+      try {
+        await Promise.race([confirmed, limit]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
     },
+  };
+}
 
-    getBlockHeight: () => connection().getBlockHeight("confirmed"),
+// ============================================
+// Production
+// ============================================
+
+export function buildProductionWalletTopupDeps(): WalletTopupRouteDeps {
+  const network = env.SOLANA_NETWORK;
+  const usdcMint = usdcMintForNetwork(network);
+
+  const deriveDepositAddress = (orgId: string) =>
+    deriveTopupDepositKeypair({
+      // enabled ⇒ present, enforced by env.ts; the fallback only makes
+      // the closure safe to construct while the rail is disabled.
+      masterKey: env.WALLET_MASTER_KEY ?? "",
+      orgId,
+    }).publicKey.toBase58();
+
+  return {
+    enabled: env.WALLET_TOPUPS_ENABLED,
+    network,
+    solEnabled: env.SOL_PRICE_SOURCE !== "off",
+    usdcMint: usdcMint.toBase58(),
+
+    deriveDepositAddress,
+    platformAddresses: (orgId) => [
+      deriveDepositAddress(orgId),
+      derivePayoutKeypair(env.WALLET_MASTER_KEY ?? "").publicKey.toBase58(),
+    ],
+
+    ensureCluster: () => ensureSolanaCluster(),
+    getSolQuote: () => getSolQuote(),
+    solMarginBps: () => getSolQuoteMarginBps(),
+    readSignatureFate: (input) => readSignatureFate(input),
+
+    ...buildWalletTopupChain({
+      getConnection: () => getSolanaConnection(),
+      usdcMint,
+    }),
+    ...buildWalletTopupStore(prisma as unknown as TopupStoreDb),
 
     creditTopup: makeCreditTopup(prisma as unknown as TopupCreditDb),
   };

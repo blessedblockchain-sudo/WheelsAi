@@ -10,21 +10,30 @@
  * broadcast, confirmation, the exactly-once credit grant — is
  * production code against real devnet + the real database.
  *
+ * The session here is an email session with NO wallet on it: the payer
+ * goes in the body of prepare (`payerAddress`), which is how any account
+ * pays from whichever wallet it connects.
+ *
  * Verifies afterwards, from primary sources:
  *   1. WalletTopUp row reached status=credited with the tx signature.
  *   2. creditTransaction rows (purchase + bonus) exist with
  *      referenceId = topup row id, [devnet] labeled.
  *   3. CreditBalance moved by exactly amount+bonus.
  *   4. ON-CHAIN: the transfer paid the HKDF deposit address the exact
- *      lamports, and the memo carries the row id.
+ *      amount (lamports for SOL, USDC base units for USDC), and the memo
+ *      carries the row id.
  *
  * Usage:
- *   npx tsx scripts/run-topup-devnet.ts <orgId> [amountUsd]
+ *   npx tsx scripts/run-topup-devnet.ts <orgId> [amountUsd] [SOL|USDC]
  *
  * Env: DATABASE_URL, WALLET_MASTER_KEY, SOLANA_NETWORK=devnet,
- *      WALLET_TOPUPS_ENABLED=true, ALLOW_DEVNET_WALLET_TOPUPS=true,
- *      WALLET_TOPUP_SOL_PRICE_USD, TOPUP_PAYER_KEYPAIR (default
- *      ../../.devnet/payer.json).
+ *      SOLANA_RPC_URL, WALLET_TOPUPS_ENABLED=true, TOPUP_PAYER_KEYPAIR
+ *      (default ../../.devnet/payer.json).
+ *      For SOL: SOL_PRICE_SOURCE=pyth (the live price, read through
+ *      SOLANA_RPC_URL), or SOL_PRICE_SOURCE=static with
+ *      SOL_PRICE_STATIC_USD on a local chain. With SOL_PRICE_SOURCE=off
+ *      SOL is not offered and only USDC can be run.
+ *      For USDC: the payer needs devnet USDC and a little SOL for the fee.
  */
 
 import { readFileSync } from "node:fs";
@@ -32,6 +41,7 @@ import { readFileSync } from "node:fs";
 import Fastify from "fastify";
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
 
+import { env } from "../src/config/env.js";
 import { prisma } from "../src/lib/prisma.js";
 import { getSolanaConnection } from "../src/lib/solana.js";
 import { createWalletTopupRoutes } from "../src/routes/walletTopup.js";
@@ -45,12 +55,18 @@ function fail(msg: string): never {
 }
 
 async function main() {
-  const [, , orgId, amountArg] = process.argv;
-  if (!orgId) {
-    console.error("usage: npx tsx scripts/run-topup-devnet.ts <orgId> [amountUsd]");
+  const [, , orgId, amountArg, assetArg] = process.argv;
+  const asset = (assetArg ?? "SOL").toUpperCase();
+  if (!orgId || (asset !== "SOL" && asset !== "USDC")) {
+    console.error("usage: npx tsx scripts/run-topup-devnet.ts <orgId> [amountUsd] [SOL|USDC]");
     process.exit(2);
   }
   const amountUsd = amountArg ? Number(amountArg) : 50;
+  if (asset === "SOL" && env.SOL_PRICE_SOURCE === "off") {
+    fail(
+      "SOL_PRICE_SOURCE is off, so SOL is not offered. Set SOL_PRICE_SOURCE=pyth (or static with SOL_PRICE_STATIC_USD on a local chain), or run this with USDC.",
+    );
+  }
 
   const payerPath = process.env.TOPUP_PAYER_KEYPAIR ?? "../../.devnet/payer.json";
   const payer = Keypair.fromSecretKey(
@@ -59,7 +75,8 @@ async function main() {
   console.log(`payer (simulated browser wallet): ${payer.publicKey.toBase58()}`);
 
   // The production route factory over the production deps — what
-  // index.ts mounts, minus the HTTP listener.
+  // index.ts mounts, minus the HTTP listener. The session carries no
+  // wallet: the payer is named in the body of prepare.
   const app = Fastify({ logger: false });
   app.decorateRequest("auth", null);
   app.addHook("onRequest", async (request) => {
@@ -67,7 +84,6 @@ async function main() {
       userId: "t5-proof",
       orgId,
       type: "jwt",
-      walletAddress: payer.publicKey.toBase58(),
     };
   });
   await app.register(createWalletTopupRoutes(buildProductionWalletTopupDeps()));
@@ -82,7 +98,7 @@ async function main() {
   const prepareRes = await app.inject({
     method: "POST",
     url: "/topups/prepare",
-    payload: { amountUsd, asset: "SOL" },
+    payload: { amountUsd, asset, payerAddress: payer.publicKey.toBase58() },
   });
   if (prepareRes.statusCode !== 200) {
     fail(`prepare -> ${prepareRes.statusCode}: ${prepareRes.body}`);
@@ -91,14 +107,30 @@ async function main() {
     topupId: string;
     unsignedTxBase64: string;
     depositAddress: string;
+    payerAddress: string;
+    asset: string;
     bonusUsd: number;
-    quotedSolPriceUsd: number;
+    amountRaw: string;
+    quote: { solPriceUsd: number; validUntil: string } | null;
+    opensUsdcAccount: boolean;
     expiresAt: string;
+    message: string;
   };
-  console.log(`\n[1] prepared topup ${prepared.topupId}`);
+  console.log(`\n[1] prepared ${prepared.asset} topup ${prepared.topupId}`);
+  console.log(`    payer (from the body): ${prepared.payerAddress}`);
   console.log(`    deposit address: ${prepared.depositAddress}`);
-  console.log(`    quote: $${prepared.quotedSolPriceUsd}/SOL, bonus $${prepared.bonusUsd}`);
+  console.log(`    amount: ${prepared.amountRaw} base units, bonus $${prepared.bonusUsd}`);
+  if (prepared.quote) {
+    console.log(`    quote: $${prepared.quote.solPriceUsd}/SOL until ${prepared.quote.validUntil}`);
+  }
+  if (prepared.opensUsdcAccount) {
+    console.log(`    this payment also opens the organization's USDC account`);
+  }
   console.log(`    expires: ${prepared.expiresAt}`);
+  console.log(`    message: ${prepared.message}`);
+  if (prepared.payerAddress !== payer.publicKey.toBase58()) {
+    fail("prepare did not take the payer from the body");
+  }
 
   // ---- 2. wallet signature (deserialize → sign → reserialize) ----
   const tx = Transaction.from(Buffer.from(prepared.unsignedTxBase64, "base64"));
@@ -116,8 +148,9 @@ async function main() {
   if (submitRes.statusCode === 200) {
     finalBody = submitRes.json();
   } else if (submitRes.statusCode === 202) {
-    console.log(`[3] submit -> 202 pending confirmation; reconciling…`);
-    finalBody = {};
+    finalBody = submitRes.json();
+    console.log(`[3] submit -> 202 ${String(finalBody.status)}; reconciling…`);
+    console.log(`    message: ${String(finalBody.message)}`);
     for (let i = 0; i < 30; i++) {
       await sleep(2_000);
       const rec = await app.inject({
@@ -143,6 +176,7 @@ async function main() {
   }
   console.log(`[3] submit -> credited`);
   console.log(`    tx signature: ${String(finalBody.txSignature)}`);
+  console.log(`    message: ${String(finalBody.message)}`);
 
   // ---- 4. verify: database ----
   const row = await prisma.walletTopUp.findUnique({
@@ -190,19 +224,33 @@ async function main() {
   const keys = parsed.transaction.message.accountKeys.map((k) =>
     (k.pubkey as PublicKey).toBase58(),
   );
-  const depositIndex = keys.indexOf(prepared.depositAddress);
-  if (depositIndex < 0) fail("deposit address not in tx accounts");
-  const lamportsReceived =
-    (parsed.meta!.postBalances[depositIndex] ?? 0) -
-    (parsed.meta!.preBalances[depositIndex] ?? 0);
+  let received: bigint;
+  if (asset === "SOL") {
+    const depositIndex = keys.indexOf(prepared.depositAddress);
+    if (depositIndex < 0) fail("deposit address not in tx accounts");
+    received =
+      BigInt(parsed.meta!.postBalances[depositIndex] ?? 0) -
+      BigInt(parsed.meta!.preBalances[depositIndex] ?? 0);
+  } else {
+    // USDC lands in a token account OWNED by the deposit address; a first
+    // payment opens it, so it may be absent from the "before" list.
+    const held = (balances: NonNullable<typeof parsed.meta>["postTokenBalances"]) =>
+      (balances ?? [])
+        .filter((b) => b.owner === prepared.depositAddress)
+        .reduce((sum, b) => sum + BigInt(b.uiTokenAmount.amount), 0n);
+    received = held(parsed.meta!.postTokenBalances) - held(parsed.meta!.preTokenBalances);
+  }
   const memoSeen = (parsed.meta!.logMessages ?? []).some((l) =>
     l.includes(prepared.topupId),
   );
   console.log(`\n[5] on-chain verification (slot ${parsed.slot})`);
-  console.log(`    deposit received: ${lamportsReceived} lamports (row says ${row.amountRaw})`);
+  console.log(`    deposit received: ${received} base units of ${asset} (row says ${row.amountRaw})`);
   console.log(`    memo carries row id: ${memoSeen}`);
-  if (String(lamportsReceived) !== row.amountRaw) {
-    fail("on-chain lamports do not match the row's amountRaw");
+  if (String(received) !== row.amountRaw) {
+    fail("the amount received on-chain does not match the row's amountRaw");
+  }
+  if (row.amountRaw !== prepared.amountRaw) {
+    fail("the row's amountRaw is not the amount prepare answered");
   }
   if (!memoSeen) fail("memo with the topup id not found in logs");
 

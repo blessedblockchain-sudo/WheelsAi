@@ -58,14 +58,6 @@ test("validateEnv: ENCRYPTION_KEY must differ from JWT_SECRET in production", as
   );
 });
 
-test("validateEnv: ALLOW_DEVNET_WALLET_TOPUPS is boot-fatal in production", async () => {
-  const { validateEnv, EnvValidationError } = await import("../config/env.js");
-  assert.throws(
-    () => validateEnv({ ...PROD_BASE, ALLOW_DEVNET_WALLET_TOPUPS: "true" }),
-    EnvValidationError
-  );
-});
-
 test("validateEnv: WALLET_TOPUPS_ENABLED demands WALLET_MASTER_KEY in every environment", async () => {
   const { validateEnv, EnvValidationError } = await import("../config/env.js");
   // Without the master key there are no deposit addresses to derive —
@@ -140,6 +132,53 @@ test("POST /checkout returns 501 card_payments_not_configured when neither Strip
     assert.equal(res.json().error, "card_payments_not_configured");
   } finally {
     p.orgMember.findUnique = savedFindUnique;
+    await app.close();
+  }
+});
+
+test("GET /packages: rails.walletAssets is USDC, then SOL wherever a SOL price source is set, and only when the wallet rail is on", async () => {
+  const Fastify = (await import("fastify")).default;
+  const { billingRoutes } = await import("../routes/billing.js");
+  const { env } = await import("../config/env.js");
+
+  const app = Fastify({ logger: false });
+  app.addHook("onRequest", async (request) => {
+    // Stand in for the global auth hook: the billing routes ask for a
+    // signed-in principal.
+    (request as unknown as { auth: unknown }).auth = {
+      userId: "user_1",
+      orgId: "org_1",
+      role: "owner",
+      type: "jwt",
+    };
+  });
+  await app.register(billingRoutes, { prefix: "/api/billing" });
+
+  const settings = env as unknown as Record<string, unknown>;
+  const saved = {
+    WALLET_TOPUPS_ENABLED: settings.WALLET_TOPUPS_ENABLED,
+    SOL_PRICE_SOURCE: settings.SOL_PRICE_SOURCE,
+  };
+  const railsWith = async (enabled: boolean, source: string) => {
+    settings.WALLET_TOPUPS_ENABLED = enabled;
+    settings.SOL_PRICE_SOURCE = source;
+    const res = await app.inject({ method: "GET", url: "/api/billing/packages" });
+    assert.equal(res.statusCode, 200);
+    return res.json().rails as { wallet: boolean; walletAssets: string[] };
+  };
+
+  try {
+    for (const source of ["off", "pyth", "static"]) {
+      const off = await railsWith(false, source);
+      assert.equal(off.wallet, false);
+      assert.deepEqual(off.walletAssets, [], `wallet rail off, source ${source}`);
+    }
+    assert.deepEqual((await railsWith(true, "off")).walletAssets, ["USDC"]);
+    assert.deepEqual((await railsWith(true, "pyth")).walletAssets, ["USDC", "SOL"]);
+    assert.deepEqual((await railsWith(true, "static")).walletAssets, ["USDC", "SOL"]);
+    assert.equal((await railsWith(true, "pyth")).wallet, true);
+  } finally {
+    Object.assign(settings, saved);
     await app.close();
   }
 });

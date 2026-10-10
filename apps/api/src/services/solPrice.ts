@@ -428,3 +428,24 @@ export function solUsdRate(quote: SolQuote, direction: SolMoneyDirection, margin
   if (!Number.isFinite(usdPerSol) || usdPerSol <= 0) return { ok: false, code: "no_value" };
   return { ok: true, usdPerSol };
 }
+
+export type SolMicroUsdRateResult =
+  | { ok: true; microUsdPerSol: bigint }
+  | { ok: false; code: SolMoneyRefusalCode };
+
+/**
+ * The same figure as solUsdRate, as whole micro-dollars per SOL, to store
+ * on a row beside the amount it priced. Rounded down; with no margin it is
+ * exact.
+ */
+export function solMicroUsdRate(
+  quote: SolQuote,
+  direction: SolMoneyDirection,
+  marginBps: number
+): SolMicroUsdRateResult {
+  const value = scaledValue(quote, direction, marginBps);
+  if (!value.ok) return value;
+  const microUsdPerSol = value.value / BPS;
+  if (microUsdPerSol <= 0n) return { ok: false, code: "no_value" };
+  return { ok: true, microUsdPerSol };
+}

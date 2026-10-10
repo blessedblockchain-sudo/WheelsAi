@@ -156,15 +156,9 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       proSubscription: isProSubscriptionEnabled(),
       mockCheckout: env.ALLOW_MOCK_CHECKOUT,
       wallet: env.WALLET_TOPUPS_ENABLED,
+      // USDC first; SOL after it wherever a SOL price source is set.
       walletAssets: env.WALLET_TOPUPS_ENABLED
-        ? [
-            ...(env.ALLOW_DEVNET_WALLET_TOPUPS &&
-            env.SOLANA_NETWORK === "devnet" &&
-            env.WALLET_TOPUP_SOL_PRICE_USD
-              ? ["SOL"]
-              : []),
-            "USDC",
-          ]
+        ? ["USDC", ...(env.SOL_PRICE_SOURCE !== "off" ? ["SOL"] : [])]
         : [],
       network: env.SOLANA_NETWORK,
     },

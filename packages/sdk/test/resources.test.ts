@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { AGENT_KINDS, WheelsAI, WheelsAIError } from "../src/index.js";
+import { AGENT_KINDS, WheelsAI, WheelsAIError, type UseAccessState, type UseRefusal } from "../src/index.js";
 import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } from "./helpers.js";
 
 const AGENT = "11111111-1111-4111-8111-111111111111";
@@ -125,6 +125,11 @@ const cases: Case[] = [
   { name: "billing.subscriptionCheckout", run: (w) => w.billing.subscriptionCheckout(), method: "POST", path: "/api/billing/subscription/checkout", body: { plan: "pro" } },
   { name: "billing.portal", run: (w) => w.billing.portal(), method: "POST", path: "/api/billing/portal" },
 
+  // ---- use of an agent you pay for ----
+  { name: "use.access", run: (w) => w.use.access("refund-helper"), method: "GET", path: "/api/a/refund-helper/access" },
+  { name: "use.chat", run: (w) => w.use.chat("refund-helper", { messages: [{ role: "user", content: "Hi" }], sessionId: "s1" }), method: "POST", path: "/api/a/refund-helper/chat", body: { messages: [{ role: "user", content: "Hi" }], sessionId: "s1", stream: false } },
+  { name: "use.run", run: (w) => w.use.run("brief-writer", { input: { topic: "x" } }), method: "POST", path: "/api/a/brief-writer/run", body: { input: { topic: "x" }, stream: false } },
+  { name: "use.results", run: (w) => w.use.results("daily-brief"), method: "GET", path: "/api/a/daily-brief/results" },
   // ---- marketplace ----
   { name: "marketplace.search", run: (w) => w.marketplace.search({ query: "support", sortBy: "newest", limit: 10 }), method: "GET", path: "/api/marketplace/listings", query: { query: "support", sortBy: "newest", limit: "10" } },
   { name: "marketplace.get", run: (w) => w.marketplace.get("my-bot"), method: "GET", path: "/api/marketplace/listings/my-bot" },
@@ -139,6 +144,8 @@ const cases: Case[] = [
   { name: "marketplace.publishListing", run: (w) => w.marketplace.publishListing(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/publish` },
   { name: "marketplace.archiveListing", run: (w) => w.marketplace.archiveListing(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/archive` },
   { name: "marketplace.install", run: (w) => w.marketplace.install(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/install` },
+  { name: "marketplace.startUsing", run: (w) => w.marketplace.startUsing(LISTING, { expected: { pricingModel: "per_request", pricePerRequestCents: 5 } }), method: "POST", path: `/api/marketplace/listings/${LISTING}/use`, body: { expected: { pricingModel: "per_request", pricePerRequestCents: 5 } } },
+  { name: "marketplace.stopUsing", run: (w) => w.marketplace.stopUsing(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/uninstall` },
   { name: "marketplace.uninstall", run: (w) => w.marketplace.uninstall(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/uninstall` },
   { name: "marketplace.installStatus", run: (w) => w.marketplace.installStatus(LISTING), method: "GET", path: `/api/marketplace/listings/${LISTING}/install-status` },
   { name: "marketplace.myInstalls", run: (w) => w.marketplace.myInstalls(), method: "GET", path: "/api/marketplace/my-installs" },
@@ -572,6 +579,124 @@ describe("errors the API documents for install", () => {
       assert.equal((err.data as { tokenSymbol: string }).tokenSymbol, "AGENT");
       return true;
     });
+  });
+});
+
+describe("selling and using an agent", () => {
+  const expected = { pricingModel: "monthly" as const, monthlyPriceCents: 900 };
+
+  it("create and update send what the listing sells, its tools and publish", async () => {
+    const { fetch, calls } = recordingFetch();
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const input = { ...listingInput, sells: "copies" as const, allowedTools: ["http_request"], publish: true };
+    await wheels.marketplace.createListing(input);
+    await wheels.marketplace.updateListing(LISTING, { sells: "use", allowedTools: [] });
+    assert.deepEqual(calls[0]!.body, input);
+    assert.deepEqual(calls[1]!.body, { sells: "use", allowedTools: [] });
+  });
+
+  it("startUsing sends the price it was shown, and acceptNewPricing only when asked", async () => {
+    const { fetch, calls } = recordingFetch();
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    await wheels.marketplace.startUsing(LISTING, { expected, acceptNewPricing: true });
+    await wheels.marketplace.startUsing(LISTING, { expected });
+    assert.deepEqual(calls[0]!.body, { expected, acceptNewPricing: true });
+    assert.deepEqual(calls[1]!.body, { expected });
+  });
+
+  it("keeps the pricing a changed listing answers with", async () => {
+    const body = {
+      error: "pricing_changed",
+      message: "The price changed.",
+      pricing: { pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 1200 },
+    };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 409)).fetch });
+    await assert.rejects(wheels.marketplace.startUsing(LISTING, { expected }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "pricing_changed");
+      assert.equal((err.data as { pricing: { monthlyPriceCents: number } }).pricing.monthlyPriceCents, 1200);
+      return true;
+    });
+  });
+
+  it("keeps the date a copy blocks starting to use until", async () => {
+    const body = {
+      error: "copy_subscription_active",
+      message: "You hold a copy of this agent with a month paid for.",
+      until: "2026-11-01T00:00:00.000Z",
+    };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 409)).fetch });
+    await assert.rejects(wheels.marketplace.startUsing(LISTING, { expected }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 409);
+      assert.equal(err.code, "copy_subscription_active");
+      assert.equal((err.data as UseRefusal).until, "2026-11-01T00:00:00.000Z");
+      return true;
+    });
+  });
+
+  it("the access answer carries startBlocked, and a person who left the organization is refused", async () => {
+    const access: UseAccessState = {
+      access: "none",
+      listingId: "l1",
+      terms: null,
+      accepted: null,
+      subscription: null,
+      balanceCents: 0,
+      canAccept: false,
+      startBlocked: { code: "copy_subscription_active", message: "A copy is paid for.", until: "2026-11-01T00:00:00.000Z" },
+    };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(access)).fetch });
+    assert.deepEqual(await wheels.use.access("refund-helper"), access);
+    const refusal = { error: "not_a_member", message: "You are no longer a member of the organization that pays for this." };
+    const refused = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(refusal, 403)).fetch });
+    await assert.rejects(refused.use.chat("refund-helper", { messages: [{ role: "user", content: "Hi" }] }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 403);
+      assert.equal(err.code, "not_a_member");
+      return true;
+    });
+  });
+
+  it("a handle is one path segment", async () => {
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch().fetch });
+    assert.throws(() => wheels.use.access(".."), WheelsAIError);
+    assert.throws(() => wheels.use.chat("", { messages: [] }), WheelsAIError);
+  });
+
+  it("chat and run give the whole answer and the receipt as the API sent them", async () => {
+    const answer = {
+      message: { role: "assistant", content: "Hello." },
+      toolCalls: [],
+      billing: { chargedCents: 5, balanceCents: 495, access: "listing_pricing" },
+    };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(answer)).fetch });
+    assert.deepEqual(await wheels.use.chat("refund-helper", { messages: [{ role: "user", content: "Hi" }] }), answer);
+  });
+
+  it("a refusal keeps its body, so the message can be shown as it comes", async () => {
+    const body = {
+      error: "insufficient_credits",
+      message: "You do not have enough credits for this message ($0.05). Nothing was charged. Add credits to continue.",
+      priceCents: 5,
+      balanceCents: 2,
+    };
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, 402)).fetch });
+    await assert.rejects(wheels.use.chat("refund-helper", { messages: [{ role: "user", content: "Hi" }] }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 402);
+      assert.equal(err.code, "insufficient_credits");
+      assert.equal((err.data as { priceCents: number }).priceCents, 5);
+      return true;
+    });
+  });
+
+  it("createApiKey sends the cap for one use with the scope", async () => {
+    const { fetch, calls } = recordingFetch();
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    await wheels.auth.createApiKey({ name: "buyer", scopes: ["agents:use"], maxUsePriceCents: 50, dailySpendCapCents: 2000 });
+    assert.deepEqual(calls[0]!.body, { name: "buyer", scopes: ["agents:use"], maxUsePriceCents: 50, dailySpendCapCents: 2000 });
   });
 });
 

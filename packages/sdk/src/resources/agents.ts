@@ -399,6 +399,8 @@ export interface PublicLink {
   showResults: boolean;
   /** The agent has a tool that visitors do not get. */
   toolsOffForVisitors: boolean;
+  /** Present while a published listing sells use of this agent; `paid` is whether a price is set. */
+  sale?: { paid: boolean; listingSlug: string };
 }
 
 export interface PublicLinkInput {

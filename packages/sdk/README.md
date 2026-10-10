@@ -121,6 +121,43 @@ WheelsAI API key. Model deployments stream and take `tools` too.
 `agents.update(id, { entrypoint: "graph" })` makes an agent answer through its saved graph, and
 `agents.usage(id, "7d")` returns its requests, errors, tokens and latency.
 
+## Using an agent you pay for
+
+A listing sells either use of the creator's own agent (the default) or copies. Someone who pays to
+use an agent never gets a copy or its instructions: they start using it, then chat with it or run it.
+Each use is charged when it is sent and refunded if no answer is delivered; a monthly price charges
+30 days at a time. The answer arrives whole.
+
+```ts
+// What it asks and where you stand. Needs sign-in; 404 agent_not_found.
+const { access, terms, balanceCents, canAccept } = await wheels.use.access("refund-helper");
+
+// Agree to the price you were shown (an owner or admin, or a key granted marketplace:install).
+// A changed price answers 409 pricing_changed with the new pricing; pass acceptNewPricing to continue.
+const { listing } = await wheels.marketplace.get("refund-helper-bot");
+await wheels.marketplace.startUsing(listing.id, {
+  expected: { pricingModel: listing.pricingModel, pricePerRequestCents: listing.pricePerRequestCents, monthlyPriceCents: listing.monthlyPriceCents },
+});
+
+const answer = await wheels.use.chat("refund-helper", { messages: [{ role: "user", content: "How long do refunds take?" }] });
+console.log(answer.message.content, answer.billing.chargedCents, answer.billing.balanceCents);
+
+// A task agent takes its form's answers; a self-running agent's results are read, not asked for.
+const run = await wheels.use.run("brief-writer", { input: { topic: "Q3 churn" } });
+const { results, hasMore } = await wheels.use.results("daily-brief");
+
+await wheels.marketplace.stopUsing(listing.id); // a subscription ends now, with no refund
+```
+
+`use.chat` and `use.run` need an API key granted `agents:use`, created with both caps:
+`auth.createApiKey({ scopes: ["agents:use"], maxUsePriceCents: 50, dailySpendCapCents: 2000 })`. A
+refusal throws a `WheelsAIError` whose `data` is a `UseRefusal`; show its `message` as it comes. Two to
+know: `not_a_member` (403) when you are no longer a member of the paying organization, and
+`copy_subscription_active` (409 on `marketplace.startUsing`, with `until`) when you hold a copy of the
+agent with a month paid for; `use.access` then carries `startBlocked` and `canAccept` is false. The
+same agent answers `inference.chat({ model: "a/refund-helper", ... })`. To sell, `marketplace.createListing`
+takes `sells` (`"use"` by default, or `"copies"`), `allowedTools` and `publish`.
+
 ## Hiring an offering
 
 An offering is a fixed task a publisher's agent, workflow or model runs for a set price. Hiring
@@ -270,7 +307,7 @@ refused before anything is sent, with an error that does not repeat it.
 
 ## Resources
 
-`auth`, `agents`, `destinations`, `deployments` (model deployments), `models`, `billing`, `marketplace`,
+`auth`, `agents`, `destinations`, `deployments` (model deployments), `models`, `billing`, `marketplace`, `use` (agents you pay for),
 `inference` (OpenAI-compatible `/v1`), `workflows` (definitions are read-only here: `list`, `get`,
 `run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`, `/api/capabilities`) and `skills`. Billing amounts are dollars, as the API

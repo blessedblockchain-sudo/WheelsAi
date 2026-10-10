@@ -7,6 +7,7 @@ import {
   modelsResource,
   billingResource,
   marketplaceResource,
+  useResource,
   inferenceResource,
   workflowsResource,
   offeringsResource,
@@ -25,6 +26,7 @@ export class WheelsAI {
   readonly models;
   readonly billing;
   readonly marketplace;
+  readonly use;
   readonly inference;
   readonly workflows;
   readonly offerings;
@@ -45,6 +47,7 @@ export class WheelsAI {
     this.models = modelsResource(this.client);
     this.billing = billingResource(this.client);
     this.marketplace = marketplaceResource(this.client);
+    this.use = useResource(this.client);
     this.inference = inferenceResource(this.client);
     this.workflows = workflowsResource(this.client);
     this.offerings = offeringsResource(this.client);

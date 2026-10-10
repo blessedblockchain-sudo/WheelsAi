@@ -111,7 +111,18 @@ export interface ChatCompletionResponse {
   wheelsai?: ChatCompletionExtension;
 }
 
-/** One entry of `GET /v1/models`: a running deployment, an agent or an enabled workflow. */
+/**
+ * What `/v1` adds to the completion of an agent you pay for (`model: "a/<handle>"`): nothing but this.
+ * The response has no `usage`, and every chunk of a stream carries `model: "a/<handle>"`; the first chunk of a
+ * stream has `choices: []` and this object.
+ */
+export interface PaidAgentCompletionExtension {
+  agent: { handle: string };
+  /** What the use cost; `chargedCents` is 0 inside a paid month. */
+  billing: { chargedCents: number; balanceCents: number | null; access: "subscribed" | "listing_pricing" };
+}
+
+/** One entry of `GET /v1/models`: a running deployment, an agent, an enabled workflow, or an agent you pay for. */
 export interface ModelEntry {
   /** A deployment slug, `agent/<slug>` or `workflow/<slug>`. Pass it as `model` to `inference.chat`. */
   id: string;
@@ -120,7 +131,7 @@ export interface ModelEntry {
   owned_by: string;
   /** Deployments only: the underlying Hugging Face model id. */
   root?: string;
-  wheelsai?: { kind: "deployment" | "agent" | "workflow" };
+  wheelsai?: { kind: "deployment" | "agent" | "workflow" | "paid_agent" };
 }
 
 export function inferenceResource(client: WheelsAIClient) {

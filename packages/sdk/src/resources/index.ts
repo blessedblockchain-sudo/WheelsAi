@@ -85,16 +85,36 @@ export {
 } from "./billing.js";
 export {
   marketplaceResource,
+  type AgentInstall,
   type AgentListing,
   type AgentReview,
   type CreateListingInput,
+  type ExpectedPricing,
+  type InstallAccess,
+  type LicenceAgent,
   type ListingCategory,
+  type ListingSells,
   type ListingStatus,
+  type ListingSubscription,
+  type ListingUnit,
+  type StartedUsing,
   type Pagination,
   type PricingModel,
   type SearchListingsParams,
   type UpdateListingInput,
 } from "./marketplace.js";
+export {
+  useResource,
+  type UseAccessState,
+  type UseBilling,
+  type UseChatResult,
+  type UseRefusal,
+  type UseResults,
+  type UseRunResult,
+  type UseTerms,
+  type UseToolCall,
+  type UseAccessKind,
+} from "./use.js";
 export {
   inferenceResource,
   type ChatMessage,
@@ -104,6 +124,7 @@ export {
   type ChatCompletionRequest,
   type ChatCompletionResponse,
   type ChatCompletionExtension,
+  type PaidAgentCompletionExtension,
   type ModelEntry,
 } from "./inference.js";
 export {

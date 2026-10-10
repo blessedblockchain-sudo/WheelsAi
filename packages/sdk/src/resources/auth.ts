@@ -44,8 +44,8 @@ export interface WhoAmI {
 
 /**
  * What a key may be granted. An ordinary scope is also held by a key with no scopes or with
- * `*`. The three that spend money (`jobs:hire`, `jobs:review`, `marketplace:install`) are held
- * only by a key that lists them by name.
+ * `*`. The four that spend money (`jobs:hire`, `jobs:review`, `marketplace:install`, `agents:use`)
+ * are held only by a key that lists them by name.
  */
 export type ApiKeyScope =
   | "*"
@@ -55,14 +55,17 @@ export type ApiKeyScope =
   | "jobs:read"
   | "jobs:hire"
   | "jobs:review"
-  | "marketplace:install";
+  | "marketplace:install"
+  | "agents:use";
 
 export interface CreateApiKeyInput {
   name?: string;
   scopes?: ApiKeyScope[];
   /** Required with `jobs:hire`: the most one job may cost, in cents (1 to 100,000). */
   maxJobPriceCents?: number;
-  /** Required with `jobs:hire`: the most the key may spend on jobs in one UTC day, in cents. */
+  /** Required with `agents:use`: the most one use of a paid agent may cost, in cents (1 to 100,000). */
+  maxUsePriceCents?: number;
+  /** Required with `jobs:hire` or `agents:use`: the most the key may spend in one UTC day, in cents. Hiring and paid use share the day. */
   dailySpendCapCents?: number;
 }
 
@@ -73,6 +76,8 @@ export interface ApiKeyInfo {
   scopes: string[];
   /** Spend caps of a key granted `jobs:hire`; null on any other key. */
   maxJobPriceCents: number | null;
+  /** The most one use of a paid agent may cost, on a key granted `agents:use`; null on any other key. */
+  maxUsePriceCents: number | null;
   dailySpendCapCents: number | null;
   lastUsedAt: string | null;
   expiresAt: string | null;

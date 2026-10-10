@@ -899,6 +899,30 @@ test("a public listing says what it sells, its unit and its agent's handle and k
   }
 });
 
+test("a public listing says whether it has a token, and nothing of the token", async () => {
+  const world = published({ sells: "use", pricingModel: "free" });
+  await withWorld(world, async ({ getListingBySlug, getListingById }) => {
+    world.state.listings[0]!.agentToken = { id: "tok_1", mintAddress: "So1anaMint", creatorAddress: "Cr3ator" };
+    const withToken = (await getListingBySlug("research-analyst"))!;
+    assert.equal(withToken.hasToken, true);
+    assert.doesNotMatch(JSON.stringify(withToken), /tok_1|So1anaMint|Cr3ator/);
+
+    world.state.listings[0]!.agentToken = null;
+    assert.equal((await getListingBySlug("research-analyst"))!.hasToken, false);
+
+    // A read that did not look says nothing, rather than "no token".
+    delete world.state.listings[0]!.agentToken;
+    assert.equal("hasToken" in (await getListingById(LISTING_ID))!, false);
+  });
+});
+
+test("the reads behind the marketplace, its featured row and the listing page ask whether a listing has a token", () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(path.join(here, "../services/marketplace.ts"), "utf8");
+  assert.equal(source.match(/agentToken: LISTING_TOKEN_MARK/g)?.length, 3);
+  assert.match(source, /const LISTING_TOKEN_MARK = \{ select: \{ id: true \} \} as const;/);
+});
+
 test("getListingBySlug's select no longer names the agent's instructions or tools", () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(path.join(here, "..", "services", "marketplace.ts"), "utf8");

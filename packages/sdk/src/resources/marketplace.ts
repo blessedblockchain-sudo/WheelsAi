@@ -40,6 +40,8 @@ export interface AgentListing {
   /** What the listing sells. */
   sells: ListingSells;
   unit: ListingUnit | null;
+  /** Whether the listing has a token. Present on a search, the featured row and a listing read by slug. */
+  hasToken?: boolean;
   /** Your own listings only (create, update, `myListings`): the tools the agent may use for people who pay. */
   allowedTools?: string[];
   /** `myListings` only: how many people have a copy, use it, or are subscribed. */

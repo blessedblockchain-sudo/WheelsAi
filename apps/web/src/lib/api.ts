@@ -2080,6 +2080,8 @@ export interface MarketplaceListing {
   pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents: number | null;
   monthlyPriceCents: number | null;
+  /** Whether the listing has a token. Said by the marketplace, its featured row and the listing page. */
+  hasToken?: boolean;
   /** What the listing sells. */
   sells: MarketplaceSells;
   /** What one payment buys; null for a free listing, a copy or a token listing. */
@@ -2345,7 +2347,16 @@ export interface PaidUseAccessState {
   terms: PaidUseTerms | null;
   /** What the caller agreed to; null when they have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
-  subscription: { status: string; currentPeriodEnd: string; cancelAtPeriodEnd: boolean } | null;
+  /**
+   * `graceEndsAt` is set while a renewal that failed is still being retried: the day access ends
+   * unless credits are added before it (an ISO date).
+   */
+  subscription: {
+    status: string;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+    graceEndsAt: string | null;
+  } | null;
   /** The caller's credits, in cents. */
   balanceCents: number;
   /** Whether the caller may agree to a price: an owner or admin of their organization. */
@@ -2419,6 +2430,10 @@ export interface PaidUseRefusal {
   balanceCents?: number;
   /** model_error and answer_withheld: what was charged and given back. */
   refundedCents?: number;
+  /** pricing_changed on starting to use: what the listing asks now. */
+  pricing?: MarketplacePricingTerms;
+  /** insufficient_credits on subscribing: what the first month costs. */
+  requiredCents?: number;
 }
 
 /** The refusal body of an error thrown by `paidUseApi`, or null when it is not one. */

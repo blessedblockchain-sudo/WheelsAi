@@ -1068,8 +1068,26 @@ test("getUseAccess: the caller's access, the terms now, what they accepted and w
     status: "active",
     currentPeriodEnd: "2026-11-01T00:00:00.000Z",
     cancelAtPeriodEnd: false,
+    graceEndsAt: null,
   });
   assert.equal(subscribed.accepted?.monthlyPriceCents, 900);
+
+  // A renewal that failed is retried for three days: the page is told the day
+  // access ends unless credits are added. No such day once renewal is cancelled.
+  const retried = await view({
+    listing: MONTHLY_LISTING,
+    licence: MONTHLY_LICENCE,
+    sub: { ...PAID_MONTH, status: "past_due" },
+    role: "admin",
+  });
+  assert.equal(retried.subscription?.graceEndsAt, "2026-11-04T00:00:00.000Z");
+  const cancelled = await view({
+    listing: MONTHLY_LISTING,
+    licence: MONTHLY_LICENCE,
+    sub: { ...PAID_MONTH, status: "past_due", cancelAtPeriodEnd: true },
+    role: "admin",
+  });
+  assert.equal(cancelled.subscription?.graceEndsAt, null);
   assert.equal(subscribed.terms?.unit, "month");
   assert.equal(subscribed.canAccept, true);
 

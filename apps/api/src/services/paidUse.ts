@@ -109,6 +109,7 @@ import {
   type UseAccess,
   type UseSubscription,
 } from "./useAccess.js";
+import { PAST_DUE_GRACE_DAYS } from "./subscriptionAccess.js";
 import type { UseListingRow } from "./useListing.js";
 import {
   resolveUseBilling,
@@ -413,7 +414,16 @@ export interface UseAccessView {
   terms: PaidUseTerms | null;
   /** What the caller agreed to; null when they have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
-  subscription: { status: string; currentPeriodEnd: string; cancelAtPeriodEnd: boolean } | null;
+  /**
+   * `graceEndsAt` is set while a renewal that failed is still being retried:
+   * the day access ends unless credits are added before it.
+   */
+  subscription: {
+    status: string;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+    graceEndsAt: string | null;
+  } | null;
   balanceCents: number;
   /**
    * Whether this caller may agree to a price: an owner or admin, or a key
@@ -1295,6 +1305,11 @@ export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Pro
               status: sub.status,
               currentPeriodEnd: sub.currentPeriodEnd.toISOString(),
               cancelAtPeriodEnd: sub.cancelAtPeriodEnd === true,
+              // The same days of grace subscriptionGrantsAccess gives.
+              graceEndsAt:
+                sub.status === "past_due" && sub.cancelAtPeriodEnd !== true
+                  ? new Date(sub.currentPeriodEnd.getTime() + PAST_DUE_GRACE_DAYS * 24 * 60 * 60 * 1000).toISOString()
+                  : null,
             }
           : null,
       balanceCents: Number(balance),

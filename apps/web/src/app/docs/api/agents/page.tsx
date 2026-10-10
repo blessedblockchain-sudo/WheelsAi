@@ -1395,9 +1395,10 @@ if reply.tool_calls:
             <code>keepsCopy</code> is whether the owner keeps a copy of what is sent and answered.
           </li>
           <li>
-            <code>subscription</code> is <code>&#123; status, currentPeriodEnd, cancelAtPeriodEnd &#125;</code> or{" "}
-            <code>null</code>. <code>canAccept</code> is whether you may agree to a price: an owner or admin, or a key
-            granted <code>marketplace:install</code> by name.
+            <code>subscription</code> is <code>&#123; status, currentPeriodEnd, cancelAtPeriodEnd, graceEndsAt &#125;</code> or{" "}
+            <code>null</code>; <code>graceEndsAt</code> is set while a renewal that failed is being retried, and is the
+            day access ends unless credits are added before it. <code>canAccept</code> is whether you may agree to a
+            price: an owner or admin, or a key granted <code>marketplace:install</code> by name.
           </li>
           <li>
             <code>startBlocked</code> is <code>null</code>, or <code>&#123; code: &quot;copy_subscription_active&quot;, message, until &#125;</code>{" "}

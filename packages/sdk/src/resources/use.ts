@@ -45,7 +45,16 @@ export interface UseAccessState {
   terms: UseTerms | null;
   /** What you agreed to; null when you have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
-  subscription: { status: string; currentPeriodEnd: string; cancelAtPeriodEnd: boolean } | null;
+  /**
+   * `graceEndsAt` is set while a renewal that failed is still being retried: the day access ends
+   * unless credits are added before it (an ISO date).
+   */
+  subscription: {
+    status: string;
+    currentPeriodEnd: string;
+    cancelAtPeriodEnd: boolean;
+    graceEndsAt: string | null;
+  } | null;
   /** Your credits, in cents. */
   balanceCents: number;
   /** Whether you may agree to a price: an owner or admin, or a key granted `marketplace:install` by name. */

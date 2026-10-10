@@ -200,6 +200,7 @@ export async function searchListings(params: ListingSearchParams) {
         agent: {
           select: LISTING_AGENT_COLUMNS,
         },
+        agentToken: LISTING_TOKEN_MARK,
       },
     }),
     prisma.agentListing.count({ where }),
@@ -233,6 +234,7 @@ export async function getListingBySlug(slug: string) {
           publicHandle: true,
         },
       },
+      agentToken: LISTING_TOKEN_MARK,
     },
   });
 
@@ -349,6 +351,7 @@ export async function getFeaturedListings(limit = 6) {
       agent: {
         select: LISTING_AGENT_COLUMNS,
       },
+      agentToken: LISTING_TOKEN_MARK,
     },
   });
 
@@ -564,6 +567,12 @@ export async function getPublisherProfile(slug: string) {
 // ============================================
 
 /** The agent columns every listing answer is drawn from. Never its instructions or its tools. */
+/**
+ * Whether the listing has a token, and nothing of the token itself. The
+ * marketplace shows a "Receipts" mark on a listing that has one.
+ */
+const LISTING_TOKEN_MARK = { select: { id: true } } as const;
+
 const LISTING_AGENT_COLUMNS = {
   id: true,
   framework: true,
@@ -1184,6 +1193,8 @@ function formatListingForPublic(listing: any) {
     // and get no copy. "copies": a buyer installs their own copy.
     sells: listing.sells === "use" ? "use" : "copies",
     unit,
+    // Said only by the reads that looked: search, featured and the listing page.
+    ...(listing.agentToken !== undefined && { hasToken: listing.agentToken !== null }),
     pricingModel: listing.pricingModel,
     pricePerRequestCents: listing.pricePerRequestCents
       ? Number(listing.pricePerRequestCents)

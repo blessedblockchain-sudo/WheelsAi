@@ -40,6 +40,11 @@ test("the wallet top-up stays as it is, with or without a card rail", () => {
   assert.deepEqual(both, { card: true, wallet: true, notice: null });
   // On, but with no asset to pay in: there is nothing to sign.
   assert.equal(packPayment(rails({ wallet: true, walletAssets: [] })).wallet, false);
+  // Only an asset this page cannot pay with: the same, no button.
+  assert.equal(packPayment(rails({ wallet: true, walletAssets: ["BONK"] })).wallet, false);
+  assert.equal(packPayment(rails({ wallet: true, walletAssets: ["SOL"] })).wallet, true);
+  // Assets named while the rail is off are not a way to pay.
+  assert.equal(packPayment(rails({ wallet: false, walletAssets: ["USDC", "SOL"] })).wallet, false);
 });
 
 test("with no rail at all the page says so instead of drawing a dead button", () => {

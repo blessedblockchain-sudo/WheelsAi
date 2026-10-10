@@ -18,6 +18,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
+import bs58 from "bs58";
 
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -28,6 +29,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { settingsApi, authApi, type UserProfile, type UserSettings, getErrorMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { apiRefusal, isWalletDecline } from "@/lib/wallet-topup";
 
 type Tab = "profile" | "security" | "notifications" | "wallets";
 
@@ -510,6 +512,12 @@ export default function SettingsPage() {
   );
 }
 
+// What the Wallets tab says itself, for what the API cannot see.
+const LINK_DECLINED = "You cancelled the request in your wallet. Nothing was linked.";
+const LINK_NOT_SIGNED = "Your wallet did not sign the request. Nothing was linked. Try again.";
+const LINK_CANNOT_SIGN = "This wallet cannot sign a message. Connect a different wallet.";
+const LINK_NO_ANSWER = "The wallet could not be linked. Try again.";
+
 function WalletsTab({
   profile,
   onProfileUpdate,
@@ -520,45 +528,53 @@ function WalletsTab({
   const { publicKey, connected, signMessage, disconnect } = useWallet();
   const { setVisible } = useWalletModal();
   const [isLinking, setIsLinking] = useState(false);
+  const [linkLine, setLinkLine] = useState<{ message: string; ok: boolean } | null>(null);
 
-  const handleConnectAndLink = async () => {
-    if (!connected) {
-      setVisible(true);
+  const connectedAddress = connected && publicKey ? publicKey.toBase58() : null;
+
+  // Linking happens only when this button is pressed. The wallet signs the
+  // one-time text the API hands out, the same way it does to sign in.
+  const handleLink = async () => {
+    if (!publicKey || isLinking) return;
+    if (!signMessage) {
+      setLinkLine({ message: LINK_CANNOT_SIGN, ok: false });
       return;
     }
 
-    if (!publicKey || !signMessage) return;
-
+    const address = publicKey.toBase58();
     setIsLinking(true);
+    setLinkLine(null);
     try {
-      const address = publicKey.toBase58();
-      const message = `Link wallet ${address} to WheelsAI account at ${Date.now()}`;
-      const encoded = new TextEncoder().encode(message);
-      const signature = await signMessage(encoded);
-      const sigBase64 = Buffer.from(signature).toString("base64");
-      const result = await settingsApi.linkWallet(address, sigBase64, message);
-      toast.success("Wallet linked successfully");
-      if (profile) {
-        onProfileUpdate({ ...profile, walletAddress: address });
+      let nonce: string;
+      try {
+        ({ nonce } = await settingsApi.linkWalletNonce(address));
+      } catch (err) {
+        setLinkLine({ message: apiRefusal(err)?.message ?? LINK_NO_ANSWER, ok: false });
+        return;
       }
-    } catch (err: any) {
-      if (err?.message?.includes("User rejected")) {
-        toast.error("Signature rejected");
-      } else {
-        toast.error(getErrorMessage(err, "Failed to link wallet"));
+
+      let signature: string;
+      try {
+        signature = bs58.encode(await signMessage(new TextEncoder().encode(nonce)));
+      } catch (err) {
+        // The wallet's own error text is not shown.
+        setLinkLine({ message: isWalletDecline(err) ? LINK_DECLINED : LINK_NOT_SIGNED, ok: false });
+        return;
+      }
+
+      try {
+        const result = await settingsApi.linkWallet(address, signature, nonce);
+        setLinkLine({ message: result.message || "Wallet linked.", ok: true });
+        if (profile) {
+          onProfileUpdate({ ...profile, walletAddress: result.walletAddress || address });
+        }
+      } catch (err) {
+        setLinkLine({ message: apiRefusal(err)?.message ?? LINK_NO_ANSWER, ok: false });
       }
     } finally {
       setIsLinking(false);
     }
   };
-
-  // Auto-link when wallet connects and not yet linked
-  useEffect(() => {
-    if (connected && publicKey && !profile?.walletAddress && signMessage) {
-      handleConnectAndLink();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, publicKey, profile?.walletAddress]);
 
   return (
     <div className="space-y-6">
@@ -571,12 +587,12 @@ function WalletsTab({
         </CardHeader>
         <CardContent>
           {profile?.walletAddress ? (
-            <div className="flex items-center justify-between rounded-lg border p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-r from-green-400 to-purple-500">
+            <div className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-green-400 to-purple-500">
                   <Wallet className="h-5 w-5 text-white" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="font-medium">Solana Wallet</p>
                   <code className="text-sm text-muted-foreground">
                     {profile.walletAddress.slice(0, 8)}...
@@ -585,36 +601,76 @@ function WalletsTab({
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <Badge variant="success">Connected</Badge>
+                <Badge variant="success">Linked</Badge>
                 {connected && (
                   <button
                     onClick={() => disconnect()}
-                    className="p-1.5 rounded-md hover:bg-muted text-gray-400 hover:text-foreground transition-colors"
+                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                     title="Disconnect wallet"
+                    aria-label="Disconnect wallet"
                   >
                     <Unlink className="h-4 w-4" />
                   </button>
                 )}
               </div>
             </div>
+          ) : connectedAddress ? (
+            <div className="rounded-lg border p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
+                    <Wallet className="h-5 w-5 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-medium">Connected in this browser</p>
+                    <code className="text-sm text-muted-foreground">
+                      {connectedAddress.slice(0, 8)}...
+                      {connectedAddress.slice(-8)}
+                    </code>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button onClick={handleLink} disabled={isLinking}>
+                    {isLinking ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Wallet className="mr-2 h-4 w-4" />
+                    )}
+                    {isLinking ? "Linking..." : "Link this wallet"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => disconnect()} disabled={isLinking}>
+                    Disconnect
+                  </Button>
+                </div>
+              </div>
+              <p className="mt-3 text-sm text-muted-foreground">
+                Linking lets this wallet sign in to this account. Your wallet signs a short
+                message to show it is yours. No transfer is made.
+              </p>
+            </div>
           ) : (
-            <div className="text-center py-8">
-              <Wallet className="mx-auto h-12 w-12 text-gray-300" />
-              <p className="mt-4 text-muted-foreground">No wallets connected</p>
-              <Button
-                className="mt-4"
-                onClick={handleConnectAndLink}
-                disabled={isLinking}
-              >
-                {isLinking ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Wallet className="mr-2 h-4 w-4" />
-                )}
-                {isLinking ? "Linking..." : "Connect Solana Wallet"}
+            <div className="py-8 text-center">
+              <Wallet className="mx-auto h-12 w-12 text-muted-foreground" />
+              <p className="mt-4 text-muted-foreground">No wallet linked</p>
+              <Button className="mt-4" onClick={() => setVisible(true)}>
+                <Wallet className="mr-2 h-4 w-4" />
+                Connect Solana Wallet
               </Button>
             </div>
           )}
+
+          <div role="status" aria-live="polite">
+            {linkLine && (
+              <p
+                className={cn(
+                  "mt-4 break-words rounded-lg border px-4 py-3 text-sm text-foreground",
+                  linkLine.ok ? "border-green-500/30 bg-green-500/10" : "border-red-500/30 bg-red-500/10"
+                )}
+              >
+                {linkLine.message}
+              </p>
+            )}
+          </div>
         </CardContent>
       </Card>
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { VersionedTransaction } from "@solana/web3.js";
@@ -36,9 +36,32 @@ import {
   type X402MetricsHistoryPoint,
   type X402MetricsResponse,
   type CreditPackage,
+  type TopupAsset,
+  type TopupPrepareResponse,
   getErrorMessage,
 } from "@/lib/api";
 import { packPayment } from "@/lib/credit-purchase";
+import {
+  CONNECT_TO_PAY,
+  FOLLOW_EVERY_MS,
+  WALLET_CANNOT_SIGN,
+  type NextStep,
+  type ShownLine,
+  type StatusLine,
+  afterPrepareError,
+  afterReconcileError,
+  afterSettle,
+  afterSignError,
+  afterSubmitError,
+  assetToPayWith,
+  lineFor,
+  lineForPrepared,
+  lineWhileFollowing,
+  shouldCarryOn,
+  shouldKeepFollowing,
+  topupsToFollow,
+  walletAssetsOffered,
+} from "@/lib/wallet-topup";
 import { cn } from "@/lib/utils";
 
 // Fallback only — the real ladder is served by GET /api/billing/packages
@@ -165,8 +188,19 @@ export default function BillingPage() {
   const [isWalletPaying, setIsWalletPaying] = useState<number | null>(null);
   const [rails, setRails] = useState<BillingRails | null>(null);
   const [railsReadFailed, setRailsReadFailed] = useState(false);
-  const { publicKey, connected, signTransaction } = useWallet();
-  const { setVisible } = useWalletModal();
+  // Which asset "Pay with Wallet" uses; null until chosen, which means the first one offered.
+  const [chosenAsset, setChosenAsset] = useState<TopupAsset | null>(null);
+  // The line under the packs: the API's sentence for the step a wallet payment is at.
+  const [topupLine, setTopupLine] = useState<ShownLine | null>(null);
+  // Top-ups sent and not yet final: each is asked about until the API says how it ended.
+  const [following, setFollowing] = useState<string[]>([]);
+  const followBusy = useRef(false);
+  // When each one was first asked about here, so a page left open does not ask for ever.
+  const followSince = useRef(new Map<string, number>());
+  // The pack chosen before any wallet was connected: paid for once one connects.
+  const [waitingPack, setWaitingPack] = useState<{ index: number; askedAt: number } | null>(null);
+  const { publicKey, connected, connecting, wallet, signTransaction } = useWallet();
+  const { visible, setVisible } = useWalletModal();
 
   async function loadBillingData() {
     try {
@@ -219,7 +253,55 @@ export default function BillingPage() {
         setRailsReadFailed(!res.rails);
       })
       .catch(() => setRailsReadFailed(true));
+    // A top-up sent before this page was closed is picked up again here.
+    billingApi
+      .listTopups()
+      .then((res) => {
+        const open = topupsToFollow(res.topups);
+        const newest = open[open.length - 1];
+        if (!newest) return;
+        setFollowing((ids) => [...ids, ...open.map((t) => t.id).filter((id) => !ids.includes(id))]);
+        setTopupLine((line) => line ?? { ...lineFor(newest), topupId: newest.id });
+      })
+      .catch(() => undefined);
   }, []);
+
+  // Follow every top-up in flight until it is final, then read the balance again.
+  useEffect(() => {
+    if (following.length === 0) return;
+    let stopped = false;
+    const ask = async () => {
+      if (followBusy.current) return;
+      followBusy.current = true;
+      try {
+        for (const id of following) {
+          const since = followSince.current.get(id) ?? Date.now();
+          followSince.current.set(id, since);
+          let next: Pick<NextStep, "follow" | "reloadBalance"> & { line: StatusLine | null };
+          try {
+            next = afterSettle(await billingApi.reconcileTopup(id));
+          } catch (error) {
+            next = { ...afterReconcileError(error), reloadBalance: false };
+          }
+          if (stopped) return;
+          setTopupLine((shown) => lineWhileFollowing(shown, id, next));
+          // Still not final after a long while: the server finishes it; stop asking from here.
+          if (!next.follow || !shouldKeepFollowing(since, Date.now())) {
+            followSince.current.delete(id);
+            setFollowing((ids) => ids.filter((other) => other !== id));
+          }
+          if (next.reloadBalance) loadBillingData();
+        }
+      } finally {
+        followBusy.current = false;
+      }
+    };
+    const timer = setInterval(ask, FOLLOW_EVERY_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [following]);
 
   // Pricing page "Start Pro Trial" lands on ?upgrade=pro after sign-up;
   // Stripe returns to ?checkout=… / ?subscription=….
@@ -258,89 +340,99 @@ export default function BillingPage() {
     }
   }
 
-  // Wallet top-up (B2/T5): the server builds the exact transfer, the
-  // wallet signs it unchanged, submit is byte-equality-verified and
-  // credits land only after on-chain confirmation.
+  const offeredAssets = walletAssetsOffered(rails);
+  const payAsset = assetToPayWith(offeredAssets, chosenAsset);
+
+  // Wallet top-up: the server builds the exact transfer, the connected wallet
+  // signs it, and credits are added only once the chain confirms it. Every
+  // sentence shown is the API's, except for what only the page can see (a
+  // wallet that declined, or a request that got no answer).
   async function handleWalletPurchase(packageIndex: number) {
     const pkg = creditPackages[packageIndex];
-    if (!pkg || !rails?.wallet || rails.walletAssets.length === 0) return;
+    if (!pkg || !payAsset || isWalletPaying !== null) return;
     if (!connected || !publicKey) {
+      setWaitingPack({ index: packageIndex, askedAt: Date.now() });
+      setTopupLine({ message: CONNECT_TO_PAY, tone: "progress" });
       setVisible(true);
       return;
     }
     if (!signTransaction) {
-      toast.error(
-        "This wallet doesn't support transaction signing — try a different wallet."
-      );
+      setTopupLine({ message: WALLET_CANNOT_SIGN, tone: "error" });
       return;
     }
 
-    const asset = rails.walletAssets[0] as "SOL" | "USDC";
     setIsWalletPaying(packageIndex);
     try {
-      const prepared = await billingApi.prepareTopup({
-        amountUsd: pkg.amount,
-        asset,
-      });
-
-      const txBytes = Uint8Array.from(atob(prepared.unsignedTxBase64), (c) =>
-        c.charCodeAt(0)
-      );
-      const tx = VersionedTransaction.deserialize(txBytes);
-      const signedTx = await signTransaction(tx);
-
-      const signedBytes = signedTx.serialize();
-      let binary = "";
-      for (let i = 0; i < signedBytes.length; i++) {
-        binary += String.fromCharCode(signedBytes[i]!);
+      let prepared: TopupPrepareResponse;
+      try {
+        prepared = await billingApi.prepareTopup({
+          amountUsd: pkg.amount,
+          asset: payAsset,
+          payerAddress: publicKey.toBase58(),
+        });
+      } catch (error) {
+        setTopupLine(afterPrepareError(error));
+        return;
       }
-      const signedTxBase64 = btoa(binary);
+      // For SOL this is the price and how long it holds.
+      setTopupLine({ ...lineForPrepared(prepared), topupId: prepared.topupId });
 
-      let settled = await billingApi.submitTopup(
-        prepared.topupId,
-        signedTxBase64
-      );
-      // 202 pending-confirmation path: the tx is broadcast but not yet
-      // confirmed — reconcile settles it against the chain.
-      for (
-        let attempt = 0;
-        settled.status === "submitted" && attempt < 12;
-        attempt++
-      ) {
-        await new Promise((r) => setTimeout(r, 2_500));
-        settled = await billingApi.reconcileTopup(prepared.topupId);
-      }
-
-      if (settled.status === "credited") {
-        toast.success(
-          settled.grantedUsd
-            ? `Credits added — ${formatCurrency(settled.grantedUsd)} granted`
-            : "Credits added"
+      let signedTxBase64: string;
+      try {
+        const txBytes = Uint8Array.from(atob(prepared.unsignedTxBase64), (c) =>
+          c.charCodeAt(0)
         );
-        loadBillingData();
-      } else if (settled.status === "submitted") {
-        toast.info(
-          "Payment broadcast — confirmation is still pending. Your balance updates once it lands."
-        );
-      } else {
-        toast.error(
-          settled.reason
-            ? `Top-up ${settled.status}: ${settled.reason}`
-            : `Top-up ${settled.status}`
-        );
+        const signedTx = await signTransaction(VersionedTransaction.deserialize(txBytes));
+        const signedBytes = signedTx.serialize();
+        let binary = "";
+        for (let i = 0; i < signedBytes.length; i++) {
+          binary += String.fromCharCode(signedBytes[i]!);
+        }
+        signedTxBase64 = btoa(binary);
+      } catch (error) {
+        setTopupLine(afterSignError(error));
+        return;
       }
-    } catch (error) {
-      const message = getErrorMessage(error, "Wallet payment failed");
-      // Wallet-adapter user rejections read like "User rejected the request".
-      if (/reject/i.test(message)) {
-        toast.info("Transaction canceled in wallet");
-      } else {
-        toast.error(message);
+
+      // Once it is signed, a failed request decides nothing: the transfer may
+      // have been sent on, so the top-up is followed until the API ends it.
+      let next: NextStep;
+      try {
+        next = afterSettle(await billingApi.submitTopup(prepared.topupId, signedTxBase64));
+      } catch (error) {
+        next = afterSubmitError(error);
       }
+      setTopupLine({ ...next.line, topupId: prepared.topupId });
+      if (next.follow) {
+        const { topupId } = prepared;
+        setFollowing((ids) => (ids.includes(topupId) ? ids : [...ids, topupId]));
+      }
+      if (next.reloadBalance) loadBillingData();
     } finally {
       setIsWalletPaying(null);
     }
   }
+
+  // "Pay with Wallet" with no wallet connected opened the wallet list: carry
+  // the payment on once a wallet connects, and drop it if the list was closed
+  // without choosing one.
+  useEffect(() => {
+    if (!waitingPack) return;
+    if (connected && publicKey) {
+      setWaitingPack(null);
+      if (shouldCarryOn(waitingPack, true, Date.now())) {
+        void handleWalletPurchase(waitingPack.index);
+      } else {
+        setTopupLine((line) => (line?.message === CONNECT_TO_PAY ? null : line));
+      }
+      return;
+    }
+    if (!visible && !connecting && !wallet) {
+      setWaitingPack(null);
+      setTopupLine((line) => (line?.message === CONNECT_TO_PAY ? null : line));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waitingPack, connected, publicKey, visible, connecting, wallet]);
 
   function formatCurrency(amount: number): string {
     return new Intl.NumberFormat("en-US", {
@@ -460,6 +552,43 @@ export default function BillingPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Drawn only when there is a choice to make. */}
+            {payment.wallet && offeredAssets.length > 1 && (
+              <div
+                role="radiogroup"
+                aria-labelledby="pay-with-label"
+                className="mb-6 flex flex-wrap items-center gap-3"
+              >
+                <span id="pay-with-label" className="text-sm font-medium text-foreground">
+                  {payment.card ? "Wallet pays with" : "Pay with"}
+                </span>
+                <div className="inline-flex rounded-lg border border-border bg-muted p-1">
+                  {offeredAssets.map((asset) => (
+                    <label
+                      key={asset}
+                      className={cn(
+                        "cursor-pointer rounded-md px-4 py-1.5 text-sm font-medium transition-colors focus-within:ring-2 focus-within:ring-ring",
+                        asset === payAsset
+                          ? "bg-primary text-primary-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="topup-asset"
+                        value={asset}
+                        className="sr-only"
+                        checked={asset === payAsset}
+                        disabled={isWalletPaying !== null}
+                        onChange={() => setChosenAsset(asset)}
+                      />
+                      {asset}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="grid gap-4 md:grid-cols-4">
               {creditPackages.map((pkg, index) => (
                 <div
@@ -503,6 +632,7 @@ export default function BillingPage() {
                       variant="outline"
                       onClick={() => handleWalletPurchase(index)}
                       isLoading={isWalletPaying === index}
+                      disabled={isWalletPaying !== null}
                     >
                       <Wallet className="mr-2 h-4 w-4" />
                       Pay with Wallet
@@ -516,6 +646,25 @@ export default function BillingPage() {
               <p className="mt-4 text-center text-sm text-foreground" role="status">
                 {payment.notice}
               </p>
+            )}
+
+            {/* Where a wallet payment stands, in the API's words. Always in the
+                page while the wallet rail is live so a change is announced. */}
+            {(payment.wallet || topupLine) && (
+              <div role="status" aria-live="polite">
+                {topupLine && (
+                  <p
+                    className={cn(
+                      "mt-4 break-words rounded-lg border px-4 py-3 text-center text-sm text-foreground",
+                      topupLine.tone === "success" && "border-green-500/30 bg-green-500/10",
+                      topupLine.tone === "error" && "border-red-500/30 bg-red-500/10",
+                      topupLine.tone === "progress" && "border-border bg-muted"
+                    )}
+                  >
+                    {topupLine.message}
+                  </p>
+                )}
+              </div>
             )}
 
             <p className="mt-4 text-center text-sm text-muted-foreground">

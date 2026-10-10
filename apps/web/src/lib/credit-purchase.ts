@@ -3,11 +3,12 @@
  * reports. Pure: the Billing page draws a button only for a rail that is live.
  */
 import type { BillingRails } from "./api";
+import { walletAssetsOffered } from "./wallet-topup";
 
 export interface PackPayment {
   /** "Purchase": a card checkout exists (Stripe, or the test checkout of a development server). */
   card: boolean;
-  /** "Pay with Wallet": the wallet top-up is on and names at least one asset. */
+  /** "Pay with Wallet": the wallet top-up is on and names at least one asset this page can pay with. */
   wallet: boolean;
   /** Said under the packs when neither is live; null otherwise. */
   notice: string | null;
@@ -23,8 +24,7 @@ export const RAILS_NOT_READ = "Could not check how you can pay right now. Reload
  */
 export function packPayment(rails: BillingRails | null | undefined, readFailed = false): PackPayment {
   const card = rails?.stripeCheckout === true || rails?.mockCheckout === true;
-  const wallet =
-    rails?.wallet === true && Array.isArray(rails.walletAssets) && rails.walletAssets.length > 0;
+  const wallet = walletAssetsOffered(rails).length > 0;
   return {
     card,
     wallet,

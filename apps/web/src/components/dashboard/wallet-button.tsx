@@ -1,72 +1,17 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useWallet, useConnection } from "@solana/wallet-adapter-react";
+import { useState, useCallback } from "react";
+import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { Wallet, LogOut, Copy, Check } from "lucide-react";
-import { toast } from "sonner";
-import { settingsApi } from "@/lib/api";
 
+// Connects a wallet for this browser, shows its short address, copies it and
+// disconnects. It asks the wallet to sign nothing: linking a wallet to the
+// account is its own button in Settings, and paying is on the Billing page.
 export function WalletButton() {
-  const { publicKey, connected, disconnect, signMessage } = useWallet();
-  const { connection } = useConnection();
+  const { publicKey, connected, disconnect } = useWallet();
   const { setVisible } = useWalletModal();
-  const [balance, setBalance] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
-  const [linking, setLinking] = useState(false);
-
-  // Fetch SOL balance when connected
-  useEffect(() => {
-    if (!publicKey || !connected) {
-      setBalance(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    const fetchBalance = async () => {
-      try {
-        const lamports = await connection.getBalance(publicKey);
-        if (!cancelled) {
-          setBalance(lamports / LAMPORTS_PER_SOL);
-        }
-      } catch {
-        if (!cancelled) setBalance(null);
-      }
-    };
-
-    fetchBalance();
-    const interval = setInterval(fetchBalance, 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [publicKey, connected, connection]);
-
-  // Link wallet to account on connect
-  useEffect(() => {
-    if (!publicKey || !connected || !signMessage || linking) return;
-
-    const linkWallet = async () => {
-      setLinking(true);
-      try {
-        const address = publicKey.toBase58();
-        const message = `Link wallet ${address} to WheelsAI account at ${Date.now()}`;
-        const encoded = new TextEncoder().encode(message);
-        const signature = await signMessage(encoded);
-        const sigBase64 = Buffer.from(signature).toString("base64");
-        await settingsApi.linkWallet(address, sigBase64, message);
-      } catch {
-        // Non-critical — user can still trade, just won't persist
-      } finally {
-        setLinking(false);
-      }
-    };
-
-    linkWallet();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [publicKey, connected, signMessage]);
 
   const copyAddress = useCallback(() => {
     if (!publicKey) return;
@@ -101,16 +46,11 @@ export function WalletButton() {
         <Wallet className="h-5 w-5 text-green-600" />
         <span className="flex-1 text-left">
           <span className="block font-mono text-xs">{shortenedAddress}</span>
-          {balance !== null && (
-            <span className="block text-xs text-muted-foreground">
-              {balance.toFixed(4)} SOL
-            </span>
-          )}
         </span>
         {copied ? (
           <Check className="h-3.5 w-3.5 text-green-500" />
         ) : (
-          <Copy className="h-3.5 w-3.5 text-gray-400" />
+          <Copy className="h-3.5 w-3.5 text-muted-foreground" />
         )}
       </button>
       <button

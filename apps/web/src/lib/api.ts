@@ -662,26 +662,67 @@ export interface BillingRails {
   network: "devnet" | "mainnet-beta";
 }
 
+/** What a wallet top-up can be paid in. */
+export type TopupAsset = "USDC" | "SOL";
+
+/** Where a top-up stands. "In flight" means submitting or submitted. */
+export type TopupStatus =
+  | "prepared"
+  | "submitting"
+  | "submitted"
+  | "credited"
+  | "failed"
+  | "expired";
+
 export interface TopupPrepareResponse {
   topupId: string;
   /** Full unsigned transaction for wallet.signTransaction. */
   unsignedTxBase64: string;
   depositAddress: string;
-  asset: "SOL" | "USDC";
+  /** The wallet that signs and pays: the one sent, else the one on the session. */
+  payerAddress: string;
+  asset: TopupAsset;
   amountUsd: number;
   bonusUsd: number;
+  /** What the wallet sends, in base units (lamports, or USDC times 1,000,000). */
+  amountRaw: string;
+  /** SOL only. */
   quotedSolPriceUsd?: number;
+  /** SOL only: the price this top-up was worked out from and how long it holds. */
+  quote: { solPriceUsd: number; validUntil: string } | null;
+  /** True when this first USDC payment also opens the organization's USDC account. */
+  opensUsdcAccount: boolean;
   expiresAt: string;
+  /** The sentence to show. */
+  message: string;
 }
 
+/** The answer of submit and of reconcile. `message` is the sentence to show. */
 export interface TopupSettleResponse {
-  status: "credited" | "submitted" | "prepared" | "failed" | "expired";
+  status: TopupStatus;
+  message: string;
   txSignature?: string;
   grantedUsd?: number;
   balanceUsd?: number;
   alreadyCredited?: boolean;
   pendingConfirmation?: boolean;
-  reason?: string;
+  /** True while the top-up is prepared and no signed transfer has reached the API. */
+  pendingSignature?: boolean;
+}
+
+/** One top-up as GET /api/billing/topups and GET /api/billing/topups/:id give it. */
+export interface TopupRecord {
+  id: string;
+  status: TopupStatus;
+  message: string;
+  asset: TopupAsset;
+  amountUsd: number;
+  bonusUsd: number;
+  txSignature?: string;
+  depositAddress: string;
+  payerAddress: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export type PlanId = "starter" | "pro" | "enterprise";
@@ -740,26 +781,32 @@ export const billingApi = {
       rails: BillingRails;
     }>("/api/billing/packages"),
 
-  // Wallet top-up rail (B2/T5): prepare → wallet signs the EXACT
-  // server-built transaction → submit (byte-equality verified server
-  // side) → credits granted only after on-chain confirmation.
-  prepareTopup: (body: { amountUsd: number; asset: "SOL" | "USDC" }) =>
+  // Wallet top-up: prepare, the wallet signs the transfer the server built,
+  // submit. Credits are granted only once the chain confirms the transfer;
+  // a top-up still being confirmed is followed with reconcile.
+  prepareTopup: (body: { amountUsd: number; asset: TopupAsset; payerAddress?: string }) =>
     api<TopupPrepareResponse>("/api/billing/topups/prepare", {
       method: "POST",
       body,
     }),
 
   submitTopup: (topupId: string, signedTxBase64: string) =>
-    api<TopupSettleResponse>(`/api/billing/topups/${topupId}/submit`, {
+    api<TopupSettleResponse>(`/api/billing/topups/${encodeURIComponent(topupId)}/submit`, {
       method: "POST",
       body: { signedTxBase64 },
     }),
 
   reconcileTopup: (topupId: string) =>
-    api<TopupSettleResponse>(`/api/billing/topups/${topupId}/reconcile`, {
+    api<TopupSettleResponse>(`/api/billing/topups/${encodeURIComponent(topupId)}/reconcile`, {
       method: "POST",
       body: {},
     }),
+
+  getTopup: (topupId: string) =>
+    api<TopupRecord>(`/api/billing/topups/${encodeURIComponent(topupId)}`),
+
+  /** The organization's last 20 top-ups, newest first. */
+  listTopups: () => api<{ topups: TopupRecord[] }>("/api/billing/topups"),
 
   getTransactions: () =>
     api<{ transactions: CreditTransaction[] }>("/api/billing/transactions"),
@@ -961,10 +1008,18 @@ export const settingsApi = {
       body: { currentPassword, newPassword },
     }),
 
-  linkWallet: (walletAddress: string, signature: string, message: string) =>
+  /** A one-time text for the wallet to sign, to prove it is the caller's. */
+  linkWalletNonce: (walletAddress: string) =>
+    api<{ nonce: string; walletAddress: string }>("/api/settings/link-wallet/nonce", {
+      method: "POST",
+      body: { walletAddress },
+    }),
+
+  /** `signature` is the wallet's signature over the nonce text, base58. */
+  linkWallet: (walletAddress: string, signature: string, nonce: string) =>
     api<{ walletAddress: string; message: string }>("/api/settings/link-wallet", {
       method: "POST",
-      body: { walletAddress, signature, message },
+      body: { walletAddress, signature, nonce },
     }),
 
   getBranding: () =>

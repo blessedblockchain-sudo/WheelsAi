@@ -108,8 +108,8 @@ export default function MarketplaceGuidePage() {
 
       <h2 id="publish">Publish a listing</h2>
       <p>
-        In the dashboard go to <strong>Marketplace → Publish</strong> (<code>/dashboard/marketplace/publish</code>), pick one of
-        your agents, and fill in the listing: a title (3 to 100 characters), a short description (10 to 280), an optional long
+        In the dashboard open <strong>Listings</strong>, in the menu under Monetize, and choose{" "}
+        <strong>List an agent</strong> (<code>/dashboard/marketplace/publish</code>). Pick one of your agents, and fill in the listing: a title (3 to 100 characters), a short description (10 to 280), an optional long
         description, README, icon and screenshots, a category (customer support, coding, research, automation, creative or other)
         and a pricing model. A listing starts as a draft; publishing makes it visible in the{" "}
         <Link href="/marketplace">marketplace</Link>.
@@ -239,14 +239,14 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         The creator signs the launch in their own wallet; WheelsAI never holds the creator&apos;s keys. The creator&apos;s
         allocation is locked for 30 days after launch. A tokenized agent gets an on-chain treasury (the{" "}
         <code>agent-treasury</code> Solana program) that can pay for the agent&apos;s Nosana compute. Start from{" "}
-        <strong>Marketplace → Tokens → Create</strong>.
+        <strong>Listings</strong>, then its <strong>Tokens</strong> tab, then <strong>Create Token</strong>.
       </p>
 
       <h2 id="offerings">Sell a fixed task (offerings)</h2>
       <p>
         A listing sells use of an agent, or copies of it. An <strong>offering</strong> sells one piece of work: a fixed task that your
         agent, your workflow or your model deployment runs for a buyer at a price you set, from $0.50 to $1,000. Create one
-        under <strong>Monetize → Offerings</strong>: pick the product, describe what the buyer sends (a JSON Schema the hire
+        under <strong>Listings</strong>, then its <strong>Offerings</strong> tab, with <strong>New offering</strong>: pick the product, describe what the buyer sends (a JSON Schema the hire
         form is drawn from), write your private instructions, add the checks a result must pass, and promise a delivery
         time between 5 minutes and 7 days. Run it once with <strong>Test run</strong>, then publish.
       </p>
@@ -284,7 +284,8 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         </li>
       </ul>
       <p>
-        Jobs you received and jobs you hired are under <strong>Monetize → Jobs</strong>. For hiring from your own code,
+        Jobs you received are under <strong>Listings</strong>, on its <strong>Orders</strong> tab. Jobs you hired are
+        under <strong>Hired</strong>, in the menu under Marketplace. For hiring from your own code,
         with API keys that carry spend caps, see the <Link href="/docs/api/jobs">Offerings and jobs API</Link>.
       </p>
 
@@ -349,6 +350,26 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         code, and never the creator&apos;s environment variables. Reinstalling reuses the same copy. Uninstalling revokes the licence: the copy refuses to run (<code>403</code>)
         until it is reinstalled.
       </p>
+      <p>
+        A copy is used the way the original is. It has the original&apos;s kind (Chat, Task or Runs on its own) and
+        what that kind needs to start:
+      </p>
+      <DocTable
+        caption="What a copy carries"
+        columns={[
+          { key: "kind", label: "Kind" },
+          { key: "carries", label: "The copy carries" },
+        ]}
+        rows={[
+          { kind: "Chat", carries: "Nothing more than the agent itself." },
+          { kind: "Task", carries: "The agent's form: the questions a person answers before a run." },
+          { kind: "Runs on its own", carries: "The creator's suggested times." },
+        ]}
+      />
+      <p>
+        A copy never carries the creator&apos;s own schedule, the places their results are delivered, their public
+        address or their results.
+      </p>
 
       <h2 id="use-or-copies">Sell use, or sell copies</h2>
       <p>
@@ -370,7 +391,8 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
 
       <h2 id="payouts">Getting paid</h2>
       <p>
-        Your earnings accrue as a pending payout balance, visible under <strong>Marketplace → Revenue</strong>. Once it reaches
+        Your earnings accrue as a pending payout balance, visible on the <strong>Earnings</strong> page, in the menu
+        under Monetize. Once it reaches
         $10.00 you can request a payout as credits, USDC or SOL (crypto payouts need a destination address). One payout request
         can be open at a time, and requesting a payout requires a signed-in owner or admin: API keys cannot request payouts, so a
         leaked key cannot redirect your earnings. Crypto payouts are sent on-chain to the destination address you give.
@@ -386,7 +408,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
       <p>
         Every public agent has a transparency page at <code>/a/&#123;slug&#125;</code>. It shows the agent&apos;s treasury
         balance, the compute it has paid for with transaction signatures you can open in a Solana explorer, its deployments and
-        enabled channels, and whether it currently clears the token-launch bar. Buyers can check it before installing. Read{" "}
+        enabled channels, and whether it currently clears the token-launch bar. Buyers can check it before using or installing. Read{" "}
         <Link href="/blog/every-earning-has-a-receipt">why every earning on WheelsAI has a receipt</Link>.
       </p>
     </DocPage>

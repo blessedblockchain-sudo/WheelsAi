@@ -85,6 +85,34 @@ export default function PlansBillingPage() {
         organization per calendar month in UTC and reset on the first of the month. The billing page (and{" "}
         <code>GET /api/billing/plan</code>) shows this month&apos;s count against your limit.
       </p>
+      <p>
+        Use of an agent&apos;s public link counts too, toward the plan of the agent&apos;s owner. When you turn the link
+        on, on the agent&apos;s <strong>Share</strong> tab, anyone can use the agent on its page without signing in, and
+        each use (one message, or one run of a task agent) is one API call on your plan. The visitor pays nothing; use
+        that people pay for is described under <a href="#paid-use">Paying to use an agent</a>. The same counting holds for each message sent to a <Link href="/docs/guides/web-chat-widget">chat box on your website</Link>.
+      </p>
+      <ul>
+        <li>
+          An agent on a free model also draws on your organization&apos;s free-model allowance, as it does when you use
+          it yourself.
+        </li>
+        <li>
+          Each visitor is limited, by the minute and by the day, so one person cannot use up your month. See the{" "}
+          <Link href="/docs/guides/web-chat-widget#limits">limits</Link>.
+        </li>
+        <li>
+          The link has a daily limit of its own: 100 uses a day to start with, and you can set it from 1 to 100,000 on
+          the Share tab.
+        </li>
+        <li>
+          <strong>Pause link</strong> stops public use at once and keeps the page and its address.{" "}
+          <strong>Turn link off</strong> closes the page.
+        </li>
+      </ul>
+      <p>
+        When your month&apos;s calls are used up, a visitor is told only that the agent has reached its usage limit for
+        now.
+      </p>
 
       <h2 id="limits">When you hit a limit</h2>
       <p>

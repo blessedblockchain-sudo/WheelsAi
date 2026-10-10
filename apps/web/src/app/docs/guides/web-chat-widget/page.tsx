@@ -12,6 +12,7 @@ export const metadata: Metadata = {
 };
 
 const toc = [
+  { id: "share", title: "Three ways to share an agent" },
   { id: "what", title: "What the widget is" },
   { id: "create", title: "1. Create a key" },
   { id: "origins", title: "2. Allow your sites" },
@@ -32,9 +33,36 @@ export default function WebChatWidgetGuidePage() {
     <DocPage
       href="/docs/guides/web-chat-widget"
       title="Web chat widget and Try it"
-      lead="Web is a chat channel like Discord, Telegram and Slack: a widget you paste into your own site that talks to one of your agents. Try it is the same public chat on a marketplace listing, free and limited, before someone installs or hires the agent."
+      lead="Web is a chat channel like Discord, Telegram and Slack: a chat box you paste into your own site that talks to one of your agents. It is one of three ways to share an agent, beside its public link and the API. Try it is the same public chat on a marketplace listing, free and limited, before someone uses, installs or hires the agent."
       toc={toc}
     >
+      <h2 id="share">Three ways to share an agent</h2>
+      <p>
+        Open an agent and choose its <strong>Share</strong> tab. It has three cards:
+      </p>
+      <ul>
+        <li>
+          <strong>Public link.</strong> The agent&apos;s own page, at <code>/a/&#123;handle&#125;</code>. Choose{" "}
+          <strong>Turn link on</strong> and anyone with the link can use the agent there, with no sign-in. The card
+          shows the link to copy, how many uses a day it allows, and <strong>Pause link</strong> and{" "}
+          <strong>Turn link off</strong>.
+        </li>
+        <li>
+          <strong>On a website.</strong> For an agent people talk to, this is the chat box this guide describes. A task
+          agent, or one that runs on its own, is shared by its page instead: the card gives you a button to paste into
+          your site that opens the agent&apos;s public page, once the public link is on.
+        </li>
+        <li>
+          <strong>Use from code.</strong> The agent&apos;s address on the API. See the{" "}
+          <Link href="/docs/api/agents">agents API</Link>.
+        </li>
+      </ul>
+      <p>
+        The public link is counted the way the chat box is: each use is one API call on{" "}
+        <Link href="/docs/guides/plans-and-billing#api-calls">your plan</Link>, each visitor is limited, and the link has
+        its own daily limit, which you set on the card.
+      </p>
+
       <h2 id="what">What the widget is</h2>
       <p>
         One script tag. It adds a chat button to the corner of your page; visitors open it and talk to your agent, and the
@@ -49,8 +77,11 @@ export default function WebChatWidgetGuidePage() {
 
       <h2 id="create">1. Create a key</h2>
       <p>
-        In the dashboard open <Link href="/dashboard/integrations?tab=channels">Channels, then Website chat</Link>, choose{" "}
-        <strong>New key</strong>, pick the agent and give the key a name. Owners and admins can create, edit, rotate and
+        On the agent&apos;s <strong>Share</strong> tab, under <strong>On a website</strong>, choose{" "}
+        <strong>Create a chat box</strong> and give the key a name. Or open{" "}
+        <Link href="/dashboard/integrations?tab=channels">Channels, then Website chat</Link>, choose{" "}
+        <strong>New key</strong>, pick the agent and give the key a name. Every key is listed in Channels, which is also
+        where you preview, rotate or revoke one. Owners and admins can create, edit, rotate and
         revoke keys; every member can see them. An agent can have up to 20 live keys, for example one per site.
       </p>
       <p>
@@ -308,9 +339,9 @@ curl -sN -X POST "$WHEELSAI_API_URL/api/widget/wpk_.../chat" \\
       <h2 id="try-it">Try it on marketplace listings</h2>
       <p>
         Every published <Link href="/docs/guides/marketplace">marketplace listing</Link> has a <strong>Try it</strong>{" "}
-        tab: a free chat with the listed agent, so a buyer can see how it answers before installing or hiring it. It is
+        tab: a free chat with the listed agent, so a buyer can see how it answers before using, installing or hiring it. It is
         the same public chat as the widget, with the same reduced tools and the same fail-closed limits, and nobody is
-        charged for it by default.
+        charged for it by default. A task agent is tried by its form, and one that runs on its own by one sample run.
       </p>
       <ul>
         <li>
@@ -330,7 +361,7 @@ curl -sN -X POST "$WHEELSAI_API_URL/api/widget/wpk_.../chat" \\
           <Founder>confirm the default Try it limits (TRIAL_* in the API configuration)</Founder>
         </li>
         <li>
-          <strong>Publishers can pay for more.</strong> Under <Link href="/dashboard/marketplace">My listings</Link>,{" "}
+          <strong>Publishers can pay for more.</strong> Under <Link href="/dashboard/marketplace">Listings</Link>,{" "}
           <strong>Try it settings</strong> sets how many extra messages a day you fund from your credits once the free
           ones run out. A funded message is charged when its answer is delivered and returned if it is not. If funded
           messages are temporarily unavailable, the setting answers <code>501 trial_funding_not_configured</code> and

@@ -32,7 +32,8 @@ export default function DocsHome() {
       <h2 id="start-here">Start here</h2>
       <CardGrid>
         <CardLink href="/docs/guides/getting-started" title="Getting started">
-          Create an account, verify your email for $5 of credits, import or create an agent and chat with it.
+          Create an account, verify your email for $5 of credits, create an agent that answers at once, then share it
+          and sell it.
         </CardLink>
         <CardLink href="/docs/guides/deploy-a-model" title="Deploy a model">
           Put an open-weight model on a Nosana GPU and call it through an OpenAI-compatible endpoint.
@@ -61,21 +62,31 @@ export default function DocsHome() {
         <li>
           <strong>Agent.</strong> Instructions, a model choice, tools and optional source code, tagged with one of six frameworks:
           Mastra, ElizaOS, LangChain, AutoGen, CrewAI or custom. An agent is made for one of three uses: people talk to it, people
-          give it a task by filling in a short form, or it runs on its own at set times. Creating
-          one needs only a name. Agents can be created in the dashboard, started from a template, or imported from a GitHub
-          repository. Secrets you attach to an agent are encrypted at rest and never shown again.
+          give it a task by filling in a short form, or it runs on its own at set times and delivers its results. In the
+          dashboard you choose one of the three, say what it should do and name it; over the API a name is enough. A new
+          agent answers at once, with no deploy step. Agents can be created in the dashboard, started from a template, or
+          imported from a GitHub repository. Secrets you attach to an agent are encrypted at rest and never shown again.
         </li>
         <li>
-          <strong>Playground.</strong> Chat with any agent, whichever way it is used, from the dashboard or the API. Free models are rate limited per
-          organization; paid plans raise the limits.
+          <strong>Sharing.</strong> An agent is reached in three ways, all on its <strong>Share</strong> tab: a public
+          link to its own page at <code>/a/&#123;handle&#125;</code>, which anyone can use without signing in once you
+          turn it on; a chat box for your website (for a task agent or one that runs on its own, a button that opens its
+          page); and the API.
+        </li>
+        <li>
+          <strong>Playground.</strong> Try any agent from the dashboard or the API. An agent&apos;s page opens on the tab
+          for its use: <strong>Chat</strong>, <strong>Run</strong> for a task, or <strong>Runs</strong> for one that runs
+          on its own. Free models are rate limited per organization; paid plans raise the limits.
         </li>
         <li>
           <strong>Deployment.</strong> A model from the catalog running on a Nosana GPU tier, reachable at{" "}
           <code>/v1/&#123;deploymentSlug&#125;/chat/completions</code>. GPU time is priced per second and paid from credits.
         </li>
         <li>
-          <strong>Marketplace listing.</strong> A published agent that other organizations can install. Creators keep 90% of what
-          buyers pay; the platform fee is 10%.
+          <strong>Marketplace listing.</strong> A published agent that other people can use or install, and the listing
+          says which. Used, it stays its creator&apos;s agent: people use it on its page or through the API and never get
+          its instructions, its settings or its code. Installed, the buyer gets a copy of their own. Creators keep 90% of
+          what buyers pay; the platform fee is 10%.
         </li>
         <li>
           <strong>Credits.</strong> A USD balance, kept in cents in a ledger where every change is a row. Inference, GPU time and

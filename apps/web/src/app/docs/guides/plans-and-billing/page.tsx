@@ -7,7 +7,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Plans and billing",
   description:
-    "WheelsAI plans (Starter, Pro, Enterprise), what counts as an API call, credits and the ledger, and the three ways to pay: Stripe card checkout, Solana wallet top-ups and x402 micropayments.",
+    "WheelsAI plans (Starter, Pro, Enterprise), what counts as an API call, credits and the ledger, and the three ways to pay: Stripe card checkout, Solana wallet top-ups in USDC or SOL, and x402 micropayments.",
 };
 
 const toc = [
@@ -242,11 +242,74 @@ export default function PlansBillingPage() {
 
       <h3 id="wallet">Wallet top-up</h3>
       <p>
-        Pay with USDC from a connected Solana wallet. WheelsAI prepares the exact transfer transaction, your wallet signs it,
-        and WheelsAI checks that what you signed is byte-for-byte what it prepared before broadcasting. Credits are granted
-        only after the transaction is confirmed on-chain, and at most once, even if a confirmation is interrupted and later
-        reconciled. The transfer is signed by the wallet on your session, so use this rail while signed in with your
-        Solana wallet.
+        Add credits by paying USDC or SOL from a Solana wallet. Any wallet you connect can pay. It does not have to be
+        the wallet you sign in with, and an account that signs in with email can pay this way too.
+      </p>
+      <ol>
+        <li>
+          Open <strong>Billing</strong>. Under <strong>Add Credits</strong>, choose what to pay with, USDC or SOL, when
+          both are offered.
+        </li>
+        <li>
+          Choose <strong>Pay with Wallet</strong> on a credit pack. If no wallet is connected yet, pick one from the list
+          and the payment carries on.
+        </li>
+        <li>
+          Confirm the transfer in your wallet. WheelsAI prepares the exact transfer and your wallet signs it; WheelsAI
+          never holds your wallet&apos;s keys.
+        </li>
+        <li>
+          Your credits appear as soon as the network confirms the transfer, usually within a minute. You can leave the
+          page while it is being confirmed, and the credits are still added.
+        </li>
+      </ol>
+      <DocTable
+        caption="Paying with USDC or SOL"
+        columns={[
+          { key: "asset", label: "You pay in" },
+          { key: "amount", label: "What your wallet sends" },
+          { key: "time", label: "Time to confirm in your wallet" },
+        ]}
+        rows={[
+          {
+            asset: "USDC",
+            amount: "Exactly the dollar amount, in USDC.",
+            time: "120 seconds",
+          },
+          {
+            asset: "SOL",
+            amount: "The dollar amount in SOL, at the price shown before you confirm.",
+            time: "60 seconds, while the price holds",
+          },
+        ]}
+      />
+      <ul>
+        <li>
+          If the time runs out before you confirm, nothing is taken. Start the top-up again; a SOL top-up gets a fresh
+          price.
+        </li>
+        <li>
+          If a current SOL price cannot be read, SOL is not prepared and nothing is taken. USDC is not affected.
+        </li>
+        <li>
+          Your organization&apos;s first USDC payment also opens its USDC account, which costs your wallet about 0.002 SOL
+          once.
+        </li>
+        <li>
+          Your wallet also pays the network&apos;s fee for the transfer, so keep a little SOL in it.
+        </li>
+        <li>
+          When WheelsAI can see that the wallet holds less than the top-up needs, it says so before anything is signed.
+          Choose a smaller amount or another wallet.
+        </li>
+        <li>
+          Credits are added once per transfer. If a transfer fails on the network, no payment is taken and the top-up
+          says so.
+        </li>
+      </ul>
+      <p>
+        From code, the same steps are <Link href="/docs/api/billing#topups">the wallet top-up endpoints</Link>, which
+        take an API key or a session.
       </p>
 
       <h3 id="x402">x402 per request</h3>
@@ -264,7 +327,8 @@ export default function PlansBillingPage() {
       <h2 id="who">Who can pay</h2>
       <p>
         Buying credits by card, starting Pro and opening the billing portal require a signed-in owner or admin of the
-        organization. API keys cannot start payments.
+        organization, and an API key cannot start them. Adding credits from a wallet is open to any signed-in account
+        and to an API key: the wallet that signs the transfer is the one that pays.
       </p>
     </DocPage>
   );

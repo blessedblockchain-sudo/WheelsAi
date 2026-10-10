@@ -4,11 +4,12 @@ import Link from "next/link";
 import { CodeBlock } from "@/components/marketing/code-block";
 import { DocPage } from "@/components/marketing/docs/doc-page";
 import { Endpoint, Fields } from "@/components/marketing/docs/endpoint";
+import { DocTable } from "@/components/marketing/prose";
 
 export const metadata: Metadata = {
   title: "Billing and plans API",
   description:
-    "WheelsAI billing API: credit balance, ledger transactions, usage, credit packages and live payment rails, plan and limits, Stripe checkout and portal, and Solana wallet top-ups.",
+    "WheelsAI billing API: credit balance, ledger transactions, usage, credit packages and live payment rails, plan and limits, Stripe checkout and portal, Solana wallet top-ups in USDC or SOL, and linking a wallet.",
 };
 
 const toc = [
@@ -19,11 +20,19 @@ const toc = [
   { id: "packages", title: "Packages and rails", sub: true },
   { id: "plan", title: "Plan" },
   { id: "get-plan", title: "Current plan and usage", sub: true },
-  { id: "payments", title: "Payments" },
+  { id: "payments", title: "Card payments" },
   { id: "checkout", title: "Buy credits by card", sub: true },
   { id: "subscription", title: "Start Pro", sub: true },
   { id: "portal", title: "Billing portal", sub: true },
-  { id: "topups", title: "Wallet top-ups", sub: true },
+  { id: "topups", title: "Wallet top-ups" },
+  { id: "topup-prepare", title: "Prepare a top-up", sub: true },
+  { id: "topup-submit", title: "Send the signed transfer", sub: true },
+  { id: "topup-reconcile", title: "Check a top-up", sub: true },
+  { id: "topup-get", title: "Read one top-up", sub: true },
+  { id: "topup-list", title: "List recent top-ups", sub: true },
+  { id: "link-wallet", title: "Link a wallet" },
+  { id: "link-wallet-nonce", title: "Ask for a nonce", sub: true },
+  { id: "link-wallet-verify", title: "Link the wallet", sub: true },
 ];
 
 export default function BillingApiPage() {
@@ -31,7 +40,7 @@ export default function BillingApiPage() {
     <DocPage
       href="/docs/api/billing"
       title="Billing and plans"
-      lead="Read your credit balance, ledger and plan with an API key or session. Starting a payment always needs a signed-in owner or admin."
+      lead="Read your credit balance, ledger and plan with an API key or session. Card payments need a signed-in owner or admin. Wallet top-ups in USDC or SOL work with an API key or a session."
       toc={toc}
     >
       <h2 id="credits">Credits</h2>
@@ -73,14 +82,15 @@ export default function BillingApiPage() {
     "stripeCheckout": true,
     "proSubscription": true,
     "wallet": true,
-    "walletAssets": ["USDC"],
+    "walletAssets": ["USDC", "SOL"],
     "network": "mainnet-beta"
   }
 }`}
         />
         <p>
-          <code>rails</code> lists the payment paths open to you, so a client never offers one the API would refuse. The
-          values above are an example; read them from the API.
+          <code>rails</code> lists the payment paths open to you, so a client never offers one the API would refuse.{" "}
+          <code>walletAssets</code> is present when <code>wallet</code> is true: <code>USDC</code>, followed by{" "}
+          <code>SOL</code> when SOL is offered. The values above are an example; read them from the API.
         </p>
       </Endpoint>
 
@@ -110,7 +120,7 @@ export default function BillingApiPage() {
         </p>
       </Endpoint>
 
-      <h2 id="payments">Payments</h2>
+      <h2 id="payments">Card payments</h2>
       <p>
         These endpoints need a signed-in <strong>owner or admin</strong> session; API keys and members are refused. While card
         payments are temporarily unavailable, card endpoints answer <code>501</code>{" "}
@@ -137,37 +147,292 @@ export default function BillingApiPage() {
         <p>Returns a Stripe billing portal session URL for payment methods, invoices and cancellation.</p>
       </Endpoint>
 
-      <Endpoint id="topups" method="POST" path="/api/billing/topups/prepare" auth="Session signed in with a wallet" title="Prepare a wallet top-up">
+      <h2 id="topups">Wallet top-ups</h2>
+      <p>
+        Add credits by paying USDC or SOL from a Solana wallet. These endpoints take an <strong>API key or a session</strong>.
+        A top-up has three steps: WheelsAI prepares the transfer, the wallet signs it, and you send the signed transfer
+        back. Credits are added once the network confirms the transfer, and only once.
+      </p>
+      <p>
+        <code>rails.wallet</code> in <a href="#packages">the packages answer</a> says whether wallet top-ups are open, and{" "}
+        <code>rails.walletAssets</code> lists the assets you can pay in. Every answer about a top-up, a refusal included,
+        carries <code>message</code>: a plain sentence you can show to the person paying.
+      </p>
+      <DocTable
+        caption="The statuses of a top-up"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "meaning", label: "What it means" },
+        ]}
+        rows={[
+          { status: <code>prepared</code>, meaning: "The transfer is ready to sign. Nothing has been sent." },
+          {
+            status: (
+              <>
+                <code>submitting</code>, <code>submitted</code>
+              </>
+            ),
+            meaning: "The signed transfer was received and is being confirmed on the network.",
+          },
+          { status: <code>credited</code>, meaning: "The transfer was confirmed and the credits are in your balance. Final." },
+          { status: <code>failed</code>, meaning: "The transfer failed on the network, so no payment was taken. Final." },
+          { status: <code>expired</code>, meaning: "The top-up ran out of time, or the network never took the transfer. Nothing was taken. Final." },
+        ]}
+      />
+
+      <Endpoint id="topup-prepare" method="POST" path="/api/billing/topups/prepare" auth="API key or session" title="Prepare a top-up">
         <Fields
           fields={[
-            { name: "amountUsd", type: "number", required: true, description: "US dollars, within the purchase limits." },
-            { name: "asset", type: "enum", required: true, description: <>An asset listed in <code>rails.walletAssets</code>, normally <code>USDC</code>.</> },
+            { name: "amountUsd", type: "number", required: true, description: "US dollars, 5 to 10,000." },
+            {
+              name: "asset",
+              type: "\"USDC\" | \"SOL\"",
+              required: true,
+              description: <>An asset listed in <code>rails.walletAssets</code>.</>,
+            },
+            {
+              name: "payerAddress",
+              type: "string",
+              description: (
+                <>
+                  The Solana wallet that signs and pays. It does not have to be linked to your account. When it is left
+                  out, the wallet your session signed in with pays.
+                </>
+              ),
+            },
+          ]}
+        />
+        <CodeBlock
+          language="json"
+          code={`{
+  "topupId": "...",
+  "unsignedTxBase64": "...",
+  "depositAddress": "...",
+  "payerAddress": "...",
+  "asset": "USDC",
+  "amountUsd": 50,
+  "bonusUsd": 5,
+  "amountRaw": "50000000",
+  "quote": null,
+  "opensUsdcAccount": false,
+  "expiresAt": "...",
+  "message": "Confirm the transfer in your wallet."
+}`}
+        />
+        <ul>
+          <li>
+            <code>unsignedTxBase64</code> is the whole transfer, from the paying wallet to your organization&apos;s{" "}
+            <code>depositAddress</code>, ready to sign.
+          </li>
+          <li>
+            <code>amountRaw</code> is the amount the wallet sends in the asset&apos;s base units, as a string. One USDC is
+            1,000,000 base units, so a USDC amount is exactly the dollar amount.
+          </li>
+          <li>
+            For SOL, <code>quote</code> is <code>&#123; solPriceUsd, validUntil &#125;</code> and{" "}
+            <code>quotedSolPriceUsd</code> repeats the price. The price holds for 60 seconds. For USDC,{" "}
+            <code>quote</code> is <code>null</code> and the top-up can be sent for 120 seconds. <code>expiresAt</code> is
+            the moment either one runs out.
+          </li>
+          <li>
+            <code>opensUsdcAccount</code> is true when this is your organization&apos;s first USDC payment. That transfer
+            also opens your organization&apos;s USDC account, which costs the paying wallet about 0.002 SOL once.
+          </li>
+          <li>
+            <code>bonusUsd</code> is the bonus this amount earns, added with the credits.
+          </li>
+        </ul>
+        <p>You can prepare at most 10 top-ups a minute. Nothing is taken by a refusal:</p>
+        <DocTable
+          caption="Refusals of prepare"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "400", error: <code>invalid_payload</code>, when: "The body is not the one described above." },
+            { status: "400", error: <code>invalid_amount</code>, when: "The amount is outside $5 to $10,000." },
+            { status: "400", error: <code>wallet_required</code>, when: "No payerAddress was sent and the session has no wallet." },
+            { status: "400", error: <code>invalid_payer_address</code>, when: "The payer is not a Solana wallet address that can pay." },
+            { status: "400", error: <code>asset_unavailable</code>, when: "SOL was asked for and is not offered. Pay with USDC." },
+            { status: "409", error: <code>wallet_balance_short</code>, when: "The wallet holds less than the top-up needs." },
+            { status: "501", error: <code>wallet_topups_not_enabled</code>, when: "Wallet top-ups are not open." },
+            {
+              status: "502, 503",
+              error: (
+                <>
+                  <code>rpc_unavailable</code>, <code>chain_unavailable</code>
+                </>
+              ),
+              when: "Wallet payments are paused for a moment. Try again shortly.",
+            },
+            {
+              status: "503",
+              error: <code>price_unavailable</code>,
+              when: "No current SOL price could be read, so nothing was prepared. USDC is not affected.",
+            },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="topup-submit" method="POST" path="/api/billing/topups/{topupId}/submit" auth="API key or session" title="Send the signed transfer">
+        <Fields
+          fields={[
+            {
+              name: "signedTxBase64",
+              type: "string",
+              required: true,
+              description: "The prepared transfer, signed by the paying wallet, as base64.",
+            },
           ]}
         />
         <p>
-          Returns <code>topupId</code>, <code>unsignedTxBase64</code> (the complete transfer from your wallet to your
-          organization&apos;s deposit address), <code>depositAddress</code>, <code>bonusUsd</code> and{" "}
-          <code>expiresAt</code>. Then:
+          Sign the transfer as it was prepared. A wallet may add its own fee setting; any other change is refused and
+          nothing is sent. The answer is <code>200</code> when the transfer was confirmed during the call:
         </p>
-        <ol>
-          <li>
-            Sign the transaction in your wallet without changing it, and send it to{" "}
-            <code>POST /api/billing/topups/&#123;topupId&#125;/submit</code> as <code>&#123; &quot;signedTxBase64&quot;: &quot;...&quot; &#125;</code>.
-            WheelsAI rejects anything that is not byte-for-byte the transaction it prepared, then broadcasts it.
-          </li>
-          <li>
-            Credits are granted once the transaction is confirmed. If confirmation was interrupted,{" "}
-            <code>POST /api/billing/topups/&#123;topupId&#125;/reconcile</code> checks the chain and settles the top-up; it is
-            safe to call repeatedly and never credits twice.
-          </li>
-          <li>
-            <code>GET /api/billing/topups/&#123;topupId&#125;</code> returns its status.
-          </li>
-        </ol>
+        <CodeBlock
+          language="json"
+          code={`{
+  "status": "credited",
+  "message": "Added $55.00 in credits: $50.00 paid and a $5.00 bonus.",
+  "txSignature": "...",
+  "grantedUsd": 55,
+  "balanceUsd": 67.5
+}`}
+        />
         <p>
-          The whole rail answers <code>501</code> while wallet top-ups are temporarily unavailable, and <code>400</code>{" "}
-          <code>wallet_required</code> when your session was not signed in with a wallet.
+          and <code>202</code> when it was sent and is still being confirmed, with <code>status</code>{" "}
+          <code>submitting</code> or <code>submitted</code>:
         </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "status": "submitted",
+  "message": "Your transfer was sent and is being confirmed. Your credits appear as soon as it is, usually within a minute. You can leave this page.",
+  "txSignature": "...",
+  "pendingConfirmation": true
+}`}
+        />
+        <p>
+          After a <code>202</code> you do not have to do anything: the credits are added when the network confirms the
+          transfer. To follow it, call <a href="#topup-reconcile">reconcile</a> or read{" "}
+          <a href="#topup-get">the top-up</a> until its status is final. A <code>202</code> can also say that WheelsAI
+          could not confirm the network took the transfer. If it goes through, your credits are added within a few
+          minutes. If it does not, nothing is taken.
+        </p>
+        <p>
+          Sending the same signed transfer again is safe. It is not sent to the network twice, and the answer is where the
+          top-up stands now, with <code>alreadyCredited: true</code> once the credits were added by an earlier call.
+        </p>
+        <DocTable
+          caption="Refusals of submit"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "400", error: <code>unreadable_transaction</code>, when: "The signed transfer could not be read. It was not sent." },
+            { status: "400", error: <code>message_mismatch</code>, when: "The signed transfer is not the one that was prepared. It was not sent." },
+            { status: "404", error: <code>topup_not_found</code>, when: "No top-up of your organization has this id." },
+            {
+              status: "409",
+              error: (
+                <>
+                  <code>in_flight</code>, <code>duplicate_signature</code>
+                </>
+              ),
+              when: "This top-up is already being confirmed. You do not need to send it again.",
+            },
+            { status: "410", error: <code>topup_expired</code>, when: "The top-up ran out of time. Prepare a new one." },
+            { status: "410", error: <code>topup_failed</code>, when: "The top-up has already failed. Prepare a new one." },
+            { status: "501", error: <code>wallet_topups_not_enabled</code>, when: "Wallet top-ups are not open." },
+            { status: "503", error: <code>chain_unavailable</code>, when: "Wallet payments are paused for a moment. Try again shortly." },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="topup-reconcile" method="POST" path="/api/billing/topups/{topupId}/reconcile" auth="API key or session" title="Check a top-up against the network">
+        <p>
+          Send an empty JSON object. WheelsAI checks the network for this top-up and answers where it stands:{" "}
+          <code>status</code> and <code>message</code>, with <code>txSignature</code>, <code>grantedUsd</code> and{" "}
+          <code>balanceUsd</code> once it is credited, and <code>pendingConfirmation: true</code> while the transfer is
+          still being confirmed. It is safe to call as often as you like and never adds credits twice.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="topup-get" method="GET" path="/api/billing/topups/{topupId}" auth="API key or session" title="Read one top-up">
+        <CodeBlock
+          language="json"
+          code={`{
+  "id": "...",
+  "status": "credited",
+  "message": "Added $55.00 in credits: $50.00 paid and a $5.00 bonus.",
+  "asset": "USDC",
+  "amountUsd": 50,
+  "bonusUsd": 5,
+  "txSignature": "...",
+  "depositAddress": "...",
+  "payerAddress": "...",
+  "createdAt": "...",
+  "expiresAt": "..."
+}`}
+        />
+        <p>
+          <code>txSignature</code> is present once a signed transfer was received. <code>message</code> says in a
+          sentence where the top-up stands, including why one failed or expired.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="topup-list" method="GET" path="/api/billing/topups" auth="API key or session" title="List recent top-ups">
+        <p>
+          Returns <code>&#123; topups &#125;</code>: your organization&apos;s last 20 top-ups, newest first, each in the
+          shape above. Read it when a page opens to pick up a top-up that is still being confirmed.
+        </p>
+      </Endpoint>
+
+      <h2 id="link-wallet">Link a wallet</h2>
+      <p>
+        Linking adds a Solana wallet to your account, so your session carries it. You do not need a linked wallet to pay:
+        a top-up takes the paying wallet in <code>payerAddress</code>. Linking is two calls: ask for a nonce, then send
+        the wallet&apos;s signature of it.
+      </p>
+
+      <Endpoint id="link-wallet-nonce" method="POST" path="/api/settings/link-wallet/nonce" auth="Session" title="Ask for a nonce">
+        <Fields fields={[{ name: "walletAddress", type: "string", required: true, description: "The Solana wallet to link." }]} />
+        <p>
+          Returns <code>&#123; nonce, walletAddress &#125;</code>. The wallet signs the <code>nonce</code> text exactly as
+          it is. A nonce works once, and only for the wallet it was issued to.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="link-wallet-verify" method="POST" path="/api/settings/link-wallet" auth="Session" title="Link the wallet">
+        <Fields
+          fields={[
+            { name: "walletAddress", type: "string", required: true, description: "The wallet the nonce was issued to." },
+            { name: "signature", type: "string", required: true, description: "The wallet's signature of the nonce text, base58 encoded." },
+            { name: "nonce", type: "string", required: true, description: "The nonce from the call above." },
+          ]}
+        />
+        <p>
+          Returns <code>&#123; walletAddress, message &#125;</code> and issues your session cookie again, so the session
+          carries the wallet at once.
+        </p>
+        <DocTable
+          caption="Refusals of linking a wallet"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "400", error: <code>invalid_wallet_address</code>, when: "The address is not a Solana wallet address." },
+            { status: "400", error: <code>invalid_signature</code>, when: "The signature could not be checked against the wallet and the nonce." },
+            { status: "401", error: <code>invalid_nonce</code>, when: "The nonce has expired, was already used, or was issued to another wallet. Ask for a new one." },
+            { status: "409", error: <code>wallet_in_use</code>, when: "The wallet already signs in to another WheelsAI account. Nothing is changed." },
+          ]}
+        />
       </Endpoint>
     </DocPage>
   );

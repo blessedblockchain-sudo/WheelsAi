@@ -10,7 +10,7 @@ import { DeployFailure, runDeploy } from "../lib/deploy.js";
 import { formatLatencyValue, loadPlatformLatency, type PublicLatencyFigure } from "../lib/latency.js";
 import { checkListingText } from "../lib/listing.js";
 import { parseWholeNumber } from "../lib/numbers.js";
-import { describePricing, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
+import { describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, field, printJson } from "../ui.js";
 
@@ -29,6 +29,7 @@ interface DeployOptions {
   monthly?: string;
   free?: boolean;
   tokenized?: boolean;
+  copies?: boolean;
   title?: string;
   description?: string;
   category?: string;
@@ -55,7 +56,8 @@ export const deployCommand = new Command("deploy")
   .option("--price-per-request <cents>", "with --publish: charge this many cents per request")
   .option("--monthly <cents>", "with --publish: charge this many cents per month")
   .option("--free", "with --publish: list for free (the default)")
-  .option("--tokenized", "with --publish: token-gated once a token is launched for the listing; free to install until then")
+  .option("--copies", "with --publish: sell copies of the agent instead of use of it (buyers get their own copy, including its instructions)")
+  .option("--tokenized", "with --publish: token-gated once a token is launched for the listing; free to install until then (needs --copies)")
   .option("--title <title>", "with --publish: listing title (default: the agent's name)")
   .option("--description <text>", "with --publish: listing description (default: the agent's description)")
   .option("--category <category>", "with --publish: marketplace category (default: from the agent's tags, else other)")
@@ -70,8 +72,8 @@ export const deployCommand = new Command("deploy")
     const pricing = parsePricing(opts);
     parseCategory(opts.category);
     checkListingText(opts);
-    if (!opts.publish && (pricing || opts.title !== undefined || opts.description !== undefined || opts.category !== undefined)) {
-      throw new CliError("Pricing, --title, --description and --category only apply with --publish.");
+    if (!opts.publish && (pricing || opts.copies || opts.title !== undefined || opts.description !== undefined || opts.category !== undefined)) {
+      throw new CliError("Pricing, --copies, --title, --description and --category only apply with --publish.");
     }
     if (opts.resume !== undefined && !UUID.test(opts.resume)) {
       throw new CliError(`--resume takes a deployment id (a UUID), got "${opts.resume}".`);
@@ -96,7 +98,7 @@ export const deployCommand = new Command("deploy")
           validate: opts.validate,
           resume: opts.resume,
           publish: opts.publish
-            ? { pricing, title: opts.title, description: opts.description, category: opts.category }
+            ? { pricing, title: opts.title, description: opts.description, category: opts.category, copies: opts.copies }
             : undefined,
         },
       );
@@ -175,6 +177,7 @@ function printListing(listing: AgentListing, url: string): void {
   console.log(chalk.bold("  Listed on the marketplace"));
   console.log(field("URL", clean(url)));
   console.log(field("Status", clean(listing.status)));
+  console.log(field("Sells", clean(describeSells(listing))));
   console.log(field("Pricing", clean(describePricing(listing))));
   const note = pricingNote(listing.pricingModel);
   if (note) console.log(chalk.yellow(`  ${note}`));

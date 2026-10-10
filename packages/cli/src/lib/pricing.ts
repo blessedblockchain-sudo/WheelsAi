@@ -16,6 +16,8 @@ export interface PricingFlags {
   monthly?: string;
   free?: boolean;
   tokenized?: boolean;
+  /** The listing sells copies of the agent. Without it a listing sells use of the agent. */
+  copies?: boolean;
 }
 
 export type Pricing =
@@ -24,17 +26,22 @@ export type Pricing =
   | { pricingModel: "per_request"; pricePerRequestCents: number }
   | { pricingModel: "monthly"; monthlyPriceCents: number };
 
-/** The API's bounds (its createListing schema), checked here so a bad price fails before anything is deployed. */
+/**
+ * The API's bounds (its createListing schema), checked here so a bad price fails before anything is deployed.
+ * A listing that sells use charges at least 5 cents a use; one that sells copies at least 1 cent a request.
+ */
+export const MIN_USE_PRICE_CENTS = 5;
 const PRICE_PER_REQUEST_CENTS = { min: 1, max: 100_000 };
+const USE_PRICE_PER_REQUEST_CENTS = { min: MIN_USE_PRICE_CENTS, max: 100_000 };
 const MONTHLY_PRICE_CENTS = { min: 100, max: 10_000_000 };
 
-function parseCents(flag: string, value: string, bounds: { min: number; max: number }): number {
+function parseCents(flag: string, value: string, bounds: { min: number; max: number }, hint?: string): number {
   if (!/^\d+$/.test(value.trim())) {
     throw new CliError(`${flag} must be a whole number of cents, got "${value}".`);
   }
   const cents = Number.parseInt(value, 10);
   if (cents < bounds.min || cents > bounds.max) {
-    throw new CliError(`${flag} must be between ${bounds.min} and ${bounds.max} cents, got ${cents}.`);
+    throw new CliError(`${flag} must be between ${bounds.min} and ${bounds.max} cents, got ${cents}.`, hint ? { hint } : {});
   }
   return cents;
 }
@@ -42,6 +49,9 @@ function parseCents(flag: string, value: string, bounds: { min: number; max: num
 /**
  * Read the pricing flags. Returns null when none was given, so the caller
  * can decide on a default. Giving more than one is an error.
+ *
+ * A listing sells use of the agent unless `copies` is set. A use listing charges at least 5 cents
+ * per use, and cannot be token-gated: `--tokenized` needs `--copies`.
  */
 export function parsePricing(flags: PricingFlags): Pricing | null {
   const chosen = [
@@ -54,10 +64,22 @@ export function parsePricing(flags: PricingFlags): Pricing | null {
   if (chosen.length > 1) {
     throw new CliError(`Choose one pricing option, not ${chosen.join(" and ")}.`);
   }
+  if (flags.tokenized && !flags.copies) {
+    throw new CliError("--tokenized needs --copies: a token-gated listing sells copies of the agent, not use of it.", {
+      hint: "Add --copies. Buyers then get their own copy, including its instructions.",
+    });
+  }
   if (flags.pricePerRequest !== undefined) {
     return {
       pricingModel: "per_request",
-      pricePerRequestCents: parseCents("--price-per-request", flags.pricePerRequest, PRICE_PER_REQUEST_CENTS),
+      pricePerRequestCents: flags.copies
+        ? parseCents("--price-per-request", flags.pricePerRequest, PRICE_PER_REQUEST_CENTS)
+        : parseCents(
+            "--price-per-request",
+            flags.pricePerRequest,
+            USE_PRICE_PER_REQUEST_CENTS,
+            `A listing that sells use charges at least ${MIN_USE_PRICE_CENTS} cents per use. A listing that sells copies (--copies) can charge less.`,
+          ),
     };
   }
   if (flags.monthly !== undefined) {
@@ -82,6 +104,16 @@ export function describePricing(pricing: Pricing | { pricingModel: string; price
     default:
       return pricing.pricingModel;
   }
+}
+
+/**
+ * What a listing sells, in words: "use, per message", "use, per month", "use" or "copies".
+ * `unit` is what one payment buys; the API sends it null for a free listing and for copies.
+ */
+export function describeSells(listing: { sells?: string | null; unit?: string | null }): string {
+  if (listing.sells === "copies") return "copies";
+  if (listing.sells === "use") return listing.unit ? `use, per ${listing.unit}` : "use";
+  return "unknown";
 }
 
 /**

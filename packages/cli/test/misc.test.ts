@@ -209,6 +209,34 @@ describe("describeError", () => {
     assert.equal(described.hint, "Add credits at https://w.test/dashboard/billing");
   });
 
+  it("shows a listing refusal by its message, and the fields that need another look after it", () => {
+    for (const [status, code, message] of [
+      [409, "listing_exists", "This agent already has a listing."],
+      [409, "marketplace_copy", "This agent came from the marketplace, so it cannot be sold again."],
+      [409, "graph_agent_not_supported", "This agent answers through its graph, so use of it cannot be sold yet."],
+      [400, "token_access_not_available", "Token access is for copies. Sell copies to use it."],
+    ] as const) {
+      const described = describeError(new WheelsAIError(status, message, { error: code, message }, code));
+      assert.equal(described.message, message);
+      assert.equal(described.detail, `HTTP ${status} ${code}`);
+    }
+
+    const body = {
+      error: "validation_failed",
+      message: "Price per message must be at least $0.05.",
+      fields: {
+        pricePerRequestCents: "Price per message must be at least $0.05.",
+        allowedTools: "That tool is not one of the agent's skills.",
+      },
+    };
+    const described = describeError(new WheelsAIError(400, body.message, body, "validation_failed"));
+    assert.equal(
+      described.message,
+      "Price per message must be at least $0.05.\n  allowedTools: That tool is not one of the agent's skills.",
+    );
+    assert.equal(described.detail, "HTTP 400 validation_failed");
+  });
+
   it("tells a 401 to log in, and an unreachable API to check the URL", () => {
     assert.match(describeError(new WheelsAIError(401, "Authentication required")).hint ?? "", /wheelsai login/);
     const unreachable = describeError(new WheelsAIError(0, "Could not reach http://x: ECONNREFUSED"));

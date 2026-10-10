@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { CliError } from "../src/errors.js";
-import { describePricing, parseCategory, parsePricing, pricingNote } from "../src/lib/pricing.js";
+import { describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../src/lib/pricing.js";
 import { parseWholeNumber } from "../src/lib/numbers.js";
 
 describe("parsePricing", () => {
@@ -12,7 +12,7 @@ describe("parsePricing", () => {
 
   it("maps each flag to the API's pricing model", () => {
     assert.deepEqual(parsePricing({ free: true }), { pricingModel: "free" });
-    assert.deepEqual(parsePricing({ tokenized: true }), { pricingModel: "tokenized" });
+    assert.deepEqual(parsePricing({ tokenized: true, copies: true }), { pricingModel: "tokenized" });
     assert.deepEqual(parsePricing({ pricePerRequest: "5" }), { pricingModel: "per_request", pricePerRequestCents: 5 });
     assert.deepEqual(parsePricing({ monthly: "900" }), { pricingModel: "monthly", monthlyPriceCents: 900 });
   });
@@ -32,9 +32,49 @@ describe("parsePricing", () => {
   });
 });
 
+describe("a listing sells use unless --copies says otherwise", () => {
+  it("--tokenized needs --copies, and says so plainly", () => {
+    assert.throws(() => parsePricing({ tokenized: true }), (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.message, "--tokenized needs --copies: a token-gated listing sells copies of the agent, not use of it.");
+      assert.match(err.hint ?? "", /Add --copies/);
+      return true;
+    });
+    assert.deepEqual(parsePricing({ tokenized: true, copies: true }), { pricingModel: "tokenized" });
+  });
+
+  it("a use listing charges at least 5 cents a use; copies can charge 1", () => {
+    assert.throws(() => parsePricing({ pricePerRequest: "4" }), (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.match(err.message, /--price-per-request must be between 5 and 100000 cents, got 4/);
+      assert.match(err.hint ?? "", /at least 5 cents per use/);
+      return true;
+    });
+    assert.deepEqual(parsePricing({ pricePerRequest: "5" }), { pricingModel: "per_request", pricePerRequestCents: 5 });
+    assert.deepEqual(parsePricing({ pricePerRequest: "1", copies: true }), { pricingModel: "per_request", pricePerRequestCents: 1 });
+  });
+
+  it("--copies alone is not a pricing choice, and the monthly range is the same either way", () => {
+    assert.equal(parsePricing({ copies: true }), null);
+    assert.deepEqual(parsePricing({ monthly: "100" }), { pricingModel: "monthly", monthlyPriceCents: 100 });
+    assert.deepEqual(parsePricing({ monthly: "100", copies: true }), { pricingModel: "monthly", monthlyPriceCents: 100 });
+  });
+});
+
+describe("describeSells", () => {
+  it("says what a listing sells and what one payment buys", () => {
+    assert.equal(describeSells({ sells: "use", unit: "message" }), "use, per message");
+    assert.equal(describeSells({ sells: "use", unit: "run" }), "use, per run");
+    assert.equal(describeSells({ sells: "use", unit: "month" }), "use, per month");
+    assert.equal(describeSells({ sells: "use", unit: null }), "use");
+    assert.equal(describeSells({ sells: "copies", unit: null }), "copies");
+    assert.equal(describeSells({}), "unknown");
+  });
+});
+
 describe("price limits (the API's own, checked before anything is deployed)", () => {
   it("accepts the ends of each range", () => {
-    assert.deepEqual(parsePricing({ pricePerRequest: "1" }), { pricingModel: "per_request", pricePerRequestCents: 1 });
+    assert.deepEqual(parsePricing({ pricePerRequest: "5" }), { pricingModel: "per_request", pricePerRequestCents: 5 });
     assert.deepEqual(parsePricing({ pricePerRequest: "100000" }), { pricingModel: "per_request", pricePerRequestCents: 100000 });
     assert.deepEqual(parsePricing({ monthly: "100" }), { pricingModel: "monthly", monthlyPriceCents: 100 });
     assert.deepEqual(parsePricing({ monthly: "10000000" }), { pricingModel: "monthly", monthlyPriceCents: 10000000 });
@@ -42,8 +82,9 @@ describe("price limits (the API's own, checked before anything is deployed)", ()
 
   it("refuses a price the API would reject", () => {
     for (const [flags, message] of [
-      [{ pricePerRequest: "0" }, /--price-per-request must be between 1 and 100000 cents, got 0/],
-      [{ pricePerRequest: "100001" }, /--price-per-request must be between 1 and 100000 cents/],
+      [{ pricePerRequest: "0", copies: true }, /--price-per-request must be between 1 and 100000 cents, got 0/],
+      [{ pricePerRequest: "0" }, /--price-per-request must be between 5 and 100000 cents, got 0/],
+      [{ pricePerRequest: "100001" }, /--price-per-request must be between 5 and 100000 cents/],
       [{ monthly: "50" }, /--monthly must be between 100 and 10000000 cents, got 50/],
       [{ monthly: "10000001" }, /--monthly must be between 100 and 10000000 cents/],
     ] as const) {

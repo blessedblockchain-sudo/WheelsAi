@@ -445,6 +445,8 @@ describe("wheelsai (the built command)", () => {
         ["--description", "short"],
         ["--category", "finance"],
         ["--free", "--tokenized"],
+        ["--tokenized"],
+        ["--price-per-request", "4"],
       ]) {
         api.seen.length = 0;
         const result = await wheelsai(["deploy", "--agent", "my-support-bot", "--publish", ...flags]);

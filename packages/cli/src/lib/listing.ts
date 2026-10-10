@@ -10,6 +10,11 @@ export interface PublishOptions {
   title?: string;
   description?: string;
   category?: string;
+  /**
+   * Sell copies of the agent (buyers get their own copy, including its instructions) instead of use of it.
+   * Left out, a new listing sells use and an existing one keeps what it sells.
+   */
+  copies?: boolean;
 }
 
 export interface PublishResult {
@@ -72,6 +77,7 @@ const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 export function publishCommandLine(agentSlug: string, options: PublishOptions): string {
   const parts = ["wheelsai publish --agent", agentSlug];
   const pricing = options.pricing;
+  if (options.copies) parts.push("--copies");
   if (pricing?.pricingModel === "per_request") parts.push("--price-per-request", String(pricing.pricePerRequestCents));
   else if (pricing?.pricingModel === "monthly") parts.push("--monthly", String(pricing.monthlyPriceCents));
   else if (pricing) parts.push(pricing.pricingModel === "free" ? "--free" : "--tokenized");
@@ -133,6 +139,8 @@ export async function publishAgent(
       title: options.title ?? defaults.title,
       shortDescription: options.description ?? defaults.shortDescription,
       category: category ?? defaults.category,
+      // Use of the agent unless the caller asked for copies: the API's own default, so it is left out.
+      ...(options.copies && { sells: "copies" as const }),
       // Free unless the caller chose a price: publishing never charges by accident.
       ...(options.pricing ?? { pricingModel: "free" as const }),
     }));
@@ -143,6 +151,7 @@ export async function publishAgent(
       ...(options.title !== undefined && { title: options.title }),
       ...(options.description !== undefined && { shortDescription: options.description }),
       ...(category !== undefined && { category }),
+      ...(options.copies && { sells: "copies" as const }),
       ...(options.pricing ?? {}),
     };
     if (Object.keys(edits).length > 0) {

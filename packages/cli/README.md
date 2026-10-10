@@ -212,17 +212,18 @@ first.
 `publish` command does the same on its own and is safe to run again.
 
 With `deploy --publish`, everything about the listing that can be known in advance is checked
-before any GPU is requested: prices (`--price-per-request` 1 to 100000 cents, `--monthly` 100
-to 10000000), `--title` (3 to 100 characters), `--description` (10 to 280), `--category`, and,
+before any GPU is requested: prices (`--price-per-request` 5 to 100000 cents, or 1 to 100000 with
+`--copies`; `--monthly` 100 to 10000000), that `--tokenized` comes with `--copies`, `--title` (3 to 100 characters), `--description` (10 to 280), `--category`, and,
 when the agent has no listing yet, that its name works as a title. These are the API's own
 limits. If the listing still fails after the deployment is running, the error says the agent is
 live and gives the exact `wheelsai publish ...` command, with your flags, to retry only the listing.
 
 ```bash
 wheelsai publish --agent my-support-bot                          # free listing
-wheelsai publish --agent my-support-bot --price-per-request 5    # cents per request
+wheelsai publish --agent my-support-bot --price-per-request 5    # cents per use (at least 5)
 wheelsai publish --agent my-support-bot --monthly 900            # cents per month
-wheelsai publish --agent my-support-bot --tokenized             # token-gated once a token is launched
+wheelsai publish --agent my-support-bot --copies --price-per-request 1   # sell copies instead of use
+wheelsai publish --agent my-support-bot --copies --tokenized     # token-gated once a token is launched
 wheelsai publish --agent my-support-bot --title "Support Pro" --category customer-support \
   --description "Answers order and refund questions."
 ```
@@ -230,6 +231,7 @@ wheelsai publish --agent my-support-bot --title "Support Pro" --category custome
 | Flag | Default |
 | --- | --- |
 | pricing: `--free`, `--price-per-request <cents>`, `--monthly <cents>`, `--tokenized` (choose one) | free for a new listing, so publishing never charges by accident; an existing listing keeps its pricing |
+| `--copies` | a new listing sells use of the agent: buyers use it on its page or through the API and never get a copy or its instructions. `--copies` sells copies instead, which buyers install with their instructions; you cannot take a copy back. `--tokenized` needs `--copies`, and a use price is at least 5 cents |
 | `--title` | the agent's name |
 | `--description` | the agent's description (cut to 280 characters), else a line made from its name, framework and kind, such as `<name>: a <framework> agent built on WheelsAI.` |
 | `--category` | a category found in the agent's tags, else `other` (`customer-support`, `coding`, `research`, `automation`, `creative`, `other`) |
@@ -237,8 +239,13 @@ wheelsai publish --agent my-support-bot --title "Support Pro" --category custome
 An agent has at most one listing, so a second run reuses it: it is edited only if you passed
 flags, published if it is not yet, and left alone otherwise. The printed URL is
 `<web URL>/marketplace/<slug>`, where the slug is what the API returned (it is derived from
-the title, so it can differ from the agent's slug). Pricing, `--title`, `--description` and
+the title, so it can differ from the agent's slug). Pricing, `--copies`, `--title`, `--description` and
 `--category` without `--publish` are rejected up front, before any GPU is requested.
+
+The listing prints what it sells (`use, per message`, `use, per month` or `copies`). If the API
+refuses the listing (`listing_exists`, `marketplace_copy`, `graph_agent_not_supported`,
+`token_access_not_available` or `validation_failed`) the CLI prints its message, and for
+`validation_failed` each field that needs another look.
 
 A `--tokenized` listing is gated only once a token has been launched for it (in the
 dashboard); the CLI launches none, and until then anyone can install it for free. The CLI says

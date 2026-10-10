@@ -106,7 +106,10 @@ describe("publishCommandLine", () => {
   it("repeats every listing option, quoted for a shell", () => {
     assert.equal(publishCommandLine("my-bot", { pricing: null }), "wheelsai publish --agent my-bot");
     assert.equal(publishCommandLine("my-bot", { pricing: { pricingModel: "free" } }), "wheelsai publish --agent my-bot --free");
-    assert.equal(publishCommandLine("my-bot", { pricing: { pricingModel: "tokenized" } }), "wheelsai publish --agent my-bot --tokenized");
+    assert.equal(
+      publishCommandLine("my-bot", { pricing: { pricingModel: "tokenized" }, copies: true }),
+      "wheelsai publish --agent my-bot --copies --tokenized",
+    );
     assert.equal(
       publishCommandLine("my-bot", { pricing: { pricingModel: "monthly", monthlyPriceCents: 900 }, title: "It's $HOME", description: "Ten chars!", category: "coding" }),
       `wheelsai publish --agent my-bot --monthly 900 --title 'It'\\''s $HOME' --description 'Ten chars!' --category coding`,
@@ -124,6 +127,48 @@ describe("publishAgent", () => {
     const result = await publishAgent(api.wheels, agent(), "http://localhost:3000", { pricing: { pricingModel: "tokenized" } });
     assert.equal((api.requested("POST", "/api/marketplace/listings")[0]?.body as { pricingModel: string }).pricingModel, "tokenized");
     assert.equal(result.listing.pricingModel, "tokenized");
+  });
+
+  it("a new listing leaves what it sells to the API (use), and --copies sends sells: copies", async () => {
+    const routes = {
+      "GET /api/marketplace/my-listings": { listings: [] },
+      "POST /api/marketplace/listings": status(201, { listing: listing() }),
+      [`POST /api/marketplace/listings/${LISTING_ID}/publish`]: { listing: listing({ status: "published" }), message: "ok" },
+    };
+    const use = fakeApi(routes);
+    await publishAgent(use.wheels, agent(), "http://localhost:3000", { pricing: { pricingModel: "per_request", pricePerRequestCents: 5 } });
+    assert.ok(!("sells" in (use.requested("POST", "/api/marketplace/listings")[0]?.body as object)));
+
+    const copies = fakeApi(routes);
+    await publishAgent(copies.wheels, agent(), "http://localhost:3000", {
+      pricing: { pricingModel: "per_request", pricePerRequestCents: 1 },
+      copies: true,
+    });
+    assert.deepEqual(copies.requested("POST", "/api/marketplace/listings")[0]?.body, {
+      agentId: AGENT_ID,
+      title: "My Support Bot",
+      shortDescription: "Answers customer support questions about orders and refunds.",
+      category: "other",
+      sells: "copies",
+      pricingModel: "per_request",
+      pricePerRequestCents: 1,
+    });
+  });
+
+  it("--copies on an existing listing is an edit; without it what the listing sells is not touched", async () => {
+    const api = fakeApi({
+      "GET /api/marketplace/my-listings": { listings: [listing({ status: "published" })] },
+      [`PATCH /api/marketplace/listings/${LISTING_ID}`]: { listing: listing({ status: "published", sells: "copies" }) },
+    });
+    await publishAgent(api.wheels, agent(), "http://localhost:3000", { pricing: null, copies: true });
+    assert.deepEqual(api.requested("PATCH", `/api/marketplace/listings/${LISTING_ID}`)[0]?.body, { sells: "copies" });
+
+    const plain = fakeApi({
+      "GET /api/marketplace/my-listings": { listings: [listing({ status: "published" })] },
+      [`PATCH /api/marketplace/listings/${LISTING_ID}`]: { listing: listing({ status: "published" }) },
+    });
+    await publishAgent(plain.wheels, agent(), "http://localhost:3000", { pricing: { pricingModel: "free" } });
+    assert.deepEqual(plain.requested("PATCH", `/api/marketplace/listings/${LISTING_ID}`)[0]?.body, { pricingModel: "free" });
   });
 
   it("creates a free draft by default, publishes it and builds the URL from the returned slug", async () => {

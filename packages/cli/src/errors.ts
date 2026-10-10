@@ -45,6 +45,21 @@ function tooManyRequestsHint(err: WheelsAIError, context: ErrorContext): string 
   return "The API is rate limiting requests. Wait a minute, then retry.";
 }
 
+/**
+ * A 400 `validation_failed` names each field that needs another look in `fields` (field name to a
+ * plain sentence). The first problem is already the message; the others follow it, one line each.
+ */
+function fieldLines(err: WheelsAIError): string[] {
+  const fields = (err.data as { fields?: unknown } | null)?.fields;
+  if (typeof fields !== "object" || fields === null || Array.isArray(fields)) return [];
+  const lines: string[] = [];
+  for (const [name, sentence] of Object.entries(fields)) {
+    if (typeof sentence !== "string" || sentence === "" || sentence === err.message) continue;
+    lines.push(`  ${clean(name)}: ${clean(sentence)}`);
+  }
+  return lines;
+}
+
 /** Turn anything thrown into terminal text. API messages are passed through, minus control characters. */
 export function describeError(err: unknown, context: ErrorContext = {}): DescribedError {
   if (err instanceof CliError) {
@@ -67,7 +82,7 @@ export function describeError(err: unknown, context: ErrorContext = {}): Describ
     } else if (err.status === 0) {
       hint = "Check the API URL with `wheelsai config show`.";
     }
-    return { message: clean(err.message), detail, hint };
+    return { message: [clean(err.message), ...fieldLines(err)].join("\n"), detail, hint };
   }
 
   return { message: clean(err instanceof Error ? err.message : String(err)) };

@@ -2430,6 +2430,14 @@ export async function getPublisherRevenue(publisherId: string) {
     orderBy: { createdAt: "desc" },
     take: 20,
   });
+  // What each row's licence is for, so a sale of use and a request made on a
+  // buyer's copy are not given the same name. A row with no licence (a job,
+  // an x402 payment) has none.
+  const licenceIds = [...new Set(recentTransactions.flatMap((t) => (t.installId ? [t.installId] : [])))];
+  const licences = licenceIds.length
+    ? await prisma.agentInstall.findMany({ where: { id: { in: licenceIds } }, select: { id: true, kind: true } })
+    : [];
+  const licenceKindOf = new Map(licences.map((licence) => [licence.id, licence.kind === "use" ? "use" : "copy"] as const));
   // Job payments still in escrow: paid by buyers, not yet the publisher's.
   const heldInEscrow = await prisma.marketplaceRevenue.aggregate({
     where: { publisherId, type: "job", status: "pending" },
@@ -2471,6 +2479,9 @@ export async function getPublisherRevenue(publisherId: string) {
       jobId: t.jobId,
       escrow: t.type === "job" ? escrowState(t.status) : null,
       modelCostCents: Number(t.modelCostCents),
+      // "use": the buyer used the creator's own agent. "copy": a request on
+      // the buyer's copy, or its subscription. null: no licence behind it.
+      licenceKind: t.installId ? (licenceKindOf.get(t.installId) ?? null) : null,
       createdAt: t.createdAt,
     })),
     heldInEscrow: {

@@ -168,7 +168,7 @@ export default function RevenueDashboardPage() {
       setLoadError(null);
     } catch (error) {
       setLoadError(error);
-      toast.error(getErrorMessage(error, "Failed to load revenue data"));
+      toast.error(getErrorMessage(error, "Couldn't load your earnings"));
     } finally {
       setIsLoading(false);
     }
@@ -244,7 +244,7 @@ export default function RevenueDashboardPage() {
           <RevenuePageSkeleton />
         ) : loadError !== null || !revenue ? (
           <ErrorState
-            title="Couldn't load revenue data"
+            title="Couldn't load your earnings"
             error={loadError}
             onRetry={retryLoad}
           />
@@ -359,14 +359,14 @@ export default function RevenueDashboardPage() {
               {/* Revenue by Listing */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Revenue by Agent</CardTitle>
+                  <CardTitle>Earnings by agent</CardTitle>
                   <CardDescription>Earnings breakdown by published agent</CardDescription>
                 </CardHeader>
                 <CardContent>
                   {revenue.revenueByListing.length === 0 && !(revenue.unlistedJobRevenue?.jobs) ? (
                     <EmptyState
                       icon={Store}
-                      title="No revenue yet"
+                      title="No earnings yet"
                       description="Earnings from your published agents will show here."
                     />
                   ) : (
@@ -479,14 +479,14 @@ export default function RevenueDashboardPage() {
             <Card className="mt-8">
               <CardHeader>
                 <CardTitle>Recent Transactions</CardTitle>
-                <CardDescription>Latest revenue from your agents</CardDescription>
+                <CardDescription>Your latest earnings</CardDescription>
               </CardHeader>
               <CardContent>
                 {revenue.recentTransactions.length === 0 ? (
                   <EmptyState
                     icon={TrendingUp}
                     title="No transactions yet"
-                    description="Revenue will appear here when users use your agents."
+                    description="Earnings appear here when people pay for your agents."
                   />
                 ) : (
                   <div className="overflow-x-auto">

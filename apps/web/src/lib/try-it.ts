@@ -67,13 +67,13 @@ export function tryItNotice(
     return {
       message:
         reason === "network_changed"
-          ? "Your network changed, so this preview session ended. Start a new one to keep chatting."
-          : "This preview session ended. Start a new one to keep chatting.",
+          ? "Your network changed, so this preview session ended. Start a new one to keep going."
+          : "This preview session ended. Start a new one to keep going.",
       action: "session",
       ended: false,
     };
   }
-  if (code === "turnstile_required") return { message: "Complete the check to start chatting.", action: "none", ended: false };
+  if (code === "turnstile_required") return { message: "Complete the check to start.", action: "none", ended: false };
   if (code === "turnstile_failed") {
     return { message: "The check did not pass. Reload the page and try it again, or sign in.", action: "signin", ended: false };
   }

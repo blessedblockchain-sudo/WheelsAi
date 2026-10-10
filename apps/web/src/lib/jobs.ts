@@ -190,7 +190,7 @@ export interface ScopeOption {
 }
 
 export const ORDINARY_SCOPES: ScopeOption[] = [
-  { scope: "agents:invoke", label: "Call agents", description: "Chat with your agents through /v1." },
+  { scope: "agents:invoke", label: "Call agents", description: "Chat with your agents through /v1, and run their tasks." },
   { scope: "workflows:invoke", label: "Run workflows", description: "Run your workflows through /v1." },
   { scope: "offerings:write", label: "Manage offerings", description: "Create, edit, publish and test-run offerings." },
   { scope: "jobs:read", label: "Read jobs", description: "List jobs and read their deliverables." },

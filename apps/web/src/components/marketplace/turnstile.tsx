@@ -87,7 +87,7 @@ export function Turnstile({
           cData,
           callback: (token) => onTokenRef.current(token),
           "error-callback": () => setProblem("The check could not be completed. Reload the page, or sign in instead."),
-          "expired-callback": () => setProblem("The check expired. Complete it again to start chatting."),
+          "expired-callback": () => setProblem("The check expired. Complete it again to start."),
         });
       })
       .catch(() => {

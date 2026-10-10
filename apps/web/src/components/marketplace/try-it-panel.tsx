@@ -165,7 +165,7 @@ export function TryItPanel({
       if (!current || new Date(current.expiresAt).getTime() <= Date.now()) {
         if (availability.gate !== "session") {
           setSession(null);
-          setNotice({ message: "Complete the check to start chatting.", action: "none", ended: false });
+          setNotice({ message: "Complete the check to start.", action: "none", ended: false });
           return;
         }
         current = await startSession();
@@ -447,7 +447,7 @@ export function TryItPanel({
             {needsCheck && availability.turnstileSiteKey && (
               <div className="mt-4">
                 <p className="mb-2 text-sm text-muted-foreground">
-                  Complete this check to start chatting, or{" "}
+                  Complete this check to start, or{" "}
                   <Link href={signInHref} className="text-primary underline-offset-4 hover:underline">
                     sign in
                   </Link>{" "}

@@ -17,7 +17,7 @@ export default function PublicTemplatesPage() {
         width="6xl"
         eyebrow="Templates"
         title="Start from a working agent"
-        description="Ready-made agents with a system prompt, tools and model settings already in place. Pick one, make it yours, and chat with it in the playground."
+        description="Ready-made agents with a system prompt, tools and model settings already in place. Pick one, make it yours, and it is live at once: talk to it, give it a task, or let it run on its own."
       >
         <p className="mt-4 text-sm text-navy-200/70">
           How templates work:{" "}

@@ -9,8 +9,9 @@ const productTypes = [
     icon: Bot,
     title: "AI Agents",
     description:
-      "Import from GitHub or start from a template in Mastra, ElizaOS, LangChain, AutoGen, CrewAI or your own stack. Give agents tools, knowledge and memory.",
-    monetize: "Sell per request, by monthly subscription, or token-gated.",
+      "Agents people talk to, give a task, or leave to run on their own. Import from GitHub or start from a template in Mastra, ElizaOS, LangChain, AutoGen, CrewAI or your own stack. Give agents tools, knowledge and memory, then share them by a link, on a website or through the API.",
+    monetize:
+      "Sell use per request or by monthly subscription, without handing over the agent's instructions. Sell copies the same ways, or token-gated.",
   },
   {
     icon: GitBranch,

@@ -32,12 +32,13 @@ const ENTRYPOINTS: Array<{ id: AgentEntrypoint; label: string; detail: string }>
     id: "graph",
     label: "Its graph",
     detail:
-      "The agent answers by running the graph saved in the builder. Each chat is one run, kept with its trace.",
+      "The agent answers by running the graph saved in the builder. Each request is one run, kept with its trace.",
   },
 ];
 
 /**
- * What answers when the agent is chatted with, in the playground and on /v1.
+ * What answers when the agent is used in its tabs and through the API. Paid
+ * use (services/paidUse.ts) and Try it (services/publicChat.ts) refuse a graph.
  * Switching to the graph is refused by the API until a graph is saved.
  */
 export function EntrypointCard({ agent, agentId, loadAgent }: AgentTabProps) {
@@ -63,7 +64,8 @@ export function EntrypointCard({ agent, agentId, loadAgent }: AgentTabProps) {
       <CardHeader>
         <CardTitle className="text-base">Answers with</CardTitle>
         <CardDescription>
-          The same choice serves the playground and the API. Build or edit the graph in the{" "}
+          The same choice answers in this agent's tabs and through the API. An agent that answers with its graph cannot
+          be sold for use or previewed with Try it. Build or edit the graph in the{" "}
           <Link href={`/dashboard/agents/${agentId}/builder`} className="text-primary-600 hover:underline">
             graph builder
           </Link>
@@ -71,7 +73,7 @@ export function EntrypointCard({ agent, agentId, loadAgent }: AgentTabProps) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="What answers a chat">
+        <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="What answers">
           {ENTRYPOINTS.map((option) => {
             const selected = option.id === current;
             return (
@@ -116,7 +118,7 @@ const PERIODS: Array<{ id: AgentUsagePeriod; label: string }> = [
 // The one way a measured latency is written (packages/shared/src/latency.ts).
 const ms = formatLatencyMs;
 
-/** Requests, errors, tokens and latency of the agent's chats, measured. */
+/** Requests, errors, tokens and latency of the agent's use, measured, by where it came from. */
 export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
   const [period, setPeriod] = useState<AgentUsagePeriod>("24h");
   const [usage, setUsage] = useState<AgentChatUsage | null>(null);
@@ -146,7 +148,10 @@ export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
         <div>
           <CardTitle className="text-base">Traffic</CardTitle>
-          <CardDescription>Every chat this agent was asked for, in the playground and through the API.</CardDescription>
+          <CardDescription>
+            Every time this agent was used: in chats and runs, through the API, on its public page, on a schedule and
+            by people who pay.
+          </CardDescription>
         </div>
         <div className="flex gap-1" role="group" aria-label="Period">
           {PERIODS.map((p) => (
@@ -174,8 +179,8 @@ export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
         ) : !total || total.requests === 0 ? (
           <EmptyState
             icon={Activity}
-            title="No chats in this period"
-            description="Requests, tokens and latency appear here once the agent is called from the playground or the API."
+            title="No use in this period"
+            description="Requests, tokens and latency appear here once the agent is used."
           />
         ) : (
           <div className="space-y-6">
@@ -188,14 +193,14 @@ export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
               <Stat
                 label="Error rate"
                 value={`${(total.errorRate * 100).toFixed(1)}%`}
-                hint={`${total.errors.toLocaleString("en-US")} chats produced no answer`}
+                hint={`${total.errors.toLocaleString("en-US")} requests produced no answer`}
               />
               <Stat
                 label="Latency (median)"
                 value={ms(total.p50LatencyMs)}
                 hint={
                   total.p50LatencyMs === null
-                    ? "no answered chat measured in this period"
+                    ? "no answered request measured in this period"
                     : `p95 ${ms(total.p95LatencyMs)} · average ${ms(total.avgLatencyMs)}`
                 }
               />
@@ -204,7 +209,7 @@ export function UsageCard({ agentId }: Pick<AgentTabProps, "agentId">) {
                 value={(total.inputTokens + total.outputTokens).toLocaleString("en-US")}
                 hint={
                   total.usageUnreported > 0
-                    ? `${total.usageUnreported.toLocaleString("en-US")} answered chats reported no usage and are not counted`
+                    ? `${total.usageUnreported.toLocaleString("en-US")} answered requests reported no usage and are not counted`
                     : `${total.inputTokens.toLocaleString("en-US")} in · ${total.outputTokens.toLocaleString("en-US")} out`
                 }
               />

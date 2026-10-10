@@ -132,7 +132,7 @@ reference at `/docs/api` on the web app.
 | Email | `EMAIL_PROVIDER=resend`, `RESEND_API_KEY`, `EMAIL_FROM`. Without email, verification, password reset and alert emails answer `501`, and new accounts cannot verify, so they never receive the signup credits. `EMAIL_PROVIDER=log` is refused outside development. |
 | Card payments | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`. Point a Stripe webhook at `https://<api>/api/billing/stripe/webhook`. |
 | Pro plan | `STRIPE_PRO_PRICE_ID`, a recurring price of $49 a month. |
-| Wallet top-ups (USDC) | `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`. The SOL test rail (`ALLOW_DEVNET_WALLET_TOPUPS`) is refused in production. |
+| Wallet top-ups (USDC and SOL) | `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`. Outside development it also needs `TOPUP_RECONCILE_INTERVAL_MS` above 0 (15000 by default): that worker credits a transfer that lands after the customer has closed the page. USDC needs nothing more. SOL is offered when `SOL_PRICE_SOURCE=pyth`, which reads Pyth's SOL/USD price account through `SOLANA_RPC_URL`; with no fresh price SOL is refused and USDC still works. In production the rail runs only on mainnet. |
 | x402 pay-per-request | `X402_ENABLED=true`, `X402_INFERENCE_MODE`, `X402_SUBMIT_TRANSACTIONS=true`, `X402_SETTLEMENT_WORKER_ENABLED=true` and `TREASURY_WALLET_ADDRESS` (a real address: the all-ones default is refused). |
 | Creator payouts | `PAYOUTS_ENABLED=true` and `PAYOUT_EXECUTOR_INTERVAL_MS`. Crypto payouts need a funded payout wallet derived from `WALLET_MASTER_KEY`, and `PAYOUT_SOL_PRICE_USD` for SOL. |
 | GPU deployments | Section 9. |
@@ -153,7 +153,7 @@ defaults.
 ### 3.5 Development switches
 
 These exist for local development and are refused in production: `ALLOW_NOSANA_MOCK`,
-`ALLOW_MOCK_CHECKOUT`, x402 verification-only mode, `ALLOW_DEVNET_WALLET_TOPUPS`,
+`ALLOW_MOCK_CHECKOUT`, x402 verification-only mode, `SOL_PRICE_SOURCE=static` (a stated SOL price, for a local chain),
 `STORAGE_DRIVER=local`, `EMAIL_PROVIDER=log`, and a default `CORS_ORIGIN`.
 
 ## 4. Configure the web app

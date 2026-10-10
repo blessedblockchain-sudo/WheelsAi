@@ -14,7 +14,7 @@ Updated 2026-10-06. Tick items off here as they land.
 ## 2. Payments
 
 - [ ] **Stripe account.** Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_PRO_PRICE_ID` (a recurring $49/month Price). This unlocks card checkout for credits, the Pro plan and trial, and the billing portal.
-- [ ] **USDC wallet top-ups.** Set `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`.
+- [ ] **Wallet top-ups in USDC and SOL.** Set `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`, and `SOL_PRICE_SOURCE=pyth` to offer SOL. Production takes them only on mainnet: `SOLANA_NETWORK=mainnet-beta` with a mainnet `SOLANA_RPC_URL`.
 - [ ] **Creator payouts.**
   - Set `PAYOUTS_ENABLED=true` and `PAYOUT_EXECUTOR_INTERVAL_MS`. Crypto payouts also need a funded payout wallet derived from `WALLET_MASTER_KEY`, and `PAYOUT_SOL_PRICE_USD` for SOL.
   - A payout compliance provider (KYC and sanctions screening) is still to be chosen.

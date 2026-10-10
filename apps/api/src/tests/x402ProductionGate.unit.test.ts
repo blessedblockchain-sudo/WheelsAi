@@ -52,6 +52,9 @@ test("production: fully-wired x402 passes", async () => {
   assert.doesNotThrow(() =>
     validateEnv({
       ...PROD_BASE,
+      // Production takes money only on mainnet (envMoneyRails.unit.test.ts).
+      SOLANA_NETWORK: "mainnet-beta",
+      SOLANA_RPC_URL: "https://rpc.example.test",
       X402_ENABLED: "true",
       X402_SUBMIT_TRANSACTIONS: "true",
       X402_SETTLEMENT_WORKER_ENABLED: "true",

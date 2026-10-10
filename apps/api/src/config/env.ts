@@ -444,6 +444,45 @@ const envSchema = z.object({
   // crypto_sol payout is actually settled.
   PAYOUT_SOL_PRICE_USD: z.coerce.number().positive().optional(),
 
+  // Live SOL/USD price for anything that turns SOL into dollars or back
+  // (services/solPrice.ts). There is no fallback number: a price is a
+  // quote or a refusal.
+  //   off    - no SOL price. SOL is unavailable; USDC is unaffected.
+  //   pyth   - Pyth's SOL/USD price account, read through SOLANA_RPC_URL
+  //            together with the chain's clock.
+  //   static - SOL_PRICE_STATIC_USD, for a local chain. Refused on
+  //            mainnet and in production (checked below).
+  SOL_PRICE_SOURCE: z.enum(["off", "pyth", "static"]).default("off"),
+  SOL_PRICE_STATIC_USD: z.coerce.number().positive().optional(),
+  // Pyth's SOL/USD price account (the same address on mainnet and
+  // devnet), its feed id in hex, and the program or programs allowed to
+  // own it, comma-separated. Read from both clusters on 2026-10-10. A
+  // wrong value makes the price refuse; it cannot misprice.
+  PYTH_SOL_USD_ACCOUNT: z.string().default("7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE"),
+  PYTH_SOL_USD_FEED_ID: z
+    .string()
+    .default("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d"),
+  PYTH_PROGRAM_IDS: z.string().default("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ"),
+  // A price is refused when it is older than this by the chain's own
+  // clock. Pyth refreshes the account every 60 seconds or on a 0.5% move
+  // and calls that a target, so the default is two refreshes.
+  SOL_PRICE_MAX_AGE_SECONDS: z.coerce.number().int().min(5).max(3600).default(120),
+  // Refused when the price's stated uncertainty is above this share of
+  // the price, or the price is further than this from its own moving
+  // average. Basis points: 100 is 1%.
+  SOL_PRICE_MAX_CONF_BPS: z.coerce.number().int().min(1).max(10_000).default(100),
+  SOL_PRICE_MAX_EMA_DEVIATION_BPS: z.coerce.number().int().min(1).max(10_000).default(1000),
+  // A further margin on every quote, against the customer. 0 by default:
+  // a quote already leans by the price's own stated uncertainty.
+  SOL_QUOTE_MARGIN_BPS: z.coerce.number().int().min(0).max(1000).default(0),
+  // Optional sanity band, in dollars. A price outside it is refused.
+  SOL_PRICE_MIN_USD: z.coerce.number().positive().optional(),
+  SOL_PRICE_MAX_USD: z.coerce.number().positive().optional(),
+  // How far past a transaction's last valid block height the finalized
+  // chain must be before the transaction is treated as unable to land
+  // (services/signatureFate.ts).
+  CHAIN_EXPIRY_MARGIN_BLOCKS: z.coerce.number().int().min(0).max(1000).default(32),
+
   // Platform curation key (Wave 1): gates the marketplace isFeatured
   // toggle — curation is an OPERATOR action, not a publisher one. The
   // route reads process.env at request time (rotation without reboot);
@@ -452,6 +491,32 @@ const envSchema = z.object({
 });
 
 export class EnvValidationError extends Error {}
+
+const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+// True when the text is base58 for exactly 32 bytes, the size of a Solana
+// public key. Decoded here rather than matched by length: 32 bytes come
+// out as 32 to 44 characters, and so do some values that are not 32 bytes.
+function isBase58PublicKey(value: string): boolean {
+  if (value.length < 32 || value.length > 44) return false;
+  let number = 0n;
+  for (const char of value) {
+    const digit = BASE58_ALPHABET.indexOf(char);
+    if (digit < 0) return false;
+    number = number * 58n + BigInt(digit);
+  }
+  let bytes = 0;
+  while (number > 0n) {
+    number >>= 8n;
+    bytes += 1;
+  }
+  // Each leading "1" is one leading zero byte.
+  for (const char of value) {
+    if (char !== "1") break;
+    bytes += 1;
+  }
+  return bytes === 32;
+}
 
 /**
  * Pure validation: parses + applies the production safety assertions and
@@ -588,6 +653,76 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError(
       "SOLANA_NETWORK=mainnet-beta requires an explicitly set, non-devnet SOLANA_RPC_URL (the default is the devnet endpoint — mainnet mode would silently verify against the wrong chain)"
     );
+  }
+
+  // The other way round. SOLANA_RPC_URL is now used on every network, so
+  // SOLANA_NETWORK=devnet with a mainnet address would read and send on
+  // mainnet while the product believes it is on a test chain. The address
+  // can only be judged by its text here; the cluster check in
+  // lib/solana.ts asks the node itself before money moves.
+  if (data.SOLANA_NETWORK === "devnet" && /mainnet/i.test(data.SOLANA_RPC_URL)) {
+    throw new EnvValidationError(
+      "SOLANA_NETWORK=devnet must not be used with a mainnet SOLANA_RPC_URL: set SOLANA_NETWORK=mainnet-beta, or point SOLANA_RPC_URL at a devnet or local node"
+    );
+  }
+
+  // A money rail in production runs on mainnet or not at all. On devnet
+  // the tokens are worth nothing: a top-up would grant real credits for
+  // them, and a payout or an x402 payment would "settle" in them. Staging
+  // and development keep devnet.
+  if (data.NODE_ENV === "production" && data.SOLANA_NETWORK !== "mainnet-beta") {
+    for (const [name, enabled] of [
+      ["WALLET_TOPUPS_ENABLED", data.WALLET_TOPUPS_ENABLED],
+      ["PAYOUTS_ENABLED", data.PAYOUTS_ENABLED],
+      ["X402_ENABLED", data.X402_ENABLED],
+    ] as const) {
+      if (enabled) {
+        throw new EnvValidationError(
+          `${name} requires SOLANA_NETWORK=mainnet-beta in production (it is ${data.SOLANA_NETWORK}): a money rail must not run on a test chain`
+        );
+      }
+    }
+  }
+
+  // The SOL price. A static price is an operator's number for a local
+  // chain; it never prices real SOL.
+  if (data.SOL_PRICE_SOURCE === "static") {
+    if (data.NODE_ENV === "production") {
+      throw new EnvValidationError(
+        "SOL_PRICE_SOURCE=static must not be used in production: use pyth or off"
+      );
+    }
+    if (data.SOLANA_NETWORK === "mainnet-beta") {
+      throw new EnvValidationError(
+        "SOL_PRICE_SOURCE=static must not be used with SOLANA_NETWORK=mainnet-beta: use pyth or off"
+      );
+    }
+    if (data.SOL_PRICE_STATIC_USD === undefined) {
+      throw new EnvValidationError("SOL_PRICE_SOURCE=static requires SOL_PRICE_STATIC_USD");
+    }
+  }
+  if (
+    data.SOL_PRICE_MIN_USD !== undefined &&
+    data.SOL_PRICE_MAX_USD !== undefined &&
+    data.SOL_PRICE_MIN_USD >= data.SOL_PRICE_MAX_USD
+  ) {
+    throw new EnvValidationError("SOL_PRICE_MIN_USD must be below SOL_PRICE_MAX_USD");
+  }
+  if (data.SOL_PRICE_SOURCE === "pyth") {
+    if (!isBase58PublicKey(data.PYTH_SOL_USD_ACCOUNT)) {
+      throw new EnvValidationError("PYTH_SOL_USD_ACCOUNT must be a base58 Solana public key");
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(data.PYTH_SOL_USD_FEED_ID)) {
+      throw new EnvValidationError("PYTH_SOL_USD_FEED_ID must be 64 hex characters");
+    }
+    const programIds = data.PYTH_PROGRAM_IDS.split(",").map((id) => id.trim());
+    for (const programId of programIds) {
+      if (!isBase58PublicKey(programId)) {
+        throw new EnvValidationError(
+          "PYTH_PROGRAM_IDS must be a comma-separated list of base58 Solana public keys"
+        );
+      }
+    }
   }
 
   // Nosana access (config/nosanaAccess.ts parses its own variables). Two

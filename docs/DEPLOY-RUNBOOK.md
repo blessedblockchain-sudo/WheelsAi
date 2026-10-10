@@ -100,7 +100,7 @@ missing or unsafe, and prints which one.
 | `JWT_SECRET` | At least 32 characters. Signs sessions, signed cookies and fine-tuning callbacks. |
 | `ENCRYPTION_KEY` | At least 32 characters, and **different from `JWT_SECRET`**. Encrypts agent secrets and channel settings at rest. |
 | `CORS_ORIGIN` | The web app's origin. `localhost` is refused outside development, staging included. |
-| `SOLANA_RPC_URL` | Production: a mainnet RPC endpoint. `SOLANA_NETWORK=mainnet-beta` (set in `fly.production.toml`) refuses to start without an explicit mainnet URL. It may carry an API key, so keep it a secret rather than a plain setting. |
+| `SOLANA_RPC_URL` | Production: a mainnet RPC endpoint. `SOLANA_NETWORK=mainnet-beta` (set in `fly.production.toml`) refuses to start without an explicit mainnet URL. It may carry an API key, so keep it a secret rather than a plain setting. The API uses this endpoint on every network, devnet included (before, devnet always went to the public devnet node whatever was set here). In production the API refuses to start with `WALLET_TOPUPS_ENABLED`, `PAYOUTS_ENABLED` or `X402_ENABLED` on unless `SOLANA_NETWORK=mainnet-beta`; staging and development may run them on devnet. |
 
 ### 3.2 Public origins
 

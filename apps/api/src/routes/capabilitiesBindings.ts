@@ -29,6 +29,7 @@ import { getAvailableFreeModels, type FreeModelConfig } from "../config/free-mod
 import { requireAuth } from "../middleware/auth.js";
 import { isEmailConfigured } from "../services/email/emailService.js";
 import { getOrgPlan } from "../services/orgPlan.js";
+import { payoutsRunning } from "../services/payoutRequests.js";
 import { createCapabilitiesRoutes, type CapabilitiesRouteDeps } from "./capabilities.js";
 
 /** The settings the answer reads. */
@@ -53,10 +54,8 @@ export function buildCapabilitiesDeps(input: BuildCapabilitiesDepsInput): Capabi
   return {
     guards: { auth: input.auth },
     chatModels: () => input.availableFreeModels().map((model) => ({ id: model.id, label: model.displayName })),
-    payouts: () => {
-      const e = input.env();
-      return e.PAYOUTS_ENABLED === true && e.PAYOUT_EXECUTOR_INTERVAL_MS > 0;
-    },
+    // The rule POST /api/marketplace/payouts refuses on (services/payoutRequests.ts).
+    payouts: () => payoutsRunning(input.env()),
     emailDelivery: () => input.emailConfigured(),
     agentGpu: () => input.env().AGENT_GPU_ENABLED === true,
     paidTasks: () => input.env().JOB_RUNNER_CONCURRENCY > 0,

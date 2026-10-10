@@ -31,6 +31,7 @@ import { isPaidUse, MIN_PRICE_PER_USE_CENTS, useUnitOf, type UseUnit } from "./u
 import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
+import { buildCancelPayoutDeps, cancelPayout, payoutView, type CancelPayoutDb } from "./payoutRequests.js";
 
 const logger = createLogger("marketplace-service");
 
@@ -2600,21 +2601,29 @@ export async function getPayoutHistory(publisherId: string) {
     take: 50,
   });
 
-  return payouts.map((p) => ({
-    id: p.id,
-    amountCents: Number(p.amountCents),
-    payoutMethod: p.payoutMethod,
-    payoutAddress: p.payoutAddress,
-    status: p.status,
-    txSignature: p.txSignature,
-    grossRevenueCents: Number(p.grossRevenueCents),
-    platformFeeCents: Number(p.platformFeeCents),
-    periodStart: p.periodStart,
-    periodEnd: p.periodEnd,
-    requestedAt: p.requestedAt,
-    processedAt: p.processedAt,
-    failureReason: p.failureReason,
-  }));
+  // payoutView adds `cancellable` and turns the recorded failure reason
+  // into a sentence written for the creator (services/payoutRequests.ts).
+  return payouts.map((p) => payoutView(p));
+}
+
+/**
+ * Takes back a payout request that has not started to be sent: the row
+ * becomes cancelled and its amount returns to pendingPayoutCents in one
+ * transaction (services/payoutRequests.ts cancelPayout).
+ */
+export async function cancelPayoutRequest(publisherId: string, payoutId: string) {
+  const result = await cancelPayout(buildCancelPayoutDeps(prisma as unknown as CancelPayoutDb), {
+    payoutId,
+    orgId: publisherId,
+  });
+  if (result.outcome === "cancelled") {
+    logger.info(
+      { publisherId, payoutId, amount: Number(result.payout.amountCents) },
+      "Payout cancelled, earnings restored",
+    );
+    return { outcome: "cancelled" as const, payout: payoutView(result.payout) };
+  }
+  return result;
 }
 
 /**

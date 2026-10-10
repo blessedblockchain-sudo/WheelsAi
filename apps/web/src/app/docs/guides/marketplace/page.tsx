@@ -8,7 +8,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Publish to the marketplace",
   description:
-    "List a WheelsAI agent on the marketplace, choose free, per-request, monthly or tokenized pricing, understand the 90/10 revenue split, installs and payouts.",
+    "List a WheelsAI agent on the marketplace, sell use of it or copies of it, choose free, per-use, monthly or tokenized pricing, understand the 90/10 revenue split, who uses or installs it and payouts.",
 };
 
 const toc = [
@@ -21,6 +21,7 @@ const toc = [
   { id: "offerings", title: "Sell a fixed task (offerings)" },
   { id: "split", title: "Revenue split" },
   { id: "installs", title: "What buyers get" },
+  { id: "use-or-copies", title: "Sell use, or sell copies" },
   { id: "payouts", title: "Getting paid" },
   { id: "receipts", title: "Public receipts" },
 ];
@@ -30,7 +31,7 @@ export default function MarketplaceGuidePage() {
     <DocPage
       href="/docs/guides/marketplace"
       title="Publish to the marketplace"
-      lead="Turn an agent into a product other teams can install. You choose how buyers pay; WheelsAI meters every use, keeps a ledger row for every cent, and pays out your share."
+      lead="Turn an agent into a product other teams can use. You choose how buyers pay; WheelsAI meters every use, keeps a ledger row for every cent, and pays out your share."
       toc={toc}
     >
       <h2 id="publish">Publish a listing</h2>
@@ -54,17 +55,25 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings" \\
     "shortDescription": "Turns merged pull requests into a readable changelog.",
     "category": "coding",
     "pricingModel": "per_request",
-    "pricePerRequestCents": 2
+    "pricePerRequestCents": 5
   }'
 
 # 2. Publish it
 curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish" \\
   -H "Authorization: Bearer $WHEELSAI_API_KEY"`}
       />
+      <p>
+        A listing sells <strong>use</strong> of your agent unless you say otherwise: buyers use your own agent on its page or
+        through the API, and never get a copy, its instructions, its settings or its code. Add{" "}
+        <code>&quot;sells&quot;: &quot;copies&quot;</code> to sell copies instead (see{" "}
+        <a href="#use-or-copies">Sell use, or sell copies</a>).
+      </p>
       <Callout title="Your secrets stay yours">
         <p>
-          When a buyer installs your agent they get its prompt, tools, model settings and code, but never its environment
-          variables. Provider keys and bot tokens you set on the agent are not copied; buyers set their own.
+          When a buyer uses your agent they never see its prompt, tools, model settings, code or environment variables.
+          When a buyer installs a copy, which only a listing that sells copies allows, they get its prompt, tools, model
+          settings and code, but still never its environment variables: provider keys and bot tokens you set on the agent
+          are not copied; buyers set their own.
         </p>
       </Callout>
 
@@ -81,7 +90,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
           {
             model: "Per request",
             value: <code>per_request</code>,
-            buyer: <>A fixed price per run, from 1 cent to $1,000 (<code>pricePerRequestCents</code>), charged from credits.</>,
+            buyer: <>A fixed price per message or run, from 5 cents (1 cent when you sell copies) to $1,000 (<code>pricePerRequestCents</code>), charged from credits.</>,
           },
           {
             model: "Monthly",
@@ -98,12 +107,12 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
 
       <h3 id="free">Free</h3>
       <p>
-        Anyone can install and run the agent. Installing still creates a licence: uninstalling ends it, and the buyer&apos;s copy
-        stops running.
+        Anyone can use the agent on its page. If the listing sells copies, anyone can install and run it, and installing still
+        creates a licence: uninstalling ends it, and the buyer&apos;s copy stops running.
       </p>
 
       <h3 id="per-request">Per request</h3>
-      <p>Every run of an installed per-request agent goes through three steps, each committed atomically:</p>
+      <p>Every use of a per-request agent, or run of an installed copy, goes through three steps, each committed atomically:</p>
       <ol>
         <li>
           <strong>Charge</strong> before the agent runs. The price is debited from the buyer&apos;s credits only if the balance
@@ -215,9 +224,29 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
 
       <h2 id="installs">What buyers get</h2>
       <p>
-        Installing creates a copy of the agent in the buyer&apos;s organization, linked to the install. Reinstalling reuses the
-        same copy. Uninstalling revokes the licence: the copy refuses to run (<code>403</code>) until it is reinstalled. Buyers
-        can leave a 1 to 5 star review with a title and text.
+        A buyer of a listing that sells use uses your own agent and gets no copy. They agree to the price once, then use the
+        agent on its page or through the API; each message or run is charged when it is sent and refunded if the agent does
+        not answer. They stop at any time. A buyer of a listing that sells copies installs a copy in their organization,
+        linked to the install. Reinstalling reuses the same copy. Uninstalling revokes the licence: the copy refuses to run
+        (<code>403</code>) until it is reinstalled. Buyers can leave a 1 to 5 star review with a title and text.
+      </p>
+
+      <h2 id="use-or-copies">Sell use, or sell copies</h2>
+      <p>
+        Copies are a separate kind of listing. A listing that sells <strong>use</strong> keeps your agent, its instructions
+        and its keys with you: people pay to use it and you keep earning from every use. A listing that sells{" "}
+        <strong>copies</strong> gives each buyer their own copy, including its instructions, and you cannot take a copy back.
+        Choose copies with <code>&quot;sells&quot;: &quot;copies&quot;</code> when you create the listing, or by switching an
+        existing listing; people who already pay to use the agent keep access until what they paid for ends. Token-gated
+        access is for copies.
+      </p>
+      <p>
+        An agent that came from the marketplace cannot be sold again, and an agent that answers through its graph cannot have
+        its use sold yet. A listing that sells use turns the agent&apos;s page on: a free listing keeps it open to anyone, and
+        a price turns free use there off. Your agent cannot save files for people who pay, and cannot send requests to other
+        websites unless you allow it with <code>allowedTools</code>. The API is in the{" "}
+        <Link href="/docs/api/marketplace">marketplace reference</Link>, and buyers use an agent they pay for through{" "}
+        <Link href="/docs/api/agents#paid-use">the paid-use endpoints</Link>.
       </p>
 
       <h2 id="payouts">Getting paid</h2>

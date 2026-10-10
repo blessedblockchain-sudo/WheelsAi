@@ -45,6 +45,13 @@ const toc = [
   { id: "agent-tools", title: "Function calling and tools", sub: true },
   { id: "agent-errors", title: "Errors", sub: true },
   { id: "agent-models", title: "List the agent's model", sub: true },
+  { id: "paid-use", title: "Use an agent you pay for" },
+  { id: "paid-access", title: "Where you stand", sub: true },
+  { id: "paid-chat", title: "Chat", sub: true },
+  { id: "paid-run", title: "Run a task", sub: true },
+  { id: "paid-results", title: "Read results", sub: true },
+  { id: "paid-v1", title: "Through /v1", sub: true },
+  { id: "paid-errors", title: "Refusals", sub: true },
   { id: "playground", title: "Playground" },
   { id: "playground-chat", title: "Chat with an agent", sub: true },
   { id: "playground-models", title: "Available models", sub: true },
@@ -355,6 +362,15 @@ export default function AgentsApiPage() {
           with no saved graph, or an empty one, answers <code>400</code> <code>agent_graph_missing</code>. See{" "}
           <a href="#agent-graph">Graph agents</a>.
         </p>
+        <p>
+          While the agent&apos;s use is sold on the marketplace, some changes would break what people paid for and answer{" "}
+          <code>409</code> <code>on_sale_for_use</code> with a plain <code>message</code>, before anything is written:{" "}
+          <code>isPublic: false</code>, <code>entrypoint: &quot;graph&quot;</code>, and moving the kind to{" "}
+          <code>scheduled</code> while the use is sold per use. Stop selling it first. Restoring an older version through{" "}
+          <code>POST /api/versioning/agents/&#123;agentId&#125;/versions/&#123;version&#125;/rollback</code> answers the same{" "}
+          <code>409</code> <code>on_sale_for_use</code> when the version would switch an agent that is on sale to answer
+          through its graph, or to run on its own while it is sold per use. Nothing is restored.
+        </p>
       </Endpoint>
 
       <Endpoint id="agent-usage" method="GET" path="/api/agents/{agentId}/usage" auth="API key or session" title="Agent chat usage">
@@ -399,6 +415,10 @@ export default function AgentsApiPage() {
         <p>
           Stops the agent&apos;s running deployments and deletes it. Its own schedule goes with it, so nothing keeps firing.
           Fires <code>agent.deleted</code>.
+        </p>
+        <p>
+          An agent whose listing has buyers cannot be deleted: it answers <code>409</code> <code>agent_has_buyers</code>. Stop
+          selling it instead: it leaves the marketplace, and subscribers keep access until the month they paid for ends.
         </p>
       </Endpoint>
 
@@ -528,7 +548,7 @@ export default function AgentsApiPage() {
           agent. The public link is the switch that lets anyone with the address use the agent.
         </p>
         <DocTable
-          caption="The four states"
+          caption="The five states"
           columns={[
             { key: "state", label: "state" },
             { key: "means", label: "What visitors get" },
@@ -538,6 +558,7 @@ export default function AgentsApiPage() {
             { state: <code>paused</code>, means: "The page shows, with a note where the panel would be. Nobody can use the agent until you turn it back on." },
             { state: <code>off</code>, means: "The agent is not public. Its page does not exist. It keeps its address." },
             { state: <code>view_only</code>, means: <>The page shows and nobody can use the agent from it yet. This is where an agent starts when it was made public with <code>isPublic</code>: you turn it <code>on</code> when you are ready. It is read, never set.</> },
+            { state: <code>paid</code>, means: <>A listing sells use of the agent at a price. The page shows its terms and people sign in and pay to use it, per message or run or per month, from <Link href="#paid-use">the paid-use endpoints</Link>. Free use there is off and the page&apos;s key is never sent. It is read, never set: it follows the listing.</> },
           ]}
         />
         <CodeBlock
@@ -549,7 +570,8 @@ export default function AgentsApiPage() {
   "dailyCap": 100,
   "usedToday": 12,
   "showResults": false,
-  "toolsOffForVisitors": true
+  "toolsOffForVisitors": true,
+  "sale": { "paid": false, "listingSlug": "release-notes-helper" }
 }`}
         />
         <ul>
@@ -565,6 +587,10 @@ export default function AgentsApiPage() {
           <li>
             <code>showResults</code> is whether a self-running agent&apos;s latest results show on its page.{" "}
             <code>toolsOffForVisitors</code> is <code>true</code> when the agent has a tool that visitors do not get.
+          </li>
+          <li>
+            <code>sale</code> is there only while a published listing sells use of the agent: <code>paid</code> says whether
+            a price is set (the state is then <code>paid</code>), and <code>listingSlug</code> names the listing.
           </li>
         </ul>
         <p>
@@ -602,6 +628,8 @@ export default function AgentsApiPage() {
             { status: <code>403</code>, code: "", when: "A member who is not an owner or admin." },
             { status: <code>404</code>, code: <code>agent_not_found</code>, when: "No agent with that id in your organization." },
             { status: <code>409</code>, code: <code>handle_taken</code>, when: "Another agent has that address." },
+            { status: <code>409</code>, code: <code>sold_as_paid</code>, when: <>Turning the link <code>on</code> while a listing sells use at a price. Free use on the page would undercut the people who pay; choose a free listing instead.</> },
+            { status: <code>409</code>, code: <code>on_sale_for_use</code>, when: <>Turning the link <code>off</code>, or pausing it on a listing that sells free use. An agent on sale keeps its page on. Stop selling it first.</> },
           ]}
         />
       </Endpoint>
@@ -666,6 +694,41 @@ export default function AgentsApiPage() {
           only while the owner shows results (<code>showResults</code> on the <a href="#set-public-link">public link</a>).
           Otherwise <code>resultsPublic</code> is <code>false</code> and <code>latest</code> is empty. A result carries when
           it finished and its text and nothing else: never where it was sent, and never a run that did not finish.
+        </p>
+        <p>
+          While <code>use.state</code> is <code>paid</code>, <code>use.key</code> is <code>null</code> and{" "}
+          <code>use.paid</code> carries the terms a person sees before paying. <code>use.paid</code> is always present,{" "}
+          <code>null</code> in the other states.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "use": {
+    "state": "paid",
+    "key": null,
+    "transcriptsStored": true,
+    "paid": {
+      "listingId": "…",
+      "listingSlug": "support-bot",
+      "pricingModel": "per_request",
+      "priceCents": 5,
+      "unit": "message",
+      "perMinute": 10,
+      "perDay": 200,
+      "transcriptsStored": true,
+      "sendsRequests": false
+    },
+    "chat": { "maxMessages": 20, "maxMessageChars": 4000, "maxTotalChars": 16000 }
+  }
+}`}
+        />
+        <p>
+          <code>unit</code> is <code>message</code>, <code>run</code> or <code>month</code>. <code>transcriptsStored</code> says
+          whether the owner keeps a copy of what buyers send and the agent answers, and <code>sendsRequests</code> whether
+          the agent may send requests to other websites as part of its answers. A self-running agent that is sold shows when
+          its results arrive and never what they say: <code>scheduled.latest</code> holds{" "}
+          <code>finishedAt</code> dates only, <code>scheduled.lastResultAt</code> is the latest, and{" "}
+          <code>scheduled.schedule</code> is <code>&#123; cronExpression, timezone &#125;</code> or <code>null</code>.
         </p>
       </Endpoint>
 
@@ -1268,6 +1331,254 @@ if reply.tool_calls:
           deployments.
         </p>
       </Endpoint>
+
+      <h2 id="paid-use">Use an agent you pay for</h2>
+      <p>
+        A listing that sells use lets people use the creator&apos;s own agent, per message or run or per month, from their
+        WheelsAI credits. They never get a copy, and no route returns its instructions, tools or model. Start by agreeing
+        to the price (<Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>),
+        then use the agent here. All four routes need you signed in, with a session or an API key. A key needs the{" "}
+        <code>agents:use</code> scope to chat or run, created with both caps (see{" "}
+        <Link href="/docs/api/jobs#keys">API keys that can spend</Link>).
+      </p>
+      <ul>
+        <li>One use is one message or one run. It is charged when it is sent and refunded if no answer is delivered.</li>
+        <li>The answer arrives whole, not word by word, after the agent&apos;s reply has been checked.</li>
+        <li>
+          Limits are 10 uses a minute and 200 a day for your organization and the agent. After 10 answers in a day that
+          could not be delivered, you wait until tomorrow.
+        </li>
+        <li>
+          You cannot send tools, a model or a system message. An answer that repeats eight consecutive words of the
+          agent&apos;s instructions is withheld and refunded; rewordings and translations are not caught.
+        </li>
+        <li>
+          If the agent has a knowledge base, a paid use and the free sample of a listing that sells use give it the
+          passages it needs without the titles of the documents they came from.
+        </li>
+        <li>
+          Inside a paid month nothing is charged per use. The owner may keep a copy of what you send and what it answers;
+          the agent&apos;s page says so (<code>transcriptsStored</code>).
+        </li>
+      </ul>
+
+      <Endpoint id="paid-access" method="GET" path="/api/a/{handle}/access" auth="API key or session" title="Where you stand with an agent">
+        <p>Answers what the listing asks, what you agreed to, and your credits.</p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "access": "listing_pricing",
+  "listingId": "…",
+  "terms": {
+    "pricingModel": "per_request",
+    "pricePerRequestCents": 5,
+    "monthlyPriceCents": null,
+    "unit": "message",
+    "keepsCopy": true
+  },
+  "accepted": { "pricingModel": "per_request", "pricePerRequestCents": 5, "monthlyPriceCents": null },
+  "subscription": null,
+  "balanceCents": 495,
+  "canAccept": true,
+  "startBlocked": null
+}`}
+        />
+        <ul>
+          <li>
+            <code>access</code> is <code>none</code> (you have not started), <code>subscribed</code>,{" "}
+            <code>listing_pricing</code> (the listing&apos;s price is what you agreed to, or lower),{" "}
+            <code>pricing_changed</code> (the price went up; accept it to continue), <code>subscription_lapsed</code>,{" "}
+            <code>not_offered</code> or <code>own_agent</code>.
+          </li>
+          <li>
+            <code>terms</code> is what the listing asks now, or <code>null</code> when use is not on sale.{" "}
+            <code>keepsCopy</code> is whether the owner keeps a copy of what is sent and answered.
+          </li>
+          <li>
+            <code>subscription</code> is <code>&#123; status, currentPeriodEnd, cancelAtPeriodEnd &#125;</code> or{" "}
+            <code>null</code>. <code>canAccept</code> is whether you may agree to a price: an owner or admin, or a key
+            granted <code>marketplace:install</code> by name.
+          </li>
+          <li>
+            <code>startBlocked</code> is <code>null</code>, or <code>&#123; code: &quot;copy_subscription_active&quot;, message, until &#125;</code>{" "}
+            while your organization holds a copy of this agent with a month paid for. Starting waits until{" "}
+            <code>until</code> (an ISO date): remove the copy, or cancel its renewal and start after that date. While it is
+            set, <code>canAccept</code> is <code>false</code>.
+          </li>
+          <li>
+            <code>404</code> <code>agent_not_found</code>.
+          </li>
+        </ul>
+      </Endpoint>
+
+      <Endpoint id="paid-chat" method="POST" path="/api/a/{handle}/chat" auth="Session, or an API key with agents:use" title="Chat with an agent you pay for">
+        <Fields
+          fields={[
+            { name: "messages", type: "array", required: true, description: <>The conversation so far, each <code>&#123; role: &quot;user&quot; | &quot;assistant&quot;, content &#125;</code>.</> },
+            { name: "sessionId", type: "string", description: "Keeps the turns of one conversation together." },
+            { name: "stream", type: "boolean", description: <>Default <code>true</code>. <code>false</code> answers JSON.</> },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/a/support-bot/chat" \
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \
+  -d '{ "messages": [{ "role": "user", "content": "How long do refunds take?" }], "stream": false }'`}
+        />
+        <CodeBlock
+          language="json"
+          code={`{
+  "message": { "role": "assistant", "content": "Refunds take 3 to 5 business days." },
+  "toolCalls": [],
+  "billing": { "chargedCents": 5, "balanceCents": 495, "access": "listing_pricing" }
+}`}
+        />
+        <p>
+          <code>billing.chargedCents</code> is 0 inside a paid month, and <code>billing.balanceCents</code> is your credits
+          after the use, or <code>null</code> when they could not be read just now. <code>toolCalls</code> lists each tool
+          the agent used and whether it worked (<code>ok</code>, <code>unavailable</code> or <code>error</code>).
+        </p>
+        <p>
+          With streaming, the response is <code>text/event-stream</code> and carries the whole checked answer in one go:
+          first <code>data: &#123;&quot;wheelsai&quot;:&#123;&quot;billing&quot;:…&#125;&#125;</code>, then optionally{" "}
+          <code>data: &#123;&quot;wheelsai&quot;:&#123;&quot;toolCalls&quot;:…&#125;&#125;</code>, then OpenAI-style{" "}
+          <code>choices[0].delta.content</code> events, a finish event and <code>data: [DONE]</code>. A refusal is always
+          plain JSON, also when a stream was asked for.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="paid-run" method="POST" path="/api/a/{handle}/run" auth="Session, or an API key with agents:use" title="Run a task you pay for">
+        <Fields
+          fields={[
+            { name: "input", type: "object", required: true, description: <>One answer per question of the agent&apos;s form, as for <a href="#run-agent">the run route</a>.</> },
+            { name: "stream", type: "boolean", description: <>Default <code>true</code>. <code>false</code> answers JSON.</> },
+          ]}
+        />
+        <CodeBlock
+          language="json"
+          code={`{
+  "output": { "format": "text", "text": "Brief: …" },
+  "toolCalls": [],
+  "billing": { "chargedCents": 10, "balanceCents": 485, "access": "listing_pricing" }
+}`}
+        />
+        <p>
+          Answers that do not fit the form answer <code>422</code> <code>input_invalid</code> with <code>details</code>, and
+          nothing is charged.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="paid-results" method="GET" path="/api/a/{handle}/results" auth="API key or session" title="Read a self-running agent's results">
+        <p>
+          For an agent that runs on its own, a subscriber reads what it produced. Answers{" "}
+          <code>&#123; results: [&#123; finishedAt, text &#125;], hasMore &#125;</code>, newest first, at most 30. While the agent&apos;s
+          use is free, this shows what its public page shows: at most 3 results of up to 8,000 characters each, and none
+          when its owner turned results off. Refusals:{" "}
+          <code>401</code>; <code>402</code> <code>subscription_lapsed</code>; <code>403</code> <code>use_not_started</code>;{" "}
+          <code>404</code>; <code>409</code> <code>not_a_scheduled_agent</code>, <code>pricing_changed</code>,{" "}
+          <code>not_offered</code> or <code>not_for_sale</code>; <code>429</code>; <code>503</code>.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="paid-v1" method="POST" path="/v1/chat/completions" auth="API key with agents:use, or session" title="Use an agent you pay for through /v1">
+        <p>
+          Set <code>model</code> to <code>a/&lt;handle&gt;</code> and use any OpenAI client. A key needs <code>agents:use</code>{" "}
+          and both caps; a session works too. The answer is OpenAI&apos;s shape plus{" "}
+          <code>wheelsai: &#123; agent: &#123; handle &#125;, billing &#125;</code> and nothing else, and it has no{" "}
+          <code>usage</code>. Every chunk&apos;s <code>model</code> is <code>a/&lt;handle&gt;</code>. Like the other paid routes it
+          is charged when sent and refunded if no answer is delivered.
+        </p>
+        <ul>
+          <li>
+            A stream carries the whole checked answer in one go. Its first chunk has <code>choices: []</code> and the{" "}
+            <code>wheelsai</code> object; then come the content chunks, a finish chunk and <code>data: [DONE]</code>.
+          </li>
+          <li>
+            <code>tools</code>, <code>tool_choice</code>, and a system or tool message are refused with <code>400</code>{" "}
+            <code>unsupported_parameter</code> before anything is charged. Sampling settings are accepted and not applied.
+          </li>
+          <li>
+            The page&apos;s limits apply: 20 messages, 4,000 characters each and 16,000 in all, the last one from the user.
+            Past them the answer is <code>400</code> <code>validation_failed</code>.
+          </li>
+          <li>
+            <Link href="/docs/api/inference#list-models"><code>GET /v1/models</code></Link> also lists, for each agent your
+            organization can use now,{" "}
+            <code>&#123; id: &quot;a/&lt;handle&gt;&quot;, object: &quot;model&quot;, owned_by: &quot;wheelsai&quot;, wheelsai: &#123; kind: &quot;paid_agent&quot; &#125; &#125;</code>.
+          </li>
+        </ul>
+        <p>
+          Errors are OpenAI-shaped, <code>&#123; error: &#123; message, type, param, code &#125; &#125;</code>. Show{" "}
+          <code>message</code> as it comes. The object may also carry <code>terms</code>, <code>priceCents</code>,{" "}
+          <code>balanceCents</code> and <code>refundedCents</code>, and <code>reason</code>: the more exact code when{" "}
+          <code>/v1</code> folds several into one, for example <code>not_offered</code> or <code>results_only</code> under{" "}
+          <code>not_for_sale</code>. Errors that repeating cannot fix carry <code>x-should-retry: false</code>.
+        </p>
+        <DocTable
+          caption="Errors of a paid agent on /v1"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "code", label: "error.code" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: <code>400</code>, code: <code>validation_failed</code>, when: "The request itself, or past the page's limits." },
+            { status: <code>400</code>, code: <code>unsupported_parameter</code>, when: <>Tools, <code>tool_choice</code>, a system message or a tool message. Nothing was charged.</> },
+            { status: <code>402</code>, code: <code>marketplace_payment_required</code>, when: <>Not enough credits for this use; <code>priceCents</code> and <code>balanceCents</code> say how much.</> },
+            { status: <code>403</code>, code: <><code>insufficient_scope</code>, <code>use_not_started</code></>, when: <>A key without <code>agents:use</code>; or you have not started using this agent (<code>terms</code> says what it asks).</> },
+            { status: <code>403</code>, code: <><code>api_key_use_price_cap_exceeded</code>, <code>api_key_daily_cap_exceeded</code>, <code>api_key_spend_caps_missing</code></>, when: "The key's own caps." },
+            { status: <code>403</code>, code: <code>not_a_member</code>, when: "You are no longer a member of the organization that pays for this agent." },
+            { status: <code>404</code>, code: <code>agent_not_found</code>, when: "No agent with that handle." },
+            { status: <code>409</code>, code: <code>pricing_changed</code>, when: <>The price went up or the pricing model changed since you agreed; <code>terms</code> says what it is now.</> },
+            { status: <code>409</code>, code: <><code>own_agent</code>, <code>not_for_sale</code></>, when: <>Your own agent; or an agent whose use is free, not offered, or read through results (<code>reason</code> says which).</> },
+            { status: <code>429</code>, code: <code>rate_limit_exceeded</code>, when: <>Your limit or the agent&apos;s, with <code>retry-after</code>.</> },
+            { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
+            { status: <code>502</code>, code: <code>answer_withheld</code>, when: <>The answer could not be shown. The charge was refunded (<code>refundedCents</code>).</> },
+            { status: <code>502</code>, code: <code>upstream_error</code>, when: <>The agent could not answer. The charge was refunded; a retry is a new charge, refunded again if it fails.</> },
+            { status: <code>503</code>, code: <code>service_unavailable</code>, when: "The agent or the limit check is not available right now. Try again in a moment." },
+          ]}
+        />
+      </Endpoint>
+
+      <h3 id="paid-errors">Refusals</h3>
+      <p>
+        Chat, run and results answer <code>&#123; error, message &#125;</code>. Show <code>message</code> as it comes: it
+        names the price and your credits where they matter. Other fields come only with the refusal they belong to.
+      </p>
+      <DocTable
+        caption="Refusals of paid chat and run"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "code", label: "error" },
+          { key: "when", label: "When" },
+        ]}
+        rows={[
+          { status: <code>400</code>, code: <code>invalid_request</code>, when: "The body is not what the route takes." },
+          { status: <code>401</code>, code: "", when: "Not signed in." },
+          { status: <code>402</code>, code: <code>insufficient_credits</code>, when: <>Not enough credits for this use. <code>priceCents</code> and <code>balanceCents</code> say how much. Nothing was charged.</> },
+          { status: <code>402</code>, code: <code>subscription_lapsed</code>, when: "The subscription ended or its renewal did not go through." },
+          { status: <code>403</code>, code: <code>missing_scope</code>, when: <>A key without <code>agents:use</code>.</> },
+          { status: <code>403</code>, code: <code>use_not_started</code>, when: <>You have not started using this agent. <code>terms</code> and <code>access</code> say what it asks.</> },
+          { status: <code>403</code>, code: <><code>api_key_use_price_cap_exceeded</code>, <code>api_key_daily_cap_exceeded</code>, <code>api_key_spend_caps_missing</code></>, when: "The key's own caps: the price of one use is over the most one use may cost, the day's allowance is used, or the key has no caps." },
+          { status: <code>403</code>, code: <code>not_a_member</code>, when: "You are no longer a member of the organization that pays for this agent." },
+          { status: <code>404</code>, code: <code>agent_not_found</code>, when: "No agent with that handle." },
+          { status: <code>409</code>, code: <><code>own_agent</code>, <code>not_for_sale</code>, <code>not_offered</code>, <code>results_only</code>, <code>not_a_task_agent</code></>, when: "Your own agent; an agent whose use is free (use it on its page) or not on sale; a listing that is no longer offered; a self-running agent, which is read through results; the run route on an agent that is not a task agent." },
+          { status: <code>409</code>, code: <code>pricing_changed</code>, when: <>The price went up or the pricing model changed since you agreed. <code>terms</code> says what it is now. Nothing is charged until you accept it.</> },
+          { status: <code>413</code>, code: <code>input_too_large</code>, when: "Your answers are too long." },
+          { status: <code>422</code>, code: <code>input_invalid</code>, when: <>Some answers need another look; <code>details</code> lists them.</> },
+          { status: <code>429</code>, code: <code>rate_limited</code>, when: <>Your limit or the agent&apos;s, with <code>scope</code> (<code>org</code> or <code>agent</code>) and <code>retryAfterSeconds</code>.</> },
+          { status: <code>429</code>, code: <code>too_many_refunds</code>, when: "Several of your answers could not be delivered today. Try again tomorrow." },
+          { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
+          { status: <code>502</code>, code: <><code>model_error</code>, <code>answer_withheld</code></>, when: <>The agent could not answer, or its answer could not be shown. <code>refundedCents</code> says what was given back.</> },
+          { status: <code>503</code>, code: <><code>agent_unavailable</code>, <code>rate_limiter_unavailable</code></>, when: "The agent or the limit check is not available right now. Try again in a moment." },
+        ]}
+      />
+      <p>
+        <code>GET /api/capabilities</code> also answers <code>paidUse</code>:{" "}
+        <code>&#123; perBuyerPerMinute, perBuyerPerDay, minPricePerUseCents, freeModelDailyAllowance &#125;</code>. These are the
+        limits above, the smallest price of one use (5 cents), and how many answers a day your organization gets on
+        WheelsAI&apos;s models (<code>null</code> when it cannot be read).
+      </p>
 
       <h2 id="playground">Playground</h2>
 

@@ -119,29 +119,35 @@ export default function JobsApiPage() {
           { scope: <code>workflows:invoke</code>, allows: <>Run workflows through <code>/v1</code>.</>, kind: "Ordinary" },
           { scope: <code>jobs:hire</code>, allows: "Hire an offering; cancel a job.", kind: "Spend" },
           { scope: <code>jobs:review</code>, allows: "Accept, reject and rate a job.", kind: "Spend" },
-          { scope: <code>marketplace:install</code>, allows: "Install a marketplace listing.", kind: "Spend" },
+          { scope: <code>marketplace:install</code>, allows: "Install a marketplace listing, or start using an agent that is sold for use.", kind: "Spend" },
+          { scope: <code>agents:use</code>, allows: <>Pay to use other people&apos;s agents: chat with them, run them, and call them through <code>/v1</code> with <code>model: &quot;a/&lt;handle&gt;&quot;</code>.</>, kind: "Spend" },
         ]}
       />
       <p>
-        A key granted <code>jobs:hire</code> must carry two caps, set when it is created at{" "}
-        <code>POST /api/auth/keys</code> (session only; a key with a spend scope can be created only by an owner or
-        admin):
+        A key granted <code>jobs:hire</code> must carry two caps, and a key granted <code>agents:use</code> two caps too,
+        set when it is created at <code>POST /api/auth/keys</code> (session only; a key with a spend scope can be created
+        only by an owner or admin). The day&apos;s allowance is shared: hiring and paying to use agents both count against
+        it.
       </p>
       <Fields
         fields={[
           { name: "scopes", type: "string[]", description: "From the table above. An unknown scope is 400 invalid_scope." },
-          { name: "maxJobPriceCents", type: "integer", description: "The most one job may cost: 1 to 100,000." },
+          { name: "maxJobPriceCents", type: "integer", description: <>With <code>jobs:hire</code>. The most one job may cost: 1 to 100,000.</> },
+          { name: "maxUsePriceCents", type: "integer", description: <>With <code>agents:use</code>. The most one use of a paid agent may cost: 1 to 100,000.</> },
           {
             name: "dailySpendCapCents",
             type: "integer",
-            description: "The most the key may spend on jobs in one UTC day: 1 to 10,000,000, and not below maxJobPriceCents.",
+            description: "The most the key may spend in one UTC day, on jobs and on paid use together: 1 to 10,000,000, and not below maxJobPriceCents or maxUsePriceCents.",
           },
         ]}
       />
       <p>
-        <code>jobs:hire</code> without both caps is refused with <code>422</code> <code>spend_caps_required</code>. Both caps
-        are enforced inside the hire itself, so a refused hire charges nothing. A refund does not give the day&apos;s
-        allowance back.
+        <code>jobs:hire</code> without <code>maxJobPriceCents</code> and <code>dailySpendCapCents</code>, or{" "}
+        <code>agents:use</code> without <code>maxUsePriceCents</code> and <code>dailySpendCapCents</code>, is refused with{" "}
+        <code>422</code> <code>spend_caps_required</code>; a cap outside its range, above the daily cap, or for a scope the
+        key does not have is <code>422</code> <code>invalid_spend_cap</code>. Both caps are enforced inside the hire or the
+        use itself, so a refused one charges nothing. A refund does not give the day&apos;s allowance back. A key listed
+        under <code>GET /api/auth/keys</code> carries its caps, including <code>maxUsePriceCents</code>.
       </p>
       <CodeBlock
         language="bash"

@@ -71,7 +71,7 @@ export default function ApiOverviewPage() {
         </li>
         <li>
           A key can be limited with scopes. Anything that spends your credits (hiring an offering, accepting or rejecting a
-          job, installing a listing) needs its scope granted by name: a key with no scopes, or with <code>*</code>, cannot
+          job, installing a listing, paying to use someone else&apos;s agent) needs its scope granted by name: a key with no scopes, or with <code>*</code>, cannot
           spend. See <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.
         </li>
         <li>
@@ -225,6 +225,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/auth/wallet/verify" \\
           { group: <Link href="/docs/api/deployments">Models and deployments</Link>, prefix: <><code>/api/models</code>, <code>/api/deployments</code></> },
           { group: <Link href="/docs/api/training">Fine-tuning: datasets, training jobs and fine-tuned models</Link>, prefix: <code>/api/training</code> },
           { group: <Link href="/docs/api/marketplace">Marketplace</Link>, prefix: <code>/api/marketplace</code> },
+          { group: <Link href="/docs/api/agents#paid-use">Use an agent you pay for</Link>, prefix: <><code>/api/a/&#123;handle&#125;/access</code>, <code>/api/a/&#123;handle&#125;/chat</code>, <code>/api/a/&#123;handle&#125;/run</code>, <code>/api/a/&#123;handle&#125;/results</code></> },
           { group: <Link href="/docs/api/jobs">Offerings and jobs</Link>, prefix: <><code>/api/offerings</code>, <code>/api/jobs</code></> },
           { group: <Link href="/docs/api/billing">Billing and plans</Link>, prefix: <code>/api/billing</code> },
           { group: <Link href="/docs/api/workflows">Workflows and scheduler</Link>, prefix: <><code>/api/orchestrations</code>, <code>/api/scheduler</code>, <code>/v1/workflows</code></> },

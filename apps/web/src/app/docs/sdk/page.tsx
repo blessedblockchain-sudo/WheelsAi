@@ -221,12 +221,23 @@ if (agentGpu.available) {
               <>
                 <code>search</code>, <code>get</code>, <code>featured</code>, <code>categories</code>, <code>reviews</code>,{" "}
                 <code>addReview</code>, <code>myListings</code>, <code>createListing</code>, <code>updateListing</code>,{" "}
-                <code>publishListing</code>, <code>archiveListing</code>, <code>install</code>, <code>uninstall</code>,{" "}
+                <code>publishListing</code>, <code>archiveListing</code>, <code>install</code>, <code>startUsing</code>,{" "}
+                <code>stopUsing</code>, <code>uninstall</code>,{" "}
                 <code>installStatus</code>, <code>myInstalls</code>, <code>subscriptions</code>,{" "}
                 <code>cancelSubscription</code>, <code>resumeSubscription</code>, <code>revenue</code>, <code>payouts</code>
               </>
             ),
             endpoint: <code>/api/marketplace/...</code>,
+          },
+          {
+            resource: <code>use</code>,
+            methods: (
+              <>
+                <code>access(handle)</code>, <code>chat(handle, &#123; messages, sessionId? &#125;)</code>,{" "}
+                <code>run(handle, &#123; input &#125;)</code>, <code>results(handle)</code>
+              </>
+            ),
+            endpoint: <code>/api/a/&#123;handle&#125;/...</code>,
           },
           {
             resource: <code>inference</code>,
@@ -677,16 +688,17 @@ wheelsai deploy --agent my-support-bot --publish --price-per-request 5`}
       <CodeBlock
         language="bash"
         code={`wheelsai publish --agent my-support-bot                          # free listing
-wheelsai publish --agent my-support-bot --price-per-request 5    # cents per request
+wheelsai publish --agent my-support-bot --price-per-request 5    # cents per use, at least 5
 wheelsai publish --agent my-support-bot --monthly 900            # cents per month
+wheelsai publish --agent my-support-bot --copies --price-per-request 1   # sell copies instead of use
 wheelsai publish --agent my-support-bot --title "Support Pro" --category customer-support`}
       />
       <p>
         Creates and publishes the agent&apos;s marketplace listing and prints its URL. An agent has one listing, so running it
-        again reuses it and changes only what you pass. A new listing is free unless you choose a price.{" "}
+        again reuses it and changes only what you pass. A new listing sells use of the agent, so buyers use it on its page and never get a copy; it is free unless you choose a price, and a price per use is at least 5 cents. <code>--copies</code> sells copies instead, which buyers install with the agent&apos;s instructions.{" "}
         <code>deploy --publish</code> does the same after the deployment is running, and checks the price, title, description
-        and category against the API&apos;s limits before any GPU is requested. A <code>--tokenized</code> listing is gated
-        only once a token has been launched for it; until then it installs free.
+        and category against the API&apos;s limits before any GPU is requested. A <code>--tokenized</code> listing needs{" "}
+        <code>--copies</code>, and is gated only once a token has been launched for it; until then it installs free.
       </p>
 
       <h3 id="cli-test">wheelsai test</h3>

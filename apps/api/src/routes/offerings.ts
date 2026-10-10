@@ -15,6 +15,12 @@
  *                               body.expected = the terms the buyer saw;
  *                               409 offering_terms_changed when they moved
  *
+ * POST / and PATCH /:id take `fromAgentForm: true` in place of
+ * `inputSchema`: the form is the agent's own task form. 400 when both are
+ * sent, 409 not_a_task_agent when the agent is not a task agent. The
+ * publisher's reads answer `formInSync`: whether that form is still the
+ * agent's.
+ *
  * The public reads answer PublicOffering, which cannot carry the private
  * instructions. Every publisher route is scoped to the caller's
  * organization inside the service.

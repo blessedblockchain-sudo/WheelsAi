@@ -64,6 +64,16 @@ test("price and delivery time are held to the decided bounds", () => {
   assert.equal(updateOfferingSchema.safeParse({ agentId: AGENT }).success, false);
   assert.equal(updateOfferingSchema.safeParse({ productKind: "workflow" }).success, false);
   assert.equal(updateOfferingSchema.safeParse({}).success, false);
+  // One form per save: a schema written by hand, or the agent's own.
+  const { inputSchema: _schema, ...noSchema } = VALID_OFFERING;
+  assert.equal(createOfferingSchema.safeParse({ ...noSchema, fromAgentForm: true }).success, true);
+  assert.equal(parse({ fromAgentForm: true }).success, false);
+  assert.equal(parse({ fromAgentForm: false }).success, true);
+  assert.equal(updateOfferingSchema.safeParse({ fromAgentForm: true }).success, true);
+  assert.equal(
+    updateOfferingSchema.safeParse({ fromAgentForm: true, inputSchema: VALID_OFFERING.inputSchema }).success,
+    false,
+  );
 });
 
 test("an input schema must be an object schema that compiles", () => {
@@ -382,6 +392,22 @@ test("the publisher's job shows what their product produced and why it failed, a
 
   assert.equal(toBuyerJob(jobRecord({ escrow: { ...jobRecord().escrow!, status: "settled" } })).escrow?.status, "released");
   assert.equal(toBuyerJob(jobRecord({ escrow: { ...jobRecord().escrow!, status: "refunded" } })).escrow?.status, "refunded");
+});
+
+test("the publisher's view says whether the form is the agent's; a form written by hand answers null", async () => {
+  const market = makeMarket();
+  const created = await createOffering(market.offerings, PUB, createOfferingSchema.parse(VALID_OFFERING));
+  assert.equal(created.formInSync, null);
+  // The order the questions were sent in is remembered beside the schema.
+  assert.deepEqual(market.offeringRow(created.id).inputOrder, ["url", "depth"]);
+  assert.equal(market.offeringRow(created.id).inputFromAgentForm, false);
+  assert.deepEqual(Object.keys((created.inputSchema as { properties: object }).properties), ["url", "depth"]);
+  // A reader of the public page is told nothing about where the form came from.
+  const publicView = toPublicOffering((await market.offerings.store.findById(created.id))!);
+  for (const key of ["formInSync", "inputOrder", "inputFromAgentForm", "agentForm"]) {
+    assert.equal(key in publicView, false, key);
+  }
+  for (const key of ["inputOrder", "inputFromAgentForm", "agentForm"]) assert.equal(key in created, false, key);
 });
 
 test("only an active offering has a public page", async () => {

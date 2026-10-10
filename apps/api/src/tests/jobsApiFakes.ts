@@ -59,6 +59,12 @@ export function makeMarket(opts: JobsDbOptions & { runnerEnabled?: boolean } = {
     if (row.productKind === "workflow") return owned(workflows.get(row.orchestrationId ?? ""));
     return owned(deployments.get(row.deploymentId ?? ""));
   };
+  const agentNow = (row: OfferingRecord): OfferingView["agentForm"] => {
+    const agent = row.productKind === "agent" ? agents.get(row.agentId ?? "") : undefined;
+    return agent && agent.orgId === row.publisherId
+      ? { agentKind: agent.agentKind ?? "conversation", kindConfig: agent.kindConfig ?? null }
+      : null;
+  };
   const view = (row: Row | undefined): OfferingView | null => {
     if (!row || !row.slug) return null;
     const record = row as unknown as OfferingRecord;
@@ -67,6 +73,8 @@ export function makeMarket(opts: JobsDbOptions & { runnerEnabled?: boolean } = {
       productName: productName(record),
       publisher: { name: "Publisher Org", slug: "publisher-org", isVerified: false, reputationTier: "new" },
       listing: null,
+      // The agent as it is now, as the Prisma store reads it beside the row.
+      agentForm: agentNow(record),
     };
   };
   const offeringRows = () => [...db.state.offerings.values()].filter((row) => row.slug);

@@ -41,6 +41,7 @@ import type { JobEvent } from "./jobNotifications.js";
 import type { JobForRun, JobRunnerDeps, ProductRun, TokenUsage } from "./jobRunner.js";
 import { runWorkflowExecutionJob } from "./runWorkflowExecutionJob.js";
 import { buildProductionExecutorDeps } from "./scheduledTaskExecutorProduction.js";
+import { withSchemaOrder } from "./schemaOrder.js";
 import { startWorkflowRun } from "./startWorkflowRun.js";
 import { triggerWebhook } from "./webhooks.js";
 import { workflowAnswerText } from "./workflowChat.js";
@@ -68,6 +69,8 @@ export const JOB_FOR_RUN_SELECT = {
       orchestrationId: true,
       deploymentId: true,
       inputSchema: true,
+      // The order of the form's questions: the brief lists the answers in it.
+      inputOrder: true,
       instructions: true,
       allowedTools: true,
       maxAttempts: true,
@@ -255,11 +258,21 @@ export function buildJobRunnerDeps(overrides: JobRunnerOverrides = {}): JobRunne
   return {
     loadJob: async (jobId) => {
       const row = (await prisma.job.findUnique({ where: { id: jobId }, select: JOB_FOR_RUN_SELECT })) as
-        | (Omit<JobForRun, "terms"> & { terms: unknown })
+        | (Omit<JobForRun, "terms" | "offering"> & {
+            terms: unknown;
+            offering: JobForRun["offering"] & { inputOrder?: string[] | null };
+          })
         | null;
       if (!row) return null;
       const terms = typeof row.terms === "object" && row.terms !== null ? (row.terms as Partial<JobTerms>) : {};
-      return { ...row, terms };
+      // JSONB does not keep the order of the form's questions; the brief is
+      // rendered in the schema's order, so it is put back here.
+      const { inputOrder, ...offering } = row.offering;
+      return {
+        ...row,
+        terms,
+        offering: { ...offering, inputSchema: withSchemaOrder(offering.inputSchema, inputOrder ?? []) },
+      };
     },
 
     inTransaction: (fn) => prisma.$transaction((tx) => fn(tx as EscrowTx)),

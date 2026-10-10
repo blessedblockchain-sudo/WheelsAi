@@ -7,6 +7,11 @@
  * (findBySlug, searchActive) select no more than the view needs; the
  * private instructions are on the record because the owner's view and the
  * runner need them, and services/offerings.ts decides which shape leaves.
+ *
+ * Every read gives the form's questions in the order they were saved
+ * (inputOrder): JSONB does not keep it. The agent's kind and settings ride
+ * on the view so the owner's view can say whether a form taken from the
+ * agent is still the agent's (formInSync); no public shape carries them.
  */
 
 import { randomBytes } from "node:crypto";
@@ -16,6 +21,7 @@ import { Prisma } from "@prisma/client";
 import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { ensurePublisherProfile } from "./marketplace.js";
+import { withSchemaOrder } from "./schemaOrder.js";
 import type {
   NewOffering,
   OfferingPatch,
@@ -27,7 +33,7 @@ import type {
 } from "./offerings.js";
 
 const VIEW_INCLUDE = {
-  agent: { select: { name: true } },
+  agent: { select: { name: true, agentKind: true, kindConfig: true } },
   orchestration: { select: { name: true } },
   listing: { select: { slug: true, title: true, status: true } },
   publisher: {
@@ -57,6 +63,8 @@ async function toViews(rows: OfferingRow[]): Promise<OfferingView[]> {
   const deployments = await deploymentNames(rows);
   return rows.map(({ agent, orchestration, listing, publisher, ...record }) => ({
     ...record,
+    inputSchema: withSchemaOrder(record.inputSchema, record.inputOrder),
+    agentForm: agent ? { agentKind: agent.agentKind, kindConfig: agent.kindConfig } : null,
     productName:
       record.productKind === "agent"
         ? (agent?.name ?? null)
@@ -113,7 +121,14 @@ export function buildOfferingStore(): OfferingStore {
     findAgent: async (orgId, agentId) => {
       const agent = await prisma.agent.findFirst({
         where: { id: agentId, orgId },
-        select: { id: true, name: true, entrypoint: true, listing: { select: { id: true, status: true } } },
+        select: {
+          id: true,
+          name: true,
+          entrypoint: true,
+          agentKind: true,
+          kindConfig: true,
+          listing: { select: { id: true, status: true } },
+        },
       });
       if (!agent) return null;
       return {
@@ -122,6 +137,8 @@ export function buildOfferingStore(): OfferingStore {
         entrypoint: agent.entrypoint,
         isMarketplaceCopy: await anyMarketplaceCopy([agent.id]),
         listingId: agent.listing?.status === "published" ? agent.listing.id : null,
+        agentKind: agent.agentKind,
+        kindConfig: agent.kindConfig,
       };
     },
 

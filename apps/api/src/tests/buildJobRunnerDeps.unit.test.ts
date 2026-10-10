@@ -154,6 +154,11 @@ test("the job is loaded with the fields a run needs and nothing else, and money 
   // Terms that are not an object read as empty rather than crashing the run.
   assert.deepEqual(job?.terms, {});
   assert.equal("buyer" in JOB_FOR_RUN_SELECT, false);
+  // The order of the form's questions is read with the schema, for the brief.
+  assert.equal(JOB_FOR_RUN_SELECT.offering.select.inputOrder, true);
+  // A job whose offering has no remembered order runs on the schema as stored.
+  assert.equal(job?.offering.inputSchema, null);
+  assert.equal("inputOrder" in (job?.offering ?? {}), false);
 
   const got = await deps.inTransaction(async (tx) => (tx as unknown as { marker: string }).marker);
   assert.equal(got, "tx");

@@ -29,6 +29,18 @@
  * digest that changes when the instructions do; it carries none of them.) PublisherOffering is the
  * owner's view.
  *
+ * The form's questions keep the order they were saved in. The database
+ * does not keep the order of a schema's keys, so it is stored beside the
+ * schema (inputOrder, services/schemaOrder.ts) and put back on every read.
+ *
+ * An agent offering's form can be the agent's own task form
+ * (`fromAgentForm`): the schema the public task run checks an input against
+ * (publicTaskForm), copied into the offering when it is saved. The copy does
+ * not follow the agent: `formInSync` on the publisher's view says whether
+ * it is still the form the agent has, and saving with `fromAgentForm` again
+ * takes the new one, which changes the terms version like any other change
+ * of the form.
+ *
  * An active offering can be edited in place, so what a buyer read can be
  * out of date by the time they confirm. offeringTerms is what a hire is
  * held to (services/jobs.ts): the price, the delivery time and one version
@@ -46,6 +58,8 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { publicTaskForm } from "./agentKind.js";
+import { TASK_MESSAGES } from "./agentTask.js";
 import { MAX_CHECKS, validateChecks, type Check, type CheckResult } from "./assertions.js";
 import {
   JOB_MAX_PRICE_CENTS,
@@ -56,6 +70,7 @@ import {
 } from "./jobEscrow.js";
 import type { JobForRun } from "./jobRunner.js";
 import { compileUserSchema, JsonSchemaError, type SchemaIssue } from "./jsonSchema.js";
+import { schemaOrderOf, withSchemaOrder } from "./schemaOrder.js";
 
 export type ProductKind = "agent" | "workflow" | "model";
 export type OfferingStatus = "draft" | "active" | "paused" | "archived";
@@ -73,6 +88,7 @@ export type OfferingErrorCode =
   | "invalid_request"
   | "product_not_found"
   | "product_not_sellable"
+  | "not_a_task_agent"
   | "invalid_input_schema"
   | "invalid_sample_input"
   | "invalid_deliverable_check"
@@ -88,6 +104,7 @@ const STATUS_OF: Record<OfferingErrorCode, number> = {
   invalid_request: 400,
   product_not_found: 404,
   product_not_sellable: 409,
+  not_a_task_agent: 409,
   invalid_input_schema: 422,
   invalid_sample_input: 422,
   invalid_deliverable_check: 422,
@@ -128,6 +145,8 @@ const contentFields = {
   priceCents: z.number().int().min(Number(JOB_MIN_PRICE_CENTS)).max(Number(JOB_MAX_PRICE_CENTS)),
   slaSeconds: z.number().int().min(JOB_MIN_SLA_SECONDS).max(JOB_MAX_SLA_SECONDS),
   inputSchema: jsonObject.nullable().optional(),
+  /** True = the form is the agent's own task form, instead of `inputSchema`. */
+  fromAgentForm: z.boolean().optional(),
   sampleInputs: z.array(jsonObject).max(MAX_SAMPLE_INPUTS).optional(),
   instructions: z.string().max(MAX_INSTRUCTIONS_CHARS).nullable().optional(),
   deliverableChecks: z.array(z.unknown()).max(MAX_CHECKS).optional(),
@@ -137,6 +156,18 @@ const contentFields = {
   maxConcurrentJobs: z.number().int().min(1).max(50).optional(),
 };
 
+export const FORM_MESSAGES = {
+  bothForms: "Send inputSchema or fromAgentForm, not both. fromAgentForm uses the agent's own task form.",
+  notAnAgentOffering: "fromAgentForm is for an offering of an agent. Send inputSchema for a workflow or a model.",
+} as const;
+
+/** One form per save: a schema written by hand, or the agent's own. */
+function oneFormOnly(body: { inputSchema?: unknown; fromAgentForm?: boolean }, ctx: z.RefinementCtx): void {
+  if (body.fromAgentForm === true && body.inputSchema !== undefined) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["fromAgentForm"], message: FORM_MESSAGES.bothForms });
+  }
+}
+
 export const createOfferingSchema = z
   .object({
     productKind: z.enum(["agent", "workflow", "model"]),
@@ -145,14 +176,16 @@ export const createOfferingSchema = z
     deploymentId: z.string().uuid().optional(),
     ...contentFields,
   })
-  .strict();
+  .strict()
+  .superRefine(oneFormOnly);
 
 /** Everything but the product: an offering is not moved to another product. */
 export const updateOfferingSchema = z
   .object(contentFields)
   .partial()
   .strict()
-  .refine((body) => Object.keys(body).length > 0, { message: "Nothing to change" });
+  .refine((body) => Object.keys(body).length > 0, { message: "Nothing to change" })
+  .superRefine(oneFormOnly);
 
 export const validateOfferingSchema = z
   .object({
@@ -183,6 +216,13 @@ export interface OfferingRecord {
   priceCents: bigint;
   slaSeconds: number;
   inputSchema: unknown;
+  /**
+   * The keys of the form's questions in the order they were saved. Empty or
+   * missing (an offering saved before the order was kept) = as stored.
+   */
+  inputOrder?: string[];
+  /** True when the form was taken from the agent's own task form. */
+  inputFromAgentForm?: boolean;
   sampleInputs: unknown;
   instructions: string | null;
   deliverableChecks: unknown;
@@ -203,6 +243,18 @@ export interface OfferingView extends OfferingRecord {
   productName: string | null;
   publisher: { name: string; slug: string | null; isVerified: boolean; reputationTier: string | null };
   listing: { slug: string; title: string } | null;
+  /**
+   * An agent offering's agent as it is now: what `formInSync` is read from.
+   * Null or missing when the agent is gone or the product is not an agent.
+   * Never part of what a reader is sent.
+   */
+  agentForm?: AgentFormSource | null;
+}
+
+/** What an agent's task form is derived from. */
+export interface AgentFormSource {
+  agentKind?: string | null;
+  kindConfig?: unknown;
 }
 
 export interface TrackRecord {
@@ -227,6 +279,10 @@ export interface AgentForSale {
   isMarketplaceCopy: boolean;
   /** Its published listing, when it has one: reviews and contributor shares hang off it. */
   listingId: string | null;
+  /** How people use it; only a "task" agent has a form an offering can take. */
+  agentKind?: string | null;
+  /** Its settings as stored; the task form is read from them. */
+  kindConfig?: unknown;
 }
 
 export interface WorkflowForSale {
@@ -257,6 +313,8 @@ export type OfferingPatch = Partial<
     | "priceCents"
     | "slaSeconds"
     | "inputSchema"
+    | "inputOrder"
+    | "inputFromAgentForm"
     | "sampleInputs"
     | "instructions"
     | "deliverableChecks"
@@ -421,6 +479,70 @@ export async function checkSellable(
 }
 
 // ============================================
+// The form
+// ============================================
+
+/** The offering's form with its questions in the order they were saved. */
+export function orderedInputSchema(o: Pick<OfferingRecord, "inputSchema" | "inputOrder">): unknown {
+  const order = o.inputOrder ?? [];
+  // Nothing remembered: exactly what is stored.
+  if (order.length === 0) return o.inputSchema ?? null;
+  return withSchemaOrder(o.inputSchema ?? null, order);
+}
+
+export interface AgentForm {
+  schema: unknown;
+  order: string[];
+}
+
+/**
+ * The form a task agent's own task form derives, and the order of its
+ * questions: publicTaskForm, the schema the public task run checks an input
+ * against. Null when the agent is missing or is not a task agent.
+ */
+export function agentFormOf(agent: AgentFormSource | null | undefined): AgentForm | null {
+  if (!agent || agent.agentKind !== "task") return null;
+  const { schema } = publicTaskForm(agent.kindConfig);
+  return { schema, order: schemaOrderOf(schema) };
+}
+
+/**
+ * Whether an offering made from its agent's form still has that form: true
+ * while the stored schema and the order of its questions are what the
+ * agent's form derives now, false once the agent's form was edited (or the
+ * agent is gone, or is no longer a task agent), null for a form written by
+ * hand. Read from the agent as it is now; never stored.
+ */
+export function formInSync(o: OfferingView): boolean | null {
+  if (!o.inputFromAgentForm) return null;
+  const form = agentFormOf(o.productKind === "agent" ? o.agentForm : null);
+  if (!form) return false;
+  const order = o.inputOrder ?? [];
+  return (
+    JSON.stringify(canonical(o.inputSchema ?? null)) === JSON.stringify(canonical(form.schema)) &&
+    order.length === form.order.length &&
+    order.every((key, index) => key === form.order[index])
+  );
+}
+
+/** The agent's form for a save with `fromAgentForm`, or the refusal. */
+async function agentFormOrThrow(
+  store: Pick<OfferingStore, "findAgent">,
+  orgId: string,
+  product: ProductRef,
+): Promise<AgentForm> {
+  if (product.productKind !== "agent") {
+    throw new OfferingError("invalid_request", FORM_MESSAGES.notAnAgentOffering);
+  }
+  const agent = product.agentId ? await store.findAgent(orgId, product.agentId) : null;
+  if (!agent) throw new OfferingError("product_not_found", "That agent was not found in your organization");
+  const form = agentFormOf(agent);
+  // The sentence the task run answers this code with.
+  if (!form) throw new OfferingError("not_a_task_agent", TASK_MESSAGES.notATaskAgent);
+  return form;
+}
+
+// ============================================
 // Response shapes
 // ============================================
 
@@ -511,7 +633,7 @@ export function toPublicOffering(o: OfferingView) {
     // Sent back with a hire as `expected`, so the buyer pays for what they read.
     termsVersion: offeringTermsVersion(o),
     reviewWindowHours: JOB_REVIEW_WINDOW_MS / 3_600_000,
-    inputSchema: o.inputSchema ?? null,
+    inputSchema: orderedInputSchema(o),
     sampleInputs: asArray(o.sampleInputs),
     deliverableChecks: publicChecks(o.deliverableChecks),
     outputFormat: o.outputFormat,
@@ -538,6 +660,8 @@ export function toPublisherOffering(o: OfferingView, jobCounts: Record<string, n
     maxConcurrentJobs: o.maxConcurrentJobs,
     activeJobs: o.activeJobs,
     productAvailable: o.productName !== null,
+    // Only for a form taken from the agent's own: whether it still is that form.
+    formInSync: formInSync(o),
     publishedAt: o.publishedAt,
     updatedAt: o.updatedAt,
     stats: { jobs: jobCounts },
@@ -598,7 +722,11 @@ export async function createOffering(
   const sellable = sellableOrThrow(
     await checkSellable(deps.store, orgId, product, { allowedTools: body.allowedTools }),
   );
-  const { checks } = validateOfferingContent(body);
+  // The agent's own form, when asked for, goes through every check a
+  // hand-written schema does.
+  const agentForm = body.fromAgentForm === true ? await agentFormOrThrow(deps.store, orgId, product) : null;
+  const inputSchema = agentForm ? agentForm.schema : (body.inputSchema ?? null);
+  const { checks } = validateOfferingContent({ ...body, inputSchema });
   // Held from the first offering on, not only at activation: a profile that
   // is missing when a job settles leaves the escrow held.
   await deps.ensurePublisherProfile(orgId);
@@ -611,7 +739,9 @@ export async function createOffering(
     description: body.description,
     priceCents: BigInt(body.priceCents),
     slaSeconds: body.slaSeconds,
-    inputSchema: body.inputSchema ?? null,
+    inputSchema,
+    inputOrder: agentForm ? agentForm.order : schemaOrderOf(inputSchema),
+    inputFromAgentForm: agentForm !== null,
     sampleInputs: body.sampleInputs ?? [],
     instructions: body.instructions?.trim() ? body.instructions : null,
     deliverableChecks: checks,
@@ -651,10 +781,18 @@ export async function updateOffering(
   if (current.status === "archived") {
     throw new OfferingError("offering_state_conflict", "An archived offering cannot be changed");
   }
+  const agentForm = body.fromAgentForm === true ? await agentFormOrThrow(deps.store, orgId, current) : null;
+  // What the form becomes: the agent's own, a schema written by hand (which
+  // stops it being the agent's), or undefined when this edit leaves it alone.
+  const form: Pick<OfferingPatch, "inputSchema" | "inputOrder" | "inputFromAgentForm"> | undefined = agentForm
+    ? { inputSchema: agentForm.schema, inputOrder: agentForm.order, inputFromAgentForm: true }
+    : body.inputSchema !== undefined
+      ? { inputSchema: body.inputSchema, inputOrder: schemaOrderOf(body.inputSchema), inputFromAgentForm: false }
+      : undefined;
   // The stored values stand in for whatever the patch leaves out, so the
   // samples are always checked against the schema they will be saved beside.
   const { checks } = validateOfferingContent({
-    inputSchema: body.inputSchema !== undefined ? body.inputSchema : current.inputSchema,
+    inputSchema: form ? form.inputSchema : current.inputSchema,
     sampleInputs: body.sampleInputs ?? asArray(current.sampleInputs),
     deliverableChecks: body.deliverableChecks ?? asArray(current.deliverableChecks),
   });
@@ -666,7 +804,9 @@ export async function updateOffering(
     ...(body.description !== undefined && { description: body.description }),
     ...(body.priceCents !== undefined && { priceCents: BigInt(body.priceCents) }),
     ...(body.slaSeconds !== undefined && { slaSeconds: body.slaSeconds }),
-    ...(body.inputSchema !== undefined && { inputSchema: body.inputSchema }),
+    ...form,
+    // false alone keeps the form and stops comparing it with the agent's.
+    ...(!form && body.fromAgentForm === false && { inputFromAgentForm: false }),
     ...(body.sampleInputs !== undefined && { sampleInputs: body.sampleInputs }),
     ...(body.instructions !== undefined && { instructions: body.instructions?.trim() ? body.instructions : null }),
     ...(body.deliverableChecks !== undefined && { deliverableChecks: checks }),

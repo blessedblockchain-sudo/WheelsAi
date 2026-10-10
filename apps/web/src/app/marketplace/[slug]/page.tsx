@@ -31,6 +31,8 @@ import {
   type MarketplaceReview,
   type AgentToken,
   type AgentTokenHolder,
+  type MarketplaceInstallAccess,
+  type MarketplaceInstallKind,
   type TokenSnapshot,
   ApiError,
   getErrorMessage,
@@ -43,20 +45,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/hooks/use-session";
-
-function formatPrice(listing: MarketplaceListing): string {
-  if (listing.pricingModel === "free") return "Free";
-  if (listing.pricingModel === "tokenized") return "Token Gated";
-  if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
-    const price = listing.pricePerRequestCents / 100;
-    return `$${price.toFixed(4)} per request`;
-  }
-  if (listing.pricingModel === "monthly" && listing.monthlyPriceCents) {
-    const price = listing.monthlyPriceCents / 100;
-    return `$${price.toFixed(2)}/month`;
-  }
-  return "Free";
-}
+import { listingCountText, listingCta, listingInstallStats } from "@/lib/listing-cta";
 
 function formatUsd(value: number): string {
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
@@ -271,6 +260,9 @@ export default function ListingDetailPage() {
   const { authed } = useSession();
   const [installState, setInstallState] = useState<{
     installed: boolean;
+    /** "use": the organization uses the creator's agent and has no copy. */
+    kind: MarketplaceInstallKind | null;
+    access: MarketplaceInstallAccess | null;
     clonedAgentId: string | null;
   } | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -377,12 +369,14 @@ export default function ListingDetailPage() {
         if (!cancelled) {
           setInstallState({
             installed: res.isInstalled,
+            kind: res.install?.kind ?? null,
+            access: res.install?.access ?? null,
             clonedAgentId: res.install?.clonedAgentId ?? null,
           });
         }
       })
       .catch(() => {
-        if (!cancelled) setInstallState({ installed: false, clonedAgentId: null });
+        if (!cancelled) setInstallState({ installed: false, kind: null, access: null, clonedAgentId: null });
       });
     return () => {
       cancelled = true;
@@ -402,7 +396,7 @@ export default function ListingDetailPage() {
           monthlyPriceCents: listing.monthlyPriceCents,
         },
       });
-      setInstallState({ installed: true, clonedAgentId: res.clonedAgent.id });
+      setInstallState({ installed: true, kind: "copy", access: null, clonedAgentId: res.clonedAgent.id });
       if (res.subscription) {
         const renews = new Date(res.subscription.currentPeriodEnd).toLocaleDateString();
         toast.success(`Subscribed to ${listing.title}. Renews on ${renews}.`);
@@ -451,8 +445,6 @@ export default function ListingDetailPage() {
   }
 
   const hasToken = listing?.pricingModel === "tokenized" && tokenData !== null;
-  const isMonthly = listing?.pricingModel === "monthly" && !!listing?.monthlyPriceCents;
-  const monthlyPrice = isMonthly ? `$${(listing!.monthlyPriceCents! / 100).toFixed(2)}` : "";
   // A listing that sells use is used on the agent's own page; the buyer gets no copy.
   const sellsUse = listing?.sells === "use";
   const agentHandle = listing?.agent?.handle ?? null;
@@ -501,6 +493,16 @@ export default function ListingDetailPage() {
       </div>
     );
   }
+
+  // What the price card says and which button it shows (lib/listing-cta.ts).
+  const cta = listingCta({
+    listing,
+    authed: authed === true,
+    install: installState,
+    installing,
+    tokenSymbol: hasToken && tokenData ? tokenData.symbol : null,
+  });
+  const CtaIcon = cta.button?.type === "link" && cta.button.icon === "check" ? CheckCircle : Play;
 
   return (
     <div className="min-h-screen bg-background">
@@ -580,10 +582,8 @@ export default function ListingDetailPage() {
                       </span>
                     </div>
                     <div className="flex items-center gap-1 text-muted-foreground">
-                      <Download className="h-4 w-4" />
-                      <span>
-                        {listing.totalInstalls.toLocaleString()} installs
-                      </span>
+                      {sellsUse ? <Users className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+                      <span>{listingCountText(listing)}</span>
                     </div>
                     <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
                       {listing.agent?.framework || "custom"}
@@ -720,8 +720,9 @@ export default function ListingDetailPage() {
                 {activeTab === "hire" && (
                   <div className="space-y-4">
                     <p className="text-sm text-muted-foreground">
-                      Instead of installing this agent, hire it for one fixed task. The publisher runs it for you, your
-                      payment is held in escrow, and they are paid only when you accept the result.
+                      {sellsUse ? "Hire this agent for one fixed task." : "Instead of installing this agent, hire it for one fixed task."}{" "}
+                      The publisher runs it for you, your payment is held in escrow, and they are paid only when you
+                      accept the result.
                     </p>
                     {offerings === null ? (
                       <div className="grid gap-4 sm:grid-cols-2" aria-busy="true">
@@ -739,7 +740,11 @@ export default function ListingDetailPage() {
                       <EmptyState
                         icon={Clock}
                         title="No fixed-price tasks yet"
-                        description="The publisher has not set up a task this agent can be hired for. You can still install it and run it yourself."
+                        description={
+                          sellsUse
+                            ? "The publisher has not set up a task this agent can be hired for. You can still use it on its page."
+                            : "The publisher has not set up a task this agent can be hired for. You can still install it and run it yourself."
+                        }
                       />
                     ) : (
                       <div className="grid gap-4 sm:grid-cols-2">
@@ -752,7 +757,12 @@ export default function ListingDetailPage() {
                 )}
 
                 {activeTab === "try" && listing.trial?.enabled && (
-                  <TryItPanel slug={listing.slug} listingId={listing.id} listingTitle={listing.title} />
+                  <TryItPanel
+                    slug={listing.slug}
+                    listingId={listing.id}
+                    listingTitle={listing.title}
+                    sells={listing.sells}
+                  />
                 )}
 
                 {activeTab === "reviews" && (
@@ -1033,69 +1043,50 @@ export default function ListingDetailPage() {
                   </>
                 ) : (
                   <>
-                    <div
-                      className={`text-3xl font-bold ${listing.pricingModel === "free" ? "text-green-600" : "text-foreground"}`}
-                    >
-                      {formatPrice(listing)}
+                    <div className={`text-3xl font-bold ${cta.priceIsFree ? "text-green-600" : "text-foreground"}`}>
+                      {cta.price}
                     </div>
-                    {listing.pricingModel !== "free" && (
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        {listing.pricingModel === "per_request"
-                          ? "Pay only for what you use"
-                          : listing.pricingModel === "tokenized"
-                          ? "Free until this agent's token launches, then for token holders"
-                          : "Billed monthly"}
-                      </p>
-                    )}
+                    {cta.priceNote && <p className="mt-1 text-sm text-muted-foreground">{cta.priceNote}</p>}
                   </>
                 )}
               </div>
 
               {/* Install CTA (INT-M1) — the buyer conversion */}
-              {sellsUse ? (
-                agentHandle && (
-                  <Link
-                    href={`/a/${agentHandle}`}
-                    className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700"
-                  >
-                    <Play className="h-4 w-4" />
-                    Use this agent
-                  </Link>
-                )
-              ) : authed && installState?.installed ? (
+              {cta.status && (
+                <p className="mt-6 flex items-center justify-center gap-2 text-sm font-medium text-foreground">
+                  <CheckCircle className="h-4 w-4 text-green-500" aria-hidden="true" />
+                  {cta.status}
+                </p>
+              )}
+              {cta.button?.type === "link" && (
                 <Link
-                  href={
-                    installState.clonedAgentId
-                      ? `/dashboard/agents/${installState.clonedAgentId}`
-                      : "/dashboard/marketplace/installs"
-                  }
-                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-green-600 px-4 py-3 font-medium text-white hover:bg-green-700"
+                  href={cta.button.href}
+                  className={`${cta.status ? "mt-3" : "mt-6"} flex w-full items-center justify-center gap-2 rounded-lg px-4 py-3 font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+                    cta.button.tone === "success"
+                      ? "bg-green-600 hover:bg-green-700"
+                      : "bg-primary-600 hover:bg-primary-700"
+                  }`}
                 >
-                  <CheckCircle className="h-4 w-4" />
-                  Installed — Open in Dashboard
+                  <CtaIcon className="h-4 w-4" />
+                  {cta.button.label}
                 </Link>
-              ) : authed ? (
+              )}
+              {cta.button?.type === "install" && (
                 <button
                   onClick={handleInstall}
-                  disabled={installing || installState === null}
+                  disabled={cta.button.disabled}
                   className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Download className="h-4 w-4" />
-                  {installing
-                    ? isMonthly
-                      ? "Subscribing…"
-                      : "Installing…"
-                    : isMonthly
-                    ? `Subscribe · ${monthlyPrice}/month`
-                    : "Install Agent"}
+                  {cta.button.label}
                 </button>
-              ) : (
+              )}
+              {cta.secondary && (
                 <Link
-                  href={`/login?next=/marketplace/${slug}`}
-                  className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-primary-600 px-4 py-3 font-medium text-white hover:bg-primary-700"
+                  href={cta.secondary.href}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted"
                 >
-                  <Play className="h-4 w-4" />
-                  Sign in to install
+                  {cta.secondary.label}
                 </Link>
               )}
 
@@ -1119,43 +1110,22 @@ export default function ListingDetailPage() {
                 </Link>
               )}
 
-              <p className="mt-3 text-center text-xs text-muted-foreground">
-                {sellsUse
-                  ? "You use it on its page. You do not get a copy."
-                  : authed
-                  ? installState?.installed
-                    ? "Installed as a private copy in your workspace."
-                    : isMonthly
-                    ? `Charges ${monthlyPrice} from your credits now and every 30 days. Cancel anytime from Installed.`
-                    : hasToken
-                    ? `Requires at least 1 ${tokenData!.symbol} in a wallet linked to your organization.`
-                    : "Installs a private copy of this agent into your workspace."
-                  : "Sign in to install this agent to your account."}
-              </p>
+              <p className="mt-3 text-center text-xs text-muted-foreground">{cta.footnote}</p>
             </div>
 
             {/* Stats Card */}
             <div className="rounded-lg border bg-card p-6">
               <h3 className="font-semibold text-foreground">Statistics</h3>
               <dl className="mt-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <dt className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Download className="h-4 w-4" />
-                    Total Installs
-                  </dt>
-                  <dd className="font-medium text-foreground">
-                    {listing.totalInstalls.toLocaleString()}
-                  </dd>
-                </div>
-                <div className="flex items-center justify-between">
-                  <dt className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Users className="h-4 w-4" />
-                    Active Users
-                  </dt>
-                  <dd className="font-medium text-foreground">
-                    {listing.activeInstalls.toLocaleString()}
-                  </dd>
-                </div>
+                {listingInstallStats(listing).map((stat) => (
+                  <div key={stat.key} className="flex items-center justify-between">
+                    <dt className="flex items-center gap-2 text-sm text-muted-foreground">
+                      {stat.key === "installs" ? <Download className="h-4 w-4" /> : <Users className="h-4 w-4" />}
+                      {stat.label}
+                    </dt>
+                    <dd className="font-medium text-foreground">{stat.value}</dd>
+                  </div>
+                ))}
                 <div className="flex items-center justify-between">
                   <dt className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Star className="h-4 w-4" />

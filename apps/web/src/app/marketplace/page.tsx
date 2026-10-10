@@ -15,6 +15,7 @@ import {
   Coins,
   TrendingUp,
   ShieldCheck,
+  Users,
 } from "lucide-react";
 import {
   marketplaceApi,
@@ -33,6 +34,7 @@ import { MarketplaceNavLinks } from "@/components/marketplace/public-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { listingCountText, priceTextForUse } from "@/lib/listing-cta";
 
 const SORT_OPTIONS = [
   { value: "popular", label: "Most Popular" },
@@ -43,7 +45,7 @@ const SORT_OPTIONS = [
 ];
 
 /**
- * What is sold. Agents can be installed (a listing) or hired for one task
+ * What is sold. Agents can be used or installed (a listing) or hired for one task
  * (an offering); workflows and models are sold as offerings only.
  */
 const PRODUCT_TYPES: Array<{ value: string; label: string; kind: OfferingProductKind; noun: string }> = [
@@ -117,9 +119,14 @@ function AgentCard({
   listing: MarketplaceListing;
   tokenPriceMap: Map<string, number>;
 }) {
-  const priceText = formatPrice(listing, tokenPriceMap);
-  const hasTokenPrice =
-    listing.pricingModel === "tokenized" && tokenPriceMap.has(listing.id);
+  // A listing that sells use: the buyer uses the creator's agent and gets no
+  // copy, so its card says "using it" and gives the price with its unit.
+  const sellsUse = listing.sells === "use";
+  const priceText = sellsUse ? priceTextForUse(listing) : formatPrice(listing, tokenPriceMap);
+  // The listing says whether it has a token; the token list, keyed by
+  // listing, is the fallback for an answer that does not say.
+  const hasToken = listing.hasToken ?? tokenPriceMap.has(listing.id);
+  const hasTokenPrice = !sellsUse && listing.pricingModel === "tokenized" && hasToken;
 
   return (
     <Link
@@ -164,17 +171,22 @@ function AgentCard({
           <span className="text-gray-400">({listing.reviewCount})</span>
         </div>
         <div className="flex items-center gap-1 text-muted-foreground">
-          <Download className="h-4 w-4" />
-          <span>{listing.totalInstalls.toLocaleString()} installs</span>
+          {sellsUse ? <Users className="h-4 w-4" /> : <Download className="h-4 w-4" />}
+          <span>{listingCountText(listing)}</span>
         </div>
       </div>
 
-      <div className="mt-4 flex items-center justify-between">
-        <span className="flex items-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+        <span className="flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
             {listing.agent?.framework || "custom"}
           </span>
-          {listing.pricingModel === "tokenized" && (
+          {sellsUse && (
+            <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+              Use
+            </span>
+          )}
+          {hasToken && (
             <span
               className="flex items-center gap-1 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-500"
               title="Tokenized agent — treasury and compute payments are publicly verifiable on-chain"
@@ -376,7 +388,7 @@ function MarketplaceContent() {
   const sortBy = (searchParams.get("sort") as any) || "popular";
   const page = parseInt(searchParams.get("page") || "1", 10);
   const productType = PRODUCT_TYPES.find((t) => t.value === searchParams.get("type")) ?? PRODUCT_TYPES[0]!;
-  // Agents default to the listings you install; "tasks" shows what you can
+  // Agents default to the listings you use or install; "tasks" shows what you can
   // hire them for. Workflows and models are only ever hired.
   const showTasks = productType.value !== "agents" || searchParams.get("view") === "tasks";
 
@@ -488,7 +500,7 @@ function MarketplaceContent() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <h1 className="text-3xl font-bold">Marketplace</h1>
           <p className="mt-2 text-primary-100">
-            Install agents built by the community, or hire an agent, a workflow or a model for one task at a fixed price
+            Use or install agents built by the community, or hire an agent, a workflow or a model for one task at a fixed price
           </p>
 
           {/* Search */}
@@ -604,7 +616,7 @@ function MarketplaceContent() {
               {productType.value === "agents" && (
                 <div role="group" aria-label="How to buy" className="inline-flex rounded-lg border bg-card p-1">
                   {[
-                    { view: null, label: "Install" },
+                    { view: null, label: "Use or install" },
                     { view: "tasks", label: "Hire for a task" },
                   ].map((option) => (
                     <button

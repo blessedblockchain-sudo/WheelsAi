@@ -24,6 +24,11 @@
  *           onto the new pricing: the paid period runs out, the
  *           subscription ends with endReason 'pricing_changed', and the
  *           install is suspended until the buyer accepts the new pricing.
+ *   use no longer sold
+ *           a subscription to USE of the creator's agent, whose listing is
+ *           no longer published or now sells copies, ends at the close of
+ *           the paid month with endReason 'use_ended' and is not charged
+ *           again: there would be nothing to charge for.
  *
  * Access for a monthly install = subscription active or past_due within
  * grace (see subscriptionGrantsAccess), enforced by resolveInstallBilling.
@@ -58,7 +63,7 @@ export class SubscriptionClaimLostError extends Error {
   }
 }
 
-export type SubscriptionEndReason = "pricing_changed" | "listing_archived";
+export type SubscriptionEndReason = "pricing_changed" | "listing_archived" | "use_ended";
 
 export interface SubscriptionRow {
   id: string;
@@ -71,6 +76,12 @@ export interface SubscriptionRow {
   /** The agreed monthly price; null only on rows from before it was stored. */
   priceCents?: bigint | null;
   endReason?: string | null;
+  /**
+   * The kind of the subscriber's licence (AgentInstall.kind): "use" when
+   * the month pays for use of the creator's agent, "copy" for a copy.
+   * Absent reads as a copy.
+   */
+  licenceKind?: string;
 }
 
 export interface ListingForBilling {
@@ -82,6 +93,8 @@ export interface ListingForBilling {
   pricingModel?: string;
   /** Renewal stops if the listing is no longer published. */
   status?: string;
+  /** What the listing sells now: "use" or "copies". A use subscription stops renewing once it is not "use". */
+  sells?: string;
 }
 
 export interface SubscriptionTx {
@@ -292,6 +305,24 @@ export async function renewSubscription(
   const now = args.now ?? new Date();
   const { sub } = args;
   if (sub.currentPeriodEnd > now) return { kind: "not_due" };
+
+  // A month of USE of the creator's agent, and the listing no longer sells
+  // use: it is not published, or it sells copies now. The month that was
+  // paid for has ended (access ran to here: services/useAccess.ts checks a
+  // paid month before the listing), and there is nothing left to charge
+  // for, so it ends and is not renewed. The licence row is left as it is:
+  // access is decided from the rows at each use, and the reason recorded
+  // here means that selling use again cannot start charging this buyer
+  // without their consent. A copy subscription never takes this branch.
+  const sellsUse = args.listing.sells === undefined || args.listing.sells === "use";
+  const published = args.listing.status === undefined || args.listing.status === "published";
+  if (sub.licenceKind === "use" && !(sellsUse && published)) {
+    const closed = await tx.agentSubscription.updateMany({
+      where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
+      data: { status: "cancelled", cancelledAt: now, endReason: "use_ended" },
+    });
+    return closed.count === 1 ? { kind: "cancelled" } : { kind: "lost_race" };
+  }
 
   // The publisher archived the listing: the paid period ran its course and
   // nothing more is charged. An archived listing charges nobody, so the

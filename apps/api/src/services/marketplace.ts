@@ -1,16 +1,34 @@
 import { prisma, Prisma } from "@wheelsai/db";
 import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
 import { pauseAgentSchedules, type OwnScheduleDb } from "./agentOwnSchedule.js";
+import {
+  ensurePageKey,
+  ensurePublicPage,
+  isHandleConflict,
+  PublicLinkError,
+  setPageUse,
+  type PublicLinkTx,
+} from "./agentPublicLink.js";
 import { getOrgPlan } from "./orgPlan.js";
 import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
-import { startMonthlySubscription, type SubscriptionTx } from "./marketplaceSubscriptions.js";
+import { startMonthlySubscription, SubscriptionClaimLostError, type SubscriptionTx } from "./marketplaceSubscriptions.js";
 import {
   installAccess,
+  type InstallAccess,
   PAST_DUE_GRACE_DAYS,
   subscriptionGrantsAccess,
   subscriptionIsOpen,
 } from "./subscriptionAccess.js";
 import { orgHoldsToken, TokenRequiredError } from "./tokenAccess.js";
+import {
+  COPY_MONTH_BLOCKS_USE,
+  copyMonthBlockingUse,
+  copyMonthBlockingUseMessage,
+  useAccess,
+  type UseAccess,
+} from "./useAccess.js";
+import { isPaidUse, MIN_PRICE_PER_USE_CENTS, useUnitOf, type UseUnit } from "./useListing.js";
+import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { createLogger } from "../utils/logger.js";
 import { updatePublisherReputation } from "./reputation.js";
 
@@ -42,7 +60,23 @@ export interface ListingCreateParams {
   pricingModel: "free" | "per_request" | "monthly" | "tokenized";
   pricePerRequestCents?: number;
   monthlyPriceCents?: number;
+  /**
+   * What the listing sells: use of the creator's own agent, or copies of it.
+   * Omitted on a new listing means use; an existing listing keeps what it
+   * sells unless an update names it.
+   */
+  sells?: ListingSells;
+  /**
+   * The outbound tools the creator allows for people who pay to use the
+   * agent, by name. Only names of tools the agent has.
+   */
+  allowedTools?: string[];
+  /** Publish in the same request. A listing that is already published stays as it is. */
+  publish?: boolean;
 }
+
+export const LISTING_SELLS = ["use", "copies"] as const;
+export type ListingSells = (typeof LISTING_SELLS)[number];
 
 // ============================================
 // Constants
@@ -164,12 +198,7 @@ export async function searchListings(params: ListingSearchParams) {
       take: limit,
       include: {
         agent: {
-          select: {
-            id: true,
-            framework: true,
-            agentKind: true,
-            tags: true,
-          },
+          select: LISTING_AGENT_COLUMNS,
         },
       },
     }),
@@ -201,8 +230,7 @@ export async function getListingBySlug(slug: string) {
           framework: true,
           agentKind: true,
           tags: true,
-          systemPrompt: true,
-          tools: true,
+          publicHandle: true,
         },
       },
     },
@@ -229,7 +257,7 @@ export async function getListingTrialPreview(slug: string) {
     where: { slug, status: "published" },
     select: {
       id: true,
-      agent: { select: { entrypoint: true, agentKind: true, modelConfig: true, tools: true } },
+      agent: { select: { entrypoint: true, agentKind: true, kindConfig: true, modelConfig: true, tools: true } },
     },
   });
   if (!listing) return null;
@@ -243,6 +271,9 @@ export async function getListingTrialPreview(slug: string) {
     id: listing.id,
     agentEntrypoint: listing.agent.entrypoint,
     agentKind: isAgentKind(listing.agent.agentKind) ? listing.agent.agentKind : DEFAULT_AGENT_KIND,
+    // The task form is made from this by the caller (publicTaskForm); the
+    // rest of it goes nowhere.
+    agentKindConfig: listing.agent.kindConfig,
     // Resolved to a model id by the caller, with the rule agent chat uses.
     agentModelConfig: modelConfig,
     agentTools: tools
@@ -298,12 +329,7 @@ export async function getListingById(id: string) {
     where: { id },
     include: {
       agent: {
-        select: {
-          id: true,
-          framework: true,
-          agentKind: true,
-          tags: true,
-        },
+        select: LISTING_AGENT_COLUMNS,
       },
     },
   });
@@ -321,12 +347,7 @@ export async function getFeaturedListings(limit = 6) {
     take: limit,
     include: {
       agent: {
-        select: {
-          id: true,
-          framework: true,
-          agentKind: true,
-          tags: true,
-        },
+        select: LISTING_AGENT_COLUMNS,
       },
     },
   });
@@ -509,12 +530,7 @@ export async function getPublisherProfile(slug: string) {
             take: 10,
             include: {
               agent: {
-                select: {
-                  id: true,
-                  framework: true,
-                  agentKind: true,
-                  tags: true,
-                },
+                select: LISTING_AGENT_COLUMNS,
               },
             },
           },
@@ -547,6 +563,212 @@ export async function getPublisherProfile(slug: string) {
 // Listing Management (Protected)
 // ============================================
 
+/** The agent columns every listing answer is drawn from. Never its instructions or its tools. */
+const LISTING_AGENT_COLUMNS = {
+  id: true,
+  framework: true,
+  agentKind: true,
+  tags: true,
+  publicHandle: true,
+} as const;
+
+/** The same, with the name a buyer knows the agent by. */
+const LICENCE_AGENT_COLUMNS = { ...LISTING_AGENT_COLUMNS, name: true } as const;
+
+/** What deciding whether an agent can be sold needs of it. */
+const SELLABLE_AGENT_COLUMNS = {
+  id: true,
+  entrypoint: true,
+  agentKind: true,
+  tools: true,
+} as const;
+
+interface SellableAgent {
+  id: string;
+  entrypoint?: string | null;
+  agentKind?: string | null;
+  tools?: unknown;
+}
+
+/** The smallest monthly price, in cents. */
+export const MIN_MONTHLY_PRICE_CENTS = 100n;
+
+export const LISTING_MESSAGES = {
+  marketplaceCopy: "This agent came from the marketplace, so it cannot be sold again.",
+  graphAgent:
+    "This agent answers through its graph, so use of it cannot be sold yet. You can sell it as a task with guaranteed delivery, or sell copies.",
+  tokenAccess:
+    "Use of an agent cannot be sold to token holders yet. Choose Free, Pay per use or Monthly, or sell copies instead.",
+  listingExists: "This agent already has a listing. Edit that listing instead.",
+  nameTaken: "Another listing was saved under that name at the same moment. Try again.",
+  monthlyFloor: "The price per month must be at least $1.00.",
+  perMessageFloor: "The price per message must be at least $0.05.",
+  perRunFloor: "The price per run must be at least $0.05.",
+  scheduledPerUse: "An agent that runs on its own can be free or sold by the month, not per use.",
+  unknownTool: (name: string) => `Your agent has no tool named "${name}".`,
+} as const;
+
+/**
+ * A listing that cannot be saved or published as asked. The message is a
+ * plain sentence for the person; `body` is the whole answer when it is a
+ * 400 `validation_failed` with its fields.
+ */
+export class ListingError extends Error {
+  constructor(
+    readonly status: 400 | 404 | 409,
+    readonly code: string,
+    message: string,
+    readonly body?: ValidationFailureBody,
+  ) {
+    super(message);
+    this.name = "ListingError";
+  }
+}
+
+function listingInvalid(field: string, message: string): ListingError {
+  return new ListingError(400, "validation_failed", message, validationFailureFromFields({ [field]: message }));
+}
+
+interface ListingTerms {
+  sells: string;
+  pricingModel: string;
+  pricePerRequestCents: bigint | null;
+  monthlyPriceCents: bigint | null;
+}
+
+/**
+ * Refuses terms an agent cannot be sold on. Pure.
+ *
+ * Use of an agent is sold free, per use or by the month, and only for an
+ * agent that answers from its instructions: a graph run looks up a copy by
+ * itself and would run free. A per-use price is 5 cents or more, so the
+ * platform's share never rounds to nothing, and is not offered for an agent
+ * that runs on its own. A listing that sells copies is held to the monthly
+ * floor only, as before.
+ */
+export function assertSellable(agent: SellableAgent, terms: ListingTerms): void {
+  if (
+    terms.pricingModel === "monthly" &&
+    terms.monthlyPriceCents !== null &&
+    terms.monthlyPriceCents < MIN_MONTHLY_PRICE_CENTS
+  ) {
+    throw listingInvalid("monthlyPriceCents", LISTING_MESSAGES.monthlyFloor);
+  }
+  if (terms.sells !== "use") return;
+  if (agent.entrypoint === "graph") {
+    throw new ListingError(409, "graph_agent_not_supported", LISTING_MESSAGES.graphAgent);
+  }
+  if (terms.pricingModel === "tokenized") {
+    throw new ListingError(400, "token_access_not_available", LISTING_MESSAGES.tokenAccess);
+  }
+  if (terms.pricingModel === "per_request") {
+    if (agent.agentKind === "scheduled") throw listingInvalid("pricingModel", LISTING_MESSAGES.scheduledPerUse);
+    if ((terms.pricePerRequestCents ?? 0n) < MIN_PRICE_PER_USE_CENTS) {
+      throw listingInvalid(
+        "pricePerRequestCents",
+        agent.agentKind === "task" ? LISTING_MESSAGES.perRunFloor : LISTING_MESSAGES.perMessageFloor,
+      );
+    }
+  }
+}
+
+/** The tools named, each once, when the agent has every one of them. */
+function allowedToolsOf(agent: SellableAgent, names: string[]): string[] {
+  const has = new Set(
+    (Array.isArray(agent.tools) ? (agent.tools as unknown[]) : [])
+      .map((tool) => (tool as { name?: unknown } | null)?.name)
+      .filter((name): name is string => typeof name === "string"),
+  );
+  const allowed = [...new Set(names)];
+  for (const name of allowed) {
+    if (!has.has(name)) throw listingInvalid("allowedTools", LISTING_MESSAGES.unknownTool(name));
+  }
+  return allowed;
+}
+
+/**
+ * Whether this agent is a buyer's copy from the marketplace. A copy carries
+ * its creator's instructions, so it is not sold on, as use or as copies.
+ */
+async function isMarketplaceCopy(agentId: string): Promise<boolean> {
+  const install = await prisma.agentInstall.findFirst({
+    where: { clonedAgentId: agentId },
+    select: { id: true },
+  });
+  return install !== null && install !== undefined;
+}
+
+/** Two listings reaching for one address at once: the loser looks again. */
+const PAGE_ATTEMPTS = 3;
+
+/**
+ * Runs a transaction that may give the agent its public address. A write
+ * that loses the address to another agent ends the Postgres transaction
+ * (isHandleConflict), so the whole of it is run again and then sees the
+ * address as taken.
+ */
+async function inPageTransaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await prisma.$transaction(fn);
+    } catch (err) {
+      if (err instanceof PublicLinkError) {
+        throw new ListingError(err.status, err.code, err.message, err.body);
+      }
+      if (!isHandleConflict(err) || attempt >= PAGE_ATTEMPTS) throw err;
+    }
+  }
+}
+
+/**
+ * The page of an agent whose use is on sale, set inside the transaction
+ * that puts it on sale: the page is public and has an address, and it has
+ * its page key. Free use turns the key on, because the page is how people
+ * use it; a price turns it off, because free use on the page would be the
+ * paid thing for nothing. A self-running agent shows its results to
+ * everyone when free and to subscribers only (through the paid routes) when
+ * sold by the month.
+ *
+ * The pause is written whether or not the key reads as on. A write that
+ * waited for a key seen as on would match nothing against a key that
+ * another request is turning on at this moment, and would not wait for it:
+ * both would commit and the priced page would be left on. Written always,
+ * it takes the key's row lock, so it lands after that "on" and overrides
+ * it, or before it, and then the other request sees the price and stops.
+ */
+async function applyUsePage(
+  tx: Prisma.TransactionClient,
+  args: {
+    orgId: string;
+    agentId: string;
+    agentKind: string | null | undefined;
+    paid: boolean;
+    /**
+     * "set" when free use is starting: the listing goes on sale free, or moves
+     * to free. "keep" when a free listing that was already on sale is saved
+     * again: the owner may have hidden the results since, and a save of the
+     * listing must not show them again.
+     */
+    results: "set" | "keep";
+  },
+): Promise<void> {
+  const page = tx as unknown as PublicLinkTx;
+  const { orgId, agentId } = args;
+  await ensurePublicPage(page, { orgId, agentId });
+  await ensurePageKey(page, { orgId, agentId });
+  if (args.paid) {
+    await page.widgetKey.updateMany({
+      where: { pageOfAgentId: agentId, orgId, revokedAt: null },
+      data: { enabled: false },
+    });
+  } else {
+    await setPageUse(page, { orgId, agentId, enabled: true });
+  }
+  if (args.agentKind === "scheduled" && (args.paid || args.results === "set")) {
+    await tx.agent.updateMany({ where: { id: agentId, orgId }, data: { publicResults: !args.paid } });
+  }
+}
+
 export async function createListing(
   orgId: string,
   orgName: string,
@@ -561,13 +783,24 @@ export async function createListing(
     throw new Error("Agent not found or does not belong to your organization");
   }
 
+  // A new listing sells use unless copies are asked for by name.
+  const sells: ListingSells = params.sells ?? "use";
+
+  if (await isMarketplaceCopy(agent.id)) {
+    throw new ListingError(409, "marketplace_copy", LISTING_MESSAGES.marketplaceCopy);
+  }
+
+  const prices = normalizeListingPricing(params.pricingModel, params);
+  assertSellable(agent, { sells, pricingModel: params.pricingModel, ...prices });
+  const useAllowedTools = allowedToolsOf(agent, params.allowedTools ?? []);
+
   // Check if listing already exists for this agent
   const existing = await prisma.agentListing.findUnique({
     where: { agentId: params.agentId },
   });
 
   if (existing) {
-    throw new Error("A listing already exists for this agent");
+    throw new ListingError(409, "listing_exists", LISTING_MESSAGES.listingExists);
   }
 
   // Generate slug
@@ -588,43 +821,54 @@ export async function createListing(
     limits: { priorityPlacement: false },
   }));
 
-  const listing = await prisma.agentListing.create({
-    data: {
-      priorityPlacement: planLimits.priorityPlacement,
-      // Every listing has sold copies until now. What a listing sells has no
-      // default in the data, so each place that creates one says.
-      sells: "copies",
-      agentId: params.agentId,
-      title: params.title,
-      slug,
-      shortDescription: params.shortDescription,
-      longDescription: params.longDescription,
-      category: params.category,
-      iconUrl: params.iconUrl,
-      screenshots: params.screenshots ?? [],
-      readme: params.readme,
-      pricingModel: params.pricingModel,
-      ...normalizeListingPricing(params.pricingModel, params),
-      publisherId: orgId,
-      publisherName: orgName,
-      status: "draft",
-    },
-    include: {
-      agent: {
-        select: {
-          id: true,
-          framework: true,
-          agentKind: true,
-          tags: true,
+  const listing = await prisma.agentListing
+    .create({
+      data: {
+        priorityPlacement: planLimits.priorityPlacement,
+        agentId: params.agentId,
+        title: params.title,
+        slug,
+        shortDescription: params.shortDescription,
+        longDescription: params.longDescription,
+        category: params.category,
+        iconUrl: params.iconUrl,
+        screenshots: params.screenshots ?? [],
+        readme: params.readme,
+        sells,
+        useAllowedTools,
+        pricingModel: params.pricingModel,
+        ...prices,
+        publisherId: orgId,
+        publisherName: orgName,
+        status: "draft",
+      },
+      include: {
+        agent: {
+          select: LISTING_AGENT_COLUMNS,
         },
       },
-    },
-  });
+    })
+    .catch((err) => {
+      // Two requests for one agent, or two titles that give one slug, at the
+      // same moment. Said in a sentence, never in the database's words.
+      if (!isUniqueViolation(err)) throw err;
+      const target = String((err as { meta?: { target?: unknown } }).meta?.target ?? "");
+      throw target.includes("slug")
+        ? new ListingError(409, "listing_name_taken", LISTING_MESSAGES.nameTaken)
+        : new ListingError(409, "listing_exists", LISTING_MESSAGES.listingExists);
+    });
 
   // Ensure publisher profile exists
   await ensurePublisherProfile(orgId, orgName);
 
-  return formatListingForPublic(listing);
+  if (!params.publish) return formatListingForOwner(listing);
+
+  await publishOwnListing(listing.id, orgId);
+  const published = await prisma.agentListing.findUnique({
+    where: { id: listing.id },
+    include: { agent: { select: LISTING_AGENT_COLUMNS } },
+  });
+  return formatListingForOwner(published ?? listing);
 }
 
 export async function updateListing(
@@ -634,6 +878,7 @@ export async function updateListing(
 ) {
   const listing = await prisma.agentListing.findFirst({
     where: { id: listingId, publisherId: orgId },
+    include: { agent: { select: SELLABLE_AGENT_COLUMNS } },
   });
 
   if (!listing) {
@@ -667,9 +912,50 @@ export async function updateListing(
           }
         ),
       }
-    : {};
+    : null;
 
-  const updated = await prisma.agentListing.update({
+  // What the listing sells, and on what terms, once this edit is saved. An
+  // edit that does not name what it sells leaves that as it is.
+  const next: ListingTerms = {
+    sells: params.sells ?? listing.sells,
+    pricingModel: pricing?.pricingModel ?? listing.pricingModel,
+    pricePerRequestCents: pricing ? pricing.pricePerRequestCents : listing.pricePerRequestCents,
+    monthlyPriceCents: pricing ? pricing.monthlyPriceCents : listing.monthlyPriceCents,
+  };
+  const agent: SellableAgent = listing.agent ?? { id: listing.agentId };
+  if (params.sells !== undefined && params.sells !== listing.sells && (await isMarketplaceCopy(listing.agentId))) {
+    throw new ListingError(409, "marketplace_copy", LISTING_MESSAGES.marketplaceCopy);
+  }
+  if (pricingTouched || params.sells !== undefined || params.publish) assertSellable(agent, next);
+  const useAllowedTools =
+    params.allowedTools !== undefined ? allowedToolsOf(agent, params.allowedTools) : undefined;
+
+  const publishing = params.publish === true && listing.status !== "published";
+  if (
+    publishing &&
+    (!(params.title || listing.title) ||
+      !(params.shortDescription || listing.shortDescription) ||
+      !(params.category || listing.category))
+  ) {
+    throw new Error("Listing is missing required fields");
+  }
+
+  // The agent's page follows the listing while use of it is on sale. An
+  // edit that names the price, what is sold, or publish may move the page,
+  // so it is saved in a transaction and the page is set there from the row
+  // as it was saved, never from the read above: another edit or a publish
+  // may have committed since, and the row as saved is what is on sale. The
+  // listing's row lock puts two such requests one after the other, and the
+  // later one sets the page for what both left. Every other edit leaves the
+  // page alone. Nothing is undone when a listing stops selling use: no
+  // licence or subscription is ended here, access is decided from the rows
+  // at each use (services/useAccess.ts), and a paid month runs to its end.
+  const mayMovePage = pricingTouched || params.sells !== undefined || params.publish === true;
+  // Free use was already on sale before this edit. A self-running agent's
+  // results are shown when free use starts, not each time the listing is saved.
+  const wasFreeUse = listing.status === "published" && listing.sells === "use" && !isPaidUse(listing);
+
+  const write = {
     where: { id: listingId },
     data: {
       ...(params.title && { title: params.title }),
@@ -683,55 +969,128 @@ export async function updateListing(
       ...(params.iconUrl !== undefined && { iconUrl: params.iconUrl }),
       ...(params.screenshots && { screenshots: params.screenshots }),
       ...(params.readme !== undefined && { readme: params.readme }),
-      ...pricing,
+      ...(pricing ?? {}),
+      ...(params.sells !== undefined && { sells: params.sells }),
+      ...(useAllowedTools !== undefined && { useAllowedTools }),
+      ...(publishing && { status: "published", publishedAt: new Date() }),
     },
     include: {
       agent: {
-        select: {
-          id: true,
-          framework: true,
-          agentKind: true,
-          tags: true,
-        },
+        select: LISTING_AGENT_COLUMNS,
       },
     },
-  });
+  };
 
-  return formatListingForPublic(updated);
+  const updated = mayMovePage
+    ? await inPageTransaction(async (tx) => {
+        const saved = await tx.agentListing.update(write);
+        if (saved.status !== "published") return saved;
+        // The sale rules, on the terms that are on sale once this commits and
+        // on the agent as it is now: it may have changed since the read above.
+        const agentNow: SellableAgent =
+          (await tx.agent.findFirst({ where: { id: listing.agentId, orgId }, select: SELLABLE_AGENT_COLUMNS })) ?? agent;
+        assertSellable(agentNow, saved);
+        if (saved.sells !== "use") return saved;
+        await applyUsePage(tx, {
+          orgId,
+          agentId: listing.agentId,
+          agentKind: agentNow.agentKind,
+          paid: isPaidUse(saved),
+          results: wasFreeUse ? "keep" : "set",
+        });
+        // Read again: the page may have just been given its address.
+        return (
+          (await tx.agentListing.findUnique({
+            where: { id: listingId },
+            include: { agent: { select: LISTING_AGENT_COLUMNS } },
+          })) ?? saved
+        );
+      })
+    : await prisma.agentListing.update(write);
+
+  if (publishing) {
+    await updatePublisherStats(orgId);
+    logger.info({ listingId, orgId }, "Listing published");
+  }
+
+  return formatListingForOwner(updated);
 }
 
-export async function publishListing(listingId: string, orgId: string) {
+/**
+ * Puts the organization's listing on sale. Publishing a listing that is
+ * already published changes nothing and is not an error. False when there
+ * was nothing to do.
+ *
+ * For a listing that sells use, the agent's page is set in the same
+ * transaction (applyUsePage), from the listing as it is read again after
+ * the status is written: a price saved on the draft a moment earlier is
+ * what is published, or what is refused.
+ */
+async function publishOwnListing(listingId: string, orgId: string): Promise<boolean> {
   const listing = await prisma.agentListing.findFirst({
     where: { id: listingId, publisherId: orgId },
+    include: { agent: { select: SELLABLE_AGENT_COLUMNS } },
   });
 
   if (!listing) {
     throw new Error("Listing not found");
   }
 
-  if (listing.status === "published") {
-    throw new Error("Listing is already published");
-  }
+  if (listing.status === "published") return false;
 
   // Validate listing has required fields
   if (!listing.title || !listing.shortDescription || !listing.category) {
     throw new Error("Listing is missing required fields");
   }
 
-  const updated = await prisma.agentListing.update({
-    where: { id: listingId },
-    data: {
-      status: "published",
-      publishedAt: new Date(),
-    },
+  // The agent may have changed since the draft was saved.
+  const agent: SellableAgent = listing.agent ?? { id: listing.agentId };
+  assertSellable(agent, listing);
+
+  const published = await inPageTransaction(async (tx) => {
+    // Compare-and-set: of two publishes at once, one moves the listing and
+    // the other finds nothing to do.
+    const moved = await tx.agentListing.updateMany({
+      where: { id: listingId, publisherId: orgId, status: { not: "published" } },
+      data: {
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    if (moved.count !== 1) return false;
+    // The row as it goes on sale. The read before the transaction may be
+    // behind an edit that committed since; this one is made holding the
+    // listing's row lock, so no edit lands between it and the commit.
+    const onSale = await tx.agentListing.findUnique({
+      where: { id: listingId },
+      include: { agent: { select: SELLABLE_AGENT_COLUMNS } },
+    });
+    if (!onSale) throw new Error("Listing not found");
+    const agentNow: SellableAgent = onSale.agent ?? agent;
+    assertSellable(agentNow, onSale);
+    if (onSale.sells === "use") {
+      await applyUsePage(tx, {
+        orgId,
+        agentId: onSale.agentId,
+        agentKind: agentNow.agentKind,
+        paid: isPaidUse(onSale),
+        results: "set",
+      });
+    }
+    return true;
   });
+  if (!published) return false;
 
   // Update publisher stats
   await updatePublisherStats(orgId);
 
   logger.info({ listingId, orgId }, "Listing published");
+  return true;
+}
 
-  return updated;
+export async function publishListing(listingId: string, orgId: string) {
+  await publishOwnListing(listingId, orgId);
+  return prisma.agentListing.findUnique({ where: { id: listingId } });
 }
 
 export async function archiveListing(listingId: string, orgId: string) {
@@ -759,24 +1118,57 @@ export async function getMyListings(orgId: string) {
     orderBy: { createdAt: "desc" },
     include: {
       agent: {
-        select: {
-          id: true,
-          framework: true,
-          agentKind: true,
-          tags: true,
-        },
+        select: LISTING_AGENT_COLUMNS,
       },
     },
   });
 
-  return listings.map(formatListingForPublic);
+  // Who holds what, per listing: copies in use, people using the agent
+  // itself, and subscriptions that grant access right now.
+  const listingIds = listings.map((listing) => listing.id);
+  const [licences, subscriptions] =
+    listingIds.length > 0
+      ? await Promise.all([
+          prisma.agentInstall.findMany({
+            where: { listingId: { in: listingIds }, status: "active" },
+            select: { listingId: true, kind: true },
+          }),
+          prisma.agentSubscription.findMany({
+            where: { listingId: { in: listingIds }, status: { in: ["active", "past_due"] } },
+            select: { listingId: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true },
+          }),
+        ])
+      : [[], []];
+  const now = new Date();
+  const buyersOf = (listingId: string) => ({
+    copies: licences.filter((l) => l.listingId === listingId && l.kind !== "use").length,
+    using: licences.filter((l) => l.listingId === listingId && l.kind === "use").length,
+    subscribed: subscriptions.filter((s) => s.listingId === listingId && subscriptionGrantsAccess(s, now)).length,
+  });
+
+  return listings.map((listing) => ({
+    ...formatListingForOwner(listing),
+    buyers: buyersOf(listing.id),
+  }));
 }
 
 // ============================================
 // Helpers
 // ============================================
 
+/** A listing as its publisher sees it: the public answer plus what only they set. */
+function formatListingForOwner(listing: any) {
+  return {
+    ...formatListingForPublic(listing),
+    allowedTools: Array.isArray(listing.useAllowedTools) ? (listing.useAllowedTools as string[]) : [],
+  };
+}
+
 function formatListingForPublic(listing: any) {
+  // What one payment buys, for a listing that sells use at a price. A
+  // listing that sells copies, or use for free, has no unit.
+  const unit: UseUnit | null =
+    listing.sells === "use" && isPaidUse(listing) ? useUnitOf(listing.agent?.agentKind, listing.pricingModel) : null;
   return {
     id: listing.id,
     agentId: listing.agentId,
@@ -788,6 +1180,10 @@ function formatListingForPublic(listing: any) {
     iconUrl: listing.iconUrl,
     screenshots: listing.screenshots,
     readme: listing.readme,
+    // "use": people use the creator's agent on its page or through the API
+    // and get no copy. "copies": a buyer installs their own copy.
+    sells: listing.sells === "use" ? "use" : "copies",
+    unit,
     pricingModel: listing.pricingModel,
     pricePerRequestCents: listing.pricePerRequestCents
       ? Number(listing.pricePerRequestCents)
@@ -819,6 +1215,9 @@ function formatListingForPublic(listing: any) {
           // or one that runs on its own.
           agentKind: isAgentKind(listing.agent.agentKind) ? listing.agent.agentKind : DEFAULT_AGENT_KIND,
           tags: listing.agent.tags,
+          // The agent's address, /a/<handle>: where a listing that sells use
+          // is used. null until the agent has a page.
+          handle: listing.agent.publicHandle ?? null,
           // Present only on selects that ask for them (getListingBySlug);
           // undefined elsewhere.
           slug: listing.agent.slug,
@@ -939,6 +1338,267 @@ function samePricing(a: ListingPricingTerms, b: ListingPricingTerms): boolean {
   return true;
 }
 
+// ============================================
+// The licence: four steps install and start-using share
+// ============================================
+//
+// A buyer's licence is one AgentInstall row per listing and buyer, whether
+// it is for their own copy (kind "copy") or for use of the creator's agent
+// (kind "use"). installAgent and startUsing both run these four steps, in
+// this order, so the two cannot drift on what a buyer agreed to or on what
+// they are charged:
+//
+//   1. agreeToTerms               nothing is recorded that the buyer did not see
+//   2. claimLicence, writeLicence the row is claimed, then written with the terms
+//   3. settleLicenceSubscription  a monthly listing charges its first 30 days
+//   4. countLicence               the listing's counters, once per licence
+
+/** Another request holds the licence row or its subscription. Nothing was written or charged. */
+export class LicenceClaimLostError extends Error {
+  readonly code = "install_in_progress";
+  constructor(message = "This agent is already being installed. Refresh to see it.") {
+    super(message);
+    this.name = "LicenceClaimLostError";
+  }
+}
+
+/** What a licence records of the pricing its buyer agreed to. */
+export interface AcceptedTerms {
+  acceptedPricingModel: string;
+  acceptedPricePerRequestCents: bigint | null;
+  pricingAcceptedAt: Date;
+}
+
+interface LicenceListing {
+  id: string;
+  title: string;
+  publisherId: string;
+  pricingModel: string;
+  pricePerRequestCents: bigint | null;
+  monthlyPriceCents: bigint | null;
+}
+
+interface LicenceRow {
+  id: string;
+  status: string;
+  clonedAgentId: string | null;
+}
+
+interface LicenceSubscription {
+  id: string;
+  status: string;
+  currentPeriodEnd: Date;
+  cancelAtPeriodEnd: boolean;
+  endReason: string | null;
+}
+
+/**
+ * Step 1, the terms check. Answers what the licence will record, or throws
+ * PricingChangedError carrying the pricing as it stands.
+ *
+ * `changed` is the caller's reading of the rows: the listing's pricing is
+ * not what this buyer's licence agreed to. Moving onto it takes the buyer's
+ * explicit acceptance. `expectedPricing` is what the buyer was looking at
+ * when they confirmed: if the listing has moved since, what they confirmed
+ * is not what would be recorded, so nothing is.
+ */
+export function agreeToTerms(
+  listing: LicenceListing,
+  opts: { changed: boolean; acceptNewPricing?: boolean; expectedPricing?: ListingPricingTerms },
+): AcceptedTerms {
+  const currentPricing = listingPricingTerms(listing);
+  if (opts.changed && !opts.acceptNewPricing) {
+    throw new PricingChangedError(listing.title, currentPricing);
+  }
+  // The publisher changed the price between the buyer seeing it and
+  // confirming: what they confirmed is not what would be recorded.
+  if (opts.expectedPricing && !samePricing(opts.expectedPricing, currentPricing)) {
+    throw new PricingChangedError(listing.title, currentPricing);
+  }
+  // What this licence agrees to. Billing compares the listing against it at
+  // every request (installAccess, useAccess), so a later increase pauses
+  // the licence instead of being charged.
+  return {
+    acceptedPricingModel: listing.pricingModel,
+    acceptedPricePerRequestCents:
+      listing.pricingModel === "per_request" ? (listing.pricePerRequestCents ?? 0n) : null,
+    pricingAcceptedAt: new Date(),
+  };
+}
+
+/**
+ * Step 2, first half: claim the existing licence row, by compare-and-swap
+ * on what was read. For an uninstalled or suspended row this is exclusive:
+ * of two concurrent requests one wins and the other stops here. For a row
+ * that is already active it changes nothing a second request could miss, so
+ * it is not a claim: there the exclusive step is the subscription's (or the
+ * pricing acceptance's) in step 3, and nothing is charged before it.
+ * Matching clonedAgentId as well stops a request that read the row before
+ * another install repointed it: acting on the stale id would create a
+ * second copy and orphan the first, which would then run unmetered.
+ */
+export async function claimLicence(tx: Prisma.TransactionClient, existing: LicenceRow | null): Promise<void> {
+  if (!existing) return;
+  const claimed = await tx.agentInstall.updateMany({
+    where: {
+      id: existing.id,
+      status: existing.status,
+      clonedAgentId: existing.clonedAgentId,
+    },
+    data: { status: "active", uninstalledAt: null },
+  });
+  if (claimed.count !== 1) {
+    throw new LicenceClaimLostError();
+  }
+}
+
+/**
+ * Step 2, second half: write the licence with its kind and the terms the
+ * buyer agreed to. A brand-new licence is protected by the unique
+ * (listingId, buyerId): the loser of a race fails here and its whole
+ * transaction rolls back.
+ *
+ * A copy names its copy. A use licence never does: on a new row
+ * clonedAgentId is null, and on a row that once held a copy the copy is
+ * left where it is, still pointed at and still metered by this row.
+ */
+export async function writeLicence(
+  tx: Prisma.TransactionClient,
+  args: {
+    existing: LicenceRow | null;
+    listingId: string;
+    buyerId: string;
+    terms: AcceptedTerms;
+  } & ({ kind: "copy"; clonedAgentId: string } | { kind: "use" }),
+) {
+  const { existing, listingId, buyerId, terms } = args;
+  if (args.kind === "copy") {
+    return existing
+      ? tx.agentInstall.update({
+          where: { id: existing.id },
+          data: { clonedAgentId: args.clonedAgentId, kind: "copy", ...terms },
+        })
+      : tx.agentInstall.create({
+          data: { listingId, buyerId, clonedAgentId: args.clonedAgentId, kind: "copy", status: "active", ...terms },
+        });
+  }
+  return existing
+    ? tx.agentInstall.update({ where: { id: existing.id }, data: { kind: "use", ...terms } })
+    : tx.agentInstall.create({
+        data: { listingId, buyerId, clonedAgentId: null, kind: "use", status: "active", ...terms },
+      });
+}
+
+/**
+ * Step 3, the subscription. A monthly listing charges the first 30-day
+ * period now, in this transaction (startMonthlySubscription claims the
+ * subscription row before it debits, so two requests at once charge one
+ * month). Under any other pricing, a subscription that is over or was ended
+ * from the publisher's side is closed by the buyer's acceptance.
+ */
+export async function settleLicenceSubscription(
+  tx: Prisma.TransactionClient,
+  args: { listing: LicenceListing; buyerId: string; installId: string; existingSub: LicenceSubscription | null },
+): Promise<{ id: string; currentPeriodEnd: Date } | null> {
+  const { listing, buyerId, existingSub } = args;
+  // Monthly listings charge the first 30-day period now.
+  if (listing.pricingModel === "monthly") {
+    const started = await startMonthlySubscription(tx as unknown as SubscriptionTx, {
+      listing: {
+        id: listing.id,
+        title: listing.title,
+        publisherId: listing.publisherId,
+        monthlyPriceCents: listing.monthlyPriceCents ?? 0n,
+      },
+      buyerId,
+      installId: args.installId,
+    });
+    return {
+      id: started.subscription.id,
+      currentPeriodEnd: started.subscription.currentPeriodEnd,
+    };
+  }
+  if (existingSub && (existingSub.endReason || subscriptionIsOpen(existingSub))) {
+    // The buyer accepts the listing's current pricing in place of the
+    // subscription: one the publisher's side ended, or one that ran out
+    // and the renewal worker has not closed yet. Compare-and-swap on
+    // what was read, so this is the exclusive step when the licence row
+    // was already active, and the worker's own close (which matches an
+    // open status) then misses instead of suspending the licence again.
+    const accepted = await tx.agentSubscription.updateMany({
+      where: {
+        id: existingSub.id,
+        status: existingSub.status,
+        currentPeriodEnd: existingSub.currentPeriodEnd,
+        endReason: existingSub.endReason,
+      },
+      data: {
+        status: "cancelled",
+        endReason: null,
+        cancelAtPeriodEnd: false,
+        ...(subscriptionIsOpen(existingSub) ? { cancelledAt: new Date() } : {}),
+      },
+    });
+    if (accepted.count !== 1) {
+      throw new LicenceClaimLostError();
+    }
+  }
+  return null;
+}
+
+/**
+ * Step 4, the counters. A lapsed (suspended) or already-active licence
+ * still counts as active on the listing, so (re)subscribing or accepting a
+ * price must not count it twice.
+ */
+export async function countLicence(
+  tx: Prisma.TransactionClient,
+  args: { listingId: string; previousStatus: string | undefined },
+): Promise<void> {
+  if (args.previousStatus === "suspended" || args.previousStatus === "active") return;
+  await tx.agentListing.update({
+    where: { id: args.listingId },
+    data: {
+      totalInstalls: { increment: 1 },
+      activeInstalls: { increment: 1 },
+    },
+  });
+}
+
+/** After a licence is written: the publisher's totals, and the reputation legs they feed. */
+async function afterLicenceStarted(listingId: string, publisherId: string, what: string): Promise<void> {
+  // Update publisher stats
+  await updatePublisherStats(publisherId);
+
+  // Installs feed the usage/social legs of the reputation score.
+  updatePublisherReputation(publisherId).catch((err) =>
+    logger.error({ err, listingId, publisherId }, `Failed to recalc publisher reputation after ${what}`)
+  );
+}
+
+export const INSTALL_MESSAGES = {
+  sellsUse: "You use this agent on its page. You do not get a copy.",
+  alreadyUsing: "You already use this agent on its page. Stop using it before you install a copy.",
+} as const;
+
+/**
+ * Installing was refused because of what the listing sells: use of the
+ * creator's agent, not copies of it. Carries the agent's address so a
+ * client can send the person to its page.
+ */
+export class InstallRefusedError extends Error {
+  readonly status = 409;
+  constructor(
+    readonly code: "sells_use" | "already_using",
+    message: string,
+    /** /a/<handle>; null when the agent has no page. */
+    readonly handle: string | null,
+  ) {
+    super(message);
+    this.name = "InstallRefusedError";
+  }
+}
+
 export async function installAgent(
   listingId: string,
   buyerId: string,
@@ -973,12 +1633,27 @@ export async function installAgent(
     throw new Error("You published this agent; it is already in your workspace");
   }
 
+  // A listing that sells use gives nobody a copy: the buyer uses the
+  // creator's own agent and never receives its instructions.
+  if (listing.sells === "use") {
+    throw new InstallRefusedError("sells_use", INSTALL_MESSAGES.sellsUse, listing.agent?.publicHandle ?? null);
+  }
+
   // Check if already installed
   const existingInstall = await prisma.agentInstall.findUnique({
     where: {
       listingId_buyerId: { listingId, buyerId },
     },
   });
+  // The listing sold use when this buyer started, and their licence for it
+  // still runs (a paid month, say). One licence per listing and buyer: it
+  // is not turned into a copy underneath them.
+  if (
+    existingInstall?.kind === "use" &&
+    (existingInstall.status === "active" || existingInstall.status === "suspended")
+  ) {
+    throw new InstallRefusedError("already_using", INSTALL_MESSAGES.alreadyUsing, listing.agent?.publicHandle ?? null);
+  }
   const existingSub = existingInstall
     ? await prisma.agentSubscription.findUnique({
         where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
@@ -986,7 +1661,7 @@ export async function installAgent(
       })
     : null;
 
-  const currentPricing = listingPricingTerms(listing);
+  let changed = false;
   if (existingInstall) {
     const access = installAccess({
       installStatus: existingInstall.status,
@@ -1005,24 +1680,13 @@ export async function installAgent(
     if (access === "subscribed" || access === "listing_pricing") {
       throw new Error("You have already installed this agent");
     }
-    if (access === "pricing_changed" && !opts.acceptNewPricing) {
-      throw new PricingChangedError(listing.title, currentPricing);
-    }
+    changed = access === "pricing_changed";
   }
-  // The publisher changed the price between the buyer seeing it and
-  // confirming: what they confirmed is not what would be recorded.
-  if (opts.expectedPricing && !samePricing(opts.expectedPricing, currentPricing)) {
-    throw new PricingChangedError(listing.title, currentPricing);
-  }
-  // What this install agrees to. Billing compares the listing against it at
-  // every request (installAccess), so a later increase pauses the install
-  // instead of being charged.
-  const acceptedPricing = {
-    acceptedPricingModel: listing.pricingModel,
-    acceptedPricePerRequestCents:
-      listing.pricingModel === "per_request" ? (listing.pricePerRequestCents ?? 0n) : null,
-    pricingAcceptedAt: new Date(),
-  };
+  const acceptedPricing = agreeToTerms(listing, {
+    changed,
+    acceptNewPricing: opts.acceptNewPricing,
+    expectedPricing: opts.expectedPricing,
+  });
 
   // Token-gated: once the token exists, installing needs it too, so a
   // buyer learns what access requires before anything is created.
@@ -1041,29 +1705,7 @@ export async function installAgent(
   // these were separate writes, and a crash in between left a clone that
   // ran for free.
   const result = await prisma.$transaction(async (tx) => {
-    // Claim the existing install row first, by compare-and-swap on what we
-    // read. For an uninstalled or suspended row this is exclusive: of two
-    // concurrent installs one wins and the other stops here. For a row
-    // that is already active it changes nothing a second request could
-    // miss, so it is not a claim: there the exclusive step is the
-    // subscription's (or the pricing acceptance's) below, and nothing is
-    // charged before it. Matching clonedAgentId as well stops a request
-    // that read the row before another install repointed it: acting on
-    // the stale id would create a second copy and orphan the first, which
-    // would then run unmetered.
-    if (existingInstall) {
-      const claimed = await tx.agentInstall.updateMany({
-        where: {
-          id: existingInstall.id,
-          status: existingInstall.status,
-          clonedAgentId: existingInstall.clonedAgentId,
-        },
-        data: { status: "active", uninstalledAt: null },
-      });
-      if (claimed.count !== 1) {
-        throw new Error("This agent is already being installed. Refresh to see it.");
-      }
-    }
+    await claimLicence(tx, existingInstall);
 
     // Reinstalling reuses the buyer's existing copy. Creating a new clone
     // each time left the previous one in the buyer's org with no install
@@ -1119,71 +1761,23 @@ export async function installAgent(
         },
       }));
 
-    // A brand-new install is protected by the unique (listingId, buyerId):
-    // the loser of a race fails here and its whole transaction rolls back.
-    const install = existingInstall
-      ? await tx.agentInstall.update({
-          where: { id: existingInstall.id },
-          data: { clonedAgentId: clonedAgent.id, ...acceptedPricing },
-        })
-      : await tx.agentInstall.create({
-          data: { listingId, buyerId, clonedAgentId: clonedAgent.id, status: "active", ...acceptedPricing },
-        });
+    const install = await writeLicence(tx, {
+      existing: existingInstall,
+      listingId,
+      buyerId,
+      kind: "copy",
+      clonedAgentId: clonedAgent.id,
+      terms: acceptedPricing,
+    });
 
-    // Monthly listings charge the first 30-day period now.
-    let subscription: { id: string; currentPeriodEnd: Date } | null = null;
-    if (listing.pricingModel === "monthly") {
-      const started = await startMonthlySubscription(tx as unknown as SubscriptionTx, {
-        listing: {
-          id: listing.id,
-          title: listing.title,
-          publisherId: listing.publisherId,
-          monthlyPriceCents: listing.monthlyPriceCents ?? 0n,
-        },
-        buyerId,
-        installId: install.id,
-      });
-      subscription = {
-        id: started.subscription.id,
-        currentPeriodEnd: started.subscription.currentPeriodEnd,
-      };
-    } else if (existingSub && (existingSub.endReason || subscriptionIsOpen(existingSub))) {
-      // The buyer accepts the listing's current pricing in place of the
-      // subscription: one the publisher's side ended, or one that ran out
-      // and the renewal worker has not closed yet. Compare-and-swap on
-      // what was read, so this is the exclusive step when the install row
-      // was already active, and the worker's own close (which matches an
-      // open status) then misses instead of suspending the install again.
-      const accepted = await tx.agentSubscription.updateMany({
-        where: {
-          id: existingSub.id,
-          status: existingSub.status,
-          currentPeriodEnd: existingSub.currentPeriodEnd,
-          endReason: existingSub.endReason,
-        },
-        data: {
-          status: "cancelled",
-          endReason: null,
-          cancelAtPeriodEnd: false,
-          ...(subscriptionIsOpen(existingSub) ? { cancelledAt: new Date() } : {}),
-        },
-      });
-      if (accepted.count !== 1) {
-        throw new Error("This agent is already being installed. Refresh to see it.");
-      }
-    }
+    const subscription = await settleLicenceSubscription(tx, {
+      listing,
+      buyerId,
+      installId: install.id,
+      existingSub,
+    });
 
-    // A lapsed (suspended) or already-active install still counts as
-    // active on the listing, so (re)subscribing must not count it twice.
-    if (existingInstall?.status !== "suspended" && existingInstall?.status !== "active") {
-      await tx.agentListing.update({
-        where: { id: listingId },
-        data: {
-          totalInstalls: { increment: 1 },
-          activeInstalls: { increment: 1 },
-        },
-      });
-    }
+    await countLicence(tx, { listingId, previousStatus: existingInstall?.status });
 
     return {
       install,
@@ -1198,21 +1792,12 @@ export async function installAgent(
     // constraint and this transaction rolled back whole. Translated out
     // here, never inside the transaction.
     if (isUniqueViolation(err)) {
-      throw new Error("This agent is already being installed. Refresh to see it.");
+      throw new LicenceClaimLostError();
     }
     throw err;
   });
 
-  // Update publisher stats
-  await updatePublisherStats(listing.publisherId);
-
-  // Installs feed the usage/social legs of the reputation score.
-  updatePublisherReputation(listing.publisherId).catch((err) =>
-    logger.error(
-      { err, listingId, publisherId: listing.publisherId },
-      "Failed to recalc publisher reputation after install"
-    )
-  );
+  await afterLicenceStarted(listingId, listing.publisherId, "install");
 
   logger.info(
     { listingId, buyerId, agentId: result.clonedAgent.id, subscription: result.subscription?.id },
@@ -1231,6 +1816,273 @@ export async function installAgent(
       needsConfiguration: result.needsConfiguration,
     },
   };
+}
+
+// ============================================
+// Using the creator's agent
+// ============================================
+
+export const USE_START_MESSAGES = {
+  expectedTermsRequired: "Send the price you were shown, so nothing is agreed to that you did not see.",
+  listingNotFound: "Listing not found",
+  sellsCopies: "This listing sells copies of the agent. Install it to get your own copy.",
+  ownAgent: "This is your agent. You do not pay to use it.",
+  tokenAccess: "Use of this agent is not on sale right now.",
+  claimLost: "This was just started by another request. Refresh to see it.",
+} as const;
+
+/** Starting to use an agent was refused before anything was written or charged. */
+export class UseStartError extends Error {
+  constructor(
+    readonly status: 400 | 404 | 409,
+    readonly code:
+      | "expected_terms_required"
+      | "listing_not_found"
+      | "sells_copies"
+      | "own_agent"
+      | "not_offered"
+      | typeof COPY_MONTH_BLOCKS_USE,
+    message: string,
+    /** For copy_subscription_active: the day the copy's paid month ends. */
+    readonly until?: Date,
+  ) {
+    super(message);
+    this.name = "UseStartError";
+  }
+}
+
+/** The agent a licence is for, as its buyer may know it. Never its instructions. */
+export interface LicenceAgent {
+  /** /a/<handle>; null when the agent has no page. */
+  handle: string | null;
+  name: string;
+  agentKind: string;
+}
+
+function licenceAgentOf(agent: { publicHandle?: string | null; name?: string | null; agentKind?: string | null } | null | undefined): LicenceAgent {
+  return {
+    handle: agent?.publicHandle ?? null,
+    name: agent?.name ?? "",
+    agentKind: isAgentKind(agent?.agentKind) ? agent.agentKind : DEFAULT_AGENT_KIND,
+  };
+}
+
+/** Where a buyer stands with an agent they use, or could. */
+export interface UseState {
+  access: UseAccess;
+  /** What the buyer agreed to. null when there is no licence (free use needs none). */
+  acceptedPricing: { pricingModel: string | null; pricePerRequestCents: number | null; acceptedAt: Date | null } | null;
+  subscription: ReturnType<typeof formatSubscription> | null;
+  agent: LicenceAgent;
+}
+
+const USE_LISTING_INCLUDE = {
+  agent: { select: { id: true, name: true, agentKind: true, publicHandle: true, entrypoint: true } },
+} as const;
+
+/** The buyer's state for a listing, from the rows as they are now. */
+async function readUseState(
+  listing: {
+    id: string;
+    status: string;
+    sells: string;
+    pricingModel: string;
+    pricePerRequestCents: bigint | null;
+    agent: Parameters<typeof licenceAgentOf>[0];
+  },
+  buyerId: string,
+): Promise<UseState> {
+  const licence = await prisma.agentInstall.findUnique({
+    where: { listingId_buyerId: { listingId: listing.id, buyerId } },
+  });
+  const sub = licence
+    ? await prisma.agentSubscription.findUnique({
+        where: { listingId_subscriberId: { listingId: listing.id, subscriberId: buyerId } },
+      })
+    : null;
+  return {
+    access: useAccess({
+      licence: licence
+        ? {
+            kind: licence.kind,
+            status: licence.status,
+            accepted: {
+              pricingModel: licence.acceptedPricingModel,
+              pricePerRequestCents: licence.acceptedPricePerRequestCents,
+            },
+          }
+        : null,
+      listing,
+      sub,
+    }),
+    acceptedPricing: licence
+      ? {
+          pricingModel: licence.acceptedPricingModel,
+          pricePerRequestCents:
+            licence.acceptedPricePerRequestCents !== null && licence.acceptedPricePerRequestCents !== undefined
+              ? Number(licence.acceptedPricePerRequestCents)
+              : null,
+          acceptedAt: licence.pricingAcceptedAt ?? null,
+        }
+      : null,
+    subscription: sub ? formatSubscription(sub) : null,
+    agent: licenceAgentOf(listing.agent),
+  };
+}
+
+/**
+ * Start using a creator's agent, or accept its current terms.
+ *
+ * Writes or claims the buyer's licence with kind "use" and the pricing they
+ * agreed to. No copy is made: the buyer uses the creator's own agent on its
+ * page or through the API, and nothing of the agent is written into their
+ * organization. A price per use charges nothing here (each use is charged
+ * when it is sent); a monthly price charges the first 30 days now, in the
+ * same transaction as the licence, exactly as a monthly copy does.
+ *
+ * `expected` is the pricing the person was shown and is always required:
+ * it is their consent. If the listing no longer matches it nothing is
+ * written or charged, and PricingChangedError carries the pricing as it is
+ * now. A buyer whose licence agreed to less (a higher price, or another
+ * pricing model) also has to send `acceptNewPricing`.
+ *
+ * `created: false` means nothing was written: the buyer already uses the
+ * agent on terms that cover it, or use is free and needs no licence.
+ *
+ * Throws UseStartError (400 expected_terms_required, 404, 409 sells_copies,
+ * own_agent, not_offered, copy_subscription_active), PricingChangedError, InsufficientCreditsError and
+ * SubscriptionClaimLostError (another request got there first; of two
+ * starts at once one month is charged).
+ */
+export async function startUsing(
+  listingId: string,
+  buyerId: string,
+  opts: { expected?: ListingPricingTerms; acceptNewPricing?: boolean },
+): Promise<UseState & { created: boolean }> {
+  if (!opts.expected) {
+    throw new UseStartError(400, "expected_terms_required", USE_START_MESSAGES.expectedTermsRequired);
+  }
+
+  const listing = await prisma.agentListing.findUnique({
+    where: { id: listingId },
+    include: USE_LISTING_INCLUDE,
+  });
+
+  // A listing that is not on sale is not there to start on, whoever asks.
+  if (!listing || listing.status !== "published") {
+    throw new UseStartError(404, "listing_not_found", USE_START_MESSAGES.listingNotFound);
+  }
+
+  // Self-dealing is refused by organization, here and at every use.
+  if (listing.publisherId === buyerId) {
+    throw new UseStartError(409, "own_agent", USE_START_MESSAGES.ownAgent);
+  }
+
+  if (listing.sells !== "use") {
+    throw new UseStartError(409, "sells_copies", USE_START_MESSAGES.sellsCopies);
+  }
+  // Use is sold free, per use or by the month. Anything else cannot be
+  // published as use; if a row says so anyway, nothing is started on it.
+  if (listing.pricingModel !== "free" && listing.pricingModel !== "per_request" && listing.pricingModel !== "monthly") {
+    throw new UseStartError(409, "not_offered", USE_START_MESSAGES.tokenAccess);
+  }
+
+  // Free use is the agent's public page: nobody pays, so there is nothing
+  // to agree to and no licence to write.
+  if (!isPaidUse(listing)) {
+    return { ...(await readUseState(listing, buyerId)), created: false };
+  }
+
+  const existingInstall = await prisma.agentInstall.findUnique({
+    where: {
+      listingId_buyerId: { listingId, buyerId },
+    },
+  });
+  const existingSub = existingInstall
+    ? await prisma.agentSubscription.findUnique({
+        where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
+        select: { id: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
+      })
+    : null;
+
+  const now = new Date();
+  const access = useAccess(
+    {
+      licence: existingInstall
+        ? {
+            kind: existingInstall.kind,
+            status: existingInstall.status,
+            accepted: {
+              pricingModel: existingInstall.acceptedPricingModel,
+              pricePerRequestCents: existingInstall.acceptedPricePerRequestCents,
+            },
+          }
+        : null,
+      listing,
+      sub: existingSub,
+    },
+    now,
+  );
+  // Already using it on terms that cover the listing: nothing to agree to
+  // and nothing to charge. Answered as it stands.
+  if (access === "subscribed" || access === "listing_pricing") {
+    return { ...(await readUseState(listing, buyerId)), created: false };
+  }
+  // An agent that answers through its graph cannot answer a paid use (the
+  // listing rules refuse it, but an agent can be moved back to an earlier
+  // version). No first month is charged for something that cannot run.
+  if (listing.agent?.entrypoint === "graph") {
+    throw new UseStartError(409, "not_offered", USE_START_MESSAGES.tokenAccess);
+  }
+  // A copy of this agent with a month paid for. There is one licence row
+  // for a listing and a buyer: starting use over it would cancel the month
+  // that was paid for, or on a monthly listing could never go through.
+  // Refused here, before anything is written, cancelled or charged.
+  const copyPaidUntil = copyMonthBlockingUse(existingInstall, existingSub, now);
+  if (copyPaidUntil) {
+    throw new UseStartError(
+      409,
+      COPY_MONTH_BLOCKS_USE,
+      copyMonthBlockingUseMessage(copyPaidUntil, now),
+      copyPaidUntil,
+    );
+  }
+  const terms = agreeToTerms(listing, {
+    changed: access === "pricing_changed",
+    acceptNewPricing: opts.acceptNewPricing,
+    expectedPricing: opts.expected,
+  });
+
+  // The licence, the counters and (for a monthly price) the first month's
+  // charge commit together or not at all.
+  const subscriptionId = await prisma
+    .$transaction(async (tx) => {
+      await claimLicence(tx, existingInstall);
+      const licence = await writeLicence(tx, { existing: existingInstall, listingId, buyerId, kind: "use", terms });
+      const subscription = await settleLicenceSubscription(tx, {
+        listing,
+        buyerId,
+        installId: licence.id,
+        existingSub,
+      });
+      await countLicence(tx, { listingId, previousStatus: existingInstall?.status });
+      return subscription?.id ?? null;
+    })
+    .catch((err) => {
+      // Another start for this buyer got there first: it holds the licence
+      // row, or the unique (listingId, buyerId) on a first start. This
+      // transaction rolled back whole, so nothing was charged twice.
+      if (isUniqueViolation(err) || err instanceof LicenceClaimLostError) {
+        throw new SubscriptionClaimLostError(USE_START_MESSAGES.claimLost);
+      }
+      throw err;
+    });
+
+  await afterLicenceStarted(listingId, listing.publisherId, "a start of use");
+
+  logger.info({ listingId, buyerId, subscription: subscriptionId }, "Started using an agent from the marketplace");
+
+  return { ...(await readUseState(listing, buyerId)), created: true };
 }
 
 export async function uninstallAgent(listingId: string, buyerId: string) {
@@ -1253,6 +2105,12 @@ export async function uninstallAgent(listingId: string, buyerId: string) {
   // uninstalls only one ends the subscription and moves the counter.
   // Uninstalling ends a monthly subscription now (the current period is
   // not refunded).
+  //
+  // Stopping use of a creator's agent is this same path: the licence ends
+  // now ("uninstalled" is a status useAccess reads as no licence), a
+  // subscription ends now with no refund for the month, and there is no
+  // copy to stop. A buyer who wants the rest of a paid month cancels the
+  // renewal instead.
   const listing = await prisma.$transaction(async (tx) => {
     const claimed = await tx.agentInstall.updateMany({
       where: { id: install.id, status: { in: ["active", "suspended"] } },
@@ -1301,12 +2159,7 @@ export async function getMyInstalls(buyerId: string) {
       listing: {
         include: {
           agent: {
-            select: {
-              id: true,
-              framework: true,
-              agentKind: true,
-              tags: true,
-            },
+            select: LICENCE_AGENT_COLUMNS,
           },
         },
       },
@@ -1321,27 +2174,28 @@ export async function getMyInstalls(buyerId: string) {
 
   return installs.map((install) => {
     const sub = subByListing.get(install.listingId);
+    const accepted = {
+      pricingModel: install.acceptedPricingModel,
+      pricePerRequestCents: install.acceptedPricePerRequestCents,
+    };
+    const kind = install.kind === "use" ? ("use" as const) : ("copy" as const);
     return {
       id: install.id,
       listingId: install.listingId,
-      clonedAgentId: install.clonedAgentId,
+      // "use": the buyer uses the creator's agent on its page and has no
+      // copy. "copy": their own copy, clonedAgentId.
+      kind,
+      clonedAgentId: install.clonedAgentId ?? null,
+      // The agent the licence is for. For "use" this is where it is used.
+      agent: licenceAgentOf(install.listing.agent),
       status: install.status,
       totalRequests: Number(install.totalRequests),
       totalSpentCents: Number(install.totalSpentCents),
       installedAt: install.installedAt,
-      // The same rule install billing applies (token gates aside), so the
-      // page offers only what will actually work.
-      access: installAccess({
-        installStatus: install.status,
-        listingStatus: install.listing.status,
-        pricingModel: install.listing.pricingModel,
-        pricePerRequestCents: install.listing.pricePerRequestCents,
-        accepted: {
-          pricingModel: install.acceptedPricingModel,
-          pricePerRequestCents: install.acceptedPricePerRequestCents,
-        },
-        sub: sub ?? null,
-      }),
+      // The same rule billing applies (token gates aside), so the page
+      // offers only what will actually work: installAccess for a copy,
+      // useAccess for use of the creator's agent.
+      access: licenceAccess(kind, install.status, accepted, install.listing, sub ?? null),
       // What the buyer agreed to, next to the listing's pricing today, so
       // the page can show both when they differ.
       acceptedPricing: {
@@ -1444,12 +2298,44 @@ export async function setSubscriptionCancelAtPeriodEnd(
   return formatSubscription(sub!);
 }
 
+/**
+ * Where a licence stands. A copy is decided by installAccess; use of the
+ * creator's agent by useAccess, which can also answer "none" and
+ * "not_offered".
+ */
+function licenceAccess(
+  kind: "copy" | "use",
+  status: string,
+  accepted: { pricingModel: string | null; pricePerRequestCents: bigint | null },
+  listing: { status: string; sells: string; pricingModel: string; pricePerRequestCents: bigint | null },
+  sub: { status: string; currentPeriodEnd: Date; cancelAtPeriodEnd?: boolean; endReason?: string | null } | null,
+): InstallAccess | UseAccess {
+  if (kind === "use") {
+    return useAccess({ licence: { kind, status, accepted }, listing, sub });
+  }
+  return installAccess({
+    installStatus: status,
+    listingStatus: listing.status,
+    pricingModel: listing.pricingModel,
+    pricePerRequestCents: listing.pricePerRequestCents,
+    accepted,
+    sub,
+  });
+}
+
 export async function checkInstallStatus(listingId: string, buyerId: string) {
   const install = await prisma.agentInstall.findUnique({
     where: {
       listingId_buyerId: { listingId, buyerId },
     },
+    include: { listing: { include: { agent: { select: LICENCE_AGENT_COLUMNS } } } },
   });
+  const sub = install
+    ? await prisma.agentSubscription.findUnique({
+        where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
+      })
+    : null;
+  const kind = install?.kind === "use" ? ("use" as const) : ("copy" as const);
 
   return {
     isInstalled: install?.status === "active",
@@ -1457,7 +2343,19 @@ export async function checkInstallStatus(listingId: string, buyerId: string) {
       ? {
           id: install.id,
           status: install.status,
-          clonedAgentId: install.clonedAgentId,
+          kind,
+          clonedAgentId: install.clonedAgentId ?? null,
+          agent: licenceAgentOf(install.listing.agent),
+          access: licenceAccess(
+            kind,
+            install.status,
+            {
+              pricingModel: install.acceptedPricingModel,
+              pricePerRequestCents: install.acceptedPricePerRequestCents,
+            },
+            install.listing,
+            sub,
+          ),
           installedAt: install.installedAt,
         }
       : null,

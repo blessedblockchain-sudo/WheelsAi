@@ -6,7 +6,9 @@
  *   loadDue        -> AgentSubscription rows whose period has ended and that
  *                     are still active or past_due, never-tried first, then
  *                     least recently tried, with the listing's current
- *                     monthly price and pricing model
+ *                     monthly price, pricing model and what it sells, and
+ *                     the kind of the subscriber's licence (a copy, or use
+ *                     of the creator's agent)
  *   recordAttempt  -> stamps lastRenewalAttemptAt in its own statement, so
  *                     it survives the renewal transaction's rollback
  *   inTransaction  -> prisma.$transaction; renewSubscription and
@@ -42,10 +44,22 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
               monthlyPriceCents: true,
               pricingModel: true,
               status: true,
+              sells: true,
             },
           },
         },
       });
+      // The kind of each subscriber's licence. One read for the page; a
+      // subscription with no licence row reads as a copy, as before. If
+      // this read fails the tick fails with it and nothing is charged.
+      const licences =
+        rows.length > 0
+          ? await prisma.agentInstall.findMany({
+              where: { OR: rows.map((r) => ({ listingId: r.listingId, buyerId: r.subscriberId })) },
+              select: { listingId: true, buyerId: true, kind: true },
+            })
+          : [];
+      const kindOf = new Map(licences.map((l) => [`${l.listingId}:${l.buyerId}`, l.kind]));
       return rows.map((r) => ({
         sub: {
           id: r.id,
@@ -57,6 +71,7 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           cancelAtPeriodEnd: r.cancelAtPeriodEnd,
           priceCents: r.priceCents,
           endReason: r.endReason,
+          licenceKind: kindOf.get(`${r.listingId}:${r.subscriberId}`) ?? "copy",
         },
         listing: {
           id: r.listing.id,
@@ -65,6 +80,7 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           monthlyPriceCents: r.listing.monthlyPriceCents ?? 0n,
           pricingModel: r.listing.pricingModel,
           status: r.listing.status,
+          sells: r.listing.sells,
         },
       }));
     },

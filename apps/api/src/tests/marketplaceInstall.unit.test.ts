@@ -1053,3 +1053,23 @@ test("a second uninstall switches nothing off again and moves no counter", async
   assert.equal(world.state.taskWrites.length, 1, "only the uninstall that claimed the row reaches the schedules");
   assert.equal(world.state.listing.activeInstalls, 0);
 });
+
+// ============================================
+// The licence says it is for a copy
+// ============================================
+
+test("an install writes the licence as a copy, on a first install and on a reinstall", async () => {
+  const fresh = makeWorld({ pricingModel: "free" });
+  await withWorld(fresh, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+  assert.equal(fresh.state.installs[0]!.kind, "copy");
+  assert.equal(fresh.state.installs[0]!.clonedAgentId, fresh.state.agents[0]!.id);
+
+  const again = makeWorld({
+    pricingModel: "free",
+    install: { status: "uninstalled", clonedAgentId: "agent_c0" },
+    agents: ["agent_c0"],
+  });
+  await withWorld(again, ({ installAgent }) => installAgent(LISTING_ID, BUYER));
+  assert.equal(again.state.installs[0]!.kind, "copy");
+  assert.equal(again.state.installs[0]!.clonedAgentId, "agent_c0");
+});

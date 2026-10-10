@@ -970,3 +970,140 @@ test("an archived monthly listing whose subscription closed keeps running free, 
     { kind: "revoked", listingTitle: "Research Analyst", reason: "subscription_lapsed" },
   );
 });
+
+// ============================================
+// A month of use of the creator's agent, once use is no longer sold
+// ============================================
+
+for (const [name, change] of [
+  ["sells copies now", { sells: "copies", status: "published" }],
+  ["was archived", { sells: "use", status: "archived" }],
+  ["went back to a draft", { sells: "use", status: "draft" }],
+] as const) {
+  test(`a use subscription ends at the close of the paid month and is not charged when the listing ${name}`, async () => {
+    const { state, inTransaction, sub } = await subscribed();
+    const useSub = () => ({ ...sub(), licenceKind: "use" });
+    const listing = { ...LISTING, pricingModel: "monthly", ...change };
+
+    // Inside the month that was paid for nothing happens: the buyer keeps it.
+    assert.deepEqual(await inTransaction((tx) => renewSubscription(tx, { sub: useSub(), listing, now: at(29) })), {
+      kind: "not_due",
+    });
+    assert.equal(sub().status, "active");
+
+    const outcome = await inTransaction((tx) => renewSubscription(tx, { sub: useSub(), listing, now: at(30) }));
+    assert.deepEqual(outcome, { kind: "cancelled" });
+    assert.equal(sub().status, "cancelled");
+    assert.equal(sub().endReason, "use_ended");
+    // Only the first month was ever charged.
+    assert.equal(state.revenue.length, 1);
+    assert.equal(state.ledger.length, 1);
+    assert.equal(state.balances.get("org_buyer"), 8_500n);
+    // The licence row is left alone: access is decided from the rows.
+    assert.equal(state.installs[0]!.status, "active");
+
+    // A second worker on the same row does nothing.
+    assert.deepEqual(await inTransaction((tx) => renewSubscription(tx, { sub: useSub(), listing, now: at(30) })), {
+      kind: "lost_race",
+    });
+    assert.equal(state.revenue.length, 1);
+  });
+}
+
+test("a use subscription whose listing still sells use renews as any subscription does", async () => {
+  const { state, inTransaction, sub } = await subscribed();
+  const outcome = await inTransaction((tx) =>
+    renewSubscription(tx, {
+      sub: { ...sub(), licenceKind: "use" },
+      listing: { ...LISTING, pricingModel: "monthly", status: "published", sells: "use" },
+      now: at(30),
+    }),
+  );
+  assert.equal(outcome.kind, "renewed");
+  assert.equal(state.revenue.length, 2);
+  assert.equal(state.revenue[1]!.type, "subscription_renewal");
+  assert.equal(state.balances.get("org_buyer"), 7_000n);
+});
+
+test("a copy subscription is untouched by what the listing sells: it renews, and an archived one ends as before", async () => {
+  // The listing sells use now; this buyer subscribed to a copy.
+  for (const licenceKind of ["copy", undefined]) {
+    const { state, inTransaction, sub } = await subscribed();
+    const outcome = await inTransaction((tx) =>
+      renewSubscription(tx, {
+        sub: { ...sub(), ...(licenceKind && { licenceKind }) },
+        listing: { ...LISTING, pricingModel: "monthly", status: "published", sells: "use" },
+        now: at(30),
+      }),
+    );
+    assert.equal(outcome.kind, "renewed");
+    assert.equal(state.balances.get("org_buyer"), 7_000n);
+    assert.equal(sub().endReason, null);
+  }
+
+  const { state, inTransaction, sub } = await subscribed();
+  const outcome = await inTransaction((tx) =>
+    renewSubscription(tx, {
+      sub: { ...sub(), licenceKind: "copy" },
+      listing: { ...LISTING, status: "archived", sells: "copies" },
+      now: at(30),
+    }),
+  );
+  assert.deepEqual(outcome, { kind: "cancelled" });
+  assert.equal(sub().endReason, "listing_archived");
+  assert.equal(state.installs[0]!.status, "active");
+});
+
+test("the renewal tick's loader reads what the listing sells and the licence's kind", async () => {
+  const { buildSubscriptionRenewalTickDeps } = await import("../services/buildSubscriptionRenewalTickDeps.js");
+  const queries: Array<Record<string, any>> = [];
+  const row = (id: string, listingId: string, sells: string) => ({
+    id,
+    listingId,
+    subscriberId: "org_buyer",
+    status: "active",
+    currentPeriodStart: at(0),
+    currentPeriodEnd: at(30),
+    cancelAtPeriodEnd: false,
+    priceCents: 1500n,
+    endReason: null,
+    listing: { id: listingId, title: "T", publisherId: "org_pub", monthlyPriceCents: 1500n, pricingModel: "monthly", status: "published", sells },
+  });
+  const fake = {
+    agentSubscription: {
+      findMany: async (args: Record<string, any>) => {
+        queries.push({ model: "agentSubscription", ...args });
+        return [row("sub_use", "lst_use", "copies"), row("sub_copy", "lst_copy", "copies"), row("sub_none", "lst_none", "use")];
+      },
+    },
+    agentInstall: {
+      findMany: async (args: Record<string, any>) => {
+        queries.push({ model: "agentInstall", ...args });
+        return [
+          { listingId: "lst_use", buyerId: "org_buyer", kind: "use" },
+          { listingId: "lst_copy", buyerId: "org_buyer", kind: "copy" },
+        ];
+      },
+    },
+  };
+  const deps = buildSubscriptionRenewalTickDeps(fake as never);
+  const due = await deps.loadDue({ now: at(31), limit: 10, excludeIds: [] });
+
+  assert.equal(queries[0]!.include.listing.select.sells, true);
+  assert.deepEqual(queries[1]!.where.OR[0], { listingId: "lst_use", buyerId: "org_buyer" });
+  assert.deepEqual(
+    due.map((d) => [d.sub.id, d.sub.licenceKind, d.listing.sells]),
+    [
+      ["sub_use", "use", "copies"],
+      ["sub_copy", "copy", "copies"],
+      // No licence row: read as a copy, which is how it renewed before.
+      ["sub_none", "copy", "use"],
+    ],
+  );
+
+  // Nothing due: the licences are not asked for.
+  fake.agentSubscription.findMany = async () => [];
+  queries.length = 0;
+  assert.deepEqual(await deps.loadDue({ now: at(31), limit: 10, excludeIds: [] }), []);
+  assert.equal(queries.length, 0);
+});

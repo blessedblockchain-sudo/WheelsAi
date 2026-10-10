@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth, requireJwtAuth, requireRole, requireScope } from "../middleware/auth.js";
+import { requireAuth, requireJwtAuth, requireRole, requireScope, requireSpend } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import {
@@ -21,6 +21,10 @@ import {
   archiveListing,
   getMyListings,
   installAgent,
+  InstallRefusedError,
+  ListingError,
+  startUsing,
+  UseStartError,
   PricingChangedError,
   uninstallAgent,
   getMyInstalls,
@@ -72,6 +76,42 @@ const createListingSchema = z.object({
   pricingModel: z.enum(["free", "per_request", "monthly", "tokenized"]),
   pricePerRequestCents: z.number().int().min(1).max(100000).optional(),
   monthlyPriceCents: z.number().int().min(100).max(10000000).optional(),
+  // What the listing sells: use of the creator's own agent, or copies of
+  // it. Omitted on a new listing means use; an update that does not name it
+  // leaves it as it is. The floors that depend on it (a price per use of 5
+  // cents or more) are checked in the service, with the agent in hand.
+  sells: z.enum(["use", "copies"]).optional(),
+  // The outbound tools the creator allows for people who pay to use it.
+  allowedTools: z.array(z.string().min(1).max(100)).max(50).optional(),
+  // Publish in the same request.
+  publish: z.literal(true).optional(),
+});
+
+/**
+ * A listing refusal as its answer: the code, one plain sentence, and for a
+ * 400 `validation_failed` the fields.
+ */
+function listingRefusal(error: ListingError) {
+  return error.body ?? { error: error.code, message: error.message };
+}
+
+/**
+ * What a failed listing write tells the person. A sentence the service
+ * wrote is passed on; anything that came from the database is not.
+ */
+function listingFailureMessage(error: unknown): string {
+  const known = error as { code?: unknown; clientVersion?: unknown; message?: unknown } | null;
+  if (known?.clientVersion !== undefined || (typeof known?.code === "string" && /^P\d{4}$/.test(known.code))) {
+    return "The listing could not be saved. Please try again.";
+  }
+  return typeof known?.message === "string" ? known.message : "The listing could not be saved. Please try again.";
+}
+
+/** The pricing a person was shown, as they send it back. */
+const shownPricingSchema = z.object({
+  pricingModel: z.enum(["free", "per_request", "monthly", "tokenized"]),
+  pricePerRequestCents: z.number().int().nonnegative().nullable().optional(),
+  monthlyPriceCents: z.number().int().nonnegative().nullable().optional(),
 });
 
 const updateListingSchema = createListingSchema.omit({ agentId: true }).partial();
@@ -208,8 +248,11 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
         const listing = await createListing(orgId, org?.name || "Unknown", body);
         return reply.status(201).send({ listing });
       } catch (error: any) {
+        if (error instanceof ListingError) {
+          return reply.status(error.status).send(listingRefusal(error));
+        }
         logger.error({ error, orgId }, "Failed to create listing");
-        return reply.badRequest(error.message);
+        return reply.badRequest(listingFailureMessage(error));
       }
     }
   );
@@ -229,8 +272,11 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
         const listing = await updateListing(id, orgId, body);
         return { listing };
       } catch (error: any) {
+        if (error instanceof ListingError) {
+          return reply.status(error.status).send(listingRefusal(error));
+        }
         logger.error({ error, orgId, listingId: id }, "Failed to update listing");
-        return reply.badRequest(error.message);
+        return reply.badRequest(listingFailureMessage(error));
       }
     }
   );
@@ -249,8 +295,11 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
         const listing = await publishListing(id, orgId);
         return { listing, message: "Listing published successfully" };
       } catch (error: any) {
+        if (error instanceof ListingError) {
+          return reply.status(error.status).send(listingRefusal(error));
+        }
         logger.error({ error, orgId, listingId: id }, "Failed to publish listing");
-        return reply.badRequest(error.message);
+        return reply.badRequest(listingFailureMessage(error));
       }
     }
   );
@@ -378,13 +427,7 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
       const { acceptNewPricing, expectedPricing } = z
         .object({
           acceptNewPricing: z.boolean().optional(),
-          expectedPricing: z
-            .object({
-              pricingModel: z.enum(["free", "per_request", "monthly", "tokenized"]),
-              pricePerRequestCents: z.number().int().nonnegative().nullable().optional(),
-              monthlyPriceCents: z.number().int().nonnegative().nullable().optional(),
-            })
-            .optional(),
+          expectedPricing: shownPricingSchema.optional(),
         })
         .parse(request.body ?? {});
 
@@ -406,6 +449,16 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
           subscription: result.subscription,
         });
       } catch (error: any) {
+        // The listing sells use of the creator's agent, or this buyer
+        // already uses it: there is no copy to install. The handle is where
+        // the person uses it.
+        if (error instanceof InstallRefusedError) {
+          return reply.status(error.status).send({
+            error: error.code,
+            message: error.message,
+            handle: error.handle,
+          });
+        }
         if (error instanceof InsufficientCreditsError) {
           return reply.status(402).send({
             error: error.code,
@@ -436,6 +489,90 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
         }
         logger.error({ error, orgId, listingId: id }, "Failed to install agent");
         return reply.badRequest(error.message);
+      }
+    }
+  );
+
+  /**
+   * POST /listings/:id/use - Start using a creator's agent, or accept its
+   * current price.
+   *
+   * No copy is made: the buyer uses the agent on its page or through the
+   * API. A price per use charges nothing here; a monthly price charges the
+   * first 30 days. Stopping is POST /listings/:id/uninstall.
+   */
+  app.post(
+    "/listings/:id/use",
+    // Agreeing to a price spends the organization's money: a signed-in
+    // member must be an owner or admin (their role as it is now), and an
+    // API key must have been granted the spend scope by name; "*" and an
+    // unscoped key do not carry it (config/apiKeyScopes.ts).
+    { preHandler: [requireAuth, requireSpend("marketplace:install")] },
+    async (request, reply) => {
+      const { orgId } = request.auth!;
+      const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      // expected is the pricing the person was shown, and is their consent:
+      // without it nothing is agreed to. acceptNewPricing is sent only by a
+      // buyer who was shown that the price went up, or the pricing model
+      // changed, after they started.
+      const body = z
+        .object({
+          expected: shownPricingSchema.optional(),
+          acceptNewPricing: z.boolean().optional(),
+        })
+        .safeParse(request.body ?? {});
+      if (!body.success || !body.data.expected) {
+        return reply.status(400).send({
+          error: "expected_terms_required",
+          message: "Send the price you were shown, so nothing is agreed to that you did not see.",
+        });
+      }
+      const { expected, acceptNewPricing } = body.data;
+
+      try {
+        const { created, ...state } = await startUsing(id, orgId, {
+          acceptNewPricing,
+          expected: {
+            pricingModel: expected.pricingModel,
+            pricePerRequestCents: expected.pricePerRequestCents ?? null,
+            monthlyPriceCents: expected.monthlyPriceCents ?? null,
+          },
+        });
+        // 201 when this request started or accepted something; 200 with the
+        // state as it stands when there was nothing to do.
+        return reply.status(created ? 201 : 200).send(state);
+      } catch (error: any) {
+        if (error instanceof UseStartError) {
+          // `until` comes with copy_subscription_active: the day the
+          // month paid for the buyer's copy ends.
+          return reply.status(error.status).send({
+            error: error.code,
+            message: error.message,
+            ...(error.until && { until: error.until.toISOString() }),
+          });
+        }
+        if (error instanceof InsufficientCreditsError) {
+          return reply.status(402).send({
+            error: error.code,
+            message: error.message,
+            requiredCents: Number(error.requiredCents),
+          });
+        }
+        // The price or the pricing model is not what the person was shown,
+        // or not what their licence agreed to. Nothing was charged.
+        if (error instanceof PricingChangedError) {
+          return reply.status(409).send({
+            error: error.code,
+            message: error.message,
+            pricing: error.pricing,
+          });
+        }
+        // Another request for this buyer got there first. Nothing was
+        // charged by this one.
+        if (error instanceof SubscriptionClaimLostError) {
+          return reply.status(409).send({ error: error.code, message: error.message });
+        }
+        throw error;
       }
     }
   );

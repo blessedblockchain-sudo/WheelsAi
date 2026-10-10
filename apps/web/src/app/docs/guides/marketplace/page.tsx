@@ -21,6 +21,8 @@ const toc = [
   { id: "offerings", title: "Sell a fixed task (offerings)" },
   { id: "split", title: "Revenue split" },
   { id: "installs", title: "What buyers get" },
+  { id: "using", title: "Using an agent", sub: true },
+  { id: "owning", title: "Owning a copy", sub: true },
   { id: "use-or-copies", title: "Sell use, or sell copies" },
   { id: "payouts", title: "Getting paid" },
   { id: "receipts", title: "Public receipts" },
@@ -224,11 +226,58 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
 
       <h2 id="installs">What buyers get</h2>
       <p>
-        A buyer of a listing that sells use uses your own agent and gets no copy. They agree to the price once, then use the
-        agent on its page or through the API; each message or run is charged when it is sent and refunded if the agent does
-        not answer. They stop at any time. A buyer of a listing that sells copies installs a copy in their organization,
-        linked to the install. Reinstalling reuses the same copy. Uninstalling revokes the licence: the copy refuses to run
-        (<code>403</code>) until it is reinstalled. Buyers can leave a 1 to 5 star review with a title and text.
+        A listing says which of two things it sells. Its page in the <Link href="/marketplace">marketplace</Link> offers{" "}
+        <strong>Use this agent</strong> when you use the creator&apos;s agent, and <strong>Install Agent</strong> when you
+        get a copy of your own. Both appear under{" "}
+        <strong>Marketplace → Installed</strong>, marked <strong>You use it</strong> or <strong>Your copy</strong>, with
+        what each costs and how to stop. Buyers of either can leave a 1 to 5 star review with a title and text.
+      </p>
+
+      <h3 id="using">Using an agent</h3>
+      <p>
+        <strong>Use this agent</strong> on a listing opens the agent&apos;s own page, <code>/a/&#123;handle&#125;</code>.
+        You use the creator&apos;s agent there, or from your code through{" "}
+        <Link href="/docs/api/agents#paid-use">the paid-use endpoints</Link>. You do not get a copy, and you never see its
+        instructions, its settings or its code. The creator can improve it at any time and you use the improved agent at
+        once.
+      </p>
+      <ul>
+        <li>
+          <strong>Free:</strong> anyone with the link can use it, with no sign-in.
+        </li>
+        <li>
+          <strong>Per message or per run:</strong> you sign in and agree to the price once. Each message, or each run of
+          a task agent, is then charged from your credits when you send it, and refunded if no answer is delivered. The
+          answer arrives whole, not word by word.
+        </li>
+        <li>
+          <strong>Monthly:</strong> subscribing charges the first 30 days from your credits, and the same price every 30
+          days after that. For an agent that runs on its own, a subscription lets you read its results on its page.
+        </li>
+      </ul>
+      <p>
+        An owner or admin of your organization agrees to a price; after that every member can use the agent. An
+        organization can use one agent up to 10 times a minute and 200 times a day.
+      </p>
+      <p>
+        If the creator lowers a per-use price, you pay the lower price from then on. If they raise it, or change how the
+        agent is sold, your use pauses and nothing is charged until you accept the new price, on the agent&apos;s page or
+        from Installed. A month you already paid for is honoured whatever the listing says now.
+      </p>
+      <p>
+        To stop, open <strong>Marketplace → Installed</strong> and choose <strong>Stop using</strong>. With a subscription
+        you have two choices: <strong>Cancel renewal</strong> keeps your access until the end of the month you paid for and
+        charges nothing more, while <strong>Stop using</strong> ends the subscription at once and the month is not
+        refunded. What a paid use costs, and when it is refunded, is in{" "}
+        <Link href="/docs/guides/plans-and-billing#paid-use">Plans and billing</Link>.
+      </p>
+
+      <h3 id="owning">Owning a copy</h3>
+      <p>
+        A buyer of a listing that sells copies installs a copy in their organization, linked to the install. The copy is
+        theirs to open, read and run in their own workspace: it carries the agent&apos;s prompt, tools, model settings and
+        code, and never the creator&apos;s environment variables. Reinstalling reuses the same copy. Uninstalling revokes the licence: the copy refuses to run (<code>403</code>)
+        until it is reinstalled.
       </p>
 
       <h2 id="use-or-copies">Sell use, or sell copies</h2>

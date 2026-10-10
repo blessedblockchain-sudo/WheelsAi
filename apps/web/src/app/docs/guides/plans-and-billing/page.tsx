@@ -16,6 +16,7 @@ const toc = [
   { id: "limits", title: "When you hit a limit" },
   { id: "credits", title: "Credits and the ledger" },
   { id: "what-uses-credits", title: "What uses credits", sub: true },
+  { id: "paid-use", title: "Paying to use an agent", sub: true },
   { id: "rails", title: "Ways to pay" },
   { id: "card", title: "Card (Stripe)", sub: true },
   { id: "wallet", title: "Wallet top-up", sub: true },
@@ -119,10 +120,65 @@ export default function PlansBillingPage() {
           or charged per token on top of it. See <Link href="/docs/api/inference#billing">how a request is billed</Link>.
         </li>
         <li>
-          <strong>Marketplace purchases</strong>: per-request runs and monthly subscriptions of paid listings.
+          <strong>Marketplace purchases</strong>: per-request runs and monthly subscriptions of paid listings, whether
+          you use the creator&apos;s agent or run a copy of your own.
         </li>
       </ul>
       <p>Chatting with your own agents on free models does not use credits; it is rate limited instead.</p>
+
+      <h3 id="paid-use">Paying to use an agent</h3>
+      <p>
+        A marketplace listing can sell use of its creator&apos;s agent, per use or by the month. The price is the one you
+        agreed to on the agent&apos;s page, and it is paid from your organization&apos;s credits. See{" "}
+        <Link href="/docs/guides/marketplace#using">Using an agent</Link>.
+      </p>
+      <DocTable
+        caption="What a paid use costs and when it is refunded"
+        columns={[
+          { key: "sold", label: "Sold" },
+          { key: "charged", label: "Charged" },
+          { key: "refunded", label: "Refunded" },
+        ]}
+        rows={[
+          {
+            sold: "Per message or per run",
+            charged: "The price of one use, from your credits, when you send it. One use is one message or one run.",
+            refunded:
+              "In full when no answer is delivered: the agent could not answer, ran out of time, or its answer was withheld.",
+          },
+          {
+            sold: "Monthly",
+            charged: "The first 30 days when you subscribe, then the price you agreed to every 30 days.",
+            refunded: "A month that has started is not refunded.",
+          },
+        ]}
+      />
+      <ul>
+        <li>
+          If your credits do not cover a use, the request answers <code>402</code>: nothing runs and nothing is charged.
+          Add credits and send it again.
+        </li>
+        <li>
+          If a renewal cannot be paid, the subscription is retried during a 3-day grace period and then ends. Add
+          credits before then to keep access.
+        </li>
+        <li>
+          <strong>Cancel renewal</strong> (under <strong>Marketplace → Installed</strong>) keeps your access until the
+          end of the month you paid for and charges nothing more.
+        </li>
+        <li>
+          <strong>Stop using</strong> a subscription from Installed ends it immediately, and the month you paid for is
+          not refunded.
+        </li>
+        <li>
+          If the creator raises the price or changes how the agent is sold, nothing is charged until you accept the new
+          price. A subscription renews at the price you agreed to.
+        </li>
+      </ul>
+      <p>
+        Every charge and every refund is a ledger row. In your billing history they read &quot;Paid use&quot; and
+        &quot;Paid use refunded&quot;, with the listing&apos;s name.
+      </p>
 
       <h2 id="rails">Ways to pay</h2>
       <p>

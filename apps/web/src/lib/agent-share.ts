@@ -11,6 +11,8 @@
  */
 import { taskFieldsOf, type AgentKind, type TaskField } from "@wheelsai/shared/agent-kind";
 
+import { formatCents } from "./agent-page";
+
 /** The fields of an agent this file reads (AgentDetail has them all). */
 export interface ShareAgent {
   id: string;
@@ -33,6 +35,8 @@ export interface ShareLink {
   usedToday: number | null;
   showResults: boolean;
   toolsOffForVisitors: boolean;
+  /** Present while a published listing sells use of the agent; `paid` is whether a price is set. */
+  sale?: { paid: boolean; listingSlug: string };
 }
 
 // ============================================
@@ -122,6 +126,97 @@ export function linkView(link: ShareLink, agent: { agentKind: AgentKind; descrip
   };
 }
 
+// ============================================
+// The public link of an agent that is on sale
+// ============================================
+
+export const SALE_WORDS = {
+  /** The badge beside the title while the agent is sold at a price. */
+  onSale: "On sale",
+  /** Under the title while the agent is sold at a price. */
+  paidSentence: "People sign in to pay. They pay from WheelsAI credits.",
+  paid: "This agent is on sale, so free use on its page is off. Choose Free under Who can use it? to let anyone use it.",
+  free: "This agent is on sale, so its page stays on. Stop selling it first.",
+  openSell: "Open the Sell tab",
+  priceUnavailable: "The price cannot be shown right now.",
+} as const;
+
+/** `none`: not on sale. `free`: on sale for free. `paid`: on sale at a price. */
+export type SaleState = "none" | "free" | "paid";
+
+export function saleStateOf(link: Pick<ShareLink, "sale">): SaleState {
+  if (!link.sale) return "none";
+  return link.sale.paid ? "paid" : "free";
+}
+
+export interface LinkCardView extends LinkView {
+  sale: SaleState;
+  /** The sentence that says what the sale holds in place, with a link to the Sell tab; null when not on sale. */
+  saleNotice: string | null;
+  /** Whether the card shows what people pay, read from the agent's public page. */
+  showPrice: boolean;
+}
+
+/**
+ * What the link card shows and offers, the sale taken into account.
+ *
+ *   no sale   exactly what linkView says
+ *   free      the page stays on: pausing and turning off are not offered
+ *   paid      free use is off: nothing that would turn it on, pause it or
+ *             close the page is offered, and what describes free use (the
+ *             daily limit, today's count, the visitors' tools) is left out.
+ *             The address stays, because the page is where people pay.
+ *
+ * The API decides in the end; this only keeps the card from offering what
+ * it would refuse.
+ */
+export function linkCardView(link: ShareLink, agent: { agentKind: AgentKind; description: string | null }): LinkCardView {
+  const view = linkView(link, agent);
+  const sale = saleStateOf(link);
+  if (sale === "none") return { ...view, sale, saleNotice: null, showPrice: false };
+  if (sale === "free") {
+    const actions = view.actions.filter((action) => action === "turn_on");
+    return {
+      ...view,
+      actions,
+      askDescription: view.askDescription && actions.length > 0,
+      sale,
+      saleNotice: SALE_WORDS.free,
+      showPrice: false,
+    };
+  }
+  return {
+    ...view,
+    status: SALE_WORDS.onSale,
+    sentence: SALE_WORDS.paidSentence,
+    actions: [],
+    askDescription: false,
+    capLine: null,
+    usedLine: null,
+    toolsLine: null,
+    // While a price is set the results are the buyers': the page shows when they arrived and never their text,
+    // whatever this switch says, so it is not offered.
+    offerShowResults: false,
+    sale,
+    saleNotice: SALE_WORDS.paid,
+    showPrice: true,
+  };
+}
+
+/** "$0.05 per message", "$0.10 per run", "$9.00 a month". null when the page gave no price. */
+export function salePriceLine(
+  terms: { priceCents: number; unit: "message" | "run" | "month" } | null | undefined,
+): string | null {
+  if (!terms || !Number.isFinite(terms.priceCents) || terms.priceCents <= 0) return null;
+  const price = formatCents(terms.priceCents);
+  return terms.unit === "month" ? `${price} a month` : `${price} per ${terms.unit}`;
+}
+
+/** Whether a refused save was refused because the agent is on sale (409 `sold_as_paid`, `on_sale_for_use`). */
+export function isSaleRefusal(status: number, code: unknown): boolean {
+  return status === 409 && (code === "sold_as_paid" || code === "on_sale_for_use");
+}
+
 /** The daily limit an owner typed, or the sentence that says why it cannot be saved. */
 export function parseDailyCap(text: string): { ok: true; value: number } | { ok: false; message: string } {
   const trimmed = text.trim().replace(/,/g, "");
@@ -140,6 +235,17 @@ export function parseDailyCap(text: string): { ok: true; value: number } | { ok:
  */
 export function switchOf(state: ShareLink["state"]): "on" | "paused" | "off" {
   return state === "view_only" ? "paused" : state;
+}
+
+/**
+ * The state to send with a change that is not the switch itself, the sale
+ * taken into account. While a price is set free use is off whatever the
+ * stored switch says, and "paused" is the one state the API takes then: "on"
+ * is refused (409 sold_as_paid) and so is "off" (409 on_sale_for_use), which
+ * would refuse a change of address with a sentence about something else.
+ */
+export function keptSwitchOf(link: Pick<ShareLink, "state" | "sale">): "on" | "paused" | "off" {
+  return link.sale?.paid ? "paused" : switchOf(link.state);
 }
 
 /** What comes before the handle in the link's address, taken from the address the server gave. */
@@ -361,4 +467,9 @@ export function shareCards(agent: ShareAgent, link: ShareLink | null): ShareCard
 /** Where the Share tab of an agent is, for a link from elsewhere in the dashboard. */
 export function shareTabHref(agentId: string): string {
   return `/dashboard/agents/${agentId}?tab=share`;
+}
+
+/** Where the Sell tab of an agent is. */
+export function sellTabHref(agentId: string): string {
+  return `/dashboard/agents/${agentId}?tab=sell`;
 }

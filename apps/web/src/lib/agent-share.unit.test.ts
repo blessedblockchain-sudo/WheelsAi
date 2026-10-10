@@ -10,13 +10,20 @@ import { fileURLToPath } from "node:url";
 
 import {
   PUBLIC_LINK_WORDS,
+  SALE_WORDS,
   addressPrefix,
   apiOrigin,
   buttonSnippet,
   codeCard,
+  isSaleRefusal,
+  keptSwitchOf,
+  linkCardView,
   linkView,
   parseDailyCap,
+  salePriceLine,
+  saleStateOf,
   sampleTaskInput,
+  sellTabHref,
   shareCards,
   shareTabHref,
   switchOf,
@@ -301,4 +308,113 @@ test("neither the pure file nor the tab reads the browser's address or the build
 
 test("the Share tab has an address other pages can link to", () => {
   assert.equal(shareTabHref("abc"), "/dashboard/agents/abc?tab=share");
+});
+
+// ============================================
+// The link of an agent that is on sale
+// ============================================
+
+test("with no sale the card is what the link alone says, in every state", () => {
+  for (const state of ["off", "view_only", "on", "paused"] as const) {
+    for (const description of ["Summarizes research papers.", null]) {
+      const of = { agentKind: "scheduled" as const, description };
+      const card = linkCardView(link({ state, toolsOffForVisitors: true }), of);
+      assert.deepEqual(card, {
+        ...linkView(link({ state, toolsOffForVisitors: true }), of),
+        sale: "none",
+        saleNotice: null,
+        showPrice: false,
+      });
+    }
+  }
+  assert.equal(saleStateOf(link()), "none");
+});
+
+test("on sale for free: the page stays on, so pausing and turning off are not offered", () => {
+  const sold = link({ state: "on", sale: { paid: false, listingSlug: "research-summarizer" } });
+  const card = linkCardView(sold, described);
+  assert.equal(card.sale, "free");
+  assert.deepEqual(card.actions, []);
+  assert.equal(card.saleNotice, "This agent is on sale, so its page stays on. Stop selling it first.");
+  assert.equal(card.showPrice, false);
+  // Everything else about a free page reads as it does today.
+  const plain = linkView(sold, described);
+  assert.equal(card.status, PUBLIC_LINK_WORDS.on);
+  assert.equal(card.sentence, PUBLIC_LINK_WORDS.explanation);
+  assert.equal(card.capLine, plain.capLine);
+  assert.equal(card.usedLine, plain.usedLine);
+  assert.equal(card.askDescription, false);
+});
+
+test("on sale for free with the page not on: turning it on is still offered, and nothing that closes it", () => {
+  for (const state of ["paused", "view_only", "off"] as const) {
+    const card = linkCardView(link({ state, sale: { paid: false, listingSlug: "s" } }), { agentKind: "task", description: null });
+    assert.deepEqual(card.actions, ["turn_on"], state);
+    assert.equal(card.askDescription, true, state);
+  }
+});
+
+test("on sale at a price: the price shows, free use is not offered, and the address stays", () => {
+  const sold = link({ state: "paused", toolsOffForVisitors: true, sale: { paid: true, listingSlug: "research-summarizer" } });
+  const card = linkCardView(sold, { agentKind: "conversation", description: null });
+  assert.equal(card.sale, "paid");
+  assert.equal(card.showPrice, true);
+  assert.deepEqual(card.actions, []);
+  assert.equal(card.askDescription, false);
+  assert.equal(card.status, "On sale");
+  assert.equal(card.sentence, "People sign in to pay. They pay from WheelsAI credits.");
+  assert.equal(
+    card.saleNotice,
+    "This agent is on sale, so free use on its page is off. Choose Free under Who can use it? to let anyone use it.",
+  );
+  // What describes free use says nothing while free use is off.
+  assert.equal(card.capLine, null);
+  assert.equal(card.usedLine, null);
+  assert.equal(card.toolsLine, null);
+  // The link itself is untouched by the decision.
+  assert.equal(sold.url, `${WEB}/a/research-summarizer`);
+  assert.equal(SALE_WORDS.paid, card.saleNotice);
+});
+
+test("on sale at a price: showing results is not offered, because the page never shows their text then", () => {
+  for (const state of ["on", "paused", "view_only"] as const) {
+    const sold = link({ state, showResults: true, sale: { paid: true, listingSlug: "s" } });
+    assert.equal(linkCardView(sold, { agentKind: "scheduled", description: "Runs daily." }).offerShowResults, false);
+  }
+  // A free sale leaves it as it is.
+  const free = link({ state: "on", sale: { paid: false, listingSlug: "s" } });
+  assert.equal(linkCardView(free, { agentKind: "scheduled", description: "Runs daily." }).offerShowResults, true);
+});
+
+test("a change that is not the switch sends the one state the API takes while a price is set", () => {
+  // With a price set: "on" is refused as sold_as_paid and "off" as on_sale_for_use, whatever is stored.
+  for (const state of ["on", "paused", "view_only", "off"] as const) {
+    assert.equal(keptSwitchOf(link({ state, sale: { paid: true, listingSlug: "s" } })), "paused");
+  }
+  // No sale, or a free one: the state the link is in, as before.
+  for (const state of ["on", "paused", "view_only", "off"] as const) {
+    assert.equal(keptSwitchOf(link({ state })), switchOf(state));
+    assert.equal(keptSwitchOf(link({ state, sale: { paid: false, listingSlug: "s" } })), switchOf(state));
+  }
+});
+
+test("the price reads in dollars with its unit, and is never made up", () => {
+  assert.equal(salePriceLine({ priceCents: 5, unit: "message" }), "$0.05 per message");
+  assert.equal(salePriceLine({ priceCents: 10, unit: "run" }), "$0.10 per run");
+  assert.equal(salePriceLine({ priceCents: 900, unit: "month" }), "$9.00 a month");
+  assert.equal(salePriceLine(null), null);
+  assert.equal(salePriceLine(undefined), null);
+  assert.equal(salePriceLine({ priceCents: 0, unit: "message" }), null);
+  assert.equal(salePriceLine({ priceCents: Number.NaN, unit: "run" }), null);
+});
+
+test("a save refused because of the sale is told apart from any other refusal", () => {
+  assert.equal(isSaleRefusal(409, "sold_as_paid"), true);
+  assert.equal(isSaleRefusal(409, "on_sale_for_use"), true);
+  assert.equal(isSaleRefusal(409, "handle_taken"), false);
+  assert.equal(isSaleRefusal(400, "sold_as_paid"), false);
+});
+
+test("the Sell tab has an address the card can link to", () => {
+  assert.equal(sellTabHref("abc"), "/dashboard/agents/abc?tab=sell");
 });

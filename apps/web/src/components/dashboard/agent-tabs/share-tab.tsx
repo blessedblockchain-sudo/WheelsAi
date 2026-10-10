@@ -22,6 +22,7 @@ import {
   authApi,
   getErrorMessage,
   getValidationError,
+  publicAgentApi,
   webChannelApi,
   type Agent,
   type AgentDetail,
@@ -34,11 +35,15 @@ import {
   DAILY_CAP_MAX,
   DAILY_CAP_MIN,
   PUBLIC_LINK_WORDS,
+  SALE_WORDS,
   addressPrefix,
   codeCard,
-  linkView,
+  isSaleRefusal,
+  keptSwitchOf,
+  linkCardView,
   parseDailyCap,
-  switchOf,
+  salePriceLine,
+  sellTabHref,
   websiteCard,
 } from "@/lib/agent-share";
 import { CHANNELS_WEBSITE_CHAT_HREF } from "@/lib/nav";
@@ -88,8 +93,29 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
   useEffect(() => setDescription(agent.description ?? ""), [agent.description]);
   useEffect(() => setHandleDraft(link.handle ?? ""), [link.handle]);
 
-  const view = linkView(link, { agentKind: agent.agentKind, description });
+  const view = linkCardView(link, { agentKind: agent.agentKind, description });
   const live = link.state === "on" || link.state === "paused";
+
+  // What people pay, as the agent's own page says it. Read only while a price is set.
+  const priceHandle = view.showPrice ? link.handle : null;
+  const [price, setPrice] = useState<{ handle: string; line: string | null } | null>(null);
+  const [priceAttempt, setPriceAttempt] = useState(0);
+  useEffect(() => {
+    if (!priceHandle) return;
+    let current = true;
+    publicAgentApi
+      .get(priceHandle)
+      .then((page) => {
+        if (current) setPrice({ handle: priceHandle, line: salePriceLine(page.use.paid) });
+      })
+      .catch(() => {
+        if (current) setPrice({ handle: priceHandle, line: null });
+      });
+    return () => {
+      current = false;
+    };
+  }, [priceHandle, priceAttempt]);
+  const priceRead = price !== null && price.handle === priceHandle ? price : null;
 
   /** One change of the link. Answers the link as it then is, or null when this member may not change it. */
   async function change(what: string, input: PublicLinkInput): Promise<PublicLink | null> {
@@ -103,6 +129,14 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
       if (isForbidden(err)) {
         onForbidden();
         return null;
+      }
+      // Refused because the agent went on sale since the card was drawn: read the link again, so the card
+      // stops offering what the sale holds in place. The caller still shows the API's own sentence.
+      if (err instanceof ApiError && isSaleRefusal(err.status, (err.data as { error?: unknown } | null)?.error)) {
+        agentsApi
+          .getPublicLink(agent.id)
+          .then(onLink)
+          .catch(() => undefined);
       }
       throw err;
     } finally {
@@ -179,7 +213,7 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
     }
     setCapError(null);
     try {
-      if (await change("cap", { state: switchOf(link.state), dailyCap: parsed.value })) setEditingCap(false);
+      if (await change("cap", { state: keptSwitchOf(link), dailyCap: parsed.value })) setEditingCap(false);
     } catch (err) {
       setCapError(getValidationError(err)?.fields.dailyCap ?? getErrorMessage(err, "The limit could not be saved."));
     }
@@ -187,7 +221,7 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
 
   async function setShowResults(showResults: boolean) {
     try {
-      if (await change("results", { state: switchOf(link.state), showResults })) onAgentChanged?.();
+      if (await change("results", { state: keptSwitchOf(link), showResults })) onAgentChanged?.();
     } catch (err) {
       setError(getErrorMessage(err, "That could not be saved."));
     }
@@ -197,7 +231,7 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
     event.preventDefault();
     setHandleError(null);
     try {
-      if (await change("handle", { state: switchOf(link.state), handle: handleDraft })) {
+      if (await change("handle", { state: keptSwitchOf(link), handle: handleDraft })) {
         toast.success("The address was changed");
         onAgentChanged?.();
       }
@@ -207,7 +241,8 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
     }
   }
 
-  const statusVariant = link.state === "on" ? "success" : link.state === "paused" ? "warning" : "secondary";
+  const statusVariant =
+    view.sale === "paid" || link.state === "on" ? "success" : link.state === "paused" ? "warning" : "secondary";
 
   return (
     <Card>
@@ -241,6 +276,44 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
               </p>
             )
           ))}
+
+        {view.showPrice && (
+          <div aria-live="polite" aria-busy={priceHandle !== null && priceRead === null}>
+            {!priceHandle ? (
+              <p className="text-sm text-muted-foreground">{SALE_WORDS.priceUnavailable}</p>
+            ) : priceRead === null ? (
+              <>
+                <span className="sr-only">Loading the price</span>
+                <Skeleton className="h-7 w-40" />
+              </>
+            ) : priceRead.line ? (
+              <p className="text-lg font-semibold text-foreground">{priceRead.line}</p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {SALE_WORDS.priceUnavailable}{" "}
+                <button
+                  type="button"
+                  className={textButton}
+                  onClick={() => {
+                    setPrice(null);
+                    setPriceAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  Try again
+                </button>
+              </p>
+            )}
+          </div>
+        )}
+
+        {view.saleNotice && (
+          <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+            {view.saleNotice}{" "}
+            <Link href={sellTabHref(agent.id)} className={textButton}>
+              {SALE_WORDS.openSell}
+            </Link>
+          </p>
+        )}
 
         {view.capLine && (
           <div className="space-y-2 text-sm">
@@ -346,7 +419,11 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
           </p>
         )}
 
-        {canManage ? (
+        {!canManage ? (
+          <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+            {PUBLIC_LINK_WORDS.membersOnly}
+          </p>
+        ) : view.actions.length === 0 ? null : (
           <div className="flex flex-wrap items-center gap-3">
             {link.state === "off" ? (
               <div className="flex items-center gap-3">
@@ -391,10 +468,6 @@ function PublicLinkCard({ agent, link, canManage, onLink, onForbidden, onAgentCh
               )
             )}
           </div>
-        ) : (
-          <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-            {PUBLIC_LINK_WORDS.membersOnly}
-          </p>
         )}
 
         {canManage && (

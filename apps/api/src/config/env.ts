@@ -435,10 +435,21 @@ const envSchema = z.object({
     .union([z.boolean(), z.string()])
     .transform((value) => value === true || value === "true")
     .default(false),
-  // SOL/USD quote for crypto_sol payouts — operator-stated (no oracle in
-  // the path), mirroring the wallet-topup SOL rail. Required only when a
-  // crypto_sol payout is actually settled.
-  PAYOUT_SOL_PRICE_USD: z.coerce.number().positive().optional(),
+  // Limits on payouts to a wallet, in dollars. A payout taken as credits
+  // has none: it never leaves the platform.
+  //   per payout            the most one request may be for
+  //   per day               the most one creator may request in a UTC day
+  //   platform per day      the most the paying wallet sends in a UTC day
+  //                         in all; past it, payouts wait as pending
+  // They bound what a mistake or a stolen session can cost, since the
+  // wallet that pays out holds its key in this process.
+  PAYOUT_MAX_PER_PAYOUT_USD: z.coerce.number().int().min(5).max(1_000_000).default(500),
+  PAYOUT_MAX_PER_DAY_USD: z.coerce.number().int().min(5).max(10_000_000).default(1000),
+  PAYOUT_PLATFORM_MAX_PER_DAY_USD: z.coerce.number().int().min(5).max(100_000_000).default(5000),
+  // How many transfers may be signed for one payout. When the last one
+  // fails on the chain or can no longer land, the payout fails and the
+  // creator's earnings go back.
+  PAYOUT_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
 
   // Live SOL/USD price for anything that turns SOL into dollars or back
   // (services/solPrice.ts). There is no fallback number: a price is a
@@ -607,6 +618,14 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   }
   if (data.EMAIL_PROVIDER === "resend" && (!data.RESEND_API_KEY || !data.EMAIL_FROM)) {
     throw new EnvValidationError("EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM");
+  }
+
+  // A creator's day limit below the per-payout limit would make the larger
+  // figure a lie on the Earnings page.
+  if (data.PAYOUT_MAX_PER_DAY_USD < data.PAYOUT_MAX_PER_PAYOUT_USD) {
+    throw new EnvValidationError(
+      "PAYOUT_MAX_PER_DAY_USD must not be below PAYOUT_MAX_PER_PAYOUT_USD"
+    );
   }
 
   // A top-up is finished by the reconcile worker whenever the request that
@@ -856,6 +875,8 @@ export const RETIRED_SETTINGS: Record<string, string> = {
     "SOL top-ups are offered whenever SOL_PRICE_SOURCE is pyth, or static on a local chain",
   WALLET_TOPUP_SOL_PRICE_USD:
     "use SOL_PRICE_SOURCE=static with SOL_PRICE_STATIC_USD on a local chain, or SOL_PRICE_SOURCE=pyth",
+  PAYOUT_SOL_PRICE_USD:
+    "SOL payouts are priced by SOL_PRICE_SOURCE (pyth, or static with SOL_PRICE_STATIC_USD on a local chain)",
 };
 
 /** The retired settings that are still set, each with what replaced it. */

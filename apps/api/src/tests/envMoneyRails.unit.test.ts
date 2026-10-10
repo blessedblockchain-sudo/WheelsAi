@@ -275,3 +275,27 @@ test("devnet with a devnet or a local RPC address passes", () => {
     assert.doesNotThrow(() => validateEnv({ ...STAGING, SOLANA_NETWORK: "devnet", SOLANA_RPC_URL: url }));
   }
 });
+
+// Payments pass, batch 4: the limits on payouts to a wallet.
+test("the payout limits have defaults, and a day limit below the per-payout limit is refused", () => {
+  const data = validateEnv({ ...DEVELOPMENT });
+  assert.equal(data.PAYOUT_MAX_PER_PAYOUT_USD, 500);
+  assert.equal(data.PAYOUT_MAX_PER_DAY_USD, 1000);
+  assert.equal(data.PAYOUT_PLATFORM_MAX_PER_DAY_USD, 5000);
+  assert.equal(data.PAYOUT_MAX_ATTEMPTS, 3);
+  assert.match(
+    refusal({ ...DEVELOPMENT, PAYOUT_MAX_PER_PAYOUT_USD: "800", PAYOUT_MAX_PER_DAY_USD: "500" }),
+    /PAYOUT_MAX_PER_DAY_USD must not be below PAYOUT_MAX_PER_PAYOUT_USD/,
+  );
+  assert.doesNotThrow(() => validateEnv({ ...DEVELOPMENT, PAYOUT_MAX_PER_PAYOUT_USD: "800", PAYOUT_MAX_PER_DAY_USD: "800" }));
+});
+
+test("the old SOL payout price is a retired setting: ignored, and said to be", async () => {
+  const { retiredSettingsIn } = await import("../config/env.js");
+  const data = validateEnv({ ...DEVELOPMENT, PAYOUT_SOL_PRICE_USD: "150" }) as Record<string, unknown>;
+  assert.equal("PAYOUT_SOL_PRICE_USD" in data, false);
+  const lines = retiredSettingsIn({ PAYOUT_SOL_PRICE_USD: "150" });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /^PAYOUT_SOL_PRICE_USD is no longer a setting and is ignored: .*SOL_PRICE_SOURCE/);
+  assert.doesNotMatch(lines[0]!, /150/);
+});

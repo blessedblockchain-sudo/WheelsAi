@@ -61,7 +61,17 @@ export interface GrantCreditsInput {
   description: string;
   /** Optional prefix for non-production rails, e.g. "[devnet-test] ". */
   labelPrefix?: string;
+  /**
+   * The ledger type of the grant row. "purchase" unless given: a creator's
+   * payout taken as credits is "payout_credit", so a statement can tell
+   * credits that were bought from credits that were earned. A bonus row is
+   * always "bonus".
+   */
+  ledgerType?: CreditGrantLedgerType;
 }
+
+/** What the grant row can be called in the credit ledger. */
+export type CreditGrantLedgerType = "purchase" | "payout_credit";
 
 export interface GrantCreditsResult {
   balanceAfterCents: bigint;
@@ -95,7 +105,7 @@ export async function grantCredits(
     data: {
       orgId: input.orgId,
       amountCents: input.amountCents,
-      type: "purchase",
+      type: input.ledgerType ?? "purchase",
       description: `${prefix}${input.description}`,
       referenceId: input.referenceId,
       balanceAfter: afterPurchase.balanceCents,

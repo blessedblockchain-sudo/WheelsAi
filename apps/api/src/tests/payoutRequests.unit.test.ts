@@ -3,7 +3,6 @@ import "./unitEnv.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildPayoutExecutorTickDeps } from "../services/buildPayoutExecutorTickDeps.js";
 import {
   buildCancelPayoutDeps,
   cancelPayout,
@@ -23,7 +22,9 @@ import {
 // take it back. A request is now refused before anything is reserved while
 // payouts are not running, and a pending payout can be cancelled: the row
 // becomes cancelled and its amount returns to the earnings in one
-// transaction, racing the executor's claim with exactly one winner.
+// transaction, racing the worker's claim with exactly one winner. The
+// worker's side of the race is tested with the worker; here its claim is a
+// stand-in, one compare-and-set.
 
 const ORG = "7f5c1d9e-2a3b-4c5d-8e9f-0a1b2c3d4e5f";
 const OTHER_ORG = "11111111-2222-4333-8444-555555555555";
@@ -156,9 +157,18 @@ function cancelledRow(balanceAfter: bigint, over: Partial<LedgerRow> = {}): Ledg
   };
 }
 
-/** The executor's own claim (pending → processing), bound to the same rows. */
-function executorOver(db: CancelPayoutDb) {
-  return buildPayoutExecutorTickDeps({ prisma: db, connection: {}, usdcMint: {} } as any);
+/**
+ * The worker's claim, as a stand-in: one compare-and-set, pending →
+ * processing. The worker's own claim is tested with the worker.
+ */
+function standInClaim(db: CancelPayoutDb) {
+  return async (payoutId: string): Promise<boolean> => {
+    const res = await (db as any).creatorPayout.updateMany({
+      where: { id: payoutId, status: "pending" },
+      data: { status: "processing" },
+    });
+    return res.count === 1;
+  };
 }
 
 // ---------------------------------------------------------------
@@ -242,11 +252,11 @@ test("two cancels at once: one restores, the other writes nothing", async () => 
   assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
 });
 
-test("cancel against the executor's claim: the claim wins, nothing is restored", async () => {
+test("cancel against the worker's claim: the claim wins, nothing is restored", async () => {
   const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
-  const executor = executorOver(db);
+  const claim = standInClaim(db);
 
-  assert.equal(await executor.claim(PAYOUT), true);
+  assert.equal(await claim(PAYOUT), true);
   const cancel = await cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG });
 
   assert.deepEqual(cancel, { outcome: "not_cancellable", status: "processing" });
@@ -256,73 +266,30 @@ test("cancel against the executor's claim: the claim wins, nothing is restored",
   assert.equal(state.ledger.length, 0);
 });
 
-test("cancel against the executor's claim: the cancel wins, the claim does nothing", async () => {
+test("cancel against the worker's claim: the cancel wins, the claim does nothing", async () => {
   const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
-  const executor = executorOver(db);
+  const claim = standInClaim(db);
 
   const cancel = await cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG });
   assert.equal(cancel.outcome, "cancelled");
-  assert.equal(await executor.claim(PAYOUT), false, "a cancelled payout cannot be claimed");
+  assert.equal(await claim(PAYOUT), false, "a cancelled payout cannot be claimed");
 
   assert.equal(state.payouts[0]!.status, "cancelled");
   assert.equal(state.balances[ORG], 2500n);
   assert.equal(state.balanceWrites, 1);
   assert.deepEqual(state.ledger, [cancelledRow(2500n)]);
-
-  // A tick that loaded the row while it was still pending and then fails it
-  // must not restore a second time.
-  await executor.failAndRestore({ ...payoutRow(), status: "pending" } as any, "invalid payout address");
-  assert.equal(state.payouts[0]!.status, "cancelled");
-  assert.equal(state.balances[ORG], 2500n);
-  assert.equal(state.balanceWrites, 1);
-  assert.deepEqual(state.ledger, [cancelledRow(2500n)], "no second ledger row");
-});
-
-test("the executor fails a payout: the amount is restored once, with one ledger row", async () => {
-  for (const status of ["pending", "processing"]) {
-    const { state, db } = fakeDb([payoutRow({ status })], { [ORG]: 300n });
-    const executor = executorOver(db);
-    const loaded = { ...payoutRow({ status }) } as any;
-
-    await executor.failAndRestore(loaded, "invalid payout address");
-    assert.equal(state.payouts[0]!.status, "failed");
-    assert.equal(state.payouts[0]!.failureReason, "invalid payout address");
-    assert.equal(state.balances[ORG], 2800n);
-    assert.equal(state.balanceWrites, 1);
-    assert.deepEqual(state.ledger, [
-      cancelledRow(2800n, { description: "Payout failed, amount returned" }),
-    ]);
-
-    // A retry of the same failure, and a cancel after it, restore nothing more.
-    await executor.failAndRestore(loaded, "invalid payout address");
-    const cancel = await cancelPayout(buildCancelPayoutDeps(db), { payoutId: PAYOUT, orgId: ORG });
-    assert.deepEqual(cancel, { outcome: "not_cancellable", status: "failed" });
-    assert.equal(state.balances[ORG], 2800n);
-    assert.equal(state.balanceWrites, 1, "the balance is credited exactly once");
-    assert.equal(state.ledger.length, 1);
-  }
-});
-
-test("if the earnings cannot be restored the executor's failure rolls back: the payout is not failed", async () => {
-  // No balance row for the organization: the restore throws.
-  const { state, db } = fakeDb([payoutRow({ status: "processing" })], {});
-  const executor = executorOver(db);
-  await assert.rejects(executor.failAndRestore({ ...payoutRow({ status: "processing" }) } as any, "invalid payout address"));
-  assert.equal(state.payouts[0]!.status, "processing", "never failed without its amount given back");
-  assert.equal(state.payouts[0]!.failureReason, null);
-  assert.equal(state.ledger.length, 0);
 });
 
 test("the claim lands between the cancel's read and its write: the cancel loses and writes nothing", async () => {
   const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
-  const executor = executorOver(db);
+  const claim = standInClaim(db);
   const deps = buildCancelPayoutDeps(db);
 
-  // The cancel reads "pending"; the executor claims before the transaction.
+  // The cancel reads "pending"; the worker claims before the transaction.
   const racing = {
     ...deps,
     transaction: async <T>(fn: Parameters<typeof deps.transaction<T>>[0]) => {
-      assert.equal(await executor.claim(PAYOUT), true);
+      assert.equal(await claim(PAYOUT), true);
       return deps.transaction(fn);
     },
   };
@@ -338,10 +305,10 @@ test("the claim lands between the cancel's read and its write: the cancel loses 
 test("claim and cancel fired together: exactly one of them happens", async () => {
   for (const order of ["cancel-first", "claim-first"] as const) {
     const { state, db } = fakeDb([payoutRow()], { [ORG]: 0n });
-    const executor = executorOver(db);
+    const claimPayout = standInClaim(db);
     const deps = buildCancelPayoutDeps(db);
     const cancel = () => cancelPayout(deps, { payoutId: PAYOUT, orgId: ORG });
-    const claim = () => executor.claim(PAYOUT);
+    const claim = () => claimPayout(PAYOUT);
 
     const [a, b] =
       order === "cancel-first" ? await Promise.all([cancel(), claim()]) : await Promise.all([claim(), cancel()]);

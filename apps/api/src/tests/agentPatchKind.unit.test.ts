@@ -118,6 +118,9 @@ async function appWith(
   // The PATCH announces "agent.updated" without waiting; no webhook is set up here,
   // and without this the lookup would reach for a real database.
   (prisma as any).webhook = { findMany: async () => [] };
+  // Use of this agent is not on sale (tests/agentsSold.unit.test.ts covers one that is).
+  const savedListings = (prisma as any).agentListing;
+  (prisma as any).agentListing = { findFirst: async () => null };
   // One transaction: what its writes changed is undone when it throws.
   (prisma as any).$transaction = async (fn: (tx: unknown) => Promise<unknown>) => {
     transactions += 1;
@@ -219,6 +222,7 @@ async function appWith(
         limiter: { peek: async () => 0 },
         pageUrl: (handle) => `https://app.example.test/a/${handle}`,
         toolOffForVisitors: () => false,
+        useListing: async () => null,
         keyDefaultDailyCap: 100,
       },
       ORG,
@@ -243,6 +247,7 @@ async function appWith(
       (prisma as any).scheduledTask = savedTasks;
       (prisma as any).$transaction = savedTransaction;
       (prisma as any).webhook = savedWebhooks;
+      (prisma as any).agentListing = savedListings;
     },
   };
 }

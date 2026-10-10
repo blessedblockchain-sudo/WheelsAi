@@ -88,7 +88,11 @@ async function buildHarness(
     agentGraph: { ...p.agentGraph },
     user: { ...p.user },
     orgSubscription: p.orgSubscription,
+    agentListing: p.agentListing,
   };
+  // No listing sells use of this agent: a rollback to a graph reads that
+  // before it writes (versioningOnSale.unit.test.ts).
+  p.agentListing = { findFirst: async () => null };
   // An API-key write is metered (requireAuth -> meterApiCall -> getOrgPlan).
   // Enterprise has no call cap, so the meter needs neither a database nor Redis.
   p.orgSubscription = { findUnique: async () => ({ plan: "enterprise", status: "active" }) };
@@ -178,6 +182,7 @@ async function buildHarness(
       Object.assign(p.agentGraph, original.agentGraph);
       Object.assign(p.user, original.user);
       p.orgSubscription = original.orgSubscription;
+      p.agentListing = original.agentListing;
       await app.close();
     },
   };

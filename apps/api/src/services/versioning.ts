@@ -3,6 +3,7 @@ import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
 
 import { cloneKindConfig } from "./agentKind.js";
 import { setOwnScheduleEnabled, type OwnScheduleDb } from "./agentOwnSchedule.js";
+import { findUseListing, isPaidUse, ON_SALE_FOR_USE_MESSAGES, type UseListingDb } from "./useListing.js";
 
 // ============================================
 // Types
@@ -35,6 +36,32 @@ export interface AgentScope {
  * cases are deliberately indistinguishable to the caller — distinguishing
  * them turns this API into an agent-ID existence oracle.
  */
+/**
+ * A rollback that would put an agent whose use is on sale into a state its
+ * buyers cannot use: answering through its graph, or running on its own
+ * while sold at a price per use. The route answers 409 on_sale_for_use with
+ * `message`, a sentence written for the agent's owner (the ones an edit of
+ * the agent is refused with). Nothing was restored.
+ */
+export class OnSaleForUseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OnSaleForUseError";
+  }
+}
+
+/**
+ * The check for an agent on sale could not be made, because its listing
+ * could not be read. The rollback fails closed and restores nothing, and the
+ * route answers 503 with this sentence, never with the database's own words.
+ */
+export class SaleCheckUnavailableError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super("This rollback could not be checked right now, so nothing was restored. Try again in a moment.", options);
+    this.name = "SaleCheckUnavailableError";
+  }
+}
+
 export class AgentNotFoundError extends Error {
   readonly statusCode = 404;
   constructor() {
@@ -340,6 +367,13 @@ export async function getLatestVersion(scope: AgentScope) {
  * A rollback that takes the agent's kind away from "scheduled" also turns
  * its own schedule off, in the same transaction; the version returned then
  * carries `schedulePaused: true`.
+ *
+ * While a published listing sells use of the agent, a rollback is held to
+ * the rule an edit is (PATCH /api/agents/:id): it may not switch the agent
+ * to its graph, nor, at a price per use, make it run on its own. It throws
+ * OnSaleForUseError and restores nothing. The listing is read only for a
+ * rollback that would make one of those two switches, inside the
+ * transaction, and a read that fails fails the rollback.
  */
 export async function rollbackToVersion(
   scope: AgentScope,
@@ -365,10 +399,25 @@ export async function rollbackToVersion(
     // takes it away from "scheduled" turns its own schedule off, below.
     const current = await tx.agent.findFirst({
       where: { id: agentId, orgId: scope.orgId },
-      select: { agentKind: true },
+      select: { agentKind: true, entrypoint: true },
     });
     const wasScheduled = current?.agentKind === "scheduled";
     const restoredKind = isAgentKind(targetVersion.agentKind) ? targetVersion.agentKind : DEFAULT_AGENT_KIND;
+
+    // An agent whose use is on sale keeps what its buyers rely on, as on an
+    // edit: answers from its instructions, and, at a price per use, a kind
+    // that is used by a person. Decided before anything is written.
+    const switchesToGraph = targetVersion.entrypoint === "graph" && current?.entrypoint !== "graph";
+    const becomesScheduled = restoredKind === "scheduled" && !wasScheduled;
+    if (switchesToGraph || becomesScheduled) {
+      const useListing = await findUseListing(tx as unknown as UseListingDb, agentId).catch((cause: unknown) => {
+        throw new SaleCheckUnavailableError({ cause });
+      });
+      if (useListing && switchesToGraph) throw new OnSaleForUseError(ON_SALE_FOR_USE_MESSAGES.graph);
+      if (useListing && becomesScheduled && useListing.pricingModel === "per_request" && isPaidUse(useListing)) {
+        throw new OnSaleForUseError(ON_SALE_FOR_USE_MESSAGES.scheduled);
+      }
+    }
 
     // Update the agent with the snapshot from the target version
     await tx.agent.update({

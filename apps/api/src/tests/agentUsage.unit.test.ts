@@ -308,6 +308,8 @@ test("PATCH entrypoint=graph is refused until the agent has a graph, and bumps t
       },
     },
     agentGraph: { findUnique: async () => graph },
+    // Use of this agent is not on sale.
+    agentListing: { findFirst: async () => null },
     webhook: { findMany: async () => [] },
   };
   const saved: Record<string, unknown> = {};

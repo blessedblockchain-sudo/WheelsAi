@@ -45,7 +45,7 @@ interface World {
 }
 
 async function appWith(world: World) {
-  const names = ["agent", "scheduledTask", "taskExecution", "openClawChannel", "webhook", "$transaction"] as const;
+  const names = ["agent", "agentListing", "scheduledTask", "taskExecution", "openClawChannel", "webhook", "$transaction"] as const;
   const saved = Object.fromEntries(names.map((name) => [name, (prisma as any)[name]]));
 
   /** A delegate the route must never reach for. */
@@ -79,6 +79,8 @@ async function appWith(world: World) {
       return {};
     },
   };
+  // Read first: whether people have paid for the agent (none here).
+  (prisma as any).agentListing = { findFirst: async () => null };
   (prisma as any).scheduledTask = untouched("scheduledTask");
   (prisma as any).taskExecution = untouched("taskExecution");
   (prisma as any).$transaction = () => {

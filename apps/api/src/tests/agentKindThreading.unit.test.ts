@@ -301,6 +301,9 @@ function withTasks(world: ReturnType<typeof makeVersionWorld>, tasks: Row[], opt
       return { count: hit.length };
     },
   };
+  // No listing sells use of this agent: a rollback to scheduled or to a
+  // graph reads that before it writes (versioningOnSale.unit.test.ts).
+  world.models.agentListing = { findFirst: async () => null };
   // One transaction: what it changed on the agent is undone when it throws.
   world.models.$transaction = async (fn: (tx: Row) => Promise<unknown>) => {
     log.transactions += 1;

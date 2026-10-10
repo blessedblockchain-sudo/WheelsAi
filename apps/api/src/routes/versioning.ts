@@ -12,6 +12,8 @@ import {
   tagVersion,
   publishVersion,
   AgentNotFoundError,
+  OnSaleForUseError,
+  SaleCheckUnavailableError,
   type ChangeType,
   type VersionAuthor,
 } from "../services/versioning.js";
@@ -35,6 +37,15 @@ import {
 function replyForError(reply: FastifyReply, error: unknown) {
   if (error instanceof AgentNotFoundError) {
     return reply.status(404).send({ error: "agent_not_found" });
+  }
+  // A rollback an agent on sale cannot take, said the way an edit of the
+  // agent says it (PATCH /api/agents/:id).
+  if (error instanceof OnSaleForUseError) {
+    return reply.status(409).send({ error: "on_sale_for_use", message: error.message });
+  }
+  // That check could not be made. Said in our words, not the database's.
+  if (error instanceof SaleCheckUnavailableError) {
+    return reply.status(503).send({ error: "sale_check_unavailable", message: error.message });
   }
 
   const message = error instanceof Error ? error.message : "Request failed";

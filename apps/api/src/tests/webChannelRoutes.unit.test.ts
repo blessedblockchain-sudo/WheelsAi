@@ -100,6 +100,11 @@ interface ServerOptions {
   snippet?: WebChannelDeps["snippet"];
   limiterDown?: boolean;
   role?: string | null;
+  /**
+   * What "is use of this agent sold at a price?" answers, one entry per
+   * read in order (the last one repeats). Default: never.
+   */
+  soldAtAPrice?: boolean[];
 }
 
 async function server(options: ServerOptions = {}) {
@@ -108,8 +113,28 @@ async function server(options: ServerOptions = {}) {
     options.limiterDown ? brokenStore : createMemoryLimiterStore(() => NOW.getTime()),
   );
   let n = 0;
+  const saleReads: string[] = [];
+  const sold = (where: string) => {
+    const answers = options.soldAtAPrice ?? [false];
+    const answer = answers[Math.min(saleReads.length, answers.length - 1)]!;
+    saleReads.push(where);
+    return answer;
+  };
   const channel: WebChannelDeps = {
     db,
+    sale: {
+      soldAtAPrice: async () => sold("before"),
+      // A transaction that puts the keys back as they were when it throws.
+      transaction: async (fn) => {
+        const before = keys.map((key) => ({ ...key }));
+        try {
+          return await fn({ widgetKey: db.widgetKey, soldAtAPrice: async () => sold("inside") });
+        } catch (err) {
+          keys.splice(0, keys.length, ...before);
+          throw err;
+        }
+      },
+    },
     limiter,
     whiteLabel: async () => options.whiteLabel ?? false,
     snippet: options.snippet ?? { webUrl: "https://app.wheelsai.test/", apiUrl: "https://api.wheelsai.test" },
@@ -170,7 +195,7 @@ async function server(options: ServerOptions = {}) {
     }),
     { prefix: "/api/widget" },
   );
-  return { app, keys, limiter };
+  return { app, keys, limiter, saleReads };
 }
 
 const owner = { "x-test-org": ORG };
@@ -472,6 +497,10 @@ test("rotate: compare-and-set on the key that was read - a rotation that lost th
   let n = 0;
   const deps: WebChannelDeps = {
     db,
+    sale: {
+      soldAtAPrice: async () => false,
+      transaction: (fn) => fn({ widgetKey: db.widgetKey, soldAtAPrice: async () => false }),
+    },
     limiter: createFailClosedLimiter(createMemoryLimiterStore()),
     whiteLabel: async () => false,
     snippet: { webUrl: "https://a.test", apiUrl: "https://b.test" },
@@ -564,4 +593,74 @@ test("a key says whether it is an agent's page key, and revoking one clears the 
   assert.equal((await app.inject({ method: "DELETE", url: `/api/channels/web/keys/${ordinary.id}`, headers: owner })).statusCode, 204);
   const plain = keys.find((key) => key.id === ordinary.id)!;
   assert.deepEqual([plain.revokedAt, plain.enabled, plain.pageOfAgentId], [NOW, false, null]);
+});
+
+// ============================================
+// A page key gives way to a price
+// ============================================
+
+const SOLD_AS_PAID =
+  "This agent is on sale, so free use on its page is off. Choose Free under Who can use it? to let anyone use it.";
+
+/** A paused page key of AGENT, and an ordinary website key beside it. */
+async function withPausedPageKey(options: ServerOptions) {
+  const built = await server(options);
+  const { app, keys } = built;
+  const headers = { "content-type": "application/json", "x-test-org": ORG };
+  const create = (name: string) =>
+    app.inject({ method: "POST", url: "/api/channels/web/keys", headers, payload: JSON.stringify({ agentId: AGENT, name, allowedOrigins: ["https://shop.example.com"] }) });
+  const page = (await create("Public page")).json().key as { id: string };
+  const site = (await create("Shop")).json().key as { id: string };
+  const stored = keys.find((key) => key.id === page.id)!;
+  stored.pageOfAgentId = AGENT;
+  stored.enabled = false;
+  keys.find((key) => key.id === site.id)!.enabled = false;
+  const turnOn = (id: string, body: object = { enabled: true }) =>
+    app.inject({ method: "PATCH", url: `/api/channels/web/keys/${id}`, headers, payload: JSON.stringify(body) });
+  return { ...built, page, site, stored, turnOn };
+}
+
+test("a page key cannot be turned on while use of its agent is sold at a price: 409 sold_as_paid before any write", async () => {
+  const { stored, page, turnOn, saleReads } = await withPausedPageKey({ soldAtAPrice: [true] });
+  const res = await turnOn(page.id, { enabled: true, name: "Renamed" });
+  assert.equal(res.statusCode, 409);
+  assert.deepEqual(res.json(), { error: "sold_as_paid", message: SOLD_AS_PAID });
+  assert.equal(stored.enabled, false);
+  assert.equal(stored.name, "Public page", "nothing of the edit was written");
+  assert.deepEqual(saleReads, ["before"], "refused before the transaction was opened");
+});
+
+test("a listing published at a price while the key is being turned on rolls the switch back", async () => {
+  // Free when it was checked; priced by the time the write is in.
+  const { keys, page, turnOn, saleReads } = await withPausedPageKey({ soldAtAPrice: [false, true] });
+  const res = await turnOn(page.id, { enabled: true, name: "Renamed" });
+  assert.equal(res.statusCode, 409);
+  assert.equal(res.json().error, "sold_as_paid");
+  assert.equal(res.json().message, SOLD_AS_PAID);
+  assert.deepEqual(saleReads, ["before", "inside"]);
+  const after = keys.find((key) => key.id === page.id)!;
+  assert.equal(after.enabled, false, "the switch was rolled back");
+  assert.equal(after.name, "Public page", "with everything else the write carried");
+});
+
+test("a page key turns on when nothing is sold at a price, checked before and after the write", async () => {
+  const { keys, page, turnOn, saleReads } = await withPausedPageKey({});
+  const res = await turnOn(page.id);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().key.enabled, true);
+  assert.equal(keys.find((key) => key.id === page.id)!.enabled, true);
+  assert.deepEqual(saleReads, ["before", "inside"]);
+});
+
+test("the price check is the page key's alone: a website key, a pause and other edits are as they were", async () => {
+  const { keys, page, site, turnOn, saleReads } = await withPausedPageKey({ soldAtAPrice: [true] });
+  // The owner's own website widget is not free use of the page.
+  const website = await turnOn(site.id);
+  assert.equal(website.statusCode, 200);
+  assert.equal(keys.find((key) => key.id === site.id)!.enabled, true);
+  // Pausing, and an edit that does not turn the key on, never ask.
+  assert.equal((await turnOn(page.id, { enabled: false })).statusCode, 200);
+  assert.equal((await turnOn(page.id, { dailyMessageCap: 50 })).statusCode, 200);
+  assert.equal(keys.find((key) => key.id === page.id)!.dailyMessageCap, 50);
+  assert.deepEqual(saleReads, []);
 });

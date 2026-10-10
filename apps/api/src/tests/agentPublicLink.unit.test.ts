@@ -24,6 +24,7 @@ import {
   getPublicLink,
   isHandleConflict,
   PAGE_KEY_NAME,
+  PUBLIC_LINK_MESSAGES,
   PublicLinkError,
   setPageUse,
   setPublicLink,
@@ -37,7 +38,13 @@ import { buildAgentPublicLinkDeps, toolOffForVisitors } from "../services/buildA
 import { createFailClosedLimiter, createMemoryLimiterStore } from "../services/failClosedLimiter.js";
 import { publicChatKeys, utcDay } from "../services/publicChat.js";
 import { HANDLE_MESSAGES } from "../services/publicHandle.js";
-import { PAGE_DAILY_CAP_DEFAULT, PAGE_DAILY_CAP_MAX, pageKeyUsable } from "../services/publicPageState.js";
+import {
+  PAGE_DAILY_CAP_DEFAULT,
+  PAGE_DAILY_CAP_MAX,
+  pageKeyUsable,
+  publicPageStateOf,
+} from "../services/publicPageState.js";
+import type { UseListingRow } from "../services/useListing.js";
 import { SkillRegistry } from "../services/skills/registry.js";
 import type { SkillDefinition } from "../services/skills/types.js";
 
@@ -62,13 +69,17 @@ interface Hooks {
   beforeSwitch?: () => void;
   /** Runs once, just before a handle is written. */
   beforeHandleWrite?: () => void;
+  /** Runs once, after the page key was switched: what another request committed meanwhile. */
+  afterSwitch?: () => void;
 }
 
 const unique = (target: string) =>
   Object.assign(new Error("Unique constraint failed"), { code: "P2002", meta: { target: [target] } });
 
-function fakeWorld(over: { agent?: Partial<StoredAgent>; keys?: StoredKey[] } = {}) {
+function fakeWorld(over: { agent?: Partial<StoredAgent>; keys?: StoredKey[]; listing?: UseListingRow | null } = {}) {
   const state = {
+    /** The published listing that sells use of AGENT, when there is one. */
+    listing: over.listing ?? null,
     agents: [
       {
         id: AGENT,
@@ -95,6 +106,7 @@ function fakeWorld(over: { agent?: Partial<StoredAgent>; keys?: StoredKey[] } = 
   const hooks: Hooks = {};
   const writes: string[] = [];
   let transactions = 0;
+  let listingReads = 0;
   let seq = 0;
 
   /** What other requests committed during a transaction: it stays when that transaction is undone. */
@@ -163,6 +175,7 @@ function fakeWorld(over: { agent?: Partial<StoredAgent>; keys?: StoredKey[] } = 
           Object.assign(key, data);
           writes.push(`key:${Object.keys(data).join(",")}`);
         }
+        if (data.enabled !== undefined) fire("afterSwitch");
         return { count: hit.length };
       },
     },
@@ -186,13 +199,22 @@ function fakeWorld(over: { agent?: Partial<StoredAgent>; keys?: StoredKey[] } = 
       }
     },
     limiter,
+    useListing: async (on, agentId) => {
+      // Read on whatever it is handed: the client, or the open transaction.
+      assert.equal(on, db);
+      listingReads += 1;
+      if (world.listingReadFails) throw new Error("the listing could not be read");
+      return agentId === AGENT && state.listing ? { ...state.listing } : null;
+    },
     pageUrl: (handle) => `${WEB}/a/${handle}`,
     toolOffForVisitors: (name) => name === "http_request" || name === "file_read",
     keyDefaultDailyCap: 1000,
     generatePublicKey: () => `wpk_${String((n += 1)).padStart(32, "0")}`,
     now: () => NOW,
   };
-  return {
+  const world = {
+    listingReadFails: false,
+    listingReads: () => listingReads,
     deps,
     db,
     state,
@@ -203,7 +225,26 @@ function fakeWorld(over: { agent?: Partial<StoredAgent>; keys?: StoredKey[] } = 
     agent: () => state.agents.find((agent) => agent.id === AGENT)!,
     pageKeys: () => state.keys.filter((key) => key.pageOfAgentId === AGENT),
   };
+  return world;
 }
+
+/** A published listing that sells use of AGENT. Free unless a price is given. */
+const useListing = (over: Partial<UseListingRow> = {}): UseListingRow => ({
+  id: "listing-1",
+  slug: "support-bot-listing",
+  title: "Support Bot",
+  agentId: AGENT,
+  publisherId: ORG,
+  status: "published",
+  sells: "use",
+  pricingModel: "free",
+  pricePerRequestCents: null,
+  monthlyPriceCents: null,
+  useAllowedTools: [],
+  ...over,
+});
+const PER_USE = useListing({ pricingModel: "per_request", pricePerRequestCents: 5n });
+const MONTHLY = useListing({ pricingModel: "monthly", monthlyPriceCents: 900n });
 
 const pageKey = (over: Partial<StoredKey> = {}): StoredKey => ({
   id: "key-existing",
@@ -856,4 +897,144 @@ test("PUT refusals: handle rules and bounds are 400 validation_failed by field; 
   assert.equal(world.agent().isPublic, false, "no refused request published the page");
   assert.equal(world.state.keys.length, 0);
   await app.close();
+});
+
+// ============================================
+// While use of the agent is on sale
+// ============================================
+
+const SOLD_AS_PAID =
+  "This agent is on sale, so free use on its page is off. Choose Free under Who can use it? to let anyone use it.";
+const ON_SALE = "This agent is on sale, so its page stays on. Stop selling it first.";
+
+/** An agent on sale at a price: public, with its page key paused by the listing. */
+const soldWorld = (listing: UseListingRow, key: Partial<StoredKey> = { enabled: false }) =>
+  fakeWorld({ agent: { isPublic: true, publicHandle: "support-bot" }, keys: [pageKey(key)], listing });
+
+test("the sentences are the plan's", () => {
+  assert.equal(PUBLIC_LINK_MESSAGES.soldAsPaid, SOLD_AS_PAID);
+  assert.equal(PUBLIC_LINK_MESSAGES.onSaleForUse, ON_SALE);
+});
+
+test("on is refused with sold_as_paid while a price is set, per use or per month, before anything is written", async () => {
+  for (const listing of [PER_USE, MONTHLY]) {
+    const world = soldWorld(listing);
+    await assert.rejects(setPublicLink(world.deps, ORG, AGENT, { state: "on", dailyCap: 5, showResults: true }), (err: unknown) => {
+      assert.ok(refused(409, "sold_as_paid")(err));
+      assert.equal((err as Error).message, SOLD_AS_PAID);
+      return true;
+    });
+    assert.deepEqual(world.writes, [], listing.pricingModel);
+    assert.equal(world.pageKeys()[0]!.enabled, false, "the key stays paused");
+    assert.equal(world.pageKeys()[0]!.dailyMessageCap, PAGE_DAILY_CAP_DEFAULT);
+    assert.equal(world.agent().publicResults, false);
+  }
+});
+
+test("on is refused even when the key row was left enabled: the listing decides, not the row", async () => {
+  const world = soldWorld(PER_USE, { enabled: true });
+  await assert.rejects(setPublicLink(world.deps, ORG, AGENT, { state: "on" }), refused(409, "sold_as_paid"));
+  assert.deepEqual(world.writes, []);
+});
+
+test("a price set at the same moment: the link is checked again after its writes, and they are undone", async () => {
+  const world = fakeWorld({ agent: { isPublic: true, publicHandle: "support-bot" }, keys: [pageKey({ enabled: false })] });
+  // Another request publishes the listing at a price just after the key was switched on.
+  world.hooks.afterSwitch = () => {
+    world.state.listing = PER_USE;
+  };
+  await assert.rejects(setPublicLink(world.deps, ORG, AGENT, { state: "on" }), refused(409, "sold_as_paid"));
+  assert.equal(world.pageKeys()[0]!.enabled, false, "the switch was rolled back");
+  assert.equal(world.listingReads(), 2, "read before the writes and after them");
+  assert.equal(world.transactions(), 1);
+});
+
+test("off is refused with on_sale_for_use for every listing that sells use, free or priced", async () => {
+  for (const listing of [useListing(), PER_USE, MONTHLY]) {
+    const world = soldWorld(listing, { enabled: listing.pricingModel === "free" });
+    await assert.rejects(setPublicLink(world.deps, ORG, AGENT, { state: "off" }), (err: unknown) => {
+      assert.ok(refused(409, "on_sale_for_use")(err));
+      assert.equal((err as Error).message, ON_SALE);
+      return true;
+    });
+    assert.deepEqual(world.writes, [], listing.pricingModel);
+    assert.equal(world.agent().isPublic, true, "the page stays on");
+  }
+});
+
+test("paused: refused for a free listing, whose page must stay usable; with a price set it answers the link as it is", async () => {
+  const free = soldWorld(useListing(), { enabled: true });
+  await assert.rejects(setPublicLink(free.deps, ORG, AGENT, { state: "paused" }), refused(409, "on_sale_for_use"));
+  assert.deepEqual(free.writes, []);
+  assert.equal(free.pageKeys()[0]!.enabled, true);
+
+  const priced = soldWorld(MONTHLY);
+  const link = await setPublicLink(priced.deps, ORG, AGENT, { state: "paused" });
+  assert.equal(link.state, "paused");
+  assert.deepEqual(link.sale, { paid: true, listingSlug: "support-bot-listing" });
+  assert.deepEqual(priced.writes, [], "the key was paused already: nothing moved");
+});
+
+test("a free use listing leaves on as it was, and the link says it is on sale", async () => {
+  const world = soldWorld(useListing(), { enabled: false });
+  const link = await setPublicLink(world.deps, ORG, AGENT, { state: "on" });
+  assert.equal(link.state, "on");
+  assert.deepEqual(link.sale, { paid: false, listingSlug: "support-bot-listing" });
+  assert.equal(world.pageKeys()[0]!.enabled, true);
+});
+
+test("the owner's read says a price is set, and nothing else of the listing", async () => {
+  const world = soldWorld(PER_USE);
+  const link = await getPublicLink(world.deps, ORG, AGENT);
+  assert.deepEqual(link, {
+    state: "paused",
+    handle: "support-bot",
+    url: `${WEB}/a/support-bot`,
+    dailyCap: PAGE_DAILY_CAP_DEFAULT,
+    usedToday: 0,
+    showResults: false,
+    toolsOffForVisitors: false,
+    sale: { paid: true, listingSlug: "support-bot-listing" },
+  });
+  assert.deepEqual(world.writes, []);
+  // No listing: no `sale` key at all, as before.
+  assert.equal("sale" in (await getPublicLink(fakeWorld().deps, ORG, AGENT)), false);
+});
+
+test("a listing that cannot be read moves nothing: the link is not switched on a guess", async () => {
+  const world = fakeWorld({ agent: { isPublic: true, publicHandle: "support-bot" }, keys: [pageKey({ enabled: false })] });
+  world.listingReadFails = true;
+  await assert.rejects(setPublicLink(world.deps, ORG, AGENT, { state: "on" }), /could not be read/);
+  assert.deepEqual(world.writes, []);
+  assert.equal(world.pageKeys()[0]!.enabled, false);
+});
+
+test("another organization's agent is still not found, whatever is on sale", async () => {
+  const world = soldWorld(PER_USE);
+  await assert.rejects(setPublicLink(world.deps, OTHER_ORG, AGENT, { state: "on" }), refused(404, "agent_not_found"));
+  assert.equal(world.listingReads(), 0, "nothing of the listing is read for a stranger");
+});
+
+test("the page state: a price comes before the key, and a page that is off stays off", () => {
+  const enabled = { enabled: true, revokedAt: null };
+  assert.equal(publicPageStateOf(true, enabled, true), "paid");
+  assert.equal(publicPageStateOf(true, null, true), "paid");
+  assert.equal(publicPageStateOf(false, enabled, true), "off");
+  assert.equal(publicPageStateOf(true, enabled), "on");
+  assert.equal(publicPageStateOf(true, enabled, false), "on");
+  assert.equal(pageKeyUsable(true, enabled, true), false, "an enabled key is not usable while a price is set");
+  assert.equal(pageKeyUsable(true, enabled), true);
+});
+
+test("as HTTP: the two refusals carry the code and the sentence", async () => {
+  const sold = await server({ world: soldWorld(PER_USE) });
+  const on = await put(sold.app, { state: "on" });
+  assert.equal(on.statusCode, 409);
+  assert.deepEqual(on.json(), { error: "sold_as_paid", message: SOLD_AS_PAID });
+  const off = await put(sold.app, { state: "off" });
+  assert.equal(off.statusCode, 409);
+  assert.deepEqual(off.json(), { error: "on_sale_for_use", message: ON_SALE });
+  assert.deepEqual((await get(sold.app)).json().sale, { paid: true, listingSlug: "support-bot-listing" });
+  assert.deepEqual(sold.world.writes, []);
+  await sold.app.close();
 });

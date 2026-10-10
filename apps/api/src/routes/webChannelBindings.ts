@@ -14,6 +14,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { publicChatLimiter } from "../services/buildPublicChatDeps.js";
 import { getOrgPlan } from "../services/orgPlan.js";
+import { findUseListing, isPaidUse, type UseListingDb } from "../services/useListing.js";
 import type { WebChannelDb, WebChannelDeps } from "../services/webChannel.js";
 import { createWebChannelRoutes, type WebChannelGuards } from "./webChannel.js";
 
@@ -42,9 +43,25 @@ export function buildWebChannelGuards(): WebChannelGuards {
   };
 }
 
+/** Whether use of the agent is sold at a price right now, read on the client or transaction it is handed. */
+async function soldAtAPrice(db: UseListingDb, agentId: string): Promise<boolean> {
+  const listing = await findUseListing(db, agentId);
+  return listing !== null && isPaidUse(listing);
+}
+
 export function buildWebChannelDeps(): WebChannelDeps {
   return {
     db: prisma as unknown as WebChannelDb,
+    sale: {
+      soldAtAPrice: (agentId) => soldAtAPrice(prisma as unknown as UseListingDb, agentId),
+      transaction: (fn) =>
+        prisma.$transaction((tx) =>
+          fn({
+            widgetKey: tx.widgetKey as unknown as WebChannelDb["widgetKey"],
+            soldAtAPrice: (agentId) => soldAtAPrice(tx as unknown as UseListingDb, agentId),
+          }),
+        ),
+    },
     limiter: publicChatLimiter,
     whiteLabel: orgHasWhiteLabel,
     snippet: snippetAddresses(),

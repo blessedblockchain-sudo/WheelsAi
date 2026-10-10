@@ -11,6 +11,10 @@
  *                        applies when it builds a visitor's tool list, so
  *                        there is no second list of tools to keep in step
  *
+ *   useListing           the published listing that sells use of the agent
+ *                        (findUseListing), on the client or the transaction
+ *                        the core hands over
+ *
  * Delegates are read from the client per call, not captured at build time.
  */
 
@@ -20,10 +24,11 @@ import { env } from "../config/env.js";
 import type { AgentPublicLinkDeps, PublicLinkTx } from "./agentPublicLink.js";
 import { publicChatLimiter } from "./buildPublicChatDeps.js";
 import { agentPageUrl } from "./publicEndpoints.js";
+import { findUseListing, type UseListingDb } from "./useListing.js";
 import { getDefaultRegistry } from "./skills/production.js";
 import type { SkillRegistry } from "./skills/registry.js";
 
-type PublicLinkPrisma = Pick<PrismaClient, "agent" | "widgetKey" | "$transaction">;
+type PublicLinkPrisma = Pick<PrismaClient, "agent" | "widgetKey" | "agentListing" | "$transaction">;
 
 /**
  * Whether a visitor's chat or run is denied the tool of this name. A name
@@ -49,18 +54,24 @@ export function buildAgentPublicLinkDeps(options: BuildAgentPublicLinkDepsOption
   const registry = options.registry ?? getDefaultRegistry;
   const webAddresses =
     options.webAddresses ?? (() => ({ publicWebUrl: env.PUBLIC_WEB_URL, corsOrigin: env.CORS_ORIGIN }));
-  return {
-    db: {
-      agent: {
-        findFirst: (args) => prisma.agent.findFirst(args),
-        updateMany: (args) => prisma.agent.updateMany(args),
-      },
-      widgetKey: {
-        findFirst: (args) => prisma.widgetKey.findFirst(args),
-        createMany: (args) => prisma.widgetKey.createMany(args),
-        updateMany: (args) => prisma.widgetKey.updateMany(args),
-      },
+  const db: PublicLinkTx & UseListingDb = {
+    agent: {
+      findFirst: (args) => prisma.agent.findFirst(args),
+      updateMany: (args) => prisma.agent.updateMany(args),
     },
+    widgetKey: {
+      findFirst: (args) => prisma.widgetKey.findFirst(args),
+      createMany: (args) => prisma.widgetKey.createMany(args),
+      updateMany: (args) => prisma.widgetKey.updateMany(args),
+    },
+    agentListing: {
+      findFirst: (args) => prisma.agentListing.findFirst(args),
+    },
+  };
+  return {
+    db,
+    // `on` is `db` above or a transaction client: both carry the listings.
+    useListing: (on, agentId) => findUseListing(on as unknown as UseListingDb, agentId),
     transaction: (fn) => prisma.$transaction((tx) => fn(tx as unknown as PublicLinkTx)),
     limiter: options.limiter ?? publicChatLimiter,
     pageUrl: (handle) => {

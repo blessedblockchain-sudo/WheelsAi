@@ -15,6 +15,7 @@ import { setOwnScheduleEnabled, type OwnScheduleDb } from "../services/agentOwnS
 import { assignPublicHandle, setPageUse, type PublicLinkTx } from "../services/agentPublicLink.js";
 import { buildCreateAgentDeps } from "../services/buildCreateAgentDeps.js";
 import { createAgent, createAgentAnswer, type CreateAgentResult } from "../services/createAgent.js";
+import { findUseListing, isPaidUse, ON_SALE_FOR_USE_MESSAGES, type UseListingDb } from "../services/useListing.js";
 import { validationFailureFromFields } from "../lib/validationFailure.js";
 import { DEFAULT_AGENT_KIND, isAgentKind } from "@wheelsai/shared/agent-kind";
 import {
@@ -88,6 +89,15 @@ const updateAgentSchema = agentFieldsSchema.partial().extend({
 /** What a GPU click on an agent is answered with (501) while AGENT_GPU_ENABLED is off. */
 export const AGENT_GPU_UNAVAILABLE_MESSAGE =
   "Dedicated GPUs for agents are being built. Nothing was reserved or charged. Your agent keeps answering on WheelsAI.";
+
+// What changing an agent is answered with (409 on_sale_for_use) while a
+// published listing sells use of it. Kept with the listing's own rules,
+// which a version rollback follows too (services/versioning.ts).
+export { ON_SALE_FOR_USE_MESSAGES };
+
+/** What deleting an agent is answered with (409 agent_has_buyers) while its listing has buyers. */
+export const AGENT_HAS_BUYERS_MESSAGE =
+  "People have paid for this agent, so it cannot be deleted. Stop selling it instead: it leaves the marketplace, and subscribers keep access until the month they paid for ends.";
 
 /**
  * A knowledge base may only be bound by the org that owns it. Without
@@ -344,6 +354,31 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       return reply.status(400).send(validationFailureFromFields(kind.fields, kind.message));
     }
 
+    // An agent whose use is on sale keeps what its buyers rely on: its page,
+    // answers from its instructions, and, at a price per use, a kind that
+    // is used by a person. Decided here, before anything is written (the
+    // address below is the first write). The listing is read only when the
+    // change touches one of the three, and a read that fails fails the
+    // change.
+    const closesSoldPage = updates.isPublic === false && agent.isPublic;
+    const switchesToGraph = updates.entrypoint === "graph" && agent.entrypoint !== "graph";
+    const becomesScheduled = kind?.agentKind === "scheduled" && agent.agentKind !== "scheduled";
+    if (closesSoldPage || switchesToGraph || becomesScheduled) {
+      const useListing = await findUseListing(prisma as unknown as UseListingDb, agentId);
+      const refusal = !useListing
+        ? null
+        : closesSoldPage
+          ? ON_SALE_FOR_USE_MESSAGES.page
+          : switchesToGraph
+            ? ON_SALE_FOR_USE_MESSAGES.graph
+            : becomesScheduled && useListing.pricingModel === "per_request" && isPaidUse(useListing)
+              ? ON_SALE_FOR_USE_MESSAGES.scheduled
+              : null;
+      if (refusal) {
+        return reply.status(409).send({ error: "on_sale_for_use", message: refusal });
+      }
+    }
+
     // Increment version when behaviour actually changes (a settings save
     // that resends an unchanged prompt is not a new version).
     const differs = (key: "sourceCode" | "sourceUrl" | "systemPrompt" | "tools" | "entrypoint") =>
@@ -475,6 +510,18 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
 
     if (!agent) {
       return reply.notFound("Agent not found");
+    }
+
+    // First, before anything is stopped or deleted: an agent people have
+    // paid for stays. Its listing (whatever it sells, published or not)
+    // holds their install and subscription rows, so the delete below would
+    // fail in the database after the GPUs were already stopped.
+    const soldListing = await prisma.agentListing.findFirst({
+      where: { agentId },
+      select: { id: true, _count: { select: { installs: true, subscriptions: true } } },
+    });
+    if (soldListing && soldListing._count.installs + soldListing._count.subscriptions > 0) {
+      return reply.status(409).send({ error: "agent_has_buyers", message: AGENT_HAS_BUYERS_MESSAGE });
     }
 
     // Stop every deployment that may still hold a GPU (a `deploying` one with

@@ -21,6 +21,7 @@
 import { z } from "zod";
 
 import { createLogger } from "../utils/logger.js";
+import { PUBLIC_LINK_MESSAGES } from "./agentPublicLink.js";
 import type { FailClosedLimiter } from "./failClosedLimiter.js";
 import { publicChatKeys, utcDay } from "./publicChat.js";
 import { generatePublicKey, MAX_ALLOWED_ORIGINS, normalizeOrigin } from "./widgetKeys.js";
@@ -221,8 +222,26 @@ export interface WebChannelDb {
   };
 }
 
+/** What turning a page key on is checked against, and the transaction it is checked in. */
+export interface WebChannelSaleTx {
+  widgetKey: Pick<WebChannelDb["widgetKey"], "updateMany">;
+  /** As WebChannelDeps.sale.soldAtAPrice, read on this transaction. */
+  soldAtAPrice(agentId: string): Promise<boolean>;
+}
+
 export interface WebChannelDeps {
   db: WebChannelDb;
+  /**
+   * The sale of an agent's use, which a page key gives way to
+   * (services/useListing.ts): `soldAtAPrice` is isPaidUse of the agent's
+   * published listing that sells use. Required, so that no wiring can turn
+   * a page key on unchecked.
+   */
+  sale: {
+    soldAtAPrice(agentId: string): Promise<boolean>;
+    /** Runs `fn` in one database transaction; a throw rolls all of it back. */
+    transaction<T>(fn: (tx: WebChannelSaleTx) => Promise<T>): Promise<T>;
+  };
   limiter: Pick<FailClosedLimiter, "peek">;
   /** Whether the organization's plan lets it hide "Powered by WheelsAI". */
   whiteLabel(orgId: string): Promise<boolean>;
@@ -250,6 +269,8 @@ export class WebChannelError extends Error {
 }
 
 const keyNotFound = () => new WebChannelError(404, "widget_key_not_found", "No such web chat key.");
+/** The public link's own refusal (services/agentPublicLink.ts), for the same switch reached from here. */
+const soldAsPaid = () => new WebChannelError(409, "sold_as_paid", PUBLIC_LINK_MESSAGES.soldAsPaid);
 
 // ============================================
 // Snippet
@@ -466,6 +487,30 @@ export async function updateWebKey(
     ...(input.enabled !== undefined && { enabled: input.enabled }),
   };
   if (input.hideBranding) await assertMayHideBranding(deps, orgId);
+
+  // Turning a key ON is the one write here that can open free use. The key
+  // of an agent's public page must stay off while use of that agent is sold
+  // at a price: free use on the page would undercut the people who pay. It
+  // is decided before the write, and once more after it inside the same
+  // transaction, so a listing whose publish at a price has committed in
+  // between rolls the switch back (as setPublicLink does,
+  // services/agentPublicLink.ts). A publish that commits just after is not
+  // seen here; the key is then refused when it is used, where the listing is
+  // read again (services/buildPublicChatDeps.ts).
+  if (input.enabled === true) {
+    const row = await deps.db.widgetKey.findFirst({ where: { id, orgId }, select: WEB_KEY_COLUMNS });
+    if (!row || row.revokedAt !== null) throw keyNotFound();
+    const pageOf = row.pageOfAgentId;
+    if (pageOf != null) {
+      if (await deps.sale.soldAtAPrice(pageOf)) throw soldAsPaid();
+      await deps.sale.transaction(async (tx) => {
+        const changed = await tx.widgetKey.updateMany({ where: { id, orgId, revokedAt: null }, data });
+        if (changed.count === 0) throw keyNotFound();
+        if (await tx.soldAtAPrice(pageOf)) throw soldAsPaid();
+      });
+      return getWebKey(deps, orgId, id);
+    }
+  }
 
   if (Object.keys(data).length > 0) {
     // A revoked key stays as it was revoked.

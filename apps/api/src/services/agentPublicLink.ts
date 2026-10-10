@@ -27,6 +27,25 @@
  * A switch that lost a compare-and-set is never an error: someone else moved
  * it first, and the answer is the state as it now is.
  *
+ * While a published listing sells use of the agent, the listing decides the
+ * link and this switch gives way to it (services/useListing.ts):
+ *
+ *   on      409 sold_as_paid while a price is set: free use on the page
+ *           would undercut the people who pay
+ *   off     409 on_sale_for_use: an agent on sale keeps its page
+ *   paused  409 on_sale_for_use for a free listing, whose page must stay
+ *           usable; with a price set the key is paused already, so the
+ *           answer is the link as it is
+ *
+ * Each is decided before anything is written. Turning the link on is
+ * checked once more after its writes, inside the same transaction, which
+ * catches a listing whose publish at a price has already committed. One
+ * that commits a moment later is not seen here: the publish pauses the key
+ * with a write that waits for this one (applyUsePage, services/marketplace.ts),
+ * and whatever the stored switch ends up saying, a page key answers nobody
+ * while a published listing sells use at a price, because that is asked
+ * again each time the key is used (services/buildPublicChatDeps.ts).
+ *
  * Every read and write is scoped by the caller's organization; another
  * organization's agent is "not found", never "forbidden".
  *
@@ -48,6 +67,7 @@ import {
   publicPageStateOf,
   type PublicPageState,
 } from "./publicPageState.js";
+import { isPaidUse, type UseListingRow } from "./useListing.js";
 import { generatePublicKey } from "./widgetKeys.js";
 
 // ============================================
@@ -62,6 +82,9 @@ export const PUBLIC_LINK_MESSAGES = {
   agentNotFound: "Agent not found",
   dailyCap: `Choose a daily limit from ${PAGE_DAILY_CAP_MIN.toLocaleString("en-US")} to ${PAGE_DAILY_CAP_MAX.toLocaleString("en-US")} uses.`,
   noAddress: "No address could be made for this agent. Choose one yourself.",
+  soldAsPaid:
+    "This agent is on sale, so free use on its page is off. Choose Free under Who can use it? to let anyone use it.",
+  onSaleForUse: "This agent is on sale, so its page stays on. Stop selling it first.",
 } as const;
 
 export const publicLinkBodySchema = z
@@ -177,6 +200,12 @@ export interface PublicLink {
   showResults: boolean;
   /** The agent has a tool that visitors do not get. */
   toolsOffForVisitors: boolean;
+  /**
+   * Only while a published listing sells use of the agent: its slug, and
+   * whether a price is set (free use on the page is then off, and `state`
+   * reads "paused").
+   */
+  sale?: { paid: boolean; listingSlug: string };
 }
 
 export interface AgentPublicLinkDeps {
@@ -189,6 +218,12 @@ export interface AgentPublicLinkDeps {
   pageUrl(handle: string): string | null;
   /** Whether the `public` tool mode withholds the tool of this name. */
   toolOffForVisitors(toolName: string): boolean;
+  /**
+   * The published listing that sells use of the agent, or null
+   * (findUseListing), read on the client or transaction it is handed. A
+   * read that fails is thrown on: the link is not moved on a guess.
+   */
+  useListing(db: PublicLinkTx, agentId: string): Promise<UseListingRow | null>;
   /** A key's uses a day when its cap is unset (it can be cleared on the Channels page). */
   keyDefaultDailyCap: number;
   generatePublicKey?: () => string;
@@ -210,6 +245,21 @@ export class PublicLinkError extends Error {
 
 const agentNotFound = () => new PublicLinkError(404, "agent_not_found", PUBLIC_LINK_MESSAGES.agentNotFound);
 const handleTaken = () => new PublicLinkError(409, "handle_taken", HANDLE_MESSAGES.taken);
+const soldAsPaid = () => new PublicLinkError(409, "sold_as_paid", PUBLIC_LINK_MESSAGES.soldAsPaid);
+const onSaleForUse = () => new PublicLinkError(409, "on_sale_for_use", PUBLIC_LINK_MESSAGES.onSaleForUse);
+
+/** What a listing that sells use lets this switch do. Throws the refusal. */
+function assertSaleAllows(state: PublicLinkSwitch, listing: UseListingRow | null): void {
+  if (!listing) return;
+  const paid = isPaidUse(listing);
+  if (state === "on") {
+    if (paid) throw soldAsPaid();
+    return;
+  }
+  // Off closes the page of an agent on sale. Paused does the same to a free
+  // listing; with a price set the key is paused already.
+  if (state === "off" || !paid) throw onSaleForUse();
+}
 
 /** The name a page key shows under on the Channels page. */
 export const PAGE_KEY_NAME = "Public page";
@@ -430,6 +480,7 @@ export async function getPublicLink(deps: AgentPublicLinkDeps, orgId: string, ag
   if (!agent) throw agentNotFound();
   const stored = await deps.db.widgetKey.findFirst({ where: { pageOfAgentId: agentId, orgId }, select: PAGE_KEY_COLUMNS });
   const key = stored && !stored.revokedAt ? stored : null;
+  const listing = await deps.useListing(deps.db, agentId);
 
   let usedToday: number | null = 0;
   if (key) {
@@ -449,6 +500,7 @@ export async function getPublicLink(deps: AgentPublicLinkDeps, orgId: string, ag
     usedToday,
     showResults: agent.publicResults,
     toolsOffForVisitors: toolNames(agent.tools).some((name) => deps.toolOffForVisitors(name)),
+    ...(listing ? { sale: { paid: isPaidUse(listing), listingSlug: listing.slug } } : {}),
   };
 }
 
@@ -475,11 +527,18 @@ export async function setPublicLink(
   const apply = async (tx: PublicLinkTx): Promise<void> => {
     const agent = await tx.agent.findFirst({ where: { id: agentId, orgId }, select: LINK_AGENT_COLUMNS });
     if (!agent) throw agentNotFound();
+    // Before any write: what the listing that sells use of it allows.
+    assertSaleAllows(input.state, await deps.useListing(tx, agentId));
 
     if (input.state === "on") {
       await ensurePublicPage(tx, { orgId, agentId, handle: input.handle });
       await ensurePageKey(tx, { orgId, agentId, generatePublicKey: deps.generatePublicKey });
       await setPageUse(tx, { orgId, agentId, enabled: true });
+      // Once more, after the key was moved: a listing published at a price
+      // meanwhile pauses this same key in its own transaction, and whichever
+      // of the two wrote it second has now seen the other. Throwing undoes
+      // the writes above.
+      assertSaleAllows(input.state, await deps.useListing(tx, agentId));
     } else {
       if (input.handle !== undefined) await setPublicHandle(tx, orgId, agent, input.handle);
       if (input.state === "paused") await setPageUse(tx, { orgId, agentId, enabled: false });

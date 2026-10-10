@@ -7,7 +7,10 @@
  *                                address, whether results show   owner, admin
  *
  * Both answer { state, handle, url, dailyCap, usedToday, showResults,
- * toolsOffForVisitors }. Everything is scoped to the caller's organization
+ * toolsOffForVisitors }, plus `sale: { paid, listingSlug }` while a published
+ * listing sells use of the agent. PUT then answers 409 `sold_as_paid` for
+ * "on" while a price is set, and 409 `on_sale_for_use` for "off" (and for
+ * "paused" on a free listing). Everything is scoped to the caller's organization
  * inside the service (services/agentPublicLink.ts): another organization's
  * agent is 404. What a visitor does with the page is routes/publicAgent.ts
  * and routes/widget.ts.

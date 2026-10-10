@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { AGENT_KINDS, WheelsAI, WheelsAIError, type UseAccessState, type UseRefusal } from "../src/index.js";
+import { AGENT_KINDS, WheelsAI, WheelsAIError, isTopupFinal, type UseAccessState, type UseRefusal } from "../src/index.js";
 import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } from "./helpers.js";
 
 const AGENT = "11111111-1111-4111-8111-111111111111";
@@ -18,6 +18,9 @@ const JOB = "55555555-5555-4555-8555-555555555555";
 const PLACE = "66666666-6666-4666-8666-666666666666";
 const RUN = "77777777-7777-4777-8777-777777777777";
 const PAYOUT = "88888888-8888-4888-8888-888888888888";
+const TOPUP = "99999999-9999-4999-8999-999999999999";
+/** A Solana address in the shape the API takes (base58); nothing here checks it. */
+const PAYER = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
 
 interface Case {
   /** `resource.method`: must match a method on the client. */
@@ -125,6 +128,11 @@ const cases: Case[] = [
   { name: "billing.checkout", run: (w) => w.billing.checkout(25), method: "POST", path: "/api/billing/checkout", body: { amount: 25 } },
   { name: "billing.subscriptionCheckout", run: (w) => w.billing.subscriptionCheckout(), method: "POST", path: "/api/billing/subscription/checkout", body: { plan: "pro" } },
   { name: "billing.portal", run: (w) => w.billing.portal(), method: "POST", path: "/api/billing/portal" },
+  { name: "billing.topups.prepare", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "SOL", payerAddress: PAYER }), method: "POST", path: "/api/billing/topups/prepare", body: { amountUsd: 50, asset: "SOL", payerAddress: PAYER } },
+  { name: "billing.topups.submit", run: (w) => w.billing.topups.submit(TOPUP, "c2lnbmVk"), method: "POST", path: `/api/billing/topups/${TOPUP}/submit`, body: { signedTxBase64: "c2lnbmVk" } },
+  { name: "billing.topups.reconcile", run: (w) => w.billing.topups.reconcile(TOPUP), method: "POST", path: `/api/billing/topups/${TOPUP}/reconcile`, body: {} },
+  { name: "billing.topups.get", run: (w) => w.billing.topups.get(TOPUP), method: "GET", path: `/api/billing/topups/${TOPUP}` },
+  { name: "billing.topups.list", run: (w) => w.billing.topups.list(), method: "GET", path: "/api/billing/topups" },
 
   // ---- use of an agent you pay for ----
   { name: "use.access", run: (w) => w.use.access("refund-helper"), method: "GET", path: "/api/a/refund-helper/access" },
@@ -824,5 +832,148 @@ describe("payouts and an offering's form", () => {
       assert.equal(err.code, "not_a_task_agent");
       return true;
     });
+  });
+});
+
+describe("adding credits from a wallet", () => {
+  const prepared = {
+    topupId: TOPUP,
+    unsignedTxBase64: "dW5zaWduZWQ=",
+    depositAddress: "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+    payerAddress: PAYER,
+    asset: "SOL",
+    amountUsd: 50,
+    bonusUsd: 5,
+    amountRaw: "453514740",
+    quotedSolPriceUsd: 110.25,
+    quote: { solPriceUsd: 110.25, validUntil: "2026-10-10T12:01:00.000Z" },
+    opensUsdcAccount: false,
+    expiresAt: "2026-10-10T12:01:00.000Z",
+    message: "1 SOL = $110.25. This price holds for 60 seconds. Confirm the transfer in your wallet.",
+  };
+
+  it("prepare sends the payer only when one is given, and answers the transfer to sign", async () => {
+    const { fetch, calls } = recordingFetch(() => jsonResponse(prepared));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const result = await wheels.billing.topups.prepare({ amountUsd: 50, asset: "SOL" });
+    assert.deepEqual(calls[0]!.body, { amountUsd: 50, asset: "SOL" });
+    assert.equal("payerAddress" in (calls[0]!.body as object), false);
+    assert.deepEqual(result, prepared);
+    assert.equal(typeof result.amountRaw, "string", "base units stay a string");
+    assert.equal(result.quote?.solPriceUsd, 110.25);
+  });
+
+  it("a USDC top-up has no quote", async () => {
+    const usdc = { ...prepared, asset: "USDC", amountRaw: "50000000", quote: null, opensUsdcAccount: true, message: "Confirm the transfer in your wallet." };
+    delete (usdc as { quotedSolPriceUsd?: number }).quotedSolPriceUsd;
+    const { fetch } = recordingFetch(() => jsonResponse(usdc));
+    const result = await new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }).billing.topups.prepare({ amountUsd: 50, asset: "USDC", payerAddress: PAYER });
+    assert.equal(result.quote, null);
+    assert.equal(result.quotedSolPriceUsd, undefined);
+    assert.equal(result.opensUsdcAccount, true);
+  });
+
+  it("submit answers a confirmed top-up with what was added", async () => {
+    const credited = {
+      status: "credited",
+      message: "Added $55.00 in credits: $50.00 paid and a $5.00 bonus.",
+      txSignature: "5sig",
+      grantedUsd: 55,
+      balanceUsd: 67.5,
+    };
+    const { fetch } = recordingFetch(() => jsonResponse(credited));
+    const result = await new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }).billing.topups.submit(TOPUP, "c2lnbmVk");
+    assert.deepEqual(result, credited);
+    assert.equal(isTopupFinal(result.status), true);
+  });
+
+  it("submit answers 202 as a result, not an error, while the transfer is being confirmed", async () => {
+    const pending = {
+      status: "submitted",
+      message: "Your transfer was sent and is being confirmed. Your credits appear as soon as it is, usually within a minute. You can leave this page.",
+      txSignature: "5sig",
+      pendingConfirmation: true,
+    };
+    const { fetch } = recordingFetch(() => jsonResponse(pending, 202));
+    const result = await new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }).billing.topups.submit(TOPUP, "c2lnbmVk");
+    assert.deepEqual(result, pending);
+    assert.equal(result.pendingConfirmation, true);
+    assert.equal(isTopupFinal(result.status), false);
+  });
+
+  it("reconcile sends an empty object and answers where the top-up stands", async () => {
+    const expired = {
+      status: "expired",
+      message: "The network did not take this transfer, so nothing was taken. Check your wallet balance and start the top-up again.",
+    };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(expired));
+    const result = await new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }).billing.topups.reconcile(TOPUP);
+    assert.equal(calls[0]!.rawBody, "{}");
+    assert.deepEqual(result, expired);
+    assert.equal(isTopupFinal(result.status), true);
+  });
+
+  it("get and list answer top-ups with a sentence and no raw failure text", async () => {
+    const topup = {
+      id: TOPUP,
+      status: "failed",
+      message: "This transfer failed on the network, so no payment was taken. Check your wallet balance and start the top-up again.",
+      asset: "USDC",
+      amountUsd: 10,
+      bonusUsd: 0,
+      txSignature: "5sig",
+      depositAddress: prepared.depositAddress,
+      payerAddress: PAYER,
+      createdAt: "2026-10-10T12:00:00.000Z",
+      expiresAt: "2026-10-10T12:02:00.000Z",
+    };
+    const { fetch } = recordingFetch((call) => jsonResponse(call.url.pathname.endsWith("/topups") ? { topups: [topup] } : topup));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    assert.deepEqual(await wheels.billing.topups.get(TOPUP), topup);
+    const listed = await wheels.billing.topups.list();
+    assert.deepEqual(listed, { topups: [topup] });
+    assert.equal(listed.topups[0]!.message, topup.message);
+  });
+
+  it("isTopupFinal is true only for a top-up that will not change again", () => {
+    assert.deepEqual(
+      ["prepared", "submitting", "submitted", "credited", "failed", "expired"].map((s) => [s, isTopupFinal(s)]),
+      [["prepared", false], ["submitting", false], ["submitted", false], ["credited", true], ["failed", true], ["expired", true]],
+    );
+  });
+
+  const refusals: Array<{ call: string; status: number; error: string; message: string; run: (w: WheelsAI) => Promise<unknown> }> = [
+    { call: "prepare", status: 400, error: "wallet_required", message: "Connect a Solana wallet to pay. The wallet you connect signs the transfer.", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "USDC" }) },
+    { call: "prepare", status: 400, error: "invalid_payer_address", message: "That is not a Solana wallet address. Connect a wallet and try again.", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "USDC", payerAddress: "nope" }) },
+    { call: "prepare", status: 400, error: "invalid_amount", message: "Choose an amount between $5 and $10,000.", run: (w) => w.billing.topups.prepare({ amountUsd: 1, asset: "USDC", payerAddress: PAYER }) },
+    { call: "prepare", status: 400, error: "asset_unavailable", message: "SOL is not available here right now. Pay with USDC.", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "SOL", payerAddress: PAYER }) },
+    { call: "prepare", status: 503, error: "price_unavailable", message: "We could not get a current SOL price, so nothing was prepared. Pay with USDC, or try again in a minute.", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "SOL", payerAddress: PAYER }) },
+    { call: "prepare", status: 409, error: "wallet_balance_short", message: "This wallet holds 3.20 USDC, which is less than this top-up needs. Choose a smaller amount or another wallet.", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "USDC", payerAddress: PAYER }) },
+    { call: "prepare", status: 501, error: "wallet_topups_not_enabled", message: "Wallet payments are paused for a moment. Nothing was taken. Try again shortly.", run: (w) => w.billing.topups.prepare({ amountUsd: 50, asset: "USDC", payerAddress: PAYER }) },
+    { call: "submit", status: 400, error: "message_mismatch", message: "The signed transfer does not match the one we prepared, so it was not sent. Nothing was taken. Start the top-up again.", run: (w) => w.billing.topups.submit(TOPUP, "b3RoZXI=") },
+    { call: "submit", status: 409, error: "in_flight", message: "This top-up is already being confirmed. You do not need to send it again.", run: (w) => w.billing.topups.submit(TOPUP, "b3RoZXI=") },
+    { call: "submit", status: 410, error: "topup_expired", message: "This top-up ran out of time before it was sent. Nothing was taken. Start it again.", run: (w) => w.billing.topups.submit(TOPUP, "c2lnbmVk") },
+    { call: "submit", status: 503, error: "chain_unavailable", message: "Wallet payments are paused for a moment. Nothing was taken. Try again shortly.", run: (w) => w.billing.topups.submit(TOPUP, "c2lnbmVk") },
+  ];
+  for (const refusal of refusals) {
+    it(`${refusal.call} keeps the ${refusal.status} ${refusal.error} and its sentence`, async () => {
+      const { fetch } = recordingFetch(() => jsonResponse({ error: refusal.error, message: refusal.message }, refusal.status));
+      const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+      await assert.rejects(refusal.run(wheels), (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.equal(err.status, refusal.status);
+        assert.equal(err.code, refusal.error);
+        assert.equal(err.message, refusal.message);
+        return true;
+      });
+    });
+  }
+
+  it("refuses an empty top-up id before anything is sent", async () => {
+    const { fetch, calls } = recordingFetch();
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    assert.throws(() => wheels.billing.topups.get(""), WheelsAIError);
+    assert.throws(() => wheels.billing.topups.submit("..", "c2lnbmVk"), WheelsAIError);
+    assert.equal(calls.length, 0);
   });
 });

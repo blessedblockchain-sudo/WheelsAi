@@ -226,6 +226,55 @@ if (waiting) await wheels.marketplace.cancelPayout(waiting.id); // the amount go
 plain sentence, and its amount is already back in your earnings. Cancelling needs a session token
 (`auth.login`) of an owner or admin.
 
+### Adding credits from a wallet
+
+Pay in USDC or SOL from a Solana wallet. The API prepares the transfer, the wallet signs it, and
+the credits are added once the network confirms it, exactly once.
+
+```ts
+const { rails } = await wheels.billing.packages();
+// rails.wallet says whether wallet payments are open; rails.walletAssets lists "USDC" and, when offered, "SOL".
+
+const prepared = await wheels.billing.topups.prepare({
+  amountUsd: 50,
+  asset: "USDC",
+  payerAddress: wallet.publicKey.toBase58(), // the wallet that signs and pays
+});
+console.log(prepared.message); // a sentence for the person paying
+
+// Sign prepared.unsignedTxBase64 with that wallet and encode the signed transaction as base64.
+const signedTxBase64 = await signWithYourWallet(prepared.unsignedTxBase64);
+
+let result = await wheels.billing.topups.submit(prepared.topupId, signedTxBase64);
+while (!isTopupFinal(result.status)) {
+  await new Promise((r) => setTimeout(r, 3000));
+  result = await wheels.billing.topups.reconcile(prepared.topupId);
+}
+console.log(result.message); // "Added $55.00 in credits: $50.00 paid and a $5.00 bonus."
+```
+
+`isTopupFinal` is exported by the package. `signWithYourWallet` stands for your own signing code:
+the wallet signs the prepared transfer as it is. A wallet may add its own fee setting; any other
+change is refused with `message_mismatch` and nothing is sent.
+
+- `payerAddress` is the wallet that pays. It does not have to be linked to your account. With a
+  session that signed in with a wallet you can leave it out, and that wallet pays; with neither,
+  `prepare` answers 400 `wallet_required`.
+- A SOL top-up carries `quote: { solPriceUsd, validUntil }` and holds its price for 60 seconds. A
+  USDC top-up has `quote: null` and can be sent for 120 seconds. `amountRaw` is the amount the
+  wallet sends in base units, as a string.
+- `submit` answers `status: "credited"` with `grantedUsd` and `balanceUsd` when the transfer was
+  confirmed during the call. Otherwise `pendingConfirmation` is true: the credits are added when
+  the network confirms the transfer, whether or not you keep asking. `reconcile` checks now and is
+  safe to repeat. Sending the same signed transfer again answers where the top-up stands.
+- `topups.get(id)` reads one top-up and `topups.list()` your organization's last 20, newest first.
+  Each has a `status` (`prepared`, `submitting`, `submitted`, `credited`, `failed`, `expired`) and
+  a `message`, a plain sentence that says where it stands.
+- A refusal is a `WheelsAIError` whose `code` is the API's (`invalid_amount`,
+  `invalid_payer_address`, `asset_unavailable`, `price_unavailable`, `wallet_balance_short`,
+  `topup_expired`, `in_flight` and the others in the API reference) and whose `message` is a
+  sentence you can show as it is.
+
 ## Authentication
 
 An API key (`apiKey`) and a session token (`token`, from `auth.login`) are both sent as
@@ -331,7 +380,7 @@ refused before anything is sent, with an error that does not repeat it.
 `run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`, `/api/capabilities`) and `skills`. Billing amounts are dollars, as the API
 returns them. To stop an agent's deployment use `agents.stopDeployment`; to buy credits, use
-`billing.checkout`.
+`billing.checkout` (card) or `billing.topups` (USDC or SOL from a wallet).
 
 ## Build and test
 

@@ -77,10 +77,17 @@ export {
 export { modelsResource, type Model, type GpuTier, type FreeModel } from "./models.js";
 export {
   billingResource,
+  isTopupFinal,
   type BillingPlan,
   type CreditBalance,
   type CreditPackage,
   type CreditTransaction,
+  type PreparedTopup,
+  type PrepareTopupInput,
+  type Topup,
+  type TopupAsset,
+  type TopupResult,
+  type TopupStatus,
   type UsageSummary,
 } from "./billing.js";
 export {

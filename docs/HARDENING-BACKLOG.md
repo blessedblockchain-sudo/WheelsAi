@@ -2,7 +2,7 @@
 
 Problems the October 2026 verification passes found and that are still open, with the reason each one was left. Everything critical or major from those passes is fixed; what remains here is minor unless marked. Add to this file instead of leaving a known problem only in a review thread, and delete an entry when its fix lands.
 
-Updated 2026-10-08.
+Updated 2026-10-11.
 
 ## Marketplace
 
@@ -86,8 +86,14 @@ Updated 2026-10-08.
 
 The model choice in an agent's Settings offers the models the organization runs on Nosana, and an agent answered from one on a live GPU on 2026-10-11 (`docs/NOSANA-DEPLOY-RUN.md`, "Third live run"). Left open:
 
-- **Stopping a deployment does not say which agents are set to it.** The agents then cannot answer; their Settings say so afterwards, and their chat answers 503 with the reason. Nothing warns at the Stop button.
-- **An agent on sale whose model is its creator's own deployment stops answering buyers when that deployment stops.** A buyer reads "unavailable"; a monthly subscriber has paid for the month. Nothing pauses the sale or tells the creator. It needs a decision: warn at Stop, pause the listing, or answer from another model.
+- **Stopping a deployment warns, and the listing is paused** (2026-10-11, `services/listingPause.ts`): Stop names the agents that will stop answering, and a listing that sells use is paused while its agent's model is not running: nobody can start, nobody is charged, no month is renewed, and a month paid for is made longer by the paused time. Rehearsed against the stand-in for Nosana on a real database (`docs/NOSANA-DEPLOY-RUN.md`, "The pause, rehearsed"), not against a live GPU. What that left open:
+  - The pause marker is brought up to date at the owner's Stop, at a start, and by the renewal worker (hourly by default). A model that stops by itself is marked at the worker's next run, so up to an hour of a paid month is not given back; a model that comes back is unmarked at the next run too, so months are lengthened by up to an hour too much. Bringing the marker up to date when the status worker ends or starts a deployment would close both.
+  - A model that does not answer for a moment (no healthy node at the instant the worker looks) pauses the listing until the next run, and the months are lengthened by that time. It errs in the buyer's favour.
+  - Nothing tells the creator when a model stops by itself and their listing is paused: no email, no alert. The Sell tab and the agent's Settings say so when opened.
+  - Marketplace cards and the Installed page do not show that a listing is paused; the agent's own page and the refusals do. A buyer who is signed out sees the pause only after signing in.
+  - The Stop warning counts a deployment that is still starting as one agents answer from.
+  - `wheelsai deployments stop` in the CLI stops without the warning; the API's dependents route is there for it.
+  - A refusal shown inside the chat or task panel of the public page stays there after the pause ends, until the next send.
 - Run live only as an owner's chat, without tools, on Ollama. A task agent's run, a scheduled run, an agent with tools, a visitor's or a buyer's chat, a fine-tuned model and vLLM behind an agent are covered by unit tests only.
 - The platform's record of an agent's chat on such a model (`request_latency_samples`) names the model and `nosana` as the provider, and no deployment.
 - `GET /api/agents/hosted-models` answers 500 when the list cannot be read, where the models route answers `hostedModels: null` and its other lists.

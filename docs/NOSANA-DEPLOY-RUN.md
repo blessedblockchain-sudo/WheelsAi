@@ -1015,6 +1015,49 @@ The check that drove it is a script kept with the working files of the run
 sixteenth was the script's own mistake about a column (it looked for an HTTP status on a
 record that does not carry one for this kind of request).
 
+### The pause, rehearsed against the stand-in (2026-10-11)
+
+When the deployment of the third run was stopped, the agent set to it could not answer. Had
+it been on sale, its buyers would have read "unavailable" and a monthly subscriber would
+have gone on paying. The same day the product gained a warning at Stop and a pause for the
+listing (commits `641ad3f` to `9e5f72b`; the rule is in `services/listingPause.ts`).
+
+This was NOT run against Nosana. It was walked on this machine against the stand-in
+(`scripts/nosana-fake-api.ts`, whose node now also answers a chat), with the real API, a real
+Postgres database made empty for it, and the renewal worker running every 5 seconds in
+place of every hour. It proves our own code end to end, the statement that lengthens paid
+months among it; it proves nothing about a GPU.
+
+The walk, 23 of 23, three runs. The figures are those of the last one:
+
+| Step | What happened |
+|---|---|
+| A seller deploys a model, sets an agent to it and sells its use at $6.00 a month | Two buyers subscribe and pay $6.00 each. One sends a message: answered from the stand-in node, nothing more charged |
+| What Stop will say | `GET /api/deployments/:id/dependents` names the agent, says it is on sale and counts its 2 subscribers. Another organization reads 404 |
+| The deployment is stopped | The listing's clock stops within the second |
+| While it is paused | The buyer's access answer says `paused`. A subscriber's message is refused 503 `agent_paused`, "This agent is paused right now. Nothing was charged.", and nothing is charged. A new buyer's start is refused 409 `listing_paused`: no licence, no subscription, no charge. The seller's own listing says paused, and since when |
+| A month that ends during the pause | Not renewed: three runs of the worker pass, nothing is charged and the subscription is as it was |
+| The model is deployed again | The listing is on sale again by itself, within 5 seconds of the model running |
+| The months paid for | Longer by the time of the pause: 53 seconds, for both subscribers |
+| The renewal that waited | Its lengthened month ended 24 seconds after the pause did. It was then charged once, $6.00, and the new month is 30 days |
+| A month started just after a pause | Exactly 30 days: the start ends the pause first, and an earlier month is longer only by the part of the pause that fell inside it |
+| The seller's sales | Five months: four first months and one renewal |
+
+The screens, in a browser against the same set-up, 17 of 17, twice: Stop on the deployment's
+page opens "Stop this deployment?" with "1 agent answers from this deployment and will stop
+answering until you deploy this model again or give it another model:", the agent's name, and
+"On sale: <name>. Its listing is paused while it cannot answer: nobody can start using it and
+nobody is charged. People who pay monthly keep the days they paid for."; "Keep it running"
+stops nothing; "Stop deployment" stops it; the seller's Sell tab and the buyer's page then say
+paused in the agreed words and the buyer cannot send; with the model deployed again the
+buyer's page comes back without a reload; Stop on the deployments list asks the same way;
+and a deployment no agent depends on (another deployment of the model is running) stops
+with no question and pauses nothing.
+
+Not shown by this: the same against a live GPU; a pause that begins because a model stops
+by itself (the marker is then set by the worker's next run, hourly by default); a paid task
+agent and a scheduled agent on a paused listing.
+
 ---
 
 ## Settled by the 2026-10-07 verification

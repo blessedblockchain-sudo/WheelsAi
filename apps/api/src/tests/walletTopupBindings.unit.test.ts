@@ -550,9 +550,9 @@ function makeConnection(over: Record<string, unknown> = {}) {
       calls.push({ method: "sendRawTransaction", args });
       return "sig";
     },
-    confirmTransaction: async (...args: unknown[]) => {
-      calls.push({ method: "confirmTransaction", args });
-      return { context: { slot: 1 }, value: { err: null } };
+    getSignatureStatuses: async (...args: unknown[]) => {
+      calls.push({ method: "getSignatureStatuses", args });
+      return { context: { slot: 1 }, value: [{ slot: 1, confirmations: 1, err: null, confirmationStatus: "confirmed" }] };
     },
     ...over,
   } as unknown as TopupConnection;
@@ -664,38 +664,109 @@ test("a send hands over the signed bytes as they are; an error is a detail with 
   assert.ok(!result.ok && result.detail.includes("<address>"));
 });
 
-test("the wait never throws and never outlasts its limit", async () => {
+test("the wait asks the node about the signature until it is confirmed, and subscribes to nothing", async () => {
   const args = { signature: "sig", blockhash: "hash", lastValidBlockHeight: 1_000 };
-  const throwing = makeConnection({
-    confirmTransaction: async () => {
-      throw new Error(HOSTILE);
+  const answers: unknown[] = [
+    null,
+    { slot: 5, confirmations: 0, err: null, confirmationStatus: "processed" },
+    { slot: 5, confirmations: 1, err: null, confirmationStatus: "confirmed" },
+    { slot: 5, confirmations: 9, err: null, confirmationStatus: "confirmed" },
+  ];
+  const asked: unknown[][] = [];
+  const { connection } = makeConnection({
+    getSignatureStatuses: async (...a: unknown[]) => {
+      asked.push(a);
+      return { context: { slot: 9 }, value: [answers[Math.min(asked.length - 1, answers.length - 1)]] };
     },
   });
   await buildWalletTopupChain({
+    getConnection: () => connection,
+    usdcMint: MINT,
+    confirmWaitMs: 5_000,
+    confirmPollMs: 5,
+  }).waitForConfirmation(args);
+  assert.equal(asked.length, 3, "no record, then processed, then confirmed: it stops there");
+  assert.deepEqual(asked[0], [["sig"]]);
+  // The connection it is given has no confirmTransaction to call: that is the one that subscribes.
+  assert.equal((connection as unknown as Record<string, unknown>).confirmTransaction, undefined);
+});
+
+test("the wait ends at once on a transfer that failed, and on a node that says rooted without a level", async () => {
+  const args = { signature: "sig", blockhash: "hash", lastValidBlockHeight: 1_000 };
+  for (const status of [
+    { slot: 5, confirmations: 0, err: { InstructionError: [0, "Custom"] }, confirmationStatus: "processed" },
+    { slot: 5, confirmations: null, err: null },
+  ]) {
+    let asked = 0;
+    const { connection } = makeConnection({
+      getSignatureStatuses: async () => {
+        asked += 1;
+        return { context: { slot: 9 }, value: [status] };
+      },
+    });
+    await buildWalletTopupChain({
+      getConnection: () => connection,
+      usdcMint: MINT,
+      confirmWaitMs: 5_000,
+      confirmPollMs: 5,
+    }).waitForConfirmation(args);
+    assert.equal(asked, 1);
+  }
+});
+
+test("the wait never throws and never outlasts its limit", async () => {
+  const args = { signature: "sig", blockhash: "hash", lastValidBlockHeight: 1_000 };
+  let asked = 0;
+  const throwing = makeConnection({
+    getSignatureStatuses: async () => {
+      asked += 1;
+      throw new Error(HOSTILE);
+    },
+  });
+  let started = Date.now();
+  await buildWalletTopupChain({
     getConnection: () => throwing.connection,
     usdcMint: MINT,
+    confirmWaitMs: 400,
+    confirmPollMs: 5,
   }).waitForConfirmation(args);
+  assert.ok(asked >= 2, "a read that throws is asked again");
+  assert.ok(Date.now() - started < 5_000);
 
   const unbuildable = buildWalletTopupChain({
     getConnection: () => {
       throw new Error("no connection");
     },
     usdcMint: MINT,
+    confirmWaitMs: 30,
+    confirmPollMs: 5,
   });
   await unbuildable.waitForConfirmation(args);
 
-  let release = () => {};
+  // A node that never answers and a transfer that never shows: the limit ends both.
   const hanging = makeConnection({
-    confirmTransaction: () => new Promise((resolve) => (release = () => resolve(null))),
+    getSignatureStatuses: () => new Promise(() => {}),
   });
-  const started = Date.now();
+  started = Date.now();
   await buildWalletTopupChain({
     getConnection: () => hanging.connection,
     usdcMint: MINT,
     confirmWaitMs: 20,
+    confirmPollMs: 5,
   }).waitForConfirmation(args);
-  assert.ok(Date.now() - started < 2_000);
-  release();
+  assert.ok(Date.now() - started < 5_000);
+
+  const silent = makeConnection({
+    getSignatureStatuses: async () => ({ context: { slot: 9 }, value: [null] }),
+  });
+  started = Date.now();
+  await buildWalletTopupChain({
+    getConnection: () => silent.connection,
+    usdcMint: MINT,
+    confirmWaitMs: 30,
+    confirmPollMs: 5,
+  }).waitForConfirmation(args);
+  assert.ok(Date.now() - started >= 25 && Date.now() - started < 5_000);
 });
 
 test("the blockhash is read at confirmed", async () => {

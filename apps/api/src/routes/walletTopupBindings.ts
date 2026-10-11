@@ -275,7 +275,7 @@ export type TopupConnection = Pick<
   | "getLatestBlockhash"
   | "getMultipleAccountsInfo"
   | "sendRawTransaction"
-  | "confirmTransaction"
+  | "getSignatureStatuses"
 >;
 
 export type WalletTopupChain = Pick<
@@ -308,13 +308,31 @@ function tokenAmount(
   ).getBigUint64(TOKEN_ACCOUNT_AMOUNT_OFFSET, true);
 }
 
+/** How often the wait asks the node about a signature. */
+export const TOPUP_CONFIRM_POLL_MS = 1_500;
+
+/** Resolves when the promise settles or the time is up, whichever is
+ * first, and leaves no timer behind. Never rejects. */
+function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, Math.max(0, ms));
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(done, done);
+  });
+}
+
 export function buildWalletTopupChain(input: {
   getConnection: () => TopupConnection;
   usdcMint: PublicKey;
   confirmWaitMs?: number;
+  confirmPollMs?: number;
 }): WalletTopupChain {
   const { getConnection, usdcMint } = input;
   const confirmWaitMs = input.confirmWaitMs ?? TOPUP_CONFIRM_WAIT_MS;
+  const confirmPollMs = input.confirmPollMs ?? TOPUP_CONFIRM_POLL_MS;
 
   return {
     getLatestBlockhash: async () => {
@@ -367,29 +385,39 @@ export function buildWalletTopupChain(input: {
       }
     },
 
-    // Waits for the node, at most confirmWaitMs. Whatever it says or
-    // throws decides nothing: the caller reads the signature's fate.
-    waitForConfirmation: async ({ signature, blockhash, lastValidBlockHeight }) => {
-      let timer: NodeJS.Timeout | undefined;
-      const limit = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, confirmWaitMs);
-        timer.unref?.();
-      });
-      const confirmed = Promise.resolve()
-        .then(() =>
-          getConnection().confirmTransaction(
-            { signature, blockhash, lastValidBlockHeight },
-            "confirmed",
-          ),
-        )
-        .then(
-          () => undefined,
-          () => undefined,
-        );
-      try {
-        await Promise.race([confirmed, limit]);
-      } finally {
-        if (timer) clearTimeout(timer);
+    // Asks the node about the signature until it is confirmed or has
+    // failed, at most confirmWaitMs. It asks rather than subscribes: a
+    // subscription needs a WebSocket, which not every RPC plan serves at
+    // the address the HTTP one is at, and without one the request would
+    // hold for the whole limit. Whatever the node says or throws decides
+    // nothing: the caller reads the signature's fate.
+    waitForConfirmation: async ({ signature }) => {
+      const deadline = Date.now() + confirmWaitMs;
+      for (;;) {
+        const left = deadline - Date.now();
+        if (left <= 0) return;
+        let settled = false;
+        const read = Promise.resolve()
+          .then(() => getConnection().getSignatureStatuses([signature]))
+          .then(
+            (answer) => {
+              const status = answer?.value?.[0] ?? null;
+              if (!status) return;
+              // Some providers leave the level out; `confirmations: null`
+              // is then the node's way of saying the block is rooted.
+              settled =
+                status.err != null ||
+                status.confirmationStatus === "confirmed" ||
+                status.confirmationStatus === "finalized" ||
+                (status.confirmationStatus == null && status.confirmations === null);
+            },
+            () => undefined,
+          );
+        await settledWithin(read, left);
+        if (settled) return;
+        const rest = deadline - Date.now();
+        if (rest <= 0) return;
+        await settledWithin(new Promise<void>(() => {}), Math.min(confirmPollMs, rest));
       }
     },
   };

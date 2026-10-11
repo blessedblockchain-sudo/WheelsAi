@@ -422,6 +422,9 @@ export function makeChain() {
     getTransaction: [] as Array<{ signature: string; options: any }>,
   };
   const failing = { watch: null as Error | null, history: new Set<string>() };
+  /** A provider that hands back at most this many signatures a page,
+   * whatever limit it was asked for. null: it honours the limit. */
+  let pageCap: number | null = null;
 
   /** Puts a transaction on the chain: in the history of every account it
    * names, and loadable. */
@@ -481,7 +484,8 @@ export function makeChain() {
         const stop = list.indexOf(options.until);
         if (stop >= 0) list = list.slice(0, stop);
       }
-      return list.slice(0, options?.limit ?? 1000).map((signature) => ({ signature }));
+      const asked = options?.limit ?? 1000;
+      return list.slice(0, pageCap === null ? asked : Math.min(asked, pageCap)).map((signature) => ({ signature }));
     },
     getTransaction: async (signature: string, options: any) => {
       calls.getTransaction.push({ signature, options });
@@ -493,6 +497,9 @@ export function makeChain() {
 
   return {
     connection: connection as unknown as DepositScanConnection,
+    capPages: (cap: number | null) => {
+      pageCap = cap;
+    },
     balances,
     histories,
     transactions,

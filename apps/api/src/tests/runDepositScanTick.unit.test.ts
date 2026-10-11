@@ -236,8 +236,8 @@ test("a USDC transfer that opens the account: credited, the USDC cursor moves, t
   assert.deepEqual(w.row(ORG_1).usdcAccountOpenedAt, NOW);
   assert.deepEqual(
     w.chain.calls.getSignaturesForAddress.map((c) => c.account),
-    [A1, usdcAccountOf(A1)],
-    "both histories are read",
+    [A1, usdcAccountOf(A1), usdcAccountOf(A1)],
+    "both histories are read, and the one with something new is asked once more: only an empty page ends a read",
   );
 });
 
@@ -301,10 +301,41 @@ test("history is read oldest first, page by page back to the cursor", async () =
       { limit: 2, until: "sig_0" },
       { limit: 2, before: "sig_4", until: "sig_0" },
       { limit: 2, before: "sig_2", until: "sig_0" },
+      // The page before was short. That is not taken for the end: an empty one is.
+      { limit: 2, before: "sig_1", until: "sig_0" },
     ],
   );
   assert.equal(w.row(ORG_1).lastSolSignature, "sig_5");
   assert.equal(w.row(ORG_1).lastSeenLamports, 6n * SOL);
+});
+
+test("a provider that hands back shorter pages than it was asked for hides no transfer", async () => {
+  // Asked for 1,000 a page, this one gives 2. Five transfers are newer than the cursor.
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_0", lastSeenLamports: SOL })] });
+  w.chain.capPages(2);
+  let held = 0n;
+  for (let i = 0; i <= 5; i += 1) {
+    w.chain.land(`sig_${i}`, solTransfer(A1, SOL, held));
+    held += SOL;
+  }
+  w.chain.setBalance(A1, held);
+  const res = await w.run();
+  assert.equal(res.credited, 5, "every one of the five is read and credited");
+  assert.deepEqual(
+    w.chain.calls.getTransaction.map((c) => c.signature),
+    ["sig_1", "sig_2", "sig_3", "sig_4", "sig_5"],
+  );
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_5", "the cursor moves only past what was read");
+  assert.equal(w.row(ORG_1).lastSeenLamports, 6n * SOL);
+  assert.equal(w.errors().length, 0);
+});
+
+test("an account with nothing new costs one request, as before", async () => {
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_0", lastSeenLamports: SOL })] });
+  w.chain.land("sig_0", solTransfer(A1, SOL, 0n));
+  w.chain.setBalance(A1, SOL + 1n); // the watch sees a change, the history has nothing newer
+  await w.run();
+  assert.equal(w.chain.calls.getSignaturesForAddress.filter((c) => c.account === A1).length, 1);
 });
 
 test("lastSeen is what the cursor's transaction left, not what the watch read", async () => {

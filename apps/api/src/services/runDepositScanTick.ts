@@ -306,6 +306,12 @@ async function retryDetected(
  * The signatures of an account newer than its cursor, oldest first.
  * "too_many_pages" when the cursor (or the start of the history) was not
  * reached within the page limit.
+ *
+ * Only an EMPTY page, or the cursor itself, ends the read. A page shorter
+ * than was asked for does not: a provider may hand back fewer signatures
+ * than the limit while older ones remain, and stopping there would move
+ * the cursor past transfers nobody read. It costs one more request for an
+ * account that has something new, and none for one that has not.
  */
 async function signaturesSince(
   deps: DepositScanDeps,
@@ -327,7 +333,7 @@ async function signaturesSince(
       if (cursor !== null && signature === cursor) return found.reverse();
       found.push(signature);
     }
-    if (signatures.length < limit) return found.reverse();
+    if (signatures.length === 0) return found.reverse();
     before = signatures[signatures.length - 1];
   }
   return "too_many_pages";

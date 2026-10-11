@@ -26,7 +26,8 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { SkillStatusBadge, SkillUnavailableNote } from "@/components/dashboard/skill-status";
-import { agentsApi, skillsApi, type CreateAgentInput, type Skill, getErrorMessage } from "@/lib/api";
+import { agentsApi, skillsApi, type CreateAgentInput, type HostedModelChoice, type Skill, getErrorMessage } from "@/lib/api";
+import { HOSTED_GROUP_LABEL, hostedModelLabel } from "@/lib/model-choice";
 import { cn } from "@/lib/utils";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -147,6 +148,22 @@ export function CodeImport() {
   useEffect(() => {
     loadSkills();
   }, [loadSkills]);
+
+  // The models this organization runs on Nosana. Without the list the picker
+  // offers the rest as it always did, so a failure to read it is not shown.
+  const [hostedModels, setHostedModels] = useState<HostedModelChoice[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    agentsApi
+      .hostedModels()
+      .then((result) => {
+        if (!cancelled) setHostedModels(result.hostedModels ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Visible steps exclude "start" once past it so progress bar shows correctly
   const visibleSteps = steps.filter((s) => s.id !== "start");
@@ -513,10 +530,15 @@ export function CodeImport() {
                         <option value="anthropic/claude-3-opus">Claude 3 Opus</option>
                         <option value="anthropic/claude-3-sonnet">Claude 3 Sonnet</option>
                       </optgroup>
-                      <optgroup label="WheelsAI (Your Deployments)">
-                        <option value="wheelsai/llama-3.1-8b">Llama 3.1 8B</option>
-                        <option value="wheelsai/llama-3.1-70b">Llama 3.1 70B</option>
-                      </optgroup>
+                      {hostedModels.length > 0 && (
+                        <optgroup label={HOSTED_GROUP_LABEL}>
+                          {hostedModels.map((m) => (
+                            <option key={m.id} value={m.id} disabled={!m.available}>
+                              {hostedModelLabel(m)}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
                     </Select>
                   </div>
 

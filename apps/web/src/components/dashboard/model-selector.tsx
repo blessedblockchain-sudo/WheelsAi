@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { playgroundApi, type PlaygroundModelsResponse } from "@/lib/api";
-import { chosenModel, offeredModelIds } from "@/lib/model-choice";
+import { HOSTED_GROUP_LABEL, chosenModel, hostedModelLabel, isUnlistedModel, offeredModelIds } from "@/lib/model-choice";
 import { Select } from "@/components/ui/select";
 
 interface ModelSelectorProps {
@@ -21,9 +21,11 @@ interface ModelSelectorProps {
   defaultLabel?: string;
   /** Called once the list of models has been read (or could not be), when what is shown is what is held. */
   onReady?: () => void;
+  /** Called with the list of models once it has been read, for a page that says something about it beside the picker. */
+  onModels?: (models: PlaygroundModelsResponse) => void;
 }
 
-export function ModelSelector({ agentId, value, onChange, id, ariaLabel = "Model", defaultLabel, onReady }: ModelSelectorProps) {
+export function ModelSelector({ agentId, value, onChange, id, ariaLabel = "Model", defaultLabel, onReady, onModels }: ModelSelectorProps) {
   const [models, setModels] = useState<PlaygroundModelsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -40,10 +42,13 @@ export function ModelSelector({ agentId, value, onChange, id, ariaLabel = "Model
 
   // What is shown is what is held: a model this server does not offer gives
   // way to the first one it does (lib/model-choice).
-  const handlers = useRef({ onChange, onReady });
+  const handlers = useRef({ onChange, onReady, onModels });
   useEffect(() => {
-    handlers.current = { onChange, onReady };
+    handlers.current = { onChange, onReady, onModels };
   });
+  useEffect(() => {
+    if (models) handlers.current.onModels?.(models);
+  }, [models]);
   useEffect(() => {
     if (isLoading) return;
     if (models && !keepsValue) {
@@ -66,7 +71,8 @@ export function ModelSelector({ agentId, value, onChange, id, ariaLabel = "Model
   }
 
   const availableFree = models?.freeModels?.filter((m) => m.available) ?? [];
-  const notOffered = keepsValue && value !== "" && !offered.includes(value);
+  const hosted = models?.hostedModels ?? [];
+  const notOffered = keepsValue && isUnlistedModel(value, models);
 
   return (
     <Select
@@ -78,6 +84,15 @@ export function ModelSelector({ agentId, value, onChange, id, ariaLabel = "Model
     >
       {keepsValue && <option value="">{defaultLabel}</option>}
       {notOffered && <option value={value}>{value} (not available right now)</option>}
+      {hosted.length > 0 && (
+        <optgroup label={HOSTED_GROUP_LABEL}>
+          {hosted.map((m) => (
+            <option key={m.id} value={m.id} disabled={!m.available}>
+              {hostedModelLabel(m)}
+            </option>
+          ))}
+        </optgroup>
+      )}
       <optgroup label="Free Models (No API Key)">
         {availableFree.map((m) => (
           <option key={m.id} value={m.id}>

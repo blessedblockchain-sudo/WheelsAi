@@ -1041,7 +1041,28 @@ export interface PlaygroundModel {
   available: boolean;
 }
 
+/** One model the organization runs itself, as an agent's model choice. */
+export interface HostedModelChoice {
+  /** What an agent's model is set to: "wheelsai/<catalog model id>", or "wheelsai/ft-<fine-tuned model slug>". */
+  id: string;
+  /** The model's name as the catalog (or the fine-tuned model) gives it. */
+  displayName: string;
+  /** True when an agent set to this id would be answered right now. */
+  available: boolean;
+  /** "running": answering. "starting": its deployment is not serving yet. "not_answering": it should be and is not. */
+  state: "running" | "starting" | "not_answering";
+  fineTuned: boolean;
+  /** The deployment an agent set to this id is answered from. */
+  deployment: { id: string; slug: string; name: string | null };
+}
+
 export interface PlaygroundModelsResponse {
+  /**
+   * The models the organization runs on Nosana. Null when the API could not
+   * read them just now, and absent from an older API: in both cases nothing
+   * is known, which is not the same as an empty list.
+   */
+  hostedModels?: HostedModelChoice[] | null;
   freeModels: PlaygroundModel[];
   externalModels: Array<{
     id: string;
@@ -1597,6 +1618,9 @@ export const agentsApi = {
   list: () => api<{ agents: Agent[]; total: number }>("/api/agents"),
 
   get: (id: string) => api<{ agent: AgentDetail }>(`/api/agents/${id}`),
+
+  /** The models the organization runs on Nosana, for a screen that has no agent yet. */
+  hostedModels: () => api<{ hostedModels: HostedModelChoice[] }>("/api/agents/hosted-models"),
 
   create: (input: CreateAgentInput) =>
     api<CreateAgentResult>(

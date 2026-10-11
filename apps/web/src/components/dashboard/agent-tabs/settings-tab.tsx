@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, KeyRound, Plus, Save, Trash2, X } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { taskFieldsOf, type AgentKind } from "@wheelsai/shared/agent-kind";
@@ -21,6 +22,7 @@ import {
   getErrorMessage,
   getValidationError,
   knowledgeApi,
+  type HostedModelChoice,
   type KnowledgeBase,
   type UpdateAgentInput,
 } from "@/lib/api";
@@ -36,6 +38,7 @@ import {
   type FieldDraft,
   type FieldIssues,
 } from "@/lib/field-builder";
+import { hostedModelLine } from "@/lib/model-choice";
 import { cn } from "@/lib/utils";
 import type { AgentTabProps } from "./types";
 
@@ -171,6 +174,10 @@ export function SettingsTab({ agent, agentId, loadAgent }: AgentTabProps) {
     questionsChanged;
 
   const showAdvanced = advancedOpen || ADVANCED_PROBLEMS.some((field) => problems[field]);
+
+  // The models this organization runs on Nosana, as the picker read them: null until it has, or when the server does not say.
+  const [hostedModels, setHostedModels] = useState<HostedModelChoice[] | null>(null);
+  const modelLine = hostedModelLine(form.model, hostedModels);
 
   function discard() {
     setForm(initial);
@@ -456,7 +463,24 @@ export function SettingsTab({ agent, agentId, loadAgent }: AgentTabProps) {
                     value={form.model}
                     onChange={(v) => update("model", v)}
                     defaultLabel="WheelsAI's default model"
+                    onModels={(models) => setHostedModels(models.hostedModels ?? null)}
                   />
+                  {modelLine && (
+                    <p className="text-xs text-muted-foreground">
+                      {modelLine.text}
+                      {modelLine.kind !== "hosted" && (
+                        <>
+                          {" "}
+                          <Link
+                            href={modelLine.href}
+                            className="rounded text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            {modelLine.linkLabel}
+                          </Link>
+                        </>
+                      )}
+                    </p>
+                  )}
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">

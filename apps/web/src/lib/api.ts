@@ -546,29 +546,72 @@ export const apiKeysApi = {
 // ============================================
 
 export interface CreditBalance {
+  /** What can be spent now. */
   available: number;
-  pending: number;
+  /** Everything still held: the total of GET /api/billing/holds. */
+  held: number;
+  /** Available plus held. */
   total: number;
+  /** The same figure as `held`, kept for older callers. */
+  pending: number;
 }
 
+/** What holds credits, as GET /api/billing/holds names it. */
+export type CreditHoldKind = "deployment" | "agent_deployment" | "fine_tuning" | "job" | "try_it";
+
+/** One thing that holds credits. `note` is the API's sentence for why, and when it comes back. */
+export interface CreditHold {
+  kind: CreditHoldKind | (string & {});
+  id: string;
+  name: string;
+  amount: number;
+  since: string;
+  note: string;
+}
+
+/** How a ledger row reads: the kinds of packages/shared/src/ledger.ts. */
+export type CreditTransactionKind =
+  | "added"
+  | "spent"
+  | "returned"
+  | "held"
+  | "released"
+  | "taken_back"
+  | "other";
+
+/** The filters GET /api/billing/transactions takes. */
+export type CreditTransactionFilter = "added" | "spent" | "held";
+
+/** One row of the credit ledger. `amount` and `balanceAfter` are signed dollars; `label` is the API's name for the row. */
 export interface CreditTransaction {
   id: string;
   amount: number;
-  type: "purchase" | "bonus" | "usage" | "refund";
+  /** The stored type, in lower case. */
+  type: string;
+  kind: CreditTransactionKind;
+  label: string;
   description: string;
+  balanceAfter: number;
   createdAt: string;
 }
 
+/** What was spent under one heading this month, net: below zero when more came back than was charged. */
+export interface UsageSpendLine {
+  group: string;
+  label: string;
+  amount: number;
+}
+
 export interface UsageSummary {
+  /** The UTC calendar month the figures are for, "YYYY-MM". */
+  month: string;
+  /** The sum of `spend`. */
   currentMonth: number;
+  spend: UsageSpendLine[];
   gpuHours: number;
-  avgCostPerHour: number;
-  computeCost: number;
   requests: number;
-  requestsCost: number;
   inputTokens: number;
   outputTokens: number;
-  tokensCost: number;
 }
 
 export interface X402Alert {
@@ -897,8 +940,20 @@ export const billingApi = {
   /** The last 20 transfers sent straight to the address, newest first. */
   listDeposits: () => api<{ deposits: DepositRecord[] }>("/api/billing/deposits"),
 
-  getTransactions: () =>
-    api<{ transactions: CreditTransaction[] }>("/api/billing/transactions"),
+  /** Everything that holds credits now, newest first, and the total. */
+  getHolds: () => api<{ holds: CreditHold[]; total: number }>("/api/billing/holds"),
+
+  /** A page of the credit ledger, newest first. `cursor` is the `nextCursor` of the page before. */
+  getTransactions: (opts: { limit?: number; cursor?: string; filter?: CreditTransactionFilter } = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts.cursor) qs.set("cursor", opts.cursor);
+    if (opts.filter) qs.set("filter", opts.filter);
+    const query = qs.toString();
+    return api<{ transactions: CreditTransaction[]; nextCursor: string | null }>(
+      `/api/billing/transactions${query ? `?${query}` : ""}`
+    );
+  },
 
   getUsage: () =>
     api<{ usage: UsageSummary }>("/api/billing/usage"),
@@ -3494,6 +3549,32 @@ export async function downloadAnalyticsExport(opts: {
   }
   const disposition = res.headers.get("content-disposition") ?? "";
   const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `wheelsai-${opts.dataset}.${opts.format}`;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Download the credit ledger as a CSV file, for every plan. `from` and `to`
+ * are UTC days ("YYYY-MM-DD"), `to` included. Resolves once the browser has
+ * been handed the file; a refusal rejects with an ApiError carrying the
+ * API's `{ error, message }`.
+ */
+export async function downloadCreditLedger(opts: { from: string; to: string }): Promise<void> {
+  const qs = new URLSearchParams({ from: opts.from, to: opts.to });
+  const res = await fetch(`${API_URL}/api/billing/transactions/export?${qs}`, { credentials: "include" });
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    throw new ApiError(res.status, res.statusText, data);
+  }
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const filename =
+    /filename="([^"]+)"/.exec(disposition)?.[1] ?? `wheelsai-credits-${opts.from}-to-${opts.to}.csv`;
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = url;

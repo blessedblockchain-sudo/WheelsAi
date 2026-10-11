@@ -4,35 +4,28 @@ import { useEffect, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { VersionedTransaction } from "@solana/web3.js";
-import {
-  CreditCard,
-  Activity,
-  Download,
-  TrendingUp,
-  DollarSign,
-  Zap,
-  ArrowUpRight,
-  ArrowDownRight,
-  AlertTriangle,
-  CheckCircle2,
-  Wallet,
-} from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, Wallet } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  BalanceTiles,
+  BalanceTilesSkeleton,
+  SpendingCard,
+  TransactionHistoryCard,
+} from "@/components/dashboard/billing-ledger";
 import { DepositAddressPanel } from "@/components/dashboard/deposit-address-panel";
 import { PlanCard } from "@/components/dashboard/plan-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   billingApi,
   type BillingRails,
   type CreditBalance,
-  type CreditTransaction,
+  type CreditHold,
   type UsageSummary,
   type X402MetricsHistoryPoint,
   type X402MetricsResponse,
@@ -78,27 +71,6 @@ const fallbackPackages: CreditPackage[] = [
 
 // The skeleton comes in three pieces so each can stand in for its own section
 // while <PlanCard> stays mounted above them.
-
-/** Stands in for the three balance tiles. */
-function BalanceTilesSkeleton() {
-  return (
-    <div className="mb-8 grid gap-6 md:grid-cols-3">
-      {Array.from({ length: 3 }).map((_, i) => (
-        <Card key={i}>
-          <CardContent className="py-6">
-            <div className="flex items-center gap-4">
-              <Skeleton className="h-12 w-12 rounded-lg" />
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-28" />
-                <Skeleton className="h-8 w-24" />
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
 
 /** Stands in for the Add Credits card. */
 function AddCreditsSkeleton() {
@@ -180,7 +152,10 @@ function BillingDetailsSkeleton() {
 
 export default function BillingPage() {
   const [balance, setBalance] = useState<CreditBalance | null>(null);
-  const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
+  // What holds credits; null when that list did not arrive.
+  const [holds, setHolds] = useState<CreditHold[] | null>(null);
+  // Goes up each time the balance is read again, so the history starts over from the newest row.
+  const [ledgerVersion, setLedgerVersion] = useState(0);
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [x402Metrics, setX402Metrics] = useState<X402MetricsResponse | null>(null);
   const [x402History, setX402History] = useState<X402MetricsHistoryPoint[]>([]);
@@ -208,19 +183,21 @@ export default function BillingPage() {
     try {
       const [
         balanceData,
-        transactionsData,
+        holdsData,
         usageData,
         x402MetricsData,
         x402HistoryData,
       ] = await Promise.all([
         billingApi.getBalance(),
-        billingApi.getTransactions(),
+        // The tiles stand without the list: the page says so when something is held.
+        billingApi.getHolds().catch(() => null),
         billingApi.getUsage(),
         billingApi.getX402Metrics().catch(() => null),
         billingApi.getX402MetricsHistory(24, 96).catch(() => null),
       ]);
       setBalance(balanceData.balance);
-      setTransactions(transactionsData.transactions);
+      setHolds(holdsData?.holds ?? null);
+      setLedgerVersion((version) => version + 1);
       setUsage(usageData.usage);
       setX402Metrics(x402MetricsData);
       setX402History(x402HistoryData?.history ?? []);
@@ -489,58 +466,8 @@ export default function BillingPage() {
           </div>
         )}
 
-        {/* Balance overview */}
-        {dataReady && (
-        <div className="mb-8 grid gap-6 md:grid-cols-3">
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-500/10">
-                  <DollarSign className="h-6 w-6 text-green-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">Available Credits</p>
-                  <p className="text-3xl font-bold text-foreground">
-                    {formatCurrency(balance?.available || 0)}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-500/10">
-                  <TrendingUp className="h-6 w-6 text-blue-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">This Month's Usage</p>
-                  <p className="text-3xl font-bold text-foreground">
-                    {formatCurrency(usage?.currentMonth || 0)}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="py-6">
-              <div className="flex items-center gap-4">
-                <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-purple-500/10">
-                  <Zap className="h-6 w-6 text-purple-600" />
-                </div>
-                <div>
-                  <p className="text-sm text-muted-foreground">GPU Hours Used</p>
-                  <p className="text-3xl font-bold text-foreground">
-                    {(usage?.gpuHours || 0).toFixed(1)}h
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-        )}
+        {/* Balance overview: the four tiles, and what is held */}
+        {dataReady && <BalanceTiles balance={balance} usage={usage} holds={holds} />}
 
         {/* Purchase credits */}
         {isLoading ? (
@@ -709,65 +636,8 @@ export default function BillingPage() {
           </>
         )}
 
-        {/* Usage breakdown */}
-        {dataReady && usage && (
-          <Card className="mb-8">
-            <CardHeader>
-              <CardTitle className="text-base">Usage Breakdown</CardTitle>
-              <CardDescription>
-                Your resource consumption this billing period
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Compute (GPU Hours)</p>
-                    <p className="text-sm text-muted-foreground">
-                      {usage.gpuHours.toFixed(2)} hours @ avg ${usage.avgCostPerHour.toFixed(2)}/hr
-                    </p>
-                  </div>
-                  <p className="text-lg font-semibold">
-                    {formatCurrency(usage.computeCost)}
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Inference Requests</p>
-                    <p className="text-sm text-muted-foreground">
-                      {usage.requests.toLocaleString()} requests
-                    </p>
-                  </div>
-                  <p className="text-lg font-semibold">
-                    {formatCurrency(usage.requestsCost)}
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Token Usage</p>
-                    <p className="text-sm text-muted-foreground">
-                      {usage.inputTokens.toLocaleString()} input / {usage.outputTokens.toLocaleString()} output
-                    </p>
-                  </div>
-                  <p className="text-lg font-semibold">
-                    {formatCurrency(usage.tokensCost)}
-                  </p>
-                </div>
-
-                <div className="border-t pt-4">
-                  <div className="flex items-center justify-between">
-                    <p className="text-lg font-semibold">Total This Month</p>
-                    <p className="text-xl font-bold text-primary-600">
-                      {formatCurrency(usage.currentMonth)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+        {/* Spending this month, by kind */}
+        {dataReady && usage && <SpendingCard usage={usage} />}
 
         {/* X402 settlement health */}
         {dataReady && x402Metrics && (
@@ -921,81 +791,8 @@ export default function BillingPage() {
           </Card>
         )}
 
-        {/* Transaction history */}
-        {dataReady && (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div>
-              <CardTitle className="text-base">Transaction History</CardTitle>
-              <CardDescription>
-                Your recent credit transactions
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm">
-              <Download className="mr-2 h-4 w-4" />
-              Export
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {transactions.length === 0 ? (
-              <EmptyState
-                icon={CreditCard}
-                title="No transactions yet"
-                description="Credit purchases, bonuses, usage charges and refunds will show here."
-                actionLabel="Add Credits"
-                actionHref="#add-credits"
-              />
-            ) : (
-              <div className="space-y-3">
-                {transactions.map((tx) => (
-                  <div
-                    key={tx.id}
-                    className="flex items-center justify-between rounded-lg border p-4"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div
-                        className={cn(
-                          "flex h-10 w-10 items-center justify-center rounded-lg",
-                          tx.amount > 0
-                            ? "bg-green-500/10"
-                            : "bg-red-500/10"
-                        )}
-                      >
-                        {tx.amount > 0 ? (
-                          <ArrowDownRight className="h-5 w-5 text-green-600" />
-                        ) : (
-                          <ArrowUpRight className="h-5 w-5 text-red-600" />
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-medium capitalize">{tx.type.replace(/_/g, " ")}</p>
-                        <p className="text-sm text-muted-foreground">{tx.description}</p>
-                      </div>
-                    </div>
-
-                    <div className="text-right">
-                      <p
-                        className={cn(
-                          "text-lg font-semibold",
-                          tx.amount > 0
-                            ? "text-green-600"
-                            : "text-red-600"
-                        )}
-                      >
-                        {tx.amount > 0 ? "+" : "-"}
-                        {formatCurrency(Math.abs(tx.amount))}
-                      </p>
-                      <p className="text-sm text-muted-foreground">
-                        {new Date(tx.createdAt).toLocaleDateString()}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-        )}
+        {/* Transaction history: its own pages, filter and export */}
+        {dataReady && <TransactionHistoryCard reloadKey={ledgerVersion} />}
       </div>
     </div>
   );

@@ -278,8 +278,10 @@ async function main() {
   check("the paying wallet paid out exactly the 25 USDC the payouts say", paidOut === 25_000_000, `paid=${paidOut}`);
 
   const hostile = /blockhash|0x[0-9a-f]{2,}|simulation failed|custom program error|ECONN|prisma|at Object\.|SendTransactionError|-320\d\d|P20\d\d/i;
-  const leaks = seenAnswers.filter((a) => hostile.test(a.text));
-  check("no answer in this walk carried the chain's or the database's own words", leaks.length === 0, leaks.slice(0, 2).map((a) => `${a.path} ${a.status} ${short(a.text, 160)}`).join(" || "));
+  // A transaction in base64 is not words: it is left out, so that letters in it are not read as any.
+  const words = (text) => text.replace(/"[A-Za-z0-9+/=]{60,}"/g, '""');
+  const leaks = seenAnswers.filter((a) => hostile.test(words(a.text)));
+  check("no answer in this walk carried the chain's or the database's own words", leaks.length === 0, leaks.slice(0, 2).map((a) => `${a.path} ${a.status} ${short(words(a.text), 160)}`).join(" || "));
   const dashes = seenAnswers.filter((a) => /—|–/.test(a.text));
   check("no sentence in this walk has a long dash", dashes.length === 0, dashes.slice(0, 2).map((a) => `${a.path} ${short(a.text, 120)}`).join(" || "));
 

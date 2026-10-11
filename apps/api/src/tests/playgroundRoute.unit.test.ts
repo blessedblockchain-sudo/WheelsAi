@@ -11,8 +11,13 @@ process.env.JWT_SECRET = process.env.JWT_SECRET ?? "1234567890123456789012345678
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import Fastify, { type FastifyInstance } from "fastify";
+import pinoImport from "pino";
+
+import "./unitEnv.js";
+import { logger as rootLogger } from "../utils/logger.js";
 
 import type { AgentChatAgent, AgentChatDeps } from "../services/agentChat.js";
+import type { HostedModelChoice } from "../services/hostedModelChoices.js";
 import type { ChatResult, ChatStream, RunChatOptions } from "../services/mastra-runtime.js";
 
 // POST /api/agents/:agentId/playground/chat through the real route and the
@@ -112,7 +117,11 @@ function chatDeps(over: Partial<AgentChatDeps> = {}, charge = false): { deps: Ag
   return { deps, spy };
 }
 
-async function buildApp(deps: AgentChatDeps, orgId = ORG): Promise<FastifyInstance> {
+async function buildApp(
+  deps: AgentChatDeps,
+  orgId = ORG,
+  hostedModels?: (orgId: string) => Promise<HostedModelChoice[]>,
+): Promise<FastifyInstance> {
   const { createPlaygroundRoutes } = await import("../routes/playground.js");
   const app = Fastify();
   await app.register(cors, { origin: ORIGIN, credentials: true });
@@ -123,6 +132,7 @@ async function buildApp(deps: AgentChatDeps, orgId = ORG): Promise<FastifyInstan
       requireAuth: async (request) => {
         (request as { auth?: unknown }).auth = { orgId, userId: "user-1" };
       },
+      hostedModels,
     }),
     { prefix: "/api" },
   );
@@ -444,4 +454,129 @@ test("an agent whose entrypoint is its graph answers the playground through the 
   } finally {
     await app2.close();
   }
+});
+
+// ============================================
+// GET /api/agents/:agentId/playground/models
+// ============================================
+
+// What the playground routes log as an error, kept beside the real logging.
+// The route module makes its logger when it is first imported, which every
+// test here does through buildApp, so the hook is in place before that.
+const playgroundErrors: Array<{ fields: unknown; message: unknown }> = [];
+{
+  const root = rootLogger as unknown as { child: (bindings: Record<string, unknown>) => any };
+  const realChild = root.child.bind(root);
+  root.child = (bindings) => {
+    const child = realChild(bindings);
+    if (bindings.context === "playground") {
+      const realError = child.error.bind(child);
+      child.error = (fields: unknown, message: unknown, ...rest: unknown[]) => {
+        playgroundErrors.push({ fields, message });
+        return realError(fields, message, ...rest);
+      };
+    }
+    return child;
+  };
+}
+
+/** The line a logger like the API's writes for these fields. */
+function logLine(fields: unknown, message: unknown): string {
+  let line = "";
+  const pino = pinoImport as unknown as (options: object, destination: { write: (s: string) => void }) => any;
+  pino({}, { write: (s) => (line += s) }).error(fields, message);
+  return line;
+}
+
+const HOSTED: HostedModelChoice = {
+  id: "wheelsai/llama-3.1-8b",
+  displayName: "Llama 3.1 8B",
+  available: true,
+  state: "running",
+  fineTuned: false,
+  deployment: { id: "33333333-3333-4333-8333-333333333333", slug: "my-llama", name: "My Llama" },
+};
+
+/** The models route reads the agent from the database itself: only that read is replaced. */
+async function withAgentLookup<T>(run: (lookups: unknown[]) => Promise<T>): Promise<T> {
+  const { prisma } = await import("@wheelsai/db");
+  const saved = (prisma as any).agent;
+  const lookups: unknown[] = [];
+  (prisma as any).agent = {
+    findFirst: async ({ where }: any) => {
+      lookups.push(where);
+      return where.orgId === ORG && where.id === AGENT_ID ? { id: AGENT_ID } : null;
+    },
+  };
+  try {
+    return await run(lookups);
+  } finally {
+    (prisma as any).agent = saved;
+  }
+}
+
+const models = (app: FastifyInstance, agentId = AGENT_ID) =>
+  app.inject({ method: "GET", url: `/api/agents/${agentId}/playground/models` });
+
+test("the models route carries the organization's hosted models beside the free and own-key lists", async () => {
+  await withAgentLookup(async () => {
+    const { getAllFreeModels } = await import("../config/free-models.js");
+    const askedFor: string[] = [];
+    const app = await buildApp(chatDeps().deps, ORG, async (orgId) => {
+      askedFor.push(orgId);
+      return [HOSTED];
+    });
+    const res = await models(app);
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    assert.deepEqual(Object.keys(body).sort(), ["externalModels", "freeModels", "hostedModels"]);
+    assert.deepEqual(body.hostedModels, [HOSTED]);
+    assert.deepEqual(askedFor, [ORG], "the list is the caller's organization's");
+    // The two lists the pickers already draw are what they were.
+    assert.deepEqual(body.freeModels, JSON.parse(JSON.stringify(getAllFreeModels())));
+    assert.deepEqual(
+      body.externalModels.map((m: { id: string }) => m.id),
+      ["openai/gpt-4", "openai/gpt-4-turbo", "openai/gpt-3.5-turbo", "anthropic/claude-3-opus", "anthropic/claude-3-sonnet"],
+    );
+    await app.close();
+  });
+});
+
+test("a hosted model list that cannot be built does not break the models route: it answers null, never an empty list", async () => {
+  await withAgentLookup(async () => {
+    const app = await buildApp(chatDeps().deps, ORG, async () => {
+      throw new Error("connection refused at 10.0.0.5:5432");
+    });
+    const res = await models(app);
+    assert.equal(res.statusCode, 200);
+    const body = res.json();
+    // An empty list would say the organization runs no model.
+    assert.equal(body.hostedModels, null);
+    assert.ok(Array.isArray(body.freeModels));
+    assert.equal(body.externalModels.length, 5);
+    assert.ok(!res.body.includes("10.0.0.5"), "the failure's own words stay in the log");
+    // And they are in the log: the line written says what failed, for whom.
+    const logged = playgroundErrors.filter((entry) => entry.message === "Hosted model choices could not be listed");
+    assert.equal(logged.length, 1);
+    const line = JSON.parse(logLine(logged[0]!.fields, logged[0]!.message));
+    assert.equal(line.err?.message, "connection refused at 10.0.0.5:5432");
+    assert.equal(line.orgId, ORG);
+    assert.equal(line.agentId, AGENT_ID);
+    await app.close();
+  });
+});
+
+test("the models route lists nothing for an agent of another organization", async () => {
+  await withAgentLookup(async (lookups) => {
+    let listed = 0;
+    const app = await buildApp(chatDeps().deps, "99999999-9999-4999-8999-999999999999", async () => {
+      listed += 1;
+      return [HOSTED];
+    });
+    const res = await models(app);
+    assert.equal(res.statusCode, 404);
+    assert.equal(listed, 0, "no hosted model is read for an agent the caller does not own");
+    assert.equal(lookups.length, 1);
+    await app.close();
+  });
 });

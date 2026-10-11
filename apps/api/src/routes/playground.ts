@@ -27,6 +27,7 @@ import { buildAgentChatDeps } from "../services/buildAgentChatDeps.js";
 import { abortOnClientClose, CLIENT_GONE } from "../services/chatStreamSettlement.js";
 import { publicFallbackReason } from "../services/skills/knowledgeSearchSkill.js";
 import { getAllFreeModels } from "../config/free-models.js";
+import { listHostedModelChoices, type HostedModelChoice } from "../services/hostedModelChoices.js";
 import { licenceRevokedMessage } from "../services/marketplaceMetering.js";
 import { streamToReply } from "../services/sseReply.js";
 import { prisma } from "@wheelsai/db";
@@ -52,12 +53,15 @@ export interface PlaygroundRouteDeps {
   /** Built on first use, so registering the routes opens no connection. */
   chatDeps?: () => AgentChatDeps;
   requireAuth?: preHandlerHookHandler;
+  /** The models the organization runs itself, for the models route (services/hostedModelChoices.ts). */
+  hostedModels?: (orgId: string) => Promise<HostedModelChoice[]>;
 }
 
 export function createPlaygroundRoutes(deps: PlaygroundRouteDeps = {}): FastifyPluginAsync {
   const auth = deps.requireAuth ?? requireAuth;
   let chatDeps: AgentChatDeps | null = null;
   const getChatDeps = () => (chatDeps ??= (deps.chatDeps ?? buildAgentChatDeps)());
+  const hostedModelsOf = deps.hostedModels ?? ((orgId: string) => listHostedModelChoices({ orgId }));
 
   return async (app) => {
   /**
@@ -238,7 +242,14 @@ export function createPlaygroundRoutes(deps: PlaygroundRouteDeps = {}): FastifyP
    */
   app.get(
     "/agents/:agentId/playground/models",
-    { preHandler: [auth], schema: { tags: ["Playground"], description: "List available models for playground" } },
+    {
+      preHandler: [auth],
+      schema: {
+        tags: ["Playground"],
+        description:
+          "List the models an agent can be set to: free models, models that need your own provider key, and the models your organization runs on its own deployments (hostedModels)",
+      },
+    },
     async (request, reply) => {
       const { agentId } = z.object({ agentId: z.string().uuid() }).parse(request.params);
       const orgId = request.auth!.orgId;
@@ -263,9 +274,22 @@ export function createPlaygroundRoutes(deps: PlaygroundRouteDeps = {}): FastifyP
         { id: "anthropic/claude-3-sonnet", displayName: "Claude 3 Sonnet", provider: "anthropic", requiresApiKey: true, envKey: "ANTHROPIC_API_KEY" },
       ];
 
+      // The models the organization runs itself. The free and own-key lists
+      // do not depend on it: when it cannot be built, they are still answered,
+      // and this one is null. Not an empty list: that says the organization
+      // runs no model, and a page would tell its owner to deploy one.
+      let hostedModels: HostedModelChoice[] | null = null;
+      try {
+        hostedModels = await hostedModelsOf(orgId);
+      } catch (error) {
+        // `err`: the key the logger writes an Error's message and stack under.
+        logger.error({ agentId, orgId, err: error }, "Hosted model choices could not be listed");
+      }
+
       return {
         freeModels,
         externalModels,
+        hostedModels,
       };
     }
   );

@@ -33,6 +33,7 @@ import {
   isAccessModeUnavailable,
   runDeployPreflight,
 } from "../services/nosanaPreflight.js";
+import { listHostedModelChoices, type HostedModelChoice } from "../services/hostedModelChoices.js";
 import { collectAgentTelegramWebhooks, releaseTelegramWebhooks } from "../services/openclaw.js";
 import {
   parseGitHubUrl,
@@ -145,6 +146,8 @@ export interface AgentRouteDeps {
   createAgent?: (args: { orgId: string; body: unknown }) => Promise<CreateAgentResult>;
   /** AGENT_GPU_ENABLED; a function so a test can vary it per app. */
   agentGpuEnabled?: () => boolean;
+  /** The list behind GET /hosted-models (services/hostedModelChoices.ts). */
+  hostedModels?: (orgId: string) => Promise<HostedModelChoice[]>;
 }
 
 export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync {
@@ -157,6 +160,7 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
   const createAgentWith =
     deps.createAgent ?? ((args: { orgId: string; body: unknown }) => createAgent(buildCreateAgentDeps(), args));
   const agentGpuEnabled = deps.agentGpuEnabled ?? (() => env.AGENT_GPU_ENABLED);
+  const hostedModelsOf = deps.hostedModels ?? ((orgId: string) => listHostedModelChoices({ orgId }));
 
   return async (app) => {
   /**
@@ -255,6 +259,26 @@ export function createAgentRoutes(deps: AgentRouteDeps = {}): FastifyPluginAsync
       total: agents.length,
     };
   });
+
+  /**
+   * The models the caller's organization runs itself, as an agent's model
+   * choices. The same list the playground models route carries, for screens
+   * that have no agent yet. A static path: it is matched before /:agentId.
+   */
+  app.get(
+    "/hosted-models",
+    {
+      preHandler: [requireAuth],
+      schema: {
+        tags: ["Agents"],
+        description: "List the models your organization runs on its own deployments, as an agent's model choices",
+      },
+    },
+    async (request) => {
+      const { orgId } = request.auth!;
+      return { hostedModels: await hostedModelsOf(orgId) };
+    },
+  );
 
   /**
    * Get single agent

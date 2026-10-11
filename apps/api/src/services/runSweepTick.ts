@@ -41,6 +41,7 @@ import {
   type PlannedTransfer,
   type SweepAddressFacts,
   type SweepHold,
+  type SweepPlanFacts,
   type SweepSettings,
 } from "./sweepPlan.js";
 
@@ -63,6 +64,28 @@ export interface SentTransferRow {
 
 /** USDC has 6 decimals: one cent is 10,000 base units. */
 const USDC_RAW_PER_CENT = 10_000n;
+
+/** What the hot wallet holds, as the plan needs it (services/sweepPlan.ts). */
+export interface HotWalletReading {
+  address: string;
+  lamports: bigint;
+  usdcRaw: bigint;
+  finalized?: { lamports: bigint; usdcRaw: bigint };
+}
+
+/** Cents by asset. */
+export interface PayoutCents {
+  usdcCents: bigint;
+  solCents: bigint;
+}
+
+/** What payouts to a wallet need from the hot wallet. */
+export interface OpenPayoutsOwed {
+  /** Requested, not yet signed for. */
+  waiting: PayoutCents;
+  /** Waiting, or being sent. */
+  open: PayoutCents;
+}
 
 /** The columns of deposit_addresses the sweep reads. */
 export interface SweepAddressRow {
@@ -128,18 +151,19 @@ export interface SweepTickDeps {
   /** ONE call at "finalized" for up to SWEEP_READ_CHUNK addresses and
    * their USDC accounts. Answers in the order asked. */
   readBalances: (addresses: string[]) => Promise<SweepBalance[]>;
-  /** The hot wallet: its address and what it holds. Throws when the node
-   * cannot be read. */
-  readHotWallet: () => Promise<{ address: string; lamports: bigint; usdcRaw: bigint }>;
+  /** The hot wallet: its address, what it can spend (the lower of what
+   * it holds at "confirmed" and at "finalized") and what it holds at
+   * "finalized". Throws when the node cannot be read. */
+  readHotWallet: () => Promise<HotWalletReading>;
   /** The proven treasury's address, or null (services/sweepPlan.ts
    * treasuryVerdict). */
   readTreasury: () => Promise<string | null>;
   /** services/buildSolPriceDeps.ts getSolQuote. */
   getSolQuote: () => Promise<SolPriceResult>;
-  /** What payouts to a wallet that are still open need from the hot
-   * wallet, in cents by asset, already capped. Throws when it cannot be
-   * read. */
-  readOpenPayouts: () => Promise<{ usdcCents: bigint; solCents: bigint }>;
+  /** What payouts to a wallet need from the hot wallet, in cents by
+   * asset, already capped: those waiting to be sent, and all that are
+   * open (waiting or being sent). Throws when it cannot be read. */
+  readOpenPayouts: () => Promise<OpenPayoutsOwed>;
 
   // ---- the claim and the send ----
   /** A fresh blockhash, the transfer built and SIGNED. Sends nothing.
@@ -358,7 +382,7 @@ export async function runSweepTick(
 
   // ---- 2. The facts, and the plan ----
 
-  let hotWallet: { address: string; lamports: bigint; usdcRaw: bigint };
+  let hotWallet: HotWalletReading;
   try {
     hotWallet = await deps.readHotWallet();
   } catch (err) {
@@ -387,13 +411,14 @@ export async function runSweepTick(
 
   // What open payouts need. Without it the hot wallet's excess cannot be
   // told from money a payout is waiting for, so nothing is planned.
-  let openPayouts: { usdcRaw: bigint; solCents: bigint };
+  let openPayouts: NonNullable<SweepPlanFacts["openPayouts"]>;
   try {
     const owed = await deps.readOpenPayouts();
-    openPayouts = {
-      usdcRaw: (owed.usdcCents > 0n ? owed.usdcCents : 0n) * USDC_RAW_PER_CENT,
-      solCents: owed.solCents > 0n ? owed.solCents : 0n,
-    };
+    const asPlanned = (cents: PayoutCents) => ({
+      usdcRaw: (cents.usdcCents > 0n ? cents.usdcCents : 0n) * USDC_RAW_PER_CENT,
+      solCents: cents.solCents > 0n ? cents.solCents : 0n,
+    });
+    openPayouts = { waiting: asPlanned(owed.waiting), open: asPlanned(owed.open) };
   } catch (err) {
     result.errors += 1;
     log({ event: "error", detail: `the open payouts could not be read: ${errorText(err)}` });

@@ -25,6 +25,7 @@ import {
 } from "../services/buildSweepTickDeps.js";
 import {
   runSweepTick,
+  type OpenPayoutsOwed,
   type SweepEvent,
   type SweepTickInput,
 } from "../services/runSweepTick.js";
@@ -423,8 +424,11 @@ export function setupSweep(
     clusterChecks: 0,
     treasurySetting: (opts.treasurySetting === undefined ? TREASURY : opts.treasurySetting) as string | null,
     deriveKeypair: depositKeypairOf as (orgId: string) => Keypair,
-    /** What open payouts to a wallet need, in cents; an Error makes the read throw. */
-    openPayouts: { usdcCents: 0n, solCents: 0n } as { usdcCents: bigint; solCents: bigint } | Error,
+    /** What payouts to a wallet need, in cents: those waiting, and all that are open. An Error makes the read throw. */
+    openPayouts: {
+      waiting: { usdcCents: 0n, solCents: 0n },
+      open: { usdcCents: 0n, solCents: 0n },
+    } as OpenPayoutsOwed | Error,
   };
   const hot = opts.hot ?? { lamports: SOL, usdcRaw: 0n };
   chain.setBalance(HOT, hot.lamports, hot.usdcRaw);

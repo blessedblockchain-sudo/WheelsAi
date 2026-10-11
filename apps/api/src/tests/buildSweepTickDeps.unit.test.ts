@@ -48,6 +48,7 @@ import {
   sweepTickInputFromEnv,
   type BuildSweepTransactionInput,
   owedForOpenPayouts,
+  readOpenWalletPayouts,
 } from "../services/buildSweepTickDeps.js";
 import { NO_TREASURY_ADDRESS, type PlannedTransfer } from "../services/sweepPlan.js";
 import {
@@ -455,9 +456,14 @@ test("a node that does not answer for every account is a failed read, never an e
   await assert.rejects(() => w.deps.readHotWallet(), /did not answer for the hot wallet/);
 });
 
-test("the hot wallet: its address, its SOL and its USDC, read at confirmed and at finalized, the lower of each", async () => {
+test("the hot wallet: its address, what it can spend (the lower of confirmed and finalized) and what is final", async () => {
   const w = setupSweep({}, { hot: { lamports: 3n * SOL, usdcRaw: 250n * USDC } });
-  assert.deepEqual(await w.deps.readHotWallet(), { address: HOT, lamports: 3n * SOL, usdcRaw: 250n * USDC });
+  assert.deepEqual(await w.deps.readHotWallet(), {
+    address: HOT,
+    lamports: 3n * SOL,
+    usdcRaw: 250n * USDC,
+    finalized: { lamports: 3n * SOL, usdcRaw: 250n * USDC },
+  });
   assert.deepEqual(
     w.chain.calls.getMultipleAccountsInfo.map((c) => [c.commitment, c.keys]).sort(),
     [
@@ -470,10 +476,20 @@ test("the hot wallet: its address, its SOL and its USDC, read at confirmed and a
   // transfer has just arrived in the other asset: what is final is less.
   const moving = setupSweep({}, { hot: { lamports: 3n * SOL, usdcRaw: 900n * USDC } });
   moving.chain.setConfirmedBalance(HOT, 5n * SOL, 300n * USDC);
-  assert.deepEqual(await moving.deps.readHotWallet(), { address: HOT, lamports: 3n * SOL, usdcRaw: 300n * USDC });
+  assert.deepEqual(await moving.deps.readHotWallet(), {
+    address: HOT,
+    lamports: 3n * SOL,
+    usdcRaw: 300n * USDC,
+    finalized: { lamports: 3n * SOL, usdcRaw: 900n * USDC },
+  });
 
   const bare = setupSweep({}, { hot: { lamports: 0n, usdcRaw: null } });
-  assert.deepEqual(await bare.deps.readHotWallet(), { address: HOT, lamports: 0n, usdcRaw: 0n });
+  assert.deepEqual(await bare.deps.readHotWallet(), {
+    address: HOT,
+    lamports: 0n,
+    usdcRaw: 0n,
+    finalized: { lamports: 0n, usdcRaw: 0n },
+  });
 });
 
 test("the derived address is the public key of the derived keypair", () => {
@@ -609,35 +625,117 @@ test("the queue exports the two names the wiring uses, and no file here makes a 
 // What open payouts need
 // ============================================
 
-test("what open payouts need: summed by asset, nothing while payouts are not running, never above a day's limit", () => {
-  const open = [
-    { payoutMethod: "crypto_usdc", amountCents: 30_000n },
-    { payoutMethod: "crypto_usdc", amountCents: 5_000n },
-    { payoutMethod: "crypto_sol", amountCents: 12_000n },
-    // A payout taken as credits needs nothing from the wallet, and a figure that is not an amount counts for nothing.
-    { payoutMethod: "credits", amountCents: 99_000n },
-    { payoutMethod: "crypto_sol", amountCents: -1n },
-  ];
-  assert.deepEqual(owedForOpenPayouts({ open, capCents: 500_000n, payoutsRunning: true }), {
-    usdcCents: 35_000n,
-    solCents: 12_000n,
+const SUMS = [
+  { payoutMethod: "crypto_usdc", status: "pending", amountCents: 30_000n },
+  { payoutMethod: "crypto_usdc", status: "processing", amountCents: 5_000n },
+  { payoutMethod: "crypto_sol", status: "pending", amountCents: 12_000n },
+  { payoutMethod: "crypto_sol", status: "processing", amountCents: 8_000n },
+  // None of these is owed: a payout taken as credits needs nothing from the
+  // wallet, one that is over is not open, and a figure that is no amount counts for nothing.
+  { payoutMethod: "credits", status: "pending", amountCents: 99_000n },
+  { payoutMethod: "crypto_usdc", status: "completed", amountCents: 70_000n },
+  { payoutMethod: "crypto_usdc", status: "failed", amountCents: 70_000n },
+  { payoutMethod: "crypto_sol", status: "cancelled", amountCents: 70_000n },
+  { payoutMethod: "crypto_sol", status: "pending", amountCents: -1n },
+];
+
+test("what payouts need: those waiting, and all that are open, by asset", () => {
+  assert.deepEqual(owedForOpenPayouts({ sums: SUMS, capCents: 500_000n, payoutsRunning: true }), {
+    waiting: { usdcCents: 30_000n, solCents: 12_000n },
+    open: { usdcCents: 35_000n, solCents: 20_000n },
   });
-  // An open payout that cannot be sent is no reason to hold money in the hot wallet.
-  assert.deepEqual(owedForOpenPayouts({ open, capCents: 500_000n, payoutsRunning: false }), { usdcCents: 0n, solCents: 0n });
-  // The platform's limit for a day of payouts bounds each asset.
-  assert.deepEqual(owedForOpenPayouts({ open, capCents: 20_000n, payoutsRunning: true }), { usdcCents: 20_000n, solCents: 12_000n });
-  assert.deepEqual(owedForOpenPayouts({ open, capCents: 0n, payoutsRunning: true }), { usdcCents: 0n, solCents: 0n });
-  assert.deepEqual(owedForOpenPayouts({ open: [], capCents: 500_000n, payoutsRunning: true }), { usdcCents: 0n, solCents: 0n });
+  assert.deepEqual(owedForOpenPayouts({ sums: [], capCents: 500_000n, payoutsRunning: true }), {
+    waiting: { usdcCents: 0n, solCents: 0n },
+    open: { usdcCents: 0n, solCents: 0n },
+  });
 });
 
-test("the production reader asks only for open payouts to a wallet, and only while payouts run", () => {
-  const source = readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), "../services/buildSweepTickDeps.ts"),
-    "utf8",
-  );
-  const reader = source.slice(source.indexOf("readOpenPayouts: async () => {"));
-  assert.match(reader, /env\.PAYOUTS_ENABLED && env\.PAYOUT_EXECUTOR_INTERVAL_MS > 0/);
-  assert.match(reader, /status: \{ in: \["pending", "processing"\] \}/);
-  assert.match(reader, /payoutMethod: \{ in: \["crypto_usdc", "crypto_sol"\] \}/);
-  assert.match(reader, /PAYOUT_PLATFORM_MAX_PER_DAY_USD/);
+test("nothing is owed while payouts are not running", () => {
+  // A payout that cannot be sent is no reason to hold money in the hot wallet.
+  assert.deepEqual(owedForOpenPayouts({ sums: SUMS, capCents: 500_000n, payoutsRunning: false }), {
+    waiting: { usdcCents: 0n, solCents: 0n },
+    open: { usdcCents: 0n, solCents: 0n },
+  });
+});
+
+test("USDC and SOL together are never counted above the platform's limit for a day of payouts", () => {
+  // The limit is $400.00. USDC is counted first; SOL has what is left of it.
+  assert.deepEqual(owedForOpenPayouts({ sums: SUMS, capCents: 40_000n, payoutsRunning: true }), {
+    waiting: { usdcCents: 30_000n, solCents: 10_000n },
+    open: { usdcCents: 35_000n, solCents: 5_000n },
+  });
+  // A limit under the USDC alone leaves SOL nothing.
+  assert.deepEqual(owedForOpenPayouts({ sums: SUMS, capCents: 20_000n, payoutsRunning: true }), {
+    waiting: { usdcCents: 20_000n, solCents: 0n },
+    open: { usdcCents: 20_000n, solCents: 0n },
+  });
+  for (const capCents of [0n, -5n]) {
+    const owed = owedForOpenPayouts({ sums: SUMS, capCents, payoutsRunning: true });
+    assert.deepEqual(owed.open, { usdcCents: 0n, solCents: 0n });
+  }
+  // Whatever the limit, the two never pass it together.
+  for (const capCents of [1n, 12_345n, 40_000n, 54_999n, 55_000n, 900_000n]) {
+    const owed = owedForOpenPayouts({ sums: SUMS, capCents, payoutsRunning: true });
+    assert.ok(owed.open.usdcCents + owed.open.solCents <= capCents, String(capCents));
+    assert.ok(owed.waiting.usdcCents + owed.waiting.solCents <= capCents, String(capCents));
+  }
+});
+
+test("the reader sums open payouts to a wallet by method and status, and does not read the table while payouts are off", async () => {
+  // A table holding a payout of every method in every status.
+  const table = [
+    { payoutMethod: "crypto_usdc", status: "pending", amountCents: 10_000n },
+    { payoutMethod: "crypto_usdc", status: "pending", amountCents: 20_000n },
+    { payoutMethod: "crypto_usdc", status: "processing", amountCents: 5_000n },
+    { payoutMethod: "crypto_usdc", status: "completed", amountCents: 70_000n },
+    { payoutMethod: "crypto_sol", status: "pending", amountCents: 12_000n },
+    { payoutMethod: "crypto_sol", status: "failed", amountCents: 70_000n },
+    { payoutMethod: "crypto_sol", status: "cancelled", amountCents: 70_000n },
+    { payoutMethod: "credits", status: "pending", amountCents: 99_000n },
+    { payoutMethod: "credits", status: "processing", amountCents: 99_000n },
+  ];
+  const asked: unknown[] = [];
+  const db = {
+    creatorPayout: {
+      // Does what the database does with the arguments it is given: filters, groups, sums.
+      groupBy: async (args: { by: string[]; where: { status: { in: string[] }; payoutMethod: { in: string[] } }; _sum: unknown }) => {
+        asked.push(args);
+        const groups = new Map<string, { payoutMethod: string; status: string; _sum: { amountCents: bigint | null } }>();
+        for (const row of table) {
+          if (!args.where.status.in.includes(row.status) || !args.where.payoutMethod.in.includes(row.payoutMethod)) continue;
+          const key = args.by.map((column) => (row as Record<string, unknown>)[column]).join("|");
+          const group = groups.get(key) ?? { payoutMethod: row.payoutMethod, status: row.status, _sum: { amountCents: 0n } };
+          group._sum.amountCents = (group._sum.amountCents ?? 0n) + row.amountCents;
+          groups.set(key, group);
+        }
+        return [...groups.values()];
+      },
+    },
+  };
+  const owed = await readOpenWalletPayouts(db, { payoutsRunning: true, capCents: 500_000n });
+  assert.deepEqual(owed, {
+    waiting: { usdcCents: 30_000n, solCents: 12_000n },
+    open: { usdcCents: 35_000n, solCents: 12_000n },
+  });
+  assert.equal(asked.length, 1);
+  assert.deepEqual((asked[0] as { by: string[] }).by, ["payoutMethod", "status"]);
+
+  // The limit reaches it.
+  assert.deepEqual((await readOpenWalletPayouts(db, { payoutsRunning: true, capCents: 31_000n })).open, { usdcCents: 31_000n, solCents: 0n });
+
+  // Payouts off: nothing owed, and the table is not asked.
+  const off = await readOpenWalletPayouts(db, { payoutsRunning: false, capCents: 500_000n });
+  assert.deepEqual(off.open, { usdcCents: 0n, solCents: 0n });
+  assert.equal(asked.length, 2, "only the two reads above");
+});
+
+test("the statuses and methods the reader asks for are the ones the payout code writes", () => {
+  const read = (file: string) => readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", file), "utf8");
+  // A requested payout is written "pending"; one the executor has claimed is "processing".
+  assert.match(read("services/payoutRequests.ts"), /status: "pending"/);
+  assert.match(read("services/buildPayoutExecutorTickDeps.ts"), /status: "processing"/);
+  // Production wires the reader to the settings that say whether payouts run, and to the day's limit.
+  const production = read("services/buildSweepTickDeps.ts");
+  assert.match(production, /payoutsRunning: env\.PAYOUTS_ENABLED && env\.PAYOUT_EXECUTOR_INTERVAL_MS > 0/);
+  assert.match(production, /capCents: BigInt\(env\.PAYOUT_PLATFORM_MAX_PER_DAY_USD\) \* 100n/);
 });

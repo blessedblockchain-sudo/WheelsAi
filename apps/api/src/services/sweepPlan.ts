@@ -16,18 +16,25 @@
  *   - SOL: what the address holds less 890,880 lamports and less its own
  *     fee, once that is worth SWEEP_MIN_USD by the quote. No quote, no SOL.
  *   - WHERE IT GOES. To the hot wallet while the hot wallet holds less
- *     than its float of that asset PLUS WHAT OPEN PAYOUTS NEED OF IT,
- *     counting what is already on its way and what this plan has given
- *     it. Otherwise to the treasury. With no proven treasury it stays
- *     where it is. A payout larger than the float is thereby paid from
- *     the deposits that come next, with nobody refilling the wallet.
+ *     than its float of that asset PLUS WHAT PAYOUTS WAITING TO BE SENT
+ *     NEED OF IT, counting what is already on its way and what this plan
+ *     has given it. Otherwise to the treasury. With no proven treasury it
+ *     stays where it is. A payout larger than the float is thereby paid
+ *     from the deposits that come next, with nobody refilling the wallet.
  *   - Largest first, at most SWEEP_MAX_PER_RUN transfers off deposit
  *     addresses.
  *   - THE HOT WALLET'S EXCESS. Holding more than twice a float on top of
- *     what open payouts need, it sends what it holds above the float and
- *     that need to the proven treasury: one transfer an asset, never
- *     while another from it for that asset is out. Of its SOL it always
- *     keeps HOT_WALLET_MIN_SOL after every fee it pays in the same plan.
+ *     what open payouts need (those waiting and those being sent), it
+ *     sends what it holds above the float and that need to the proven
+ *     treasury: one transfer an asset, never while another from it for
+ *     that asset is out. Of its SOL it always keeps HOT_WALLET_MIN_SOL
+ *     after every fee it pays in the same plan.
+ *   - TWO READINGS OF THE HOT WALLET. What is on its way in or out is
+ *     counted from "sent" rows, and a row is ended at "finalized": so
+ *     that count starts from what the wallet holds at "finalized", and
+ *     each row is counted once. The excess is worked out from the LOWER of
+ *     what it holds at "confirmed" and at "finalized": never from money
+ *     a payout has just taken, never from money that is not final yet.
  *   - No transfer in a plan has a destination other than the hot wallet
  *     or the proven treasury.
  *
@@ -181,16 +188,33 @@ export interface SweepPlanFacts {
   /** Further (address, asset) pairs that are not planned in this run: a
    * transfer of theirs ended a moment ago. */
   alsoBusy?: Array<{ fromAddress: string; asset: string }>;
-  hotWallet: { address: string; lamports: bigint; usdcRaw: bigint };
+  hotWallet: {
+    address: string;
+    /** What it can spend: the lower of what it holds at "confirmed" and
+     * at "finalized". Its excess is worked out from these. */
+    lamports: bigint;
+    usdcRaw: bigint;
+    /** What it holds at "finalized" alone: where the count of what is on
+     * its way in and out starts. Absent: the figures above. */
+    finalized?: { lamports: bigint; usdcRaw: bigint };
+  };
   /** The proven treasury (treasuryVerdict), or null. */
   treasury: string | null;
   /** The SOL price, or null when there is none. */
   quote: SolQuote | null;
-  /** What payouts to a wallet that are still open (requested, or being
-   * sent) need from the hot wallet: USDC in base units, SOL in cents.
-   * Absent: nothing is owed. The caller caps it (a day's payout limit), so
-   * the hot wallet never holds more than its floats and that. */
-  openPayouts?: { usdcRaw: bigint; solCents: bigint };
+  /** What payouts to a wallet need from the hot wallet: USDC in base
+   * units, SOL in cents. Absent: nothing. The caller caps both (a day's
+   * payout limit), so the hot wallet never rests above twice its floats
+   * and that. */
+  openPayouts?: {
+    /** Requested and not yet signed for. The hot wallet is FILLED to its
+     * float plus this. One being sent is not here: its money is in the
+     * wallet or has left it, and either way nothing is to be added. */
+    waiting: { usdcRaw: bigint; solCents: bigint };
+    /** Those, and the ones being sent. The EXCESS leaves this in the
+     * wallet: a payout being sent may not have taken its money yet. */
+    open: { usdcRaw: bigint; solCents: bigint };
+  };
 }
 
 export interface PlannedTransfer {
@@ -283,10 +307,13 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
       : 0n;
   const floatSolCents = dollarsToCents(settings.floatSolUsd);
   const hotCanPay = hotWallet.lamports >= settings.hotWalletMinLamports;
-  // What open payouts need. The hot wallet's float is what it holds
-  // besides this, so both the filling and the excess are measured above it.
-  const owedUsdcRaw = positive(facts.openPayouts?.usdcRaw);
-  const owedSolCents = positive(facts.openPayouts?.solCents);
+  // What payouts need. The hot wallet's float is what it holds besides
+  // this, so both the filling and the excess are measured above it: the
+  // filling above what waits to be sent, the excess above all that is open.
+  const fillUsdcRaw = positive(facts.openPayouts?.waiting.usdcRaw);
+  const fillSolCents = positive(facts.openPayouts?.waiting.solCents);
+  const keepUsdcRaw = positive(facts.openPayouts?.open.usdcRaw);
+  const keepSolCents = positive(facts.openPayouts?.open.solCents);
 
   const busy = new Set<string>();
   for (const row of facts.sent) busy.add(busyKey(row.fromAddress, row.asset));
@@ -365,9 +392,10 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
   // ---- where each goes ----
 
   // What the hot wallet holds, with what is already on its way to it and
-  // less what is already on its way out of it.
-  let hotUsdcRaw = hotWallet.usdcRaw;
-  let hotLamports = hotWallet.lamports;
+  // less what is already on its way out of it. From what is FINAL: a row
+  // is "sent" until its block is final, so each is counted exactly once.
+  let hotUsdcRaw = (hotWallet.finalized ?? hotWallet).usdcRaw;
+  let hotLamports = (hotWallet.finalized ?? hotWallet).lamports;
   for (const row of facts.sent) {
     if (row.toAddress === hotWallet.address) {
       if (row.asset === "USDC") hotUsdcRaw += row.amountRaw;
@@ -398,9 +426,9 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
     }
     const underFloat =
       candidate.asset === "USDC"
-        ? hotUsdcRaw < floatUsdcRaw + owedUsdcRaw
+        ? hotUsdcRaw < floatUsdcRaw + fillUsdcRaw
         : quote !== null &&
-          lamportsWorthCents(quote, hotLamports) < floatSolCents + owedSolCents;
+          lamportsWorthCents(quote, hotLamports) < floatSolCents + fillSolCents;
 
     let kind: ChainTransferKind;
     let toAddress: string;
@@ -445,9 +473,9 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
     if (
       !busy.has(busyKey(hotWallet.address, "USDC")) &&
       hotCanPay &&
-      hotWallet.usdcRaw > 2n * floatUsdcRaw + owedUsdcRaw
+      hotWallet.usdcRaw > 2n * floatUsdcRaw + keepUsdcRaw
     ) {
-      const amountRaw = hotWallet.usdcRaw - floatUsdcRaw - owedUsdcRaw;
+      const amountRaw = hotWallet.usdcRaw - floatUsdcRaw - keepUsdcRaw;
       if (minUsdcRaw > 0n && amountRaw >= minUsdcRaw) {
         transfers.push({
           kind: "hot_to_treasury",
@@ -464,10 +492,10 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
     }
 
     if (quote !== null && !busy.has(busyKey(hotWallet.address, "SOL"))) {
-      const floatLamports = centsAsLamports(quote, floatSolCents + owedSolCents);
+      const floatLamports = centsAsLamports(quote, floatSolCents + keepSolCents);
       if (
         floatLamports !== null &&
-        lamportsWorthCents(quote, hotWallet.lamports) > 2n * floatSolCents + owedSolCents
+        lamportsWorthCents(quote, hotWallet.lamports) > 2n * floatSolCents + keepSolCents
       ) {
         // It keeps its float and what open payouts need, and never less
         // than HOT_WALLET_MIN_SOL or than an account needs to stay open,

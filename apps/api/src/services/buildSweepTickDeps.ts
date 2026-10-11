@@ -52,6 +52,7 @@ import { getSolQuote } from "./buildSolPriceDeps.js";
 import { chainLabel, type ChainLabel } from "./depositTypes.js";
 import { hotWallet, solToLamports } from "./hotWallet.js";
 import type {
+  OpenPayoutsOwed,
   SentTransferRow,
   SignedSweepArtifact,
   SweepAddressRow,
@@ -364,41 +365,108 @@ export interface BuildSweepDepsInput {
   getSolQuote: () => Promise<SolPriceResult>;
   /** services/buildSignatureFateDeps.ts readSignatureFate. */
   readSignatureFate: (input: SignatureFateInput) => Promise<SignatureFateAnswer>;
-  /** What open payouts to a wallet need from the hot wallet, in cents by
-   * asset (owedForOpenPayouts). Left out: nothing is owed. */
-  readOpenPayouts?: () => Promise<{ usdcCents: bigint; solCents: bigint }>;
+  /** What payouts to a wallet need from the hot wallet, in cents by asset
+   * (readOpenWalletPayouts). Left out: nothing is owed. */
+  readOpenPayouts?: () => Promise<OpenPayoutsOwed>;
   log?: (event: SweepEvent) => void;
   now?: () => Date;
 }
 
+/** One sum of creator_payouts, as the reader groups them. */
+export interface OpenPayoutSum {
+  payoutMethod: string;
+  status: string;
+  amountCents: bigint;
+}
+
+const NOTHING_OWED: OpenPayoutsOwed = {
+  waiting: { usdcCents: 0n, solCents: 0n },
+  open: { usdcCents: 0n, solCents: 0n },
+};
+
 /**
- * What the hot wallet must hold for the payouts to a wallet that are still
- * open, in cents by asset.
+ * What the hot wallet must hold for payouts to a wallet, in cents by asset:
+ * for those waiting to be sent (pending), and for all that are open
+ * (pending or processing).
  *
- * Nothing while payouts are not running: an open payout that cannot be sent
- * is no reason to hold money in the wallet whose key the server has. And
- * never more than the platform's own limit for a day of payouts, which is
- * the most that can leave in a day anyway: it is what bounds how much the
- * hot wallet can come to hold on top of its floats.
+ * Nothing while payouts are not running: a payout that cannot be sent is
+ * no reason to hold money in the wallet whose key the server has. And
+ * never more, USDC and SOL TOGETHER, than the platform's own limit for a
+ * day of payouts: it is the most that can leave in a day, and it is what
+ * bounds how much the hot wallet can come to hold on top of its floats.
+ * USDC is counted first and SOL has what is left of the limit.
  */
 export function owedForOpenPayouts(input: {
-  /** Payouts that are pending or processing, summed by method. */
-  open: Array<{ payoutMethod: string; amountCents: bigint }>;
+  /** Sums of creator_payouts by method and status. */
+  sums: OpenPayoutSum[];
   /** PAYOUT_PLATFORM_MAX_PER_DAY_USD, in cents. */
   capCents: bigint;
   /** PAYOUTS_ENABLED with the executor scheduled. */
   payoutsRunning: boolean;
-}): { usdcCents: bigint; solCents: bigint } {
-  if (!input.payoutsRunning) return { usdcCents: 0n, solCents: 0n };
+}): OpenPayoutsOwed {
+  if (!input.payoutsRunning) return NOTHING_OWED;
   const cap = input.capCents > 0n ? input.capCents : 0n;
-  const sum = (method: string) => {
-    let total = 0n;
-    for (const row of input.open) {
-      if (row.payoutMethod === method && row.amountCents > 0n) total += row.amountCents;
+  const total = (method: string, statuses: string[]) => {
+    let sum = 0n;
+    for (const row of input.sums) {
+      if (row.payoutMethod === method && statuses.includes(row.status) && row.amountCents > 0n) {
+        sum += row.amountCents;
+      }
     }
-    return total > cap ? cap : total;
+    return sum;
   };
-  return { usdcCents: sum("crypto_usdc"), solCents: sum("crypto_sol") };
+  const capped = (statuses: string[]) => {
+    const usdc = total("crypto_usdc", statuses);
+    const usdcCents = usdc > cap ? cap : usdc;
+    const left = cap - usdcCents;
+    const sol = total("crypto_sol", statuses);
+    return { usdcCents, solCents: sol > left ? left : sol };
+  };
+  return { waiting: capped(["pending"]), open: capped(["pending", "processing"]) };
+}
+
+/** The one table the reader asks. */
+export interface OpenPayoutsDb {
+  creatorPayout: {
+    groupBy: (args: {
+      by: ["payoutMethod", "status"];
+      where: {
+        status: { in: string[] };
+        payoutMethod: { in: string[] };
+      };
+      _sum: { amountCents: true };
+    }) => Promise<Array<{ payoutMethod: string; status: string; _sum: { amountCents: bigint | null } }>>;
+  };
+}
+
+/**
+ * Reads what payouts to a wallet need from the hot wallet. A payout taken
+ * as credits needs nothing from it, and one that is completed, failed or
+ * cancelled is not open. The table is not read at all while payouts are
+ * not running.
+ */
+export async function readOpenWalletPayouts(
+  db: OpenPayoutsDb,
+  settings: { payoutsRunning: boolean; capCents: bigint },
+): Promise<OpenPayoutsOwed> {
+  if (!settings.payoutsRunning) return NOTHING_OWED;
+  const rows = await db.creatorPayout.groupBy({
+    by: ["payoutMethod", "status"],
+    where: {
+      status: { in: ["pending", "processing"] },
+      payoutMethod: { in: ["crypto_usdc", "crypto_sol"] },
+    },
+    _sum: { amountCents: true },
+  });
+  return owedForOpenPayouts({
+    sums: rows.map((row) => ({
+      payoutMethod: row.payoutMethod,
+      status: row.status,
+      amountCents: row._sum.amountCents ?? 0n,
+    })),
+    capCents: settings.capCents,
+    payoutsRunning: settings.payoutsRunning,
+  });
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -518,13 +586,14 @@ export function buildSweepDeps(input: BuildSweepDepsInput): SweepTickDeps {
       }));
     },
 
-    // THE LOWER of what the chain says at "confirmed" and at "finalized".
-    // Either alone is wrong for a few seconds at a time. At "confirmed", a
-    // transfer TO the hot wallet that has landed and is not final yet is
-    // in the balance and still counted from its "sent" row: twice. At
-    // "finalized", a payout that has just left the wallet is still in the
-    // balance, and the excess would be worked out from money that is
-    // gone. The lower of the two is never more than the wallet has.
+    // Read at "confirmed" and at "finalized", and both are handed on
+    // (services/sweepPlan.ts says what each is for). What it can spend is
+    // THE LOWER of the two: at "finalized" alone a payout that has just
+    // left is still in the balance, and the excess would be worked out
+    // from money that is gone. What is on its way is counted from what
+    // is FINAL: a "sent" row is ended at "finalized", so a transfer that
+    // has landed and is not final yet is in the confirmed balance and in
+    // its row at once, and would be counted twice from there.
     readHotWallet: async () => {
       const owner = input.hotWalletKeypair().publicKey;
       const keys = [owner, getAssociatedTokenAddressSync(usdcMint, owner)];
@@ -538,15 +607,19 @@ export function buildSweepDeps(input: BuildSweepDepsInput): SweepTickDeps {
         }
       }
       const lower = (a: bigint, b: bigint) => (a < b ? a : b);
+      const final = {
+        lamports: BigInt(finalized[0]?.lamports ?? 0),
+        usdcRaw: usdcHeld(finalized[1], usdcMint, owner),
+      };
       return {
         address: owner.toBase58(),
-        lamports: lower(BigInt(confirmed[0]?.lamports ?? 0), BigInt(finalized[0]?.lamports ?? 0)),
-        usdcRaw: lower(usdcHeld(confirmed[1], usdcMint, owner), usdcHeld(finalized[1], usdcMint, owner)),
+        lamports: lower(BigInt(confirmed[0]?.lamports ?? 0), final.lamports),
+        usdcRaw: lower(usdcHeld(confirmed[1], usdcMint, owner), final.usdcRaw),
+        finalized: final,
       };
     },
 
-    readOpenPayouts: async () =>
-      input.readOpenPayouts ? input.readOpenPayouts() : { usdcCents: 0n, solCents: 0n },
+    readOpenPayouts: async () => (input.readOpenPayouts ? input.readOpenPayouts() : NOTHING_OWED),
 
     readTreasury: async () => {
       const verdict = await readProvenTreasury(db, {
@@ -745,26 +818,11 @@ export function buildProductionSweepDeps(): SweepTickDeps {
     treasurySetting: () => env.TREASURY_WALLET_ADDRESS,
     getSolQuote: () => getSolQuote(),
     readSignatureFate: (input) => readSignatureFate(input),
-    readOpenPayouts: async () => {
-      const payoutsRunning = env.PAYOUTS_ENABLED && env.PAYOUT_EXECUTOR_INTERVAL_MS > 0;
-      if (!payoutsRunning) return { usdcCents: 0n, solCents: 0n };
-      const open = await prisma.creatorPayout.groupBy({
-        by: ["payoutMethod"],
-        where: {
-          status: { in: ["pending", "processing"] },
-          payoutMethod: { in: ["crypto_usdc", "crypto_sol"] },
-        },
-        _sum: { amountCents: true },
-      });
-      return owedForOpenPayouts({
-        open: open.map((row) => ({
-          payoutMethod: row.payoutMethod,
-          amountCents: row._sum.amountCents ?? 0n,
-        })),
+    readOpenPayouts: () =>
+      readOpenWalletPayouts(prisma as unknown as OpenPayoutsDb, {
+        payoutsRunning: env.PAYOUTS_ENABLED && env.PAYOUT_EXECUTOR_INTERVAL_MS > 0,
         capCents: BigInt(env.PAYOUT_PLATFORM_MAX_PER_DAY_USD) * 100n,
-        payoutsRunning,
-      });
-    },
+      }),
     log: logSweepEvent,
   });
 }

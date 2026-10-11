@@ -540,11 +540,35 @@ test("the hot wallet is taken to hold the lower of what is confirmed and what is
 test("what open payouts need reaches the plan: USDC goes to the hot wallet past its float, and its excess is not taken", async () => {
   // Float $200 (the stand-in's settings). The hot wallet holds 250; a $300 payout is open.
   const filled = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 250n * USDC } });
-  filled.knobs.openPayouts = { usdcCents: 30_000n, solCents: 0n };
+  const waiting = { usdcCents: 30_000n, solCents: 0n };
+  filled.knobs.openPayouts = { waiting, open: waiting };
   await filled.run();
   assert.deepEqual(
     filled.state.transfers.map((t) => [t.kind, t.asset, t.toAddress]),
     [["sweep_to_hot", "USDC", HOT]],
+  );
+
+  // The excess is measured above it too, to the unit: 650 held with 300 owed is
+  // not more than twice the float on top of it; 701 sends 201 and keeps 500.
+  const kept = setupSweep({ wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 650n * USDC } });
+  kept.knobs.openPayouts = { waiting, open: waiting };
+  await kept.run();
+  assert.deepEqual(kept.state.transfers, []);
+  const over = setupSweep({ wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 701n * USDC } });
+  over.knobs.openPayouts = { waiting, open: waiting };
+  await over.run();
+  assert.deepEqual(
+    over.state.transfers.map((t) => [t.kind, t.asset, t.amountRaw]),
+    [["hot_to_treasury", "USDC", 201n * USDC]],
+  );
+
+  // A payout being sent is not filled for: nothing waits, 300 is open.
+  const beingSent = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 250n * USDC } });
+  beingSent.knobs.openPayouts = { waiting: { usdcCents: 0n, solCents: 0n }, open: waiting };
+  await beingSent.run();
+  assert.deepEqual(
+    beingSent.state.transfers.map((t) => [t.kind, t.asset, t.toAddress]),
+    [["sweep_to_treasury", "USDC", TREASURY]],
   );
 
   // The same with nothing open: at its float, so it goes to the treasury.

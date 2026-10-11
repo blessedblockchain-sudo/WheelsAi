@@ -21,6 +21,8 @@ export interface PublicChatPanelProps {
   onPaused?: () => void;
   /** Changes when the visitor's standing with the agent does: a refusal shown here is then out of date and leaves. */
   noticeKey?: string;
+  /** The agent cannot answer right now (its page says why): typing stays, sending waits. */
+  sendDisabled?: boolean;
 }
 
 /**
@@ -29,7 +31,7 @@ export interface PublicChatPanelProps {
  * (word by word, or whole with what it cost), and says in one sentence why a
  * message was refused, with what the visitor can do about it.
  */
-export function PublicChatPanel({ agentName, limits, transport, onPaused, noticeKey }: PublicChatPanelProps) {
+export function PublicChatPanel({ agentName, limits, transport, onPaused, noticeKey, sendDisabled = false }: PublicChatPanelProps) {
   const inputId = useId();
   const [turns, setTurns] = useState<PanelTurn[]>([]);
   const [draft, setDraft] = useState("");
@@ -59,7 +61,7 @@ export function PublicChatPanel({ agentName, limits, transport, onPaused, notice
 
   async function send() {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || sendDisabled) return;
     const history = turns.filter((turn) => turn.content.length > 0);
     // Only what was said goes to the agent, never what a turn cost.
     const said: ChatTurn[] = history.map(({ role, content }) => ({ role, content }));
@@ -214,7 +216,7 @@ export function PublicChatPanel({ agentName, limits, transport, onPaused, notice
               <span className="sr-only sm:not-sr-only">Stop</span>
             </Button>
           ) : (
-            <Button type="submit" disabled={draft.trim() === ""}>
+            <Button type="submit" disabled={sendDisabled || draft.trim() === ""}>
               <Send className="h-4 w-4 sm:mr-2" aria-hidden="true" />
               <span className="sr-only sm:not-sr-only">Send</span>
             </Button>

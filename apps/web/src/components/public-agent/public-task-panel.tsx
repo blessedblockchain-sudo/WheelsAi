@@ -25,6 +25,8 @@ export interface PublicTaskPanelProps {
   onPaused?: () => void;
   /** Changes when the visitor's standing with the agent does: a refusal shown here is then out of date and leaves. */
   noticeKey?: string;
+  /** The agent cannot answer right now (its page says why): the answers stay, running waits. */
+  sendDisabled?: boolean;
   /**
    * Answers kept on this device while the visitor signs in: restored once
    * from sessionStorage under `key`, and written there on every change while
@@ -44,6 +46,7 @@ export function PublicTaskPanel({
   transport,
   onPaused,
   noticeKey,
+  sendDisabled = false,
   draft,
 }: PublicTaskPanelProps) {
   const [values, setValues] = useState<FormValues>(() => initialValues(inputSchema));
@@ -119,7 +122,7 @@ export function PublicTaskPanel({
   useEffect(() => () => abortRef.current?.abort(), []);
 
   async function run() {
-    if (running) return;
+    if (running || sendDisabled) return;
     const built = buildInput(inputSchema, values);
     if (Object.keys(built.errors).length > 0) {
       setErrors(built.errors);
@@ -203,7 +206,7 @@ export function PublicTaskPanel({
         {notice && <PanelNoticeView notice={notice} />}
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" disabled={running}>
+          <Button type="submit" disabled={running || sendDisabled}>
             {running ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />
             ) : (

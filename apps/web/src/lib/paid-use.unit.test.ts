@@ -452,12 +452,14 @@ const USE_CODES = [
   "model_error",
   "answer_withheld",
   "agent_unavailable",
+  "agent_paused",
   "rate_limiter_unavailable",
 ];
 const RESULTS_CODES = ["not_a_scheduled_agent"];
 const START_CODES = [
   "expected_terms_required",
   "listing_not_found",
+  "listing_paused",
   "sells_copies",
   "subscription_claim_lost",
   "copy_subscription_active",

@@ -17,6 +17,7 @@ import type {
   PaidUseTerms,
   PublicAgentPaidTerms,
 } from "./api";
+import { AGENT_PAUSED_MESSAGE, LISTING_PAUSED_START_MESSAGE } from "./listing-pause";
 import { PUBLIC_USE_MESSAGES } from "./public-use";
 import type { FormValues } from "./schema-form";
 
@@ -480,10 +481,13 @@ export const PAID_REFUSAL_RULES: Record<string, CodeRule> = {
   model_error: { action: "none", fallback: "The agent could not answer just now. Please try again." },
   answer_withheld: { action: "none", fallback: "This answer could not be shown." },
   agent_unavailable: { action: "wait", fallback: "This agent cannot be used right now. Try again later." },
+  // The model the agent runs on is not running. Nothing was sent to it, so nothing was charged.
+  agent_paused: { action: "wait", fallback: AGENT_PAUSED_MESSAGE },
   rate_limiter_unavailable: { action: "wait", fallback: "This agent is temporarily unavailable. Try again shortly." },
   // A start, a subscription or accepting a price.
   expected_terms_required: { action: "none", fallback: "The price could not be confirmed. Reload the page and try again." },
   listing_not_found: { action: "none", fallback: PAID_USE_MESSAGES.notOfferedNeverStarted },
+  listing_paused: { action: "wait", fallback: LISTING_PAUSED_START_MESSAGE },
   sells_copies: { action: "none", fallback: "This agent is now sold as a copy. Get it from its listing." },
   subscription_claim_lost: { action: "none", fallback: "Another request for your organization got there first. Reload the page." },
   copy_subscription_active: { action: "none", fallback: "You hold a copy of this agent that is paid for. Remove your copy first." },

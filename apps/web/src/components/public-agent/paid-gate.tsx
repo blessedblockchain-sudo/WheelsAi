@@ -18,6 +18,7 @@ import {
   type PublicAgentDetail,
   type PublicAgentPaidTerms,
 } from "@/lib/api";
+import { AGENT_PAUSED_MESSAGE, PAUSED_RECHECK_MS, PUBLIC_PAUSED_NOTICE, accessIsPaused } from "@/lib/listing-pause";
 import {
   ADD_CREDITS_HREF,
   PAID_USE_MESSAGES,
@@ -101,6 +102,8 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const reads = useRef(0);
 
   const signedIn = authed === true && !sessionEnded;
+  // The model the agent runs on is not running: the access says so, and it is read again after every use.
+  const paused = signedIn && accessIsPaused(access);
 
   /** Reads the access as it is now. A later read wins over an earlier one that answers late. */
   const readAccess = useCallback(async (): Promise<PaidUseAccessState | null> => {
@@ -127,6 +130,33 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   useEffect(() => {
     if (authed === true) void readAccess();
   }, [authed, readAccess]);
+
+  // While the page shows the pause nothing on it reads the access: sending is disabled and there is no
+  // button. So the page asks again by itself, and the pause ends here without anyone pressing anything.
+  // A read that fails changes nothing: the page stays paused and asks again.
+  useEffect(() => {
+    if (!paused) return;
+    let gone = false;
+    const recheck = async () => {
+      if (document.visibilityState !== "visible") return;
+      const at = reads.current;
+      try {
+        const next = await paidUseApi.access(handle);
+        // A read the person caused since then is newer than this one.
+        if (!gone && at === reads.current) setAccess(next);
+      } catch {
+        // Asked again at the next turn.
+      }
+    };
+    const timer = window.setInterval(() => void recheck(), PAUSED_RECHECK_MS);
+    const onVisible = () => void recheck();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      gone = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [paused, handle]);
 
   const ready = authed === false || sessionEnded || (authed === true && access !== null);
   const view = useMemo(
@@ -233,9 +263,9 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   );
 
   // The transports live as long as the page, so a chat keeps its session; they read what is current through this.
-  const live = useRef({ view, toPanel, readAccess });
+  const live = useRef({ view, toPanel, readAccess, paused });
   useEffect(() => {
-    live.current = { view, toPanel, readAccess };
+    live.current = { view, toPanel, readAccess, paused };
   });
   const hasChat = Boolean(use.chat);
   const hasTask = Boolean(use.task);
@@ -244,6 +274,10 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       handle,
       unit,
       heldBack: () => {
+        // Paused: nothing is sent, so nothing is charged.
+        if (live.current.paused) {
+          return { message: AGENT_PAUSED_MESSAGE, fields: {}, retryAfterSeconds: null, paused: false };
+        }
         const current = live.current.view;
         return current.usable ? null : live.current.toPanel(noticeOfView(current));
       },
@@ -304,6 +338,11 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
               <Skeleton className="h-4 w-64 max-w-full" />
               <Skeleton className="h-10 w-40 max-w-full" />
             </div>
+          ) : paused ? (
+            // In place of the price to agree to: while it is paused there is nothing to start or pay.
+            <p className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-foreground">
+              {PUBLIC_PAUSED_NOTICE}
+            </p>
           ) : (
             <>
               <p className="break-words text-foreground">{view.sentence}</p>
@@ -371,7 +410,13 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       </div>
 
       {showPanel && use.chat && transports.chat && (
-        <PublicChatPanel agentName={agent.name} limits={use.chat} transport={transports.chat} noticeKey={noticeKey} />
+        <PublicChatPanel
+          agentName={agent.name}
+          limits={use.chat}
+          transport={transports.chat}
+          noticeKey={noticeKey}
+          sendDisabled={paused}
+        />
       )}
       {showPanel && use.task && transports.task && (
         <PublicTaskPanel
@@ -379,6 +424,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           maxInputChars={use.task.maxInputChars}
           transport={transports.task}
           noticeKey={noticeKey}
+          sendDisabled={paused}
           draft={{ key: taskDraftKey(handle), keep: view.kind === "signed_out" }}
         />
       )}

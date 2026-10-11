@@ -448,6 +448,18 @@ export interface CreateDeploymentInput {
   };
 }
 
+/** `GET /api/deployments/:id/dependents`. */
+export interface DeploymentDependents {
+  /** Agents that will stop answering if this deployment is stopped now. */
+  agents: Array<{
+    id: string;
+    name: string;
+    /** The agent has a published listing that sells use. */
+    onSale: boolean;
+    listing: { id: string; title: string; pricingModel: string; subscribers: number } | null;
+  }>;
+}
+
 export const deploymentsApi = {
   list: () =>
     api<{ deployments: Deployment[]; total: number }>("/api/deployments"),
@@ -478,6 +490,10 @@ export const deploymentsApi = {
     api<{ message: string }>(`/api/deployments/${id}/restart`, {
       method: "POST",
     }),
+
+  /** The agents that will stop answering if this deployment is stopped now. Read before a stop. */
+  dependents: (id: string) =>
+    api<DeploymentDependents>(`/api/deployments/${id}/dependents`),
 
   metrics: (id: string) =>
     api<{
@@ -2313,6 +2329,12 @@ export interface MarketplaceListing {
   allowedTools?: string[];
   /** `getMyListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
+  /**
+   * `getMyListings` only: set while the model the agent runs on is not running, so nobody can start
+   * using it and nobody is charged. `since` is when that was first seen, or null when not yet noted.
+   * Null when the listing is not paused.
+   */
+  paused?: { since: string | null } | null;
   publisherId: string;
   publisherName: string;
   status: "draft" | "pending_review" | "published" | "archived";
@@ -2589,6 +2611,11 @@ export interface PaidUseAccessState {
    * until `until` (an ISO date), and `canAccept` is false. Null otherwise.
    */
   startBlocked: { code: "copy_subscription_active"; message: string; until: string } | null;
+  /**
+   * True while the model the agent runs on is not running: nobody can start or use it and nobody is
+   * charged. The other fields stay what they are. Absent from an API that does not say.
+   */
+  paused?: boolean;
 }
 
 /** What a use cost. */
@@ -2633,9 +2660,10 @@ export interface PaidUseRefusal {
   /**
    * The refusal's code. Two to know: `not_a_member` (403), the caller is no longer a member of the
    * paying organization; `copy_subscription_active` (409, on starting to use), the caller holds a
-   * copy with a month paid for.
+   * copy with a month paid for. While the agent's model is not running: `agent_paused` (503, on a
+   * use) and `listing_paused` (409, on starting to use). Nothing is charged for either.
    */
-  error: "copy_subscription_active" | "not_a_member" | (string & {});
+  error: "copy_subscription_active" | "not_a_member" | "agent_paused" | "listing_paused" | (string & {});
   message: string;
   /** copy_subscription_active: when the copy's paid month ends (an ISO date). */
   until?: string;

@@ -29,6 +29,7 @@ import {
 } from "@/lib/api";
 import { codeOf, listingForAgent } from "@/lib/agent-page";
 import { PUBLIC_LINK_WORDS } from "@/lib/agent-share";
+import { SELL_PAUSED_NOTICE, listingIsPaused } from "@/lib/listing-pause";
 import {
   LISTING_LINE_MAX,
   SELL_LINE_TOO_SHORT,
@@ -285,6 +286,16 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     </p>
   );
 
+  // The model this agent runs on is not running: said first, before anything else on the tab.
+  const pausedNotice = listingIsPaused(listing) && (
+    <p role="status" className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-sm text-foreground">
+      {SELL_PAUSED_NOTICE.message}{" "}
+      <Link href={SELL_PAUSED_NOTICE.action.href} className={textLink}>
+        {SELL_PAUSED_NOTICE.action.label}
+      </Link>
+    </p>
+  );
+
   const editListing = listing && (
     <Link
       href={`/dashboard/marketplace/publish?edit=${encodeURIComponent(listing.id)}`}
@@ -297,6 +308,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   if (listing && status && onSale) {
     return (
       <div className="space-y-6">
+        {pausedNotice}
         <Card>
           <CardHeader>
             <div ref={statusRef} tabIndex={-1} className="flex flex-wrap items-center gap-2 rounded focus-visible:outline-none">
@@ -391,6 +403,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   return (
     <Card>
       <CardContent className="space-y-5 py-6">
+        {pausedNotice}
         {status && (
           <div ref={statusRef} tabIndex={-1} className="flex flex-wrap items-center gap-2 rounded focus-visible:outline-none">
             <Badge variant={status.standing === "in_review" ? "warning" : "secondary"}>{status.label}</Badge>

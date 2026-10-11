@@ -19,9 +19,11 @@ import {
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
+import { confirmStopDeployment } from "@/components/dashboard/stop-deployment-warning";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -127,6 +129,9 @@ export default function DeploymentDetailPage() {
   // after Start keeps the last good deployment on screen (with the toast)
   // instead of the error panel, as the deployments list does.
   const hasLoadedRef = useRef(false);
+  const confirmAction = useConfirm();
+  // A second press of Stop while the first is still asking or stopping does nothing.
+  const stoppingRef = useRef(false);
 
   const deploymentId = params.id as string;
 
@@ -195,14 +200,19 @@ export default function DeploymentDetailPage() {
   }
 
   async function handleStop() {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
     setActionLoading(true);
     try {
+      // Agents that answer from this deployment are named first; with none, nothing is asked.
+      if (!(await confirmStopDeployment(deploymentId, confirmAction))) return;
       const stopped = await deploymentsApi.delete(deploymentId);
       toast.success(stopConfirmation(stopped));
       router.push("/dashboard/deployments");
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to stop deployment"));
     } finally {
+      stoppingRef.current = false;
       setActionLoading(false);
     }
   }

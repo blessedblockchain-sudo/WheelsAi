@@ -6,9 +6,11 @@ import { Cpu, MoreVertical, Play, Square, RefreshCw, Trash2 } from "lucide-react
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
+import { confirmStopDeployment } from "@/components/dashboard/stop-deployment-warning";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -68,6 +70,9 @@ export default function DeploymentsPage() {
   // Set once a fetch succeeds. After that a failed background poll keeps the
   // last good list on screen (with the toast) instead of the error panel.
   const hasLoadedRef = useRef(false);
+  const confirmAction = useConfirm();
+  // A second press of Stop while the first is still asking or stopping does nothing.
+  const stoppingRef = useRef(false);
 
   async function loadDeployments() {
     try {
@@ -118,14 +123,19 @@ export default function DeploymentsPage() {
   }
 
   async function handleStop(id: string) {
+    if (stoppingRef.current) return;
+    stoppingRef.current = true;
     setActionLoading(id);
     try {
+      // Agents that answer from this deployment are named first; with none, nothing is asked.
+      if (!(await confirmStopDeployment(id, confirmAction))) return;
       const stopped = await deploymentsApi.delete(id);
       toast.success(stopConfirmation(stopped));
       loadDeployments();
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to stop deployment"));
     } finally {
+      stoppingRef.current = false;
       setActionLoading(null);
     }
   }

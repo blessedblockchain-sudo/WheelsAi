@@ -128,6 +128,7 @@ function makeWorld(
   const state = {
     balance: 0n,
     ledger: [] as LedgerRow[],
+    receipts: [] as string[],
     fateReads: [] as Array<{ signature: string; lastValidBlockHeight: bigint }>,
     sends: [] as Array<{ signedTxB64: string; txSignature: string }>,
     endCalls: [] as unknown[],
@@ -150,6 +151,24 @@ function makeWorld(
         r.status = args.data.status;
         r.creditedAt = args.data.creditedAt;
         return { count: 1 };
+      },
+      // What makeCreditTopup reads to write the transfer's receipt.
+      findUnique: async (args: { where: { id: string } }) => {
+        const r = table.get(args.where.id);
+        return r
+          ? {
+              ...r,
+              amountRaw: "50000000",
+              payerAddress: "payer",
+              depositAddress: "deposit",
+            }
+          : null;
+      },
+    },
+    onchainReceipt: {
+      create: async (args: { data: { txSignature: string } }) => {
+        state.receipts.push(args.data.txSignature);
+        return {};
       },
     },
     creditBalance: {

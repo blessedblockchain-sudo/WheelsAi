@@ -326,17 +326,88 @@ interface LedgerRow {
   description: string;
 }
 
-function makeCreditDb(initial = 0n, casCount = 1) {
+interface ReceiptRow {
+  network: string;
+  txSignature: string;
+  asset: string;
+  topupId?: string | null;
+  [key: string]: unknown;
+}
+
+function topupRow(over: Record<string, unknown> = {}) {
+  return {
+    id: "topup_row_1",
+    orgId: "org_1",
+    asset: "SOL",
+    network: "solana:devnet",
+    amountUsdCents: 5_000n,
+    bonusCents: 500n,
+    amountRaw: "250000000",
+    payerAddress: "payer_wallet",
+    depositAddress: "deposit_address",
+    txSignature: "sig_1" as string | null,
+    status: "submitted",
+    quotePriceMicroUsd: 200_000_000n,
+    quotePublishTime: new Date("2026-10-10T11:59:58.000Z"),
+    quoteSource: "pyth",
+    ...over,
+  };
+}
+
+/**
+ * wallet_topups, onchain_receipts and the ledger in memory, with the two
+ * things the credit stands on: a real compare-and-set, and a transaction
+ * that rolls everything back when it throws. onchain_receipts refuses a
+ * second row for (network, txSignature, asset) the way Postgres does.
+ */
+function makeCreditDb(
+  initial = 0n,
+  casCount = 1,
+  rows: Array<ReturnType<typeof topupRow>> = [topupRow()],
+  receipts: ReceiptRow[] = [],
+) {
   const state = {
     balance: initial,
     ledger: [] as LedgerRow[],
     casCalls: [] as unknown[],
+    rows,
+    receipts,
   };
   const tx = {
     walletTopUp: {
-      updateMany: async (args: unknown) => {
+      updateMany: async (args: {
+        where: { id: string; status: { in: string[] }; txSignature?: { not: null } };
+        data: { status: string };
+      }) => {
         state.casCalls.push(args);
-        return { count: casCount };
+        if (casCount === 0) return { count: 0 };
+        const row = state.rows.find((r) => r.id === args.where.id);
+        if (!row) return { count: casCount };
+        if (!args.where.status.in.includes(row.status)) return { count: 0 };
+        if (args.where.txSignature && row.txSignature === null) return { count: 0 };
+        Object.assign(row, args.data);
+        return { count: 1 };
+      },
+      findUnique: async (args: { where: { id: string } }) =>
+        state.rows.find((r) => r.id === args.where.id) ??
+        topupRow({ id: args.where.id }),
+    },
+    onchainReceipt: {
+      create: async (args: { data: ReceiptRow }) => {
+        const d = args.data;
+        if (
+          state.receipts.some(
+            (r) =>
+              (r.network === d.network &&
+                r.txSignature === d.txSignature &&
+                r.asset === d.asset) ||
+              (d.topupId != null && r.topupId === d.topupId),
+          )
+        ) {
+          throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        }
+        state.receipts.push(d);
+        return d;
       },
     },
     creditBalance: {
@@ -357,10 +428,115 @@ function makeCreditDb(initial = 0n, casCount = 1) {
     },
   };
   const db = {
-    $transaction: async <T>(fn: (t: typeof tx) => Promise<T>) => fn(tx),
+    $transaction: async <T>(fn: (t: typeof tx) => Promise<T>) => {
+      const before = {
+        balance: state.balance,
+        ledger: [...state.ledger],
+        rows: state.rows.map((r) => ({ ...r })),
+        receipts: [...state.receipts],
+      };
+      try {
+        return await fn(tx);
+      } catch (err) {
+        state.balance = before.balance;
+        state.ledger = before.ledger;
+        state.rows.splice(0, state.rows.length, ...before.rows);
+        state.receipts.splice(0, state.receipts.length, ...before.receipts);
+        throw err;
+      }
+    },
   };
   return { db, state };
 }
+
+const CREDIT_ARGS = {
+  topupId: "topup_row_1",
+  orgId: "org_1",
+  amountUsdCents: 5_000n,
+  bonusCents: 500n,
+  asset: "SOL",
+  network: "solana:devnet",
+};
+
+test("crediting a top-up writes ONE receipt of its transfer, in the same transaction", async () => {
+  const { makeCreditTopup } = await importService();
+  const { db, state } = makeCreditDb(0n, 1);
+  const at = new Date("2026-10-10T12:00:00.000Z");
+  const result = await makeCreditTopup(db as never)({ ...CREDIT_ARGS, now: () => at });
+  assert.ok(result.credited);
+  assert.deepEqual(state.receipts, [
+    {
+      network: "solana:devnet",
+      txSignature: "sig_1",
+      asset: "SOL",
+      orgId: "org_1",
+      depositAddress: "deposit_address",
+      amountRaw: 250_000_000n,
+      senderAddresses: ["payer_wallet"],
+      source: "prepared",
+      topupId: "topup_row_1",
+      status: "credited",
+      amountUsdCents: 5_000n,
+      bonusCents: 500n,
+      quotePriceMicroUsd: 200_000_000n,
+      quotePublishTime: new Date("2026-10-10T11:59:58.000Z"),
+      quoteSource: "pyth",
+      creditedAt: at,
+    },
+  ]);
+  const cas = state.casCalls[0] as { where: { txSignature: unknown } };
+  assert.deepEqual(cas.where.txSignature, { not: null }, "a row with no signature is never claimed");
+});
+
+test("a second credit of the same top-up grants nothing and writes no second receipt", async () => {
+  const { makeCreditTopup } = await importService();
+  const { db, state } = makeCreditDb(0n, 1);
+  const credit = makeCreditTopup(db as never);
+  assert.ok((await credit(CREDIT_ARGS)).credited);
+  assert.deepEqual(await credit(CREDIT_ARGS), { credited: false });
+  assert.equal(state.balance, 5_500n);
+  assert.equal(state.ledger.length, 2);
+  assert.equal(state.receipts.length, 1);
+});
+
+test("a transfer that already has a receipt is not credited again: everything rolls back", async () => {
+  const { makeCreditTopup } = await importService();
+  // The scan of the deposit address credited this transfer first.
+  const { db, state } = makeCreditDb(1_000n, 1, [topupRow()], [
+    { network: "solana:devnet", txSignature: "sig_1", asset: "SOL", source: "direct" },
+  ]);
+  const result = await makeCreditTopup(db as never)(CREDIT_ARGS);
+  assert.deepEqual(result, { credited: false });
+  assert.equal(state.balance, 1_000n, "nothing granted");
+  assert.equal(state.ledger.length, 0);
+  assert.equal(state.receipts.length, 1);
+  assert.equal(state.rows[0]!.status, "submitted", "the status change rolled back with it");
+});
+
+test("a row with no signature is never credited", async () => {
+  const { makeCreditTopup } = await importService();
+  const { db, state } = makeCreditDb(0n, 1, [topupRow({ txSignature: null, status: "submitting" })]);
+  assert.deepEqual(await makeCreditTopup(db as never)(CREDIT_ARGS), { credited: false });
+  assert.equal(state.balance, 0n);
+  assert.equal(state.receipts.length, 0);
+});
+
+test("an error that is not a unique violation is thrown, and nothing is kept", async () => {
+  const { makeCreditTopup } = await importService();
+  const { db, state } = makeCreditDb(0n, 1);
+  const real = db.$transaction;
+  db.$transaction = (async (fn: never) =>
+    real(async (tx) => {
+      tx.creditTransaction.create = async () => {
+        throw new Error("connection lost");
+      };
+      return (fn as (t: typeof tx) => Promise<unknown>)(tx);
+    })) as typeof db.$transaction;
+  await assert.rejects(makeCreditTopup(db as never)(CREDIT_ARGS), /connection lost/);
+  assert.equal(state.balance, 0n);
+  assert.equal(state.receipts.length, 0);
+  assert.equal(state.rows[0]!.status, "submitted");
+});
 
 test("winning the CAS grants once, with the topup id as the ledger reference", async () => {
   const { makeCreditTopup } = await importService();

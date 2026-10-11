@@ -74,7 +74,13 @@ function storedRow(over: Partial<StoredRow> = {}): StoredRow {
 
 /** An in-memory wallet_topups that honours `where` the way Prisma does
  * for the few shapes the store uses, and the UNIQUE on tx_signature. */
-function makeDb(rows: StoredRow[], balances: Record<string, bigint> = {}) {
+function makeDb(
+  rows: StoredRow[],
+  balances: Record<string, bigint> = {},
+  depositAddresses: Array<
+    { orgId: string; address: string; network: string } & Record<string, unknown>
+  > = [],
+) {
   const calls: Array<{ op: string; args: any }> = [];
 
   const matches = (row: StoredRow, where: Record<string, any>): boolean => {
@@ -130,8 +136,28 @@ function makeDb(rows: StoredRow[], balances: Record<string, bigint> = {}) {
         return cents === undefined ? null : { balanceCents: cents };
       },
     },
+    // deposit_addresses: one row an organization, one organization an
+    // address.
+    depositAddress: {
+      findUnique: async (args) => {
+        calls.push({ op: "depositAddress.findUnique", args });
+        return depositAddresses.find((row) => row.orgId === args.where.orgId) ?? null;
+      },
+      create: async (args) => {
+        calls.push({ op: "depositAddress.create", args });
+        if (
+          depositAddresses.some(
+            (row) => row.orgId === args.data.orgId || row.address === args.data.address,
+          )
+        ) {
+          throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        }
+        depositAddresses.push({ ...args.data });
+        return {};
+      },
+    },
   };
-  return { db, calls };
+  return { db, calls, depositAddresses };
 }
 
 // ============================================
@@ -382,7 +408,7 @@ test("a new top-up is written with the price it was worked out from", async () =
     expiresAt: NOW,
     lastValidBlockHeight: 1_000n,
   });
-  assert.deepEqual(calls[0]!.args.data, {
+  assert.deepEqual(calls.find((c) => c.op === "create")!.args.data, {
     id: "row_9",
     orgId: "org_1",
     asset: "SOL",
@@ -400,6 +426,92 @@ test("a new top-up is written with the price it was worked out from", async () =
     expiresAt: NOW,
     lastValidBlockHeight: 1_000n,
   });
+});
+
+function newTopup(over: Record<string, unknown> = {}) {
+  return {
+    id: "row_9",
+    orgId: "org_1",
+    asset: "USDC",
+    network: "solana:devnet",
+    amountUsdCents: 5_000n,
+    bonusCents: 500n,
+    amountRaw: "50000000",
+    payerAddress: "payer",
+    depositAddress: "deposit_of_org_1",
+    unsignedMessageB64: "bWVzc2FnZQ==",
+    expiresAt: NOW,
+    lastValidBlockHeight: 1_000n,
+    ...over,
+  };
+}
+
+test("preparing a top-up makes the organization's deposit address row, before the top-up", async () => {
+  const { db, calls, depositAddresses } = makeDb([]);
+  await buildWalletTopupStore(db).createTopup(newTopup());
+  assert.deepEqual(depositAddresses, [
+    { orgId: "org_1", address: "deposit_of_org_1", network: "solana:devnet" },
+  ]);
+  assert.deepEqual(
+    calls.map((c) => c.op),
+    ["depositAddress.findUnique", "depositAddress.create", "create"],
+    "the address is watched before the transfer is handed out",
+  );
+});
+
+test("a deposit address row that exists is left exactly as it is", async () => {
+  const existing = {
+    orgId: "org_1",
+    address: "deposit_of_org_1",
+    network: "solana:mainnet",
+    lastSolSignature: "sig_cursor",
+    lastSeenLamports: 7n,
+  };
+  const { db, calls, depositAddresses } = makeDb([], {}, [existing]);
+  const store = buildWalletTopupStore(db);
+  await store.createTopup(newTopup());
+  await store.createTopup(newTopup({ id: "row_10" }));
+  assert.deepEqual(depositAddresses, [
+    {
+      orgId: "org_1",
+      address: "deposit_of_org_1",
+      network: "solana:mainnet",
+      lastSolSignature: "sig_cursor",
+      lastSeenLamports: 7n,
+    },
+  ]);
+  assert.equal(calls.filter((c) => c.op === "depositAddress.create").length, 0);
+  assert.equal(calls.filter((c) => c.op === "create").length, 2);
+});
+
+test("two requests making the row at once: the one that loses the insert still prepares", async () => {
+  const { db, depositAddresses, calls } = makeDb([]);
+  const real = db.depositAddress.findUnique;
+  let reads = 0;
+  // The first read finds none; another request then makes the row.
+  db.depositAddress.findUnique = async (args) => {
+    reads += 1;
+    if (reads === 1) {
+      depositAddresses.push({
+        orgId: "org_1",
+        address: "deposit_of_org_1",
+        network: "solana:devnet",
+      });
+      return null;
+    }
+    return real(args);
+  };
+  await buildWalletTopupStore(db).createTopup(newTopup());
+  assert.equal(depositAddresses.length, 1);
+  assert.equal(calls.filter((c) => c.op === "create").length, 1);
+});
+
+test("an address held by another organization's row refuses the top-up", async () => {
+  const { db, calls } = makeDb([], {}, [
+    { orgId: "org_2", address: "deposit_of_org_1", network: "solana:devnet" },
+  ]);
+  await assert.rejects(buildWalletTopupStore(db).createTopup(newTopup()));
+  assert.equal(calls.filter((c) => c.op === "create").length, 0, "no top-up is written");
 });
 
 test("the credit balance is the organization's, and nothing when it has no row", async () => {

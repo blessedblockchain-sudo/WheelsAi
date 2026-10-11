@@ -24,9 +24,11 @@
  *     price the amount was worked out from is recorded on the row.
  *
  * Credits are granted ONLY after on-chain confirmation, by
- * `makeCreditTopup`: a status CAS (submitting|submitted → credited) and
- * the grantCredits call inside ONE database transaction. The CAS is the
- * idempotency barrier — a submit/reconcile race grants exactly once.
+ * `makeCreditTopup`: a status CAS (submitting|submitted → credited), the
+ * receipt of the transfer (onchain_receipts) and the grantCredits call
+ * inside ONE database transaction. The CAS is the idempotency barrier — a
+ * submit/reconcile race grants exactly once — and the receipt's unique
+ * index is the same barrier against the scan of the deposit address.
  */
 
 import { randomUUID } from "node:crypto";
@@ -48,6 +50,7 @@ import bs58 from "bs58";
 import nacl from "tweetnacl";
 
 import { MEMO_PROGRAM_ID } from "../lib/memoProgram.js";
+import { createLogger } from "../utils/logger.js";
 import {
   grantCredits,
   type CreditGrantTxClient,
@@ -59,6 +62,8 @@ import {
   solUsdRate,
   type SolQuote,
 } from "./solPrice.js";
+
+const logger = createLogger("wallet-topup");
 
 export const USDC_DECIMALS = 6;
 export const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -577,12 +582,67 @@ export function signatureOfSignedTransaction(signedTxBase64: string): string | n
 // Crediting (the only money-moving step)
 // ============================================
 
+/** What a receipt of one on-chain transfer is written with. The table's
+ * unique index on (network, txSignature, asset) is what makes a second
+ * credit of the same transfer impossible. */
+export interface OnchainReceiptCreateData {
+  id?: string;
+  network: string;
+  txSignature: string;
+  asset: string;
+  orgId: string;
+  depositAddress: string;
+  /** Base units: lamports, or USDC with 6 decimals. */
+  amountRaw: bigint;
+  slot?: bigint | null;
+  blockTime?: Date | null;
+  senderAddresses: string[];
+  source: "prepared" | "direct";
+  topupId?: string | null;
+  status: "detected" | "credited" | "ignored";
+  ignoredReason?: string | null;
+  amountUsdCents?: bigint | null;
+  bonusCents?: bigint;
+  quotePriceMicroUsd?: bigint | null;
+  quotePublishTime?: Date | null;
+  quoteSource?: string | null;
+  creditedAt?: Date | null;
+}
+
+/** The columns of a top-up its receipt is written from. */
+export interface TopupReceiptSourceRow {
+  id: string;
+  orgId: string;
+  asset: string;
+  network: string;
+  amountUsdCents: bigint;
+  bonusCents: bigint;
+  /** Base units as a string, as wallet_topups stores them. */
+  amountRaw: string;
+  payerAddress: string;
+  depositAddress: string;
+  txSignature: string | null;
+  quotePriceMicroUsd?: bigint | null;
+  quotePublishTime?: Date | null;
+  quoteSource?: string | null;
+}
+
 export interface TopupCreditTxClient extends CreditGrantTxClient {
   walletTopUp: {
     updateMany: (args: {
-      where: { id: string; status: { in: string[] } };
+      where: {
+        id: string;
+        status: { in: string[] };
+        txSignature: { not: null };
+      };
       data: { status: string; creditedAt: Date };
     }) => Promise<{ count: number }>;
+    findUnique: (args: {
+      where: { id: string };
+    }) => Promise<TopupReceiptSourceRow | null>;
+  };
+  onchainReceipt: {
+    create: (args: { data: OnchainReceiptCreateData }) => Promise<unknown>;
   };
 }
 
@@ -605,46 +665,107 @@ export type CreditTopupResult =
   | { credited: true; balanceAfterCents: bigint; grantedCents: bigint }
   | { credited: false };
 
+/** Prisma's code for a unique index refusing a write. */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "P2002"
+  );
+}
+
 /**
  * Grants the credits for a confirmed top-up, exactly once.
  *
- * The status CAS (submitting|submitted → credited) and the grant run in
- * ONE database transaction: losing the CAS means someone else already
- * credited this row (submit vs reconcile race, double-delivered
- * request) and NO grant happens; winning it commits the flip and the
- * ledger rows atomically — a crash can never leave a credited row
- * without its grant or a grant without its flip.
+ * The status CAS (submitting|submitted → credited), the receipt of the
+ * transfer and the grant run in ONE database transaction: losing the CAS
+ * means someone else already credited this row (submit vs reconcile
+ * race, double-delivered request) and NO grant happens; winning it
+ * commits the flip, the receipt and the ledger rows atomically — a crash
+ * can never leave a credited row without its grant or a grant without
+ * its flip.
+ *
+ * The receipt (onchain_receipts, one per network, signature and asset) is
+ * the second barrier: the scan of the deposit address
+ * (services/depositCredit.ts) writes the same receipt for the same
+ * transfer, so whichever commits first is the only one that grants. A
+ * unique violation aborts the transaction, so it is turned into
+ * `credited: false` out here, after the rollback. It should never happen
+ * on this path (the scan credits a prepared transfer through its row, so
+ * the CAS is lost first), which is why it is logged as an error.
+ *
+ * A row with no signature is never credited here: there is no transfer
+ * to write a receipt for.
  */
 export function makeCreditTopup(db: TopupCreditDb) {
   return async function creditTopup(
     args: CreditTopupArgs,
   ): Promise<CreditTopupResult> {
     const now = args.now ?? (() => new Date());
-    return db.$transaction(async (tx) => {
-      const claimed = await tx.walletTopUp.updateMany({
-        where: {
-          id: args.topupId,
-          status: { in: ["submitting", "submitted"] },
-        },
-        data: { status: "credited", creditedAt: now() },
+    try {
+      return await db.$transaction(async (tx): Promise<CreditTopupResult> => {
+        const creditedAt = now();
+        const claimed = await tx.walletTopUp.updateMany({
+          where: {
+            id: args.topupId,
+            status: { in: ["submitting", "submitted"] },
+            txSignature: { not: null },
+          },
+          data: { status: "credited", creditedAt },
+        });
+        if (claimed.count === 0) {
+          return { credited: false };
+        }
+        const row = await tx.walletTopUp.findUnique({
+          where: { id: args.topupId },
+        });
+        if (!row || !row.txSignature) {
+          // Throwing rolls the status change back: nothing is credited
+          // without the transfer it stands on.
+          throw new Error("creditTopup: the claimed top-up could not be read");
+        }
+        await tx.onchainReceipt.create({
+          data: {
+            network: row.network,
+            txSignature: row.txSignature,
+            asset: row.asset,
+            orgId: row.orgId,
+            depositAddress: row.depositAddress,
+            amountRaw: BigInt(row.amountRaw),
+            senderAddresses: [row.payerAddress],
+            source: "prepared",
+            topupId: row.id,
+            status: "credited",
+            amountUsdCents: row.amountUsdCents,
+            bonusCents: row.bonusCents,
+            quotePriceMicroUsd: row.quotePriceMicroUsd ?? null,
+            quotePublishTime: row.quotePublishTime ?? null,
+            quoteSource: row.quoteSource ?? null,
+            creditedAt,
+          },
+        });
+        const granted = await grantCredits(tx, {
+          orgId: args.orgId,
+          amountCents: args.amountUsdCents,
+          bonusCents: args.bonusCents,
+          referenceId: args.topupId,
+          description: `Wallet top-up (${args.asset})`,
+          labelPrefix:
+            args.network === "solana:devnet" ? "[devnet] " : undefined,
+        });
+        return {
+          credited: true,
+          balanceAfterCents: granted.balanceAfterCents,
+          grantedCents: granted.grantedCents,
+        };
       });
-      if (claimed.count === 0) {
-        return { credited: false };
-      }
-      const granted = await grantCredits(tx, {
-        orgId: args.orgId,
-        amountCents: args.amountUsdCents,
-        bonusCents: args.bonusCents,
-        referenceId: args.topupId,
-        description: `Wallet top-up (${args.asset})`,
-        labelPrefix:
-          args.network === "solana:devnet" ? "[devnet] " : undefined,
-      });
-      return {
-        credited: true,
-        balanceAfterCents: granted.balanceAfterCents,
-        grantedCents: granted.grantedCents,
-      };
-    });
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      logger.error(
+        { topupId: args.topupId, orgId: args.orgId },
+        "Top-up not credited: its transfer already has a receipt. This should never happen.",
+      );
+      return { credited: false };
+    }
   };
 }

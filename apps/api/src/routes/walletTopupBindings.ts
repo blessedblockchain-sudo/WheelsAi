@@ -98,6 +98,15 @@ export interface TopupStoreDb {
       where: { orgId: string };
     }) => Promise<{ balanceCents: bigint } | null>;
   };
+  /** The addresses the deposit scan watches (services/runDepositScanTick.ts). */
+  depositAddress: {
+    findUnique: (args: {
+      where: { orgId: string };
+    }) => Promise<{ orgId: string } | null>;
+    create: (args: {
+      data: { orgId: string; address: string; network: string };
+    }) => Promise<unknown>;
+  };
 }
 
 export type WalletTopupStore = Pick<
@@ -138,6 +147,31 @@ function toView(row: TopupDbRow): TopupRowView {
 export function buildWalletTopupStore(db: TopupStoreDb): WalletTopupStore {
   return {
     createTopup: async (data) => {
+      // Every address money can arrive at is watched: the organization's
+      // deposit_addresses row is made before the transfer is handed out.
+      // A row that exists is left exactly as it is. Two requests can both
+      // find none; the one that loses the insert has what it wanted.
+      const watched = await db.depositAddress.findUnique({
+        where: { orgId: data.orgId },
+      });
+      if (!watched) {
+        try {
+          await db.depositAddress.create({
+            data: {
+              orgId: data.orgId,
+              address: data.depositAddress,
+              network: data.network,
+            },
+          });
+        } catch (err) {
+          if ((err as { code?: string }).code !== "P2002") throw err;
+          const now = await db.depositAddress.findUnique({
+            where: { orgId: data.orgId },
+          });
+          // The address is held by another organization's row: refuse.
+          if (!now) throw err;
+        }
+      }
       await db.walletTopUp.create({
         data: {
           id: data.id,

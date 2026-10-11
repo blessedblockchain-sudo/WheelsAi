@@ -97,6 +97,7 @@ function makeHarness(opts: {
     transactions: 0,
     upserts: [] as unknown[],
     ledger: [] as Array<Record<string, unknown>>,
+    receipts: [] as Array<Record<string, unknown>>,
     sent: [] as Buffer[],
   };
   const walletTopUp = {
@@ -111,10 +112,19 @@ function makeHarness(opts: {
       calls.updateMany.push(args);
       return { count: opts.updateCount ?? 1 };
     },
+    // What makeCreditTopup reads to write the transfer's receipt.
+    findUnique: async (args: { where: { id: string } }) =>
+      (opts.rows ?? [dbRow()]).find((row) => row.id === args.where.id) ?? null,
   };
   let balance = 0n;
   const txClient = {
     walletTopUp,
+    onchainReceipt: {
+      create: async (args: { data: Record<string, unknown> }) => {
+        calls.receipts.push(args.data);
+        return {};
+      },
+    },
     creditBalance: {
       upsert: async (args: { update: { balanceCents: { increment: bigint } } }) => {
         calls.upserts.push(args);
@@ -325,8 +335,14 @@ test("creditTopup is makeCreditTopup: the status change and the ledger rows in o
   assert.deepEqual(calls.updateMany[0]?.where, {
     id: "t1",
     status: { in: ["submitting", "submitted"] },
+    txSignature: { not: null },
   });
   assert.equal(calls.updateMany[0]?.data.status, "credited");
+  assert.deepEqual(
+    calls.receipts.map((r) => [r.txSignature, r.asset, r.source, r.topupId, r.status]),
+    [["sig_t1", "SOL", "prepared", "t1", "credited"]],
+    "the transfer's receipt is written in the same transaction",
+  );
   assert.deepEqual(
     calls.ledger.map((l) => [l.type, l.amountCents, l.referenceId]),
     [

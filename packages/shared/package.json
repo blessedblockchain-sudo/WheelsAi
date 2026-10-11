@@ -29,6 +29,10 @@
     "./payouts": {
       "types": "./src/payouts.ts",
       "default": "./src/payouts.ts"
+    },
+    "./ledger": {
+      "types": "./src/ledger.ts",
+      "default": "./src/ledger.ts"
     }
   },
   "scripts": {

@@ -50,6 +50,7 @@ import {
   type ProviderRequestParams,
   type ToolChoice,
 } from "./openaiCompat.js";
+import { networkFailureCode } from "./networkFailure.js";
 import type { SkillRegistry } from "./skills/registry.js";
 import type { ToolContext, ToolMode, ToolSpec } from "./skills/types.js";
 import {
@@ -153,6 +154,8 @@ export interface RunChatOptions {
   /** Test seams. */
   registry?: SkillRegistry;
   fetchImpl?: typeof fetch;
+  /** The wait before a provider request is sent again (see postChatCompletion). */
+  sleepImpl?: ProviderRetrySleep;
 }
 
 /** Why a stream did not produce an answer; drives what the client is told. */
@@ -450,39 +453,147 @@ function providerErrorHint(status: number): string {
   return "the model provider rejected the request";
 }
 
+/**
+ * How often one provider request is sent in all, whatever the reasons for
+ * sending it again (a failed connection, a 429, or both in turn). Three,
+ * because the failures seen from a slow link (a connect that timed out, a
+ * reset) clear within a second or two, and a provider that is really down
+ * should not hold a person for longer than that.
+ */
+const PROVIDER_MAX_SENDS = 3;
+
+/**
+ * The wait after the first and after the second failed connection. Short
+ * first, because a reset or a lost race between address families is usually
+ * gone at once; longer second, to outlast a brief loss of the link. Together
+ * 1.3 s, small next to any chat deadline.
+ */
+const NETWORK_FAILURE_WAITS_MS: readonly number[] = [300, 1_000];
+
+/**
+ * The longest retry-after of a 429 that is waited out here. Free-tier
+ * per-minute limits often ask for a second or two; anything longer is the
+ * caller's to report, with the provider's number, rather than a request held
+ * open in silence.
+ */
+const RATE_LIMIT_MAX_WAIT_SECONDS = 5;
+
+/** Added to the provider's retry-after, so the next send does not land on the edge of its window. */
+const RATE_LIMIT_WAIT_MARGIN_MS = 100;
+
+/** Resolves after `ms`; rejects with the signal's reason as soon as it aborts. */
+export type ProviderRetrySleep = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+/** A real (ref'd) timer that is cleared on abort, for the reason startDeadline gives. */
+const abortableSleep: ProviderRetrySleep = (ms, signal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+
+/**
+ * Sends one chat request to the provider. It is sent again in two cases only,
+ * both before any answer has reached the caller:
+ *   - the connection failed before a Response existed (networkFailure.ts);
+ *   - the provider answered 429 and asked for a wait short enough to sit out,
+ *     once per request.
+ * The two share one limit on sends (PROVIDER_MAX_SENDS), counted here for
+ * this request alone.
+ * Any other status, a refused redirect and an abort are final at once, and a
+ * Response that is ok is returned as it is: a stream that breaks midway is
+ * never sent again from here.
+ */
 async function postChatCompletion(
   fetchImpl: typeof fetch,
   resolved: ResolvedModel,
   body: Record<string, unknown>,
   signal?: AbortSignal,
+  sleep: ProviderRetrySleep = abortableSleep,
 ): Promise<Response> {
-  const res = await fetchImpl(`${resolved.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(resolved.apiKey && { Authorization: `Bearer ${resolved.apiKey}` }),
-    },
-    body: JSON.stringify(body),
-    signal,
-    ...(resolved.refuseRedirects && { redirect: "manual" as const }),
-  });
+  const payload = JSON.stringify(body);
+  let waitedForRateLimit = false;
+  // Counted apart from the sends, so the first failed connection waits the
+  // short wait even when a 429 was sat out before it.
+  let networkFailures = 0;
 
-  if (resolved.refuseRedirects && (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))) {
-    await res.body?.cancel().catch(() => {});
-    logger.error({ status: res.status }, "Model endpoint answered with a redirect; refusing to follow it");
-    throw new ProviderHttpError(502, null);
-  }
+  // The reason is a code or a status, never the provider's words: the log
+  // must not carry what a provider echoes back (a request, a key prefix).
+  const waitThenSendAgain = async (waitMs: number, reason: string, attempt: number) => {
+    logger.warn({ reason, attempt, waitMs }, "Model request is being sent again");
+    await sleep(waitMs, signal);
+    // An abort during the wait ends the request here with the abort's own
+    // reason, exactly as an abort during the fetch does.
+    signal?.throwIfAborted();
+  };
 
-  if (!res.ok) {
-    // The provider's error body can quote the request, name the account or
-    // echo a key prefix, and this message is returned to the client and stored
-    // on scheduled runs. The body goes to the log; the caller gets the status
-    // and a generic reason.
-    const errText = await res.text().catch(() => "Unknown error");
-    logger.error({ status: res.status, errText: errText.slice(0, 2_000) }, "Model API error");
-    throw new ProviderHttpError(res.status, retryAfterSeconds(res));
+  for (let sends = 1; ; sends += 1) {
+    let res: Response;
+    try {
+      res = await fetchImpl(`${resolved.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(resolved.apiKey && { Authorization: `Bearer ${resolved.apiKey}` }),
+        },
+        body: payload,
+        signal,
+        ...(resolved.refuseRedirects && { redirect: "manual" as const }),
+      });
+    } catch (err) {
+      const code = networkFailureCode(err);
+      if (!code || signal?.aborted || sends >= PROVIDER_MAX_SENDS) throw err;
+      networkFailures += 1;
+      const waitMs = NETWORK_FAILURE_WAITS_MS[networkFailures - 1]!;
+      await waitThenSendAgain(waitMs, code, sends + 1);
+      continue;
+    }
+
+    if (resolved.refuseRedirects && (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))) {
+      await res.body?.cancel().catch(() => {});
+      logger.error({ status: res.status }, "Model endpoint answered with a redirect; refusing to follow it");
+      throw new ProviderHttpError(502, null);
+    }
+
+    if (!res.ok) {
+      const retryAfter = retryAfterSeconds(res);
+      if (
+        res.status === 429 &&
+        !waitedForRateLimit &&
+        sends < PROVIDER_MAX_SENDS &&
+        retryAfter !== null &&
+        retryAfter <= RATE_LIMIT_MAX_WAIT_SECONDS &&
+        !signal?.aborted
+      ) {
+        waitedForRateLimit = true;
+        await res.body?.cancel().catch(() => {});
+        await waitThenSendAgain(
+          Math.ceil(retryAfter * 1_000) + RATE_LIMIT_WAIT_MARGIN_MS,
+          "429",
+          sends + 1,
+        );
+        continue;
+      }
+      // The provider's error body can quote the request, name the account or
+      // echo a key prefix, and this message is returned to the client and stored
+      // on scheduled runs. The body goes to the log; the caller gets the status
+      // and a generic reason.
+      const errText = await res.text().catch(() => "Unknown error");
+      logger.error({ status: res.status, errText: errText.slice(0, 2_000) }, "Model API error");
+      throw new ProviderHttpError(res.status, retryAfter);
+    }
+    return res;
   }
-  return res;
 }
 
 /** The non-streaming model call the tool loop drives. */
@@ -491,6 +602,7 @@ function createProviderCallModel(
   resolved: ResolvedModel,
   agentConfig: AgentPlaygroundConfig,
   requestParams?: ProviderRequestParams,
+  sleepImpl?: ProviderRetrySleep,
 ): CallModel {
   return async ({ messages, tools, toolChoice, signal }) => {
     const extra: Record<string, unknown> = { stream: false };
@@ -504,6 +616,7 @@ function createProviderCallModel(
       resolved,
       buildRequestBody(resolved, agentConfig, messages, extra, requestParams),
       signal,
+      sleepImpl,
     );
 
     const data = (await res.json().catch(() => null)) as {
@@ -632,7 +745,13 @@ async function runToolChat(
     toolChoice: options.toolChoice,
     maxRounds: options.maxToolRounds,
     signal,
-    callModel: createProviderCallModel(fetchImpl, resolved, agentConfig, options.requestParams),
+    callModel: createProviderCallModel(
+      fetchImpl,
+      resolved,
+      agentConfig,
+      options.requestParams,
+      options.sleepImpl,
+    ),
     executeTool: async (name, input, toolSignal) => {
       if (!registry) return { status: "error", message: `unknown tool "${name}"` };
       return registry.execute(name, input, { ...ctxBase, signal: toolSignal });
@@ -990,6 +1109,7 @@ export async function runChatStream(
         options.requestParams,
       ),
       deadline.signal,
+      options.sleepImpl,
     );
     if (!res.body) {
       throw new Error("No response body for streaming");

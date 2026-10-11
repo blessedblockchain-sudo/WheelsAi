@@ -885,3 +885,380 @@ test("in a hired chat http_request is neither offered nor run unless the offerin
     ["calculator", "http_request"],
   );
 });
+
+// ============================================
+// Sending a provider request again
+// ============================================
+
+/** What fetch throws when no address of the host connected in time: the code sits on a cause with an empty message. */
+function connectFailure(): Error {
+  const noAddress = Object.assign(new AggregateError([new Error("connect ETIMEDOUT")], ""), {
+    code: "ETIMEDOUT",
+  });
+  return Object.assign(new TypeError("fetch failed"), { cause: noAddress });
+}
+
+const failToConnect = (): Response => {
+  throw connectFailure();
+};
+
+const rateLimited = (retryAfter?: string) => (): Response =>
+  new Response("slow down", { status: 429, headers: retryAfter ? { "retry-after": retryAfter } : {} });
+
+/** A wait that takes no time and is written down. */
+function recordedSleep() {
+  const waits: number[] = [];
+  return { waits, sleepImpl: async (ms: number) => void waits.push(ms) };
+}
+
+const ASK = [{ role: "user" as const, content: "x" }];
+
+test("a connection that fails once is tried again and the chat succeeds", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([failToConnect, () => json(contentMessage("here"))]);
+  const sleep = recordedSleep();
+  const result = await runChat(RESOLVED, CONFIG([]), ASK, false, {
+    fetchImpl: provider.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  assert.equal(result.content, "here");
+  assert.equal(provider.bodies.length, 2);
+  assert.deepEqual(provider.bodies[1], provider.bodies[0], "the same request is sent again");
+  assert.deepEqual(sleep.waits, [300]);
+});
+
+test("a connection that fails three times fails the chat as before, after three sends", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([failToConnect, failToConnect, failToConnect, () => json(contentMessage("late"))]);
+  const sleep = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, sleepImpl: sleep.sleepImpl }),
+    (err: unknown) =>
+      err instanceof TypeError &&
+      err.message === "fetch failed" &&
+      (err.cause as { code?: string }).code === "ETIMEDOUT",
+  );
+  assert.equal(provider.bodies.length, 3);
+  assert.deepEqual(sleep.waits, [300, 1_000]);
+});
+
+test("a failure that is not the network's is not sent again", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([
+    () => {
+      throw new TypeError("fetch failed");
+    },
+    () => json(contentMessage("never")),
+  ]);
+  const sleep = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, sleepImpl: sleep.sleepImpl }),
+    /fetch failed/,
+  );
+  assert.equal(provider.bodies.length, 1);
+  assert.deepEqual(sleep.waits, []);
+});
+
+test("a 429 that asks for one second is waited out, once, and the chat succeeds", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([rateLimited("1"), () => json(contentMessage("after the wait"))]);
+  const sleep = recordedSleep();
+  const result = await runChat(RESOLVED, CONFIG([]), ASK, false, {
+    fetchImpl: provider.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  assert.equal(result.content, "after the wait");
+  assert.equal(provider.bodies.length, 2);
+  assert.deepEqual(sleep.waits, [1_100], "the provider's second plus the margin");
+});
+
+test("a 429 that asks for longer, or for nothing, is given up at once with the provider's retry-after", async () => {
+  const { runChat, ProviderHttpError } = await import("../services/mastra-runtime.js");
+  for (const [header, expected] of [
+    ["30", 30],
+    ["6", 6],
+    [undefined, null],
+  ] as const) {
+    const provider = scriptedProvider([rateLimited(header), () => json(contentMessage("never"))]);
+    const sleep = recordedSleep();
+    await assert.rejects(
+      runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, sleepImpl: sleep.sleepImpl }),
+      (err: unknown) =>
+        err instanceof ProviderHttpError && err.status === 429 && err.retryAfterSeconds === expected,
+      String(header),
+    );
+    assert.equal(provider.bodies.length, 1, String(header));
+    assert.deepEqual(sleep.waits, [], String(header));
+  }
+});
+
+test("a second 429 is given up: one wait for a request, and the caller gets the retry-after", async () => {
+  const { runChat, ProviderHttpError } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([rateLimited("1"), rateLimited("2"), () => json(contentMessage("never"))]);
+  const sleep = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, sleepImpl: sleep.sleepImpl }),
+    (err: unknown) => err instanceof ProviderHttpError && err.status === 429 && err.retryAfterSeconds === 2,
+  );
+  assert.equal(provider.bodies.length, 2);
+  assert.deepEqual(sleep.waits, [1_100]);
+});
+
+test("a request is sent three times at most, however a 429 and failed connections follow each other", async () => {
+  const { runChat, ProviderHttpError } = await import("../services/mastra-runtime.js");
+
+  // Two failed connections, then a 429 that could be waited out: it is the third send, so it is given up.
+  const lateLimit = scriptedProvider([failToConnect, failToConnect, rateLimited("1"), () => json(contentMessage("never"))]);
+  const first = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: lateLimit.fetchImpl, sleepImpl: first.sleepImpl }),
+    (err: unknown) => err instanceof ProviderHttpError && err.status === 429 && err.retryAfterSeconds === 1,
+  );
+  assert.equal(lateLimit.bodies.length, 3);
+  assert.deepEqual(first.waits, [300, 1_000]);
+
+  // A 429 between two failed connections: the third send fails as a connection does.
+  const between = scriptedProvider([failToConnect, rateLimited("1"), failToConnect, () => json(contentMessage("never"))]);
+  const second = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: between.fetchImpl, sleepImpl: second.sleepImpl }),
+    (err: unknown) => err instanceof TypeError && err.message === "fetch failed",
+  );
+  assert.equal(between.bodies.length, 3);
+  assert.deepEqual(second.waits, [300, 1_100]);
+
+  // A 429 first: the failed connection after it still waits the short wait, and the third send answers.
+  const limitFirst = scriptedProvider([rateLimited("1"), failToConnect, () => json(contentMessage("third"))]);
+  const third = recordedSleep();
+  const result = await runChat(RESOLVED, CONFIG([]), ASK, false, {
+    fetchImpl: limitFirst.fetchImpl,
+    sleepImpl: third.sleepImpl,
+  });
+  assert.equal(result.content, "third");
+  assert.equal(limitFirst.bodies.length, 3);
+  assert.deepEqual(third.waits, [1_100, 300]);
+});
+
+test("the sends are counted for one request: each round of a tool chat has its own", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([
+    failToConnect,
+    failToConnect,
+    () => json(toolCallMessage("calculator", { expression: "1+1" })),
+    failToConnect,
+    failToConnect,
+    () => json(contentMessage("2")),
+  ]);
+  const sleep = recordedSleep();
+  const result = await runChat(RESOLVED, CONFIG([{ name: "calculator", description: "calc" }]), ASK, false, {
+    registry: await makeRegistry(),
+    fetchImpl: provider.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  assert.equal(result.content, "2");
+  assert.equal(provider.bodies.length, 6);
+  assert.deepEqual(sleep.waits, [300, 1_000, 300, 1_000]);
+});
+
+test("a 429 is waited out up to five seconds and not a moment longer", async () => {
+  const { runChat, ProviderHttpError } = await import("../services/mastra-runtime.js");
+  for (const [header, waited] of [
+    ["0", 100],
+    ["5", 5_100],
+  ] as const) {
+    const provider = scriptedProvider([rateLimited(header), () => json(contentMessage("ok"))]);
+    const sleep = recordedSleep();
+    const result = await runChat(RESOLVED, CONFIG([]), ASK, false, {
+      fetchImpl: provider.fetchImpl,
+      sleepImpl: sleep.sleepImpl,
+    });
+    assert.equal(result.content, "ok", header);
+    assert.deepEqual(sleep.waits, [waited], header);
+  }
+
+  const provider = scriptedProvider([rateLimited("5.01"), () => json(contentMessage("never"))]);
+  const sleep = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, sleepImpl: sleep.sleepImpl }),
+    (err: unknown) => err instanceof ProviderHttpError && err.status === 429 && err.retryAfterSeconds === 5.01,
+  );
+  assert.equal(provider.bodies.length, 1);
+  assert.deepEqual(sleep.waits, []);
+});
+
+test("the 429 that is waited out has its body released before the wait, unread", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  let released = false;
+  let pulled = 0;
+  const held = () =>
+    new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull() {
+            pulled += 1;
+          },
+          cancel() {
+            released = true;
+          },
+        },
+        { highWaterMark: 0 },
+      ),
+      { status: 429, headers: { "retry-after": "1" } },
+    );
+  const provider = scriptedProvider([held, () => json(contentMessage("ok"))]);
+  const releasedAtWait: boolean[] = [];
+  const result = await runChat(RESOLVED, CONFIG([]), ASK, false, {
+    fetchImpl: provider.fetchImpl,
+    sleepImpl: async () => void releasedAtWait.push(released),
+  });
+  assert.equal(result.content, "ok");
+  assert.deepEqual(releasedAtWait, [true]);
+  assert.equal(pulled, 0, "the provider's words were not read");
+});
+
+test("another status is never sent again, whatever retry-after it carries", async () => {
+  const { runChat, ProviderHttpError } = await import("../services/mastra-runtime.js");
+  for (const status of [500, 503, 400]) {
+    const provider = scriptedProvider([
+      () => new Response("down", { status, headers: { "retry-after": "1" } }),
+      () => json(contentMessage("never")),
+    ]);
+    const sleep = recordedSleep();
+    await assert.rejects(
+      runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, sleepImpl: sleep.sleepImpl }),
+      (err: unknown) => err instanceof ProviderHttpError && err.status === status,
+    );
+    assert.equal(provider.bodies.length, 1, String(status));
+    assert.deepEqual(sleep.waits, [], String(status));
+  }
+});
+
+test("a client that leaves during a wait ends it at once: nothing more is sent and the error is the abort's", async () => {
+  const { runChat, ChatDeadlineError } = await import("../services/mastra-runtime.js");
+
+  // The real wait (300 ms after a failed connection, 1.1 s after the 429).
+  for (const first of [failToConnect, rateLimited("1")]) {
+    const provider = scriptedProvider([first, () => json(contentMessage("never"))]);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+    const started = Date.now();
+    await assert.rejects(
+      runChat(RESOLVED, CONFIG([]), ASK, false, {
+        fetchImpl: provider.fetchImpl,
+        signal: controller.signal,
+        deadlineMs: 5_000,
+      }),
+      (err: unknown) => !(err instanceof ChatDeadlineError) && (err as Error).name === "AbortError",
+    );
+    assert.ok(Date.now() - started < 250, "the wait did not run to its end");
+    assert.equal(provider.bodies.length, 1);
+  }
+
+  // A wait that returns although the signal aborted still sends nothing.
+  const provider = scriptedProvider([failToConnect, () => json(contentMessage("never"))]);
+  const controller = new AbortController();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, {
+      fetchImpl: provider.fetchImpl,
+      signal: controller.signal,
+      sleepImpl: async () => controller.abort(),
+    }),
+    (err: unknown) => (err as Error).name === "AbortError",
+  );
+  assert.equal(provider.bodies.length, 1);
+});
+
+test("a deadline that passes during a wait is a ChatDeadlineError, and nothing more is sent", async () => {
+  const { runChat, ChatDeadlineError } = await import("../services/mastra-runtime.js");
+  const provider = scriptedProvider([failToConnect, () => json(contentMessage("never"))]);
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, { fetchImpl: provider.fetchImpl, deadlineMs: 30 }),
+    (err: unknown) => err instanceof ChatDeadlineError,
+  );
+  assert.equal(provider.bodies.length, 1);
+});
+
+test("a request that fails with the signal already aborted is not sent again", async () => {
+  const { runChat } = await import("../services/mastra-runtime.js");
+  const controller = new AbortController();
+  const provider = scriptedProvider([
+    () => {
+      controller.abort();
+      throw connectFailure();
+    },
+    () => json(contentMessage("never")),
+  ]);
+  const sleep = recordedSleep();
+  await assert.rejects(
+    runChat(RESOLVED, CONFIG([]), ASK, false, {
+      fetchImpl: provider.fetchImpl,
+      signal: controller.signal,
+      sleepImpl: sleep.sleepImpl,
+    }),
+  );
+  assert.equal(provider.bodies.length, 1);
+  assert.deepEqual(sleep.waits, []);
+});
+
+test("a streamed chat whose first send fails to connect is sent again and passed through", async () => {
+  const { runChatStream } = await import("../services/mastra-runtime.js");
+  const events = [delta("Hel"), delta("lo"), finish(), DONE];
+  const provider = scriptedProvider([failToConnect, () => sseResponse(events)]);
+  const sleep = recordedSleep();
+  const chat = await runChatStream(RESOLVED, CONFIG([]), ASK, {
+    fetchImpl: provider.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  assert.equal(await drain(chat.stream), events.join(""), "byte for byte");
+  assert.equal((await chat.outcome).ok, true);
+  assert.equal(provider.bodies.length, 2);
+  assert.equal(provider.bodies[1]!.stream, true);
+  assert.deepEqual(sleep.waits, [300]);
+});
+
+test("a stream that breaks midway is not sent again", async () => {
+  const { runChatStream } = await import("../services/mastra-runtime.js");
+  const enc = new TextEncoder();
+  const broken = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode(delta("par")));
+          controller.error(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }));
+        },
+      }),
+      { status: 200 },
+    );
+  const provider = scriptedProvider([broken, () => sseResponse([delta("again"), finish(), DONE])]);
+  const sleep = recordedSleep();
+  const chat = await runChatStream(RESOLVED, CONFIG([]), ASK, {
+    fetchImpl: provider.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  await drain(chat.stream);
+  const outcome = await chat.outcome;
+  assert.ok(!outcome.ok && outcome.code === "transport");
+  assert.equal(provider.bodies.length, 1);
+  assert.deepEqual(sleep.waits, []);
+});
+
+test("a first send that works is one send and no wait", async () => {
+  const { runChat, runChatStream } = await import("../services/mastra-runtime.js");
+  const sleep = recordedSleep();
+  const plain = scriptedProvider([() => json(contentMessage("first time"))]);
+  const result = await runChat(RESOLVED, CONFIG([]), ASK, false, {
+    fetchImpl: plain.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  assert.equal(result.content, "first time");
+  assert.equal(plain.bodies.length, 1);
+
+  const streamed = scriptedProvider([() => sseResponse([delta("ok"), finish(), DONE])]);
+  const chat = await runChatStream(RESOLVED, CONFIG([]), ASK, {
+    fetchImpl: streamed.fetchImpl,
+    sleepImpl: sleep.sleepImpl,
+  });
+  assert.equal(contentOf(await drain(chat.stream)), "ok");
+  assert.equal(streamed.bodies.length, 1);
+  assert.deepEqual(sleep.waits, []);
+});

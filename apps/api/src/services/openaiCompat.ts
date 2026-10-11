@@ -447,6 +447,9 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
   model_error: "upstream_error",
   answer_withheld: "answer_withheld",
   agent_unavailable: "service_unavailable",
+  // The listing is paused (services/listingPause.ts): the same 503, and
+  // `reason` says which.
+  agent_paused: "service_unavailable",
   rate_limiter_unavailable: "service_unavailable",
   // A run's refusals: not reachable from a chat completion.
   not_a_task_agent: "validation_failed",

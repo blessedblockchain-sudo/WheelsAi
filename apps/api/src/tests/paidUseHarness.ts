@@ -172,6 +172,10 @@ export interface PaidHarnessOptions {
   /** The membership cannot be read. */
   roleThrows?: Error;
   results?: Array<{ finishedAt: Date; text: string }>;
+  /** The model is one the creator's organization runs itself (give `model` a wheelsai/ id), and it is not running. */
+  hostedModelDown?: boolean;
+  /** What "is the listing paused now" answers; an Error is thrown. Default: not paused. */
+  paused?: boolean | Error;
 }
 
 export interface PaidHarness {
@@ -377,6 +381,13 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       usageSources.push(record.source);
     },
     deadlineMs: 60_000,
+    ...(options.hostedModelDown && {
+      resolveHostedModel: async () => {
+        log.push("core:hostedModel");
+        // The core's own words name the model and say what its owner can do.
+        return { ok: false as const, message: 'This agent is set to "llama", and there is no running deployment of it now. Deploy the model.' };
+      },
+    }),
   };
 
   // ---- the limiter, logged ----
@@ -440,6 +451,10 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       log.push("memberRole");
       if (options.roleThrows) throw options.roleThrows;
       return options.role === undefined ? "owner" : options.role;
+    },
+    listingPaused: async () => {
+      if (options.paused instanceof Error) throw options.paused;
+      return options.paused ?? false;
     },
     now: () => NOW,
   };

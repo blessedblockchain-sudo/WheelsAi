@@ -9,6 +9,9 @@ import {
   setPageUse,
   type PublicLinkTx,
 } from "./agentPublicLink.js";
+import { resolveAgentModelId } from "./agentModelResolution.js";
+import { HOSTED_MODEL_PREFIX } from "./hostedModel.js";
+import { LISTING_PAUSED_START_MESSAGE, listingPausedNow, reconcileListingPauses } from "./listingPause.js";
 import { getOrgPlan } from "./orgPlan.js";
 import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
 import { startMonthlySubscription, SubscriptionClaimLostError, type SubscriptionTx } from "./marketplaceSubscriptions.js";
@@ -1123,16 +1126,49 @@ export async function archiveListing(listingId: string, orgId: string) {
   return updated;
 }
 
-export async function getMyListings(orgId: string) {
+/**
+ * How a listing's pause is asked about and its marker brought in line
+ * (services/listingPause.ts). The real ones when omitted.
+ */
+export interface ListingPauseHooks {
+  listingPausedNow?: typeof listingPausedNow;
+  reconcileListingPauses?: typeof reconcileListingPauses;
+}
+
+export async function getMyListings(orgId: string, hooks: ListingPauseHooks = {}) {
   const listings = await prisma.agentListing.findMany({
     where: { publisherId: orgId },
     orderBy: { createdAt: "desc" },
     include: {
       agent: {
-        select: LISTING_AGENT_COLUMNS,
+        // The organization and the model are read to ask about a pause;
+        // neither is part of the answer.
+        select: { ...LISTING_AGENT_COLUMNS, orgId: true, modelConfig: true },
       },
     },
   });
+
+  // Whether each listing is paused, asked at this moment and never read from
+  // the marker; the marker only says since when. Asked only where the agent
+  // is set to a model its organization runs: no other listing can be paused.
+  // When it cannot be answered the listing is shown as not paused; nothing
+  // is decided by this list.
+  const pausedNow = hooks.listingPausedNow ?? listingPausedNow;
+  const pausedOf = async (listing: (typeof listings)[number]): Promise<{ since: string | null } | null> => {
+    const agent = listing.agent;
+    const modelId = agent
+      ? resolveAgentModelId({ modelConfig: agent.modelConfig, availableFreeModelIds: [] })
+      : null;
+    if (!agent || !modelId || !modelId.startsWith(HOSTED_MODEL_PREFIX)) return null;
+    try {
+      if (!(await pausedNow({ listing, agent }))) return null;
+      return { since: listing.pausedSince ? listing.pausedSince.toISOString() : null };
+    } catch (err) {
+      logger.warn({ err, listingId: listing.id }, "Could not ask whether a listing is paused; shown as not paused");
+      return null;
+    }
+  };
+  const paused = await Promise.all(listings.map(pausedOf));
 
   // Who holds what, per listing: copies in use, people using the agent
   // itself, and subscriptions that grant access right now.
@@ -1157,9 +1193,11 @@ export async function getMyListings(orgId: string) {
     subscribed: subscriptions.filter((s) => s.listingId === listingId && subscriptionGrantsAccess(s, now)).length,
   });
 
-  return listings.map((listing) => ({
+  return listings.map((listing, index) => ({
     ...formatListingForOwner(listing),
     buyers: buyersOf(listing.id),
+    // null when the listing is not paused at this moment.
+    paused: paused[index]!,
   }));
 }
 
@@ -1841,19 +1879,23 @@ export const USE_START_MESSAGES = {
   sellsCopies: "This listing sells copies of the agent. Install it to get your own copy.",
   ownAgent: "This is your agent. You do not pay to use it.",
   tokenAccess: "Use of this agent is not on sale right now.",
+  paused: LISTING_PAUSED_START_MESSAGE,
+  cannotStart: "This agent cannot be started right now. Nothing was charged. Try again later.",
   claimLost: "This was just started by another request. Refresh to see it.",
 } as const;
 
 /** Starting to use an agent was refused before anything was written or charged. */
 export class UseStartError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 404 | 409 | 503,
     readonly code:
       | "expected_terms_required"
       | "listing_not_found"
       | "sells_copies"
       | "own_agent"
       | "not_offered"
+      | "listing_paused"
+      | "service_unavailable"
       | typeof COPY_MONTH_BLOCKS_USE,
     message: string,
     /** For copy_subscription_active: the day the copy's paid month ends. */
@@ -1889,8 +1931,19 @@ export interface UseState {
   agent: LicenceAgent;
 }
 
+// orgId and modelConfig are read to ask whether the listing is paused.
 const USE_LISTING_INCLUDE = {
-  agent: { select: { id: true, name: true, agentKind: true, publicHandle: true, entrypoint: true } },
+  agent: {
+    select: {
+      id: true,
+      name: true,
+      agentKind: true,
+      publicHandle: true,
+      entrypoint: true,
+      orgId: true,
+      modelConfig: true,
+    },
+  },
 } as const;
 
 /** The buyer's state for a listing, from the rows as they are now. */
@@ -1962,8 +2015,15 @@ async function readUseState(
  * `created: false` means nothing was written: the buyer already uses the
  * agent on terms that cover it, or use is free and needs no licence.
  *
+ * A listing that is paused (services/listingPause.ts: the model its agent
+ * runs on is not running) starts nothing: no first start, no new month and
+ * no accepting of a new price. That is asked at this moment, before
+ * anything is claimed or charged, and when it cannot be answered nothing is
+ * started either.
+ *
  * Throws UseStartError (400 expected_terms_required, 404, 409 sells_copies,
- * own_agent, not_offered, copy_subscription_active), PricingChangedError, InsufficientCreditsError and
+ * own_agent, not_offered, copy_subscription_active, listing_paused, 503
+ * service_unavailable), PricingChangedError, InsufficientCreditsError and
  * SubscriptionClaimLostError (another request got there first; of two
  * starts at once one month is charged).
  */
@@ -1971,6 +2031,7 @@ export async function startUsing(
   listingId: string,
   buyerId: string,
   opts: { expected?: ListingPricingTerms; acceptNewPricing?: boolean },
+  hooks: ListingPauseHooks = {},
 ): Promise<UseState & { created: boolean }> {
   if (!opts.expected) {
     throw new UseStartError(400, "expected_terms_required", USE_START_MESSAGES.expectedTermsRequired);
@@ -2060,6 +2121,38 @@ export async function startUsing(
       copyPaidUntil,
     );
   }
+  // Paused: the agent cannot answer, so nothing is started on it. Asked of
+  // the model at this moment, never read from the marker. Fail closed: when
+  // the question cannot be answered nobody is charged.
+  let paused: boolean;
+  try {
+    paused = listing.agent
+      ? await (hooks.listingPausedNow ?? listingPausedNow)({ listing, agent: listing.agent })
+      : false;
+  } catch (err) {
+    logger.warn({ err, listingId }, "Could not ask whether a listing is paused; nothing was started");
+    throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+  }
+  if (paused) {
+    throw new UseStartError(409, "listing_paused", USE_START_MESSAGES.paused);
+  }
+  // A pause that is over but whose marker is still set: the marker is
+  // cleared, and the months already paid for made longer, BEFORE this start,
+  // so that a month that begins now is not lengthened by a pause that ended
+  // before it. If that cannot be done nothing is started.
+  if (listing.pausedSince) {
+    let errors: number;
+    try {
+      ({ errors } = await (hooks.reconcileListingPauses ?? reconcileListingPauses)({ listingId }));
+    } catch (err) {
+      logger.warn({ err, listingId }, "Could not clear a listing's pause before a start; nothing was started");
+      throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+    }
+    if (errors > 0) {
+      throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+    }
+  }
+
   const terms = agreeToTerms(listing, {
     changed: access === "pricing_changed",
     acceptNewPricing: opts.acceptNewPricing,

@@ -497,6 +497,10 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
    * No copy is made: the buyer uses the agent on its page or through the
    * API. A price per use charges nothing here; a monthly price charges the
    * first 30 days. Stopping is POST /listings/:id/uninstall.
+   *
+   * While the listing is paused (the model its agent runs on is not
+   * running) nothing is started and nothing is charged: 409 listing_paused,
+   * or 503 service_unavailable when that could not be checked.
    */
   app.post(
     "/listings/:id/use",

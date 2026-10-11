@@ -441,6 +441,7 @@ test("every refusal the paid service can give has an OpenAI-shaped answer, and a
     model_error: [502, "upstream_error"],
     answer_withheld: [502, "answer_withheld"],
     agent_unavailable: [503, "service_unavailable"],
+    agent_paused: [503, "service_unavailable"],
     rate_limiter_unavailable: [503, "service_unavailable"],
   };
   for (const [code, [status, openAiCode]] of Object.entries(codes)) {

@@ -287,6 +287,14 @@ export interface PaidUseDeps {
   }): Promise<Array<{ finishedAt: Date; text: string }>>;
   /** The member's role as it is now; null when they are not a member. */
   memberRole(orgId: string, userId: string): Promise<string | null>;
+  /**
+   * Whether the listing is paused at this moment (services/listingPause.ts),
+   * for the access view. services/paidUsePause.ts when omitted.
+   */
+  listingPaused?(args: {
+    listing: { status: string; sells: string };
+    agent: { id: string; orgId: string };
+  }): Promise<boolean>;
   now?: () => Date;
   logger?: {
     warn(obj: unknown, msg: string): void;
@@ -323,6 +331,7 @@ export type PaidUseErrorCode =
   | "model_error"
   | "answer_withheld"
   | "agent_unavailable"
+  | "agent_paused"
   | "rate_limiter_unavailable";
 
 /** What the listing asks now. Cents, as numbers. */
@@ -437,6 +446,12 @@ export interface UseAccessView {
    * of that refusal, and the day the copy's month ends. null otherwise.
    */
   startBlocked: { code: typeof COPY_MONTH_BLOCKS_USE; message: string; until: string } | null;
+  /**
+   * The listing is paused at this moment: the model its agent runs on is
+   * not running, so nobody can start and nobody is charged. The other
+   * fields stay what they are while it is true.
+   */
+  paused: boolean;
 }
 
 export type UseAccessResult = { kind: "refused"; refusal: PaidUseRefusal } | { kind: "access"; view: UseAccessView };
@@ -482,6 +497,10 @@ export const PAID_USE_MESSAGES = {
   agentLimit: "This agent has reached its limit for now. Nothing was charged. Try again later.",
   tooManyRefunds: "Several of your answers could not be delivered today. Try again tomorrow.",
   unavailable: "This agent cannot be used right now. Nothing was charged. Try again later.",
+  // AGENT_PAUSED_MESSAGE of services/listingPause.ts, word for word. Said
+  // again here because this file imports nothing that reads the environment
+  // or the database; a test holds the two together.
+  paused: "This agent is paused right now. Nothing was charged.",
   limiterUnavailable: "This agent is temporarily unavailable. Nothing was charged. Try again shortly.",
   restarting: "This agent is restarting. Nothing was charged. Try again in a moment.",
   cancelled: "The request was cancelled.",
@@ -518,6 +537,7 @@ const NOT_FOUND: PaidUseRefusal = { status: 404, code: "agent_not_found", messag
 const NOT_A_MEMBER: PaidUseRefusal = { status: 403, code: "not_a_member", message: PAID_USE_MESSAGES.notAMember };
 const OWN_AGENT: PaidUseRefusal = { status: 409, code: "own_agent", message: PAID_USE_MESSAGES.ownAgent };
 const UNAVAILABLE: PaidUseRefusal = { status: 503, code: "agent_unavailable", message: PAID_USE_MESSAGES.unavailable };
+const PAUSED: PaidUseRefusal = { status: 503, code: "agent_paused", message: PAID_USE_MESSAGES.paused };
 const CLIENT_GONE_REFUSAL: PaidUseRefusal = {
   status: 499,
   code: "client_closed_request",
@@ -586,7 +606,7 @@ function chargeRefusal(refusal: Exclude<UseChargeResult, { ok: true }>): PaidUse
  * these: the charge is the core's last step that can refuse, and its own
  * refusal is read from the metering, not from here.
  */
-function coreRefusal(refusal: AgentChatRefusal, nowSeconds: number): PaidUseRefusal {
+function coreRefusal(refusal: AgentChatRefusal, nowSeconds: number, onSaleForUse: boolean): PaidUseRefusal {
   switch (refusal.kind) {
     case "agent_not_found":
       return NOT_FOUND;
@@ -611,10 +631,16 @@ function coreRefusal(refusal: AgentChatRefusal, nowSeconds: number): PaidUseRefu
     case "invalid_request":
     case "not_configured":
     case "model_invalid":
-    case "hosted_model_unavailable":
     case "licence_revoked":
     case "payment_required":
       return UNAVAILABLE;
+    // The model the agent runs on, one its organization runs itself, is not
+    // running: the listing is paused (services/listingPause.ts). The core
+    // refused before any charge, and nothing more is read to say so. Only a
+    // published listing that sells use can be paused: a buyer finishing a
+    // month on a listing that was taken down hears the general sentence.
+    case "hosted_model_unavailable":
+      return onSaleForUse ? PAUSED : UNAVAILABLE;
   }
 }
 
@@ -950,7 +976,7 @@ async function runPaidUse(
   if (!prepared.ok) {
     const charge = metering.refusal();
     if (charge) return refused(chargeRefusal(charge));
-    return refused(coreRefusal(prepared.refusal, nowSeconds));
+    return refused(coreRefusal(prepared.refusal, nowSeconds, onSaleForUse));
   }
   const { session } = prepared;
   const charge = metering.charge();
@@ -1009,7 +1035,7 @@ async function runPaidUse(
   if (!started.ok) {
     // The core has refunded the charge.
     return refused(
-      started.refusal ? coreRefusal(started.refusal, nowSeconds) : failureRefusal(started.failure, charged),
+      started.refusal ? coreRefusal(started.refusal, nowSeconds, onSaleForUse) : failureRefusal(started.failure, charged),
     );
   }
 
@@ -1243,6 +1269,21 @@ async function canAccept(deps: PaidUseDeps, caller: PaidCaller): Promise<boolean
   }
 }
 
+/**
+ * Whether the listing is paused at this moment. Nothing is decided by the
+ * answer here (a start and a use ask for themselves), so when it cannot be
+ * asked the page is told "not paused" and the request goes on.
+ */
+async function pausedNow(deps: PaidUseDeps, listing: UseListingRow, agent: PaidAgent): Promise<boolean> {
+  try {
+    const ask = deps.listingPaused ?? (await import("./paidUsePause.js")).paidListingPausedNow;
+    return await ask({ listing, agent: { id: agent.id, orgId: agent.orgId } });
+  } catch (err) {
+    deps.logger?.warn({ err }, "could not ask whether the listing is paused; shown as not paused");
+    return false;
+  }
+}
+
 /** The caller's access to an agent that is, or was, sold for use. Reads only. */
 export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Promise<UseAccessResult> {
   const now = (deps.now ?? (() => new Date()))();
@@ -1319,6 +1360,8 @@ export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Pro
         message: copyMonthBlockingUseMessage(blockedUntil, now),
         until: blockedUntil.toISOString(),
       },
+      // Only a listing that sells use now can be paused.
+      paused: onSaleForUse ? await pausedNow(deps, listing, agent) : false,
     },
   };
 }

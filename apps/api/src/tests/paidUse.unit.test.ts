@@ -1054,6 +1054,7 @@ test("getUseAccess: the caller's access, the terms now, what they accepted and w
       balanceCents: 500,
       canAccept: true,
       startBlocked: null,
+      paused: false,
     },
   });
 

@@ -441,6 +441,7 @@ test("GET /a/:handle/access answers the caller's access and nothing of the creat
     balanceCents: 500,
     canAccept: false,
     startBlocked: null,
+    paused: false,
   });
   for (const secret of [INSTRUCTIONS, CREATOR_ORG, LICENCE.id]) assert.ok(!res.body.includes(secret), secret);
 

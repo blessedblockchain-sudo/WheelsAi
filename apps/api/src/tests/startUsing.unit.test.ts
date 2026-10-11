@@ -1134,3 +1134,324 @@ test("the stop route ends a use licence, and the install-status route reports th
   assert.equal(world.state.installs[0]!.status, "uninstalled");
   assert.equal(world.state.listing.activeInstalls, 0);
 });
+
+// ============================================
+// A paused listing
+// ============================================
+
+// The agent runs on a model its organization runs itself, and that model is
+// not running: the listing is paused (services/listingPause.ts). Nothing is
+// started on it and nothing is charged.
+
+const HOSTED_MODEL = "wheelsai/llama-3.1-8b";
+const PAUSED_SENTENCE =
+  "This agent is paused right now, so nothing was started and nothing was charged. Try again later.";
+const CANNOT_START_SENTENCE = "This agent cannot be started right now. Nothing was charged. Try again later.";
+
+/** Sets the listing's agent to a model its organization runs. */
+function onHostedModel(world: World, model: string = HOSTED_MODEL): World {
+  world.state.listing.agent.orgId = PUBLISHER;
+  world.state.listing.agent.modelConfig = { externalModel: model };
+  return world;
+}
+
+/** Counts every claim, write and charge a start could make, and every transaction it opens. */
+function watchWrites(world: World) {
+  const writes: string[] = [];
+  const watch = (model: string, method: string) => {
+    const original = world.models[model][method];
+    world.models[model][method] = async (...args: unknown[]) => {
+      writes.push(`${model}.${method}`);
+      return original(...args);
+    };
+  };
+  watch("agentInstall", "create");
+  watch("agentInstall", "update");
+  watch("agentInstall", "updateMany");
+  watch("agentSubscription", "create");
+  watch("agentSubscription", "updateMany");
+  watch("agentListing", "update");
+  watch("creditBalance", "updateMany");
+  watch("creditTransaction", "create");
+  watch("marketplaceRevenue", "create");
+  const transaction = world.models.$transaction;
+  world.models.$transaction = (fn: never) => {
+    writes.push("$transaction");
+    return transaction(fn);
+  };
+  return writes;
+}
+
+const moneyOf = (world: World) => ({
+  installs: structuredClone(world.state.installs),
+  subs: structuredClone(world.state.subs),
+  balance: world.state.balance,
+  ledger: world.state.ledger.length,
+  revenue: world.state.revenue.length,
+  accrued: world.state.accrued,
+  earnings: world.state.earnings.length,
+  activeInstalls: world.state.listing.activeInstalls,
+});
+
+const pausedHooks = { listingPausedNow: async () => true };
+
+async function refusedStart(world: World, opts: Row, hooks: Row) {
+  return withWorld(world, async ({ startUsing, UseStartError }) => {
+    try {
+      await startUsing(LISTING_ID, BUYER, opts, hooks);
+      return null;
+    } catch (err) {
+      assert.ok(err instanceof UseStartError, String(err));
+      return { status: err.status, code: err.code, message: err.message };
+    }
+  });
+}
+
+test("a first start on a paused listing is refused before any row is created, claimed or charged", async () => {
+  for (const [world, expected] of [
+    [makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n }), monthly(900)],
+    [makeWorld({ pricingModel: "per_request", pricePerRequestCents: 5n }), perUse(5)],
+  ] as const) {
+    const before = moneyOf(world);
+    const writes = watchWrites(world);
+    const refusal = await refusedStart(world, { expected }, pausedHooks);
+    assert.deepEqual(refusal, { status: 409, code: "listing_paused", message: PAUSED_SENTENCE });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(moneyOf(world), before);
+    assert.equal(world.state.installs.length, 0);
+    assert.equal(world.state.subs.length, 0);
+    assert.equal(world.state.balance, 10_000n);
+  }
+});
+
+test("a new month on a paused listing is refused: the lapsed licence is not claimed and no month is charged", async () => {
+  const world = makeWorld({
+    pricingModel: "monthly",
+    monthlyPriceCents: 900n,
+    install: { status: "suspended" },
+    sub: { status: "expired", currentPeriodEnd: new Date(Date.now() - 10 * DAY), priceCents: 900n },
+  });
+  const before = moneyOf(world);
+  const writes = watchWrites(world);
+  const refusal = await refusedStart(world, { expected: monthly(900) }, pausedHooks);
+  assert.deepEqual(refusal, { status: 409, code: "listing_paused", message: PAUSED_SENTENCE });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(moneyOf(world), before);
+  assert.equal(world.state.subs[0]!.status, "expired");
+});
+
+test("accepting a new price on a paused listing is refused, and the price agreed to stays what it was", async () => {
+  const world = makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 8n,
+    install: { status: "active", acceptedPricePerRequestCents: 5n },
+  });
+  const writes = watchWrites(world);
+  const refusal = await refusedStart(world, { expected: perUse(8), acceptNewPricing: true }, pausedHooks);
+  assert.deepEqual(refusal, { status: 409, code: "listing_paused", message: PAUSED_SENTENCE });
+  assert.deepEqual(writes, []);
+  assert.equal(world.state.installs[0]!.acceptedPricePerRequestCents, 5n);
+});
+
+test("the pause is asked about this listing and its agent's own organization, once the start would write something", async () => {
+  const world = onHostedModel(makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n }));
+  const asked: Row[] = [];
+  const hooks = {
+    listingPausedNow: async (args: Row) => {
+      asked.push(args);
+      return false;
+    },
+  };
+  const started = await withWorld(world, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: monthly(900) }, hooks as never),
+  );
+  assert.equal(started.created, true);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.listing.id, LISTING_ID);
+  assert.deepEqual(
+    [asked[0]!.listing.status, asked[0]!.listing.sells, asked[0]!.agent.orgId, asked[0]!.agent.modelConfig],
+    ["published", "use", PUBLISHER, { externalModel: HOSTED_MODEL }],
+  );
+});
+
+test("when the pause cannot be asked about, nothing is started and nothing is charged", async () => {
+  const world = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
+  const before = moneyOf(world);
+  const writes = watchWrites(world);
+  const refusal = await refusedStart(
+    world,
+    { expected: monthly(900) },
+    {
+      listingPausedNow: async () => {
+        throw new Error("database is down");
+      },
+    },
+  );
+  assert.deepEqual(refusal, { status: 503, code: "service_unavailable", message: CANNOT_START_SENTENCE });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(moneyOf(world), before);
+});
+
+test("a marker left from a pause that is over is cleared before the month is charged", async () => {
+  const world = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
+  world.state.listing.pausedSince = new Date(Date.now() - 3 * DAY);
+  const order: string[] = [];
+  const charge = world.models.creditBalance.updateMany;
+  world.models.creditBalance.updateMany = async (args: Row) => {
+    order.push("charge");
+    return charge(args);
+  };
+  const hooks = {
+    listingPausedNow: async () => false,
+    reconcileListingPauses: async (scope: Row) => {
+      order.push(`reconcile:${JSON.stringify(scope)}`);
+      return { examined: 1, paused: 0, resumed: 1, extendedSubscriptions: 0, errors: 0 };
+    },
+  };
+  const started = await withWorld(world, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: monthly(900) }, hooks as never),
+  );
+  assert.equal(started.created, true);
+  assert.deepEqual(order, [`reconcile:${JSON.stringify({ listingId: LISTING_ID })}`, "charge"]);
+  assert.equal(world.state.balance, 9_100n);
+});
+
+test("with no marker there is nothing to clear, and a paused listing's marker is left to the reconcile", async () => {
+  const reconciles: Row[] = [];
+  const reconcileListingPauses = async (scope: Row) => {
+    reconciles.push(scope);
+    return { examined: 0, paused: 0, resumed: 0, extendedSubscriptions: 0, errors: 0 };
+  };
+
+  const clean = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
+  await withWorld(clean, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: monthly(900) }, {
+      listingPausedNow: async () => false,
+      reconcileListingPauses,
+    } as never),
+  );
+  assert.deepEqual(reconciles, []);
+
+  // Still paused: refused, and the marker is not this request's to touch.
+  const paused = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
+  paused.state.listing.pausedSince = new Date(Date.now() - DAY);
+  const refusal = await refusedStart(paused, { expected: monthly(900) }, { ...pausedHooks, reconcileListingPauses });
+  assert.equal(refusal!.code, "listing_paused");
+  assert.deepEqual(reconciles, []);
+});
+
+test("a marker that could not be cleared starts nothing: no month begins inside a pause that is still on the clock", async () => {
+  const failures: Array<() => Promise<Row>> = [
+    async () => {
+      throw new Error("database is down");
+    },
+    // The reconcile ran and could not settle this listing.
+    async () => ({ examined: 1, paused: 0, resumed: 0, extendedSubscriptions: 0, errors: 1 }),
+  ];
+  for (const reconcileListingPauses of failures) {
+    const world = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
+    world.state.listing.pausedSince = new Date(Date.now() - DAY);
+    const before = moneyOf(world);
+    const writes = watchWrites(world);
+    const refusal = await refusedStart(
+      world,
+      { expected: monthly(900) },
+      { listingPausedNow: async () => false, reconcileListingPauses },
+    );
+    assert.deepEqual(refusal, { status: 503, code: "service_unavailable", message: CANNOT_START_SENTENCE });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(moneyOf(world), before);
+  }
+});
+
+test("a request that starts nothing is answered as it stands, paused or not", async () => {
+  const hooks = {
+    listingPausedNow: async () => {
+      throw new Error("not asked: nothing would be started");
+    },
+  };
+  // Already subscribed, with the month paid for.
+  const subscribed = makeWorld({
+    pricingModel: "monthly",
+    monthlyPriceCents: 900n,
+    install: { status: "active" },
+    sub: { status: "active", currentPeriodEnd: new Date(Date.now() + 5 * DAY), priceCents: 900n },
+  });
+  const state = await withWorld(subscribed, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: monthly(900) }, hooks),
+  );
+  assert.deepEqual([state.created, state.access], [false, "subscribed"]);
+
+  // Free use needs no licence, so there is nothing to start.
+  const free = makeWorld({ pricingModel: "free" });
+  const freeState = await withWorld(free, ({ startUsing }) =>
+    startUsing(
+      LISTING_ID,
+      BUYER,
+      { expected: { pricingModel: "free", pricePerRequestCents: null, monthlyPriceCents: null } },
+      hooks,
+    ),
+  );
+  assert.equal(freeState.created, false);
+});
+
+// The route, with the real question: listingPausedNow on resolveHostedModel,
+// whose one read (the organization's running deployment of the model) is the
+// stand-in below.
+
+function withDeployments(world: World, findFirst: (args: Row) => Promise<Row | null>) {
+  const asked: Row[] = [];
+  world.models.deployment = {
+    findFirst: async (args: Row) => {
+      asked.push(args);
+      return findFirst(args);
+    },
+  };
+  return asked;
+}
+
+test("POST /listings/:id/use on a paused listing answers 409 listing_paused with its sentence, and nothing is charged", async () => {
+  const world = onHostedModel(makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n }));
+  // No running deployment of the model in the creator's organization.
+  const asked = withDeployments(world, async () => null);
+  const writes = watchWrites(world);
+
+  const res = await post(world, OWNER, USE_URL, { expected: monthly(900) });
+  assert.equal(res.status, 409);
+  assert.deepEqual(res.body, { error: "listing_paused", message: PAUSED_SENTENCE });
+  assert.deepEqual(writes, []);
+  assert.equal(world.state.balance, 10_000n);
+  assert.equal(world.state.installs.length, 0);
+  // Asked in the CREATOR's organization, never the buyer's.
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0]!.where.orgId, PUBLISHER);
+  assert.equal(asked[0]!.where.modelId, "llama-3.1-8b");
+});
+
+test("POST /listings/:id/use answers 503 service_unavailable when the pause cannot be checked, and nothing is charged", async () => {
+  const world = onHostedModel(makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n }));
+  withDeployments(world, async () => {
+    throw new Error('connection to server at "10.0.0.5", port 5432 failed');
+  });
+  const writes = watchWrites(world);
+
+  const res = await post(world, OWNER, USE_URL, { expected: monthly(900) });
+  assert.equal(res.status, 503);
+  assert.deepEqual(res.body, { error: "service_unavailable", message: CANNOT_START_SENTENCE });
+  assert.deepEqual(writes, []);
+  assert.equal(world.state.balance, 10_000n);
+});
+
+test("a listing whose agent is on a free model or its own key is never asked about, and starts as before", async () => {
+  for (const modelConfig of [{ externalModel: "free/groq/llama-3.3-70b" }, { model: "openai/gpt-4o-mini" }, {}]) {
+    const world = makeWorld({ pricingModel: "monthly", monthlyPriceCents: 900n });
+    world.state.listing.agent.orgId = PUBLISHER;
+    world.state.listing.agent.modelConfig = modelConfig;
+    const asked = withDeployments(world, async () => null);
+
+    const res = await post(world, OWNER, USE_URL, { expected: monthly(900) });
+    assert.equal(res.status, 201, JSON.stringify(modelConfig));
+    assert.deepEqual(asked, []);
+    assert.equal(world.state.balance, 9_100n);
+  }
+});

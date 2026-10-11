@@ -1087,3 +1087,105 @@ test("a database failure while saving a listing is never answered in the databas
   assert.equal(missing.status, 400);
   assert.equal(missing.body.message, "Agent not found or does not belong to your organization");
 });
+
+// ============================================
+// The seller's list says which listings are paused
+// ============================================
+
+const HOSTED_MODEL = "wheelsai/llama-3.1-8b";
+const ON_SALE = { status: "published", sells: "use", pricingModel: "monthly", monthlyPriceCents: 900n };
+
+/** The seller's one listing as getMyListings answers it, and what was asked about its pause. */
+async function mineWith(opts: { modelConfig: unknown; listing?: Row; pausedNow: boolean | Error }) {
+  const world = makeWorld({ agent: { modelConfig: opts.modelConfig }, listing: { ...ON_SALE, ...opts.listing } });
+  const asked: Row[] = [];
+  const hooks = {
+    listingPausedNow: async (args: Row) => {
+      asked.push(args);
+      if (opts.pausedNow instanceof Error) throw opts.pausedNow;
+      return opts.pausedNow;
+    },
+  };
+  const [mine] = await withWorld(world, ({ getMyListings }) => getMyListings(ORG, hooks as never));
+  return { mine: mine!, asked };
+}
+
+test("my listings: a paused listing says since when, from a question asked at the moment", async () => {
+  const since = new Date("2026-10-11T08:30:00.000Z");
+  const marked = await mineWith({
+    modelConfig: { externalModel: HOSTED_MODEL },
+    listing: { pausedSince: since },
+    pausedNow: true,
+  });
+  assert.deepEqual(marked.mine.paused, { since: "2026-10-11T08:30:00.000Z" });
+  // Asked about this listing and its agent's own organization.
+  assert.equal(marked.asked.length, 1);
+  assert.deepEqual(
+    [marked.asked[0]!.listing.id, marked.asked[0]!.agent.orgId, marked.asked[0]!.agent.modelConfig],
+    [LISTING_ID, ORG, { externalModel: HOSTED_MODEL }],
+  );
+
+  // Paused now, and no reconcile has set the marker yet.
+  const unmarked = await mineWith({ modelConfig: { externalModel: HOSTED_MODEL }, pausedNow: true });
+  assert.deepEqual(unmarked.mine.paused, { since: null });
+});
+
+test("my listings: paused is never read from the marker", async () => {
+  // The model answers again; the marker waits for the next reconcile.
+  const resumed = await mineWith({
+    modelConfig: { externalModel: HOSTED_MODEL },
+    listing: { pausedSince: new Date("2026-10-11T08:30:00.000Z") },
+    pausedNow: false,
+  });
+  assert.equal(resumed.mine.paused, null);
+  assert.equal(resumed.asked.length, 1);
+});
+
+test("my listings: a listing whose agent is on a free model or its own key is never asked about", async () => {
+  for (const modelConfig of [
+    { externalModel: "free/groq/llama-3.3-70b" },
+    { externalModel: "openai/gpt-4o-mini" },
+    // The model the chat picks is externalModel, whatever the legacy field says.
+    { externalModel: "openai/gpt-4o-mini", model: HOSTED_MODEL },
+    {},
+    null,
+  ]) {
+    const { mine, asked } = await mineWith({
+      modelConfig,
+      // Even with a marker left behind.
+      listing: { pausedSince: new Date("2026-10-11T08:30:00.000Z") },
+      pausedNow: true,
+    });
+    assert.equal(mine.paused, null, JSON.stringify(modelConfig));
+    assert.deepEqual(asked, [], JSON.stringify(modelConfig));
+  }
+});
+
+test("my listings: when the pause cannot be asked about the list still answers, and nothing of the agent's model is in it", async () => {
+  const { mine } = await mineWith({ modelConfig: { externalModel: HOSTED_MODEL }, pausedNow: new Error("database is down") });
+  assert.equal(mine.paused, null);
+  assert.equal(mine.sells, "use");
+  assert.deepEqual(mine.buyers, { copies: 0, using: 0, subscribed: 0 });
+  assert.doesNotMatch(JSON.stringify(mine), /modelConfig|externalModel|llama/);
+});
+
+test("GET /my-listings carries paused, asked of the organization's own running deployment", async () => {
+  const world = makeWorld({ agent: { modelConfig: { externalModel: HOSTED_MODEL } }, listing: ON_SALE });
+  // The one read resolveHostedModel makes: no running deployment of the model.
+  const asked: Row[] = [];
+  world.models.deployment = {
+    findFirst: async (args: Row) => {
+      asked.push(args);
+      return null;
+    },
+  };
+  const res = await call(world, "GET", "/my-listings");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.listings[0].paused, { since: null });
+  assert.deepEqual([asked.length, asked[0]!.where.orgId, asked[0]!.where.modelId], [1, ORG, "llama-3.1-8b"]);
+
+  // A draft is not on sale, so it is not paused whatever its model does.
+  const draft = makeWorld({ agent: { modelConfig: { externalModel: HOSTED_MODEL } }, listing: { ...ON_SALE, status: "draft" } });
+  draft.models.deployment = { findFirst: async () => null };
+  assert.equal((await call(draft, "GET", "/my-listings")).body.listings[0].paused, null);
+});

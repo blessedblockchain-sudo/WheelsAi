@@ -7,8 +7,9 @@
  * while that is under its float, and to the treasury once the treasury is
  * proven; SOL is swept less what an address must keep and its own fee; the
  * paying wallet sends on what it holds above its float; an amount under the
- * threshold stays; the operator's money report explains every unit; and the
- * treasury-verify.ts and set-plan.ts commands do what they say.
+ * threshold stays; the operator's money report explains every unit; a payout
+ * larger than what the paying wallet holds is paid from the next deposit; and
+ * the treasury-verify.ts and set-plan.ts commands do what they say.
  *
  * START FROM A QUIET CHAIN, or balances left by the other walks are swept too
  * and the figures below cannot be told apart. In this order:
@@ -16,7 +17,7 @@
  *   bash apps/api/scripts/payments-proof/local-chain.sh stop
  *   bash apps/api/scripts/payments-proof/local-chain.sh start
  *   node apps/api/scripts/payments-proof/walk-sweeps.cjs --prepare
- *   bash apps/api/scripts/payments-proof/start-api.sh            (in another terminal)
+ *   PAYOUT_MAX_PER_PAYOUT_USD=40 bash apps/api/scripts/payments-proof/start-api.sh      (in another terminal)
  *   node apps/api/scripts/payments-proof/walk-sweeps.cjs
  *
  * --prepare resets what the deposit scan remembers in the local database (a
@@ -28,12 +29,15 @@
  *   HOT_WALLET_FLOAT_USDC=20 HOT_WALLET_FLOAT_SOL_USD=22
  *   TREASURY_WALLET_ADDRESS=<printed>  PLATFORM_ADMIN_KEY=<printed>
  *
+ * PAYOUT_MAX_PER_PAYOUT_USD=40 is this walk's own: it asks for a payout of $30,
+ * more than the $20 float, where the other walks keep one payout to $20.
+ *
  * The repository's Postgres and Redis (Docker) must be running. With SOL at
  * the stated $110, a float of $22 is 0.2 SOL. No real money and no real
  * network.
  */
 const { spawnSync } = require("child_process");
-const { hkdfSync } = require("crypto");
+const { hkdfSync, randomUUID } = require("crypto");
 const fs = require("fs");
 const { REPO, KEYS_DIR, req, sql, sleep } = require("./lib.cjs");
 const web3 = req("@solana/web3.js");
@@ -303,6 +307,39 @@ async function main() {
   check("income counts the deposits as credits sold, in cents as strings", after.income?.state === "ok" && sold && /^\d+$/.test(sold.amountCents) && BigInt(sold.amountCents) >= 4500n && /^\d+$/.test(after.customers?.balanceCents || ""), short(after.income, 260));
   const text = JSON.stringify(after);
   check("the report carries no key and no signed bytes", !text.includes(masterKey) && !/signedTx|signed_tx|secret/i.test(text));
+
+  // ---- A payout larger than what the hot wallet holds is paid from the next deposit
+  const creator = await account("creator");
+  // A publisher profile comes with the first listing.
+  r = await creator.client.call("POST", "/api/agents", { name: `Walk Sweeps Agent ${STAMP}`, description: "Says hello.", agentKind: "conversation", systemPrompt: "You say hello." });
+  r = await creator.client.call("POST", "/api/marketplace/listings", { agentId: (r.body.agent || {}).id, title: `Walk Sweeps Agent ${STAMP}`, shortDescription: "A listing made by the sweeps walk, safe to ignore.", category: "other", pricingModel: "free", publish: true });
+  const listingId = (r.body.listing || {}).id;
+  // Earnings the way a sale leaves them: the balance and its ledger row, together.
+  sql(
+    `with moved as (update publisher_profiles set pending_payout_cents = pending_payout_cents + 3000, total_revenue_cents = total_revenue_cents + 3000 where org_id='${creator.orgId}' returning pending_payout_cents) ` +
+      `insert into earnings_transactions (id, org_id, amount_cents, type, description, reference_id, balance_after) select '${randomUUID()}', '${creator.orgId}', 3000, 'sale', 'Sale: set up by the sweeps walk', 'walk-${STAMP}', pending_payout_cents from moved`,
+  );
+  const perPayoutCents = ((await creator.client.call("GET", "/api/marketplace/revenue")).body.payoutLimits || {}).perPayoutCents;
+  const receiver = web3.Keypair.generate().publicKey;
+  r = await creator.client.call("POST", "/api/marketplace/payouts", { payoutMethod: "crypto_usdc", payoutAddress: receiver.toBase58(), amountCents: 3000 });
+  const payoutId = (r.body.payout || {}).id;
+  const payoutRow = () => (payoutId ? sql(`select status, coalesce(waiting_reason,'') from creator_payouts where id='${payoutId}'`) : "");
+  const waits = await waitFor(payoutRow, (x) => x === "pending|wallet_low", 40);
+  check("a $30.00 payout is more than the 20 USDC the hot wallet holds, so it waits (this walk's API allows $40.00 a payout)",
+    perPayoutCents === 4000 && r.status === 201 && waits === "pending|wallet_low" && (await usdcOf(hot)) === FLOAT_USDC_RAW,
+    `limit=${perPayoutCents} ${r.status} ${short(r.body, 140)} row=${waits} hot=${await usdcOf(hot)}`);
+  const d = await account("d");
+  const s5 = await usdcTo(d.address, 15);
+  await waitFor(() => credited(s5), Boolean);
+  rows = await waitFor(() => transfersFrom(d.address.toBase58(), "USDC"), (x) => x.length === 1 && x[0].status === "landed");
+  check("the next deposit goes to the hot wallet though it holds its float: an open payout needs it, and the treasury gets none of it",
+    rows.length === 1 && rows[0].kind === "sweep_to_hot" && rows[0].amountRaw === "15000000" && rows[0].to === hot.toBase58() && (await usdcOf(treasury.publicKey)) === 122_000_000n,
+    `${short(rows)} treasury=${await usdcOf(treasury.publicKey)}`);
+  const paidOut = await waitFor(payoutRow, (x) => x.startsWith("completed"), 90);
+  check("and the payout is then sent with nobody refilling the wallet: 30 USDC at the creator's wallet, 5 left in the hot wallet",
+    paidOut.startsWith("completed") && (await usdcOf(receiver)) === 30_000_000n && (await usdcOf(hot)) === 5_000_000n && transfersFrom(hot.toBase58(), "USDC").length === 1,
+    `row=${paidOut} receiver=${await usdcOf(receiver)} hot=${await usdcOf(hot)}`);
+  if (listingId) await creator.client.call("POST", `/api/marketplace/listings/${listingId}/archive`, {});
 
   // ---- Setting a plan
   const planOf = () => sql(`select plan, status from org_subscriptions where org_id='${a.orgId}'`);

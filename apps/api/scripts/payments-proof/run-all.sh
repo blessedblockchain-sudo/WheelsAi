@@ -3,7 +3,8 @@
 #
 #   a. a fresh local chain              (local-chain.sh stop, then start)
 #   b. node walk-sweeps.cjs --prepare   (resets what the deposit scan remembers)
-#   c. the API, started in the background with start-api.sh
+#   c. the API, started in the background with start-api.sh (for walk-sweeps
+#      with one payout allowed up to $40, which that walk needs)
 #   d. walk-sweeps.cjs first, because it needs the quiet chain; then the API is
 #      restarted with SWEEPS_ENABLED=false, so later balances stay where the
 #      walks expect them; then walk-pay-in.cjs --slow, walk-pay-out.cjs,
@@ -15,12 +16,23 @@
 #
 # It stops at the first step that fails and says which one.
 #
+# With --runbook it runs the rehearsal of the mainnet run in place of the
+# walks, once for each price of SOL given ($110 when none is): a fresh chain,
+# walk-runbook.cjs --prepare (an empty database of its own), the API started
+# with start-api.sh --runbook, then walk-runbook.cjs; then the API again with
+# both floats at 0, and walk-runbook.cjs --after.
+#
+#   bash apps/api/scripts/payments-proof/run-all.sh --runbook
+#   bash apps/api/scripts/payments-proof/run-all.sh --runbook 60 110 240 500
+#
 # What must be there first: the Solana command line tools (with
 # solana-test-validator), Node, and Docker with the repository's Postgres and
 # Redis running. Ports 4000 and 18899 must be free: this script refuses to
-# start when something it did not start listens on either, and it never stops
-# a process it did not start. (It knows a chain is its own from the process
-# number it wrote down in <chain folder>/run-all.chain.pid.)
+# start when something it did not start listens on either. It never stops an
+# API it did not start. A local chain from this folder that is no longer
+# answering is stopped and replaced, whoever started it. (It knows a listening
+# chain is its own from the process number it wrote down in
+# <chain folder>/run-all.chain.pid.)
 #
 # Everything it writes is in the chain's folder, $WHEELSAI_LOCAL_CHAIN_DIR,
 # default $HOME/.wheelsai/local-chain: the API's output in api.log and each
@@ -39,6 +51,21 @@ CHAIN_PID_FILE="$DIR/run-all.chain.pid"
 HEALTH=http://127.0.0.1:4000/health
 API_PID=""
 RAN=()
+
+RUNBOOK=0
+if [ "${1:-}" = "--runbook" ]; then
+  RUNBOOK=1
+  shift
+  [ "$#" -gt 0 ] || set -- 110
+  for price in "$@"; do
+    case "$price" in
+      ''|*[!0-9]*) echo "a price of SOL is a whole number of dollars, and '$price' is not one" >&2; exit 2 ;;
+    esac
+  done
+elif [ "$#" -gt 0 ]; then
+  echo "usage: $0 [--runbook [price ...]]" >&2
+  exit 2
+fi
 
 listening() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
 listener_pid() { ss -ltnp 2>/dev/null | grep ":$1 " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1; }
@@ -72,7 +99,7 @@ summary() {
   echo "Results (each walk's output is in $RESULTS):"
   local name
   for name in "${RAN[@]}"; do
-    printf '  %-18s %s\n' "$name" "$(tail -n 1 "$RESULTS/$name.log" 2>/dev/null)"
+    printf '  %-26s %s\n' "$name" "$(tail -n 1 "$RESULTS/$name.log" 2>/dev/null)"
   done
 }
 
@@ -86,10 +113,10 @@ fail() {
 trap stop_api EXIT
 trap 'exit 130' INT TERM
 
-# Starts the API in the background (settings given as NAME=value) and waits
-# until it answers GET /health.
+# Starts the API in the background (settings given as NAME=value; API_ARGS is
+# passed to start-api.sh) and waits until it answers GET /health.
 start_api() {
-  ( exec env "$@" bash "$HERE/start-api.sh" ) >> "$API_LOG" 2>&1 &
+  ( exec env "$@" bash "$HERE/start-api.sh" ${API_ARGS:-} ) >> "$API_LOG" 2>&1 &
   API_PID=$!
   local p
   for _ in $(seq 1 120); do
@@ -137,14 +164,47 @@ fi
 mkdir -p "$RESULTS" || exit 1
 : > "$API_LOG"
 
+fresh_chain() {
+  bash "$HERE/local-chain.sh" stop
+  for _ in $(seq 1 15); do listening 18899 || break; sleep 1; done
+  listening 18899 && fail "stopping the earlier chain (local-chain.sh stop)"
+  rm -f "$CHAIN_PID_FILE"
+  bash "$HERE/local-chain.sh" start || fail "starting the chain (local-chain.sh start)"
+  listener_pid 18899 > "$CHAIN_PID_FILE"
+}
+
+# ---- The rehearsal of the mainnet run, in place of the walks
+if [ "$RUNBOOK" = "1" ]; then
+  for price in "$@"; do
+    echo
+    echo "== the mainnet run, rehearsed with SOL at \$$price: a fresh chain and an empty database"
+    fresh_chain
+    node "$HERE/walk-runbook.cjs" --prepare || fail "walk-runbook.cjs --prepare (is the repository's Postgres running in Docker?)"
+    API_ARGS="--runbook" start_api SOL_PRICE_STATIC_USD="$price" || fail "starting the API (start-api.sh --runbook)"
+    RAN+=("walk-runbook-$price")
+    SOL_PRICE_STATIC_USD="$price" node "$HERE/walk-runbook.cjs" 2>&1 | tee "$RESULTS/walk-runbook-$price.log"
+    [ "${PIPESTATUS[0]}" = "0" ] || fail "walk-runbook.cjs with SOL at \$$price"
+    stop_api
+    for _ in $(seq 1 15); do listening 4000 || break; sleep 1; done
+
+    echo
+    echo "== afterwards: the API again with both floats at 0, so the paying wallet hands back what it holds"
+    API_ARGS="--runbook" start_api SOL_PRICE_STATIC_USD="$price" HOT_WALLET_FLOAT_USDC=0 HOT_WALLET_FLOAT_SOL_USD=0 || fail "starting the API again with both floats at 0 (start-api.sh --runbook)"
+    RAN+=("walk-runbook-$price-after")
+    node "$HERE/walk-runbook.cjs" --after 2>&1 | tee "$RESULTS/walk-runbook-$price-after.log"
+    [ "${PIPESTATUS[0]}" = "0" ] || fail "walk-runbook.cjs --after with SOL at \$$price"
+    stop_api
+    for _ in $(seq 1 15); do listening 4000 || break; sleep 1; done
+  done
+  summary
+  echo
+  echo "The rehearsal passed at every price given. The local chain is still up (bash $HERE/local-chain.sh stop ends it)."
+  exit 0
+fi
+
 # ---- a. A fresh chain
 echo "== a fresh local chain"
-bash "$HERE/local-chain.sh" stop
-for _ in $(seq 1 15); do listening 18899 || break; sleep 1; done
-listening 18899 && fail "stopping the earlier chain (local-chain.sh stop)"
-rm -f "$CHAIN_PID_FILE"
-bash "$HERE/local-chain.sh" start || fail "starting the chain (local-chain.sh start)"
-listener_pid 18899 > "$CHAIN_PID_FILE"
+fresh_chain
 
 # ---- b. What the deposit scan remembers, reset for the new chain
 echo
@@ -154,7 +214,8 @@ node "$HERE/walk-sweeps.cjs" --prepare || fail "walk-sweeps.cjs --prepare (is th
 # ---- c. The API
 echo
 echo "== the API (its output is in $API_LOG)"
-start_api || fail "starting the API (start-api.sh)"
+# walk-sweeps asks for a payout of $30, more than the $20 float.
+start_api PAYOUT_MAX_PER_PAYOUT_USD=40 || fail "starting the API (start-api.sh)"
 
 # ---- d. The walks
 run_walk walk-sweeps || fail "walk-sweeps.cjs"

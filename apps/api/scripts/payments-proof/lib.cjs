@@ -31,6 +31,17 @@ function sql(statement, db = "wheelsai") {
   return execFileSync("docker", ["exec", PG_CONTAINER, "psql", "-U", user, "-d", db, "-At", "-F", "|", "-c", statement], { encoding: "utf8" }).trim();
 }
 
+/**
+ * The address of a database in the repository's own Postgres container, for a
+ * process that must be pointed at one other than the usual (the API, prisma).
+ * Read from the container itself, so nothing is copied from a settings file.
+ */
+function databaseUrl(db) {
+  const env = (name) => execFileSync("docker", ["exec", PG_CONTAINER, "printenv", name], { encoding: "utf8" }).trim();
+  const port = execFileSync("docker", ["port", PG_CONTAINER, "5432/tcp"], { encoding: "utf8" }).split("\n")[0].trim().split(":").pop();
+  return `postgresql://${encodeURIComponent(env("POSTGRES_USER"))}:${encodeURIComponent(env("POSTGRES_PASSWORD"))}@127.0.0.1:${port}/${db}`;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The browser for the browser tests: $WHEELSAI_CHROME when set, else the one playwright-core finds. */
@@ -39,4 +50,4 @@ function launchBrowser() {
   return chromium.launch(process.env.WHEELSAI_CHROME ? { executablePath: process.env.WHEELSAI_CHROME } : {});
 }
 
-module.exports = { REPO, CHAIN_DIR, KEYS_DIR, PG_CONTAINER, req, sql, sleep, launchBrowser };
+module.exports = { REPO, CHAIN_DIR, KEYS_DIR, PG_CONTAINER, req, sql, databaseUrl, sleep, launchBrowser };

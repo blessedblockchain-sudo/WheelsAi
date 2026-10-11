@@ -88,16 +88,19 @@ so whoever has it can move what those hold, and no more:
 - **Out of its reach: what was swept to the treasury.** The treasury's
   key is not derived from `WALLET_MASTER_KEY` and is not in the product.
 
-**One organization's deposits can be held up from outside.** The scan
-reads a deposit address's history back to where it last stopped, at most
-20 pages (20,000 signatures) a run. The chain lists every transaction that
-names an address, so whoever sends more than that many transactions naming
-one organization's address between two scans, each at the network's fee,
-leaves the scan unable to reach its cursor: it changes nothing for that
-address and says in the log that it needs an operator. Nothing is lost,
-since what was sent is at the address; that organization's deposits are
-not credited until the cursor is moved by hand. Every other address is
-scanned as before.
+**One organization's deposits can be slowed from outside, not stopped.**
+The chain lists every transaction that names an address, whether or not
+it moves anything, and the scan reads an address's history back to where
+it last stopped. It takes the oldest 2,000 transactions of what it finds
+in a run, moves on past them, and goes on from there on the next run, so
+however many transactions name an address, its deposits are credited, in
+order. Whoever sends an organization's address a great many transactions,
+at the network's fee for each, delays that organization's deposits by a
+run for every 2,000 of them; every other address is scanned as before.
+One thing still needs an operator: a backlog more than 400 pages deep
+(400,000 transactions, about 2 SOL of fees) is not read at all, and the
+scan says so in the log. Nothing is lost by it, since what was sent is at
+the address.
 
 Three conditions make the bound above hold; without any one of them
 `WALLET_MASTER_KEY` can move more:

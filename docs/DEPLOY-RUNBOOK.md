@@ -698,9 +698,13 @@ you about one of those. When the difference is not 0:
    are on. With a worker off, its figures stop moving.
 3. A difference above 0 that stays is a landed sweep the scan has not yet read as leaving its
    address: the scan records a receipt for everything it reads arriving, so nothing else puts
-   `held` above `expected`. Look in the API log for the scan's errors at an address (it stops at
-   a transaction it cannot load and tries again on the next run), and check that the node at
-   `SOLANA_RPC_URL` serves history (section 3.4).
+   `held` above `expected`. Look in the API log for the scan's errors at an address, and check
+   that the node at `SOLANA_RPC_URL` serves history (section 3.4). The scan stops at a
+   transaction it cannot load and tries again on the next run. It also changes nothing for an
+   address whose history it could not read back to where it last stopped: when it has not seen
+   that signature itself, it believes what it found only if the oldest transaction starts from
+   the balance the last read left, so a node that answers with part of the history cannot move
+   it past a transfer it has not read.
 4. A difference below 0 is money that left a deposit address without a sweep to account for
    it. Look in the API log for the scan's warning about a transfer out of a deposit address.
    Nothing but a sweep should ever send from one, and only `WALLET_MASTER_KEY` can sign for one:

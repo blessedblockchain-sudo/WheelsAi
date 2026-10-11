@@ -1,9 +1,9 @@
 # Payments: proof run on a local chain
 
 **Date:** 2026-10-11
-**Code:** `ef3823d`, branch `feat/bags-launchpad`. The five walks, the four browser tests and the
-rehearsal were run on it, after the changes two readings of the mainnet run asked for (listed under "What
-the review changed"). The x402 proof was run on `496c7b7`; nothing it runs has changed since.
+**Code:** `481acc7`, branch `feat/bags-launchpad`. The five walks, the four browser tests and the
+rehearsal were run on it, after the changes three readings of the mainnet run asked for (listed under
+"What the review changed"). The x402 proof was run on `496c7b7`; nothing it runs has changed since.
 **Verdict:** every money path of the payments module was run on a local Solana chain, through the real
 API, and checked against the database and the chain: **133 checks in five walks, 45 checks in four
 browser tests, and the 10 steps of the x402 proof. All passed.** The mainnet run at the end of this
@@ -157,7 +157,8 @@ code and a sentence.
 ## What the review changed
 
 Before real money follows it, the mainnet run was read against the code by five reviewers, each for what
-a local chain cannot show, and the changes that came of it were read again by two more. What changed:
+a local chain cannot show. The changes that came of it were read again, twice, by other readers, and what
+they found was fixed too. What changed:
 
 - **A payment from a wallet is sent again until the chain says what became of it.** Before, once a node
   had taken a customer's transfer it was never sent again, so one a node dropped ended as "never landed"
@@ -166,14 +167,20 @@ a local chain cannot show, and the changes that came of it were read again by tw
   WebSocket, which not every RPC plan serves. Without one every payment would have held for 30 seconds.
 - **The deposit scan ends a read of history when it sees the cursor itself.** Before, a page shorter
   than was asked for ended it, so a provider that hands back fewer signatures than the limit, or a node
-  that answers with nothing because it has not caught up, could hide a transfer. An empty page is now
-  asked for again, and one that follows a full page is not believed: nothing changes for that address
-  until a later run can read it all.
+  that answers with nothing because it has not caught up, could hide a transfer. When the cursor is not
+  seen, what was found is believed only if its oldest transaction starts from the balance the last read
+  left: nothing that arrived can then lie unread between them. Otherwise nothing changes for that
+  address until a later run can read it all.
+- **A long history is worked through a run at a time.** The scan used to change nothing for an address
+  with more than 20 pages of unread history and wait for an operator, and the chain lists every
+  transaction that names an address: about 0.1 SOL of fees was enough to stop one organization's
+  deposits being credited. A run now takes the oldest 2,000 transactions it finds and the next run goes
+  on from there.
 - **Sweeps read the paying wallet at two levels.** What is on its way to or from it is counted from
-  what is final, so nothing is counted twice. What it may send on is worked out from the lower of what
-  is confirmed and what is final, so never from money a payout has just taken. The rehearsal found the
-  second half: read at one level only, the wallet was asked to hand back money a payout had taken
-  seconds before.
+  what is final, so nothing is counted twice, and a payout that has just left it is counted as gone.
+  What it may send on is worked out from the lower of what is confirmed and what is final, so never
+  from money a payout has just taken. The rehearsal found the second half: read at one level only, the
+  wallet was asked to hand back money a payout had taken seconds before.
 - **The paying wallet keeps its minimum of SOL after every fee it pays in one run,** not only its own.
 - **Deposits fill the paying wallet to its float and what payouts waiting to be sent need,** and what
   it sends on leaves what every open payout needs: for USDC and SOL together, never more than a day's

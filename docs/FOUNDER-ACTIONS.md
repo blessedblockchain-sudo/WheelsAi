@@ -2,7 +2,7 @@
 
 Everything the code now needs from outside the repository before the matching claim can go live. Each item names the setting it fills (see the full list in `.env.example`) and what it unlocks. Until an item is done, the feature behind it answers honestly: a 501 or 503 with the reason, or a "not configured" state in the dashboard. Nothing is faked.
 
-Updated 2026-10-06. Tick items off here as they land.
+Updated 2026-10-11. Tick items off here as they land.
 
 ## 1. Domain, hosting and origins
 
@@ -13,6 +13,9 @@ Updated 2026-10-06. Tick items off here as they land.
 
 ## 2. Payments
 
+- [ ] **Prove payments with real wallets, then with real money.** Every money path has been run on a local chain (`docs/PAYMENTS-RUN.md`, 2026-10-11). Two runs are left, and both need you:
+  - Devnet, at a browser, at no cost: one $5 payment in USDC with Phantom and one with Solflare, using devnet USDC from Circle's faucet. This is the gate before mainnet: it shows the transfer each real wallet signs is one the server accepts.
+  - Mainnet, on your go-ahead: about $16 in USDC and SOL and 0.11 SOL moving between your own wallets through every path (paying in, an exchange withdrawal to the deposit address, the treasury proof, a sweep, a sale, two payouts). It needs a mainnet RPC that serves history, a new master key kept offline, two wallets, an exchange account and a cold wallet. The steps are in `docs/PAYMENTS-RUN.md`.
 - [ ] **Stripe account.** Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_PRO_PRICE_ID` (a recurring $49/month Price). This unlocks card checkout for credits, the Pro plan and trial, and the billing portal.
 - [ ] **Wallet top-ups in USDC and SOL.** Set `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`, and `SOL_PRICE_SOURCE=pyth` to offer SOL. Production takes them only on mainnet: `SOLANA_NETWORK=mainnet-beta` with a mainnet `SOLANA_RPC_URL`.
 - [ ] **Deposit addresses (USDC and SOL sent from an exchange or any wallet).**

@@ -726,6 +726,60 @@ test("what is on its way in or out is counted from what is final, once", () => {
   assert.deepEqual(where(sol), [["sweep_to_treasury", "SOL", "a", SOL]]);
 });
 
+test("a payout that has just left the hot wallet is gone from what it is filled against, final or not", () => {
+  // Float $200. The wallet held 200, final. A 150 payout has landed and is not final:
+  // 50 is confirmed, 200 is still final, and no row of this table is the payout.
+  const justPaid = planSweeps(
+    facts({
+      addresses: [held("a", 60n * USDC)],
+      hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 50n * USDC, finalized: { lamports: SOL / 10n, usdcRaw: 200n * USDC } },
+    }),
+  );
+  assert.deepEqual(where(justPaid), [["sweep_to_hot", "USDC", "a", 60n * USDC]], "it holds 50, under its float, so the deposit is its");
+
+  // A payout and a transfer out of the wallet at once: 1,000 final, an 800 transfer
+  // out still "sent" and landed, and a 150 payout landed too. 50 is confirmed.
+  // The row takes off 800 and the rest of what has gone, 150, is the payout: it holds 50.
+  const both = planSweeps(
+    facts({
+      addresses: [held("a", 60n * USDC)],
+      sent: [{ fromAddress: HOT, toAddress: TREASURY, asset: "USDC", amountRaw: 800n * USDC }],
+      hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 50n * USDC, finalized: { lamports: SOL / 10n, usdcRaw: 1_000n * USDC } },
+    }),
+  );
+  assert.deepEqual(where(both), [["sweep_to_hot", "USDC", "a", 60n * USDC]]);
+
+  // SOL the same. $200 a SOL, float $100 is 0.5 SOL. 1 SOL final, 0.2 SOL confirmed after a payout.
+  const sweepable = SOL + KEEP + FEE;
+  const sol = planSweeps(
+    facts({
+      addresses: [held("a", 0n, sweepable)],
+      hotWallet: { address: HOT, lamports: SOL / 5n, usdcRaw: 0n, finalized: { lamports: SOL, usdcRaw: 0n } },
+    }),
+  );
+  assert.deepEqual(where(sol), [["sweep_to_hot", "SOL", "a", SOL]]);
+});
+
+test("the hot wallet is never filled for more than its excess leaves it", () => {
+  // $200 a SOL, float $100. $800 of SOL payouts wait, and what is kept for all open
+  // ones is $400 (the day's limit took the rest). The wallet holds 3.5 SOL, $700.
+  // Filled for 800 it would take the deposit and send as much on in the same plan.
+  const plan = planSweeps(
+    facts({
+      addresses: [held("a", 0n, SOL + KEEP + FEE)],
+      hotWallet: { address: HOT, lamports: (7n * SOL) / 2n, usdcRaw: 0n },
+      openPayouts: owes({ solCents: 80_000n }, { solCents: 40_000n }),
+    }),
+  );
+  // It is filled to float plus 400: $700 is over that, so the deposit is the treasury's.
+  // And $700 is more than twice the float on top of 400, so it keeps 500 and sends 1 SOL on.
+  assert.deepEqual(where(plan), [
+    ["sweep_to_treasury", "SOL", "a", SOL],
+    ["hot_to_treasury", "SOL", null, SOL],
+  ]);
+  assert.ok(!plan.transfers.some((t) => t.kind === "sweep_to_hot"), "nothing goes in that goes straight out again");
+});
+
 test("one excess transfer an asset, never while another from the hot wallet for it is sent, never without a treasury", () => {
   const rich = { address: HOT, lamports: 9n * SOL, usdcRaw: 9_000n * USDC };
   const both = planSweeps(facts({ hotWallet: rich }));

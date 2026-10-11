@@ -382,6 +382,26 @@ export async function runSweepTick(
 
   // ---- 2. The facts, and the plan ----
 
+  // What open payouts need, read BEFORE the hot wallet: a payout that
+  // completes between the two reads is then still counted as needing its
+  // money, from a balance it has already left. Read the other way round,
+  // it would be neither owed nor gone, and its money would look like
+  // excess. Without this figure the excess cannot be told from money a
+  // payout is waiting for, so nothing is planned.
+  let openPayouts: NonNullable<SweepPlanFacts["openPayouts"]>;
+  try {
+    const owed = await deps.readOpenPayouts();
+    const asPlanned = (cents: PayoutCents) => ({
+      usdcRaw: (cents.usdcCents > 0n ? cents.usdcCents : 0n) * USDC_RAW_PER_CENT,
+      solCents: cents.solCents > 0n ? cents.solCents : 0n,
+    });
+    openPayouts = { waiting: asPlanned(owed.waiting), open: asPlanned(owed.open) };
+  } catch (err) {
+    result.errors += 1;
+    log({ event: "error", detail: `the open payouts could not be read: ${errorText(err)}` });
+    return result;
+  }
+
   let hotWallet: HotWalletReading;
   try {
     hotWallet = await deps.readHotWallet();
@@ -407,22 +427,6 @@ export async function runSweepTick(
     if (price.ok) quote = price.quote;
   } catch {
     quote = null;
-  }
-
-  // What open payouts need. Without it the hot wallet's excess cannot be
-  // told from money a payout is waiting for, so nothing is planned.
-  let openPayouts: NonNullable<SweepPlanFacts["openPayouts"]>;
-  try {
-    const owed = await deps.readOpenPayouts();
-    const asPlanned = (cents: PayoutCents) => ({
-      usdcRaw: (cents.usdcCents > 0n ? cents.usdcCents : 0n) * USDC_RAW_PER_CENT,
-      solCents: cents.solCents > 0n ? cents.solCents : 0n,
-    });
-    openPayouts = { waiting: asPlanned(owed.waiting), open: asPlanned(owed.open) };
-  } catch (err) {
-    result.errors += 1;
-    log({ event: "error", detail: `the open payouts could not be read: ${errorText(err)}` });
-    return result;
   }
 
   let rows: SweepAddressRow[] = [];

@@ -32,9 +32,11 @@
  *   - TWO READINGS OF THE HOT WALLET. What is on its way in or out is
  *     counted from "sent" rows, and a row is ended at "finalized": so
  *     that count starts from what the wallet holds at "finalized", and
- *     each row is counted once. The excess is worked out from the LOWER of
- *     what it holds at "confirmed" and at "finalized": never from money
- *     a payout has just taken, never from money that is not final yet.
+ *     each row is counted once. What has left it at "confirmed" and is in
+ *     no row (a payout) is taken off as well: it is gone, final or not.
+ *     The excess is worked out from the LOWER of what it holds at
+ *     "confirmed" and at "finalized": never from money a payout has just
+ *     taken, never from money that is not final yet.
  *   - No transfer in a plan has a destination other than the hot wallet
  *     or the proven treasury.
  *
@@ -294,6 +296,10 @@ function positive(value: bigint | undefined): bigint {
   return typeof value === "bigint" && value > 0n ? value : 0n;
 }
 
+function least(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
+}
+
 export function planSweeps(facts: SweepPlanFacts): SweepPlan {
   const { settings, hotWallet, treasury, quote } = facts;
   const transfers: PlannedTransfer[] = [];
@@ -310,10 +316,13 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
   // What payouts need. The hot wallet's float is what it holds besides
   // this, so both the filling and the excess are measured above it: the
   // filling above what waits to be sent, the excess above all that is open.
-  const fillUsdcRaw = positive(facts.openPayouts?.waiting.usdcRaw);
-  const fillSolCents = positive(facts.openPayouts?.waiting.solCents);
   const keepUsdcRaw = positive(facts.openPayouts?.open.usdcRaw);
   const keepSolCents = positive(facts.openPayouts?.open.solCents);
+  // Never filled for more than is kept for: a deposit sent to the hot
+  // wallet for a payout would otherwise be sent on as excess in the same
+  // plan. (The two can part when each was capped on its own.)
+  const fillUsdcRaw = least(positive(facts.openPayouts?.waiting.usdcRaw), keepUsdcRaw);
+  const fillSolCents = least(positive(facts.openPayouts?.waiting.solCents), keepSolCents);
 
   const busy = new Set<string>();
   for (const row of facts.sent) busy.add(busyKey(row.fromAddress, row.asset));
@@ -394,18 +403,33 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
   // What the hot wallet holds, with what is already on its way to it and
   // less what is already on its way out of it. From what is FINAL: a row
   // is "sent" until its block is final, so each is counted exactly once.
-  let hotUsdcRaw = (hotWallet.finalized ?? hotWallet).usdcRaw;
-  let hotLamports = (hotWallet.finalized ?? hotWallet).lamports;
+  const final = hotWallet.finalized ?? hotWallet;
+  let hotUsdcRaw = final.usdcRaw;
+  let hotLamports = final.lamports;
+  let outUsdcRaw = 0n;
+  let outLamports = 0n;
   for (const row of facts.sent) {
     if (row.toAddress === hotWallet.address) {
       if (row.asset === "USDC") hotUsdcRaw += row.amountRaw;
       else if (row.asset === "SOL") hotLamports += row.amountRaw;
     }
     if (row.fromAddress === hotWallet.address) {
-      if (row.asset === "USDC") hotUsdcRaw -= row.amountRaw;
-      else if (row.asset === "SOL") hotLamports -= row.amountRaw;
+      if (row.asset === "USDC") {
+        hotUsdcRaw -= row.amountRaw;
+        outUsdcRaw += row.amountRaw;
+      } else if (row.asset === "SOL") {
+        hotLamports -= row.amountRaw;
+        outLamports += row.amountRaw;
+      }
     }
   }
+  // What is final and no longer confirmed has left the wallet. Whatever of
+  // that the rows above do not account for was a payout: it is in no row
+  // of this table, and it is gone whether or not its block is final yet.
+  const goneUsdcRaw = final.usdcRaw - hotWallet.usdcRaw - outUsdcRaw;
+  if (goneUsdcRaw > 0n) hotUsdcRaw -= goneUsdcRaw;
+  const goneLamports = final.lamports - hotWallet.lamports - outLamports;
+  if (goneLamports > 0n) hotLamports -= goneLamports;
 
   const maxPerRun =
     Number.isSafeInteger(settings.maxPerRun) && settings.maxPerRun > 0

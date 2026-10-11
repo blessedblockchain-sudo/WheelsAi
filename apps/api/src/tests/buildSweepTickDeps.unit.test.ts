@@ -581,6 +581,7 @@ test("production: every dependency is bound, and no node is asked to build them"
     "deriveAddress",
     "readBalances",
     "readHotWallet",
+    "readOpenPayouts",
     "readTreasury",
     "getSolQuote",
     "prepare",
@@ -659,9 +660,10 @@ test("nothing is owed while payouts are not running", () => {
 });
 
 test("USDC and SOL together are never counted above the platform's limit for a day of payouts", () => {
-  // The limit is $400.00. USDC is counted first; SOL has what is left of it.
+  // The limit is $400.00. USDC is counted first; SOL has what is left of it. What
+  // waits is never more than what is open: the USDC being sent took from SOL's share.
   assert.deepEqual(owedForOpenPayouts({ sums: SUMS, capCents: 40_000n, payoutsRunning: true }), {
-    waiting: { usdcCents: 30_000n, solCents: 10_000n },
+    waiting: { usdcCents: 30_000n, solCents: 5_000n },
     open: { usdcCents: 35_000n, solCents: 5_000n },
   });
   // A limit under the USDC alone leaves SOL nothing.
@@ -678,6 +680,7 @@ test("USDC and SOL together are never counted above the platform's limit for a d
     const owed = owedForOpenPayouts({ sums: SUMS, capCents, payoutsRunning: true });
     assert.ok(owed.open.usdcCents + owed.open.solCents <= capCents, String(capCents));
     assert.ok(owed.waiting.usdcCents + owed.waiting.solCents <= capCents, String(capCents));
+    assert.ok(owed.waiting.usdcCents <= owed.open.usdcCents && owed.waiting.solCents <= owed.open.solCents, String(capCents));
   }
 });
 

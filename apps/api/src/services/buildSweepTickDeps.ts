@@ -422,7 +422,19 @@ export function owedForOpenPayouts(input: {
     const sol = total("crypto_sol", statuses);
     return { usdcCents, solCents: sol > left ? left : sol };
   };
-  return { waiting: capped(["pending"]), open: capped(["pending", "processing"]) };
+  const open = capped(["pending", "processing"]);
+  const pending = capped(["pending"]);
+  // What waits is part of what is open, after the limit as before it: with
+  // USDC counted first, a large USDC payout being sent leaves SOL less of
+  // the limit in `open` than the SOL waiting would have had on its own.
+  const least = (a: bigint, b: bigint) => (a < b ? a : b);
+  return {
+    waiting: {
+      usdcCents: least(pending.usdcCents, open.usdcCents),
+      solCents: least(pending.solCents, open.solCents),
+    },
+    open,
+  };
 }
 
 /** The one table the reader asks. */

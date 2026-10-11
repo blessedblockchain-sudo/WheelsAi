@@ -411,7 +411,7 @@ export function setupSweep(
   init: Parameters<typeof makeSweepDb>[0] = {},
   opts: { treasurySetting?: string | null; hot?: { lamports: bigint; usdcRaw: bigint | null } } = {},
 ) {
-  /** What happened, in order: "read", "row:<signature>", "send", "fate:<signature>". */
+  /** What happened, in order: "payouts", "read", "row:<signature>", "send", "fate:<signature>". */
   const order: string[] = [];
   const data = makeSweepDb(init, order);
   const chain = makeSweepChain(order);
@@ -447,6 +447,7 @@ export function setupSweep(
     treasurySetting: () => knobs.treasurySetting,
     getSolQuote: async () => knobs.price,
     readOpenPayouts: async () => {
+      order.push("payouts");
       if (knobs.openPayouts instanceof Error) throw knobs.openPayouts;
       return knobs.openPayouts;
     },

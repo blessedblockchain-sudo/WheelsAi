@@ -178,7 +178,7 @@ test("the row is written as sent, with everything the contract names, before the
   );
   assert.equal(tx.verifySignatures(), true);
   // Reads, then the row, then the send: never a send before its row.
-  assert.deepEqual(w.order.filter((step) => step !== "read"), [`row:${row.txSignature}`, "send"]);
+  assert.deepEqual(w.order.filter((step) => step !== "read" && step !== "payouts"), [`row:${row.txSignature}`, "send"]);
   assert.ok(w.order.indexOf(`row:${row.txSignature}`) < w.order.indexOf("send"));
   // What was sent is exactly the bytes on the row.
   assert.deepEqual(w.chain.calls.sendRawTransaction.map((c) => c.b64), [row.signedTxB64]);
@@ -507,7 +507,16 @@ test("deposit addresses are read at finalized, 50 and their USDC accounts a call
   assert.deepEqual(others.map((c) => [c.commitment, c.keys]), [["confirmed", [HOT, usdcAccountOf(HOT)]]]);
 });
 
-test("the hot wallet is taken to hold the lower of what is confirmed and what is final", async () => {
+test("what payouts need is read before the hot wallet, so a payout that completes in between is still held for", async () => {
+  const w = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] });
+  await w.run();
+  const payouts = w.order.indexOf("payouts");
+  const firstRead = w.order.indexOf("read");
+  assert.ok(payouts >= 0 && firstRead >= 0);
+  assert.ok(payouts < firstRead, `payouts at ${payouts}, the first read of the chain at ${firstRead}`);
+});
+
+test("the hot wallet's excess is from the lower of what is confirmed and what is final; a payout that just left is gone from what it is filled against", async () => {
   // A payout has just left it: 900 USDC is still final, 500 is what is confirmed.
   // The float is $200, so the excess is 300, not the 700 the final figure alone would give.
   const paidOut = setupSweep({ wallets: [treasuryRow()] }, { hot: { lamports: SOL / 10n, usdcRaw: 900n * USDC } });
@@ -534,6 +543,16 @@ test("the hot wallet is taken to hold the lower of what is confirmed and what is
     arriving.state.transfers.filter((t) => t.kind === "hot_to_treasury"),
     [],
     "the final 100 is not more than twice the float: nothing is sent on from money that is not final",
+  );
+
+  // A payout of 150 has just left: 200 final, 50 confirmed, no row for it. A deposit
+  // goes to the hot wallet, which holds 50 and not the 200 that is still final.
+  const short = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] }, { hot: { lamports: SOL / 10n, usdcRaw: 200n * USDC } });
+  short.chain.setConfirmedBalance(HOT, SOL / 10n, 50n * USDC);
+  await short.run();
+  assert.deepEqual(
+    short.state.transfers.map((t) => [t.kind, t.asset, t.toAddress]),
+    [["sweep_to_hot", "USDC", HOT]],
   );
 });
 

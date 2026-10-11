@@ -7,6 +7,7 @@
  *   WHEELSAI_LOCAL_CHAIN_DIR   the chain's folder, default $HOME/.wheelsai/local-chain
  *                              (keys in <folder>/keys, the ledger in <folder>/ledger)
  *   WHEELSAI_PG_CONTAINER      the Postgres container's name, default wheelsai-postgres
+ *   WHEELSAI_REDIS_CONTAINER   the Redis container's name, default wheelsai-redis
  *   WHEELSAI_CHROME            a Chrome or Chromium to drive in the browser tests;
  *                              when unset, playwright-core finds its own
  */
@@ -21,6 +22,7 @@ const CHAIN_DIR = process.env.WHEELSAI_LOCAL_CHAIN_DIR || path.join(process.env.
 /** master.key, mint-authority.json and treasury.json: made by local-chain.sh, used only on the local chain. */
 const KEYS_DIR = path.join(CHAIN_DIR, "keys");
 const PG_CONTAINER = process.env.WHEELSAI_PG_CONTAINER || "wheelsai-postgres";
+const REDIS_CONTAINER = process.env.WHEELSAI_REDIS_CONTAINER || "wheelsai-redis";
 
 /** `require` as the API sees it, so the scripts use the versions the API uses. */
 const req = createRequire(path.join(REPO, "apps/api/package.json"));
@@ -42,6 +44,16 @@ function databaseUrl(db) {
   return `postgresql://${encodeURIComponent(env("POSTGRES_USER"))}:${encodeURIComponent(env("POSTGRES_PASSWORD"))}@127.0.0.1:${port}/${db}`;
 }
 
+/**
+ * The address of one numbered database in the repository's own Redis
+ * container, for an API that runs beside another one: each keeps its queued
+ * work in a database of its own. Read from the container itself.
+ */
+function redisUrl(index) {
+  const port = execFileSync("docker", ["port", REDIS_CONTAINER, "6379/tcp"], { encoding: "utf8" }).split("\n")[0].trim().split(":").pop();
+  return `redis://127.0.0.1:${port}/${index}`;
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The browser for the browser tests: $WHEELSAI_CHROME when set, else the one playwright-core finds. */
@@ -50,4 +62,4 @@ function launchBrowser() {
   return chromium.launch(process.env.WHEELSAI_CHROME ? { executablePath: process.env.WHEELSAI_CHROME } : {});
 }
 
-module.exports = { REPO, CHAIN_DIR, KEYS_DIR, PG_CONTAINER, req, sql, databaseUrl, sleep, launchBrowser };
+module.exports = { REPO, CHAIN_DIR, KEYS_DIR, PG_CONTAINER, req, sql, databaseUrl, redisUrl, sleep, launchBrowser };

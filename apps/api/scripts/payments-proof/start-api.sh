@@ -59,6 +59,16 @@
 # USDC and $10 in SOL, a paying wallet that works down to 0.01 SOL, the
 # product's own payout limits, and credits that can only be paid for.
 #
+# A SECOND API BESIDE ANOTHER ONE. API_PORT names its port (4000 unless set)
+# and WEB_PORT the web app it answers (3100 unless set). It must keep its
+# queued work apart: RUN_REDIS_DB=<1 to 15> gives it that numbered database
+# in the repository's Redis container (REDIS_URL in its place names any other
+# Redis). Without one of the two, an API on a port of its own is not started:
+# two APIs on one Redis database take each other's work.
+#
+#   RUN_DATABASE=wheelsai_check RUN_REDIS_DB=1 API_PORT=4010 WALLET_MASTER_KEY="$(openssl rand -hex 32)" \
+#     bash apps/api/scripts/payments-proof/start-api.sh --run devnet
+#
 # AN OPERATOR'S COMMAND WITH THE SAME SETTINGS. After --runbook or
 # --run <network>, `-- <command>` runs that command from apps/api in place of
 # the API, with the settings the API was started with: the same database, the
@@ -97,6 +107,22 @@ if [ "${#REST[@]}" -gt 0 ]; then
 fi
 
 database_url() { node -e 'process.stdout.write(require(process.argv[1]).databaseUrl(process.argv[2]))' "$HERE/lib.cjs" "$1"; }
+redis_url() { node -e 'process.stdout.write(require(process.argv[1]).redisUrl(process.argv[2]))' "$HERE/lib.cjs" "$1"; }
+
+# A second API beside another one: a port of its own, and its own database in Redis.
+PORT="${API_PORT:-4000}"
+WEB="${WEB_PORT:-3100}"
+if [ -z "${REDIS_URL:-}" ] && [ -n "${RUN_REDIS_DB:-}" ]; then
+  case "$RUN_REDIS_DB" in
+    [1-9]|1[0-5]) ;;
+    *) echo "RUN_REDIS_DB is a number from 1 to 15: database 0 is the usual API's" >&2; exit 1 ;;
+  esac
+  export REDIS_URL="$(redis_url "$RUN_REDIS_DB")"
+fi
+if [ "$PORT" != "4000" ] && [ -z "${REDIS_URL:-}" ]; then
+  echo "an API on a port of its own runs beside another one: give it its own database in Redis too (RUN_REDIS_DB=1, or REDIS_URL), or the two take each other's queued work" >&2
+  exit 1
+fi
 
 # What the mainnet run sets, here for the run and for its rehearsal alike.
 run_settings() {
@@ -144,7 +170,7 @@ if [ "$MODE" = "--run" ]; then
   export DEPOSIT_SCAN_INTERVAL_MS="${DEPOSIT_SCAN_INTERVAL_MS:-30000}" SWEEP_INTERVAL_MS="${SWEEP_INTERVAL_MS:-30000}"
   export WALLET_TOPUPS_ENABLED=true DEPOSITS_ENABLED=true PAYOUTS_ENABLED=true SWEEPS_ENABLED="${SWEEPS_ENABLED:-true}"
   run_settings
-  [ "${#COMMAND[@]}" -gt 0 ] || echo "Starting the API for the payments run on $NETWORK (127.0.0.1:4000). Every money rail is on." >&2
+  [ "${#COMMAND[@]}" -gt 0 ] || echo "Starting the API for the payments run on $NETWORK (127.0.0.1:$PORT). Every money rail is on." >&2
 else
   KEYS="${WHEELSAI_LOCAL_CHAIN_DIR:-$HOME/.wheelsai/local-chain}/keys"
   for f in master.key treasury.json; do
@@ -197,9 +223,9 @@ for v in $(grep -oE "^\s+[A-Z_]+_INTERVAL_MS\b" src/config/env.ts | tr -d ' ' | 
 done
 exec env $off $nosana \
   X402_SETTLEMENT_WORKER_ENABLED="${X402_SETTLEMENT_WORKER_ENABLED:-false}" \
-  API_HOST=127.0.0.1 API_PORT=4000 \
-  CORS_ORIGIN=http://localhost:3100 \
-  PUBLIC_API_URL=http://localhost:4000 \
-  PUBLIC_WEB_URL=http://localhost:3100 \
+  API_HOST=127.0.0.1 API_PORT="$PORT" \
+  CORS_ORIGIN="http://localhost:$WEB" \
+  PUBLIC_API_URL="http://localhost:$PORT" \
+  PUBLIC_WEB_URL="http://localhost:$WEB" \
   RATE_LIMIT_MAX_PER_MINUTE=1000 \
   npx tsx src/index.ts

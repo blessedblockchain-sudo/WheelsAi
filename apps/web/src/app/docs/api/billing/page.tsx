@@ -9,7 +9,7 @@ import { DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Billing and plans API",
   description:
-    "WheelsAI billing API: credit balance, ledger transactions, usage, credit packages and live payment rails, plan and limits, Stripe checkout and portal, Solana wallet top-ups in USDC or SOL, and linking a wallet.",
+    "WheelsAI billing API: credit balance, ledger transactions, usage, credit packages and live payment rails, plan and limits, Stripe checkout and portal, Solana wallet top-ups in USDC or SOL, your organization's deposit address for transfers from an exchange or any wallet, and linking a wallet.",
 };
 
 const toc = [
@@ -30,6 +30,12 @@ const toc = [
   { id: "topup-reconcile", title: "Check a top-up", sub: true },
   { id: "topup-get", title: "Read one top-up", sub: true },
   { id: "topup-list", title: "List recent top-ups", sub: true },
+  { id: "deposits", title: "Deposit address" },
+  { id: "deposit-address-get", title: "Read the address", sub: true },
+  { id: "deposit-address-issue", title: "Issue the address", sub: true },
+  { id: "deposit-address-usdc", title: "Prepare the address for USDC", sub: true },
+  { id: "deposit-address-check", title: "Check for transfers now", sub: true },
+  { id: "deposit-list", title: "List recent deposits", sub: true },
   { id: "link-wallet", title: "Link a wallet" },
   { id: "link-wallet-nonce", title: "Ask for a nonce", sub: true },
   { id: "link-wallet-verify", title: "Link the wallet", sub: true },
@@ -40,7 +46,7 @@ export default function BillingApiPage() {
     <DocPage
       href="/docs/api/billing"
       title="Billing and plans"
-      lead="Read your credit balance, ledger and plan with an API key or session. Card payments need a signed-in owner or admin. Wallet top-ups in USDC or SOL work with an API key or a session."
+      lead="Read your credit balance, ledger and plan with an API key or session. Card payments need a signed-in owner or admin. Wallet top-ups and your deposit address, both in USDC or SOL, work with an API key or a session."
       toc={toc}
     >
       <h2 id="credits">Credits</h2>
@@ -83,6 +89,7 @@ export default function BillingApiPage() {
     "proSubscription": true,
     "wallet": true,
     "walletAssets": ["USDC", "SOL"],
+    "deposits": true,
     "network": "mainnet-beta"
   }
 }`}
@@ -90,7 +97,8 @@ export default function BillingApiPage() {
         <p>
           <code>rails</code> lists the payment paths open to you, so a client never offers one the API would refuse.{" "}
           <code>walletAssets</code> is present when <code>wallet</code> is true: <code>USDC</code>, followed by{" "}
-          <code>SOL</code> when SOL is offered. The values above are an example; read them from the API.
+          <code>SOL</code> when SOL is offered. <code>deposits</code> is true when your organization can be paid at{" "}
+          <a href="#deposits">its deposit address</a>. The values above are an example; read them from the API.
         </p>
       </Endpoint>
 
@@ -392,10 +400,227 @@ export default function BillingApiPage() {
         </p>
       </Endpoint>
 
+      <h2 id="deposits">Deposit address</h2>
+      <p>
+        Your organization has its own address for USDC and SOL on Solana. Send to it from an exchange or from any
+        wallet: there is no top-up to prepare and nothing to sign with WheelsAI. Each transfer is added to your credits
+        once. These endpoints take an <strong>API key or a session</strong>.
+      </p>
+      <p>
+        <code>rails.deposits</code> in <a href="#packages">the packages answer</a> says whether the deposit address is
+        open. Every answer here, a refusal included, carries <code>message</code>: a plain sentence you can show as it
+        is.
+      </p>
+      <ul>
+        <li>
+          Send on the Solana network only, on the network named in <code>network</code>. A transfer on another network
+          cannot be recovered.
+        </li>
+        <li>Only USDC and SOL are credited, and SOL only while it is offered.</li>
+        <li>
+          USDC is credited one dollar for one USDC. SOL is credited at its dollar value when WheelsAI sees your
+          transfer.
+        </li>
+        <li>
+          Transfers are usually credited within a few minutes, with no call from you.{" "}
+          <a href="#deposit-address-check">Check now</a> looks at once.
+        </li>
+      </ul>
+      <p>While deposits are not open, or are paused for a moment, every endpoint here answers with one of:</p>
+      <DocTable
+        caption="Refusals of every deposit endpoint"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "error", label: "error" },
+          { key: "when", label: "When" },
+        ]}
+        rows={[
+          { status: "501", error: <code>deposits_not_enabled</code>, when: "The deposit address is not open." },
+          {
+            status: "503",
+            error: (
+              <>
+                <code>deposit_address_unavailable</code> or <code>deposits_unavailable</code>
+              </>
+            ),
+            when: "Deposits are paused for a moment. Nothing sent to your address is lost. Try again shortly.",
+          },
+        ]}
+      />
+
+      <Endpoint id="deposit-address-get" method="GET" path="/api/billing/deposit-address" auth="API key or session" title="Read the address">
+        <CodeBlock
+          language="json"
+          code={`{
+  "address": "...",
+  "network": "mainnet-beta",
+  "assets": [
+    { "asset": "USDC", "accountOpen": true },
+    { "asset": "SOL", "offered": true }
+  ],
+  "message": "Send USDC or SOL on Solana to this address. It belongs to your organization only. USDC is credited one dollar for one USDC. SOL is credited at its dollar value when we see your transfer, usually within a few minutes."
+}`}
+        />
+        <ul>
+          <li>
+            <code>address</code> is <code>null</code> until the address is <a href="#deposit-address-issue">issued</a>,
+            and <code>message</code> then says that your organization has no deposit address yet. Reading never creates
+            or changes anything.
+          </li>
+          <li>
+            <code>network</code> is <code>mainnet-beta</code> or <code>devnet</code>.
+          </li>
+          <li>
+            The USDC entry of <code>assets</code> has <code>accountOpen</code>: whether the USDC account at the address
+            exists. If a sender says the address cannot receive USDC yet,{" "}
+            <a href="#deposit-address-usdc">prepare the address</a>.
+          </li>
+          <li>
+            The SOL entry has <code>offered</code>. While it is false, send USDC only.
+          </li>
+        </ul>
+      </Endpoint>
+
+      <Endpoint id="deposit-address-issue" method="POST" path="/api/billing/deposit-address" auth="API key or session" title="Issue the address">
+        <p>
+          Send no body. Issues your organization&apos;s address and answers in the shape above, with the address. It is
+          safe to repeat: an organization has one address, and every call answers with it.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="deposit-address-usdc" method="POST" path="/api/billing/deposit-address/usdc-account" auth="API key or session" title="Prepare the address for USDC">
+        <p>
+          Send no body. Opens the USDC account at your address, for a sender that says the address cannot receive USDC
+          yet. The answer can take up to a minute, so give the call time.
+        </p>
+        <CodeBlock language="json" code={`{ "accountOpen": true, "message": "Your address can now receive USDC." }`} />
+        <p>
+          The answer is the same when the account was already open. You can call this at most 3 times a minute.
+        </p>
+        <DocTable
+          caption="Refusals of preparing the address"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "404", error: <code>deposit_address_not_issued</code>, when: "Your organization has no deposit address yet. Issue it first." },
+            { status: "403", error: <code>not_eligible</code>, when: "Verify your email or make one purchase first, then prepare the address." },
+            {
+              status: "429, 503",
+              error: (
+                <>
+                  <code>daily_limit</code>, <code>unavailable</code>
+                </>
+              ),
+              when: "The address cannot be prepared right now. Send SOL when it is offered, or try again later.",
+            },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="deposit-address-check" method="POST" path="/api/billing/deposit-address/check" auth="API key or session" title="Check for transfers now">
+        <p>
+          Send no body. WheelsAI looks for new transfers to your address now and answers what this call credited and
+          what is still waiting:
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "credited": [
+    { "asset": "USDC", "amount": "50.00", "creditedUsd": 50, "bonusUsd": 5, "txSignature": "..." }
+  ],
+  "waiting": [],
+  "message": "Credited $55.00 from your transfer: $50.00 sent and a $5.00 bonus."
+}`}
+        />
+        <ul>
+          <li>
+            <code>amount</code> is the transfer in whole units, as a string. USDC has two decimals (<code>50.00</code>),
+            or up to six when it is not whole cents. SOL has no trailing zeros (<code>0.5</code>).
+          </li>
+          <li>
+            <code>creditedUsd</code> and <code>bonusUsd</code> are US dollars: what the transfer itself added, and the
+            bonus added with it.
+          </li>
+          <li>
+            <code>waiting</code> lists every transfer of your organization that was seen and is not credited yet, each
+            with <code>asset</code>, <code>amount</code> and <code>txSignature</code>. A SOL transfer waits while no
+            current SOL price can be read, and is credited as soon as one can.
+          </li>
+          <li>
+            When nothing new has arrived, both lists are empty and <code>message</code> says so.
+          </li>
+        </ul>
+        <p>
+          It is safe to call again: a transfer is never credited twice. You can call this at most 6 times a minute.
+        </p>
+        <DocTable
+          caption="Refusals of the check"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "404", error: <code>deposit_address_not_issued</code>, when: "Your organization has no deposit address yet. Issue it first." },
+            {
+              status: "503",
+              error: <code>chain_unavailable</code>,
+              when: "Deposits are paused for a moment. Nothing sent to your address is lost. Try again shortly.",
+            },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="deposit-list" method="GET" path="/api/billing/deposits" auth="API key or session" title="List recent deposits">
+        <CodeBlock
+          language="json"
+          code={`{
+  "deposits": [
+    {
+      "id": "...",
+      "asset": "USDC",
+      "amount": "50.00",
+      "status": "credited",
+      "creditedUsd": 50,
+      "bonusUsd": 5,
+      "txSignature": "...",
+      "createdAt": "...",
+      "creditedAt": "...",
+      "message": "Credited $55.00: $50.00 sent and a $5.00 bonus."
+    }
+  ]
+}`}
+        />
+        <p>
+          The last 20 transfers sent straight to your organization&apos;s address, newest first. A transfer you prepared
+          as a <a href="#topups">wallet top-up</a> is listed with <a href="#topup-list">the top-ups</a> instead.{" "}
+          <code>creditedUsd</code> is <code>null</code> until the transfer is credited.
+        </p>
+        <DocTable
+          caption="The statuses of a deposit"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "meaning", label: "What it means" },
+          ]}
+          rows={[
+            { status: <code>credited</code>, meaning: "The transfer is in your credit balance." },
+            {
+              status: <code>waiting</code>,
+              meaning: "The transfer was seen. It is credited as soon as a current SOL price can be read.",
+            },
+            { status: <code>ignored</code>, meaning: "The transfer was too small to credit." },
+          ]}
+        />
+      </Endpoint>
+
       <h2 id="link-wallet">Link a wallet</h2>
       <p>
         Linking adds a Solana wallet to your account, so your session carries it. You do not need a linked wallet to pay:
-        a top-up takes the paying wallet in <code>payerAddress</code>. Linking is two calls: ask for a nonce, then send
+        a top-up takes the paying wallet in <code>payerAddress</code>, and a transfer to{" "}
+        <a href="#deposits">your deposit address</a> needs no wallet here at all. Linking is two calls: ask for a nonce, then send
         the wallet&apos;s signature of it.
       </p>
 

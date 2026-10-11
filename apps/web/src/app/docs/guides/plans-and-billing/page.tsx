@@ -7,7 +7,7 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Plans and billing",
   description:
-    "WheelsAI plans (Starter, Pro, Enterprise), what counts as an API call, credits and the ledger, and the three ways to pay: Stripe card checkout, Solana wallet top-ups in USDC or SOL, and x402 micropayments.",
+    "WheelsAI plans (Starter, Pro, Enterprise), what counts as an API call, credits and the ledger, and the ways to pay: Stripe card checkout, Solana wallet top-ups in USDC or SOL, a transfer to your own deposit address from an exchange or any wallet, and x402 micropayments.",
 };
 
 const toc = [
@@ -20,6 +20,7 @@ const toc = [
   { id: "rails", title: "Ways to pay" },
   { id: "card", title: "Card (Stripe)", sub: true },
   { id: "wallet", title: "Wallet top-up", sub: true },
+  { id: "deposit-address", title: "Send from an exchange or another wallet", sub: true },
   { id: "x402", title: "x402 per request", sub: true },
   { id: "who", title: "Who can pay" },
 ];
@@ -312,6 +313,74 @@ export default function PlansBillingPage() {
         take an API key or a session.
       </p>
 
+      <h3 id="deposit-address">Send from an exchange or another wallet</h3>
+      <p>
+        Your organization has its own address for USDC and SOL on Solana. Anything you send to it is added to your
+        credits, so you can pay straight from an exchange or from any wallet, with nothing to connect and nothing to
+        sign in your browser.
+      </p>
+      <ol>
+        <li>
+          Open <strong>Billing</strong>. Under <strong>Add Credits</strong>, find{" "}
+          <strong>Send from an exchange or another wallet</strong> and choose <strong>Show my deposit address</strong>.
+        </li>
+        <li>
+          Copy the address. It belongs to your organization only and stays the same, so you can save it at your exchange
+          and use it again.
+        </li>
+        <li>
+          At your exchange or in your wallet, send USDC or SOL to that address. Choose <strong>Solana</strong> as the
+          network.
+        </li>
+        <li>
+          Your credits appear on their own, usually within a few minutes. <strong>Check now</strong> looks for your
+          transfer at once.
+        </li>
+      </ol>
+      <DocTable
+        caption="How a transfer to your address is credited"
+        columns={[
+          { key: "asset", label: "You send" },
+          { key: "credited", label: "What is credited" },
+        ]}
+        rows={[
+          { asset: "USDC", credited: "One dollar for one USDC." },
+          { asset: "SOL", credited: "Its dollar value when WheelsAI sees your transfer." },
+        ]}
+      />
+      <Callout>
+        <p>
+          Send on the Solana network only. A transfer on another network cannot be recovered. Only USDC and SOL are
+          credited.
+        </p>
+      </Callout>
+      <ul>
+        <li>
+          The page says which of USDC and SOL you can send. When SOL is not offered, send USDC only.
+        </li>
+        <li>
+          If your exchange says the address cannot receive USDC yet, press <strong>Prepare address</strong> and send
+          again once the page says the address can receive USDC. Preparing needs a verified email or one earlier
+          purchase.
+        </li>
+        <li>
+          A transfer earns the same bonus as any other way to pay, and the page shows what was sent and what the bonus
+          was.
+        </li>
+        <li>
+          If a current SOL price cannot be read when your SOL arrives, the transfer is shown as seen and is credited as
+          soon as a price can be read. USDC is not affected.
+        </li>
+        <li>
+          Each transfer is credited once. Your recent transfers are listed on the page, each with where it
+          stands. A transfer too small to credit is listed as such.
+        </li>
+      </ul>
+      <p>
+        From code, the same steps are <Link href="/docs/api/billing#deposits">the deposit address endpoints</Link>,
+        which take an API key or a session.
+      </p>
+
       <h3 id="x402">x402 per request</h3>
       <p>
         Calls to a <code>/v1</code> deployment that is billed per request can be paid one request
@@ -328,7 +397,9 @@ export default function PlansBillingPage() {
       <p>
         Buying credits by card, starting Pro and opening the billing portal require a signed-in owner or admin of the
         organization, and an API key cannot start them. Adding credits from a wallet is open to any signed-in account
-        and to an API key: the wallet that signs the transfer is the one that pays.
+        and to an API key: the wallet that signs the transfer is the one that pays. Your organization&apos;s deposit
+        address is open to any signed-in account and to an API key too, and whatever is sent to it is credited to the
+        organization.
       </p>
     </DocPage>
   );

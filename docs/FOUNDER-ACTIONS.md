@@ -15,6 +15,10 @@ Updated 2026-10-06. Tick items off here as they land.
 
 - [ ] **Stripe account.** Set `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_PRO_PRICE_ID` (a recurring $49/month Price). This unlocks card checkout for credits, the Pro plan and trial, and the billing portal.
 - [ ] **Wallet top-ups in USDC and SOL.** Set `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`, and `SOL_PRICE_SOURCE=pyth` to offer SOL. Production takes them only on mainnet: `SOLANA_NETWORK=mainnet-beta` with a mainnet `SOLANA_RPC_URL`.
+- [ ] **Deposit addresses (USDC and SOL sent from an exchange or any wallet).**
+  - Set `DEPOSITS_ENABLED=true`. It needs wallet top-ups on (the line above) and the scan worker running: `DEPOSIT_SCAN_INTERVAL_MS` above 0 (60000 by default). `DEPOSIT_SCAN_MAX_ADDRESSES` (500) is the most addresses one run looks at.
+  - "Prepare address" spends from the paying wallet (the one that pays creators): about 0.002 SOL for each USDC account it opens. Decide the limits if the defaults do not suit: 25 accounts a day in all (`DEPOSIT_ACCOUNT_OPENS_PER_DAY`), and none while that wallet holds under 0.05 SOL (`HOT_WALLET_MIN_SOL`). Keep the wallet funded.
+  - Back up `WALLET_MASTER_KEY` and never change it once customers have saved their addresses: every deposit address is derived from it.
 - [ ] **Creator payouts.**
   - Set `PAYOUTS_ENABLED=true` and `PAYOUT_EXECUTOR_INTERVAL_MS`. Payouts to a wallet also need the paying wallet derived from `WALLET_MASTER_KEY` to hold USDC, SOL and a little SOL for fees (the API logs its address at start), and `SOL_PRICE_SOURCE=pyth` to offer SOL.
   - Decide the limits if the defaults do not suit: $500 a payout, $1,000 a creator a day, $5,000 a day in all (`PAYOUT_MAX_PER_PAYOUT_USD`, `PAYOUT_MAX_PER_DAY_USD`, `PAYOUT_PLATFORM_MAX_PER_DAY_USD`).

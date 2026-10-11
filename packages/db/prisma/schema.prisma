@@ -337,6 +337,11 @@ model NosanaOrphanDeployment {
 model CreditBalance {
   orgId       String   @id @map("org_id") @db.Uuid
   balanceCents BigInt  @default(0) @map("balance_cents")
+  // x402 payments returned to this organization that do not yet make a
+  // whole cent, in millionths of a dollar. A request paid by x402 costs a
+  // fraction of a cent; when one is returned it lands here, and whole cents
+  // move to the balance with a ledger row.
+  x402RefundCarryMicroUsd BigInt @default(0) @map("x402_refund_carry_micro_usd")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   // Cascade is correct here, unlike the tables above (G6): this row is derived
@@ -1260,13 +1265,37 @@ model X402Payment {
   txSignature   String?  @unique @map("tx_signature")
 
   // Status
-  status        String   @default("pending") // 'pending', 'verified', 'settled', 'failed', 'refunded'
+  // 'submitted': recorded and sent, not yet known to have landed.
+  // 'verified': landed. 'settled': landed, final, and the request was served.
+  // 'failed': never landed, failed on the chain, or refused before sending.
+  // 'refunded': landed, not served, returned as credits. 'pending' is the
+  // column's default and is not written.
+  status        String   @default("pending")
   verifiedAt    DateTime? @map("verified_at")
   settledAt     DateTime? @map("settled_at")
 
   // Error handling
   failureReason String?  @map("failure_reason")
   retryCount    Int      @default(0) @map("retry_count")
+
+  // Claim first: the signed transaction exactly as the payer handed it over
+  // and the blockhash it was built on, written with status 'submitted'
+  // BEFORE it is broadcast. Only the chain then says what became of it.
+  signedTxB64       String?   @map("signed_tx_b64")
+  recentBlockhash   String?   @map("recent_blockhash")
+  submittedAt       DateTime? @map("submitted_at")
+  // What the transfer actually carried, in base units (amountRaw above is
+  // what the request required), the request's price in millionths of a
+  // dollar, and, for SOL, the rate the payment was quoted at.
+  amountReceivedRaw String?   @map("amount_received_raw")
+  amountMicroUsd    BigInt?   @map("amount_micro_usd")
+  solMicroUsdPerSol BigInt?   @map("sol_micro_usd_per_sol")
+  // Exactly one of these ends a payment that landed: the request was
+  // answered (servedAt), or it was not and the payment went back to the
+  // organization's credits (refundedAt, with what was returned).
+  servedAt          DateTime? @map("served_at")
+  refundedAt        DateTime? @map("refunded_at")
+  refundMicroUsd    BigInt?   @map("refund_micro_usd")
 
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")

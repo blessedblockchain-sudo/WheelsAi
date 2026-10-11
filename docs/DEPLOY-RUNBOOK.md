@@ -236,6 +236,14 @@ feature off, naming the setting: every fine-tuning blocker (`Fine-tuning cannot 
 `TAVILY_API_KEY` and `SANDBOX_RUNNER_URL`. Read them with `flyctl logs -a wheelsai-api[-staging]`
 after a deploy.
 
+If requests to a model provider, to Nosana or to the chain fail at once with `fetch failed` and
+`ETIMEDOUT` in the log, the host is slow to connect out, or has an IPv6 route that does not work.
+Each attempt to connect is given `OUTBOUND_CONNECT_ATTEMPT_TIMEOUT_MS` (2500 unless set; Node's
+own default of 250 is too short for such a host): raise it. A model request whose connection
+fails is sent again by itself, three times at most, and so is one the provider answered with a
+429 that asks for a wait of 5 seconds or less; the log says so each time
+(`Model request is being sent again`).
+
 ### First-run steps
 
 - The model catalog syncs itself when the API starts (the log line `Model catalog synced`); no

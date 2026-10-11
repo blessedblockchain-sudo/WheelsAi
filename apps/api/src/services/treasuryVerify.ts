@@ -202,7 +202,10 @@ export async function verifyTreasury(
 
   // A transaction that could not be loaded may be the proof itself: a
   // node that is rate limited, or one that listed a signature another has
-  // not caught up with. Sending again would not help and is not asked for.
+  // not caught up with. So the first thing asked for is another run, not
+  // another transfer. If the same ones still cannot be loaded, a new
+  // transfer is what proves it: the history is read newest first, so it is
+  // found before any of them is reached.
   const none = `No proof found for ${treasury} in the last ${entries.length} transactions of the hot wallet`;
   return {
     outcome: "not_found",
@@ -213,8 +216,8 @@ export async function verifyTreasury(
     message:
       unreadable > 0
         ? `${none}, and ${unreadable} of them could not be loaded: one of those may be the proof. Nothing was written. ` +
-          `Run this again before sending anything. Only if it then finds no proof with every transaction loaded, ` +
-          `send 0.1 SOL from the treasury wallet to ${hotWallet}.`
+          `Run this again before sending anything. If it still finds no proof, ` +
+          `send 0.1 SOL from the treasury wallet to ${hotWallet} and run it once more: a new transfer is read first.`
         : `${none}. Nothing was written. Send 0.1 SOL from the treasury wallet to ${hotWallet}, then run this again.`,
   };
 }

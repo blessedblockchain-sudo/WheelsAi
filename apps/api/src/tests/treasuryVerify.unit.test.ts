@@ -226,7 +226,7 @@ test("not found: nothing is written and the operator is told what to do", async 
   assert.match(res.message, /Nothing was written\. Run this again before sending anything\./);
   assert.ok(
     res.message.endsWith(
-      `Only if it then finds no proof with every transaction loaded, send 0.1 SOL from the treasury wallet to ${HOT}.`,
+      `If it still finds no proof, send 0.1 SOL from the treasury wallet to ${HOT} and run it once more: a new transfer is read first.`,
     ),
     res.message,
   );

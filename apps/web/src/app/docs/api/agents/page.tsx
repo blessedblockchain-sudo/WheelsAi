@@ -55,6 +55,7 @@ const toc = [
   { id: "playground", title: "Playground" },
   { id: "playground-chat", title: "Chat with an agent", sub: true },
   { id: "playground-models", title: "Available models", sub: true },
+  { id: "hosted-models", title: "Models your organization runs", sub: true },
 ];
 
 export default function AgentsApiPage() {
@@ -1140,9 +1141,10 @@ export default function AgentsApiPage() {
         </ul>
         <h4 id="agent-hosted-models">Agents on a model you host</h4>
         <p>
-          An agent whose model is <code>wheelsai/&lt;model id&gt;</code> (the &quot;WheelsAI Hosted&quot; choice in the agent
-          wizard) answers on your organization&apos;s own running deployment of that model, through one of its healthy
-          nodes. Its chats are included in the deployment&apos;s per-second GPU bill, as a{" "}
+          An agent whose model is <code>wheelsai/&lt;model id&gt;</code> (a choice under &quot;Your models on Nosana&quot; in
+          the agent&apos;s model picker, and an entry of <a href="#hosted-models"><code>hostedModels</code></a>) answers on
+          your organization&apos;s own running deployment of that model, through one of its healthy nodes. Its chats are
+          included in the deployment&apos;s per-second GPU bill, as a{" "}
           <Link href="/docs/api/inference#billing">direct request to the deployment</Link> is: no per-token charge and no
           free-model rate limit. When no deployment of the model is running, none of its nodes is healthy, or its GPU time
           is unpaid, the chat answers <code>503</code> <code>hosted_model_not_running</code> with the reason, and is not
@@ -1318,7 +1320,7 @@ if reply.tool_calls:
           { status: <code>429</code>, code: <code>provider_rate_limited</code>, when: <>The model provider&apos;s own limit; its <code>retry-after</code> is passed on.</> },
           { status: <code>501</code>, code: <code>model_provider_not_configured</code>, when: "The agent's free model is temporarily unavailable. Pick another free model, or add your own provider key to the agent." },
           { status: <code>502</code>, code: <><code>upstream_error</code>, <code>provider_auth_failed</code>, <code>provider_model_not_found</code>, <code>empty_answer</code>, <code>tool_loop_exhausted</code>, <code>graph_run_failed</code></>, when: "The model provider failed, rejected the credentials configured for it, or produced no answer; or the agent's graph run failed. A paid request is refunded." },
-          { status: <code>503</code>, code: <><code>hosted_model_not_running</code>, <code>service_unavailable</code></>, when: <>The agent&apos;s WheelsAI-hosted model has no deployment that can serve right now (not retried); or the API is restarting, in which case nothing was charged and <code>retry-after</code> says when to try again.</> },
+          { status: <code>503</code>, code: <><code>hosted_model_not_running</code>, <code>service_unavailable</code></>, when: <>The agent is set to a model your organization runs, and no deployment of it can serve right now (not retried); or the API is restarting, in which case nothing was charged and <code>retry-after</code> says when to try again.</> },
           { status: <code>504</code>, code: <code>upstream_timeout</code>, when: "The model did not answer within the chat time limit." },
         ]}
       />
@@ -1633,7 +1635,7 @@ if reply.tool_calls:
             another free model, or add your own provider key to the agent.
           </li>
           <li>
-            <code>503</code>: the agent&apos;s WheelsAI-hosted model has no deployment that can serve right now (
+            <code>503</code>: the agent is set to a model your organization runs, and no deployment of it can serve right now (
             <code>hosted_model_not_running</code>), or the API is restarting.
           </li>
           <li>
@@ -1661,6 +1663,54 @@ if reply.tool_calls:
           <code>externalModels</code> (models that need your own provider key, with the environment variable to set, such as{" "}
           <code>OPENAI_API_KEY</code>).
         </p>
+        <p>
+          It also returns <code>hostedModels</code>: the models your organization runs on Nosana, as choices for an
+          agent&apos;s model. Each entry is described under <a href="#hosted-models">Models your organization runs</a>.
+          It is <code>null</code> when that list could not be read just now; the other two lists are still returned.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="hosted-models" method="GET" path="/api/agents/hosted-models" auth="API key or session" title="Models your organization runs">
+        <p>
+          Returns <code>&#123; hostedModels &#125;</code>: one entry for each model your organization has a live deployment
+          of. Call it when you have no agent yet, such as before you create one. The same list is the{" "}
+          <code>hostedModels</code> field of <a href="#playground-models">the models available to an agent</a>. Reading it
+          charges and reserves nothing.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "hostedModels": [
+    {
+      "id": "wheelsai/llama-3.1-8b",
+      "displayName": "Llama 3.1 8B",
+      "available": true,
+      "state": "running",
+      "fineTuned": false,
+      "deployment": { "id": "5b1d7c3e-...", "slug": "support-llm", "name": "support-llm" }
+    }
+  ]
+}`}
+        />
+        <ul>
+          <li>
+            <code>id</code> is what you set an agent&apos;s model to: <code>wheelsai/&lt;model id&gt;</code> for a catalog
+            model, or <code>wheelsai/ft-&lt;slug&gt;</code> for a fine-tuned model (<code>fineTuned</code> is then{" "}
+            <code>true</code>).
+          </li>
+          <li>
+            <code>available</code> is <code>true</code> when an agent set to this id would be answered right now.
+          </li>
+          <li>
+            <code>state</code> is <code>running</code> when it is answering, <code>starting</code> while its deployment is
+            not serving yet, and <code>not_answering</code> when it should be answering and is not.
+          </li>
+          <li>
+            <code>deployment</code> is the deployment such an agent is answered from, with its <code>id</code>,{" "}
+            <code>slug</code> and <code>name</code>.
+          </li>
+          <li>Entries that can answer come first, then the list is ordered by name. Stopped and failed deployments are not listed.</li>
+        </ul>
       </Endpoint>
     </DocPage>
   );

@@ -18,6 +18,7 @@ const toc = [
   { id: "admission", title: "Admission: quota and reservation", sub: true },
   { id: "lifecycle", title: "4. Watch it come up" },
   { id: "call", title: "5. Call the endpoint" },
+  { id: "agent-model", title: "Use it as an agent's model" },
   { id: "billing", title: "How GPU time is billed" },
   { id: "stop", title: "6. Scale, restart or stop" },
   { id: "fine-tuned", title: "Deploy a fine-tuned model" },
@@ -176,6 +177,16 @@ console.log(completion.choices[0]?.message.content);`}
         Requests are covered by the deployment&apos;s GPU time: nothing is held or charged per token on top of it. See{" "}
         <Link href="/docs/api/inference">Chat completions</Link> for the request fields, the <code>max_tokens</code> cap and
         the errors.
+      </p>
+
+      <h2 id="agent-model">Use it as an agent&apos;s model</h2>
+      <p>
+        Once the deployment is running, an agent can think on it: open the agent&apos;s <strong>Settings</strong>, expand{" "}
+        <strong>Advanced</strong>, and under <strong>Model</strong> choose it in the group{" "}
+        <strong>Your models on Nosana</strong>. The agent answers only while the deployment is running, so a model that is
+        still starting is listed but cannot be chosen yet. The agent&apos;s chats are covered by the deployment&apos;s GPU
+        time, which is billed by the second on the deployment. From code, set the agent&apos;s model to an{" "}
+        <code>id</code> from <Link href="/docs/api/agents#hosted-models"><code>GET /api/agents/hosted-models</code></Link>.
       </p>
 
       <h2 id="billing">How GPU time is billed</h2>

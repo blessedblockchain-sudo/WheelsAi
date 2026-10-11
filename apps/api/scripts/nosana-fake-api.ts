@@ -8,7 +8,9 @@
  *     vLLM; for Ollama /api/ps, listing FAKE_NODE_MODEL as loaded, and
  *     /api/tags) and the load request of each engine (POST /api/generate for
  *     that model, POST /v1/completions), so a deployment can be observed
- *     "running";
+ *     "running", and a chat (POST /v1/chat/completions, one fixed sentence,
+ *     whole or as a stream), so an agent set to the deployment's model can
+ *     be seen to answer;
  *   - a stand-in Solana RPC that answers 500 and counts its requests (the
  *     API-key path must make none).
  *
@@ -87,6 +89,9 @@ function listen(server: Server, listenPort: number): Promise<void> {
 
 const stamp = () => new Date().toISOString();
 
+/** What the fake node answers to every chat. */
+const FAKE_ANSWER = "Hello from the stand-in node.";
+
 async function main(): Promise<void> {
   const nodePort = port("FAKE_NODE_PORT", 4311);
   const rpcPort = port("FAKE_RPC_PORT", 4312);
@@ -102,9 +107,10 @@ async function main(): Promise<void> {
 
   // The inference node: ready on both engines' probe paths, and it answers
   // the platform's load request for its model (one generated token), which
-  // is what makes an Ollama deployment "running". Nothing else.
+  // is what makes an Ollama deployment "running", and a chat. Nothing else.
   const nodeModel = process.env.FAKE_NODE_MODEL ?? "llama3.2:3b";
   let probes = 0;
+  let chats = 0;
   const answerProbe: RequestListener = (req, res) => {
     const path = (req.url ?? "/").split("?")[0];
     if (req.method === "GET" && (path === "/health" || path === "/api/tags" || path === "/api/ps")) {
@@ -143,8 +149,56 @@ async function main(): Promise<void> {
       });
       return;
     }
+    // A chat, as an agent set to this model sends one: the OpenAI-compatible
+    // route both engines serve. One fixed sentence, whole or as a stream.
+    if (req.method === "POST" && path === "/v1/chat/completions") {
+      let raw = "";
+      req.on("data", (chunk) => (raw += chunk));
+      req.on("end", () => {
+        let asked: { model?: unknown; stream?: unknown; stream_options?: { include_usage?: unknown } } = {};
+        try {
+          asked = JSON.parse(raw) as typeof asked;
+        } catch {
+          asked = {};
+        }
+        chats += 1;
+        const model = String(asked.model ?? nodeModel);
+        const id = `chatcmpl-fake-${chats}`;
+        const created = Math.floor(Date.now() / 1000);
+        const usage = { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 };
+        if (asked.stream !== true) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              id,
+              object: "chat.completion",
+              created,
+              model,
+              choices: [{ index: 0, message: { role: "assistant", content: FAKE_ANSWER }, finish_reason: "stop" }],
+              usage,
+            }),
+          );
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+        const send = (data: unknown) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+        const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
+          id,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [{ index: 0, delta, finish_reason: finish }],
+        });
+        send(chunk({ role: "assistant", content: "" }, null));
+        for (const word of FAKE_ANSWER.split(" ")) send(chunk({ content: `${word} ` }, null));
+        send(chunk({}, "stop"));
+        if (asked.stream_options?.include_usage === true) send({ id, object: "chat.completion.chunk", created, model, choices: [], usage });
+        res.end("data: [DONE]\n\n");
+      });
+      return;
+    }
     res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: "the fake node only answers readiness probes and the load request" }));
+    res.end(JSON.stringify({ error: "the fake node answers readiness probes, the load request and a chat" }));
   };
   const tlsCert = process.env.FAKE_NODE_TLS_CERT;
   const tlsKey = process.env.FAKE_NODE_TLS_KEY;

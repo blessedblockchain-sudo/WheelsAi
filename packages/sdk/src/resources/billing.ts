@@ -1,4 +1,5 @@
-import { seg, type RequestOptions, type WheelsAIClient } from "../client.js";
+import { seg, type Query, type RequestOptions, type WheelsAIClient } from "../client.js";
+import { WheelsAIError } from "../error.js";
 
 /**
  * Opening the USDC account at a deposit address can take the API up to 45 seconds
@@ -8,31 +9,132 @@ const PREPARE_USDC_TIMEOUT_MS = 90_000;
 
 /** Amounts on the billing endpoints are in dollars, not cents. */
 export interface CreditBalance {
+  /** What you can spend now. */
   available: number;
-  pending: number;
+  /** What is set aside for things that are running or awaited: the total of `getHolds()`. */
+  held: number;
+  /** `available` plus `held`. */
   total: number;
+  /** The same figure as `held`, kept for older callers. */
+  pending: number;
 }
+
+/** What a hold is for. */
+export type CreditHoldKind =
+  | "deployment"
+  | "agent_deployment"
+  | "fine_tuning"
+  | "job"
+  | "try_it"
+  | (string & {});
+
+/** Credits set aside for one thing that is running or awaited. */
+export interface CreditHold {
+  kind: CreditHoldKind;
+  /** The id of the thing that holds the credits; `"try_it"` for the one entry of that kind. */
+  id: string;
+  /** What you called it: the deployment, the agent, the job or the offering. */
+  name: string;
+  /** Dollars. */
+  amount: number;
+  /** When the credits were set aside (ISO). */
+  since: string;
+  /** A sentence that says why it is held and when it comes back. */
+  note: string;
+}
+
+/**
+ * How a ledger row reads: credits arriving (`added`), used (`spent`), a charge
+ * or its unused part coming back (`returned`), set aside (`held`), a hold coming
+ * back (`released`), removed again after a card refund (`taken_back`), or `other`.
+ */
+export type CreditTransactionKind =
+  | "added"
+  | "spent"
+  | "returned"
+  | "held"
+  | "released"
+  | "taken_back"
+  | "other"
+  | (string & {});
 
 export interface CreditTransaction {
   id: string;
-  /** Dollars. */
+  /** Dollars, by its own sign: above zero for credits arriving, below zero for credits leaving. */
   amount: number;
-  type: "purchase" | "bonus" | "usage" | "refund" | (string & {});
+  /** The stored type, in lower case, e.g. `purchase`, `gpu_usage`, `training_reservation`. */
+  type: string;
+  kind: CreditTransactionKind;
+  /** What the row is called, ready to show. */
+  label: string;
+  /** The row's own text, or the label when it has none. */
   description: string;
+  /** Your balance in dollars after this row. */
+  balanceAfter: number;
   createdAt: string;
 }
 
+/** Which rows `getTransactions` lists: credits added, spending, or holds and their releases. */
+export type CreditTransactionFilter = "added" | "spent" | "held";
+
+export interface ListCreditTransactionsInput {
+  /** 1 to 200. The API answers 50 when this is left out. */
+  limit?: number;
+  /** The `nextCursor` of the answer before, to read the page after it. */
+  cursor?: string;
+  /** Leave out for every row. */
+  filter?: CreditTransactionFilter;
+}
+
+export interface CreditTransactionPage {
+  /** Newest first. */
+  transactions: CreditTransaction[];
+  /** Pass as `cursor` to read the next page. `null` when there are no more rows. */
+  nextCursor: string | null;
+}
+
+export interface ExportCreditTransactionsInput {
+  /** The first UTC day, `YYYY-MM-DD`. Give both dates or neither. */
+  from?: string;
+  /** The last UTC day, `YYYY-MM-DD`, included. */
+  to?: string;
+}
+
+/** A heading of the month's spending. */
+export type SpendGroup =
+  | "gpu"
+  | "inference"
+  | "fine_tuning"
+  | "paid_use"
+  | "subscriptions"
+  | "jobs"
+  | "try_it"
+  | (string & {});
+
+export interface SpendLine {
+  group: SpendGroup;
+  /** The heading, ready to show. */
+  label: string;
+  /**
+   * Dollars spent under this heading this month, less what came back. Below zero
+   * when more came back this month than was charged.
+   */
+  amount: number;
+}
+
+/** This UTC calendar month. */
 export interface UsageSummary {
+  /** The month, `YYYY-MM` (UTC). */
+  month: string;
+  /** Dollars spent this month: the sum of `spend`. */
   currentMonth: number;
+  /** One line per heading, always in the same order, zero included. */
+  spend: SpendLine[];
+  /** GPU hours charged for this month. */
   gpuHours: number;
-  avgCostPerHour: number;
-  computeCost: number;
   requests: number;
-  requestsCost: number;
   inputTokens: number;
   outputTokens: number;
-  tokensCost: number;
-  metered: { computeSeconds: number; actualComputeCost: number };
 }
 
 export interface CreditPackage {
@@ -243,16 +345,50 @@ export function isTopupFinal(status: TopupStatus): boolean {
   return status === "credited" || status === "failed" || status === "expired";
 }
 
+/**
+ * Read an answer that is text, not JSON. The client reads every answer as JSON
+ * and, when one is not, raises an error that carries the text: that text is the
+ * file. A refusal (a status that is not 2xx) is raised as it is.
+ */
+async function getText(client: WheelsAIClient, path: string, query?: Query): Promise<string> {
+  try {
+    const parsed = await client.request<unknown>("GET", path, { query, headers: { Accept: "text/csv" } });
+    if (parsed === undefined) return "";
+    return typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+  } catch (err) {
+    if (err instanceof WheelsAIError && err.status >= 200 && err.status < 300 && typeof err.data === "string") {
+      return err.data;
+    }
+    throw err;
+  }
+}
+
 export function billingResource(client: WheelsAIClient) {
   return {
     getBalance: () =>
       client.get<{ balance: CreditBalance }>("/api/billing/balance"),
 
-    /** The latest 50 transactions; the API takes no paging parameters. */
-    getTransactions: () =>
-      client.get<{ transactions: CreditTransaction[] }>("/api/billing/transactions"),
+    /** Everything that holds credits now, newest first, with the total in dollars. */
+    getHolds: () =>
+      client.get<{ holds: CreditHold[]; total: number }>("/api/billing/holds"),
 
-    /** This calendar month's usage. */
+    /**
+     * Ledger rows, newest first: 50 unless `limit` (1 to 200) says otherwise. Pass
+     * the answer's `nextCursor` as `cursor` to read the next page; it is `null`
+     * when there are no more rows.
+     */
+    getTransactions: (input?: ListCreditTransactionsInput) =>
+      client.get<CreditTransactionPage>("/api/billing/transactions", input as Query | undefined),
+
+    /**
+     * The ledger as a CSV file's text, oldest first (`GET /api/billing/transactions/export`).
+     * `from` and `to` are UTC days (`YYYY-MM-DD`), `to` included; with neither, the
+     * current UTC month up to today.
+     */
+    exportTransactions: (input?: ExportCreditTransactionsInput) =>
+      getText(client, "/api/billing/transactions/export", input as Query | undefined),
+
+    /** This UTC calendar month: what was spent under each heading, GPU hours and request counts. */
     getUsage: () =>
       client.get<{ usage: UsageSummary }>("/api/billing/usage"),
 

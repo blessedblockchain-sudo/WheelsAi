@@ -270,6 +270,62 @@ when there is something to say (a payout waiting to be sent, or one that failed)
 otherwise. A failed payout also carries `failureReason`, and its amount is already back in your
 earnings. Cancelling needs a session token (`auth.login`) of an owner or admin.
 
+### Reading your credits
+
+What is available, what is held and why, what the month cost by kind, and the ledger itself.
+Every amount is in dollars. Works with an API key or a session.
+
+```ts
+const { balance } = await wheels.billing.getBalance();
+console.log(balance.available, balance.held, balance.total); // total = available + held
+
+const { holds } = await wheels.billing.getHolds();
+for (const hold of holds) console.log(hold.name, hold.amount, hold.note);
+
+const { usage } = await wheels.billing.getUsage(); // this UTC calendar month
+console.log(usage.month, usage.currentMonth, usage.gpuHours);
+for (const line of usage.spend) {
+  if (line.amount !== 0) console.log(line.label, line.amount);
+}
+
+// The ledger, newest first, a page at a time.
+let cursor: string | undefined;
+do {
+  const page = await wheels.billing.getTransactions({ limit: 100, cursor, filter: "spent" });
+  for (const row of page.transactions) console.log(row.createdAt, row.label, row.amount, row.balanceAfter);
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+
+// The same rows as a CSV file's text, oldest first.
+const csv = await wheels.billing.exportTransactions({ from: "2026-09-01", to: "2026-09-30" });
+```
+
+- `balance.held` is what is set aside for things that are running or awaited, and it is the
+  total of `getHolds()`. `balance.pending` is the same figure, kept for older callers.
+- A hold has a `kind` (`deployment`, `agent_deployment`, `fine_tuning`, `job` or `try_it`), the
+  `name` you gave the thing, `since`, and `note`: a sentence that says when it comes back.
+- `usage.spend` has one line for each kind of spending, always in the same order, zero included.
+  An `amount` is what was charged less what came back, so it can be below zero. `currentMonth` is
+  their sum.
+- A transaction's `amount` carries its own sign and `balanceAfter` is your balance after it.
+  `label` is what the row is called, ready to show. `kind` is `added`, `spent`, `returned`,
+  `held`, `released`, `taken_back` or `other`.
+- `getTransactions` takes `limit` (1 to 200, 50 when left out), `cursor` (the `nextCursor` of the
+  page before; it is `null` on the last page) and `filter` (`added`, `spent` or `held`).
+- `exportTransactions` takes `from` and `to` as UTC days (`YYYY-MM-DD`, `to` included). Give both
+  or neither: with neither, the file covers the current UTC month up to today. Its columns are
+  Date (UTC), Type, What, Description, Amount (USD) and Balance after (USD).
+
+| `code` | Status | When |
+| --- | --- | --- |
+| `invalid_request` | 400 | `getTransactions`: `limit`, `cursor` or `filter` cannot be read. |
+| `invalid_range` | 400 | `exportTransactions`: a date cannot be read, `to` is before `from`, or only one was given. |
+| `range_too_large` | 400 | `exportTransactions`: the range holds more than 100,000 rows. Choose a shorter range. |
+
+Changed in 0.2.0: `UsageSummary` no longer has `avgCostPerHour`, `computeCost`, `requestsCost`,
+`tokensCost` or `metered`; read `spend` and `gpuHours` instead. `getTransactions` answers
+`nextCursor` beside `transactions`.
+
 ### Adding credits from a wallet
 
 Pay in USDC or SOL from a Solana wallet. The API prepares the transfer, the wallet signs it, and

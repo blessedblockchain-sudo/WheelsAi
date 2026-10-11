@@ -12,6 +12,10 @@ import {
   WheelsAI,
   WheelsAIError,
   isTopupFinal,
+  type CreditBalance,
+  type CreditHold,
+  type CreditTransaction,
+  type CreditTransactionPage,
   type CreditedDeposit,
   type Deposit,
   type DepositAddress,
@@ -20,6 +24,8 @@ import {
   type DepositCheck,
   type DepositStatus,
   type PreparedDepositAddress,
+  type SpendLine,
+  type UsageSummary,
   type UseAccessState,
   type UseRefusal,
   type WaitingDeposit,
@@ -137,7 +143,9 @@ const cases: Case[] = [
 
   // ---- billing ----
   { name: "billing.getBalance", run: (w) => w.billing.getBalance(), method: "GET", path: "/api/billing/balance" },
-  { name: "billing.getTransactions", run: (w) => w.billing.getTransactions(), method: "GET", path: "/api/billing/transactions" },
+  { name: "billing.getHolds", run: (w) => w.billing.getHolds(), method: "GET", path: "/api/billing/holds" },
+  { name: "billing.getTransactions", run: (w) => w.billing.getTransactions({ limit: 20, cursor: "b3BhcXVl", filter: "spent" }), method: "GET", path: "/api/billing/transactions", query: { limit: "20", cursor: "b3BhcXVl", filter: "spent" } },
+  { name: "billing.exportTransactions", run: (w) => w.billing.exportTransactions({ from: "2026-09-01", to: "2026-09-30" }), method: "GET", path: "/api/billing/transactions/export", query: { from: "2026-09-01", to: "2026-09-30" } },
   { name: "billing.getUsage", run: (w) => w.billing.getUsage(), method: "GET", path: "/api/billing/usage" },
   { name: "billing.plan", run: (w) => w.billing.plan(), method: "GET", path: "/api/billing/plan" },
   { name: "billing.packages", run: (w) => w.billing.packages(), method: "GET", path: "/api/billing/packages" },
@@ -1297,4 +1305,200 @@ describe("adding credits by sending to the organization's address", () => {
       });
     });
   }
+});
+
+describe("reading the credit ledger", () => {
+  const client = (respond?: Parameters<typeof recordingFetch>[0]) => {
+    const { fetch, calls } = recordingFetch(respond);
+    return { wheels: new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }), calls };
+  };
+  const csvResponse = (text: string) =>
+    new Response(text, {
+      status: 200,
+      headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": 'attachment; filename="wheelsai-credits-2026-09-01-to-2026-09-30.csv"',
+      },
+    });
+  const CSV =
+    '"Date (UTC)","Type","What","Description","Amount (USD)","Balance after (USD)"\n' +
+    '"2026-09-02T10:00:00.000Z","purchase","Credits added","Card payment",50,50\n' +
+    '"2026-09-03T08:30:00.000Z","gpu_usage","GPU time","\'=2+2",-1.25,48.75\n';
+
+  it("the balance says what is available and what is held", async () => {
+    const balance: CreditBalance = { available: 40, held: 10, total: 50, pending: 10 };
+    const { wheels } = client(() => jsonResponse({ balance }));
+    const result = await wheels.billing.getBalance();
+    assert.deepEqual(result.balance, balance);
+    assert.equal(result.balance.available + result.balance.held, result.balance.total);
+  });
+
+  it("the holds come back as the API sent them, each with its sentence", async () => {
+    const holds: CreditHold[] = [
+      {
+        kind: "deployment",
+        id: DEP,
+        name: "support-llm",
+        amount: 6,
+        since: "2026-10-11T09:00:00.000Z",
+        note: "Held while this deployment runs. It comes back when the deployment stops.",
+      },
+      {
+        kind: "try_it",
+        id: "try_it",
+        name: "Try it messages",
+        amount: 4,
+        since: "2026-10-11T08:58:00.000Z",
+        note: "Held for a few minutes while a Try it message you pay for is answered.",
+      },
+    ];
+    const { wheels } = client(() => jsonResponse({ holds, total: 10 }));
+    const result = await wheels.billing.getHolds();
+    assert.deepEqual(result.holds, holds);
+    assert.equal(result.total, 10);
+    // A kind added later still types: the union is open.
+    const later: CreditHold = { ...holds[0]!, kind: "something_new" };
+    assert.equal(later.kind, "something_new");
+  });
+
+  it("the month's usage carries the spending by heading and none of the removed fields", async () => {
+    const spend: SpendLine[] = [
+      { group: "gpu", label: "GPU time", amount: 12.5 },
+      { group: "inference", label: "Inference", amount: 0 },
+      { group: "fine_tuning", label: "Fine-tuning", amount: 3 },
+      { group: "paid_use", label: "Paid use of listings", amount: -0.25 },
+      { group: "subscriptions", label: "Subscriptions", amount: 0 },
+      { group: "jobs", label: "Jobs", amount: 2 },
+      { group: "try_it", label: "Try it messages you paid for", amount: 0 },
+    ];
+    const usage: UsageSummary = {
+      month: "2026-10",
+      currentMonth: 17.25,
+      spend,
+      gpuHours: 4.5,
+      requests: 120,
+      inputTokens: 9000,
+      outputTokens: 4000,
+    };
+    const { wheels } = client(() => jsonResponse({ usage }));
+    const result = await wheels.billing.getUsage();
+    assert.deepEqual(result.usage, usage);
+    assert.equal(result.usage.spend.reduce((sum, line) => sum + line.amount, 0), result.usage.currentMonth);
+    // Removed in 0.2.0: the type no longer has them.
+    // @ts-expect-error avgCostPerHour is gone
+    void result.usage.avgCostPerHour;
+    // @ts-expect-error computeCost is gone
+    void result.usage.computeCost;
+    // @ts-expect-error requestsCost is gone
+    void result.usage.requestsCost;
+    // @ts-expect-error tokensCost is gone
+    void result.usage.tokensCost;
+    // @ts-expect-error metered is gone
+    void result.usage.metered;
+  });
+
+  it("getTransactions sends no query when nothing is asked for", async () => {
+    const { wheels, calls } = client(() => jsonResponse({ transactions: [], nextCursor: null }));
+    const page = await wheels.billing.getTransactions();
+    assert.equal(calls[0]!.url.search, "");
+    assert.deepEqual(page, { transactions: [], nextCursor: null });
+  });
+
+  it("getTransactions leaves out what is undefined", async () => {
+    const { wheels, calls } = client(() => jsonResponse({ transactions: [], nextCursor: null }));
+    await wheels.billing.getTransactions({ filter: "held", cursor: undefined });
+    assert.deepEqual(Object.fromEntries(calls[0]!.url.searchParams), { filter: "held" });
+  });
+
+  it("the next page is asked for with the cursor of the page before", async () => {
+    const row = (id: string, amount: number, balanceAfter: number): CreditTransaction => ({
+      id,
+      amount,
+      type: "gpu_usage",
+      kind: "spent",
+      label: "GPU time",
+      description: "GPU time",
+      balanceAfter,
+      createdAt: "2026-10-11T09:00:00.000Z",
+    });
+    const pages: Record<string, CreditTransactionPage> = {
+      "": { transactions: [row("t3", -1, 7), row("t2", -1, 8)], nextCursor: "after t2/+=" },
+      "after t2/+=": { transactions: [row("t1", -1, 9)], nextCursor: null },
+    };
+    const { wheels, calls } = client((call) => jsonResponse(pages[call.url.searchParams.get("cursor") ?? ""]));
+
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await wheels.billing.getTransactions({ limit: 2, cursor });
+      seen.push(...page.transactions.map((t) => t.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+
+    assert.deepEqual(seen, ["t3", "t2", "t1"]);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]!.url.searchParams.has("cursor"), false);
+    // The cursor arrives as it was given, whatever characters it holds.
+    assert.equal(calls[1]!.url.searchParams.get("cursor"), "after t2/+=");
+    assert.equal(calls[1]!.url.searchParams.get("limit"), "2");
+  });
+
+  it("a row keeps its sign, its label and the balance after it", async () => {
+    const transactions: CreditTransaction[] = [
+      { id: "a", amount: 50, type: "purchase", kind: "added", label: "Credits added", description: "Card payment", balanceAfter: 50, createdAt: "2026-10-02T10:00:00.000Z" },
+      { id: "b", amount: -6, type: "deployment_reservation", kind: "held", label: "Held for a deployment", description: "Held for a deployment", balanceAfter: 44, createdAt: "2026-10-03T10:00:00.000Z" },
+    ];
+    const { wheels } = client(() => jsonResponse({ transactions, nextCursor: null }));
+    const page = await wheels.billing.getTransactions({ filter: "added" });
+    assert.deepEqual(page.transactions, transactions);
+  });
+
+  it("exportTransactions answers the file's text exactly as the API sent it", async () => {
+    const { wheels, calls } = client(() => csvResponse(CSV));
+    const text = await wheels.billing.exportTransactions({ from: "2026-09-01", to: "2026-09-30" });
+    assert.equal(text, CSV);
+    assert.equal(calls[0]!.headers.get("accept"), "text/csv");
+    assert.equal(calls[0]!.headers.get("authorization"), `Bearer ${API_KEY}`);
+  });
+
+  it("exportTransactions with no dates sends no query: the API then answers this month", async () => {
+    const { wheels, calls } = client(() => csvResponse(CSV));
+    assert.equal(await wheels.billing.exportTransactions(), CSV);
+    assert.equal(calls[0]!.url.pathname, "/api/billing/transactions/export");
+    assert.equal(calls[0]!.url.search, "");
+  });
+
+  it("exportTransactions answers an empty string for an empty file", async () => {
+    const { wheels } = client(() => csvResponse(""));
+    assert.equal(await wheels.billing.exportTransactions(), "");
+  });
+
+  const refusals: Array<{ call: string; status: number; error: string; message: string; run: (w: WheelsAI) => Promise<unknown> }> = [
+    { call: "getTransactions", status: 400, error: "invalid_request", message: "That list could not be read. Reload the page and try again.", run: (w) => w.billing.getTransactions({ limit: 500 }) },
+    { call: "exportTransactions", status: 400, error: "invalid_range", message: "Choose a start date and an end date, with the start first.", run: (w) => w.billing.exportTransactions({ from: "2026-09-30", to: "2026-09-01" }) },
+    { call: "exportTransactions", status: 400, error: "range_too_large", message: "That range holds more rows than one file can carry. Choose a shorter range.", run: (w) => w.billing.exportTransactions({ from: "2020-01-01", to: "2026-09-30" }) },
+    { call: "exportTransactions", status: 500, error: "billing_unavailable", message: "Billing could not be read. Try again in a moment.", run: (w) => w.billing.exportTransactions() },
+    { call: "getHolds", status: 500, error: "billing_unavailable", message: "Billing could not be read. Try again in a moment.", run: (w) => w.billing.getHolds() },
+  ];
+  for (const refusal of refusals) {
+    it(`${refusal.call} keeps the ${refusal.status} ${refusal.error} and its sentence`, async () => {
+      const { wheels } = client(() => jsonResponse({ error: refusal.error, message: refusal.message }, refusal.status));
+      await assert.rejects(refusal.run(wheels), (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.equal(err.status, refusal.status);
+        assert.equal(err.code, refusal.error);
+        assert.equal(err.message, refusal.message);
+        return true;
+      });
+    });
+  }
+
+  it("exportTransactions raises a refusal that is not JSON, and never answers it as the file", async () => {
+    const { wheels } = client(() => new Response("<html>Bad gateway</html>", { status: 502 }));
+    await assert.rejects(wheels.billing.exportTransactions(), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.equal(err.status, 502);
+      return true;
+    });
+  });
 });

@@ -125,3 +125,38 @@ test("x402 disabled: the default treasury placeholder stays legal", async () => 
     })
   );
 });
+
+// Payments pass, batch 8: a payment is priced in the asset it is asked for,
+// so an asset with no live price cannot be asked for.
+test("x402 cannot ask for NOS, and asks for SOL only with a SOL price", async () => {
+  const { validateEnv, EnvValidationError } = await import("../config/env.js");
+  const dev = {
+    NODE_ENV: "development",
+    DATABASE_URL: PROD_BASE.DATABASE_URL,
+    JWT_SECRET: PROD_BASE.JWT_SECRET,
+    X402_ENABLED: "true",
+    TREASURY_WALLET_ADDRESS: REAL_TREASURY,
+  };
+  assert.throws(
+    () => validateEnv({ ...dev, X402_DEFAULT_ASSET: "NOS" }),
+    (err: unknown) => err instanceof EnvValidationError && /cannot ask for NOS/.test(err.message),
+  );
+  assert.throws(
+    () => validateEnv({ ...dev, X402_DEFAULT_ASSET: "SOL" }),
+    (err: unknown) => err instanceof EnvValidationError && /X402_DEFAULT_ASSET=SOL requires a SOL price/.test(err.message),
+  );
+  assert.doesNotThrow(() => validateEnv({ ...dev, X402_DEFAULT_ASSET: "SOL", SOL_PRICE_SOURCE: "static", SOL_PRICE_STATIC_USD: "110" }));
+  assert.doesNotThrow(() => validateEnv({ ...dev, X402_DEFAULT_ASSET: "USDC" }));
+  // With x402 off the setting is not judged: NOS stays a legal value.
+  assert.doesNotThrow(() => validateEnv({ ...dev, X402_ENABLED: "false", X402_DEFAULT_ASSET: "NOS" }));
+});
+
+test("the quote holds for two minutes and a paid request waits thirty seconds, unless set", async () => {
+  const { validateEnv } = await import("../config/env.js");
+  const base = { NODE_ENV: "development", DATABASE_URL: PROD_BASE.DATABASE_URL, JWT_SECRET: PROD_BASE.JWT_SECRET };
+  const data = validateEnv(base);
+  assert.equal(data.X402_QUOTE_TTL_SECONDS, 120);
+  assert.equal(data.X402_CONFIRM_WAIT_MS, 30_000);
+  assert.throws(() => validateEnv({ ...base, X402_QUOTE_TTL_SECONDS: "5" }));
+  assert.throws(() => validateEnv({ ...base, X402_CONFIRM_WAIT_MS: "10" }));
+});

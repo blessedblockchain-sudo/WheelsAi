@@ -69,6 +69,12 @@ const envSchema = z.object({
     .enum(["off", "fallback", "required"])
     .default("off"),
   X402_DEFAULT_ASSET: z.enum(["USDC", "SOL", "NOS"]).default("USDC"),
+  // How long the SOL rate in a "payment required" answer holds: the paid
+  // retry is priced at that rate if it arrives inside this many seconds.
+  X402_QUOTE_TTL_SECONDS: z.coerce.number().int().min(30).max(600).default(120),
+  // How long a paid request waits for its payment to land before it
+  // answers "not confirmed". The settlement worker finishes it after that.
+  X402_CONFIRM_WAIT_MS: z.coerce.number().int().min(1000).max(120_000).default(30_000),
   X402_SUBMIT_TRANSACTIONS: z
     .union([z.boolean(), z.string()])
     .transform((value) => value === true || value === "true")
@@ -911,6 +917,19 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   // a black hole, so the combination is refused everywhere, not just in
   // production (a dev client following the 402 would burn real devnet
   // funds too).
+  // A payment is priced in the asset it is asked for. NOS has no live price
+  // anywhere in the product, and SOL has one only when a source is set.
+  if (data.X402_ENABLED && data.X402_DEFAULT_ASSET === "NOS") {
+    throw new EnvValidationError(
+      "X402_ENABLED cannot ask for NOS: there is no live NOS price. Set X402_DEFAULT_ASSET to USDC or SOL"
+    );
+  }
+  if (data.X402_ENABLED && data.X402_DEFAULT_ASSET === "SOL" && data.SOL_PRICE_SOURCE === "off") {
+    throw new EnvValidationError(
+      "X402_DEFAULT_ASSET=SOL requires a SOL price: set SOL_PRICE_SOURCE, or ask for USDC"
+    );
+  }
+
   if (data.X402_ENABLED) {
     if (data.TREASURY_WALLET_ADDRESS === "11111111111111111111111111111111") {
       throw new EnvValidationError(

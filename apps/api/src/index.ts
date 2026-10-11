@@ -39,6 +39,7 @@ import { cancelInFlightGraphRuns } from "./services/runAgentGraph.js";
 import { inferenceRoutes } from "./routes/inference.js";
 import { openAiV1Routes } from "./routes/openaiV1.js";
 import { billingRoutes } from "./routes/billing.js";
+import { createBillingLedgerRoutesProduction } from "./routes/billingLedgerBindings.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { agentRoutes } from "./routes/agents.js";
 import { trainingRoutes } from "./routes/training.js";
@@ -391,6 +392,8 @@ async function main() {
     prefix: FINE_TUNED_MODELS_PREFIX,
   });
   await app.register(billingRoutes, { prefix: "/api/billing" });
+  // The balance, what is held, the month's spending, the ledger and its export.
+  await app.register(createBillingLedgerRoutesProduction(), { prefix: "/api/billing" });
   // Slack install + the distributed-app events endpoint (W2). Both are
   // ALWAYS mounted and answer 501 when Slack is unconfigured: Slack must
   // be able to probe the Events Request URL before any install exists,

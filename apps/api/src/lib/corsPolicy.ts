@@ -47,6 +47,9 @@ export const APP_EXPOSED_HEADERS = [
   "X-RateLimit-Remaining-RPD",
   "X-RateLimit-Reset-RPM",
   "X-RateLimit-Reset-RPD",
+  // A download's file name (the credit ledger's export), so the web can
+  // save the file under the name the server gave it.
+  "Content-Disposition",
 ] as const;
 
 /** What the widget script needs: how long to wait, and an id to quote. */

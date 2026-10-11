@@ -1,4 +1,10 @@
-import { seg, type WheelsAIClient } from "../client.js";
+import { seg, type RequestOptions, type WheelsAIClient } from "../client.js";
+
+/**
+ * Opening the USDC account at a deposit address can take the API up to 45 seconds
+ * to see, which is longer than an ordinary call waits.
+ */
+const PREPARE_USDC_TIMEOUT_MS = 90_000;
 
 /** Amounts on the billing endpoints are in dollars, not cents. */
 export interface CreditBalance {
@@ -136,6 +142,102 @@ export interface Topup {
   expiresAt: string;
 }
 
+/** What a transfer to your organization's deposit address can be in. */
+export type DepositAsset = "USDC" | "SOL";
+
+/** What the address can receive: USDC always, and SOL while it is offered. */
+export type DepositAddressAsset =
+  | {
+      asset: "USDC";
+      /**
+       * Whether the USDC account at the address exists. Some senders need it to
+       * exist before they send USDC: `depositAddress.prepareUsdc()` opens it.
+       */
+      accountOpen: boolean;
+    }
+  | {
+      asset: "SOL";
+      /** False while SOL is not offered: a SOL transfer is then not credited. */
+      offered: boolean;
+    };
+
+/**
+ * Your organization's own address for USDC and SOL on Solana. Anything sent to
+ * it, from an exchange or from any wallet, is added to your credits once.
+ */
+export interface DepositAddress {
+  /** `null` until the address is issued with `depositAddress.issue()`. */
+  address: string | null;
+  /** The Solana network the address is on. Send on this network only. */
+  network: "mainnet-beta" | "devnet";
+  assets: DepositAddressAsset[];
+  /** A sentence to show beside the address. */
+  message: string;
+}
+
+/** The answer to `depositAddress.prepareUsdc()`. */
+export interface PreparedDepositAddress {
+  accountOpen: true;
+  /** A sentence to show. */
+  message: string;
+}
+
+/** A transfer the check added to your credits. */
+export interface CreditedDeposit {
+  asset: DepositAsset;
+  /**
+   * The transfer in whole units, as a string: USDC with two decimals ("50.00"),
+   * or up to six when it is not whole cents; SOL with trailing zeros dropped ("0.5").
+   */
+  amount: string;
+  /** Dollars added for the transfer itself. */
+  creditedUsd: number;
+  /** Dollars of bonus added with it. */
+  bonusUsd: number;
+  txSignature: string;
+}
+
+/** A transfer that was seen and is not credited yet: SOL waiting for a current price. */
+export interface WaitingDeposit {
+  asset: DepositAsset;
+  /** The transfer in whole units, as a string (see `CreditedDeposit.amount`). */
+  amount: string;
+  txSignature: string;
+}
+
+/** The answer to `depositAddress.check()`. */
+export interface DepositCheck {
+  /** What this call added to your credits. Empty when it found nothing new. */
+  credited: CreditedDeposit[];
+  /** Every transfer of your organization that is still waiting. */
+  waiting: WaitingDeposit[];
+  /** A sentence that says what the check found. */
+  message: string;
+}
+
+/** Where a transfer to the address stands. `credited` and `ignored` are final. */
+export type DepositStatus = "credited" | "waiting" | "ignored" | (string & {});
+
+/** One transfer sent straight to your organization's deposit address. */
+export interface Deposit {
+  id: string;
+  asset: DepositAsset;
+  /** The transfer in whole units, as a string (see `CreditedDeposit.amount`). */
+  amount: string;
+  status: DepositStatus;
+  /** Dollars added for the transfer itself. `null` until it is credited. */
+  creditedUsd: number | null;
+  /** Dollars of bonus added with it. 0 or `null` until it is credited. */
+  bonusUsd: number | null;
+  txSignature: string;
+  /** When the transfer was seen. */
+  createdAt: string;
+  /** When it was credited. `null` until then. */
+  creditedAt: string | null;
+  /** A sentence that says where this transfer stands. */
+  message: string;
+}
+
 /** True when a top-up has ended (`credited`, `failed` or `expired`) and will not change again. */
 export function isTopupFinal(status: TopupStatus): boolean {
   return status === "credited" || status === "failed" || status === "expired";
@@ -163,7 +265,10 @@ export function billingResource(client: WheelsAIClient) {
         packages: CreditPackage[];
         minPurchase: number;
         maxPurchase: number;
-        /** `wallet` and `walletAssets` say whether `topups` is open and in which assets. */
+        /**
+         * `wallet` and `walletAssets` say whether `topups` is open and in which assets;
+         * `deposits` says whether `depositAddress` is.
+         */
         rails: Record<string, unknown>;
       }>("/api/billing/packages"),
 
@@ -215,6 +320,56 @@ export function billingResource(client: WheelsAIClient) {
       /** Your organization's last 20 top-ups, newest first. */
       list: () =>
         client.get<{ topups: Topup[] }>("/api/billing/topups"),
+    },
+
+    /**
+     * Your organization's own address for USDC and SOL on Solana. Send to it from
+     * an exchange or from any wallet, with nothing to sign here: each transfer is
+     * added to your credits once, usually within a few minutes. Works with an API
+     * key or a session. `rails.deposits` of `packages()` says whether it is open.
+     */
+    depositAddress: {
+      /**
+       * Read the address (`GET /api/billing/deposit-address`). `address` is `null`
+       * until it is issued. Reading never creates or changes anything.
+       */
+      get: () =>
+        client.get<DepositAddress>("/api/billing/deposit-address"),
+
+      /**
+       * Issue the address (`POST /api/billing/deposit-address`). Safe to repeat: an
+       * organization has one address and this always answers with it.
+       */
+      issue: () =>
+        client.post<DepositAddress>("/api/billing/deposit-address"),
+
+      /**
+       * Open the USDC account at the address, for a sender that says the address
+       * cannot receive USDC yet. Answers `accountOpen: true` when it is open,
+       * also when it already was. At most 3 calls a minute. The call can take up
+       * to a minute, so it waits 90 seconds unless `options.timeoutMs` says otherwise.
+       */
+      prepareUsdc: (options?: RequestOptions) =>
+        client.post<PreparedDepositAddress>("/api/billing/deposit-address/usdc-account", undefined, {
+          ...options,
+          // Named last: options without a timeout (headers only, or `timeoutMs: undefined`)
+          // must not fall back to the client's shorter one.
+          timeoutMs: options?.timeoutMs ?? PREPARE_USDC_TIMEOUT_MS,
+        }),
+
+      /**
+       * Look for new transfers now instead of waiting. Answers what this call
+       * credited and what is still waiting. Safe to repeat; a transfer is never
+       * credited twice. At most 6 calls a minute.
+       */
+      check: () =>
+        client.post<DepositCheck>("/api/billing/deposit-address/check"),
+    },
+
+    deposits: {
+      /** The last 20 transfers sent straight to your organization's address, newest first. */
+      list: () =>
+        client.get<{ deposits: Deposit[] }>("/api/billing/deposits"),
     },
   };
 }

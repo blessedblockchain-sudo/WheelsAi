@@ -82,6 +82,14 @@ export {
   type CreditBalance,
   type CreditPackage,
   type CreditTransaction,
+  type CreditedDeposit,
+  type Deposit,
+  type DepositAddress,
+  type DepositAddressAsset,
+  type DepositAsset,
+  type DepositCheck,
+  type DepositStatus,
+  type PreparedDepositAddress,
   type PreparedTopup,
   type PrepareTopupInput,
   type Topup,
@@ -89,6 +97,7 @@ export {
   type TopupResult,
   type TopupStatus,
   type UsageSummary,
+  type WaitingDeposit,
 } from "./billing.js";
 export {
   marketplaceResource,

@@ -7,7 +7,23 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { AGENT_KINDS, WheelsAI, WheelsAIError, isTopupFinal, type UseAccessState, type UseRefusal } from "../src/index.js";
+import {
+  AGENT_KINDS,
+  WheelsAI,
+  WheelsAIError,
+  isTopupFinal,
+  type CreditedDeposit,
+  type Deposit,
+  type DepositAddress,
+  type DepositAddressAsset,
+  type DepositAsset,
+  type DepositCheck,
+  type DepositStatus,
+  type PreparedDepositAddress,
+  type UseAccessState,
+  type UseRefusal,
+  type WaitingDeposit,
+} from "../src/index.js";
 import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } from "./helpers.js";
 
 const AGENT = "11111111-1111-4111-8111-111111111111";
@@ -133,6 +149,11 @@ const cases: Case[] = [
   { name: "billing.topups.reconcile", run: (w) => w.billing.topups.reconcile(TOPUP), method: "POST", path: `/api/billing/topups/${TOPUP}/reconcile`, body: {} },
   { name: "billing.topups.get", run: (w) => w.billing.topups.get(TOPUP), method: "GET", path: `/api/billing/topups/${TOPUP}` },
   { name: "billing.topups.list", run: (w) => w.billing.topups.list(), method: "GET", path: "/api/billing/topups" },
+  { name: "billing.depositAddress.get", run: (w) => w.billing.depositAddress.get(), method: "GET", path: "/api/billing/deposit-address" },
+  { name: "billing.depositAddress.issue", run: (w) => w.billing.depositAddress.issue(), method: "POST", path: "/api/billing/deposit-address" },
+  { name: "billing.depositAddress.prepareUsdc", run: (w) => w.billing.depositAddress.prepareUsdc(), method: "POST", path: "/api/billing/deposit-address/usdc-account" },
+  { name: "billing.depositAddress.check", run: (w) => w.billing.depositAddress.check(), method: "POST", path: "/api/billing/deposit-address/check" },
+  { name: "billing.deposits.list", run: (w) => w.billing.deposits.list(), method: "GET", path: "/api/billing/deposits" },
 
   // ---- use of an agent you pay for ----
   { name: "use.access", run: (w) => w.use.access("refund-helper"), method: "GET", path: "/api/a/refund-helper/access" },
@@ -1102,4 +1123,178 @@ describe("adding credits from a wallet", () => {
     assert.throws(() => wheels.billing.topups.submit("..", "c2lnbmVk"), WheelsAIError);
     assert.equal(calls.length, 0);
   });
+});
+
+describe("adding credits by sending to the organization's address", () => {
+  const ADDRESS = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin";
+  const SHOWN = "Send USDC or SOL on Solana to this address. It belongs to your organization only.";
+  const HOW = "USDC is credited one dollar for one USDC. SOL is credited at its dollar value when we see your transfer, usually within a few minutes.";
+  const NOT_ISSUED = "Your organization has no deposit address yet.";
+  const PAUSED = "Deposits are paused for a moment. Nothing sent to your address is lost. Try again shortly.";
+  const WAITING = "We have seen your transfer of 0.5 SOL. It is credited as soon as we can get a current SOL price.";
+
+  const issued: DepositAddress = {
+    address: ADDRESS,
+    network: "mainnet-beta",
+    assets: [
+      { asset: "USDC", accountOpen: false },
+      { asset: "SOL", offered: true },
+    ],
+    message: `${SHOWN} ${HOW}`,
+  };
+
+  const client = (respond: (call: RecordedCall) => Response) => {
+    const { fetch, calls } = recordingFetch(respond);
+    return { wheels: new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch }), calls };
+  };
+
+  it("get answers no address before one is issued, and sends no body", async () => {
+    const none: DepositAddress = {
+      address: null,
+      network: "devnet",
+      assets: [
+        { asset: "USDC", accountOpen: false },
+        { asset: "SOL", offered: false },
+      ],
+      message: NOT_ISSUED,
+    };
+    const { wheels, calls } = client(() => jsonResponse(none));
+    const result = await wheels.billing.depositAddress.get();
+    assert.deepEqual(result, none);
+    assert.equal(result.address, null);
+    assert.equal(calls[0]!.method, "GET");
+    assert.equal(calls[0]!.rawBody, undefined);
+  });
+
+  it("issue answers the address with what it can receive, and sends no body", async () => {
+    const { wheels, calls } = client(() => jsonResponse(issued));
+    const result = await wheels.billing.depositAddress.issue();
+    assert.deepEqual(result, issued);
+    assert.equal(calls[0]!.method, "POST");
+    assert.equal(calls[0]!.rawBody, undefined);
+
+    // Each entry reads by its asset: USDC says whether its account is open, SOL whether it is offered.
+    const read = (entry: DepositAddressAsset) => (entry.asset === "USDC" ? entry.accountOpen : entry.offered);
+    assert.deepEqual(result.assets.map((entry) => [entry.asset, read(entry)]), [["USDC", false], ["SOL", true]]);
+  });
+
+  it("prepareUsdc answers that the account is open, and sends no body", async () => {
+    const prepared: PreparedDepositAddress = { accountOpen: true, message: "Your address can now receive USDC." };
+    const { wheels, calls } = client(() => jsonResponse(prepared));
+    const result = await wheels.billing.depositAddress.prepareUsdc();
+    assert.deepEqual(result, prepared);
+    assert.equal(calls[0]!.rawBody, undefined);
+  });
+
+  it("prepareUsdc waits longer than an ordinary call by default, and options.timeoutMs replaces it", async () => {
+    const seen: Array<AbortSignal | null | undefined> = [];
+    const wheels = new WheelsAI({
+      baseUrl: BASE_URL,
+      apiKey: API_KEY,
+      timeoutMs: 0,
+      fetch: async (_input, init) => {
+        seen.push(init?.signal);
+        return jsonResponse({ accountOpen: true, message: "Your address can now receive USDC." });
+      },
+    });
+    await wheels.billing.depositAddress.prepareUsdc();
+    await wheels.billing.depositAddress.prepareUsdc({ timeoutMs: 0 });
+    await wheels.billing.depositAddress.check();
+    assert.ok(seen[0], "the call has a timeout of its own, whatever the client's is");
+    assert.equal(seen[1], undefined, "timeoutMs 0 disables it");
+    assert.equal(seen[2], undefined, "check waits as the client is set to");
+  });
+
+  it("prepareUsdc waits 90 seconds, longer than the API looks for the account, unless a timeout is given", async () => {
+    // The API can look for the account for 45 seconds; the client's ordinary wait is 30.
+    const asked: number[] = [];
+    const original = AbortSignal.timeout;
+    AbortSignal.timeout = (ms: number) => {
+      asked.push(ms);
+      return original.call(AbortSignal, ms);
+    };
+    try {
+      const { wheels } = client(() => jsonResponse({ accountOpen: true, message: "Your address can now receive USDC." }));
+      await wheels.billing.depositAddress.prepareUsdc();
+      await wheels.billing.depositAddress.prepareUsdc({ headers: { "x-trace": "1" } });
+      await wheels.billing.depositAddress.prepareUsdc({ timeoutMs: undefined });
+      await wheels.billing.depositAddress.prepareUsdc({ timeoutMs: 120_000 });
+      await wheels.billing.depositAddress.check();
+    } finally {
+      AbortSignal.timeout = original;
+    }
+    assert.deepEqual(asked, [90_000, 90_000, 90_000, 120_000, 30_000]);
+    assert.ok(asked[0]! > 45_000);
+  });
+
+  it("check answers what it credited, as amounts in whole units and dollars", async () => {
+    const credited: CreditedDeposit[] = [
+      { asset: "USDC", amount: "50.00", creditedUsd: 50, bonusUsd: 5, txSignature: "5usdc" },
+      { asset: "SOL", amount: "0.05", creditedUsd: 7.4, bonusUsd: 0, txSignature: "5sol" },
+    ];
+    const answer: DepositCheck = { credited, waiting: [], message: "Credited $62.40 from 2 transfers." };
+    const { wheels, calls } = client(() => jsonResponse(answer));
+    const result = await wheels.billing.depositAddress.check();
+    assert.deepEqual(result, answer);
+    assert.equal(typeof result.credited[0]!.amount, "string", "an amount stays a string");
+    assert.equal(result.credited[0]!.creditedUsd + result.credited[0]!.bonusUsd, 55);
+    assert.equal(calls[0]!.rawBody, undefined);
+  });
+
+  it("check answers a transfer that waits for a price, and nothing new as an empty answer", async () => {
+    const waiting: WaitingDeposit[] = [{ asset: "SOL", amount: "0.5", txSignature: "5sol" }];
+    const answers: DepositCheck[] = [
+      { credited: [], waiting, message: WAITING },
+      { credited: [], waiting: [], message: "No new transfer yet. Transfers usually arrive within a few minutes." },
+    ];
+    let next = 0;
+    const { wheels } = client(() => jsonResponse(answers[next++]));
+    assert.deepEqual(await wheels.billing.depositAddress.check(), answers[0]);
+    assert.deepEqual(await wheels.billing.depositAddress.check(), answers[1]);
+  });
+
+  it("deposits.list answers each transfer with its status and its sentence", async () => {
+    const deposits: Deposit[] = [
+      { id: "d3", asset: "SOL", amount: "0.5", status: "waiting", creditedUsd: null, bonusUsd: null, txSignature: "5c", createdAt: "2026-10-11T12:02:00.000Z", creditedAt: null, message: WAITING },
+      { id: "d2", asset: "USDC", amount: "0.000001", status: "ignored", creditedUsd: null, bonusUsd: null, txSignature: "5b", createdAt: "2026-10-11T12:01:00.000Z", creditedAt: null, message: "This transfer was too small to credit." },
+      { id: "d1", asset: "USDC", amount: "50.00", status: "credited", creditedUsd: 50, bonusUsd: 5, txSignature: "5a", createdAt: "2026-10-11T12:00:00.000Z", creditedAt: "2026-10-11T12:00:40.000Z", message: "Credited $55.00: $50.00 sent and a $5.00 bonus." },
+    ];
+    const { wheels } = client(() => jsonResponse({ deposits }));
+    const result = await wheels.billing.deposits.list();
+    assert.deepEqual(result, { deposits });
+    const statuses: DepositStatus[] = result.deposits.map((d) => d.status);
+    assert.deepEqual(statuses, ["waiting", "ignored", "credited"]);
+    const assets: DepositAsset[] = result.deposits.map((d) => d.asset);
+    assert.deepEqual(assets, ["SOL", "USDC", "USDC"]);
+    assert.equal(result.deposits[0]!.creditedUsd, null, "nothing is credited until it is");
+  });
+
+  const refusals: Array<{ call: string; status: number; error: string; message: string; run: (w: WheelsAI) => Promise<unknown> }> = [
+    { call: "get", status: 501, error: "deposits_not_enabled", message: PAUSED, run: (w) => w.billing.depositAddress.get() },
+    { call: "get", status: 503, error: "deposit_address_unavailable", message: PAUSED, run: (w) => w.billing.depositAddress.get() },
+    { call: "issue", status: 501, error: "deposits_not_enabled", message: PAUSED, run: (w) => w.billing.depositAddress.issue() },
+    { call: "issue", status: 503, error: "deposit_address_unavailable", message: PAUSED, run: (w) => w.billing.depositAddress.issue() },
+    { call: "prepareUsdc", status: 404, error: "deposit_address_not_issued", message: NOT_ISSUED, run: (w) => w.billing.depositAddress.prepareUsdc() },
+    { call: "prepareUsdc", status: 403, error: "not_eligible", message: "Verify your email or make one purchase first, then prepare the address.", run: (w) => w.billing.depositAddress.prepareUsdc() },
+    { call: "prepareUsdc", status: 429, error: "daily_limit", message: "The address cannot be prepared right now. Send SOL, or try again later.", run: (w) => w.billing.depositAddress.prepareUsdc() },
+    { call: "prepareUsdc", status: 503, error: "unavailable", message: "The address cannot be prepared right now. Try again later.", run: (w) => w.billing.depositAddress.prepareUsdc() },
+    { call: "prepareUsdc", status: 501, error: "deposits_not_enabled", message: PAUSED, run: (w) => w.billing.depositAddress.prepareUsdc() },
+    { call: "check", status: 404, error: "deposit_address_not_issued", message: NOT_ISSUED, run: (w) => w.billing.depositAddress.check() },
+    { call: "check", status: 503, error: "chain_unavailable", message: PAUSED, run: (w) => w.billing.depositAddress.check() },
+    { call: "check", status: 501, error: "deposits_not_enabled", message: PAUSED, run: (w) => w.billing.depositAddress.check() },
+    { call: "deposits.list", status: 501, error: "deposits_not_enabled", message: PAUSED, run: (w) => w.billing.deposits.list() },
+    { call: "deposits.list", status: 503, error: "deposit_address_unavailable", message: PAUSED, run: (w) => w.billing.deposits.list() },
+  ];
+  for (const refusal of refusals) {
+    it(`${refusal.call} keeps the ${refusal.status} ${refusal.error} and its sentence`, async () => {
+      const { wheels } = client(() => jsonResponse({ error: refusal.error, message: refusal.message }, refusal.status));
+      await assert.rejects(refusal.run(wheels), (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.equal(err.status, refusal.status);
+        assert.equal(err.code, refusal.error);
+        assert.equal(err.message, refusal.message);
+        return true;
+      });
+    });
+  }
 });

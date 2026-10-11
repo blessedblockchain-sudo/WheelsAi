@@ -319,6 +319,57 @@ change is refused with `message_mismatch` and nothing is sent.
   `topup_expired`, `in_flight` and the others in the API reference) and whose `message` is a
   sentence you can show as it is.
 
+### Adding credits by sending to your address
+
+Your organization has its own address for USDC and SOL on Solana. Send to it from an exchange or
+from any wallet: there is no top-up to prepare and nothing to sign here, and each transfer is
+added to your credits once.
+
+```ts
+const { rails } = await wheels.billing.packages();
+if (rails.deposits) {
+  let deposit = await wheels.billing.depositAddress.get();
+  if (!deposit.address) deposit = await wheels.billing.depositAddress.issue(); // safe to repeat
+  console.log(deposit.address, deposit.network);
+  console.log(deposit.message); // "Send USDC or SOL on Solana to this address. It belongs to ..."
+
+  // After you have sent a transfer, look for it now instead of waiting:
+  const { credited, waiting, message } = await wheels.billing.depositAddress.check();
+  console.log(message); // "Credited $55.00 from your transfer: $50.00 sent and a $5.00 bonus."
+
+  const { deposits } = await wheels.billing.deposits.list(); // the last 20, newest first
+}
+```
+
+- `depositAddress.get()` never creates anything: `address` is `null` until `issue()` is called.
+  An organization has one address, and `issue()` always answers with it.
+- `assets` says what the address can receive. The USDC entry has `accountOpen`, and the SOL entry
+  has `offered`: while it is false, send USDC only.
+- Send on the Solana network named in `network`, and only USDC or SOL.
+- USDC is credited one dollar for one USDC. SOL is credited at its dollar value when the transfer
+  is seen. Transfers are usually credited within a few minutes without any call from you;
+  `check()` looks now, is safe to repeat and never credits a transfer twice.
+- `check()` answers `credited` (what this call added: `amount` in whole units as a string,
+  `creditedUsd` and `bonusUsd` in dollars) and `waiting` (a SOL transfer that was seen while no
+  current SOL price could be read; it is credited as soon as one can).
+- A deposit in `deposits.list()` has a `status` (`credited`, `waiting` or `ignored`, a transfer
+  too small to credit) and a `message`, a plain sentence that says where it stands.
+- If a sender says the address cannot receive USDC yet, call `depositAddress.prepareUsdc()`. It
+  answers `{ accountOpen: true, message }` once the address can, and can take up to a minute, so
+  it waits 90 seconds by default (`prepareUsdc({ timeoutMs })` changes that).
+
+A refusal is a `WheelsAIError` whose `message` is a sentence you can show as it is:
+
+| `code` | Status | When |
+| --- | --- | --- |
+| `deposit_address_not_issued` | 404 | `prepareUsdc` or `check` before the address was issued. |
+| `not_eligible` | 403 | `prepareUsdc`: verify your email or make one purchase first. |
+| `daily_limit` | 429 | `prepareUsdc`: the address cannot be prepared right now. Try again later. |
+| `unavailable` | 503 | `prepareUsdc`: the address cannot be prepared right now. Try again later. |
+| `chain_unavailable` | 503 | `check`: deposits are paused for a moment. Nothing sent is lost. |
+| `deposit_address_unavailable`, `deposits_unavailable` | 503 | Deposits are paused for a moment. Nothing sent is lost. |
+| `deposits_not_enabled` | 501 | Deposits are not open. |
+
 ## Authentication
 
 An API key (`apiKey`) and a session token (`token`, from `auth.login`) are both sent as
@@ -424,7 +475,8 @@ refused before anything is sent, with an error that does not repeat it.
 `run`, `getRun`, `cancelRun`, `chatCompletion`), `offerings` and `jobs` (above), `versioning`, `openclaw` (chat channels), `platform`
 (`/api/status`, `/api/public/stats`, `/api/capabilities`) and `skills`. Billing amounts are dollars, as the API
 returns them. To stop an agent's deployment use `agents.stopDeployment`; to buy credits, use
-`billing.checkout` (card) or `billing.topups` (USDC or SOL from a wallet).
+`billing.checkout` (card), `billing.topups` (USDC or SOL from a wallet) or `billing.depositAddress`
+(USDC or SOL sent to your organization's address, for example from an exchange).
 
 ## Build and test
 

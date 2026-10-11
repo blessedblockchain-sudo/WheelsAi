@@ -99,6 +99,8 @@ RUN_DATABASE=wheelsai_devnet WALLET_MASTER_KEY_FILE=<a key file> bash apps/api/s
 
 `make-run-database.cjs` makes a database of the run's own, applies the migrations and says whether it is empty. It never drops one. `start-api.sh --run devnet` or `--run mainnet-beta` starts the API on that network with the run's settings; it says what it still needs when something is missing, and starts nothing until then. On mainnet-beta it moves real money: it is started by the person doing the run.
 
+A run's API has no Nosana access: the workers that watch and bill a GPU are off on it, so the Nosana account of `apps/api/.env` is left out and a model cannot be deployed. `WITH_NOSANA=1` in front of the command keeps the account and both workers, for a run that also deploys a model; that run can spend Nosana credits.
+
 After `--runbook` or `--run <network>`, `-- <command>` runs an operator's command from `apps/api` with the same settings in place of the API:
 
 ```

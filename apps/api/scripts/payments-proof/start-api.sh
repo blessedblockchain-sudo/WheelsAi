@@ -48,6 +48,13 @@
 # scanned and swept every 30 seconds, payouts and top-ups looked at every 15.
 # Redis is the usual one: no other WheelsAI API may be running against it.
 #
+# NOSANA ON A REAL NETWORK'S RUN. The run's API cannot reach Nosana: the two
+# workers that watch and bill a GPU are off, so the Nosana credentials of
+# apps/api/.env are blanked for this process and a deploy is refused. A GPU
+# started here would run with nobody watching it. WITH_NOSANA=1 keeps the
+# credentials and both workers (status every 10 seconds, billing every 60),
+# for a run that also deploys a model: that one can spend Nosana credits.
+#
 # THE RUN'S SETTINGS (--runbook and --run): a sweep from $1, floats of $5 in
 # USDC and $10 in SOL, a paying wallet that works down to 0.01 SOL, the
 # product's own payout limits, and credits that can only be paid for.
@@ -168,6 +175,19 @@ cd "$REPO/apps/api"
 if [ "${#COMMAND[@]}" -gt 0 ]; then
   exec "${COMMAND[@]}"
 fi
+# A set and empty name is left as it is by the settings file, and reads as
+# "not set": with all three empty the API has no way to pay Nosana. The
+# stand-in deployment of development is off too, so nothing on a run looks
+# deployed that is not.
+nosana=""
+if [ "$MODE" = "--run" ]; then
+  if [ "${WITH_NOSANA:-0}" = "1" ]; then
+    export DEPLOYMENT_STATUS_INTERVAL_MS="${DEPLOYMENT_STATUS_INTERVAL_MS:-10000}" GPU_BILLING_INTERVAL_MS="${GPU_BILLING_INTERVAL_MS:-60000}"
+    echo "Nosana is kept on for this run: a model deployed here spends Nosana credits." >&2
+  else
+    nosana="NOSANA_API_KEY= NOSANA_WALLET_PRIVATE_KEY= NOSANA_ACCESS_MODE= ALLOW_NOSANA_MOCK=false"
+  fi
+fi
 off=""
 for v in $(grep -oE "^\s+[A-Z_]+_INTERVAL_MS\b" src/config/env.ts | tr -d ' ' | sort -u); do
   # A worker whose interval is set, above or by the person starting the
@@ -175,7 +195,7 @@ for v in $(grep -oE "^\s+[A-Z_]+_INTERVAL_MS\b" src/config/env.ts | tr -d ' ' | 
   [ -n "${!v+x}" ] && continue
   off="$off $v=0"
 done
-exec env $off \
+exec env $off $nosana \
   X402_SETTLEMENT_WORKER_ENABLED="${X402_SETTLEMENT_WORKER_ENABLED:-false}" \
   API_HOST=127.0.0.1 API_PORT=4000 \
   CORS_ORIGIN=http://localhost:3100 \

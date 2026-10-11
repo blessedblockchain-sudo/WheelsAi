@@ -61,17 +61,24 @@ custodial creator key. It is the crown jewel; see rotation below.
 sweeps run.** The key derives the hot wallet and every deposit address,
 so whoever has it can move what those hold, and no more:
 
-- **The hot wallet: about twice the floats.** It is filled up to its
-  float of each asset (`HOT_WALLET_FLOAT_USDC`, 200 dollars of USDC, and
-  `HOT_WALLET_FLOAT_SOL_USD`, 100 dollars of SOL). A transfer goes to it
-  whole while it is under a float, so it can pass the float; once it
-  holds more than twice a float, a run sends what is above the float to
-  the treasury. With the defaults it therefore rests at no more than
-  about 400 dollars of USDC and 200 of SOL. Two things can put more
-  there for a time: one large transfer swept to it while it was under a
-  float, until the next run sends the excess on, and whatever the
-  operator sends it by hand for payouts and fees. Its SOL is valued at
-  the current price, so the dollar figure moves with it.
+- **The hot wallet: about twice the floats, and what open payouts
+  need.** It is filled up to its float of each asset
+  (`HOT_WALLET_FLOAT_USDC`, 200 dollars of USDC, and
+  `HOT_WALLET_FLOAT_SOL_USD`, 100 dollars of SOL) plus what the payouts
+  to a wallet that are pending or being sent need of that asset. A
+  transfer goes to it whole while it is under that, so it can pass it;
+  once it holds more than twice a float on top of that need, a run sends
+  what is above the float and the need to the treasury. With the
+  defaults and no payout open it therefore rests at no more than about
+  400 dollars of USDC and 200 of SOL. While payouts are open it also
+  holds what they need, which is never counted above
+  `PAYOUT_PLATFORM_MAX_PER_DAY_USD` (5,000 dollars) an asset: the most
+  that can be paid out in a day is the most it is ever filled for.
+  Lowering that setting lowers this. Two things can put more there for a
+  time: one large transfer swept to it while it was under its level,
+  until the next run sends the excess on, and whatever the operator
+  sends it by hand for payouts and fees. Its SOL is valued at the
+  current price, so the dollar figure moves with it.
 - **What sits at deposit addresses not yet swept.** That is: what
   arrived since the last run (`SWEEP_INTERVAL_MS`) or beyond
   `SWEEP_MAX_PER_RUN` in one run; at each address, a balance worth less

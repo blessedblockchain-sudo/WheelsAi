@@ -25,6 +25,11 @@ import { sanitizeErrorPayloadHook } from "./lib/sanitizeErrorPayload.js";
 installBigIntJsonSerializer();
 
 import { env } from "./config/env.js";
+import { allowOutboundConnectAttempts } from "./lib/outboundConnections.js";
+
+// Set before anything connects out (the database, Redis, a provider, Solana):
+// the allowance is read when a connection starts. See the module for why.
+allowOutboundConnectAttempts(env.OUTBOUND_CONNECT_ATTEMPT_TIMEOUT_MS);
 import { createLogger, logger } from "./utils/logger.js";
 import { initSentry, registerSentryErrorCapture } from "./lib/sentry.js";
 import { BAGS_ADAPTER_IMPLEMENTED } from "./services/launchpad/bagsAdapter.js";

@@ -175,6 +175,10 @@ const envSchema = z.object({
   // shutdown drain window so an in-flight chat settles or refunds before the
   // process is killed.
   AGENT_CHAT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(600_000).default(120_000),
+  // How long one attempt to connect out may take before Node tries the host's
+  // next address. Node's own 250 ms fails a request on a slow link, or where
+  // IPv6 is advertised but broken, although the host is up (2026-10-11).
+  OUTBOUND_CONNECT_ATTEMPT_TIMEOUT_MS: z.coerce.number().int().min(250).max(30_000).default(2_500),
   // A dedicated GPU for an agent (POST /api/agents/:id/deploy). Off until
   // the agent runtime images exist: the route then answers 501
   // agent_gpu_unavailable before anything is looked up, reserved or charged,

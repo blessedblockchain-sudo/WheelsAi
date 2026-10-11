@@ -87,6 +87,8 @@ model Organization {
   x402SettlementMetrics X402SettlementMetric[]
   stripePurchases StripePurchase[]
   walletTopUps    WalletTopUp[]
+  depositAddress  DepositAddress?
+  onchainReceipts OnchainReceipt[]
 
   // Marketplace relations
   publisherProfile   PublisherProfile?
@@ -523,10 +525,104 @@ model WalletTopUp {
   // Restrict (G6): a record of money changing hands. Same reasoning as
   // credit_transactions.
   org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  // The on-chain transfer this top-up was credited for (onchain_receipts).
+  receipt OnchainReceipt?
 
   @@index([orgId, createdAt])
   @@index([status])
   @@map("wallet_topups")
+}
+
+// An organization's own address for paying in without a prepared top-up:
+// a withdrawal from an exchange, a transfer from any wallet. It is the
+// address its prepared top-ups already pay into, derived from
+// WALLET_MASTER_KEY and the organization (services/topupKeypairs.ts). The
+// row exists so the address can be shown, watched and, later, emptied; the
+// USDC token account at the address is not stored, it is derived from the
+// mint and the address.
+//
+// Customers save this address, so the master key must never change under
+// it. An address stored here that is not the one this server derives is
+// left alone and reported, never shown or scanned.
+model DepositAddress {
+  orgId                  String    @id @map("org_id") @db.Uuid
+  address                String    @unique
+  network                String // 'solana:devnet' | 'solana:mainnet'
+  // The USDC account at the address. openedAt is when it was first seen
+  // to exist (it is never closed, so nothing reads the chain for it after
+  // that); openedBy is 'platform' when the platform paid to open it
+  // ("Prepare address"), null when the sender did. requestedAt is when
+  // the platform last sent a transaction to open it: what the limit for
+  // a day counts, and what stops two sends in a row.
+  usdcAccountOpenedAt    DateTime? @map("usdc_account_opened_at")
+  usdcAccountOpenedBy    String?   @map("usdc_account_opened_by")
+  usdcAccountRequestedAt DateTime? @map("usdc_account_requested_at")
+  // How far the history of the address and of its USDC account has been
+  // read: the newest signature already processed for each.
+  lastSolSignature       String?   @map("last_sol_signature")
+  lastUsdcSignature      String?   @map("last_usdc_signature")
+  // What the address held when it was last read. A balance that differs
+  // is what triggers a read of its history.
+  lastSeenLamports       BigInt    @default(0) @map("last_seen_lamports")
+  lastSeenUsdcRaw        BigInt    @default(0) @map("last_seen_usdc_raw")
+  // Set by "Check now"; cleared by the scan that answers it.
+  scanRequestedAt        DateTime? @map("scan_requested_at")
+  lastScannedAt          DateTime? @map("last_scanned_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  @@index([lastScannedAt])
+  @@map("deposit_addresses")
+}
+
+// One row for every on-chain transfer that was, or is waiting to be,
+// credited: the transfer of a prepared top-up and a transfer sent straight
+// to a deposit address alike. UNIQUE (network, tx_signature, asset) is what
+// makes "one transfer is credited once" a fact of the database: whichever
+// path sees a transfer first writes the row inside its crediting
+// transaction, and the other path finds it there.
+model OnchainReceipt {
+  id                 String    @id @default(uuid()) @db.Uuid
+  network            String // 'solana:devnet' | 'solana:mainnet'
+  txSignature        String    @map("tx_signature")
+  asset              String // 'USDC' | 'SOL'
+  orgId              String    @map("org_id") @db.Uuid
+  depositAddress     String    @map("deposit_address")
+  // What arrived, in base units (lamports, or USDC with 6 decimals).
+  amountRaw          BigInt    @map("amount_raw")
+  slot               BigInt?
+  blockTime          DateTime? @map("block_time")
+  // The signers of the transaction, for the record.
+  senderAddresses    String[]  @default([]) @map("sender_addresses")
+  // 'prepared': the transfer of a prepared top-up (topupId is set).
+  // 'direct': sent straight to the address.
+  source             String
+  topupId            String?   @unique @map("topup_id") @db.Uuid
+  // 'detected': seen, not credited yet (a SOL transfer waiting for a price).
+  // 'credited': the credits were granted in the transaction that set this.
+  // 'ignored': not credited, and why is in ignoredReason.
+  status             String    @default("detected")
+  ignoredReason      String?   @map("ignored_reason")
+  amountUsdCents     BigInt?   @map("amount_usd_cents")
+  bonusCents         BigInt    @default(0) @map("bonus_cents")
+  // SOL only: the exact price the credit was worked out from.
+  quotePriceMicroUsd BigInt?   @map("quote_price_micro_usd")
+  quotePublishTime   DateTime? @map("quote_publish_time")
+  quoteSource        String?   @map("quote_source")
+  creditedAt         DateTime? @map("credited_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  // Restrict: a record of money changing hands.
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  topup WalletTopUp? @relation(fields: [topupId], references: [id], onDelete: Restrict)
+
+  @@unique([network, txSignature, asset])
+  @@index([orgId, createdAt])
+  @@index([status])
+  @@map("onchain_receipts")
 }
 
 // ============================================

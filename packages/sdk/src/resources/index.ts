@@ -75,6 +75,7 @@ export {
   type DeploymentStatus,
   type CreateDeploymentInput,
   type DeploymentMetrics,
+  type DeploymentDependents,
 } from "./deployments.js";
 export { modelsResource, type Model, type GpuTier, type FreeModel } from "./models.js";
 export {

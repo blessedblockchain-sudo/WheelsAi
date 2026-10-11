@@ -22,6 +22,7 @@ import {
   type DepositAddressAsset,
   type DepositAsset,
   type DepositCheck,
+  type DeploymentDependents,
   type DepositStatus,
   type HostedModelChoice,
   type PreparedDepositAddress,
@@ -130,6 +131,7 @@ const cases: Case[] = [
   { name: "deployments.get", run: (w) => w.deployments.get(DEP), method: "GET", path: `/api/deployments/${DEP}` },
   { name: "deployments.create", run: (w) => w.deployments.create({ name: "chat", modelId: "llama-3.1-8b", gpuTier: "3060" }), method: "POST", path: "/api/deployments", body: { name: "chat", modelId: "llama-3.1-8b", gpuTier: "3060" } },
   { name: "deployments.update", run: (w) => w.deployments.update(DEP, { replicas: 2 }), method: "PATCH", path: `/api/deployments/${DEP}`, body: { replicas: 2 } },
+  { name: "deployments.dependents", run: (w) => w.deployments.dependents(DEP), method: "GET", path: `/api/deployments/${DEP}/dependents` },
   { name: "deployments.delete", run: (w) => w.deployments.delete(DEP), method: "DELETE", path: `/api/deployments/${DEP}` },
   { name: "deployments.restart", run: (w) => w.deployments.restart(DEP), method: "POST", path: `/api/deployments/${DEP}/restart` },
   { name: "deployments.logs", run: (w) => w.deployments.logs(DEP, { lines: 50 }), method: "GET", path: `/api/deployments/${DEP}/logs`, query: { lines: "50" } },
@@ -688,6 +690,7 @@ describe("selling and using an agent", () => {
       balanceCents: 0,
       canAccept: false,
       startBlocked: { code: "copy_subscription_active", message: "A copy is paid for.", until: "2026-11-01T00:00:00.000Z" },
+      paused: false,
     };
     const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(access)).fetch });
     assert.deepEqual(await wheels.use.access("refund-helper"), access);
@@ -732,6 +735,66 @@ describe("selling and using an agent", () => {
       assert.equal((err.data as { priceCents: number }).priceCents, 5);
       return true;
     });
+  });
+
+  it("a paused agent: the access answer and the seller's list say so, and a start and a use are refused with their sentences", async () => {
+    const json = (body: unknown, status = 200) =>
+      new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recordingFetch(() => jsonResponse(body, status)).fetch });
+
+    const access: UseAccessState = {
+      access: "subscribed",
+      listingId: "l1",
+      terms: null,
+      accepted: null,
+      subscription: null,
+      balanceCents: 0,
+      canAccept: true,
+      startBlocked: null,
+      paused: true,
+    };
+    assert.equal((await json(access).use.access("refund-helper")).paused, true);
+
+    const { listings } = await json({
+      listings: [
+        { id: "l1", paused: { since: "2026-10-11T08:30:00.000Z" } },
+        { id: "l2", paused: { since: null } },
+        { id: "l3", paused: null },
+      ],
+    }).marketplace.myListings();
+    assert.deepEqual(listings.map((l) => l.paused), [{ since: "2026-10-11T08:30:00.000Z" }, { since: null }, null]);
+
+    const start = {
+      error: "listing_paused",
+      message: "This agent is paused right now, so nothing was started and nothing was charged. Try again later.",
+    };
+    await assert.rejects(json(start, 409).marketplace.startUsing(LISTING, { expected }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, (err.data as UseRefusal).message], [409, "listing_paused", start.message]);
+      return true;
+    });
+
+    const use = { error: "agent_paused", message: "This agent is paused right now. Nothing was charged." };
+    const chat = json(use, 503).use.chat("refund-helper", { messages: [{ role: "user", content: "Hi" }] });
+    await assert.rejects(chat, (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, (err.data as UseRefusal).message], [503, "agent_paused", use.message]);
+      return true;
+    });
+  });
+
+  it("deployments.dependents answers the agents that stop answering, as the API sent them", async () => {
+    const body: DeploymentDependents = {
+      agents: [
+        { id: "a1", name: "Analyst", onSale: true, listing: { id: "l1", title: "Research Analyst", pricingModel: "monthly", subscribers: 2 } },
+        { id: "a2", name: "Helper", onSale: false, listing: null },
+      ],
+    };
+    const { fetch, calls } = recordingFetch(() => jsonResponse(body));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    assert.deepEqual(await wheels.deployments.dependents("dep 1"), body);
+    assert.equal(calls[0]!.method, "GET");
+    assert.equal(calls[0]!.url.pathname, "/api/deployments/dep%201/dependents");
+    assert.throws(() => wheels.deployments.dependents(".."), WheelsAIError);
   });
 
   it("createApiKey sends the cap for one use with the scope", async () => {

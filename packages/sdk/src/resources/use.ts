@@ -64,6 +64,12 @@ export interface UseAccessState {
    * `until` (an ISO date), and `canAccept` is false. Null otherwise.
    */
   startBlocked: { code: "copy_subscription_active"; message: string; until: string } | null;
+  /**
+   * The agent is paused right now: the model it runs on is not running. Nobody can start using it and
+   * nobody is charged while it is true, and a month already paid for is made longer by that time. The
+   * other fields stay what they are.
+   */
+  paused: boolean;
 }
 
 /** What one use cost. */
@@ -110,7 +116,8 @@ export interface UseResults {
  * `not_for_sale`, `not_offered`, `results_only`, `pricing_changed`, `not_a_task_agent` (409),
  * `input_too_large` (413), `input_invalid` (422), `rate_limited`, `too_many_refunds` (429),
  * `client_closed_request` (499), `model_error`, `answer_withheld` (502),
- * `agent_unavailable`, `rate_limiter_unavailable` (503).
+ * `agent_unavailable`, `agent_paused` (the agent is paused; nothing was charged),
+ * `rate_limiter_unavailable` (503).
  */
 export interface UseRefusal {
   error: string;

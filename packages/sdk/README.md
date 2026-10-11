@@ -125,6 +125,11 @@ WheelsAI API key. Model deployments stream and take `tools` too.
 choices for an agent; `agents.playgroundModels(id)` carries the same list as `hostedModels`, beside
 the free and own-key models.
 
+`deployments.dependents(id)` lists the agents that stop answering if that deployment is stopped, and
+which of them are on sale; read it before `deployments.delete(id)`. A listing that is paused says so in
+`marketplace.myListings()` as `paused: { since }`, and goes back on sale by itself when the model runs
+again.
+
 ```ts
 const { hostedModels } = await wheels.agents.hostedModels();
 const mine = hostedModels.find((m) => m.available); // .id is "wheelsai/<model id>", .deployment.slug
@@ -169,7 +174,10 @@ refusal throws a `WheelsAIError` whose `data` is a `UseRefusal`; show its `messa
 know: `not_a_member` (403) when you are no longer a member of the paying organization, and
 `copy_subscription_active` (409 on `marketplace.startUsing`, with `until`) when you hold a copy of the
 agent with a month paid for; `use.access` then carries `startBlocked` and `canAccept` is false. The
-same agent answers `inference.chat({ model: "a/refund-helper", ... })`. To sell, `marketplace.createListing`
+same agent answers `inference.chat({ model: "a/refund-helper", ... })`. While the model an agent runs on
+is not running the agent is paused: `use.access` says `paused: true`, `marketplace.startUsing` answers
+409 `listing_paused`, and `use.chat` and `use.run` answer 503 `agent_paused`. Nothing is charged, and a
+month already paid for is made longer by that time. To sell, `marketplace.createListing`
 takes `sells` (`"use"` by default, or `"copies"`), `allowedTools` and `publish`.
 
 ## Hiring an offering

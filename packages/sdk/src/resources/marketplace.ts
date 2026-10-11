@@ -46,6 +46,13 @@ export interface AgentListing {
   allowedTools?: string[];
   /** `myListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
+  /**
+   * `myListings` only. Set while the listing is paused: it sells use, and the model its agent runs on (one
+   * your organization runs itself) is not running, so nobody can start using it and nobody is charged.
+   * `since` is when the pause was first seen (an ISO date), or null when it has only just begun. Null when
+   * the listing is not paused.
+   */
+  paused?: { since: string | null } | null;
   publisherId: string;
   publisherName: string;
   status: ListingStatus;
@@ -386,8 +393,10 @@ export function marketplaceResource(client: WheelsAIClient) {
      * 404 `listing_not_found`; 409 `sells_copies` (install it instead), `own_agent`, `not_offered`,
      * `subscription_claim_lost` (another request won; retry), `copy_subscription_active` (you hold a copy of
      * the agent with a month paid for; `until` in `error.data` is the date it ends, so remove the copy or
-     * cancel its renewal and start after that date; nothing is written or charged) and `pricing_changed`
-     * (`pricing` in `error.data` is the listing as it is now; pass `acceptNewPricing: true` to continue on it).
+     * cancel its renewal and start after that date; nothing is written or charged), `listing_paused` (the
+     * model the agent runs on is not running; nothing was started or charged, try again later) and
+     * `pricing_changed` (`pricing` in `error.data` is the listing as it is now; pass `acceptNewPricing: true`
+     * to continue on it); 503 `service_unavailable` (the start could not be checked; nothing was charged).
      */
     startUsing: (listingId: string, options: { expected: ExpectedPricing; acceptNewPricing?: boolean }) =>
       client.post<StartedUsing>(`/api/marketplace/listings/${seg(listingId)}/use`, {

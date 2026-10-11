@@ -107,6 +107,19 @@ export interface DeploymentLogs {
   logs: DeploymentLogEntry[];
 }
 
+/** `GET /api/deployments/{id}/dependents`. */
+export interface DeploymentDependents {
+  /** Agents that will stop answering if this deployment is stopped now. */
+  agents: Array<{
+    id: string;
+    name: string;
+    /** The agent has a published listing that sells use. */
+    onSale: boolean;
+    /** That listing, with how many people pay monthly to use the agent; null when the agent is not on sale. */
+    listing: { id: string; title: string; pricingModel: string; subscribers: number } | null;
+  }>;
+}
+
 export function deploymentsResource(client: WheelsAIClient) {
   return {
     list: () =>
@@ -129,9 +142,19 @@ export function deploymentsResource(client: WheelsAIClient) {
       ),
 
     /**
+     * The agents set to this deployment's model that no other running deployment would answer: they stop
+     * answering when it stops. Read it before `delete`. Empty for a deployment that is not live. While an
+     * agent that is on sale cannot answer, its listing is paused: nobody can start using it, nobody is
+     * charged, and people who pay monthly keep the days they paid for.
+     */
+    dependents: (id: string) =>
+      client.get<DeploymentDependents>(`/api/deployments/${seg(id)}/dependents`),
+
+    /**
      * Stops the deployment (the API's DELETE is a stop, and is idempotent).
      * `fundsReleased` is false while the compute provider is still winding the
      * deployment down; `vaultReclaimed` is the same value under its older name.
+     * Agents set to its model stop answering: see `dependents`.
      */
     delete: (id: string) =>
       client.delete<{ message: string; fundsReleased?: boolean; vaultReclaimed?: boolean }>(

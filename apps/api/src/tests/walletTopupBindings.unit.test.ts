@@ -691,11 +691,12 @@ test("the wait asks the node about the signature until it is confirmed, and subs
   assert.equal((connection as unknown as Record<string, unknown>).confirmTransaction, undefined);
 });
 
-test("the wait ends at once on a transfer that failed, and on a node that says rooted without a level", async () => {
+test("the wait ends on a confirmed block whether the transfer went through or failed, and on a node that says rooted without a level", async () => {
   const args = { signature: "sig", blockhash: "hash", lastValidBlockHeight: 1_000 };
   for (const status of [
-    { slot: 5, confirmations: 0, err: { InstructionError: [0, "Custom"] }, confirmationStatus: "processed" },
+    { slot: 5, confirmations: 1, err: { InstructionError: [0, "Custom"] }, confirmationStatus: "confirmed" },
     { slot: 5, confirmations: null, err: null },
+    { slot: 5, confirmations: null, err: { InstructionError: [0, "Custom"] } },
   ]) {
     let asked = 0;
     const { connection } = makeConnection({
@@ -714,6 +715,29 @@ test("the wait ends at once on a transfer that failed, and on a node that says r
   }
 });
 
+test("a failure seen only as processed is not the end yet: the wait goes on until its block is confirmed", async () => {
+  // The fate read after the wait calls a processed transfer in flight, so stopping
+  // here would answer "pending" for a payment that is about to be final.
+  const args = { signature: "sig", blockhash: "hash", lastValidBlockHeight: 1_000 };
+  const failed = { InstructionError: [0, "Custom"] };
+  const answers = [
+    { slot: 5, confirmations: 0, err: failed, confirmationStatus: "processed" },
+    { slot: 5, confirmations: 0, err: failed, confirmationStatus: "processed" },
+    { slot: 5, confirmations: 1, err: failed, confirmationStatus: "confirmed" },
+  ];
+  let asked = 0;
+  const { connection } = makeConnection({
+    getSignatureStatuses: async () => ({ context: { slot: 9 }, value: [answers[Math.min(asked++, answers.length - 1)]] }),
+  });
+  await buildWalletTopupChain({
+    getConnection: () => connection,
+    usdcMint: MINT,
+    confirmWaitMs: 5_000,
+    confirmPollMs: 5,
+  }).waitForConfirmation(args);
+  assert.equal(asked, 3);
+});
+
 test("the wait never throws and never outlasts its limit", async () => {
   const args = { signature: "sig", blockhash: "hash", lastValidBlockHeight: 1_000 };
   let asked = 0;
@@ -723,6 +747,8 @@ test("the wait never throws and never outlasts its limit", async () => {
       throw new Error(HOSTILE);
     },
   });
+  // How late a timer may fire on a busy machine. The limits below are far apart from it.
+  const SLACK = 1_500;
   let started = Date.now();
   await buildWalletTopupChain({
     getConnection: () => throwing.connection,
@@ -731,17 +757,36 @@ test("the wait never throws and never outlasts its limit", async () => {
     confirmPollMs: 5,
   }).waitForConfirmation(args);
   assert.ok(asked >= 2, "a read that throws is asked again");
-  assert.ok(Date.now() - started < 5_000);
+  assert.ok(Date.now() - started < 400 + SLACK);
 
+  // A connection that cannot be built: asked again at the pace of the poll, not in a spin.
+  let builds = 0;
   const unbuildable = buildWalletTopupChain({
     getConnection: () => {
+      builds += 1;
       throw new Error("no connection");
     },
     usdcMint: MINT,
-    confirmWaitMs: 30,
-    confirmPollMs: 5,
+    confirmWaitMs: 300,
+    confirmPollMs: 50,
   });
+  started = Date.now();
   await unbuildable.waitForConfirmation(args);
+  assert.ok(builds >= 2 && builds <= 12, `asked ${builds} times in 300 ms at one every 50 ms`);
+  assert.ok(Date.now() - started < 300 + SLACK);
+
+  // A poll longer than the limit does not carry the wait past the limit.
+  const slowPoll = makeConnection({
+    getSignatureStatuses: async () => ({ context: { slot: 9 }, value: [null] }),
+  });
+  started = Date.now();
+  await buildWalletTopupChain({
+    getConnection: () => slowPoll.connection,
+    usdcMint: MINT,
+    confirmWaitMs: 100,
+    confirmPollMs: 60_000,
+  }).waitForConfirmation(args);
+  assert.ok(Date.now() - started < 100 + SLACK, "the sleep between reads is cut to what is left of the limit");
 
   // A node that never answers and a transfer that never shows: the limit ends both.
   const hanging = makeConnection({
@@ -754,7 +799,7 @@ test("the wait never throws and never outlasts its limit", async () => {
     confirmWaitMs: 20,
     confirmPollMs: 5,
   }).waitForConfirmation(args);
-  assert.ok(Date.now() - started < 5_000);
+  assert.ok(Date.now() - started < 20 + SLACK);
 
   const silent = makeConnection({
     getSignatureStatuses: async () => ({ context: { slot: 9 }, value: [null] }),
@@ -766,7 +811,7 @@ test("the wait never throws and never outlasts its limit", async () => {
     confirmWaitMs: 30,
     confirmPollMs: 5,
   }).waitForConfirmation(args);
-  assert.ok(Date.now() - started >= 25 && Date.now() - started < 5_000);
+  assert.ok(Date.now() - started >= 25 && Date.now() - started < 30 + SLACK);
 });
 
 test("the blockhash is read at confirmed", async () => {

@@ -95,6 +95,10 @@ export async function startTopupReconcileQueue(): Promise<void> {
             logger.error(line, "Top-up reconcile: row threw, left as it was");
           } else if (event.action === "waiting") {
             logger.warn(line, "Top-up reconcile: row still waiting");
+          } else if (event.action === "resent") {
+            // Said for what it is: the transfer is still on its way and its
+            // own bytes went out again. Nothing about the row has ended.
+            logger.info(line, "Top-up reconcile: signed bytes sent again, the transfer is still in flight");
           } else {
             logger.info(line, "Top-up reconcile: row changed");
           }

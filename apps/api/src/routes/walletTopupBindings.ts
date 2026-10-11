@@ -385,12 +385,14 @@ export function buildWalletTopupChain(input: {
       }
     },
 
-    // Asks the node about the signature until it is confirmed or has
-    // failed, at most confirmWaitMs. It asks rather than subscribes: a
-    // subscription needs a WebSocket, which not every RPC plan serves at
-    // the address the HTTP one is at, and without one the request would
-    // hold for the whole limit. Whatever the node says or throws decides
-    // nothing: the caller reads the signature's fate.
+    // Asks the node about the signature until its block is confirmed, at
+    // most confirmWaitMs. It asks rather than subscribes: a subscription
+    // needs a WebSocket, which not every RPC plan serves at the address
+    // the HTTP one is at, and without one the request would hold for the
+    // whole limit. A transfer that failed is waited for the same way: one
+    // seen only as "processed" is not yet anything the fate will call an
+    // end. Whatever the node says or throws decides nothing: the caller
+    // reads the signature's fate.
     waitForConfirmation: async ({ signature }) => {
       const deadline = Date.now() + confirmWaitMs;
       for (;;) {
@@ -406,7 +408,6 @@ export function buildWalletTopupChain(input: {
               // Some providers leave the level out; `confirmations: null`
               // is then the node's way of saying the block is rooted.
               settled =
-                status.err != null ||
                 status.confirmationStatus === "confirmed" ||
                 status.confirmationStatus === "finalized" ||
                 (status.confirmationStatus == null && status.confirmations === null);

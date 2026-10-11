@@ -3,12 +3,14 @@
  * (runSubscriptionRenewalTick).
  *
  * Wires:
+ *   reconcilePauses -> reconcileListingPauses over every listing, on this
+ *                     client
  *   loadDue        -> AgentSubscription rows whose period has ended and that
  *                     are still active or past_due, never-tried first, then
  *                     least recently tried, with the listing's current
- *                     monthly price, pricing model and what it sells, and
- *                     the kind of the subscriber's licence (a copy, or use
- *                     of the creator's agent)
+ *                     monthly price, pricing model, what it sells and its
+ *                     pause marker, and the kind of the subscriber's
+ *                     licence (a copy, or use of the creator's agent)
  *   recordAttempt  -> stamps lastRenewalAttemptAt in its own statement, so
  *                     it survives the renewal transaction's rollback
  *   inTransaction  -> prisma.$transaction; renewSubscription and
@@ -17,11 +19,17 @@
 
 import type { PrismaClient } from "@prisma/client";
 
+import { createLogger } from "../utils/logger.js";
+import { reconcileListingPauses, type ListingPauseDb } from "./listingPause.js";
 import type { SubscriptionTx } from "./marketplaceSubscriptions.js";
 import type { SubscriptionRenewalDeps } from "./runSubscriptionRenewalTick.js";
 
+const logger = createLogger("subscription-renewal");
+
 export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): SubscriptionRenewalDeps {
   return {
+    reconcilePauses: () => reconcileListingPauses({ all: true }, { db: prisma as unknown as ListingPauseDb }),
+    logger,
     loadDue: async ({ now, limit, excludeIds }) => {
       const rows = await prisma.agentSubscription.findMany({
         where: {
@@ -45,6 +53,7 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
               pricingModel: true,
               status: true,
               sells: true,
+              pausedSince: true,
             },
           },
         },
@@ -81,6 +90,7 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           pricingModel: r.listing.pricingModel,
           status: r.listing.status,
           sells: r.listing.sells,
+          pausedSince: r.listing.pausedSince,
         },
       }));
     },

@@ -29,6 +29,11 @@
  *           no longer published or now sells copies, ends at the close of
  *           the paid month with endReason 'use_ended' and is not charged
  *           again: there would be nothing to charge for.
+ *   paused  a subscription to USE on a listing whose pause marker is set
+ *           (services/listingPause.ts: the model the agent runs on is not
+ *           running) is not renewed, closed or marked past due. It waits,
+ *           and when the pause ends its month is made longer by the time
+ *           the listing was paused.
  *
  * Access for a monthly install = subscription active or past_due within
  * grace (see subscriptionGrantsAccess), enforced by resolveInstallBilling.
@@ -96,6 +101,11 @@ export interface ListingForBilling {
   status?: string;
   /** What the listing sells now: "use" or "copies". A use subscription stops renewing once it is not "use". */
   sells?: string;
+  /**
+   * The listing's pause marker (AgentListing.pausedSince). While it is set
+   * the subscribers' clock is stopped: no subscription for use is renewed.
+   */
+  pausedSince?: Date | null;
 }
 
 /** With what moveEarnings needs: each period credits the publisher through the ledger. */
@@ -289,7 +299,9 @@ export type RenewalOutcome =
   | { kind: "renewed"; revenueId: string; newPeriodEnd: Date }
   | { kind: "cancelled" }
   | { kind: "not_due" }
-  | { kind: "lost_race" };
+  | { kind: "lost_race" }
+  /** The listing is paused: nothing was claimed, charged or closed. */
+  | { kind: "paused" };
 
 /**
  * Renew (or close) one due subscription. Run inside a transaction; when it
@@ -302,6 +314,17 @@ export async function renewSubscription(
 ): Promise<RenewalOutcome> {
   const now = args.now ?? new Date();
   const { sub } = args;
+
+  // The listing is paused (services/listingPause.ts) and this month pays for
+  // use of the creator's agent, which cannot answer. The subscribers' clock
+  // is stopped, so nothing about the subscription moves: it is not charged,
+  // not closed (even if use is no longer sold, or the buyer cancelled) and
+  // not marked past due. It comes first for that reason, and it writes
+  // nothing. When the pause ends the month is made longer and the row is
+  // judged then. A copy runs in the buyer's own organization and is never
+  // paused.
+  if (sub.licenceKind === "use" && args.listing.pausedSince != null) return { kind: "paused" };
+
   if (sub.currentPeriodEnd > now) return { kind: "not_due" };
 
   // A month of USE of the creator's agent, and the listing no longer sells
@@ -375,13 +398,19 @@ export async function renewSubscription(
   // Claim the period by advancing it; a concurrent tick's CAS then misses.
   const newEnd = new Date(sub.currentPeriodEnd.getTime() + SUBSCRIPTION_PERIOD_DAYS * DAY_MS);
   // The CAS also requires the subscription not to be set to cancel, so a
-  // cancel that lands mid-tick is not charged.
+  // cancel that lands mid-tick is not charged. And, for a month of use, that
+  // the listing's pause marker is still not set: the marker this row was
+  // loaded with was read a moment ago, and a deployment stopped since then
+  // must not be charged for. A claim that misses for that reason charges
+  // nothing and reads as a lost race; the next tick loads the marker and
+  // the row waits as paused.
   const claimed = await tx.agentSubscription.updateMany({
     where: {
       id: sub.id,
       currentPeriodEnd: sub.currentPeriodEnd,
       status: { in: ["active", "past_due"] },
       cancelAtPeriodEnd: false,
+      ...(sub.licenceKind === "use" ? { listing: { pausedSince: null } } : {}),
     },
     data: {
       currentPeriodStart: sub.currentPeriodEnd,

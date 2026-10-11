@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// The renewal tick's composition root reaches the hosted-model resolver,
+// which reads the environment when it is imported.
+import "./unitEnv.js";
 import {
   InsufficientCreditsError,
   markPastDueOrExpire,
@@ -50,8 +53,21 @@ interface State {
   installs: Array<{ listingId: string; buyerId: string; status: string }>;
 }
 
+/**
+ * The pause marker of each listing as the database holds it at this moment,
+ * which is what a relation filter in a claim reads (`listing: { pausedSince:
+ * null }`). Absent = not paused. A test sets one to stand for a deployment
+ * that stopped after the row was loaded.
+ */
+const listingMarkerNow = new Map<string, Date>();
+
 function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([k, cond]) => {
+    if (k === "listing") {
+      const wanted = (cond as { pausedSince?: Date | null }).pausedSince;
+      const held = listingMarkerNow.get(String(row.listingId)) ?? null;
+      return wanted === null ? held === null : held !== null && wanted instanceof Date && held.getTime() === wanted.getTime();
+    }
     const v = row[k];
     if (cond && typeof cond === "object" && "in" in (cond as object)) {
       return ((cond as { in: unknown[] }).in).includes(v);
@@ -363,6 +379,8 @@ test("an unpaid renewal goes past_due during grace, then expires and suspends th
 function tickDeps(db: Awaited<ReturnType<typeof subscribed>>, now: Date) {
   return {
     now: () => now,
+    // No listing is paused in these tests unless one says so.
+    reconcilePauses: async () => {},
     // Never-tried first, then least recently tried, then oldest period:
     // the order buildSubscriptionRenewalTickDeps asks the database for.
     loadDue: async ({ now: n, limit, excludeIds }: { now: Date; limit: number; excludeIds: string[] }) =>
@@ -387,17 +405,17 @@ function tickDeps(db: Awaited<ReturnType<typeof subscribed>>, now: Date) {
 test("the tick renews what is due and degrades what cannot pay", async () => {
   const funded = await subscribed();
   assert.deepEqual(await runSubscriptionRenewalTick(tickDeps(funded, at(30))), {
-    scanned: 1, renewed: 1, cancelled: 0, pastDue: 0, expired: 0, errors: 0,
+    scanned: 1, renewed: 1, cancelled: 0, paused: 0, pastDue: 0, expired: 0, errors: 0,
   });
 
   const broke = await subscribed({ balance: 1_500n });
   assert.deepEqual(await runSubscriptionRenewalTick(tickDeps(broke, at(30.1))), {
-    scanned: 1, renewed: 0, cancelled: 0, pastDue: 1, expired: 0, errors: 0,
+    scanned: 1, renewed: 0, cancelled: 0, paused: 0, pastDue: 1, expired: 0, errors: 0,
   });
   // Grace retries: topping up inside the window renews and restores active.
   broke.state.balances.set("org_buyer", 5_000n);
   assert.deepEqual(await runSubscriptionRenewalTick(tickDeps(broke, at(31))), {
-    scanned: 1, renewed: 1, cancelled: 0, pastDue: 0, expired: 0, errors: 0,
+    scanned: 1, renewed: 1, cancelled: 0, paused: 0, pastDue: 0, expired: 0, errors: 0,
   });
   assert.equal(broke.sub().status, "active");
   assert.equal(broke.sub().currentPeriodEnd.getTime(), at(60).getTime());
@@ -758,7 +776,7 @@ test("rows that fail every tick rotate behind rows that have not been tried", as
 
   // Tick 1 spends its whole budget on the four oldest failing rows.
   assert.deepEqual(await runSubscriptionRenewalTick(deps(at(31)), opts), {
-    scanned: 4, renewed: 0, cancelled: 0, pastDue: 0, expired: 0, errors: 4,
+    scanned: 4, renewed: 0, cancelled: 0, paused: 0, pastDue: 0, expired: 0, errors: 4,
   });
   assert.equal(db.state.subs.get("sub_ok")!.currentPeriodEnd.getTime(), at(30).getTime());
 
@@ -1159,4 +1177,217 @@ test("the renewal tick's loader reads what the listing sells and the licence's k
   queries.length = 0;
   assert.deepEqual(await deps.loadDue({ now: at(31), limit: 10, excludeIds: [] }), []);
   assert.equal(queries.length, 0);
+});
+
+// ============================================
+// A paused listing: the subscribers' clock is stopped
+// ============================================
+
+const PAUSED_USE = { ...LISTING, pricingModel: "monthly", status: "published", sells: "use", pausedSince: at(20) };
+
+/** Everything a renewal could have written. */
+const written = (db: Awaited<ReturnType<typeof subscribed>>) =>
+  structuredClone({
+    subs: [...db.state.subs.values()],
+    balances: [...db.state.balances],
+    revenue: db.state.revenue,
+    ledger: db.state.ledger,
+    earnings: db.state.earnings,
+    installs: db.state.installs,
+  });
+
+for (const [name, change, subChange] of [
+  ["is due", {}, {}],
+  ["no longer sells use", { sells: "copies" }, {}],
+  ["was archived", { status: "archived" }, {}],
+  ["left monthly pricing", { pricingModel: "per_request" }, {}],
+  ["was cancelled by the buyer", {}, { cancelAtPeriodEnd: true }],
+  ["has no agreed price", {}, { priceCents: null }],
+  ["is past due", {}, { status: "past_due" }],
+] as const) {
+  test(`a use subscription on a paused listing that ${name} is left exactly as it is`, async () => {
+    const db = await subscribed();
+    Object.assign(db.first(), subChange);
+    const before = written(db);
+    // Any write at all would be a claim, a charge or a close.
+    const writes: string[] = [];
+    const watched = new Proxy(db.tx, {
+      get: (target, model: string) =>
+        new Proxy((target as unknown as Record<string, object>)[model]!, {
+          get: (inner, method: string) => {
+            const fn = (inner as Record<string, unknown>)[method];
+            if (typeof fn !== "function") return fn;
+            return (...a: unknown[]) => {
+              writes.push(`${model}.${method}`);
+              return (fn as (...x: unknown[]) => unknown).apply(inner, a);
+            };
+          },
+        }),
+    });
+    const outcome = await renewSubscription(watched, {
+      sub: { ...db.sub(), licenceKind: "use" },
+      listing: { ...PAUSED_USE, ...change },
+      now: at(31),
+    });
+    assert.deepEqual(outcome, { kind: "paused" });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(written(db), before);
+  });
+}
+
+test("the same due use subscription renews once the marker is cleared", async () => {
+  const db = await subscribed();
+  const outcome = await db.inTransaction((tx) =>
+    renewSubscription(tx, { sub: { ...db.sub(), licenceKind: "use" }, listing: { ...PAUSED_USE, pausedSince: null }, now: at(31) }),
+  );
+  assert.equal(outcome.kind, "renewed");
+  assert.equal(db.state.revenue.length, 2);
+});
+
+test("a month of use is not claimed or charged when the listing was marked paused after the row was loaded", async () => {
+  // The tick loaded this row with no marker. Before its claim, the owner
+  // stopped the deployment and the stop route set the marker.
+  const db = makeDb();
+  await startMonthlySubscription(db.tx, { listing: LISTING, buyerId: "org_buyer", now: at(0) });
+  const before = { balance: db.state.balances.get("org_buyer"), revenue: db.state.revenue.length, sub: { ...db.sub() } };
+  listingMarkerNow.set(LISTING.id, at(30));
+  try {
+    const outcome = await renewSubscription(db.tx, {
+      sub: { ...db.sub(), licenceKind: "use" },
+      listing: { ...LISTING, pricingModel: "monthly", status: "published", sells: "use", pausedSince: null },
+      now: at(31),
+    });
+    assert.deepEqual(outcome, { kind: "lost_race" });
+    assert.equal(db.state.balances.get("org_buyer"), before.balance, "nothing is charged");
+    assert.equal(db.state.revenue.length, before.revenue, "no sale is recorded");
+    assert.deepEqual(db.sub(), before.sub, "the month is not moved on");
+
+    // A copy's month on the same listing is the buyer's own copy: it renews.
+    const copy = await renewSubscription(db.tx, {
+      sub: { ...db.sub(), licenceKind: "copy" },
+      listing: { ...LISTING, pricingModel: "monthly", status: "published", sells: "use", pausedSince: null },
+      now: at(31),
+    });
+    assert.equal(copy.kind, "renewed");
+  } finally {
+    listingMarkerNow.delete(LISTING.id);
+  }
+});
+
+test("a copy subscription is never paused: it renews on a listing whose marker is set", async () => {
+  for (const licenceKind of ["copy", undefined]) {
+    const db = await subscribed();
+    const outcome = await db.inTransaction((tx) =>
+      renewSubscription(tx, { sub: { ...db.sub(), ...(licenceKind && { licenceKind }) }, listing: PAUSED_USE, now: at(30) }),
+    );
+    assert.equal(outcome.kind, "renewed");
+    assert.equal(db.state.balances.get("org_buyer"), 7_000n);
+  }
+});
+
+test("the tick counts a paused subscription, stamps it and charges nothing", async () => {
+  const db = await subscribed();
+  const before = written(db);
+  const deps = tickDeps(db, at(31));
+  const result = await runSubscriptionRenewalTick({
+    ...deps,
+    loadDue: async (args) =>
+      (await deps.loadDue(args)).map((d) => ({ sub: { ...d.sub, licenceKind: "use" }, listing: PAUSED_USE })),
+  });
+  assert.deepEqual(result, { scanned: 1, renewed: 0, cancelled: 0, paused: 1, pastDue: 0, expired: 0, errors: 0 });
+  // Only the attempt stamp moved, so the row rotates behind the others.
+  assert.equal(db.first().lastRenewalAttemptAt?.getTime(), at(31).getTime());
+  db.first().lastRenewalAttemptAt = null;
+  assert.deepEqual(written(db), before);
+});
+
+test("the tick reconciles pauses before it loads what is due", async () => {
+  const db = await subscribed();
+  const order: string[] = [];
+  const deps = tickDeps(db, at(30));
+  await runSubscriptionRenewalTick({
+    ...deps,
+    reconcilePauses: async () => {
+      order.push("reconcile");
+    },
+    loadDue: async (args) => {
+      order.push("load");
+      return deps.loadDue(args);
+    },
+  });
+  assert.deepEqual(order, ["reconcile", "load", "load"]);
+});
+
+test("a reconcile that throws is logged and does not stop the tick: paused rows wait, the rest renew", async () => {
+  const db = await subscribed();
+  // A second subscriber, for use of a listing whose marker is set.
+  db.state.balances.set("org_other", 10_000n);
+  await db.inTransaction((tx) => startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_other", now: T0 }));
+  const logged: Array<Record<string, unknown>> = [];
+  const failure = new Error("database unreachable");
+  const deps = tickDeps(db, at(30));
+  const result = await runSubscriptionRenewalTick({
+    ...deps,
+    reconcilePauses: async () => {
+      throw failure;
+    },
+    logger: { error: (fields) => void logged.push(fields) },
+    loadDue: async (args) =>
+      (await deps.loadDue(args)).map((d) =>
+        d.sub.subscriberId === "org_other"
+          ? { sub: { ...d.sub, licenceKind: "use" }, listing: PAUSED_USE }
+          : d,
+      ),
+  });
+  assert.deepEqual(result, { scanned: 2, renewed: 1, cancelled: 0, paused: 1, pastDue: 0, expired: 0, errors: 0 });
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0]!.error, failure);
+  assert.equal(db.state.balances.get("org_other"), 8_500n);
+  assert.equal(db.state.balances.get("org_buyer"), 7_000n);
+});
+
+test("the renewal tick's loader carries the listing's pause marker, and its reconcile covers every listing", async () => {
+  const { buildSubscriptionRenewalTickDeps } = await import("../services/buildSubscriptionRenewalTickDeps.js");
+  const selects: Array<Record<string, any>> = [];
+  const listingQueries: Array<Record<string, any>> = [];
+  const row = (id: string, pausedSince: Date | null) => ({
+    id,
+    listingId: `lst_${id}`,
+    subscriberId: "org_buyer",
+    status: "active",
+    currentPeriodStart: at(0),
+    currentPeriodEnd: at(30),
+    cancelAtPeriodEnd: false,
+    priceCents: 1500n,
+    endReason: null,
+    listing: { id: `lst_${id}`, title: "T", publisherId: "org_pub", monthlyPriceCents: 1500n, pricingModel: "monthly", status: "published", sells: "use", pausedSince },
+  });
+  const fake = {
+    agentSubscription: {
+      findMany: async (args: Record<string, any>) => {
+        selects.push(args.include.listing.select);
+        return [row("a", at(20)), row("b", null)];
+      },
+    },
+    agentInstall: { findMany: async () => [] },
+    agentListing: {
+      findMany: async (args: Record<string, any>) => {
+        listingQueries.push(args);
+        return [];
+      },
+    },
+  };
+  const deps = buildSubscriptionRenewalTickDeps(fake as never);
+  const due = await deps.loadDue({ now: at(31), limit: 10, excludeIds: [] });
+  assert.equal(selects[0]!.pausedSince, true);
+  assert.deepEqual(
+    due.map((d) => d.listing.pausedSince),
+    [at(20), null],
+  );
+
+  // The reconcile runs on the client it was given, over every listing: no
+  // organization and no listing narrows it.
+  assert.deepEqual(await deps.reconcilePauses(), { examined: 0, paused: 0, resumed: 0, extendedSubscriptions: 0, errors: 0 });
+  assert.equal(listingQueries.length, 1);
+  assert.deepEqual(listingQueries[0]!.where.AND[0], {});
 });

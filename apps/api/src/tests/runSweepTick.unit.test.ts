@@ -497,18 +497,80 @@ test("deposit addresses are read at finalized, 50 and their USDC accounts a call
   assert.equal(res.addressesRead, 120);
   assert.equal(res.planned, 0, "a dollar each is under the threshold");
   const reads = w.chain.calls.getMultipleAccountsInfo.filter((c) => c.commitment === "finalized");
-  assert.deepEqual(reads.map((c) => c.keys.length), [100, 100, 40]);
-  assert.equal(reads[0]!.keys[50], usdcAccountOf(reads[0]!.keys[0]!));
-  // The only other read is the hot wallet with its USDC account.
+  // The hot wallet with its USDC account first, then the addresses.
+  assert.deepEqual(reads.map((c) => c.keys.length), [2, 100, 100, 40]);
+  assert.deepEqual(reads[0]!.keys, [HOT, usdcAccountOf(HOT)]);
+  assert.equal(reads[1]!.keys[50], usdcAccountOf(reads[1]!.keys[0]!));
+  // The only read at another level is the hot wallet's, at confirmed: it is
+  // taken to hold the lower of the two.
   const others = w.chain.calls.getMultipleAccountsInfo.filter((c) => c.commitment !== "finalized");
-  assert.deepEqual(others.map((c) => c.keys), [[HOT, usdcAccountOf(HOT)]]);
+  assert.deepEqual(others.map((c) => [c.commitment, c.keys]), [["confirmed", [HOT, usdcAccountOf(HOT)]]]);
+});
+
+test("the hot wallet is taken to hold the lower of what is confirmed and what is final", async () => {
+  // A payout has just left it: 900 USDC is still final, 500 is what is confirmed.
+  // The float is $200, so the excess is 300, not the 700 the final figure alone would give.
+  const paidOut = setupSweep({ wallets: [treasuryRow()] }, { hot: { lamports: SOL / 10n, usdcRaw: 900n * USDC } });
+  paidOut.chain.setConfirmedBalance(HOT, SOL / 10n, 500n * USDC);
+  await paidOut.run();
+  assert.deepEqual(
+    paidOut.state.transfers.map((t) => [t.kind, t.asset, t.amountRaw]),
+    [["hot_to_treasury", "USDC", 300n * USDC]],
+  );
+
+  // A transfer to it has landed and is not final: 500 confirmed, 100 final, and its row still "sent".
+  // It is counted once, from the row: 100 + 400 is 500, not the 900 the confirmed figure would make it.
+  const arriving = setupSweep(
+    {
+      wallets: [treasuryRow()],
+      transfers: [transferRow({ kind: "sweep_to_hot", asset: "USDC", toAddress: HOT, amountRaw: 400n * USDC })],
+    },
+    { hot: { lamports: SOL / 10n, usdcRaw: 100n * USDC } },
+  );
+  arriving.chain.setConfirmedBalance(HOT, SOL / 10n, 500n * USDC);
+  arriving.fates.set(arriving.state.transfers[0]!.txSignature, fateAnswer(arriving.state.transfers[0]!.txSignature, "landed_ok", undefined, "confirmed"));
+  await arriving.run();
+  assert.deepEqual(
+    arriving.state.transfers.filter((t) => t.kind === "hot_to_treasury"),
+    [],
+    "the final 100 is not more than twice the float: nothing is sent on from money that is not final",
+  );
+});
+
+test("what open payouts need reaches the plan: USDC goes to the hot wallet past its float, and its excess is not taken", async () => {
+  // Float $200 (the stand-in's settings). The hot wallet holds 250; a $300 payout is open.
+  const filled = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 250n * USDC } });
+  filled.knobs.openPayouts = { usdcCents: 30_000n, solCents: 0n };
+  await filled.run();
+  assert.deepEqual(
+    filled.state.transfers.map((t) => [t.kind, t.asset, t.toAddress]),
+    [["sweep_to_hot", "USDC", HOT]],
+  );
+
+  // The same with nothing open: at its float, so it goes to the treasury.
+  const plain = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 250n * USDC } });
+  await plain.run();
+  assert.deepEqual(
+    plain.state.transfers.map((t) => [t.kind, t.asset, t.toAddress]),
+    [["sweep_to_treasury", "USDC", TREASURY]],
+  );
+});
+
+test("when the open payouts cannot be read nothing is planned", async () => {
+  const w = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)], wallets: [treasuryRow()] }, { hot: { lamports: SOL, usdcRaw: 900n * USDC } });
+  w.knobs.openPayouts = new Error("database said: connection refused");
+  const res = await w.run();
+  assert.equal(res.errors, 1);
+  assert.equal(res.planned, 0, "not even the excess: it cannot be told from money a payout waits for");
+  assert.match(w.errors()[0]!.detail ?? "", /open payouts could not be read/);
 });
 
 test("a failed read of a chunk plans nothing of it and is an error", async () => {
   const w = setupSweep({ addresses: [addressRow(ORG_1, 60n * USDC)] });
   const real = w.chain.connection.getMultipleAccountsInfo.bind(w.chain.connection);
   (w.chain.connection as any).getMultipleAccountsInfo = async (keys: any, commitment: any) => {
-    if (commitment === "finalized") throw new Error("node said: too many requests api-key=SECRET");
+    // The chunk of addresses, not the hot wallet's own two accounts.
+    if (keys[0].toBase58() !== HOT) throw new Error("node said: too many requests api-key=SECRET");
     return real(keys, commitment);
   };
   const res = await w.run();

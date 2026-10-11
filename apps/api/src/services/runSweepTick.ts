@@ -61,6 +61,9 @@ export interface SentTransferRow {
   lastValidBlockHeight: bigint;
 }
 
+/** USDC has 6 decimals: one cent is 10,000 base units. */
+const USDC_RAW_PER_CENT = 10_000n;
+
 /** The columns of deposit_addresses the sweep reads. */
 export interface SweepAddressRow {
   orgId: string;
@@ -133,6 +136,10 @@ export interface SweepTickDeps {
   readTreasury: () => Promise<string | null>;
   /** services/buildSolPriceDeps.ts getSolQuote. */
   getSolQuote: () => Promise<SolPriceResult>;
+  /** What payouts to a wallet that are still open need from the hot
+   * wallet, in cents by asset, already capped. Throws when it cannot be
+   * read. */
+  readOpenPayouts: () => Promise<{ usdcCents: bigint; solCents: bigint }>;
 
   // ---- the claim and the send ----
   /** A fresh blockhash, the transfer built and SIGNED. Sends nothing.
@@ -378,6 +385,21 @@ export async function runSweepTick(
     quote = null;
   }
 
+  // What open payouts need. Without it the hot wallet's excess cannot be
+  // told from money a payout is waiting for, so nothing is planned.
+  let openPayouts: { usdcRaw: bigint; solCents: bigint };
+  try {
+    const owed = await deps.readOpenPayouts();
+    openPayouts = {
+      usdcRaw: (owed.usdcCents > 0n ? owed.usdcCents : 0n) * USDC_RAW_PER_CENT,
+      solCents: owed.solCents > 0n ? owed.solCents : 0n,
+    };
+  } catch (err) {
+    result.errors += 1;
+    log({ event: "error", detail: `the open payouts could not be read: ${errorText(err)}` });
+    return result;
+  }
+
   let rows: SweepAddressRow[] = [];
   try {
     rows = await deps.loadAddresses();
@@ -456,6 +478,7 @@ export async function runSweepTick(
     hotWallet,
     treasury,
     quote,
+    openPayouts,
   });
   result.planned = plan.transfers.length;
   result.held = plan.held.length;

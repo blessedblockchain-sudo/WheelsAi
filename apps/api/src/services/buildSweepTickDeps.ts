@@ -364,8 +364,41 @@ export interface BuildSweepDepsInput {
   getSolQuote: () => Promise<SolPriceResult>;
   /** services/buildSignatureFateDeps.ts readSignatureFate. */
   readSignatureFate: (input: SignatureFateInput) => Promise<SignatureFateAnswer>;
+  /** What open payouts to a wallet need from the hot wallet, in cents by
+   * asset (owedForOpenPayouts). Left out: nothing is owed. */
+  readOpenPayouts?: () => Promise<{ usdcCents: bigint; solCents: bigint }>;
   log?: (event: SweepEvent) => void;
   now?: () => Date;
+}
+
+/**
+ * What the hot wallet must hold for the payouts to a wallet that are still
+ * open, in cents by asset.
+ *
+ * Nothing while payouts are not running: an open payout that cannot be sent
+ * is no reason to hold money in the wallet whose key the server has. And
+ * never more than the platform's own limit for a day of payouts, which is
+ * the most that can leave in a day anyway: it is what bounds how much the
+ * hot wallet can come to hold on top of its floats.
+ */
+export function owedForOpenPayouts(input: {
+  /** Payouts that are pending or processing, summed by method. */
+  open: Array<{ payoutMethod: string; amountCents: bigint }>;
+  /** PAYOUT_PLATFORM_MAX_PER_DAY_USD, in cents. */
+  capCents: bigint;
+  /** PAYOUTS_ENABLED with the executor scheduled. */
+  payoutsRunning: boolean;
+}): { usdcCents: bigint; solCents: bigint } {
+  if (!input.payoutsRunning) return { usdcCents: 0n, solCents: 0n };
+  const cap = input.capCents > 0n ? input.capCents : 0n;
+  const sum = (method: string) => {
+    let total = 0n;
+    for (const row of input.open) {
+      if (row.payoutMethod === method && row.amountCents > 0n) total += row.amountCents;
+    }
+    return total > cap ? cap : total;
+  };
+  return { usdcCents: sum("crypto_usdc"), solCents: sum("crypto_sol") };
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -485,19 +518,35 @@ export function buildSweepDeps(input: BuildSweepDepsInput): SweepTickDeps {
       }));
     },
 
+    // THE LOWER of what the chain says at "confirmed" and at "finalized".
+    // Either alone is wrong for a few seconds at a time. At "confirmed", a
+    // transfer TO the hot wallet that has landed and is not final yet is
+    // in the balance and still counted from its "sent" row: twice. At
+    // "finalized", a payout that has just left the wallet is still in the
+    // balance, and the excess would be worked out from money that is
+    // gone. The lower of the two is never more than the wallet has.
     readHotWallet: async () => {
       const owner = input.hotWalletKeypair().publicKey;
       const keys = [owner, getAssociatedTokenAddressSync(usdcMint, owner)];
-      const infos = await getConnection().getMultipleAccountsInfo(keys, "confirmed");
-      if (!Array.isArray(infos) || infos.length !== keys.length) {
-        throw new Error("the node did not answer for the hot wallet");
+      const [confirmed, finalized] = await Promise.all([
+        getConnection().getMultipleAccountsInfo(keys, "confirmed"),
+        getConnection().getMultipleAccountsInfo(keys, "finalized"),
+      ]);
+      for (const infos of [confirmed, finalized]) {
+        if (!Array.isArray(infos) || infos.length !== keys.length) {
+          throw new Error("the node did not answer for the hot wallet");
+        }
       }
+      const lower = (a: bigint, b: bigint) => (a < b ? a : b);
       return {
         address: owner.toBase58(),
-        lamports: BigInt(infos[0]?.lamports ?? 0),
-        usdcRaw: usdcHeld(infos[1], usdcMint, owner),
+        lamports: lower(BigInt(confirmed[0]?.lamports ?? 0), BigInt(finalized[0]?.lamports ?? 0)),
+        usdcRaw: lower(usdcHeld(confirmed[1], usdcMint, owner), usdcHeld(finalized[1], usdcMint, owner)),
       };
     },
+
+    readOpenPayouts: async () =>
+      input.readOpenPayouts ? input.readOpenPayouts() : { usdcCents: 0n, solCents: 0n },
 
     readTreasury: async () => {
       const verdict = await readProvenTreasury(db, {
@@ -696,6 +745,26 @@ export function buildProductionSweepDeps(): SweepTickDeps {
     treasurySetting: () => env.TREASURY_WALLET_ADDRESS,
     getSolQuote: () => getSolQuote(),
     readSignatureFate: (input) => readSignatureFate(input),
+    readOpenPayouts: async () => {
+      const payoutsRunning = env.PAYOUTS_ENABLED && env.PAYOUT_EXECUTOR_INTERVAL_MS > 0;
+      if (!payoutsRunning) return { usdcCents: 0n, solCents: 0n };
+      const open = await prisma.creatorPayout.groupBy({
+        by: ["payoutMethod"],
+        where: {
+          status: { in: ["pending", "processing"] },
+          payoutMethod: { in: ["crypto_usdc", "crypto_sol"] },
+        },
+        _sum: { amountCents: true },
+      });
+      return owedForOpenPayouts({
+        open: open.map((row) => ({
+          payoutMethod: row.payoutMethod,
+          amountCents: row._sum.amountCents ?? 0n,
+        })),
+        capCents: BigInt(env.PAYOUT_PLATFORM_MAX_PER_DAY_USD) * 100n,
+        payoutsRunning,
+      });
+    },
     log: logSweepEvent,
   });
 }

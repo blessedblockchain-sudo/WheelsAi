@@ -47,6 +47,7 @@ import {
   sweepSettingsFromEnv,
   sweepTickInputFromEnv,
   type BuildSweepTransactionInput,
+  owedForOpenPayouts,
 } from "../services/buildSweepTickDeps.js";
 import { NO_TREASURY_ADDRESS, type PlannedTransfer } from "../services/sweepPlan.js";
 import {
@@ -454,10 +455,22 @@ test("a node that does not answer for every account is a failed read, never an e
   await assert.rejects(() => w.deps.readHotWallet(), /did not answer for the hot wallet/);
 });
 
-test("the hot wallet: its address, its SOL and its USDC, in one call", async () => {
+test("the hot wallet: its address, its SOL and its USDC, read at confirmed and at finalized, the lower of each", async () => {
   const w = setupSweep({}, { hot: { lamports: 3n * SOL, usdcRaw: 250n * USDC } });
   assert.deepEqual(await w.deps.readHotWallet(), { address: HOT, lamports: 3n * SOL, usdcRaw: 250n * USDC });
-  assert.deepEqual(w.chain.calls.getMultipleAccountsInfo.map((c) => c.keys), [[HOT, usdcAccountOf(HOT)]]);
+  assert.deepEqual(
+    w.chain.calls.getMultipleAccountsInfo.map((c) => [c.commitment, c.keys]).sort(),
+    [
+      ["confirmed", [HOT, usdcAccountOf(HOT)]],
+      ["finalized", [HOT, usdcAccountOf(HOT)]],
+    ],
+  );
+
+  // A payout has just left: what is confirmed is less than what is final. And a
+  // transfer has just arrived in the other asset: what is final is less.
+  const moving = setupSweep({}, { hot: { lamports: 3n * SOL, usdcRaw: 900n * USDC } });
+  moving.chain.setConfirmedBalance(HOT, 5n * SOL, 300n * USDC);
+  assert.deepEqual(await moving.deps.readHotWallet(), { address: HOT, lamports: 3n * SOL, usdcRaw: 300n * USDC });
 
   const bare = setupSweep({}, { hot: { lamports: 0n, usdcRaw: null } });
   assert.deepEqual(await bare.deps.readHotWallet(), { address: HOT, lamports: 0n, usdcRaw: 0n });
@@ -590,4 +603,41 @@ test("the queue exports the two names the wiring uses, and no file here makes a 
     const text = readFileSync(path.join(HERE, "..", "services", file), "utf8");
     assert.ok(!/config\/env/.test(text), file);
   }
+});
+
+// ============================================
+// What open payouts need
+// ============================================
+
+test("what open payouts need: summed by asset, nothing while payouts are not running, never above a day's limit", () => {
+  const open = [
+    { payoutMethod: "crypto_usdc", amountCents: 30_000n },
+    { payoutMethod: "crypto_usdc", amountCents: 5_000n },
+    { payoutMethod: "crypto_sol", amountCents: 12_000n },
+    // A payout taken as credits needs nothing from the wallet, and a figure that is not an amount counts for nothing.
+    { payoutMethod: "credits", amountCents: 99_000n },
+    { payoutMethod: "crypto_sol", amountCents: -1n },
+  ];
+  assert.deepEqual(owedForOpenPayouts({ open, capCents: 500_000n, payoutsRunning: true }), {
+    usdcCents: 35_000n,
+    solCents: 12_000n,
+  });
+  // An open payout that cannot be sent is no reason to hold money in the hot wallet.
+  assert.deepEqual(owedForOpenPayouts({ open, capCents: 500_000n, payoutsRunning: false }), { usdcCents: 0n, solCents: 0n });
+  // The platform's limit for a day of payouts bounds each asset.
+  assert.deepEqual(owedForOpenPayouts({ open, capCents: 20_000n, payoutsRunning: true }), { usdcCents: 20_000n, solCents: 12_000n });
+  assert.deepEqual(owedForOpenPayouts({ open, capCents: 0n, payoutsRunning: true }), { usdcCents: 0n, solCents: 0n });
+  assert.deepEqual(owedForOpenPayouts({ open: [], capCents: 500_000n, payoutsRunning: true }), { usdcCents: 0n, solCents: 0n });
+});
+
+test("the production reader asks only for open payouts to a wallet, and only while payouts run", () => {
+  const source = readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../services/buildSweepTickDeps.ts"),
+    "utf8",
+  );
+  const reader = source.slice(source.indexOf("readOpenPayouts: async () => {"));
+  assert.match(reader, /env\.PAYOUTS_ENABLED && env\.PAYOUT_EXECUTOR_INTERVAL_MS > 0/);
+  assert.match(reader, /status: \{ in: \["pending", "processing"\] \}/);
+  assert.match(reader, /payoutMethod: \{ in: \["crypto_usdc", "crypto_sol"\] \}/);
+  assert.match(reader, /PAYOUT_PLATFORM_MAX_PER_DAY_USD/);
 });

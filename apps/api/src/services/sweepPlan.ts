@@ -16,14 +16,18 @@
  *   - SOL: what the address holds less 890,880 lamports and less its own
  *     fee, once that is worth SWEEP_MIN_USD by the quote. No quote, no SOL.
  *   - WHERE IT GOES. To the hot wallet while the hot wallet holds less
- *     than its float of that asset, counting what is already on its way
- *     and what this plan has given it. Otherwise to the treasury. With no
- *     proven treasury it stays where it is.
+ *     than its float of that asset PLUS WHAT OPEN PAYOUTS NEED OF IT,
+ *     counting what is already on its way and what this plan has given
+ *     it. Otherwise to the treasury. With no proven treasury it stays
+ *     where it is. A payout larger than the float is thereby paid from
+ *     the deposits that come next, with nobody refilling the wallet.
  *   - Largest first, at most SWEEP_MAX_PER_RUN transfers off deposit
  *     addresses.
- *   - THE HOT WALLET'S EXCESS. Holding more than twice a float, it sends
- *     what it holds above the float to the proven treasury: one transfer
- *     an asset, never while another from it for that asset is out.
+ *   - THE HOT WALLET'S EXCESS. Holding more than twice a float on top of
+ *     what open payouts need, it sends what it holds above the float and
+ *     that need to the proven treasury: one transfer an asset, never
+ *     while another from it for that asset is out. Of its SOL it always
+ *     keeps HOT_WALLET_MIN_SOL after every fee it pays in the same plan.
  *   - No transfer in a plan has a destination other than the hot wallet
  *     or the proven treasury.
  *
@@ -182,6 +186,11 @@ export interface SweepPlanFacts {
   treasury: string | null;
   /** The SOL price, or null when there is none. */
   quote: SolQuote | null;
+  /** What payouts to a wallet that are still open (requested, or being
+   * sent) need from the hot wallet: USDC in base units, SOL in cents.
+   * Absent: nothing is owed. The caller caps it (a day's payout limit), so
+   * the hot wallet never holds more than its floats and that. */
+  openPayouts?: { usdcRaw: bigint; solCents: bigint };
 }
 
 export interface PlannedTransfer {
@@ -256,6 +265,11 @@ function maxOf(...values: bigint[]): bigint {
   return values.reduce((a, b) => (a > b ? a : b));
 }
 
+/** An amount owed: nothing for a missing or a negative one. */
+function positive(value: bigint | undefined): bigint {
+  return typeof value === "bigint" && value > 0n ? value : 0n;
+}
+
 export function planSweeps(facts: SweepPlanFacts): SweepPlan {
   const { settings, hotWallet, treasury, quote } = facts;
   const transfers: PlannedTransfer[] = [];
@@ -269,6 +283,10 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
       : 0n;
   const floatSolCents = dollarsToCents(settings.floatSolUsd);
   const hotCanPay = hotWallet.lamports >= settings.hotWalletMinLamports;
+  // What open payouts need. The hot wallet's float is what it holds
+  // besides this, so both the filling and the excess are measured above it.
+  const owedUsdcRaw = positive(facts.openPayouts?.usdcRaw);
+  const owedSolCents = positive(facts.openPayouts?.solCents);
 
   const busy = new Set<string>();
   for (const row of facts.sent) busy.add(busyKey(row.fromAddress, row.asset));
@@ -380,8 +398,9 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
     }
     const underFloat =
       candidate.asset === "USDC"
-        ? hotUsdcRaw < floatUsdcRaw
-        : quote !== null && lamportsWorthCents(quote, hotLamports) < floatSolCents;
+        ? hotUsdcRaw < floatUsdcRaw + owedUsdcRaw
+        : quote !== null &&
+          lamportsWorthCents(quote, hotLamports) < floatSolCents + owedSolCents;
 
     let kind: ChainTransferKind;
     let toAddress: string;
@@ -426,9 +445,9 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
     if (
       !busy.has(busyKey(hotWallet.address, "USDC")) &&
       hotCanPay &&
-      hotWallet.usdcRaw > 2n * floatUsdcRaw
+      hotWallet.usdcRaw > 2n * floatUsdcRaw + owedUsdcRaw
     ) {
-      const amountRaw = hotWallet.usdcRaw - floatUsdcRaw;
+      const amountRaw = hotWallet.usdcRaw - floatUsdcRaw - owedUsdcRaw;
       if (minUsdcRaw > 0n && amountRaw >= minUsdcRaw) {
         transfers.push({
           kind: "hot_to_treasury",
@@ -445,17 +464,26 @@ export function planSweeps(facts: SweepPlanFacts): SweepPlan {
     }
 
     if (quote !== null && !busy.has(busyKey(hotWallet.address, "SOL"))) {
-      const floatLamports = centsAsLamports(quote, floatSolCents);
+      const floatLamports = centsAsLamports(quote, floatSolCents + owedSolCents);
       if (
         floatLamports !== null &&
-        lamportsWorthCents(quote, hotWallet.lamports) > 2n * floatSolCents
+        lamportsWorthCents(quote, hotWallet.lamports) > 2n * floatSolCents + owedSolCents
       ) {
-        // It keeps its float, and never less than HOT_WALLET_MIN_SOL or
-        // than an account needs to stay open, after paying this fee.
+        // It keeps its float and what open payouts need, and never less
+        // than HOT_WALLET_MIN_SOL or than an account needs to stay open,
+        // after paying this fee AND every other fee this plan has it pay
+        // (a USDC transfer off an address, its own USDC excess): without
+        // those it would end a few thousand lamports under its minimum
+        // and stop paying for USDC sweeps.
+        const fees =
+          fee +
+          transfers
+            .filter((planned) => planned.feePayer === hotWallet.address)
+            .reduce((sum, planned) => sum + planned.feeLamports, 0n);
         const keep = maxOf(
           floatLamports,
-          settings.hotWalletMinLamports + fee,
-          SWEEP_KEEP_LAMPORTS + fee,
+          settings.hotWalletMinLamports + fees,
+          SWEEP_KEEP_LAMPORTS + fees,
         );
         const amountRaw = hotWallet.lamports - keep;
         const valueCents = amountRaw > 0n ? lamportsWorthCents(quote, amountRaw) : 0n;

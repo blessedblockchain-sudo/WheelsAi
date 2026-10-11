@@ -287,6 +287,9 @@ export function tokenAccountInfo(raw: bigint, owner: string, mint: PublicKey = U
 export function makeSweepChain(order: string[] = []) {
   /** What an address holds. usdcRaw null: it has no USDC account. */
   const balances = new Map<string, { lamports: bigint; usdcRaw: bigint | null }>();
+  /** What an address holds at "confirmed", where that differs from what
+   * is final: a transfer that has landed and is not final yet. */
+  const confirmedBalances = new Map<string, { lamports: bigint; usdcRaw: bigint | null }>();
   /** Accounts answered as they are, whatever `balances` says. */
   const rawAccounts = new Map<string, unknown>();
   const calls = {
@@ -304,6 +307,10 @@ export function makeSweepChain(order: string[] = []) {
   function setBalance(address: string, lamports: bigint, usdcRaw: bigint | null = null) {
     balances.set(address, { lamports, usdcRaw });
   }
+  /** What a read at "confirmed" answers for an address, ahead of what is final. */
+  function setConfirmedBalance(address: string, lamports: bigint, usdcRaw: bigint | null = null) {
+    confirmedBalances.set(address, { lamports, usdcRaw });
+  }
 
   const connection = {
     getMultipleAccountsInfo: async (keys: PublicKey[], commitment: unknown) => {
@@ -313,16 +320,18 @@ export function makeSweepChain(order: string[] = []) {
       if (failing.read) throw failing.read;
       const usdcOwners = new Map<string, string>();
       for (const address of balances.keys()) usdcOwners.set(usdcAccountOf(address), address);
+      const held = (address: string) =>
+        (commitment === "confirmed" ? confirmedBalances.get(address) : undefined) ?? balances.get(address);
       return asked.map((address) => {
         if (rawAccounts.has(address)) return rawAccounts.get(address);
-        const own = balances.get(address);
+        const own = held(address);
         if (own) {
           return own.lamports === 0n
             ? null
             : { owner: SystemProgram.programId, data: Buffer.alloc(0), lamports: Number(own.lamports), executable: false };
         }
         const owner = usdcOwners.get(address);
-        const usdc = owner ? balances.get(owner)?.usdcRaw : undefined;
+        const usdc = owner ? held(owner)?.usdcRaw : undefined;
         return usdc === null || usdc === undefined || !owner ? null : tokenAccountInfo(usdc, owner);
       });
     },
@@ -352,6 +361,7 @@ export function makeSweepChain(order: string[] = []) {
     calls,
     failing,
     setBalance,
+    setConfirmedBalance,
   };
 }
 
@@ -413,6 +423,8 @@ export function setupSweep(
     clusterChecks: 0,
     treasurySetting: (opts.treasurySetting === undefined ? TREASURY : opts.treasurySetting) as string | null,
     deriveKeypair: depositKeypairOf as (orgId: string) => Keypair,
+    /** What open payouts to a wallet need, in cents; an Error makes the read throw. */
+    openPayouts: { usdcCents: 0n, solCents: 0n } as { usdcCents: bigint; solCents: bigint } | Error,
   };
   const hot = opts.hot ?? { lamports: SOL, usdcRaw: 0n };
   chain.setBalance(HOT, hot.lamports, hot.usdcRaw);
@@ -430,6 +442,10 @@ export function setupSweep(
     deriveKeypair: (orgId) => knobs.deriveKeypair(orgId),
     treasurySetting: () => knobs.treasurySetting,
     getSolQuote: async () => knobs.price,
+    readOpenPayouts: async () => {
+      if (knobs.openPayouts instanceof Error) throw knobs.openPayouts;
+      return knobs.openPayouts;
+    },
     readSignatureFate: async (input) => {
       fateCalls.push({ signature: input.signature, lastValidBlockHeight: input.lastValidBlockHeight });
       order.push(`fate:${input.signature}`);

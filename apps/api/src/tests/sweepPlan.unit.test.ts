@@ -13,7 +13,9 @@
  *   - SOL keeps 890,880 lamports and its fee, and is not planned with no
  *     price; no USDC while the hot wallet is under HOT_WALLET_MIN_SOL;
  *   - the excess above twice the float goes back, SOL keeping
- *     HOT_WALLET_MIN_SOL;
+ *     HOT_WALLET_MIN_SOL after every fee the hot wallet pays in the plan;
+ *   - what open payouts need is held back: the hot wallet is filled to
+ *     its float plus that, and only what is above both is its excess;
  *   - largest first, at most SWEEP_MAX_PER_RUN;
  *   - the treasury is proven only by rule 4.
  */
@@ -544,6 +546,112 @@ test("the SOL excess keeps at least HOT_WALLET_MIN_SOL after its fee", () => {
   const sent = plan.transfers[0]!;
   assert.equal(sent.amountRaw, SOL - 50_000_000n - FEE);
   assert.equal(SOL - sent.amountRaw - sent.feeLamports, 50_000_000n, "what is left is exactly the minimum");
+});
+
+test("the SOL excess leaves the minimum after EVERY fee the hot wallet pays in the same plan", () => {
+  // Floats of 0: the hot wallet hands back what it holds. It pays three
+  // fees in this plan: a USDC sweep off an address (two signatures), its own
+  // USDC excess, and the SOL transfer itself.
+  const plan = planSweeps(
+    facts({
+      settings: { ...SETTINGS, minUsd: 1, floatUsdc: 0, floatSolUsd: 0 },
+      addresses: [held("a", 30n * USDC)],
+      hotWallet: { address: HOT, lamports: SOL, usdcRaw: 40n * USDC },
+    }),
+  );
+  assert.deepEqual(
+    plan.transfers.map((t) => [t.kind, t.asset]),
+    [
+      ["sweep_to_treasury", "USDC"],
+      ["hot_to_treasury", "USDC"],
+      ["hot_to_treasury", "SOL"],
+    ],
+  );
+  const paidByHot = plan.transfers.filter((t) => t.feePayer === HOT).reduce((sum, t) => sum + t.feeLamports, 0n);
+  assert.equal(paidByHot, 10_000n + 5_000n + 5_000n);
+  const sol = plan.transfers[2]!;
+  assert.equal(sol.amountRaw, SOL - 50_000_000n - paidByHot);
+  assert.equal(SOL - sol.amountRaw - paidByHot, 50_000_000n, "after all three fees it holds exactly the minimum, not a fee or two under it");
+});
+
+// ============================================
+// What open payouts need
+// ============================================
+
+test("USDC goes to the hot wallet until it holds its float AND what open payouts need", () => {
+  // Float $200. A $300 payout is open. The hot wallet holds $350: over its float, under float plus the payout.
+  const owed = { usdcRaw: 300n * USDC, solCents: 0n };
+  const filling = planSweeps(
+    facts({
+      addresses: [held("a", 100n * USDC)],
+      hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 350n * USDC },
+      openPayouts: owed,
+    }),
+  );
+  assert.deepEqual(where(filling), [["sweep_to_hot", "USDC", "a", 100n * USDC]]);
+
+  // With nothing open the same money goes to the treasury, as it always did.
+  const asBefore = planSweeps(
+    facts({
+      addresses: [held("a", 100n * USDC)],
+      hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 350n * USDC },
+    }),
+  );
+  assert.deepEqual(where(asBefore), [["sweep_to_treasury", "USDC", "a", 100n * USDC]]);
+
+  // At float plus the payout exactly, it is full.
+  const full = planSweeps(
+    facts({
+      addresses: [held("a", 100n * USDC)],
+      hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 500n * USDC },
+      openPayouts: owed,
+    }),
+  );
+  assert.deepEqual(where(full), [["sweep_to_treasury", "USDC", "a", 100n * USDC]]);
+});
+
+test("the USDC excess is what the hot wallet holds above its float and what open payouts need", () => {
+  // Float $200, a $300 payout open. Without the payout, $650 would send $450 away and starve it.
+  const owed = { usdcRaw: 300n * USDC, solCents: 0n };
+  const held650 = planSweeps(facts({ hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 650n * USDC }, openPayouts: owed }));
+  assert.deepEqual(held650.transfers, [], "650 is not more than twice the float on top of the 300 owed");
+
+  const held701 = planSweeps(facts({ hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 701n * USDC }, openPayouts: owed }));
+  assert.deepEqual(where(held701), [["hot_to_treasury", "USDC", null, 201n * USDC]]);
+  assert.equal(701n * USDC - held701.transfers[0]!.amountRaw, 500n * USDC, "it keeps its float and the payout");
+});
+
+test("SOL the same, by the quote: filled to the float plus what is owed, and the excess measured above both", () => {
+  // $200 a SOL. Float $100 = 0.5 SOL. A $300 SOL payout is open = 1.5 SOL.
+  const owed = { usdcRaw: 0n, solCents: 30_000n };
+  const sweepable = SOL + KEEP + FEE; // an address that can give 1 SOL
+  const filling = planSweeps(
+    facts({
+      addresses: [held("a", 0n, sweepable)],
+      hotWallet: { address: HOT, lamports: SOL, usdcRaw: 0n }, // $200: over its float, under float plus the payout
+      openPayouts: owed,
+    }),
+  );
+  assert.deepEqual(where(filling), [["sweep_to_hot", "SOL", "a", SOL]]);
+
+  // 2.5 SOL is $500: more than twice the float ($200), not more than that on top of the $300 owed.
+  const kept = planSweeps(facts({ hotWallet: { address: HOT, lamports: (5n * SOL) / 2n, usdcRaw: 0n }, openPayouts: owed }));
+  assert.deepEqual(kept.transfers, []);
+  // With nothing owed the same 2.5 SOL sends 2 away and keeps the float.
+  const plain = planSweeps(facts({ hotWallet: { address: HOT, lamports: (5n * SOL) / 2n, usdcRaw: 0n } }));
+  assert.deepEqual(where(plain), [["hot_to_treasury", "SOL", null, 2n * SOL]]);
+
+  // 4 SOL is $800: above $500. It keeps the float and the payout, 2 SOL, and sends the rest.
+  const over = planSweeps(facts({ hotWallet: { address: HOT, lamports: 4n * SOL, usdcRaw: 0n }, openPayouts: owed }));
+  assert.deepEqual(where(over), [["hot_to_treasury", "SOL", null, 2n * SOL]]);
+});
+
+test("nothing owed, an absent figure and a negative one all plan as before", () => {
+  const base = { addresses: [held("a", 100n * USDC)], hotWallet: { address: HOT, lamports: SOL / 10n, usdcRaw: 250n * USDC } };
+  const plain = planSweeps(facts(base));
+  for (const openPayouts of [undefined, { usdcRaw: 0n, solCents: 0n }, { usdcRaw: -5n * USDC, solCents: -1n }]) {
+    assert.deepEqual(planSweeps(facts({ ...base, ...(openPayouts ? { openPayouts } : {}) })), plain);
+  }
 });
 
 test("one excess transfer an asset, never while another from the hot wallet for it is sent, never without a treasury", () => {

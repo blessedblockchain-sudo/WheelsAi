@@ -455,6 +455,29 @@ const envSchema = z.object({
   // day in all, and only while the hot wallet holds HOT_WALLET_MIN_SOL.
   DEPOSIT_ACCOUNT_OPENS_PER_DAY: z.coerce.number().int().min(0).max(100_000).default(25),
   HOT_WALLET_MIN_SOL: z.coerce.number().min(0).max(1000).default(0.05),
+  // Sweeps: what customers paid is moved off their deposit addresses
+  // (queues/deposit-sweep.queue.ts). An address is emptied of an asset
+  // once it holds SWEEP_MIN_USD of it. The transfer goes to the hot wallet
+  // (the wallet that pays creators) while that holds less than its float,
+  // and otherwise to TREASURY_WALLET_ADDRESS, a wallet whose key is not in
+  // the product, once that address has been proven
+  // (scripts/treasury-verify.ts). A hot wallet holding more than twice a
+  // float sends the excess over the float to the treasury. What the
+  // master key alone can move is then about twice the floats plus what
+  // has not been swept yet.
+  SWEEPS_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  // How often the sweep worker runs. 0 turns it off.
+  SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(300_000),
+  SWEEP_MIN_USD: z.coerce.number().int().min(1).max(1_000_000).default(25),
+  // The most transfers one run starts.
+  SWEEP_MAX_PER_RUN: z.coerce.number().int().min(1).max(1000).default(20),
+  // What the hot wallet keeps to pay creators with: USDC, and SOL by its
+  // dollar value.
+  HOT_WALLET_FLOAT_USDC: z.coerce.number().int().min(0).max(10_000_000).default(200),
+  HOT_WALLET_FLOAT_SOL_USD: z.coerce.number().int().min(0).max(10_000_000).default(100),
 
   // Limits on payouts to a wallet, in dollars. A payout taken as credits
   // has none: it never leaves the platform.
@@ -651,6 +674,12 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError(
       "DEPOSITS_ENABLED requires DEPOSIT_SCAN_INTERVAL_MS above 0 outside development: the scan is what credits a transfer sent to a deposit address"
     );
+  }
+
+  // A sweep empties deposit addresses: without deposits there is nothing
+  // it may touch.
+  if (data.SWEEPS_ENABLED && !data.DEPOSITS_ENABLED) {
+    throw new EnvValidationError("SWEEPS_ENABLED requires DEPOSITS_ENABLED");
   }
 
   // A creator's day limit below the per-payout limit would make the larger

@@ -316,3 +316,22 @@ test("deposits need the wallet rail, and outside development the scan that credi
   // In production the address is watched on mainnet only, like the rail it belongs to.
   assert.match(refusal({ ...PRODUCTION, ...rail, DEPOSITS_ENABLED: "true" }), /requires SOLANA_NETWORK=mainnet-beta in production/);
 });
+
+// Payments pass, batch 6: sweeps.
+test("sweeps are off by default, need deposits, and carry their floats and threshold", () => {
+  const rail = { WALLET_TOPUPS_ENABLED: "true", WALLET_MASTER_KEY: "c".repeat(48) };
+  const settings = validateEnv({ ...DEVELOPMENT });
+  assert.equal(settings.SWEEPS_ENABLED, false);
+  assert.equal(settings.SWEEP_INTERVAL_MS, 300_000);
+  assert.equal(settings.SWEEP_MIN_USD, 25);
+  assert.equal(settings.SWEEP_MAX_PER_RUN, 20);
+  assert.equal(settings.HOT_WALLET_FLOAT_USDC, 200);
+  assert.equal(settings.HOT_WALLET_FLOAT_SOL_USD, 100);
+  assert.match(refusal({ ...DEVELOPMENT, ...rail, SWEEPS_ENABLED: "true" }), /SWEEPS_ENABLED requires DEPOSITS_ENABLED/);
+  assert.doesNotThrow(() => validateEnv({ ...STAGING, ...rail, DEPOSITS_ENABLED: "true", SWEEPS_ENABLED: "true" }));
+  // The worker's interval may be 0: sweeps then simply do not run.
+  assert.doesNotThrow(() =>
+    validateEnv({ ...STAGING, ...rail, DEPOSITS_ENABLED: "true", SWEEPS_ENABLED: "true", SWEEP_INTERVAL_MS: "0" }),
+  );
+  assert.match(refusal({ ...DEVELOPMENT, SWEEP_MIN_USD: "0" }), /SWEEP_MIN_USD/);
+});

@@ -661,6 +661,8 @@ export interface BillingRails {
   wallet: boolean;
   walletAssets: string[];
   network: "devnet" | "mainnet-beta";
+  /** The organization can be paid at its own deposit address (from an exchange or any wallet). */
+  deposits?: boolean;
 }
 
 /** What a wallet top-up can be paid in. */
@@ -724,6 +726,69 @@ export interface TopupRecord {
   payerAddress: string;
   createdAt: string;
   expiresAt: string;
+}
+
+/** What can be sent to a deposit address. */
+export type DepositAsset = "USDC" | "SOL";
+
+/**
+ * The organization's deposit address, as GET and POST /api/billing/deposit-address give it.
+ * `address` is null while the organization has none on this network. `message` is the sentence to show.
+ */
+export interface DepositAddressResponse {
+  address: string | null;
+  network: "mainnet-beta" | "devnet";
+  assets: Array<
+    | { asset: "USDC"; accountOpen: boolean }
+    | { asset: "SOL"; offered: boolean }
+  >;
+  message: string;
+}
+
+/** The answer of "Prepare address". */
+export interface DepositUsdcAccountResponse {
+  accountOpen: true;
+  message: string;
+}
+
+/** A transfer "Check now" credited. `amount` is in whole units of the asset; the rest in dollars. */
+export interface DepositCreditedTransfer {
+  asset: DepositAsset;
+  amount: string;
+  creditedUsd: number;
+  bonusUsd: number;
+  txSignature: string;
+}
+
+/** A transfer that was seen and is not credited yet. */
+export interface DepositWaitingTransfer {
+  asset: DepositAsset;
+  amount: string;
+  txSignature: string;
+}
+
+/** The answer of "Check now". `message` is the sentence to show. */
+export interface DepositCheckResponse {
+  credited: DepositCreditedTransfer[];
+  waiting: DepositWaitingTransfer[];
+  message: string;
+}
+
+export type DepositStatus = "credited" | "waiting" | "ignored";
+
+/** One transfer sent straight to the address, as GET /api/billing/deposits gives it. */
+export interface DepositRecord {
+  id: string;
+  asset: DepositAsset;
+  amount: string;
+  status: DepositStatus;
+  /** Null until credited. */
+  creditedUsd: number | null;
+  bonusUsd: number | null;
+  txSignature: string;
+  createdAt: string;
+  creditedAt: string | null;
+  message: string;
 }
 
 export type PlanId = "starter" | "pro" | "enterprise";
@@ -808,6 +873,29 @@ export const billingApi = {
 
   /** The organization's last 20 top-ups, newest first. */
   listTopups: () => api<{ topups: TopupRecord[] }>("/api/billing/topups"),
+
+  // The organization's own deposit address: paid from an exchange or any
+  // wallet, in USDC or SOL, and credited once the transfer is final.
+  /** Reads the address; never creates one. */
+  getDepositAddress: () => api<DepositAddressResponse>("/api/billing/deposit-address"),
+
+  /** Issues the address (the same one every time). */
+  issueDepositAddress: () =>
+    api<DepositAddressResponse>("/api/billing/deposit-address", { method: "POST", body: {} }),
+
+  /** "Prepare address": opens the address's USDC account when it has none. */
+  prepareDepositUsdcAccount: () =>
+    api<DepositUsdcAccountResponse>("/api/billing/deposit-address/usdc-account", {
+      method: "POST",
+      body: {},
+    }),
+
+  /** "Check now": looks for new transfers and credits them. */
+  checkDeposits: () =>
+    api<DepositCheckResponse>("/api/billing/deposit-address/check", { method: "POST", body: {} }),
+
+  /** The last 20 transfers sent straight to the address, newest first. */
+  listDeposits: () => api<{ deposits: DepositRecord[] }>("/api/billing/deposits"),
 
   getTransactions: () =>
     api<{ transactions: CreditTransaction[] }>("/api/billing/transactions"),

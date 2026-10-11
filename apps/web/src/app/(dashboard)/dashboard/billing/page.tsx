@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { DepositAddressPanel } from "@/components/dashboard/deposit-address-panel";
 import { PlanCard } from "@/components/dashboard/plan-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,7 @@ import {
   getErrorMessage,
 } from "@/lib/api";
 import { packPayment } from "@/lib/credit-purchase";
+import { depositsOffered } from "@/lib/deposit-address";
 import {
   CONNECT_TO_PAY,
   FOLLOW_EVERY_MS,
@@ -692,6 +694,10 @@ export default function BillingPage() {
                 </>
               )}
             </p>
+
+            {/* The organization's own address: paid from an exchange or any
+                wallet. Drawn only when the server says deposits are live. */}
+            {depositsOffered(rails) && <DepositAddressPanel onCredited={loadBillingData} />}
           </CardContent>
         </Card>
         )}

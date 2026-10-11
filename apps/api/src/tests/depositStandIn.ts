@@ -485,7 +485,12 @@ export function makeChain() {
         return [];
       }
       let from = 0;
-      if (options?.before) from = newestFirst.indexOf(options.before) + 1;
+      if (options?.before) {
+        // A node that does not know the signature it is asked to read back from answers with nothing.
+        const at = newestFirst.indexOf(options.before);
+        if (at < 0) return [];
+        from = at + 1;
+      }
       let list = newestFirst.slice(from);
       if (options?.until) {
         const stop = list.indexOf(options.until);

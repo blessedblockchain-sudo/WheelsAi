@@ -71,10 +71,14 @@ export interface DepositEffect {
   usdcOut: bigint;
   /** The prepared top-up the memo names, or null. */
   topupId: string | null;
-  /** What the address held after it; null when the address is not in it. */
+  /** What the address held before it and after it; null when the address
+   * is not in it. */
+  lamportsBefore: bigint | null;
   lamportsAfter: bigint | null;
-  /** What the USDC account held after it; null when that account is not
-   * in it. An account in it with no token balance holds nothing. */
+  /** What the USDC account held before it and after it; null when that
+   * account is not in it. An account in it with no token balance holds
+   * nothing: one that the transaction opens held nothing before. */
+  usdcBefore: bigint | null;
   usdcAfter: bigint | null;
   signers: string[];
   slot: bigint | null;
@@ -129,10 +133,12 @@ export function depositEffect(
   // Lamports: the address's own balance, before and after.
   const addressIndex = keys.indexOf(target.address);
   let lamportsDelta = 0n;
+  let lamportsBefore: bigint | null = null;
   let lamportsAfter: bigint | null = null;
   if (addressIndex >= 0 && addressIndex < facts.postLamports.length) {
+    lamportsBefore = amountAt(facts.preLamports, addressIndex);
     lamportsAfter = amountAt(facts.postLamports, addressIndex);
-    lamportsDelta = lamportsAfter - amountAt(facts.preLamports, addressIndex);
+    lamportsDelta = lamportsAfter - lamportsBefore;
   }
 
   // USDC: every token account of our mint that the address owns. An
@@ -157,6 +163,8 @@ export function depositEffect(
   }
 
   const usdcAccountIndex = keys.indexOf(target.usdcAccount);
+  const usdcBefore =
+    usdcAccountIndex >= 0 ? (before.get(usdcAccountIndex) ?? 0n) : null;
   const usdcAfter =
     usdcAccountIndex >= 0 ? (after.get(usdcAccountIndex) ?? 0n) : null;
 
@@ -172,7 +180,9 @@ export function depositEffect(
     lamportsOut: lamportsDelta < 0n ? -lamportsDelta : 0n,
     usdcOut: usdcDelta < 0n ? -usdcDelta : 0n,
     topupId: topupIdFromMemos(facts.memos),
+    lamportsBefore,
     lamportsAfter,
+    usdcBefore,
     usdcAfter,
     signers: [...facts.signers],
     slot: facts.slot,

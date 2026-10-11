@@ -50,7 +50,9 @@ test("a plain SOL transfer: the lamports that arrived, and what the address held
   assert.equal(effect.lamportsIn, 500_000_000n);
   assert.equal(effect.usdcIn, 0n);
   assert.equal(effect.lamportsOut, 0n);
+  assert.equal(effect.lamportsBefore, 1_000n, "what it held before: where the read before this one must have stopped");
   assert.equal(effect.lamportsAfter, 500_001_000n);
+  assert.equal(effect.usdcBefore, null);
   assert.equal(effect.usdcAfter, null, "its USDC account is not in this transaction");
   assert.equal(effect.failed, false);
   assert.deepEqual(effect.signers, [SENDER]);
@@ -63,7 +65,9 @@ test("a USDC transfer: base units in at the account the address owns", () => {
   const effect = effectOf(usdcTransfer(DEPOSIT, 50_000_000n, 1_250_000n));
   assert.equal(effect.usdcIn, 50_000_000n);
   assert.equal(effect.lamportsIn, 0n);
+  assert.equal(effect.usdcBefore, 1_250_000n);
   assert.equal(effect.usdcAfter, 51_250_000n);
+  assert.equal(effect.lamportsBefore, null);
   assert.equal(effect.lamportsAfter, null, "the address itself is not in this transaction");
 });
 
@@ -87,8 +91,10 @@ test("a transfer that also opens the USDC account: no balance before is a balanc
   };
   const effect = effectOf(shape);
   assert.equal(effect.usdcIn, 50_000_000n);
+  assert.equal(effect.usdcBefore, 0n, "an account this transaction opens held nothing before it");
   assert.equal(effect.usdcAfter, 50_000_000n);
   assert.equal(effect.lamportsIn, 0n, "the rent went to the token account, not to the address");
+  assert.equal(effect.lamportsBefore, 0n);
   assert.equal(effect.lamportsAfter, 0n);
 });
 

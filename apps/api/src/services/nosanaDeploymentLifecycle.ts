@@ -54,6 +54,7 @@
  * the state Nosana reports instead of a vault balance).
  */
 
+import { NETWORK_FAILURE_CODES, isNetworkFailure } from "./networkFailure.js";
 import { NosanaCreditsError, requiredCreditsMicroUsd } from "./nosanaCredits.js";
 
 // ============================================
@@ -273,31 +274,10 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Error codes of a request that got no answer: a name that did not resolve, a connection that was never made or was dropped. */
-const NETWORK_FAILURE_CODES: ReadonlySet<string> = new Set([
-  "EAI_AGAIN",
-  "ENOTFOUND",
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "ENETUNREACH",
-  "EHOSTUNREACH",
-  "UND_ERR_CONNECT_TIMEOUT",
-]);
-
-/**
- * Whether `err`, or a cause of it, is a network failure and not an answer
- * from Nosana. The SDK's fetch wraps the socket error ("fetch failed" caused
- * by `getaddrinfo EAI_AGAIN ...`), so the chain of causes is walked.
- */
-export function isNetworkFailure(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < 6 && typeof current === "object" && current !== null; depth += 1) {
-    const code = (current as { code?: unknown }).code;
-    if (typeof code === "string" && NETWORK_FAILURE_CODES.has(code)) return true;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return false;
-}
+// The rule for "the network failed" lives in networkFailure.ts, shared with
+// the chat runtime. It is exported from here too for the callers that have
+// always imported it from this file.
+export { NETWORK_FAILURE_CODES, isNetworkFailure };
 
 // ============================================
 // Number helpers (bigint only - no floats in money math)

@@ -161,6 +161,8 @@ import {
   stopPayoutExecutorQueue,
   startTopupReconcileQueue,
   stopTopupReconcileQueue,
+  startDepositScanQueue,
+  stopDepositScanQueue,
   startEmbeddingBackfillQueue,
   stopEmbeddingBackfillQueue,
   assertQueueRedisReady,
@@ -575,6 +577,7 @@ async function main() {
   await startSubscriptionRenewalQueue();
   await startPayoutExecutorQueue();
   await startTopupReconcileQueue();
+  await startDepositScanQueue();
   await startEmbeddingBackfillQueue();
 
   // Graceful shutdown
@@ -632,6 +635,7 @@ async function main() {
       await stopSubscriptionRenewalQueue();
       await stopPayoutExecutorQueue();
       await stopTopupReconcileQueue();
+      await stopDepositScanQueue();
       await stopEmbeddingBackfillQueue();
       await metrics.close();
       await app.close();

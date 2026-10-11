@@ -435,6 +435,27 @@ const envSchema = z.object({
     .union([z.boolean(), z.string()])
     .transform((value) => value === true || value === "true")
     .default(false),
+  // Deposit addresses: an organization is paid at its own address from
+  // anywhere (a withdrawal from an exchange, a transfer from any wallet),
+  // with no prepared top-up. Needs the wallet rail, since it is the same
+  // address and the same master key.
+  DEPOSITS_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((value) => value === true || value === "true")
+    .default(false),
+  // The worker that finds transfers sent to deposit addresses and credits
+  // them (queues/deposit-scan.queue.ts). 0 turns it off; outside
+  // development deposits refuse to start without it (checked below).
+  DEPOSIT_SCAN_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
+  // The most addresses one run looks at. One balance read covers 50 of
+  // them; only an address whose balance changed has its history read.
+  DEPOSIT_SCAN_MAX_ADDRESSES: z.coerce.number().int().min(1).max(10_000).default(500),
+  // "Prepare address": the platform opens the USDC account at a deposit
+  // address, paying its rent from the hot wallet, at most this many times a
+  // day in all, and only while the hot wallet holds HOT_WALLET_MIN_SOL.
+  DEPOSIT_ACCOUNT_OPENS_PER_DAY: z.coerce.number().int().min(0).max(100_000).default(25),
+  HOT_WALLET_MIN_SOL: z.coerce.number().min(0).max(1000).default(0.05),
+
   // Limits on payouts to a wallet, in dollars. A payout taken as credits
   // has none: it never leaves the platform.
   //   per payout            the most one request may be for
@@ -618,6 +639,18 @@ export function validateEnv(raw: Record<string, string | undefined>) {
   }
   if (data.EMAIL_PROVIDER === "resend" && (!data.RESEND_API_KEY || !data.EMAIL_FROM)) {
     throw new EnvValidationError("EMAIL_PROVIDER=resend requires RESEND_API_KEY and EMAIL_FROM");
+  }
+
+  // A deposit address is the wallet rail's address, watched. Without the
+  // rail there is no master key to derive it from, and without the scan a
+  // transfer sent to it would never be credited.
+  if (data.DEPOSITS_ENABLED && !data.WALLET_TOPUPS_ENABLED) {
+    throw new EnvValidationError("DEPOSITS_ENABLED requires WALLET_TOPUPS_ENABLED");
+  }
+  if (data.NODE_ENV !== "development" && data.DEPOSITS_ENABLED && data.DEPOSIT_SCAN_INTERVAL_MS <= 0) {
+    throw new EnvValidationError(
+      "DEPOSITS_ENABLED requires DEPOSIT_SCAN_INTERVAL_MS above 0 outside development: the scan is what credits a transfer sent to a deposit address"
+    );
   }
 
   // A creator's day limit below the per-payout limit would make the larger

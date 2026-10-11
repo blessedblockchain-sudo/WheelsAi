@@ -299,3 +299,20 @@ test("the old SOL payout price is a retired setting: ignored, and said to be", a
   assert.match(lines[0]!, /^PAYOUT_SOL_PRICE_USD is no longer a setting and is ignored: .*SOL_PRICE_SOURCE/);
   assert.doesNotMatch(lines[0]!, /150/);
 });
+
+// Payments pass, batch 5: deposit addresses.
+test("deposits need the wallet rail, and outside development the scan that credits them", () => {
+  const rail = { WALLET_TOPUPS_ENABLED: "true", WALLET_MASTER_KEY: "c".repeat(48) };
+  assert.equal(validateEnv({ ...DEVELOPMENT }).DEPOSITS_ENABLED, false);
+  assert.equal(validateEnv({ ...DEVELOPMENT }).DEPOSIT_SCAN_INTERVAL_MS, 60_000);
+  assert.match(refusal({ ...DEVELOPMENT, DEPOSITS_ENABLED: "true" }), /DEPOSITS_ENABLED requires WALLET_TOPUPS_ENABLED/);
+  assert.doesNotThrow(() => validateEnv({ ...STAGING, ...rail, DEPOSITS_ENABLED: "true" }));
+  assert.match(
+    refusal({ ...STAGING, ...rail, DEPOSITS_ENABLED: "true", DEPOSIT_SCAN_INTERVAL_MS: "0" }),
+    /DEPOSITS_ENABLED requires DEPOSIT_SCAN_INTERVAL_MS above 0/,
+  );
+  // Development may run the scan by hand.
+  assert.doesNotThrow(() => validateEnv({ ...DEVELOPMENT, ...rail, DEPOSITS_ENABLED: "true", DEPOSIT_SCAN_INTERVAL_MS: "0" }));
+  // In production the address is watched on mainnet only, like the rail it belongs to.
+  assert.match(refusal({ ...PRODUCTION, ...rail, DEPOSITS_ENABLED: "true" }), /requires SOLANA_NETWORK=mainnet-beta in production/);
+});

@@ -449,3 +449,18 @@ export function solMicroUsdRate(
   if (microUsdPerSol <= 0n) return { ok: false, code: "no_value" };
   return { ok: true, microUsdPerSol };
 }
+
+/**
+ * Money in at a rate already fixed (a rate lock): the lamports that pay
+ * `microUsd` micro-dollars when one SOL is counted at `microUsdPerSol`.
+ * Rounded up, so the lamports asked for are never worth less than the
+ * price. The rate is the whole-number one solMicroUsdRate answers with: it
+ * has leaned already, and nothing leans it again here.
+ */
+export function lamportsForMicroUsdAtRate(microUsd: bigint, microUsdPerSol: bigint): LamportsResult {
+  if (!isPositiveAmount(microUsd)) return { ok: false, code: "bad_amount" };
+  if (!isPositiveAmount(microUsdPerSol)) return { ok: false, code: "no_value" };
+  const lamports = (microUsd * LAMPORTS_PER_SOL_BIGINT + microUsdPerSol - 1n) / microUsdPerSol;
+  if (lamports <= 0n) return { ok: false, code: "rounds_to_zero" };
+  return { ok: true, lamports };
+}

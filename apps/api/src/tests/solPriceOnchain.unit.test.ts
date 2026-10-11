@@ -31,6 +31,7 @@ import {
   decodeClockUnixTimestamp,
   decodePriceUpdateV2,
   judgeSolPrice,
+  lamportsForMicroUsdAtRate,
   lamportsToCollectForCents,
   lamportsToSendForCents,
   solUsdRate,
@@ -589,6 +590,22 @@ test("solPrice money: nothing answers with zero or a negative amount", () => {
       const credit = centsToCreditForLamports(q, amount, margin);
       if (credit.ok) assert.ok(credit.cents > 0n);
     }
+  }
+});
+
+test("solPrice money: lamports for micro-dollars at a fixed rate round up, and refuse what is not above zero", () => {
+  // $0.000549 at $100 a SOL is 5,490 lamports exactly; at $99 it is 5,545.45..., so 5,546.
+  assert.deepEqual(lamportsForMicroUsdAtRate(549n, 100_000_000n), { ok: true, lamports: 5_490n });
+  assert.deepEqual(lamportsForMicroUsdAtRate(549n, 99_000_000n), { ok: true, lamports: 5_546n });
+  // One micro-dollar at a very dear SOL still asks for one whole lamport.
+  assert.deepEqual(lamportsForMicroUsdAtRate(1n, 10n ** 18n), { ok: true, lamports: 1n });
+  // The same answer as the cents helper at the rate solMicroUsdRate gives (no margin: the rate is exact).
+  const q = quoteOf(100_000_000n, 1_000_000n);
+  assert.equal(lamports(lamportsForMicroUsdAtRate(10_000n, 99_000_000n)), lamports(lamportsToCollectForCents(q, 1n, 0)));
+
+  for (const bad of [0n, -1n, 100 as unknown as bigint]) {
+    assert.deepEqual(lamportsForMicroUsdAtRate(bad, 100_000_000n), { ok: false, code: "bad_amount" });
+    assert.deepEqual(lamportsForMicroUsdAtRate(549n, bad), { ok: false, code: "no_value" });
   }
 });
 

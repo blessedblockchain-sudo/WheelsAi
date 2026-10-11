@@ -9,7 +9,6 @@ import {
   getX402AlertThresholds,
   getX402OrgPaymentSummary,
   getX402SettlementWorkerMetrics,
-  persistX402SettlementSnapshot,
 } from "../services/x402Settlement.js";
 
 const listPaymentsQuerySchema = z.object({
@@ -55,13 +54,10 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
     const { orgId } = request.auth!;
     const worker = getX402SettlementWorkerMetrics();
 
-    const [{ summary, alerts }, recentFailures] = await Promise.all([
-      worker.enabled
-        ? (async () => {
-            const summary = await getX402OrgPaymentSummary(orgId);
-            return { summary, alerts: evaluateX402Alerts(summary) };
-          })()
-        : persistX402SettlementSnapshot(orgId),
+    // Reads only. The history rows are the settlement worker's to write,
+    // once a run; a page that is opened must never add one.
+    const [summary, recentFailures] = await Promise.all([
+      getX402OrgPaymentSummary(orgId),
       prisma.x402Payment.findMany({
         where: {
           orgId,
@@ -79,7 +75,7 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
         },
       }),
     ]);
-
+    const alerts = evaluateX402Alerts(summary);
 
     return {
       worker,
@@ -228,6 +224,9 @@ export const x402Routes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    return { payment };
+    // The signed transaction stays with the row: it is what the settlement
+    // worker reads, and no caller needs it back.
+    const { signedTxB64: _signedTxB64, ...shown } = payment;
+    return { payment: shown };
   });
 };

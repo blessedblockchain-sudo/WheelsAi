@@ -101,6 +101,10 @@ export const LEDGER_TYPES: Record<string, LedgerTypeInfo> = {
   trial_usage: { kind: "spent", label: "Try it message you paid for", spendGroup: "try_it" },
   trial_usage_refund: { kind: "returned", label: "Try it message refunded", spendGroup: "try_it" },
 
+  // A request paid for with an on-chain transfer (x402) that was not
+  // answered: what was paid comes back as credits.
+  x402_refund: { kind: "added", label: "Paid request returned as credits" },
+
   // Older rows, and the type an operator's correction would carry.
   signup_bonus: { kind: "added", label: "Bonus credits" },
   adjustment: { kind: "other", label: "Adjustment" },

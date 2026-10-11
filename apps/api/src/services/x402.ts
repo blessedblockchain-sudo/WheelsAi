@@ -1,186 +1,68 @@
 /**
- * X-402 Payment Protocol Service
+ * x402: what goes over the wire, and the one call that sends a payment.
  *
- * Implements the X-402 payment protocol for pay-per-request AI inference.
- * Uses Solana blockchain for payment verification and settlement.
+ * Paying for one request with an on-chain transfer (the HTTP 402 flow).
+ * This file holds the shape of the "payment required" answer, the reading
+ * of the `X-Payment` header, the sentences a payer reads, and the
+ * broadcast of a payer's signed transaction.
+ *
+ * It prices nothing and reads no transaction:
+ *   the price and the SOL rate lock   services/x402Price.ts, x402Quote.ts
+ *   the reading of a signed payment   services/x402Decode.ts
+ *   what happens to a payment         services/x402Payments.ts
+ *   a payment returned as credits     services/x402Refund.ts
  */
 
 import { randomUUID } from "crypto";
 
-import {
-  type Connection,
-  PublicKey,
-  Transaction,
-  SystemProgram,
-  LAMPORTS_PER_SOL,
-} from "@solana/web3.js";
-import { getAssociatedTokenAddress, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import bs58 from "bs58";
-
-import { createLogger } from "../utils/logger.js";
-import { env } from "../config/env.js";
 import { getSolanaConnection } from "../lib/solana.js";
-import { NOS_MINT, USDC_MINT } from "../lib/solanaAssets.js";
+import { USDC_MINT } from "../lib/solanaAssets.js";
+import type { X402Asset, X402RefusalReason } from "./x402Types.js";
 
-const logger = createLogger("x402");
-
-// ============================================
-// Constants
-// ============================================
-
-// USDC and NOS token addresses live in lib/solanaAssets.ts. USDC_MINT is
-// re-exported here under the same name for the modules that import it
-// from this file.
+// The USDC mints live in lib/solanaAssets.ts. Re-exported here under the
+// same name for the modules that import it from this file.
 export { USDC_MINT };
 
-// WheelsAI treasury address
-const TREASURY_ADDRESS = new PublicKey(env.TREASURY_WALLET_ADDRESS);
-
 // ============================================
-// Types
+// The wire
 // ============================================
 
+export type X402Network = "solana:mainnet" | "solana:devnet";
+
+/** The `payment` object of a 402 answer, and the `X-Payment-Required` header. */
 export interface PaymentRequirement {
-  scheme: "exact" | "max";
-  network: "solana:mainnet" | "solana:devnet";
-  asset: "USDC" | "SOL" | "NOS";
-  amount: string; // Raw amount as string
-  amountUsd: number;
-  payTo: string;
-  memo?: string;
-  validUntil?: number; // Unix timestamp
-}
-
-export interface PaymentHeader {
-  signature: string; // Base64 encoded signed transaction
-  network: string;
-}
-
-export interface PaymentVerification {
-  isValid: boolean;
-  payer: string;
+  scheme: "exact";
+  network: X402Network;
+  asset: X402Asset;
+  /** Base units: USDC base units, or lamports. */
   amount: string;
-  asset: string;
-  txSignature?: string;
-  error?: string;
-}
-
-export interface PriceQuote {
-  inputTokens: number;
-  outputTokens: number;
-  modelTier: "small" | "medium" | "large";
-  priceUsd: number;
-  priceUsdc: string; // Raw USDC amount (6 decimals)
-  priceSol: string; // Raw SOL amount (9 decimals)
-  priceNos: string; // Raw NOS amount
+  /** The same in dollars, to show. Never an input to an amount. */
+  amountUsd: number;
+  /** The treasury wallet. SOL is sent to it. */
+  payTo: string;
+  /** USDC only: the token account the transfer must go to. */
+  payToTokenAccount: string | null;
+  /** USDC only: the mint. */
+  mint: string | null;
+  memo: string;
+  /** Unix seconds. */
   validUntil: number;
+  /** SOL only: the rate lock the paid retry hands back. */
+  quote: string | null;
 }
 
-// ============================================
-// Pricing
-// ============================================
-
-// Prices per 1K tokens in USD
-const PRICING: Record<PriceQuote["modelTier"], { input: number; output: number }> = {
-  small: { input: 0.00015, output: 0.0006 },
-  medium: { input: 0.0003, output: 0.0012 },
-  large: { input: 0.0009, output: 0.0036 },
-};
-
-// Minimum charge in USD
-const MIN_CHARGE_USD = 0.0001;
-
-/**
- * Calculate price for a request
- */
-export function calculatePrice(
-  inputTokens: number,
-  outputTokens: number,
-  modelTier: "small" | "medium" | "large" = "small"
-): PriceQuote {
-  const pricing = PRICING[modelTier];
-
-  const inputCost = (inputTokens / 1000) * pricing.input;
-  const outputCost = (outputTokens / 1000) * pricing.output;
-  const totalUsd = Math.max(inputCost + outputCost, MIN_CHARGE_USD);
-
-  // Convert to token amounts
-  // USDC: 6 decimals
-  const priceUsdc = Math.ceil(totalUsd * 1_000_000).toString();
-
-  // SOL: 9 decimals — use cached prices (sync) for hot path
-  const prices = cachedPrices ?? { sol: 150, usdc: 1, nos: 0.1 };
-  const priceSol = Math.ceil((totalUsd / prices.sol) * LAMPORTS_PER_SOL).toString();
-
-  // NOS: 6 decimals
-  const priceNos = Math.ceil((totalUsd / prices.nos) * 1_000_000).toString();
-
-  return {
-    inputTokens,
-    outputTokens,
-    modelTier,
-    priceUsd: totalUsd,
-    priceUsdc,
-    priceSol,
-    priceNos,
-    validUntil: Math.floor(Date.now() / 1000) + 300, // 5 minutes
-  };
+/** The `X-Payment` header of a paid retry. */
+export interface PaymentHeader {
+  /** The signed transaction, base64. */
+  signature: string;
+  network: string;
+  /** The rate lock of the challenge. Needed for SOL, ignored for USDC. */
+  quote: string | null;
 }
 
-/**
- * Estimate price for a request (before execution)
- */
-export function estimatePrice(
-  estimatedInputTokens: number,
-  estimatedOutputTokens: number,
-  modelTier: "small" | "medium" | "large" = "small"
-): PriceQuote {
-  // Add 20% buffer to estimates
-  return calculatePrice(
-    Math.ceil(estimatedInputTokens * 1.2),
-    Math.ceil(estimatedOutputTokens * 1.2),
-    modelTier
-  );
-}
-
-// ============================================
-// Payment Requirement Generation
-// ============================================
-
-/**
- * Generate X-Payment-Required header content
- */
-export function generatePaymentRequirement(
-  quote: PriceQuote,
-  asset: "USDC" | "SOL" | "NOS" = env.X402_DEFAULT_ASSET,
-  memo?: string
-): PaymentRequirement {
-  const network =
-    env.SOLANA_NETWORK === "mainnet-beta" ? "solana:mainnet" : "solana:devnet";
-
-  let amount: string;
-  switch (asset) {
-    case "USDC":
-      amount = quote.priceUsdc;
-      break;
-    case "SOL":
-      amount = quote.priceSol;
-      break;
-    case "NOS":
-      amount = quote.priceNos;
-      break;
-  }
-
-  return {
-    scheme: "exact",
-    network,
-    asset,
-    amount,
-    amountUsd: quote.priceUsd,
-    payTo: TREASURY_ADDRESS.toBase58(),
-    memo,
-    validUntil: quote.validUntil,
-  };
+/** The network name x402 uses for a configured chain. */
+export function x402NetworkFor(network: "devnet" | "mainnet-beta"): X402Network {
+  return network === "mainnet-beta" ? "solana:mainnet" : "solana:devnet";
 }
 
 /**
@@ -191,23 +73,11 @@ export function formatPaymentHeader(requirement: PaymentRequirement): string {
 }
 
 /**
- * Check if a requirement has expired
- */
-export function isRequirementExpired(requirement: PaymentRequirement): boolean {
-  if (!requirement.validUntil) return false;
-  return requirement.validUntil < Math.floor(Date.now() / 1000);
-}
-
-/**
  * Create a correlation ID for a payment request.
  */
 export function createPaymentRequestId(): string {
   return `x402_${randomUUID()}`;
 }
-
-// ============================================
-// Payment Verification
-// ============================================
 
 /**
  * Parse X-Payment header from client
@@ -224,271 +94,20 @@ export function parsePaymentHeader(header: string): PaymentHeader | null {
       return null;
     }
 
-    const { signature, network } = parsed as Record<string, unknown>;
+    const { signature, network, quote } = parsed as Record<string, unknown>;
     if (typeof signature !== "string" || typeof network !== "string") {
       return null;
     }
 
-    return { signature, network };
+    return {
+      signature,
+      network,
+      quote: typeof quote === "string" && quote.length > 0 ? quote : null,
+    };
   } catch {
     return null;
   }
 }
-
-/**
- * Verify a signed payment transaction
- */
-export async function verifyPayment(
-  paymentHeader: PaymentHeader,
-  expectedRequirement: PaymentRequirement
-): Promise<PaymentVerification> {
-  try {
-    if (paymentHeader.network !== expectedRequirement.network) {
-      return {
-        isValid: false,
-        payer: "",
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "Payment network does not match requirement",
-      };
-    }
-
-    if (isRequirementExpired(expectedRequirement)) {
-      return {
-        isValid: false,
-        payer: "",
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "Payment requirement has expired",
-      };
-    }
-
-    // Decode the signed transaction
-    const txBuffer = Buffer.from(paymentHeader.signature, "base64");
-    const transaction = Transaction.from(txBuffer);
-
-    // Verify the transaction is properly signed
-    if (!transaction.signature) {
-      return {
-        isValid: false,
-        payer: "",
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "Transaction is not signed",
-      };
-    }
-
-    if (!transaction.verifySignatures()) {
-      return {
-        isValid: false,
-        payer: "",
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "Transaction signature verification failed",
-      };
-    }
-
-    if (!transaction.recentBlockhash) {
-      return {
-        isValid: false,
-        payer: "",
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "Transaction missing recent blockhash",
-      };
-    }
-
-    // Get payer from fee payer
-    const payer = transaction.feePayer?.toBase58() || "";
-    if (!payer) {
-      return {
-        isValid: false,
-        payer: "",
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "No fee payer in transaction",
-      };
-    }
-
-    const txSignature = getTransactionSignature(transaction);
-    if (!txSignature) {
-      return {
-        isValid: false,
-        payer,
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: "Unable to resolve transaction signature",
-      };
-    }
-
-    // Verify the payment instruction
-    const verified = await verifyPaymentInstruction(transaction, expectedRequirement);
-
-    if (!verified.isValid) {
-      return {
-        isValid: false,
-        payer,
-        amount: "0",
-        asset: expectedRequirement.asset,
-        error: verified.error,
-      };
-    }
-
-    // In production, optionally submit transaction to chain
-    if (env.X402_SUBMIT_TRANSACTIONS) {
-      const connection = getConnection();
-      try {
-        const submittedSignature = await connection.sendRawTransaction(txBuffer, {
-          skipPreflight: false,
-          preflightCommitment: "confirmed",
-        });
-
-        // Wait for confirmation
-        await connection.confirmTransaction(submittedSignature, "confirmed");
-
-        return {
-          isValid: true,
-          payer,
-          amount: expectedRequirement.amount,
-          asset: expectedRequirement.asset,
-          txSignature: submittedSignature,
-        };
-      } catch (err: any) {
-        logger.error({ err, payer }, "Failed to submit X-402 payment transaction");
-        return {
-          isValid: false,
-          payer,
-          amount: "0",
-          asset: expectedRequirement.asset,
-          error: `Transaction submission failed: ${err.message}`,
-        };
-      }
-    }
-
-    // Verification-only mode
-    return {
-      isValid: true,
-      payer,
-      amount: expectedRequirement.amount,
-      asset: expectedRequirement.asset,
-      txSignature,
-    };
-  } catch (err: any) {
-    logger.error({ err }, "Payment verification error");
-    return {
-      isValid: false,
-      payer: "",
-      amount: "0",
-      asset: expectedRequirement.asset,
-      error: `Verification error: ${err.message}`,
-    };
-  }
-}
-
-function getTransactionSignature(transaction: Transaction): string | null {
-  if (transaction.signature) {
-    return bs58.encode(transaction.signature);
-  }
-
-  const signedEntry = transaction.signatures.find((entry) => entry.signature);
-  if (!signedEntry?.signature) {
-    return null;
-  }
-
-  return bs58.encode(signedEntry.signature);
-}
-
-/**
- * Verify the payment instruction in a transaction
- */
-async function verifyPaymentInstruction(
-  transaction: Transaction,
-  requirement: PaymentRequirement
-): Promise<{ isValid: boolean; error?: string }> {
-  // Find the transfer instruction
-  for (const instruction of transaction.instructions) {
-    // Check for SOL transfer
-    if (
-      requirement.asset === "SOL" &&
-      instruction.programId.equals(SystemProgram.programId)
-    ) {
-      // Decode SystemProgram transfer
-      const data = instruction.data;
-      if (data.length >= 12) {
-        // Transfer instruction: [4 bytes type][8 bytes lamports]
-        const instructionType = data.readUInt32LE(0);
-        if (instructionType === 2 && instruction.keys.length >= 2) {
-          const lamports = data.readBigUInt64LE(4);
-          const recipient = instruction.keys[1]?.pubkey;
-
-          if (
-            recipient &&
-            recipient.toBase58() === requirement.payTo &&
-            lamports >= BigInt(requirement.amount)
-          ) {
-            return { isValid: true };
-          }
-        }
-      }
-    }
-
-    // Check for SPL token transfer (USDC, NOS)
-    if (
-      requirement.asset !== "SOL" &&
-      instruction.programId.equals(TOKEN_PROGRAM_ID)
-    ) {
-      const data = instruction.data;
-      if (data.length < 9 || instruction.keys.length < 2) {
-        continue;
-      }
-
-      const tokenInstructionType = data[0];
-      const isTransfer = tokenInstructionType === 3;
-      const isTransferChecked = tokenInstructionType === 12 && data.length >= 10;
-      if (!isTransfer && !isTransferChecked) {
-        continue;
-      }
-
-      const amount = data.readBigUInt64LE(1);
-      const destination = instruction.keys[1]?.pubkey;
-      if (!destination) {
-        continue;
-      }
-
-      // Verify destination is treasury's token account
-      const mint = requirement.asset === "USDC" ? USDC_MINT : NOS_MINT;
-      const network = env.SOLANA_NETWORK === "mainnet-beta" ? "mainnet" : "devnet";
-      const expectedTokenAccount = await getAssociatedTokenAddress(
-        mint[network],
-        TREASURY_ADDRESS
-      );
-
-      if (
-        destination.equals(expectedTokenAccount) &&
-        amount >= BigInt(requirement.amount)
-      ) {
-        return { isValid: true };
-      }
-    }
-  }
-
-  return {
-    isValid: false,
-    error: "No valid payment instruction found in transaction",
-  };
-}
-
-// ============================================
-// Solana Connection
-// ============================================
-
-function getConnection(): Connection {
-  return getSolanaConnection();
-}
-
-// ============================================
-// Helper Functions
-// ============================================
 
 /**
  * Create a 402 response with payment requirement
@@ -535,77 +154,57 @@ export function getPaymentFromHeaders(
 }
 
 // ============================================
-// Price Oracle (Placeholder)
+// What a payer reads
 // ============================================
 
-interface TokenPrices {
-  sol: number;
-  usdc: number;
-  nos: number;
+/**
+ * Why a presented payment was not taken, in the API's own words. Nothing
+ * from a node, from the database or from a thrown error is ever added.
+ */
+export const X402_REFUSAL_MESSAGES: Readonly<Record<X402RefusalReason, string>> = {
+  quote_expired:
+    "The price for this request has expired. Send the request again to get a new one.",
+  payment_invalid:
+    "That payment does not match this request. Check the address, the asset and the amount, and send the request again.",
+  payment_failed_on_chain:
+    "Your payment failed on the chain and nothing was taken. Send the request again.",
+  payment_not_confirmed:
+    "Your payment was not confirmed in time. If it lands, it is returned to your credit balance. Send the request again.",
+};
+
+/** A paid request that failed after its payment landed. */
+export const X402_RETURNED_MESSAGE =
+  "Your payment for this request was returned to your credit balance. Amounts under a cent add up and appear once they reach a cent.";
+
+/** The `payment` field added to the error of a paid request that failed. */
+export interface X402ReturnedNotice {
+  status: "returned";
+  amountUsd: number;
+  message: string;
 }
 
-let cachedPrices: TokenPrices | null = null;
-let pricesCacheTime = 0;
-
-/**
- * Get current token prices in USD
- */
-export async function getTokenPrices(): Promise<TokenPrices> {
-  const now = Date.now();
-
-  // Cache prices for 1 minute
-  if (cachedPrices && now - pricesCacheTime < 60_000) {
-    return cachedPrices;
-  }
-
-  // Fetch live prices from CoinGecko (free, no API key needed)
-  try {
-    const res = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=solana,nosana&vs_currencies=usd",
-      { signal: AbortSignal.timeout(5000) }
-    );
-    if (res.ok) {
-      const data = await res.json();
-      cachedPrices = {
-        sol: data.solana?.usd ?? 150,
-        usdc: 1,
-        nos: data.nosana?.usd ?? 0.1,
-      };
-      pricesCacheTime = now;
-      return cachedPrices;
-    }
-  } catch {
-    // CoinGecko unavailable — fall through to defaults
-  }
-
-  // Fallback prices if oracle is unreachable
-  cachedPrices = {
-    sol: 150,
-    usdc: 1,
-    nos: 0.1,
+/** Micro-dollars as dollars, to show. A float: never an input to an amount. */
+export function x402ReturnedNotice(refundMicroUsd: bigint): X402ReturnedNotice {
+  return {
+    status: "returned",
+    amountUsd: Number(refundMicroUsd) / 1_000_000,
+    message: X402_RETURNED_MESSAGE,
   };
-  pricesCacheTime = now;
-
-  return cachedPrices;
 }
 
-/**
- * Convert USD amount to token amount
- */
-export async function usdToToken(
-  usdAmount: number,
-  token: "SOL" | "USDC" | "NOS"
-): Promise<string> {
-  const prices = await getTokenPrices();
+// ============================================
+// The chain
+// ============================================
 
-  switch (token) {
-    case "SOL":
-      return Math.ceil((usdAmount / prices.sol) * LAMPORTS_PER_SOL).toString();
-    case "USDC":
-      return Math.ceil(usdAmount * 1_000_000).toString(); // 6 decimals
-    case "NOS":
-      return Math.ceil((usdAmount / prices.nos) * 1_000_000).toString();
-    default:
-      throw new Error(`Unknown token: ${token}`);
-  }
+/**
+ * Send a payer's signed transaction, exactly as it was handed over. Called
+ * only AFTER the payment's row is written. It may throw, and a throw
+ * decides nothing: only the signature's fate says what became of it.
+ */
+export async function broadcastX402Transaction(signedTxB64: string): Promise<void> {
+  await getSolanaConnection().sendRawTransaction(Buffer.from(signedTxB64, "base64"), {
+    skipPreflight: false,
+    preflightCommitment: "confirmed",
+    maxRetries: 3,
+  });
 }

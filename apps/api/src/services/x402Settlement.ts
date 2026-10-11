@@ -1,15 +1,32 @@
 import { createHmac, randomUUID } from "crypto";
 
-import { type Connection, type SignatureStatus } from "@solana/web3.js";
-import { prisma, type X402Payment } from "@wheelsai/db";
+import { prisma } from "@wheelsai/db";
 
 import { env } from "../config/env.js";
-import { getSolanaConnection } from "../lib/solana.js";
+import { ensureSolanaCluster, getSolanaConnection } from "../lib/solana.js";
 import { createLogger } from "../utils/logger.js";
+import { buildSignatureFateDeps } from "./buildSignatureFateDeps.js";
+import { X402_FAILED_ON_CHAIN_REASON, readX402Fate } from "./buildX402PaymentsDeps.js";
+import { signatureFate } from "./signatureFate.js";
+import { x402NetworkFor } from "./x402.js";
+import {
+  settleX402Row,
+  type X402SettleOutcome,
+  type X402SettlementDeps,
+  type X402SettlementRow,
+} from "./x402Payments.js";
+import { returnX402Payment, type X402RefundDb } from "./x402Refund.js";
 
 const logger = createLogger("x402-settlement-worker");
 
+/** What a payment that can never land says on its row. Our own words. */
+export const X402_NEVER_LANDED_REASON = "The payment never reached the chain. Nothing was taken.";
+
 let isTickRunning = false;
+// Where the next run starts in the list of open rows. A row the chain has
+// nothing to say about yet is left as it is, so a full batch of those must
+// not keep the rows behind it from ever being looked at.
+let scanOffset = 0;
 let lastMetricsPruneAt: number | null = null;
 const lastCriticalAlertNotificationAt = new Map<string, number>();
 
@@ -24,6 +41,9 @@ export interface WorkerMetrics {
   processed: number;
   settled: number;
   failed: number;
+  /** Payments returned to their payer's credits by the worker. */
+  returned: number;
+  /** Rows the chain had nothing to say about yet: left for the next run. */
   retried: number;
   skipped: number;
 }
@@ -78,11 +98,10 @@ const workerMetrics: WorkerMetrics = {
   processed: 0,
   settled: 0,
   failed: 0,
+  returned: 0,
   retried: 0,
   skipped: 0,
 };
-
-type SettlementOutcome = "settled" | "failed" | "retried" | "skipped";
 
 export function getX402AlertThresholds(): X402AlertThresholds {
   return {
@@ -163,17 +182,20 @@ export function evaluateX402Alerts(
   return alerts;
 }
 
+const NOT_LANDED_STATUSES = ["submitted", "pending"] as const;
+
 export async function getX402OrgPaymentSummary(
   orgId: string
 ): Promise<X402OrgPaymentSummary> {
   const [total, pending, verified, settled, failed, oldestPending] = await Promise.all([
     prisma.x402Payment.count({ where: { orgId } }),
-    prisma.x402Payment.count({ where: { orgId, status: "pending" } }),
+    // Not yet known to have landed: "submitted" (and "pending" on old rows).
+    prisma.x402Payment.count({ where: { orgId, status: { in: [...NOT_LANDED_STATUSES] } } }),
     prisma.x402Payment.count({ where: { orgId, status: "verified" } }),
     prisma.x402Payment.count({ where: { orgId, status: "settled" } }),
     prisma.x402Payment.count({ where: { orgId, status: "failed" } }),
     prisma.x402Payment.findFirst({
-      where: { orgId, status: "pending" },
+      where: { orgId, status: { in: [...NOT_LANDED_STATUSES] } },
       orderBy: { createdAt: "asc" },
       select: { createdAt: true },
     }),
@@ -303,27 +325,39 @@ export async function runX402SettlementTick(): Promise<void> {
   }
 
   try {
-    const payments = await prisma.x402Payment.findMany({
+    // Rows of THIS chain that are not finished: sent and not yet known to
+    // have landed, or landed and not yet final. No count of attempts ends a
+    // row; only the chain does.
+    const batchSize = env.X402_SETTLEMENT_BATCH_SIZE;
+    const payments: X402SettlementRow[] = await prisma.x402Payment.findMany({
       where: {
-        status: { in: ["verified", "pending"] },
-        retryCount: { lt: env.X402_SETTLEMENT_MAX_RETRIES },
+        status: { in: ["submitted", "verified"] },
+        network: x402NetworkFor(env.SOLANA_NETWORK),
       },
-      orderBy: { createdAt: "asc" },
-      take: env.X402_SETTLEMENT_BATCH_SIZE,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      skip: scanOffset,
+      take: batchSize,
+      select: SETTLEMENT_ROW_SELECT,
     });
 
+    const deps = buildX402SettlementDeps();
     let settled = 0;
     let failed = 0;
+    let returned = 0;
     let retried = 0;
     let skipped = 0;
 
     for (const payment of payments) {
-      const outcome = await settlePayment(payment);
+      const outcome = await settlePayment(payment, deps);
       if (outcome === "settled") settled += 1;
       if (outcome === "failed") failed += 1;
-      if (outcome === "retried") retried += 1;
+      if (outcome === "returned") returned += 1;
+      if (outcome === "waiting") retried += 1;
       if (outcome === "skipped") skipped += 1;
     }
+    // Rows left as they were stay in the list: the next run starts after
+    // them. A short batch was the end of the list.
+    scanOffset = payments.length < batchSize ? 0 : scanOffset + retried + skipped;
 
     const snapshots = await persistAllX402SettlementSnapshots();
     const snapshottedOrgs = snapshots.length;
@@ -342,6 +376,7 @@ export async function runX402SettlementTick(): Promise<void> {
     workerMetrics.processed += payments.length;
     workerMetrics.settled += settled;
     workerMetrics.failed += failed;
+    workerMetrics.returned += returned;
     workerMetrics.retried += retried;
     workerMetrics.skipped += skipped;
     workerMetrics.lastTickAt = new Date().toISOString();
@@ -353,7 +388,11 @@ export async function runX402SettlementTick(): Promise<void> {
         scanned: payments.length,
         settled,
         failed,
-        retried,
+        // Payments that landed for a request that was never answered, given
+        // back to the payer's credit balance.
+        returned,
+        // Left for the next run: the chain had nothing final to say yet.
+        waiting: retried,
         skipped,
         snapshottedOrgs,
         criticalAlertNotifications,
@@ -383,130 +422,113 @@ export function getX402SettlementWorkerMetrics(): WorkerMetrics {
   return { ...workerMetrics, enabled, running: enabled };
 }
 
-async function settlePayment(payment: X402Payment): Promise<SettlementOutcome> {
-  if (payment.status === "pending") {
-    return retryOrFail(
-      payment,
-      "Payment is pending verification and cannot be settled yet"
-    );
-  }
+const SETTLEMENT_ROW_SELECT = {
+  id: true,
+  status: true,
+  txSignature: true,
+  recentBlockhash: true,
+  servedAt: true,
+  refundedAt: true,
+  submittedAt: true,
+  verifiedAt: true,
+  createdAt: true,
+} as const;
 
-  if (payment.status !== "verified") {
-    return "skipped";
-  }
+/**
+ * The worker's reads and writes. The fate of a signature comes from the
+ * shared connection; every write is a compare-and-set whose count is
+ * checked, so a request finishing the same row at the same moment loses
+ * nothing and doubles nothing.
+ */
+export function buildX402SettlementDeps(
+  checkCluster: () => Promise<{ ok: boolean }> = ensureSolanaCluster,
+): X402SettlementDeps {
+  // Asked once for the run these deps are built for, and only if a row
+  // needs the chain read.
+  let cluster: Promise<boolean> | null = null;
+  return {
+    submitTransactions: env.X402_SUBMIT_TRANSACTIONS,
+    confirmWaitMs: env.X402_CONFIRM_WAIT_MS,
+    now: () => new Date(),
 
-  if (!payment.txSignature) {
-    return retryOrFail(payment, "Verified payment is missing transaction signature");
-  }
-
-  if (!env.X402_SUBMIT_TRANSACTIONS) {
-    return markSettled(payment.id);
-  }
-
-  const status = await fetchSignatureStatus(payment.txSignature);
-  if (!status) {
-    return retryOrFail(payment, "Transaction not visible on chain yet");
-  }
-
-  if (status.err) {
-    return markFailed(payment, `On-chain transaction error: ${JSON.stringify(status.err)}`);
-  }
-
-  if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") {
-    return markSettled(payment.id);
-  }
-
-  return retryOrFail(
-    payment,
-    `Transaction confirmation status is ${status.confirmationStatus ?? "unknown"}`
-  );
-}
-
-async function fetchSignatureStatus(
-  txSignature: string
-): Promise<SignatureStatus | null> {
-  try {
-    const connection = getConnection();
-    const statuses = await connection.getSignatureStatuses([txSignature], {
-      searchTransactionHistory: true,
-    });
-    return statuses.value[0] ?? null;
-  } catch (error) {
-    logger.error({ error, txSignature }, "Failed to fetch transaction status");
-    return null;
-  }
-}
-
-async function markSettled(paymentId: string): Promise<SettlementOutcome> {
-  const result = await prisma.x402Payment.updateMany({
-    where: {
-      id: paymentId,
-      status: "verified",
+    clusterOk: () => {
+      if (!cluster) {
+        cluster = (async () => {
+          try {
+            const ok = (await checkCluster()).ok;
+            if (!ok) {
+              logger.error(
+                "X402 settlement: the node does not serve the configured chain; no payment is decided from it",
+              );
+            }
+            return ok;
+          } catch {
+            return false;
+          }
+        })();
+      }
+      return cluster;
     },
-    data: {
-      status: "settled",
-      settledAt: new Date(),
-      failureReason: null,
-    },
-  });
 
-  return result.count > 0 ? "settled" : "skipped";
-}
+    readFate: (input) =>
+      readX402Fate(input, (fateInput) =>
+        signatureFate(fateInput, buildSignatureFateDeps({ connection: getSolanaConnection() })),
+      ),
 
-async function retryOrFail(
-  payment: X402Payment,
-  reason: string
-): Promise<SettlementOutcome> {
-  const nextRetryCount = payment.retryCount + 1;
-  const shouldFail = nextRetryCount >= env.X402_SETTLEMENT_MAX_RETRIES;
-
-  const result = await prisma.x402Payment.updateMany({
-    where: {
-      id: payment.id,
-      status: payment.status,
-      retryCount: payment.retryCount,
-    },
-    data: shouldFail
-      ? {
-          status: "failed",
-          retryCount: { increment: 1 },
-          failureReason: reason,
-        }
-      : {
-          retryCount: { increment: 1 },
-          failureReason: reason,
+    markSettled: async (paymentId, at) => {
+      const result = await prisma.x402Payment.updateMany({
+        where: {
+          id: paymentId,
+          status: "verified",
+          servedAt: { not: null },
+          refundedAt: null,
         },
-  });
+        data: {
+          status: "settled",
+          settledAt: at,
+          failureReason: null,
+        },
+      });
+      return result.count === 1;
+    },
 
-  if (result.count === 0) {
-    return "skipped";
+    markFailed: async (paymentId, why) => {
+      const result = await prisma.x402Payment.updateMany({
+        where: { id: paymentId, status: "submitted" },
+        data: {
+          status: "failed",
+          failureReason:
+            why === "failed_on_chain" ? X402_FAILED_ON_CHAIN_REASON : X402_NEVER_LANDED_REASON,
+        },
+      });
+      return result.count === 1;
+    },
+
+    refund: (input) => returnX402Payment(prisma as unknown as X402RefundDb, input),
+  };
+}
+
+/**
+ * One row. A row that throws (the database, mid-write) is left for the
+ * next run and does not stop the rows after it.
+ */
+async function settlePayment(
+  payment: X402SettlementRow,
+  deps: X402SettlementDeps,
+): Promise<X402SettleOutcome> {
+  try {
+    const outcome = await settleX402Row(payment, deps);
+    if (outcome === "returned") {
+      logger.info(
+        { paymentId: payment.id, txSignature: payment.txSignature, was: payment.status },
+        "X402 payment returned: it landed for a request that was never answered, and went back to the payer's credit balance",
+      );
+    }
+    return outcome;
+  } catch (error) {
+    logger.error({ error, paymentId: payment.id }, "Failed settling an X402 payment; left for the next run");
+    return "waiting";
   }
-
-  return shouldFail ? "failed" : "retried";
-}
-
-async function markFailed(
-  payment: X402Payment,
-  reason: string
-): Promise<SettlementOutcome> {
-  const result = await prisma.x402Payment.updateMany({
-    where: {
-      id: payment.id,
-      status: payment.status,
-      retryCount: payment.retryCount,
-    },
-    data: {
-      status: "failed",
-      retryCount: { increment: 1 },
-      failureReason: reason,
-    },
-  });
-
-  return result.count > 0 ? "failed" : "skipped";
-}
-
-function getConnection(): Connection {
-  return getSolanaConnection();
 }
 
 function shouldRunMetricsPrune(): boolean {

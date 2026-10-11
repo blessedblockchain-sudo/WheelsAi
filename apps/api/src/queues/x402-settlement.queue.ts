@@ -17,6 +17,14 @@ let worker: Worker | null = null;
  * Starts the BullMQ-backed x402 settlement queue and worker.
  * Only starts if `env.X402_SETTLEMENT_WORKER_ENABLED` is true.
  * Registers a repeatable job that fires every `env.X402_SETTLEMENT_INTERVAL_MS`.
+ *
+ * Each run finishes the payments a request left open, from what the chain
+ * says and nothing else (services/x402Payments.ts `settleX402Row`): a
+ * served payment that is final is settled; one that landed for a request
+ * that was never answered is returned to the payer's credits; one that
+ * failed or can never land is failed. One run at a time (concurrency 1,
+ * and the run refuses to overlap itself); a run that throws is logged and
+ * the next one starts from the rows as they are.
  */
 export async function startX402Queue(): Promise<void> {
   if (!env.X402_SETTLEMENT_WORKER_ENABLED) {

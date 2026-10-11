@@ -15,7 +15,7 @@ import {
 } from "../services/openaiCompat.js";
 import { env } from "../config/env.js";
 import { createLogger } from "../utils/logger.js";
-import { Prisma, prisma } from "@wheelsai/db";
+import { prisma } from "@wheelsai/db";
 import { PRICING_TIERS, calculateTokenCost } from "@wheelsai/shared";
 import { abortOnClientClose, CLIENT_GONE } from "../services/chatStreamSettlement.js";
 import { proxyToNode, recordDeploymentUsage as recordUsage } from "../services/buildDeploymentChatDeps.js";
@@ -55,16 +55,20 @@ import {
   type InferenceHoldPrisma,
 } from "../services/inferenceCreditHold.js";
 import {
+  X402_REFUSAL_MESSAGES,
   create402Response,
   createPaymentRequestId,
-  estimatePrice,
-  generatePaymentRequirement,
   getPaymentFromHeaders,
   hasPaymentHeader,
   parsePaymentHeader,
-  verifyPayment,
+  x402ReturnedNotice,
   type PaymentRequirement,
+  type X402ReturnedNotice,
 } from "../services/x402.js";
+import { getX402Payments } from "../services/buildX402PaymentsDeps.js";
+import type { X402PaymentsApi } from "../services/x402Payments.js";
+import { priceMicroUsd } from "../services/x402Price.js";
+import type { X402RefusalReason } from "../services/x402Types.js";
 
 const logger = createLogger("inference-routes");
 
@@ -90,7 +94,11 @@ interface BillingResolution {
 }
 
 interface InferenceRouteDeps {
-  verifyPaymentFn?: typeof verifyPayment;
+  /**
+   * What happens to an x402 payment: read, claimed, sent, served or
+   * returned. Defaults to the bound form (services/buildX402PaymentsDeps.ts).
+   */
+  x402?: X402PaymentsApi;
   /** The /v1 guard; defaults to createOpenAiAuth(). */
   auth?: preHandlerHookHandler;
   /** Keep-alive comment interval on a stream; 0 turns it off. */
@@ -154,7 +162,7 @@ const NOT_SERVING_YET_STATUSES = ["pending", "provisioning", "degraded"] as cons
 export function createDeploymentCompletionHandler(
   deps: InferenceRouteDeps = {},
 ): DeploymentCompletionHandler {
-  const verifyPaymentFn = deps.verifyPaymentFn ?? verifyPayment;
+  const x402 = deps.x402 ?? getX402Payments();
   const heartbeatMs = deps.heartbeatMs ?? STREAM_HEARTBEAT_MS;
   const recordLatency = deps.recordLatency ?? recordLatencySample;
   const surface = deps.surface ?? "v1";
@@ -168,13 +176,20 @@ export function createDeploymentCompletionHandler(
     // Wired before the first await: a client that leaves stops the node call.
     const abort = abortOnClientClose(reply.raw);
 
+    // Set when a request paid by x402 produced no answer and its payment
+    // went back to the payer's credits: every refusal after that says so.
+    let returnedPayment: X402ReturnedNotice | null = null;
+
     const refuse = (
       code: Parameters<typeof openAiError>[0],
       detail: Parameters<typeof openAiError>[1] = {},
       status?: number,
     ) => {
       const error = openAiError(code, detail);
-      return sendOpenAiError(reply, status === undefined ? error : { ...error, status });
+      return sendOpenAiError(
+        reply,
+        withReturnedPayment(status === undefined ? error : { ...error, status }, returnedPayment),
+      );
     };
 
     const parsed = parseChatCompletionRequest(request.body);
@@ -280,7 +295,9 @@ export function createDeploymentCompletionHandler(
         modelTier: deployment.model.pricingTier as keyof typeof PRICING_TIERS,
         body: billable,
         creditBalanceCents: creditBalance?.balanceCents ?? null,
-        verifyPaymentFn,
+        x402,
+        // A payment is looked at only for a deployment that can answer.
+        hasHealthyNode: selectNode(deployment.nodes as NodeInfo[]) !== null,
       });
     }
 
@@ -320,7 +337,7 @@ export function createDeploymentCompletionHandler(
     const startTime = Date.now();
     let closed = false;
 
-    /** Nothing was produced: the hold goes back and an x402 payment is failed. */
+    /** Nothing was produced: the hold goes back and an x402 payment is returned. */
     const abandon = async (reason: string, options: { countError?: boolean } = {}) => {
       if (closed) return;
       closed = true;
@@ -336,7 +353,9 @@ export function createDeploymentCompletionHandler(
           )
           .catch((err) => logger.error({ err, orgId, heldCents }, "Failed to release inference hold"));
       }
-      if (billing.x402PaymentId) await markX402PaymentFailed(billing.x402PaymentId, reason);
+      if (billing.x402PaymentId) {
+        returnedPayment = await returnX402Payment(x402, billing.x402PaymentId, reason);
+      }
       if (options.countError) {
         recordUsage(orgId, deployment.id, null, Date.now() - startTime, 0, deployment.gpuTier, true).catch(
           (err) => logger.error({ err }, "Failed to record usage"),
@@ -386,17 +405,11 @@ export function createDeploymentCompletionHandler(
           );
         }
       } else if (billing.x402PaymentId) {
-        // A5: "settled" means CONFIRMED ON-CHAIN, and only the settlement
-        // worker may say so. The route has merely verified the payment's
-        // signature/shape, so it records "verified"; the worker owns the
-        // verified -> settled transition after broadcast + confirmation.
-        await prisma.x402Payment.update({
-          where: { id: billing.x402PaymentId },
-          data: {
-            status: "verified",
-            verifiedAt: new Date(),
-          },
-        });
+        // The payment landed before the request was served ("verified").
+        // An answer was produced: the row is marked served, which is what
+        // keeps it from ever being returned. "settled" is the settlement
+        // worker's to say, once the payment is final.
+        await markX402PaymentServed(x402, billing.x402PaymentId);
       }
 
       // Record usage metrics (async, non-blocking). Compute metering uses the
@@ -532,7 +545,10 @@ export function createDeploymentCompletionHandler(
         "error",
         sendOpenAiError(
           reply,
-          nodeStatusError(response.status, nodeErrorMessage(text), retryAfterOf(response)),
+          withReturnedPayment(
+            nodeStatusError(response.status, nodeErrorMessage(text), retryAfterOf(response)),
+            returnedPayment,
+          ),
         ),
       );
     }
@@ -729,7 +745,9 @@ export async function resolveBilling(params: {
   modelTier: keyof typeof PRICING_TIERS;
   body: BillableRequest;
   creditBalanceCents: bigint | null;
-  verifyPaymentFn: typeof verifyPayment;
+  x402: X402PaymentsApi;
+  /** Whether the deployment has a healthy node at this moment. */
+  hasHealthyNode: boolean;
 }): Promise<BillingResolution | null> {
   const {
     request,
@@ -739,7 +757,8 @@ export async function resolveBilling(params: {
     modelTier,
     body,
     creditBalanceCents,
-    verifyPaymentFn,
+    x402,
+    hasHealthyNode,
   } = params;
   const hasSufficientCredits =
     creditBalanceCents !== null && creditBalanceCents >= MIN_INFERENCE_BALANCE_CENTS;
@@ -753,136 +772,60 @@ export async function resolveBilling(params: {
     return { mode: "credits", requestId };
   }
 
-  const estimatedInputTokens = estimatePromptTokens(body.messages);
-  const estimatedOutputTokens = estimateCompletionTokens(body.max_tokens);
-  const quote = estimatePrice(estimatedInputTokens, estimatedOutputTokens, modelTier);
-  const requirement = generatePaymentRequirement(
-    quote,
-    env.X402_DEFAULT_ASSET,
-    `deployment:${deploymentId};request:${requestId}`
-  );
-
-  if (hasPaymentHeader(request.headers)) {
-    const rawHeader = getPaymentFromHeaders(request.headers);
-    if (!rawHeader) {
-      if (x402Mode === "required" || !hasSufficientCredits) {
-        return replyWithX402Required(reply, requirement, requestId, "Missing X-Payment header");
-      }
-      return { mode: "credits", requestId };
-    }
-
-    const parsedHeader = parsePaymentHeader(rawHeader);
-    if (!parsedHeader) {
-      if (x402Mode === "required" || !hasSufficientCredits) {
-        return replyWithX402Required(reply, requirement, requestId, "Invalid X-Payment header format");
-      }
-      return { mode: "credits", requestId };
-    }
-
-    const verification = await verifyPaymentFn(parsedHeader, requirement);
-
-    const persistedPayment = await persistX402Payment({
-      orgId,
-      deploymentId,
-      requestId,
-      requirement,
-      verification,
-    });
-
-    if (persistedPayment.replayDetected) {
-      sendOpenAiError(
-        reply,
-        openAiError("payment_already_used", {
-          extra: { paymentId: persistedPayment.payment.id, requestId },
-        }),
-      );
-      return null;
-    }
-
-    if (!verification.isValid) {
-      if (x402Mode === "required" || !hasSufficientCredits) {
-        return replyWithX402Required(
-          reply,
-          requirement,
-          requestId,
-          verification.error ?? "Payment verification failed"
-        );
-      }
-      return { mode: "credits", requestId };
-    }
-
-    return {
-      mode: "x402",
-      requestId,
-      x402PaymentId: persistedPayment.payment.id,
-    };
-  }
-
-  if (x402Mode === "required" || !hasSufficientCredits) {
-    return replyWithX402Required(reply, requirement, requestId);
-  }
-
-  return { mode: "credits", requestId };
-}
-
-async function persistX402Payment(params: {
-  orgId: string;
-  deploymentId: string;
-  requestId: string;
-  requirement: PaymentRequirement;
-  verification: Awaited<ReturnType<typeof verifyPayment>>;
-}): Promise<{ payment: { id: string }; replayDetected: boolean }> {
-  const { orgId, deploymentId, requestId, requirement, verification } = params;
-  const txSignature = verification.txSignature ?? null;
-
-  if (txSignature) {
-    const existing = await prisma.x402Payment.findUnique({
-      where: { txSignature },
-      select: { id: true },
-    });
-    if (existing) {
-      return { payment: existing, replayDetected: true };
-    }
-  }
-
-  const status = verification.isValid ? "verified" : "failed";
-  const data = {
+  // The request's price in whole micro-dollars, worked out from THIS body:
+  // the challenge and the paid retry are each priced from what they carry.
+  const scope = {
     orgId,
     deploymentId,
     requestId,
-    network: requirement.network,
-    asset: requirement.asset,
-    amountRaw: requirement.amount,
-    amountUsd: requirement.amountUsd,
-    payerAddress: verification.payer || "unknown",
-    payeeAddress: requirement.payTo,
-    txSignature,
-    status,
-    verifiedAt: verification.isValid ? new Date() : null,
-    failureReason: verification.isValid ? null : verification.error ?? "Payment verification failed",
+    microUsd: priceMicroUsd({
+      modelTier,
+      estimatedInputTokens: estimatePromptTokens(body.messages),
+      estimatedOutputTokens: estimateCompletionTokens(body.max_tokens),
+    }),
+  };
+  /** A fresh challenge, or credits where the mode and the balance allow. */
+  const challengeOrCredits = async (reason?: X402RefusalReason): Promise<BillingResolution | null> => {
+    if (x402Mode === "required" || !hasSufficientCredits) {
+      return replyWithX402Required(reply, await x402.requirement(scope), requestId, reason);
+    }
+    return { mode: "credits", requestId };
   };
 
-  try {
-    const payment = await prisma.x402Payment.create({
-      data,
-      select: { id: true },
-    });
-    return { payment, replayDetected: false };
-  } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002" &&
-      txSignature
-    ) {
-      const existing = await prisma.x402Payment.findUnique({
-        where: { txSignature },
-        select: { id: true },
-      });
-      if (existing) {
-        return { payment: existing, replayDetected: true };
-      }
-    }
-    throw error;
+  if (!hasPaymentHeader(request.headers)) return challengeOrCredits();
+
+  const rawHeader = getPaymentFromHeaders(request.headers);
+  const header = rawHeader ? parsePaymentHeader(rawHeader) : null;
+  // A header that cannot be read is a payment that cannot be read.
+  if (!header) return challengeOrCredits("payment_invalid");
+
+  const taken = await x402.take({ ...scope, header, hasHealthyNode });
+  switch (taken.outcome) {
+    case "taken":
+      return { mode: "x402", requestId, x402PaymentId: taken.paymentId };
+    case "refused":
+      return challengeOrCredits(taken.reason);
+    case "already_used":
+      sendOpenAiError(
+        reply,
+        openAiError("payment_already_used", {
+          extra: { ...(taken.paymentId && { paymentId: taken.paymentId }), requestId },
+        }),
+      );
+      return null;
+    case "unavailable":
+      // No payment was looked at, so none was touched.
+      reply.header("X-Request-Id", requestId);
+      sendOpenAiError(
+        reply,
+        openAiError("service_unavailable", {
+          message:
+            taken.why === "no_healthy_node"
+              ? "No healthy nodes available for this deployment"
+              : "Payments cannot be checked right now. Nothing was taken. Try again in a moment.",
+        }),
+      );
+      return null;
   }
 }
 
@@ -890,7 +833,7 @@ function replyWithX402Required(
   reply: FastifyReply,
   requirement: PaymentRequirement,
   requestId: string,
-  reason?: string
+  reason?: X402RefusalReason
 ): null {
   const paymentResponse = create402Response(requirement);
 
@@ -901,11 +844,10 @@ function replyWithX402Required(
 
   // `payment`, `requestId` and `reason` stay at the top level, where x402
   // clients read them; `error` is OpenAI's object so an OpenAI SDK prints the
-  // reason instead of "[object Object]".
+  // reason instead of "[object Object]". The sentence is one of ours: nothing
+  // a node or the database said is ever part of it.
   const error = openAiError("x402_payment_required", {
-    message: reason
-      ? `${paymentResponse.body.message}: ${reason}`
-      : paymentResponse.body.message,
+    message: reason ? X402_REFUSAL_MESSAGES[reason] : paymentResponse.body.message,
   });
   for (const [header, value] of Object.entries(error.headers)) reply.header(header, value);
   reply.status(402).send({
@@ -917,6 +859,67 @@ function replyWithX402Required(
   return null;
 }
 
+/**
+ * An error as it is, or with the one field more a payer reads when the
+ * payment for the request went back to their credits.
+ */
+function withReturnedPayment<T extends { body: object }>(
+  error: T,
+  returned: X402ReturnedNotice | null,
+): T {
+  if (!returned) return error;
+  return { ...error, body: { ...error.body, payment: returned } };
+}
+
+/**
+ * An answer was produced for a request paid by x402. Never throws: the
+ * answer exists whatever becomes of this write.
+ */
+async function markX402PaymentServed(x402: X402PaymentsApi, paymentId: string): Promise<void> {
+  try {
+    const marked = await x402.served(paymentId);
+    if (!marked) {
+      logger.warn({ paymentId }, "x402 payment was not there to be marked served");
+    }
+  } catch (err) {
+    logger.error({ err, paymentId }, "Failed to mark an x402 payment served");
+  }
+}
+
+/**
+ * No answer was produced for a request paid by x402: the payment goes back
+ * to the payer's credits, once. Answers what the payer is told, or null
+ * when nothing was returned here (the settlement worker returns a payment
+ * this call could not). Never throws.
+ */
+async function returnX402Payment(
+  x402: X402PaymentsApi,
+  paymentId: string,
+  reason: string,
+): Promise<X402ReturnedNotice | null> {
+  try {
+    const result = await x402.returned(paymentId);
+    if (!result.returned) {
+      logger.warn({ paymentId, why: result.reason, reason }, "x402 payment was not returned");
+      return null;
+    }
+    logger.info(
+      {
+        paymentId,
+        orgId: result.orgId,
+        refundMicroUsd: result.refundMicroUsd.toString(),
+        creditedCents: result.creditedCents.toString(),
+        reason,
+      },
+      "x402 payment returned as credits",
+    );
+    return x402ReturnedNotice(result.refundMicroUsd);
+  } catch (err) {
+    logger.error({ err, paymentId, reason }, "Failed to return an x402 payment; the settlement worker will");
+    return null;
+  }
+}
+
 function replyWithCreditRequired(reply: FastifyReply): null {
   sendOpenAiError(
     reply,
@@ -925,16 +928,6 @@ function replyWithCreditRequired(reply: FastifyReply): null {
     }),
   );
   return null;
-}
-
-async function markX402PaymentFailed(paymentId: string, reason: string): Promise<void> {
-  await prisma.x402Payment.update({
-    where: { id: paymentId },
-    data: {
-      status: "failed",
-      failureReason: reason,
-    },
-  });
 }
 
 export function getOrCreateRequestId(

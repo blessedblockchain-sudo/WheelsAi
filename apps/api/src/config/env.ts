@@ -85,7 +85,6 @@ const envSchema = z.object({
     .default(false),
   X402_SETTLEMENT_INTERVAL_MS: z.coerce.number().int().min(1000).default(15000),
   X402_SETTLEMENT_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(25),
-  X402_SETTLEMENT_MAX_RETRIES: z.coerce.number().int().min(1).max(20).default(5),
   X402_METRICS_HISTORY_LIMIT: z.coerce.number().int().min(1).max(1000).default(168),
   X402_METRICS_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   X402_METRICS_PRUNE_INTERVAL_MINUTES: z.coerce
@@ -958,6 +957,8 @@ export const RETIRED_SETTINGS: Record<string, string> = {
     "use SOL_PRICE_SOURCE=static with SOL_PRICE_STATIC_USD on a local chain, or SOL_PRICE_SOURCE=pyth",
   PAYOUT_SOL_PRICE_USD:
     "SOL payouts are priced by SOL_PRICE_SOURCE (pyth, or static with SOL_PRICE_STATIC_USD on a local chain)",
+  X402_SETTLEMENT_MAX_RETRIES:
+    "an x402 payment is ended by what the chain says became of it, never by a count of attempts",
 };
 
 /** The retired settings that are still set, each with what replaced it. */

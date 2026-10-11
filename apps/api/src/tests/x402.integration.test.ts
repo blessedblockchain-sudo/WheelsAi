@@ -11,6 +11,10 @@ function setupEnv() {
     process.env.DATABASE_URL ?? "postgresql://wheelsai:wheelsai@localhost:5432/wheelsai";
   process.env.JWT_SECRET =
     process.env.JWT_SECRET ?? "12345678901234567890123456789012";
+  // The node these tests talk to is a stand-in on this machine. The route
+  // lets a node on localhost through only in a development process that
+  // says so (services/nodeUrlAllowlist.ts).
+  process.env.ALLOW_LOOPBACK_NODE_URLS = process.env.ALLOW_LOOPBACK_NODE_URLS ?? "true";
 }
 
 test("x402 handshake and paid inference flow", async () => {
@@ -30,14 +34,16 @@ test("x402 handshake and paid inference flow", async () => {
   const originalMethods = {
     deploymentFindFirst: prismaAny.deployment.findFirst,
     creditBalanceFindUnique: prismaAny.creditBalance.findUnique,
-    x402PaymentFindUnique: prismaAny.x402Payment.findUnique,
-    x402PaymentCreate: prismaAny.x402Payment.create,
-    x402PaymentUpdate: prismaAny.x402Payment.update,
     usageRecordUpsert: prismaAny.usageRecord.upsert,
   };
 
-  const createdPayments: Array<{ requestId: string; txSignature: string | null }> = [];
-  const paymentUpdates: Array<{ data?: { status?: string } }> = [];
+  // What becomes of a payment (read, claimed, sent, served or returned) is
+  // services/x402Payments.ts, covered with stand-ins in
+  // x402Payments.unit.test.ts and x402InferenceRoute.unit.test.ts. Here it
+  // is a stand-in itself: this test is the handshake through the route.
+  const takenPayments: Array<{ requestId: string; signature: string; hasHealthyNode: boolean }> = [];
+  const servedPayments: string[] = [];
+  const returnedPayments: string[] = [];
 
   prismaAny.deployment.findFirst = async () => ({
     id: "dep_1",
@@ -59,15 +65,6 @@ test("x402 handshake and paid inference flow", async () => {
     ],
   });
   prismaAny.creditBalance.findUnique = async () => ({ orgId: "org_1", balanceCents: BigInt(0) });
-  prismaAny.x402Payment.findUnique = async () => null;
-  prismaAny.x402Payment.create = async ({ data }: any) => {
-    createdPayments.push({ requestId: data.requestId, txSignature: data.txSignature });
-    return { id: "pay_1" };
-  };
-  prismaAny.x402Payment.update = async (args: any) => {
-    paymentUpdates.push(args);
-    return { id: "pay_1" };
-  };
   prismaAny.usageRecord.upsert = async () => ({ id: "usage_1" });
 
   const originalFetch = globalThis.fetch;
@@ -76,6 +73,7 @@ test("x402 handshake and paid inference flow", async () => {
       JSON.stringify({
         id: "chatcmpl_1",
         object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
         usage: { prompt_tokens: 120, completion_tokens: 80 },
       }),
       {
@@ -94,15 +92,39 @@ test("x402 handshake and paid inference flow", async () => {
     };
   });
 
-  const verifyPaymentFn = async () => ({
-    isValid: true,
-    payer: "payer_1",
-    amount: "1000",
-    asset: "USDC",
-    txSignature: "sig_1",
-  });
+  const x402 = {
+    requirement: async (scope: { deploymentId: string; requestId: string }) => ({
+      scheme: "exact" as const,
+      network: "solana:devnet" as const,
+      asset: "USDC" as const,
+      amount: "1000",
+      amountUsd: 0.001,
+      payTo: "treasury_1",
+      payToTokenAccount: "treasury_usdc_1",
+      mint: "usdc_mint_1",
+      memo: `deployment:${scope.deploymentId};request:${scope.requestId}`,
+      validUntil: Math.floor(Date.now() / 1000) + 120,
+      quote: null,
+    }),
+    take: async (input: { requestId: string; header: { signature: string }; hasHealthyNode: boolean }) => {
+      takenPayments.push({
+        requestId: input.requestId,
+        signature: input.header.signature,
+        hasHealthyNode: input.hasHealthyNode,
+      });
+      return { outcome: "taken" as const, paymentId: "pay_1" };
+    },
+    served: async (paymentId: string) => {
+      servedPayments.push(paymentId);
+      return true;
+    },
+    returned: async (paymentId: string) => {
+      returnedPayments.push(paymentId);
+      return { returned: false as const, reason: "already_ended" as const };
+    },
+  };
 
-  await app.register(createInferenceRoutes({ verifyPaymentFn }));
+  await app.register(createInferenceRoutes({ x402 }));
 
   const requestPayload = {
     messages: [{ role: "user", content: "Hello world" }],
@@ -133,22 +155,20 @@ test("x402 handshake and paid inference flow", async () => {
   });
 
   assert.equal(secondAttempt.statusCode, 200);
-  assert.equal(createdPayments.length, 1);
-  assert.equal(createdPayments[0]?.requestId, "req_test_1");
-  assert.equal(createdPayments[0]?.txSignature, "sig_1");
-  // A5: the route may only mark the payment "verified" — "settled" is
-  // reserved for the settlement worker after on-chain confirmation.
-  assert.equal(paymentUpdates.length, 1);
-  assert.equal(paymentUpdates[0]?.data?.status, "verified");
+  assert.equal(takenPayments.length, 1);
+  assert.equal(takenPayments[0]?.requestId, "req_test_1");
+  assert.equal(takenPayments[0]?.signature, Buffer.from("mock_signature").toString("base64"));
+  assert.equal(takenPayments[0]?.hasHealthyNode, true);
+  // An answer was produced: the payment is marked served, never returned.
+  // "settled" is reserved for the settlement worker, once it is final.
+  assert.deepEqual(servedPayments, ["pay_1"]);
+  assert.deepEqual(returnedPayments, []);
 
   await app.close();
   globalThis.fetch = originalFetch;
 
   prismaAny.deployment.findFirst = originalMethods.deploymentFindFirst;
   prismaAny.creditBalance.findUnique = originalMethods.creditBalanceFindUnique;
-  prismaAny.x402Payment.findUnique = originalMethods.x402PaymentFindUnique;
-  prismaAny.x402Payment.create = originalMethods.x402PaymentCreate;
-  prismaAny.x402Payment.update = originalMethods.x402PaymentUpdate;
   prismaAny.usageRecord.upsert = originalMethods.usageRecordUpsert;
 });
 
@@ -163,7 +183,6 @@ test("x402 settlement tick updates counters and statuses", async () => {
     ]);
 
   (env as any).X402_SUBMIT_TRANSACTIONS = false;
-  (env as any).X402_SETTLEMENT_MAX_RETRIES = 3;
   (env as any).X402_SETTLEMENT_BATCH_SIZE = 25;
   (env as any).X402_METRICS_PRUNE_INTERVAL_MINUTES = 1;
   (env as any).X402_ALERT_WEBHOOK_URL = "https://alerts.example.test/x402";
@@ -204,6 +223,11 @@ test("x402 settlement tick updates counters and statuses", async () => {
       txSignature: "sig_1",
       status: "verified",
       verifiedAt: now,
+      // The request was answered: with broadcasting off it settles at once.
+      servedAt: now,
+      refundedAt: null,
+      submittedAt: null,
+      recentBlockhash: null,
       settledAt: null,
       failureReason: null,
       retryCount: 0,
@@ -223,8 +247,14 @@ test("x402 settlement tick updates counters and statuses", async () => {
       payerAddress: "payer_2",
       payeeAddress: "payee_1",
       txSignature: "sig_2",
-      status: "pending",
+      // Sent, and not yet known to have landed: only the chain may say, and
+      // with broadcasting off the chain is not asked. Left as it is.
+      status: "submitted",
       verifiedAt: null,
+      servedAt: null,
+      refundedAt: null,
+      submittedAt: now,
+      recentBlockhash: "blockhash_2",
       settledAt: null,
       failureReason: null,
       retryCount: 0,
@@ -238,14 +268,14 @@ test("x402 settlement tick updates counters and statuses", async () => {
   };
   prismaAny.x402Payment.groupBy = async () => [{ orgId: "org_1" }];
   prismaAny.x402Payment.count = async ({ where }: any) => {
-    if (where?.status === "pending") return 1;
+    if (where?.status?.in) return 1;
     if (where?.status === "verified") return 1;
     if (where?.status === "settled") return 0;
     if (where?.status === "failed") return 0;
     return 2;
   };
   prismaAny.x402Payment.findFirst = async ({ where }: any) => {
-    if (where?.status === "pending") {
+    if (where?.status?.in) {
       return { createdAt: new Date(Date.now() - 5 * 60 * 1000) };
     }
     return null;
@@ -284,13 +314,10 @@ test("x402 settlement tick updates counters and statuses", async () => {
   assert.ok(
     updates.some((update) => update.where?.id === "pay_verified" && update.data?.status === "settled")
   );
-  assert.ok(
-    updates.some(
-      (update) =>
-        update.where?.id === "pay_pending" &&
-        update.data?.retryCount?.increment === 1
-    )
-  );
+  // No count of attempts ends a row: the one the chain has said nothing
+  // about is not written to at all.
+  assert.ok(!updates.some((update) => update.where?.id === "pay_pending"));
+  assert.ok(after.retried >= before.retried + 1);
   assert.ok(executeRawCalls >= 2);
   assert.equal(alertWebhookCalls, 1);
   const webhookTimestamp = lastWebhookHeaders["x-wheelsai-alert-timestamp"];

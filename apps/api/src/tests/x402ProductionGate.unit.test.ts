@@ -160,3 +160,17 @@ test("the quote holds for two minutes and a paid request waits thirty seconds, u
   assert.throws(() => validateEnv({ ...base, X402_QUOTE_TTL_SECONDS: "5" }));
   assert.throws(() => validateEnv({ ...base, X402_CONFIRM_WAIT_MS: "10" }));
 });
+
+test("the count of settlement attempts is retired: a payment is ended by the chain alone", async () => {
+  const { retiredSettingsIn, validateEnv } = await import("../config/env.js");
+  const lines = retiredSettingsIn({ X402_SETTLEMENT_MAX_RETRIES: "5" });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /X402_SETTLEMENT_MAX_RETRIES is no longer a setting and is ignored/);
+  const data = validateEnv({
+    NODE_ENV: "development",
+    DATABASE_URL: PROD_BASE.DATABASE_URL,
+    JWT_SECRET: PROD_BASE.JWT_SECRET,
+    X402_SETTLEMENT_MAX_RETRIES: "5",
+  }) as Record<string, unknown>;
+  assert.equal("X402_SETTLEMENT_MAX_RETRIES" in data, false);
+});

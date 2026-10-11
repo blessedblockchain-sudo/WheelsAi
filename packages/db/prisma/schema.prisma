@@ -1393,6 +1393,14 @@ model AgentListing {
 
   // Status & Stats
   status            String    @default("draft") // 'draft', 'pending_review', 'published', 'archived'
+  // Set while a listing that sells use of its agent is paused: the model the
+  // agent runs on is one its organization runs, and it is not answering.
+  // While it is set no subscription to the listing is renewed, and when it
+  // is cleared every month paid for is made longer by the time it was set
+  // (services/listingPause.ts). Whether a listing can be bought or used at
+  // a given moment is asked of the agent's model at that moment, never
+  // read from here: this is only when the subscribers' clock stopped.
+  pausedSince       DateTime? @map("paused_since")
   isFeatured        Boolean   @default(false) @map("is_featured")
   totalInstalls     Int       @default(0) @map("total_installs")
   activeInstalls    Int       @default(0) @map("active_installs")

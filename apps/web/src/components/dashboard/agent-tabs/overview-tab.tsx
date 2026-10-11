@@ -10,6 +10,12 @@ import { treasuryApi } from "@/lib/api";
 import { agentHasToken } from "@/lib/agent-page";
 import type { AgentTabProps } from "./types";
 
+// The cluster explorer links open on: the deployment's own, as the public receipts use it.
+const SOLANA_CLUSTER = (process.env.NEXT_PUBLIC_SOLANA_CLUSTER || "devnet") as
+  | "mainnet-beta"
+  | "devnet"
+  | "testnet";
+
 export type OverviewTabProps = AgentTabProps;
 
 export function OverviewTab({ agent }: OverviewTabProps) {
@@ -95,7 +101,7 @@ export function OverviewTab({ agent }: OverviewTabProps) {
       {hasToken && (
         <>
           <RunwayCard slug={agent.slug} />
-          <PaymentsTable slug={agent.slug} cluster="devnet" className="md:col-span-2" />
+          <PaymentsTable slug={agent.slug} cluster={SOLANA_CLUSTER} className="md:col-span-2" />
         </>
       )}
     </div>

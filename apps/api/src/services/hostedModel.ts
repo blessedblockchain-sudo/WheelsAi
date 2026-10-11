@@ -1,11 +1,12 @@
 /**
- * Agents on WheelsAI-hosted models: `wheelsai/<model id>`.
+ * Agents on a model their organization runs itself: `wheelsai/<model id>`.
  *
- * The agent wizard offers "WheelsAI Hosted" models and stores them as
- * `wheelsai/llama-3.1-8b`. Nothing resolved that id, so such an agent could
- * not chat at all. It names a model the organization runs on its own GPU
- * deployment, so it resolves to THAT deployment: the newest running one of
- * the caller's organization for the model, through one of its healthy nodes.
+ * An agent's model choice offers the models its organization runs itself
+ * ("Your models on Nosana", listed by services/hostedModelChoices.ts) and
+ * stores one as `wheelsai/llama-3.1-8b`. That id names a model the
+ * organization runs on its own GPU deployment, so it resolves to THAT
+ * deployment: the newest running one of the caller's organization for the
+ * model, through one of its healthy nodes.
  *
  * Money: a dedicated deployment is billed per GPU-second by the GPU billing
  * worker, and an agent chat on it is included in that time - exactly as a
@@ -184,7 +185,7 @@ export async function resolveHostedModel(
       message:
         fineTunedSlug !== null
           ? `This agent uses the fine-tuned model "${fineTunedSlug}", and your organization has no running deployment of it. Deploy the fine-tuned model (Training > Models), or give the agent another model.`
-          : `This agent uses the WheelsAI-hosted model "${catalogId}", and your organization has no running deployment of it. Deploy the model (Deployments > New), or give the agent another model.`,
+          : `This agent is set to "${catalogId}", a model your organization runs on its own deployment, and there is no running deployment of it now. Deploy the model (Deployments > New), or give the agent another model.`,
     };
   }
 

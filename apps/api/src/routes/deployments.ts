@@ -53,6 +53,7 @@ import {
   estimateDeploymentReservationCents,
 } from "../services/deploymentCreditGate.js";
 import { getPricePerSecond } from "../services/computeMetering.js";
+import { listDeploymentDependents, type DeploymentDependents } from "../services/deploymentDependents.js";
 import {
   FineTunedModelGoneError,
   adapterForRun,
@@ -66,6 +67,7 @@ import {
   chargeGpuWindow,
   type GpuBillingTx,
 } from "../services/gpuBilling.js";
+import { reconcileListingPauses } from "../services/listingPause.js";
 
 const logger = createLogger("deployment-routes");
 
@@ -463,6 +465,10 @@ export interface DeploymentRouteDeps {
   loadScopedLatency?: (window: ScopedWindow) => Promise<ScopedLatency>;
   /** What serving a fine-tuned adapter needs; the server's own when omitted. */
   adapterServing?: AdapterServingDeps;
+  /** The agents that answer from a deployment (services/deploymentDependents.ts); null when it is not the organization's. */
+  dependents?: (args: { orgId: string; deploymentId: string }) => Promise<DeploymentDependents | null>;
+  /** Brings the organization's listing pauses in line after a stop (services/listingPause.ts). */
+  reconcilePauses?: (scope: { orgId: string }) => Promise<unknown>;
 }
 
 /** The chat-completions URL on a deployment's own custom domain. */
@@ -513,6 +519,11 @@ export function createDeploymentRoutes(
       return new Map<string, string>();
     }
   };
+  const dependents =
+    deps.dependents ?? ((args) => listDeploymentDependents(args, { db: prisma as never }));
+  // An injected database has no listings behind it: nothing to pause.
+  const reconcilePauses =
+    deps.reconcilePauses ?? (deps.prisma ? async () => undefined : (scope) => reconcileListingPauses(scope));
   // Built on first use: it reads the environment.
   let adapterServingDeps = deps.adapterServing ?? null;
   const adapterServing = () => (adapterServingDeps ??= buildAdapterServingDeps());
@@ -629,6 +640,27 @@ export function createDeploymentRoutes(
             customEndpoint: customDomain ? customDomainEndpoint(customDomain) : null,
           },
         };
+      }
+    );
+
+    /**
+     * The agents that will stop answering if this deployment is stopped now:
+     * what the Stop button reads before it asks. Read-only.
+     */
+    app.get(
+      "/:deploymentId/dependents",
+      { preHandler: [requireAuth] },
+      async (request, reply) => {
+        const { orgId } = request.auth!;
+        const { deploymentId } = z
+          .object({ deploymentId: z.string() })
+          .parse(request.params);
+
+        const result = await dependents({ orgId, deploymentId });
+        if (!result) {
+          return reply.notFound("Deployment not found");
+        }
+        return result;
       }
     );
 
@@ -1320,6 +1352,16 @@ export function createDeploymentRoutes(
         }
 
         logger.info({ deploymentId, reclaimed }, "Deployment stopped");
+
+        // Agents set to this model can no longer answer: the listings that
+        // sell use of them are paused from now, not from the next renewal
+        // tick. Best effort: the deployment is stopped whatever happens here,
+        // and the tick reconciles again.
+        try {
+          await reconcilePauses({ orgId });
+        } catch (err) {
+          logger.error({ err, deploymentId }, "Failed to reconcile listing pauses after a stop");
+        }
 
         triggerWebhook(
           orgId,

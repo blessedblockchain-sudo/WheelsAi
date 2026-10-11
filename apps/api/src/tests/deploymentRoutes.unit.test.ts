@@ -383,6 +383,10 @@ async function makeApp(opts: {
   realSubmit?: boolean;
   /** The deployment's measured latency; omitted = no sample table behind the fake database. */
   loadScopedLatency?: (window: any) => Promise<any>;
+  /** The agents that answer from a deployment; omitted = the real list over the fake database. */
+  dependents?: (args: { orgId: string; deploymentId: string }) => Promise<any>;
+  /** The listing-pause reconcile a stop runs; omitted = none (no listings behind the fake database). */
+  reconcilePauses?: (scope: { orgId: string }) => Promise<unknown>;
 }) {
   const nosana = opts.nosana ?? makeNosana();
   const mod = await import("../routes/deployments.js");
@@ -407,6 +411,8 @@ async function makeApp(opts: {
       }) as never,
       now: () => T_NOW,
       ...(opts.loadScopedLatency ? { loadScopedLatency: opts.loadScopedLatency } : {}),
+      ...(opts.dependents ? { dependents: opts.dependents } : {}),
+      ...(opts.reconcilePauses ? { reconcilePauses: opts.reconcilePauses } : {}),
       ...(opts.realSubmit
         ? {}
         : {
@@ -2306,4 +2312,132 @@ test("metrics of another organization's deployment are a 404 and read no samples
   const res = await app.inject({ method: "GET", url: "/dep_1/metrics" });
   assert.equal(res.statusCode, 404);
   assert.equal(reads, 0);
+});
+
+// ============================================
+// Warn at stop, and pause the listing
+// ============================================
+
+test("GET /:id/dependents answers the agents that answer from the deployment, for the caller's organization", async () => {
+  const db = makeDb({ deployments: [running()] });
+  const asked: unknown[] = [];
+  const answer = {
+    agents: [
+      {
+        id: "a_1",
+        name: "Analyst",
+        onSale: true,
+        listing: { id: "l_1", title: "Research Analyst", pricingModel: "monthly", subscribers: 2 },
+      },
+      { id: "a_2", name: "Helper", onSale: false, listing: null },
+    ],
+  };
+  const { app } = await makeApp({
+    db,
+    dependents: async (args) => {
+      asked.push(args);
+      return args.deploymentId === "dep_1" ? answer : null;
+    },
+  });
+
+  const res = await app.inject({ method: "GET", url: "/dep_1/dependents" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), answer);
+  // The organization is the caller's, never one the request names.
+  assert.deepEqual(asked, [{ orgId: "org_1", deploymentId: "dep_1" }]);
+
+  const missing = await app.inject({ method: "GET", url: "/dep_other/dependents" });
+  assert.equal(missing.statusCode, 404);
+});
+
+test("GET /:id/dependents reads only: another organization's deployment is a 404, a stopped one has none, and nothing is written", async () => {
+  // The real list (services/deploymentDependents.ts) over the routes' own database.
+  const db = makeDb({
+    deployments: [running({ status: "stopped" }), running({ id: "dep_theirs", orgId: "org_2" })],
+  });
+  const before = JSON.stringify(db.state, (_key, value) => (typeof value === "bigint" ? `${value}n` : value));
+  const { app, nosana } = await makeApp({ db });
+
+  const stopped = await app.inject({ method: "GET", url: "/dep_1/dependents" });
+  assert.equal(stopped.statusCode, 200);
+  assert.deepEqual(stopped.json(), { agents: [] });
+
+  const theirs = await app.inject({ method: "GET", url: "/dep_theirs/dependents" });
+  assert.equal(theirs.statusCode, 404);
+
+  assert.equal(JSON.stringify(db.state, (_key, value) => (typeof value === "bigint" ? `${value}n` : value)), before);
+  assert.deepEqual(nosana.fake.calls, []);
+});
+
+test("GET /:id/dependents needs a caller", async () => {
+  const db = makeDb({ deployments: [running()] });
+  const asked: unknown[] = [];
+  const { app } = await makeApp({
+    db,
+    authed: false,
+    dependents: async (args) => {
+      asked.push(args);
+      return { agents: [] };
+    },
+  });
+  const res = await app.inject({ method: "GET", url: "/dep_1/dependents" });
+  assert.equal(res.statusCode, 401);
+  assert.deepEqual(asked, []);
+});
+
+test("DELETE reconciles the organization's listing pauses once the stop has succeeded, and answers as before", async () => {
+  const db = makeDb({ deployments: [running()], balances: { org_1: 1000n } });
+  const reconciles: Array<{ scope: unknown; statusThen: string }> = [];
+  const { app } = await makeApp({
+    db,
+    reconcilePauses: async (scope) => {
+      // By now the deployment no longer answers: a listing asked about at
+      // this moment is paused.
+      reconciles.push({ scope, statusThen: db.state.deployments[0]!.status });
+    },
+  });
+
+  const res = await app.inject({ method: "DELETE", url: "/dep_1" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { message: "Deployment stopped", fundsReleased: true, vaultReclaimed: true });
+  assert.deepEqual(reconciles, [{ scope: { orgId: "org_1" }, statusThen: "stopped" }]);
+});
+
+test("DELETE still answers that the deployment stopped when the pause reconcile fails", async () => {
+  const db = makeDb({ deployments: [running()], balances: { org_1: 1000n } });
+  const webhooks: Array<[string, string]> = [];
+  const { app } = await makeApp({
+    db,
+    webhooks,
+    reconcilePauses: async () => {
+      throw new Error("database is down");
+    },
+  });
+
+  const res = await app.inject({ method: "DELETE", url: "/dep_1" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), { message: "Deployment stopped", fundsReleased: true, vaultReclaimed: true });
+  assert.equal(db.state.deployments[0]!.status, "stopped");
+  assert.deepEqual(db.state.deployments[0]!.reservationReleasedAt, T_NOW);
+  assert.deepEqual(webhooks, [["org_1", "deployment.stopped"]]);
+});
+
+test("DELETE that stops nothing reconciles nothing: a failed stop, one already stopped, another organization's", async () => {
+  const reconciles: unknown[] = [];
+  const reconcilePauses = async (scope: unknown) => {
+    reconciles.push(scope);
+  };
+
+  const failing = makeNosana({ stopError: new Error("nosana 503") });
+  const refused = await makeApp({ db: makeDb({ deployments: [running()] }), nosana: failing, reconcilePauses });
+  assert.equal((await refused.app.inject({ method: "DELETE", url: "/dep_1" })).statusCode, 502);
+
+  const already = await makeApp({ db: makeDb({ deployments: [running({ status: "stopped" })] }), reconcilePauses });
+  const again = await already.app.inject({ method: "DELETE", url: "/dep_1" });
+  assert.deepEqual([again.statusCode, again.json().message], [200, "Deployment already stopped"]);
+
+  const theirs = await makeApp({ db: makeDb({ deployments: [running({ orgId: "org_2" })] }), reconcilePauses });
+  assert.equal((await theirs.app.inject({ method: "DELETE", url: "/dep_1" })).statusCode, 404);
+
+  assert.deepEqual(reconciles, []);
 });

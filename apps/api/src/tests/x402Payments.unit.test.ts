@@ -389,9 +389,19 @@ test("an expired, forged, foreign or missing rate lock is quote_expired, and not
     outcome: "refused",
     reason: "quote_expired",
   });
-  // Forged: one character of the signature changed.
+  // Forged: one character of the signature changed. Not its last one: the
+  // last character of a base64url signature carries bits that are not part
+  // of it, so changing only those leaves the same signature and the token
+  // is still the genuine one (about one run in twenty, this test then saw a
+  // "forged" token accepted).
   const token = challenge.quote!;
-  const forged = token.slice(0, -1) + (token.endsWith("A") ? "B" : "A");
+  const at = token.length - 5;
+  const forged = token.slice(0, at) + (token[at] === "A" ? "B" : "A") + token.slice(at + 1);
+  assert.notDeepEqual(
+    Buffer.from(forged.split(".")[2]!, "base64url"),
+    Buffer.from(token.split(".")[2]!, "base64url"),
+    "the forged token carries another signature",
+  );
   assert.deepEqual(await take(world, signedTx, { header: header(forged) }), {
     outcome: "refused",
     reason: "quote_expired",

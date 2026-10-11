@@ -29,6 +29,7 @@ Two files are the reference for every setting:
 10. [Fine-tuning: storage and the training image](#10-fine-tuning-storage-and-the-training-image)
 11. [Upgrades and migrations](#11-upgrades-and-migrations)
 12. [Rotating secrets](#12-rotating-secrets)
+13. [Money: the treasury, the money report and plans](#13-money-the-treasury-the-money-report-and-plans)
 
 ## 1. Prerequisites
 
@@ -116,7 +117,7 @@ missing or unsafe, and prints which one.
 | --- | --- |
 | `WALLET_MASTER_KEY` | The root secret from which treasury, creator and deposit keys are derived. Set it once and back it up: changing it changes every derived address (section 12), each organization's deposit address included, so it must never change once customers have saved their addresses. Required when token launches, wallet top-ups or deposit addresses are on. |
 | `NOSANA_API_KEY` or `NOSANA_WALLET_PRIVATE_KEY` | Pays for GPU jobs (section 9). |
-| `PLATFORM_ADMIN_KEY` | At least 16 characters. Unlocks marketplace curation and the operator view of GPU compute, `GET /api/platform/compute` with the header `x-admin-key`. |
+| `PLATFORM_ADMIN_KEY` | At least 16 characters. Unlocks marketplace curation and the two operator views, each read with the header `x-admin-key`: GPU compute at `GET /api/platform/compute`, and the money report at `GET /api/platform/money` (section 13.2). |
 | `METRICS_TOKEN` | Bearer token for `GET /metrics` when that path is reachable outside your private network. |
 | `SENTRY_DSN` | Optional. Error tracking starts when it is set. |
 
@@ -134,6 +135,7 @@ reference at `/docs/api` on the web app.
 | Pro plan | `STRIPE_PRO_PRICE_ID`, a recurring price of $49 a month. |
 | Wallet top-ups (USDC and SOL) | `WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`. Outside development it also needs `TOPUP_RECONCILE_INTERVAL_MS` above 0 (15000 by default): that worker credits a transfer that lands after the customer has closed the page. USDC needs nothing more. SOL is offered when `SOL_PRICE_SOURCE=pyth`, which reads Pyth's SOL/USD price account through `SOLANA_RPC_URL`; with no fresh price SOL is refused and USDC still works. In production the rail runs only on mainnet. |
 | Deposit addresses (USDC and SOL sent from an exchange or any wallet) | `DEPOSITS_ENABLED=true` (off by default). It needs the wallet top-up rail above (`WALLET_TOPUPS_ENABLED=true` and `WALLET_MASTER_KEY`): the API refuses to start with deposits on and top-ups off, because an organization's deposit address is the address its top-ups already pay into, derived from the same key. Outside development it also needs the scan worker: `DEPOSIT_SCAN_INTERVAL_MS` above 0 (60000 by default; 0 turns the worker off and the API then refuses to start). The scan is what finds a transfer and credits it, once, and it credits only finalized transfers. It reads each address's transaction history, so `SOLANA_RPC_URL` must be a node that serves history (`getSignaturesForAddress` and `getTransaction`); the log line "a balance its history does not explain" on run after run means the node is not serving it, and a transfer at that address is waiting to be credited. `DEPOSIT_SCAN_MAX_ADDRESSES` (500) is the most addresses one run looks at; one balance read covers 50 of them, and only an address whose balance changed has its history read. "Prepare address" opens the USDC account at a customer's address and is paid for by the paying wallet, the one creator payouts are sent from (derived from `WALLET_MASTER_KEY`): about 0.002 SOL an account. `DEPOSIT_ACCOUNT_OPENS_PER_DAY` (25) is how many the platform opens in a UTC day in all, and `HOT_WALLET_MIN_SOL` (0.05) is the SOL the paying wallet must hold for one to be opened; at the limit or under that balance the customer is told to try again later, and transfers are still credited. SOL is credited when `SOL_PRICE_SOURCE=pyth`; with no fresh price a SOL transfer is recorded and credited by a later run. **Never change `WALLET_MASTER_KEY` once customers have saved their addresses**: every deposit address is derived from it, a changed key gives every organization a different address, and whatever is sent to a saved address is then not credited. While the stored address and the derived one differ, the deposit routes answer `503` and show no address. |
+| Sweeps (moving what customers paid off their deposit addresses) | `SWEEPS_ENABLED=true` (off by default). It needs deposit addresses on (the row above): the API refuses to start with sweeps on and `DEPOSITS_ENABLED` off. It also needs its worker, `SWEEP_INTERVAL_MS` above 0 (300000 by default; 0 turns the worker off and nothing is swept), and the node at `SOLANA_RPC_URL` answering for the chain in `SOLANA_NETWORK`: while that check fails a run moves nothing. A run first settles the transfers it sent earlier, from the chain. It then looks at each deposit address and moves an asset only when what the address holds, finalized, equals what the deposit scan last accounted for, so nothing leaves an address before the scan has read it, and only while no earlier transfer of that asset from that address is still in flight. `SWEEP_MIN_USD` (25) is the least worth moving, in dollars: USDC is swept whole once an address holds that much, and SOL once what can be moved is worth that much. `SWEEP_MAX_PER_RUN` (20) is the most transfers one run starts, largest first. **Where it goes.** `HOT_WALLET_FLOAT_USDC` (200, dollars of USDC) and `HOT_WALLET_FLOAT_SOL_USD` (100, dollars of SOL at the current price) are what the hot wallet keeps to pay creators with. The hot wallet is the paying wallet of the rows around this one, derived from `WALLET_MASTER_KEY`. A transfer goes to it, whole, while it holds less than its float of that asset, counting what is already on its way there; otherwise the transfer goes to the treasury, `TREASURY_WALLET_ADDRESS`. **Nothing goes to the treasury until it is proven** (section 13.1): with no proven treasury only transfers to the hot wallet happen, and once the hot wallet is at its float the rest stays at the deposit addresses. When the hot wallet holds more than twice a float and the treasury is proven, it sends what it holds above the float to the treasury, one transfer an asset; of SOL it always keeps `HOT_WALLET_MIN_SOL` as well. **What stays behind.** A SOL sweep leaves 890,880 lamports at the address, what an empty account must keep, so a later transfer of any size can still arrive. USDC is swept whole. **Who pays each fee** (5,000 lamports a signature). A USDC sweep is paid for by the hot wallet, which also opens the destination's USDC account when it is missing; no USDC is swept while the hot wallet holds less than `HOT_WALLET_MIN_SOL` (0.05). A SOL sweep is paid for by the deposit address itself, out of what it holds, so SOL sweeps do not need the hot wallet and are how it gets its SOL. The hot wallet pays for its own transfers to the treasury. SOL is swept only with a price (`SOL_PRICE_SOURCE=pyth`): with no fresh price no SOL moves in that run, and USDC still does. `TREASURY_WALLET_ADDRESS` is the same setting x402 payments are sent to (the row below). The deposit scan warns in the log about any transfer out of a deposit address that is not one of these sweeps. |
 | x402 pay-per-request | `X402_ENABLED=true`, `X402_INFERENCE_MODE`, `X402_SUBMIT_TRANSACTIONS=true`, `X402_SETTLEMENT_WORKER_ENABLED=true` and `TREASURY_WALLET_ADDRESS` (a real address: the all-ones default is refused). |
 | Creator payouts | `PAYOUTS_ENABLED=true` and `PAYOUT_EXECUTOR_INTERVAL_MS`. A payout taken as credits needs nothing more. A payout to a wallet is sent from the paying wallet derived from `WALLET_MASTER_KEY` (the API logs its address at start); it must hold the USDC or SOL to send plus a little SOL for fees, and while it is short a payout waits as pending and its creator can cancel it. SOL payouts are offered when `SOL_PRICE_SOURCE=pyth`. Limits, each a setting: `PAYOUT_MAX_PER_PAYOUT_USD` (500), `PAYOUT_MAX_PER_DAY_USD` per creator (1000), `PAYOUT_PLATFORM_MAX_PER_DAY_USD` in all (5000). `PAYOUT_MAX_ATTEMPTS` (3) is how many transfers may be signed for one payout before its amount goes back to the creator. In production the rail runs only on mainnet. |
 | GPU deployments | Section 9. |
@@ -221,6 +223,9 @@ Feature checks:
 - `GET /api/domains/config` (any signed-in user): whether custom domains are set up (`configured`),
   and the edge they use (section 7).
 - `GET /api/billing/packages`: which payment rails are on.
+- `GET /api/platform/money` with `x-admin-key: <PLATFORM_ADMIN_KEY>`: what customers and creators
+  are owed, what came in, what the platform's wallets hold, and in `health` which money rails and
+  workers are on (section 13.2).
 
 The API also logs, once at start-up, a warning for each optional setting whose absence switches a
 feature off, naming the setting: every fine-tuning blocker (`Fine-tuning cannot start: …`, also
@@ -392,6 +397,7 @@ or a concurrency setting; `0` turns it off. The defaults suit production. These 
 | `UPTIME_PROBER_INTERVAL_MS` (30000) | Uptime monitors and the status page. | Monitors stop updating. |
 | `PAYMENT_SUBMIT_INTERVAL_MS`, `PAYMENT_POLL_INTERVAL_MS`, `PAYMENT_REAP_INTERVAL_MS` | Submit, confirm and reap on-chain payments. | On-chain payments stay pending. |
 | `DEPOSIT_SCAN_INTERVAL_MS` (60000), `DEPOSIT_SCAN_MAX_ADDRESSES` (500) | Finds transfers sent to deposit addresses and credits them. Needs `DEPOSITS_ENABLED=true`. | Transfers sent to a deposit address are not credited until it runs again; nothing is lost. Outside development the API refuses to start with deposits on and this off. |
+| `SWEEP_INTERVAL_MS` (300000), `SWEEP_MAX_PER_RUN` (20) | Moves what customers paid off their deposit addresses, to the hot wallet while it is under its float and to the proven treasury otherwise, and settles the transfers it sent (section 3.4). Needs `SWEEPS_ENABLED=true`. | Nothing is swept and no transfer already sent is settled until it runs again; what was paid stays at the deposit addresses, and customers are credited as before. |
 | `PAYOUT_EXECUTOR_INTERVAL_MS` (0) | Sends crypto payouts. Needs `PAYOUTS_ENABLED=true`. | Payout requests wait. |
 | `FEE_ROUTER_INTERVAL_MS` (0), `REPUTATION_ATTESTATION_INTERVAL_MS` (0) | Route trading fees to treasuries; write reputation attestations. Each needs its funded or whitelisted key. | Fees and attestations wait. |
 
@@ -584,3 +590,136 @@ the new API version.
 | `WALLET_MASTER_KEY` | Every treasury authority and derived key comes from it. Rotate the on-chain treasury authorities first with `apps/api/scripts/rotate-treasury-authority.ts` (run it in dry-run mode first): it signs with keys from the old master and accepts with keys from the new one. Change the secret only after that, because the old keys are needed to sign. Deposit addresses cannot be rotated this way: each one is derived from this key and customers save theirs, so with deposit addresses on (section 3.4) this key must not change. |
 | `CUSTOM_DOMAIN_ASK_TOKEN`, `CUSTOM_DOMAIN_EDGE_SECRET` | Set the new value on both the API and the edge (section 7.2). |
 | `PLATFORM_ADMIN_KEY`, `METRICS_TOKEN` | Replace at any time. |
+
+## 13. Money: the treasury, the money report and plans
+
+The two commands in this section are operator scripts in `apps/api/scripts`. The API's image does
+not contain them: run them from a checkout of the repository, in `apps/api`, with the API's
+settings in the environment (the database, `SOLANA_NETWORK`, `SOLANA_RPC_URL`, and for the first
+one `WALLET_MASTER_KEY` and `TREASURY_WALLET_ADDRESS`). Each takes `--dry-run`, which writes
+nothing.
+
+### 13.1 Proving the treasury
+
+The treasury is the wallet sweeps send to once the hot wallet has its float (section 3.4). Its key
+is not a setting and is never given to the API: the API only knows its address,
+`TREASURY_WALLET_ADDRESS`. Because a wrong address would send customers' payments somewhere
+nobody controls, a sweep sends nothing to the treasury until the address is proven: the wallet at
+that address has signed a transfer to the hot wallet, which only the holder of its key can do.
+
+1. Set `TREASURY_WALLET_ADDRESS` to the wallet's address. It must be an ordinary wallet address,
+   and not the all-ones default, the hot wallet or a deposit address; each of those is refused.
+   An exchange deposit address will not do: you cannot sign a transfer from it. Nor will a token
+   account or a multisig vault: an address with no key of its own is not an ordinary wallet
+   address.
+2. Find the hot wallet's address. With creator payouts scheduled, the API logs it at start
+   (`Platform payout wallet: fund this address for payouts to a wallet`). The money report gives
+   it as `onChain.hotWallet.address` (section 13.2), and the command in step 4 also prints it
+   when it finds no proof.
+3. From the treasury wallet, send at least 0.1 SOL to the hot wallet, and wait for the transfer
+   to be finalized. The SOL is not lost: it is in the hot wallet, where it pays fees.
+4. Run:
+
+   ```bash
+   cd apps/api
+   npx tsx scripts/treasury-verify.ts --dry-run   # looks, and writes nothing
+   npx tsx scripts/treasury-verify.ts
+   ```
+
+   It looks through the hot wallet's finalized history, newest first, up to 1,000 signatures, for
+   a transaction that did not fail, that the treasury address signed, and that left the hot wallet
+   with at least 0.1 SOL (100,000,000 lamports) more. When it finds one it records the address as
+   proven for this chain, with that signature, and says so. When it finds none it writes nothing
+   and says: "Send 0.1 SOL from the treasury wallet to <hot wallet address>, then run this again."
+
+The proof is for one address on one chain. The treasury counts as proven only while the recorded
+address is exactly `TREASURY_WALLET_ADDRESS`, so after changing the setting nothing goes to the
+treasury until the new address is proven the same way (steps 3 and 4); the record is then replaced.
+`treasury.proven` in the money report (section 13.2) says where this stands.
+
+### 13.2 The money report
+
+```bash
+curl -fsS -H "x-admin-key: $PLATFORM_ADMIN_KEY" \
+  "https://<api>/api/platform/money?from=2026-10-01&to=2026-10-31"
+```
+
+`GET /api/platform/money` is gated the way `GET /api/platform/compute` is: `503
+platform_admin_not_configured` while `PLATFORM_ADMIN_KEY` is not set, `401 invalid_admin_key` for
+a wrong key, and the answer is never cached. `from` and `to` are dates (`YYYY-MM-DD`); without
+them the range is from the first day of the current UTC month to now, and a date that cannot be
+read answers `400 invalid_range`. The report only reads.
+
+Amounts in cents, lamports and USDC base units (a millionth of a USDC) are strings of digits.
+Every section has a `state`: `ok`, or `unreadable` when that section could not be read. One
+section failing does not fail the report, so check each `state` before trusting its figures.
+
+| Section | What it says |
+| --- | --- |
+| `customers` | What the platform owes its customers in service: the sum of every credit balance (`balanceCents`), and how many organizations hold more than 0. |
+| `creators` | What creators are owed and have not asked for (`owedCents`); payouts that are pending or processing now (`openPayouts`) and payouts completed in the range (`paidOutInRange`), each by payout method. |
+| `income` | In the range. `creditsSold` by rail: `wallet_topup` and `deposit` by asset, `stripe`, and `other`, which is every other credit purchase. `bonusesGrantedCents`: credits given as a bonus. `creditsUsed`: what customers spent, by type. `marketplaceFeesCents`: the platform's fee on settled marketplace revenue. `x402Received`: settled x402 payments by asset. |
+| `onChain` | `hotWallet` and `treasury`: the address and what it holds in lamports and USDC, read from the chain as the report is made. `treasury` is null when no address is set, and `proven` is the answer of section 13.1. `depositAddresses`: how many there are on this chain and what they hold in all, as the deposit scan last accounted for it. That figure is not read from the chain here. |
+| `sweeps` | `sent`: transfers in flight now. `landedInRange`: transfers that landed in the range, by kind (`sweep_to_hot`, `sweep_to_treasury`, `hot_to_treasury`) and asset. `failedInRange`: how many failed. |
+| `reconciliation` | Whether what sits at the deposit addresses is explained, for USDC and for SOL, over everything ever recorded on this chain (not the range). See below. |
+| `health` | `cluster`: `ok`, `wrong_cluster` (the node at `SOLANA_RPC_URL` is not on the chain in `SOLANA_NETWORK`) or `unreachable`. `walletTopups`, `deposits`, `depositScan`, `sweeps`, `payouts`: whether each is switched on with its worker scheduled. `solPrice`: where the SOL price comes from, whether there is one now, and its age in seconds. |
+
+**Reading the reconciliation.** `usdc` is in USDC base units and its fields end in `Raw`
+(`receivedRaw`, `sweptRaw`, `expectedRaw`, `heldRaw`, `differenceRaw`); `sol` is in lamports and
+its fields end in `Lamports` (`receivedLamports`, and so on, with `feeLamports` as well). For each
+asset:
+
+- `received` is everything recorded as arriving at a deposit address, credited or not.
+- `swept` is every sweep off a deposit address that landed. For SOL, `feeLamports` is the fees
+  sweeps paid out of the address: those that landed, and those that failed on the chain, which
+  moved nothing and still paid their fee.
+- `expected` is `received` less `swept` (and, for SOL, less those fees): what should still be
+  there.
+- `held` is the `depositAddresses` figure of `onChain`.
+- `difference` is `held` less `expected`.
+
+**A difference of 0 is the healthy answer**: every lamport and every USDC base unit at the deposit
+addresses is explained by a recorded receipt or a landed sweep. It speaks only of what the scan
+has read: `held` is each address's balance as of the newest transaction the scan has processed,
+so a transfer the scan has not read yet is in neither `held` nor `received` and does not show
+here. The scan's log line "a balance its history does not explain" (section 3.4) is what tells
+you about one of those. When the difference is not 0:
+
+1. Read the report again after a deposit scan and a sweep run have passed
+   (`DEPOSIT_SCAN_INTERVAL_MS`, `SWEEP_INTERVAL_MS`). `held` moves when the scan reads an address
+   and `swept` moves when the sweep worker settles a transfer, so a sweep in flight (`sweeps.sent`
+   above 0) can show as a difference that goes away once both have run.
+2. Check `health`: `cluster` must be `ok` and `depositScan` true, and `sweeps` true where sweeps
+   are on. With a worker off, its figures stop moving.
+3. A difference above 0 that stays is a landed sweep the scan has not yet read as leaving its
+   address: the scan records a receipt for everything it reads arriving, so nothing else puts
+   `held` above `expected`. Look in the API log for the scan's errors at an address (it stops at
+   a transaction it cannot load and tries again on the next run), and check that the node at
+   `SOLANA_RPC_URL` serves history (section 3.4).
+4. A difference below 0 is money that left a deposit address without a sweep to account for
+   it. Look in the API log for the scan's warning about a transfer out of a deposit address.
+   Nothing but a sweep should ever send from one, and only `WALLET_MASTER_KEY` can sign for one:
+   treat a transfer out that is not a sweep as a leak of that key until it is explained
+   (`docs/THREAT-MODEL.md`, section 4).
+5. If the reconciliation's `state` is `unreadable`, or `onChain` is, the report could not read
+   what it needed. That is a fault in reading, not in the money: fix the database or the node and
+   read it again.
+
+### 13.3 Setting an organization's plan
+
+```bash
+cd apps/api
+npx tsx scripts/set-plan.ts <organization> <starter|pro|enterprise> --dry-run
+npx tsx scripts/set-plan.ts <organization> <starter|pro|enterprise>
+```
+
+This puts an organization on a plan by hand; it is how an organization gets Enterprise. Name the
+organization by its id, its slug, or the email of one of its owners. A name that matches no
+organization, or more than one, changes nothing and says so. The command prints the plan before
+and after.
+
+- `starter` removes the grant.
+- An organization whose plan a Stripe subscription drives is refused, because the next Stripe
+  webhook would undo the change. Change that plan in Stripe, or pass `--force` to set it anyway
+  knowing that.
+- `--dry-run` prints what would change and writes nothing.

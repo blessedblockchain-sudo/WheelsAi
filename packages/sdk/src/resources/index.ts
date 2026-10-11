@@ -53,6 +53,8 @@ export {
   type UpdateAgentInput,
   type DeployAgentInput,
   type PlaygroundChatResponse,
+  type HostedModelChoice,
+  type PlaygroundModels,
   type AgentRunInput,
   type AgentRunResult,
   type AgentRunToolCall,

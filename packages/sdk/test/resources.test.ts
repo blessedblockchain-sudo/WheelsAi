@@ -23,6 +23,7 @@ import {
   type DepositAsset,
   type DepositCheck,
   type DepositStatus,
+  type HostedModelChoice,
   type PreparedDepositAddress,
   type SpendLine,
   type UsageSummary,
@@ -114,6 +115,7 @@ const cases: Case[] = [
   { name: "agents.runs.list", run: (w) => w.agents.runs.list(AGENT, { limit: 10, before: RUN }), method: "GET", path: `/api/agents/${AGENT}/runs`, query: { limit: "10", before: RUN } },
   { name: "agents.runs.resend", run: (w) => w.agents.runs.resend(AGENT, RUN), method: "POST", path: `/api/agents/${AGENT}/runs/${RUN}/deliver` },
   { name: "agents.playgroundModels", run: (w) => w.agents.playgroundModels(AGENT), method: "GET", path: `/api/agents/${AGENT}/playground/models` },
+  { name: "agents.hostedModels", run: (w) => w.agents.hostedModels(), method: "GET", path: "/api/agents/hosted-models" },
   { name: "agents.getGraph", run: (w) => w.agents.getGraph(AGENT), method: "GET", path: `/api/agents/${AGENT}/graph` },
   { name: "agents.saveGraph", run: (w) => w.agents.saveGraph(AGENT, graph), method: "PUT", path: `/api/agents/${AGENT}/graph`, body: graph },
   { name: "agents.validateGraph", run: (w) => w.agents.validateGraph(AGENT, graph), method: "POST", path: `/api/agents/${AGENT}/graph/validate`, body: graph },
@@ -1500,5 +1502,53 @@ describe("reading the credit ledger", () => {
       assert.equal(err.status, 502);
       return true;
     });
+  });
+});
+
+describe("hosted models", () => {
+  const choice: HostedModelChoice = {
+    id: "wheelsai/llama-3.1-8b",
+    displayName: "Llama 3.1 8B",
+    available: true,
+    state: "running",
+    fineTuned: false,
+    deployment: { id: DEP, slug: "my-llama", name: "My Llama" },
+  };
+  const starting: HostedModelChoice = {
+    ...choice,
+    id: "wheelsai/ft-support-tone",
+    displayName: "Support tone",
+    available: false,
+    state: "starting",
+    fineTuned: true,
+  };
+
+  it("agents.hostedModels returns the organization's choices as the API sent them", async () => {
+    const { fetch } = recordingFetch(() => jsonResponse({ hostedModels: [choice, starting] }));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const { hostedModels } = await wheels.agents.hostedModels();
+    assert.deepEqual(hostedModels, [choice, starting]);
+    // The id an agent is set to, and the deployment it would answer from.
+    const usable = hostedModels.filter((m) => m.available).map((m) => [m.id, m.deployment.slug]);
+    assert.deepEqual(usable, [["wheelsai/llama-3.1-8b", "my-llama"]]);
+  });
+
+  it("agents.playgroundModels carries hostedModels beside the two lists it already had", async () => {
+    const { fetch } = recordingFetch(() =>
+      jsonResponse({ freeModels: [{ id: "free/groq/llama-3.3-70b" }], externalModels: [], hostedModels: [starting] }),
+    );
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const models = await wheels.agents.playgroundModels(AGENT);
+    assert.equal(models.freeModels.length, 1);
+    assert.deepEqual(models.externalModels, []);
+    const state: HostedModelChoice["state"] | undefined = models.hostedModels?.[0]?.state;
+    assert.equal(state, "starting");
+  });
+
+  it("agents.playgroundModels passes on a hostedModels of null: the list could not be read, which is not an empty list", async () => {
+    const { fetch } = recordingFetch(() => jsonResponse({ freeModels: [], externalModels: [], hostedModels: null }));
+    const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
+    const models = await wheels.agents.playgroundModels(AGENT);
+    assert.equal(models.hostedModels, null);
   });
 });

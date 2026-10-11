@@ -334,6 +334,35 @@ export interface DeployAgentInput {
   walletConfig?: { dailyLimitCents?: number; perTxLimitCents?: number; allowedDomains?: string[] };
 }
 
+/**
+ * One model your organization runs on its own deployment, as an agent's model choice. Set an
+ * agent to it with `agents.update(id, { modelConfig: { externalModel: choice.id } })`.
+ */
+export interface HostedModelChoice {
+  /** What an agent's model is set to: `wheelsai/<catalog model id>`, or `wheelsai/ft-<fine-tuned model slug>`. */
+  id: string;
+  /** The model's name as the catalog (or the fine-tuned model) gives it. */
+  displayName: string;
+  /** True when an agent set to this id would be answered right now. */
+  available: boolean;
+  /** `running`: answering. `starting`: its deployment is not serving yet. `not_answering`: it should be and is not. */
+  state: "running" | "starting" | "not_answering";
+  fineTuned: boolean;
+  /** The deployment an agent set to this id is answered from. */
+  deployment: { id: string; slug: string; name: string | null };
+}
+
+/** `GET /api/agents/{id}/playground/models`. */
+export interface PlaygroundModels {
+  freeModels: unknown[];
+  externalModels: unknown[];
+  /**
+   * The models your organization runs itself: available ones first, then by name.
+   * `null` when they could not be read just now (the other two lists are still answered).
+   */
+  hostedModels: HostedModelChoice[] | null;
+}
+
 export interface PlaygroundChatResponse {
   content: string;
   model: string;
@@ -718,8 +747,18 @@ export function agentsResource(client: WheelsAIClient) {
         client.post<{ run: RunView }>(`/api/agents/${seg(id)}/runs/${seg(runId)}/deliver`),
     },
 
-    playgroundModels: (id: string) =>
-      client.get<{ freeModels: unknown[]; externalModels: unknown[] }>(`/api/agents/${seg(id)}/playground/models`),
+    /**
+     * The models an agent can be set to: free ones, ones that need your own provider key, and
+     * `hostedModels`, the models your organization runs on its own deployments.
+     */
+    playgroundModels: (id: string) => client.get<PlaygroundModels>(`/api/agents/${seg(id)}/playground/models`),
+
+    /**
+     * `GET /api/agents/hosted-models`: the models your organization runs on its own deployments, as
+     * an agent's model choices. The same list as `playgroundModels(id).hostedModels`, without an agent.
+     * An agent set to an entry's `id` answers only while `available` is true.
+     */
+    hostedModels: () => client.get<{ hostedModels: HostedModelChoice[] }>("/api/agents/hosted-models"),
 
     /**
      * The agent's visual graph. Empty (`nodes: []`) when it has none.

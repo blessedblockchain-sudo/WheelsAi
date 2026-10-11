@@ -121,6 +121,20 @@ WheelsAI API key. Model deployments stream and take `tools` too.
 `agents.update(id, { entrypoint: "graph" })` makes an agent answer through its saved graph, and
 `agents.usage(id, "7d")` returns its requests, errors, tokens and latency.
 
+`agents.hostedModels()` lists the models your organization runs on its own deployments, as model
+choices for an agent; `agents.playgroundModels(id)` carries the same list as `hostedModels`, beside
+the free and own-key models.
+
+```ts
+const { hostedModels } = await wheels.agents.hostedModels();
+const mine = hostedModels.find((m) => m.available); // .id is "wheelsai/<model id>", .deployment.slug
+if (mine) await wheels.agents.update(agent.id, { modelConfig: { externalModel: mine.id } });
+```
+
+An agent set to one of these answers from that deployment, and only while the deployment is running
+(`available`). `state` says why not: `starting`, or `not_answering`. Its GPU time is billed by the
+second on the deployment.
+
 ## Using an agent you pay for
 
 A listing sells either use of the creator's own agent (the default) or copies. Someone who pays to

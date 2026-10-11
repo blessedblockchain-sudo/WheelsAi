@@ -72,9 +72,9 @@ so whoever has it can move what those hold, and no more:
   defaults and no payout open it therefore rests at no more than about
   400 dollars of USDC and 200 of SOL. While payouts are open it also
   holds what they need, which is never counted above
-  `PAYOUT_PLATFORM_MAX_PER_DAY_USD` (5,000 dollars) an asset: the most
-  that can be paid out in a day is the most it is ever filled for.
-  Lowering that setting lowers this. Two things can put more there for a
+  `PAYOUT_PLATFORM_MAX_PER_DAY_USD` (5,000 dollars) for USDC and SOL
+  together: the most that can be paid out in a day is the most it is
+  ever filled for. Lowering that setting lowers this. Two things can put more there for a
   time: one large transfer swept to it while it was under its level,
   until the next run sends the excess on, and whatever the operator
   sends it by hand for payouts and fees. Its SOL is valued at the
@@ -87,6 +87,17 @@ so whoever has it can move what those hold, and no more:
   no price.
 - **Out of its reach: what was swept to the treasury.** The treasury's
   key is not derived from `WALLET_MASTER_KEY` and is not in the product.
+
+**One organization's deposits can be held up from outside.** The scan
+reads a deposit address's history back to where it last stopped, at most
+20 pages (20,000 signatures) a run. The chain lists every transaction that
+names an address, so whoever sends more than that many transactions naming
+one organization's address between two scans, each at the network's fee,
+leaves the scan unable to reach its cursor: it changes nothing for that
+address and says in the log that it needs an operator. Nothing is lost,
+since what was sent is at the address; that organization's deposits are
+not credited until the cursor is moved by hand. Every other address is
+scanned as before.
 
 Three conditions make the bound above hold; without any one of them
 `WALLET_MASTER_KEY` can move more:

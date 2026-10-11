@@ -425,6 +425,9 @@ export function makeChain() {
   /** A provider that hands back at most this many signatures a page,
    * whatever limit it was asked for. null: it honours the limit. */
   let pageCap: number | null = null;
+  /** How many of the next requests that read back from a signature are
+   * answered by a node that does not know it: with nothing. */
+  let forgetful = 0;
 
   /** Puts a transaction on the chain: in the history of every account it
    * names, and loadable. */
@@ -477,6 +480,10 @@ export function makeChain() {
       calls.getSignaturesForAddress.push({ account: address, options, commitment });
       if (failing.history.has(address)) throw new Error("node said: history unavailable api-key=SECRET");
       const newestFirst = [...(histories.get(address) ?? [])].reverse();
+      if (options?.before && forgetful > 0) {
+        forgetful -= 1;
+        return [];
+      }
       let from = 0;
       if (options?.before) from = newestFirst.indexOf(options.before) + 1;
       let list = newestFirst.slice(from);
@@ -499,6 +506,10 @@ export function makeChain() {
     connection: connection as unknown as DepositScanConnection,
     capPages: (cap: number | null) => {
       pageCap = cap;
+    },
+    /** The next `count` requests that carry `before` reach a node that does not know that signature. */
+    forgetBefore: (count: number) => {
+      forgetful = count;
     },
     balances,
     histories,

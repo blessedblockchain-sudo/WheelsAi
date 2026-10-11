@@ -26,8 +26,19 @@
  *     transaction's own balances, never the figure the watch read. A node
  *     that answers the watch ahead of the history then costs one more read
  *     on the next run and can never hide a transfer.
- *   - More than DEPOSIT_HISTORY_MAX_PAGES pages for one account: stop,
- *     log an error, change nothing for that address.
+ *   - A READ OF HISTORY ENDS AT THE CURSOR ITSELF. Only the first
+ *     request names the cursor (so an account with nothing new answers
+ *     with nothing, in one request); after it the read goes back until
+ *     the cursor's own signature is seen. A page shorter than was asked
+ *     for is not the end, and neither is an empty one on its own: a node
+ *     that does not know the signature it is asked to read back from
+ *     answers with nothing too. An empty page is asked for once more.
+ *     Still empty after a FULL page, the address is left as it is for
+ *     this run; after a short one it is taken as a history that does not
+ *     reach back to the cursor, and said in the log.
+ *   - More than DEPOSIT_HISTORY_MAX_PAGES pages' worth of new signatures
+ *     for one account: stop, log an error, change nothing for that
+ *     address.
  *   - A row whose stored address is not the one this server derives for
  *     its organization is never read. Nor is a row of another chain.
  *   - One address that throws does not stop the others.
@@ -94,6 +105,9 @@ export type DepositScanEventKind =
   | "swept"
   /** The address holds a balance nothing in its history explains yet. */
   | "unexplained"
+  /** A history ended before its cursor was seen: taken as one that does
+   * not reach back that far. */
+  | "history_short"
   | "error";
 
 /** One thing a run did or met, for the log. Never sent to a customer. */
@@ -304,37 +318,79 @@ async function retryDetected(
 
 /**
  * The signatures of an account newer than its cursor, oldest first.
- * "too_many_pages" when the cursor (or the start of the history) was not
- * reached within the page limit.
  *
- * Only an EMPTY page, or the cursor itself, ends the read. A page shorter
- * than was asked for does not: a provider may hand back fewer signatures
- * than the limit while older ones remain, and stopping there would move
- * the cursor past transfers nobody read. It costs one more request for an
- * account that has something new, and none for one that has not.
+ * The first request asks only for what is newer than the cursor, so an
+ * account with nothing new costs one request. When it finds something, the
+ * read is not over until the CURSOR ITSELF has been seen: the next request
+ * asks, without naming the cursor, for the one signature that comes after
+ * the oldest found. For a read that is complete that signature is the
+ * cursor, and it is proof. Any other signature is new too, and the read
+ * goes on back, a page at a time, until the cursor appears.
+ *
+ * An empty page proves nothing by itself: a node that does not know the
+ * signature it is asked to read back from answers with nothing, the same
+ * as one whose history has ended. So an empty page is asked for once more.
+ * Still empty:
+ *   - with no cursor (a first read), it is the start of the history;
+ *   - after a FULL page, more was to be expected and the answer is not
+ *     believed: "end_not_proven", and nothing changes for the address;
+ *   - after a short page, the history does not reach back to the cursor
+ *     (a node that keeps little of it): what was found is taken, and the
+ *     caller says so in the log.
+ *
+ * "too_many_pages": more than DEPOSIT_HISTORY_MAX_PAGES pages' worth of
+ * new signatures, or a node that would be asked without end.
  */
 async function signaturesSince(
   deps: DepositScanDeps,
   account: string,
   cursor: string | null,
-): Promise<string[] | "too_many_pages"> {
+): Promise<{ signatures: string[]; cursorSeen: boolean } | "too_many_pages" | "end_not_proven"> {
   const limit = deps.historyPageSize ?? DEPOSIT_HISTORY_PAGE_SIZE;
+  const most = limit * DEPOSIT_HISTORY_MAX_PAGES;
   const found: string[] = [];
-  let before: string | undefined;
-  for (let page = 0; page < DEPOSIT_HISTORY_MAX_PAGES; page += 1) {
-    const signatures = await deps.listSignatures({
-      account,
-      limit,
-      ...(before !== undefined ? { before } : {}),
-      ...(cursor !== null ? { until: cursor } : {}),
-    });
-    for (const signature of signatures) {
-      // A node that ignores `until` still stops here.
-      if (cursor !== null && signature === cursor) return found.reverse();
+  const done = (cursorSeen: boolean) => ({ signatures: found.reverse(), cursorSeen });
+
+  const first = await deps.listSignatures({
+    account,
+    limit,
+    ...(cursor !== null ? { until: cursor } : {}),
+  });
+  for (const signature of first) {
+    // A node that ignores `until` still stops here.
+    if (cursor !== null && signature === cursor) return done(true);
+    found.push(signature);
+  }
+  // Nothing newer than the cursor. Nothing moves, so nothing can be missed.
+  if (found.length === 0) return done(true);
+
+  let lastPageFull = first.length >= limit;
+  let before = found[found.length - 1] as string;
+  // With a cursor, first the one signature that should be it.
+  let asking = cursor !== null ? 1 : limit;
+  let empties = 0;
+  // Every request below either adds a signature or is one of two empty
+  // answers in a row, so this bound is never what ends an honest read.
+  for (let requests = 0; requests < 4 * DEPOSIT_HISTORY_MAX_PAGES + 4; requests += 1) {
+    const page = await deps.listSignatures({ account, limit: asking, before });
+    if (page.length === 0) {
+      empties += 1;
+      asking = limit;
+      if (empties < 2) continue;
+      if (cursor === null) return done(true);
+      return lastPageFull ? "end_not_proven" : done(false);
+    }
+    empties = 0;
+    for (const signature of page) {
+      if (cursor !== null && signature === cursor) return done(true);
       found.push(signature);
     }
-    if (signatures.length === 0) return found.reverse();
-    before = signatures[signatures.length - 1];
+    if (found.length > most) return "too_many_pages";
+    // The request for one signature says nothing about how full a page is.
+    if (asking === limit) lastPageFull = page.length >= limit;
+    else lastPageFull = true;
+    asking = limit;
+    before = page[page.length - 1] as string;
   }
   return "too_many_pages";
 }
@@ -358,27 +414,41 @@ async function scanAddress(
   const tally = newTally();
   const usdcAccount = deps.usdcAccountOf(row.address);
 
-  const solSignatures = await signaturesSince(
-    deps,
-    row.address,
-    row.lastSolSignature,
-  );
-  const usdcSignatures =
-    solSignatures === "too_many_pages"
-      ? solSignatures
+  const solRead = await signaturesSince(deps, row.address, row.lastSolSignature);
+  const usdcRead =
+    typeof solRead === "string"
+      ? solRead
       : await signaturesSince(deps, usdcAccount, row.lastUsdcSignature);
-  if (solSignatures === "too_many_pages" || usdcSignatures === "too_many_pages") {
+  if (typeof solRead === "string" || typeof usdcRead === "string") {
+    const why = typeof solRead === "string" ? solRead : usdcRead;
     tally.errors += 1;
     deps.log?.({
       kind: "error",
       orgId: row.orgId,
       address: row.address,
       detail:
-        `more than ${DEPOSIT_HISTORY_MAX_PAGES} pages of history since the ` +
-        "cursor; nothing was changed. It needs an operator.",
+        why === "too_many_pages"
+          ? `more than ${DEPOSIT_HISTORY_MAX_PAGES} pages of history since the ` +
+            "cursor; nothing was changed. It needs an operator."
+          : "the history could not be read back to the cursor: a page came back " +
+            "empty where more was expected; nothing was changed. It is read again on the next run.",
     });
     return { complete: false, signaturesFound: 0, tally };
   }
+  for (const [asset, read] of [["SOL", solRead], ["USDC", usdcRead]] as const) {
+    if (read.cursorSeen) continue;
+    deps.log?.({
+      kind: "history_short",
+      orgId: row.orgId,
+      address: row.address,
+      asset,
+      detail:
+        "the node's history ended before the cursor was seen; what it holds was read. " +
+        "A node that keeps the whole history is needed to be sure nothing older was missed.",
+    });
+  }
+  const solSignatures = solRead.signatures;
+  const usdcSignatures = usdcRead.signatures;
 
   // Each transaction is read once and credited once in this pass, even
   // when it is in both histories.

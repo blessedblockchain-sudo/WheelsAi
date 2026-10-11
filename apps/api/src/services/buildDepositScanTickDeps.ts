@@ -336,6 +336,8 @@ export function logDepositScanEvent(event: DepositScanEvent): void {
     logger.info(line, "Deposit scan: a sweep left a deposit address");
   } else if (event.kind === "unexplained") {
     logger.warn(line, "Deposit scan: a balance its history does not explain");
+  } else if (event.kind === "history_short") {
+    logger.warn(line, "Deposit scan: a history that does not reach back to its cursor");
   } else {
     logger.info(line, `Deposit scan: transfer ${event.kind}`);
   }

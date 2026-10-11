@@ -236,8 +236,8 @@ test("a USDC transfer that opens the account: credited, the USDC cursor moves, t
   assert.deepEqual(w.row(ORG_1).usdcAccountOpenedAt, NOW);
   assert.deepEqual(
     w.chain.calls.getSignaturesForAddress.map((c) => c.account),
-    [A1, usdcAccountOf(A1), usdcAccountOf(A1)],
-    "both histories are read, and the one with something new is asked once more: only an empty page ends a read",
+    [A1, usdcAccountOf(A1), usdcAccountOf(A1), usdcAccountOf(A1)],
+    "both histories are read; a first read that found something goes back until the history is empty, asked for twice",
   );
 });
 
@@ -298,11 +298,13 @@ test("history is read oldest first, page by page back to the cursor", async () =
   assert.deepEqual(
     pages.map((c) => c.options),
     [
+      // Only the first request names the cursor.
       { limit: 2, until: "sig_0" },
-      { limit: 2, before: "sig_4", until: "sig_0" },
-      { limit: 2, before: "sig_2", until: "sig_0" },
-      // The page before was short. That is not taken for the end: an empty one is.
-      { limit: 2, before: "sig_1", until: "sig_0" },
+      // Then the one signature after the oldest found: were it the cursor, the read would be over.
+      { limit: 1, before: "sig_4" },
+      // It was not, so the read goes back until the cursor itself appears.
+      { limit: 2, before: "sig_3" },
+      { limit: 2, before: "sig_1" },
     ],
   );
   assert.equal(w.row(ORG_1).lastSolSignature, "sig_5");
@@ -327,6 +329,97 @@ test("a provider that hands back shorter pages than it was asked for hides no tr
   );
   assert.equal(w.row(ORG_1).lastSolSignature, "sig_5", "the cursor moves only past what was read");
   assert.equal(w.row(ORG_1).lastSeenLamports, 6n * SOL);
+  assert.equal(w.errors().length, 0);
+});
+
+test("one new transfer costs two requests: the page, and the signature after it, which is the cursor", async () => {
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_0", lastSeenLamports: SOL })] });
+  w.chain.land("sig_0", solTransfer(A1, SOL, 0n));
+  w.chain.land("sig_1", solTransfer(A1, SOL, SOL));
+  w.chain.setBalance(A1, 2n * SOL);
+  const res = await w.run();
+  assert.equal(res.credited, 1);
+  assert.deepEqual(
+    w.chain.calls.getSignaturesForAddress.filter((c) => c.account === A1).map((c) => c.options),
+    [
+      { limit: 1000, until: "sig_0" },
+      { limit: 1, before: "sig_1" },
+    ],
+  );
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_1");
+  assert.equal(w.events.filter((e) => e.kind === "history_short").length, 0);
+});
+
+test("a node that does not know the signature it is asked to read back from answers with nothing: asked again, the read goes on", async () => {
+  // Three transfers are new and the provider gives two a page. The request that
+  // reads back from the second reaches a node that has not seen it yet.
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_0", lastSeenLamports: SOL })] }, { historyPageSize: 2 });
+  let held = 0n;
+  for (let i = 0; i <= 3; i += 1) {
+    w.chain.land(`sig_${i}`, solTransfer(A1, SOL, held));
+    held += SOL;
+  }
+  w.chain.setBalance(A1, held);
+  w.chain.forgetBefore(1);
+  const res = await w.run();
+  assert.equal(res.credited, 3, "the one empty answer hid nothing");
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_3");
+  assert.equal(w.row(ORG_1).lastSeenLamports, 4n * SOL);
+  assert.equal(w.errors().length, 0);
+});
+
+test("after a full page, two empty answers are not believed: nothing changes for the address, and the next run reads it all", async () => {
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_0", lastSeenLamports: SOL })] }, { historyPageSize: 2 });
+  let held = 0n;
+  for (let i = 0; i <= 5; i += 1) {
+    w.chain.land(`sig_${i}`, solTransfer(A1, SOL, held));
+    held += SOL;
+  }
+  w.chain.setBalance(A1, held);
+  // The first page comes back full. Every request after it reaches a node that does not know where to read back from.
+  w.chain.forgetBefore(2);
+  const res = await w.run();
+  assert.equal(res.credited, 0, "the two it did read are not credited ahead of the three it could not");
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_0", "the cursor has not moved past anything");
+  assert.equal(w.row(ORG_1).lastSeenLamports, SOL);
+  assert.equal(w.errors().length, 1);
+  assert.match(w.errors()[0]!.detail ?? "", /could not be read back to the cursor/);
+  assert.ok(!/SECRET|api-key/.test(w.errors()[0]!.detail ?? ""));
+
+  // The node has caught up.
+  const again = await w.run();
+  assert.equal(again.credited, 5);
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_5");
+  assert.equal(w.row(ORG_1).lastSeenLamports, 6n * SOL);
+});
+
+test("a history that does not reach back to the cursor is read as far as it goes, and said in the log", async () => {
+  // A node that keeps little history: the cursor's own transaction is gone from it, one newer transfer is there.
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_gone", lastSeenLamports: SOL })] });
+  w.chain.land("sig_new", solTransfer(A1, SOL, SOL));
+  w.chain.setBalance(A1, 2n * SOL);
+  const res = await w.run();
+  assert.equal(res.credited, 1);
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_new");
+  const short = w.events.filter((e) => e.kind === "history_short");
+  assert.equal(short.length, 1);
+  assert.equal(short[0]!.asset, "SOL");
+  assert.match(short[0]!.detail ?? "", /ended before the cursor was seen/);
+  assert.equal(w.errors().length, 0);
+});
+
+test(`exactly ${DEPOSIT_HISTORY_MAX_PAGES} pages' worth of new transfers is read in one run`, async () => {
+  const w = setup({ addresses: [addressRow(ORG_1, { lastSolSignature: "sig_0", lastSeenLamports: SOL })] }, { historyPageSize: 2 });
+  const count = 2 * DEPOSIT_HISTORY_MAX_PAGES;
+  let held = 0n;
+  for (let i = 0; i <= count; i += 1) {
+    w.chain.land(`sig_${i}`, solTransfer(A1, SOL, held));
+    held += SOL;
+  }
+  w.chain.setBalance(A1, held);
+  const res = await w.run();
+  assert.equal(res.credited, count);
+  assert.equal(w.row(ORG_1).lastSolSignature, `sig_${count}`);
   assert.equal(w.errors().length, 0);
 });
 
@@ -391,9 +484,10 @@ test(`more than ${DEPOSIT_HISTORY_MAX_PAGES} pages changes nothing for that addr
   const res = await w.run();
   assert.equal(res.errors, 1);
   assert.deepEqual(w.row(ORG_1), untouched, "not a column of the row changed");
+  // The first page, the one signature after it, and the pages it took to pass 20 pages' worth.
   assert.equal(
     w.chain.calls.getSignaturesForAddress.filter((c) => c.account === A1).length,
-    DEPOSIT_HISTORY_MAX_PAGES,
+    DEPOSIT_HISTORY_MAX_PAGES + 1,
   );
   assert.ok(!w.chain.calls.getTransaction.some((c) => c.signature.startsWith("sig_many")));
   assert.equal(w.state.balances[ORG_1], undefined);

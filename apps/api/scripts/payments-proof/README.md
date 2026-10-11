@@ -17,6 +17,7 @@ These scripts run every money path of WheelsAI against a Solana chain that lives
 | `browser-pay-in.cjs`, `browser-pay-out.cjs`, `browser-deposits.cjs`, `browser-billing.cjs` | the same in a browser, with a test wallet and no extension |
 | `walk-runbook.cjs` | the mainnet run of `docs/PAYMENTS-RUN.md`, rehearsed step for step from an empty database, with test wallets: the same order, amounts and settings, on the local chain with a stated price of SOL |
 | `make-run-database.cjs` | makes the empty database a devnet or mainnet run keeps its records in; it never drops one |
+| `browser-run-start.cjs` | what a new person meets at the start of a run on a real network, before any wallet: signing up on an empty database and the Billing page, in a browser. It signs up an account, so it is run on a database other than the run's |
 | `run-all.sh` | the chain, the API and the five walks, in order; with `--runbook`, the rehearsal instead |
 | `lib.cjs` | what the scripts share: where the repository and the keys are, the database, the browser |
 
@@ -98,6 +99,14 @@ RUN_DATABASE=wheelsai_devnet WALLET_MASTER_KEY_FILE=<a key file> bash apps/api/s
 ```
 
 `make-run-database.cjs` makes a database of the run's own, applies the migrations and says whether it is empty. It never drops one. `start-api.sh --run devnet` or `--run mainnet-beta` starts the API on that network with the run's settings; it says what it still needs when something is missing, and starts nothing until then. On mainnet-beta it moves real money: it is started by the person doing the run.
+
+Before the person with the wallets arrives, the start of a run can be checked in a browser. The check signs up an account, so it has a database and a key of its own, and the run's database stays empty:
+
+```
+node apps/api/scripts/payments-proof/make-run-database.cjs wheelsai_check
+RUN_DATABASE=wheelsai_check WALLET_MASTER_KEY="$(openssl rand -hex 32)" bash apps/api/scripts/payments-proof/start-api.sh --run devnet    # in a terminal of its own
+node apps/api/scripts/payments-proof/browser-run-start.cjs <a folder> devnet
+```
 
 A run's API has no Nosana access: the workers that watch and bill a GPU are off on it, so the Nosana account of `apps/api/.env` is left out and a model cannot be deployed. `WITH_NOSANA=1` in front of the command keeps the account and both workers, for a run that also deploys a model; that run can spend Nosana credits.
 

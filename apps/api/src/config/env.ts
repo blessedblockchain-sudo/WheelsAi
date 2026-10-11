@@ -772,6 +772,15 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     }
   }
 
+  // Credits granted without a payment are for a local demo. On mainnet
+  // they could buy a sale, become a creator's earnings and be paid out in
+  // real money, in development as much as anywhere.
+  if (data.ALLOW_MOCK_CHECKOUT && data.SOLANA_NETWORK === "mainnet-beta") {
+    throw new EnvValidationError(
+      "ALLOW_MOCK_CHECKOUT must not be used with SOLANA_NETWORK=mainnet-beta: credits granted without a payment could be paid out in real money"
+    );
+  }
+
   // The SOL price. A static price is an operator's number for a local
   // chain; it never prices real SOL.
   if (data.SOL_PRICE_SOURCE === "static") {

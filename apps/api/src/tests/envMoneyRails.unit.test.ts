@@ -135,6 +135,16 @@ test("a static price is refused on mainnet in every environment", () => {
   }
 });
 
+test("credits without a payment are refused on mainnet in every environment, development included", () => {
+  assert.match(
+    refusal({ ...DEVELOPMENT, ...MAINNET, ALLOW_MOCK_CHECKOUT: "true" }),
+    /ALLOW_MOCK_CHECKOUT must not be used with SOLANA_NETWORK=mainnet-beta/,
+  );
+  // On devnet a local demo may still grant them, and off they change nothing.
+  assert.doesNotThrow(() => validateEnv({ ...DEVELOPMENT, ALLOW_MOCK_CHECKOUT: "true" }));
+  assert.doesNotThrow(() => validateEnv({ ...DEVELOPMENT, ...MAINNET, ALLOW_MOCK_CHECKOUT: "false" }));
+});
+
 test("the static number alone, with the source off, changes nothing", () => {
   const data = validateEnv({ ...PRODUCTION, ...MAINNET, SOL_PRICE_STATIC_USD: "110" });
   assert.equal(data.SOL_PRICE_SOURCE, "off");

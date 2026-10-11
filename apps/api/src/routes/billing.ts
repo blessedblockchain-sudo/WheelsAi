@@ -160,6 +160,8 @@ export const billingRoutes: FastifyPluginAsync = async (fastify) => {
       walletAssets: env.WALLET_TOPUPS_ENABLED
         ? ["USDC", ...(env.SOL_PRICE_SOURCE !== "off" ? ["SOL"] : [])]
         : [],
+      // The organization's own deposit address (routes/depositAddress.ts).
+      deposits: env.DEPOSITS_ENABLED,
       network: env.SOLANA_NETWORK,
     },
   }));

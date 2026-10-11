@@ -84,6 +84,7 @@ import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
 import { createPartialSignTokenRoutesProduction } from "./routes/tokenLaunchPartialSignBindings.js";
 import { createWalletTopupRoutesProduction } from "./routes/walletTopupBindings.js";
+import { createDepositAddressRoutesProduction } from "./routes/depositAddressBindings.js";
 import {
   createSlackOAuthRoutesProduction,
   createSlackEventsRoutesProduction,
@@ -409,6 +410,11 @@ async function main() {
   // when WALLET_TOPUPS_ENABLED is false the routes answer 501 honestly
   // instead of 404ing.
   await app.register(createWalletTopupRoutesProduction(), {
+    prefix: "/api/billing",
+  });
+  // A deposit address: /api/billing/deposit-address/* and /deposits. Always
+  // mounted; while DEPOSITS_ENABLED is off the routes answer 501.
+  await app.register(createDepositAddressRoutesProduction(), {
     prefix: "/api/billing",
   });
   await app.register(settingsRoutes, { prefix: "/api/settings" });

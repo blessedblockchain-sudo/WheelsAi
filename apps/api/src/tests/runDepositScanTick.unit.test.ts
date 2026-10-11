@@ -464,6 +464,68 @@ test("a transfer out gets no receipt and is logged", async () => {
   assert.equal(w.row(ORG_1).lastSeenLamports, 100n);
 });
 
+test("a transfer out that is a known sweep is not warned about; any other still is", async () => {
+  const w = setup({
+    addresses: [addressRow(ORG_1, { lastSolSignature: "sig_in", lastSeenLamports: 3n * SOL })],
+    chainTransfers: [
+      { id: "ct-1", network: DEVNET, fromAddress: A1, txSignature: "sig_sweep", status: "landed" },
+      // A row of another chain with the same signature is not this server's sweep here.
+      { id: "ct-2", network: "solana:mainnet", fromAddress: A1, txSignature: "sig_other_chain", status: "landed" },
+    ],
+  });
+  const hot = addressOf("hot");
+  w.chain.land("sig_in", solTransfer(A1, 3n * SOL));
+  w.chain.land("sig_sweep", {
+    keys: [A1, hot, SYSTEM_PROGRAM],
+    lamports: { [A1]: [3n * SOL, 2n * SOL], [hot]: [0n, SOL - 5_000n] },
+  });
+  w.chain.land("sig_other_chain", {
+    keys: [A1, hot, SYSTEM_PROGRAM],
+    lamports: { [A1]: [2n * SOL, SOL], [hot]: [0n, SOL - 5_000n] },
+  });
+  w.chain.land("sig_stranger", {
+    keys: [A1, addressOf("elsewhere"), SYSTEM_PROGRAM],
+    lamports: { [A1]: [SOL, 890_880n], [addressOf("elsewhere")]: [0n, SOL - 895_880n] },
+  });
+  w.chain.setBalance(A1, 890_880n);
+  const res = await w.run();
+  assert.equal(res.transfersOut, 2, "only the transfers that are not this chain's sweeps are counted");
+  assert.equal(res.errors, 0);
+  assert.deepEqual(
+    w.events.filter((e) => e.kind === "transfer_out").map((e) => e.signature),
+    ["sig_other_chain", "sig_stranger"],
+  );
+  assert.deepEqual(
+    w.events.filter((e) => e.kind === "swept").map((e) => [e.orgId, e.signature]),
+    [[ORG_1, "sig_sweep"]],
+  );
+  // Known or not, no receipt is written and the cursor and balance move.
+  assert.equal(w.state.receipts.length, 0);
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_stranger");
+  assert.equal(w.row(ORG_1).lastSeenLamports, 890_880n);
+});
+
+test("a sweep lookup that throws proves nothing: the transfer out is warned about", async () => {
+  const w = setup({
+    addresses: [addressRow(ORG_1, { lastSolSignature: "sig_in", lastSeenLamports: SOL })],
+    chainTransfers: [{ id: "ct-1", network: DEVNET, fromAddress: A1, txSignature: "sig_sweep", status: "landed" }],
+  });
+  w.raw.chainTransfer.findUnique = async () => {
+    throw new Error("database is away");
+  };
+  w.chain.land("sig_in", solTransfer(A1, SOL));
+  w.chain.land("sig_sweep", {
+    keys: [A1, addressOf("hot"), SYSTEM_PROGRAM],
+    lamports: { [A1]: [SOL, 890_880n], [addressOf("hot")]: [0n, SOL - 895_880n] },
+  });
+  w.chain.setBalance(A1, 890_880n);
+  const res = await w.run();
+  assert.equal(res.transfersOut, 1);
+  assert.equal(res.errors, 0);
+  assert.deepEqual(w.events.filter((e) => e.kind === "transfer_out").map((e) => e.signature), ["sig_sweep"]);
+  assert.equal(w.row(ORG_1).lastSolSignature, "sig_sweep");
+});
+
 test("a prepared top-up whose transfer landed without its submit is credited through its row", async () => {
   const topup = topupRow({ status: "expired", failureCode: "unsigned_expired" });
   const w = setup({ addresses: [addressRow(ORG_1)], topups: [topup] });

@@ -85,6 +85,13 @@ export interface DepositScanDb extends DepositCreditDb {
       data: Record<string, unknown>;
     }) => Promise<{ count: number }>;
   };
+  /** Batch 6: a transfer out whose signature is a row here is a sweep
+   * this server made. */
+  chainTransfer: {
+    findUnique: (args: {
+      where: { txSignature: string };
+    }) => Promise<{ id: string; network: string; fromAddress: string } | null>;
+  };
   onchainReceipt: DepositCreditDb["onchainReceipt"] & {
     findMany: (args: {
       where: { network: string; status: "detected"; orgId?: string };
@@ -258,6 +265,15 @@ export function buildDepositScanDeps(
       );
     },
 
+    // A sweep this server made: a chain_transfers row of this chain with
+    // that signature.
+    isKnownTransfer: async (signature) => {
+      const row = await db.chainTransfer.findUnique({
+        where: { txSignature: signature },
+      });
+      return row !== null && row.network === network;
+    },
+
     creditFoundTransfer: credit.creditFoundTransfer,
     creditDetectedReceipt: credit.creditDetectedReceipt,
 
@@ -316,6 +332,8 @@ export function logDepositScanEvent(event: DepositScanEvent): void {
     logger.error(line, "Deposit scan: error");
   } else if (event.kind === "transfer_out") {
     logger.warn(line, "Deposit scan: a transfer left a deposit address");
+  } else if (event.kind === "swept") {
+    logger.info(line, "Deposit scan: a sweep left a deposit address");
   } else if (event.kind === "unexplained") {
     logger.warn(line, "Deposit scan: a balance its history does not explain");
   } else {

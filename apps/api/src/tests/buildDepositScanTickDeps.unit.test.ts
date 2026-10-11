@@ -221,6 +221,26 @@ test("the USDC account is recorded as open only while that is unknown", async ()
   });
 });
 
+test("a known sweep is a chain_transfers row of this chain with that signature", async () => {
+  const w = setup({
+    chainTransfers: [
+      { id: "ct-1", network: "solana:devnet", fromAddress: depositAddressOf(ORG_1), txSignature: "sig_sweep" },
+      { id: "ct-2", network: "solana:mainnet", fromAddress: depositAddressOf(ORG_1), txSignature: "sig_mainnet" },
+    ],
+  });
+  assert.equal(await w.deps.isKnownTransfer!("sig_sweep"), true);
+  assert.equal(await w.deps.isKnownTransfer!("sig_mainnet"), false);
+  assert.equal(await w.deps.isKnownTransfer!("sig_stranger"), false);
+  assert.deepEqual(
+    w.calls.filter((c) => c.op === "chainTransfer.findUnique").map((c) => c.args),
+    [
+      { where: { txSignature: "sig_sweep" } },
+      { where: { txSignature: "sig_mainnet" } },
+      { where: { txSignature: "sig_stranger" } },
+    ],
+  );
+});
+
 test("production: every dependency is bound, and no node is asked to build them", () => {
   const deps = buildProductionDepositScanDeps();
   for (const name of [
@@ -233,6 +253,7 @@ test("production: every dependency is bound, and no node is asked to build them"
     "watch",
     "listSignatures",
     "loadTransaction",
+    "isKnownTransfer",
     "creditFoundTransfer",
     "creditDetectedReceipt",
     "markWatched",

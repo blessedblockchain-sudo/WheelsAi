@@ -77,6 +77,10 @@ export {
   stopDepositScanQueue,
 } from "./deposit-scan.queue.js";
 export {
+  startDepositSweepQueue,
+  stopDepositSweepQueue,
+} from "./deposit-sweep.queue.js";
+export {
   startEmbeddingBackfillQueue,
   stopEmbeddingBackfillQueue,
 } from "./embedding-backfill.queue.js";

@@ -32,6 +32,9 @@
  *     its organization is never read. Nor is a row of another chain.
  *   - One address that throws does not stop the others.
  *   - A transfer OUT of a deposit address gets no receipt; it is logged.
+ *     One whose signature is a chain_transfers row is a sweep this server
+ *     made (services/runSweepTick.ts): it is expected, and is not warned
+ *     about. Any other transfer out still is.
  *   - A balance the history does not explain (the node is behind, or does
  *     not serve the address's history) is logged on every run it lasts.
  *     Nothing is credited from a balance alone.
@@ -87,6 +90,8 @@ export type DepositScanEventKind =
   | "waiting"
   | "ignored"
   | "transfer_out"
+  /** A transfer out that is a sweep this server made: expected. */
+  | "swept"
   /** The address holds a balance nothing in its history explains yet. */
   | "unexplained"
   | "error";
@@ -135,6 +140,10 @@ export interface DepositScanDeps {
   }) => Promise<string[]>;
   /** One finalized transaction's facts; null when it cannot be loaded. */
   loadTransaction: (signature: string) => Promise<TransactionFacts | null>;
+
+  /** Is this signature a chain_transfers row (a sweep this server made)?
+   * Without it, or when it throws, every transfer out is warned about. */
+  isKnownTransfer?: (signature: string) => Promise<boolean>;
 
   creditFoundTransfer: (found: FoundTransfer) => Promise<FoundTransferOutcome>;
   creditDetectedReceipt: (
@@ -444,16 +453,37 @@ async function scanAddress(
     countOutcomes(signature, outcomes);
 
     if (effect.lamportsOut > 0n || effect.usdcOut > 0n) {
-      tally.transfersOut += 1;
-      deps.log?.({
-        kind: "transfer_out",
-        orgId: row.orgId,
-        address: row.address,
-        signature,
-        detail:
-          `left the address: ${effect.lamportsOut.toString()} lamports, ` +
-          `${effect.usdcOut.toString()} USDC base units. No receipt is written.`,
-      });
+      // A sweep this server made is expected. A read that throws proves
+      // nothing, so the transfer is warned about like any other.
+      let known = false;
+      if (deps.isKnownTransfer) {
+        try {
+          known = (await deps.isKnownTransfer(signature)) === true;
+        } catch {
+          known = false;
+        }
+      }
+      const left =
+        `${effect.lamportsOut.toString()} lamports, ` +
+        `${effect.usdcOut.toString()} USDC base units`;
+      if (known) {
+        deps.log?.({
+          kind: "swept",
+          orgId: row.orgId,
+          address: row.address,
+          signature,
+          detail: `a sweep left the address: ${left}. No receipt is written.`,
+        });
+      } else {
+        tally.transfersOut += 1;
+        deps.log?.({
+          kind: "transfer_out",
+          orgId: row.orgId,
+          address: row.address,
+          signature,
+          detail: `left the address: ${left}. No receipt is written.`,
+        });
+      }
     }
     done.set(signature, effect);
     return effect;

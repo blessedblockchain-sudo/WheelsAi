@@ -122,12 +122,15 @@ export function makeDb(
     receipts?: Row[];
     addresses?: Row[];
     balances?: Record<string, bigint>;
+    /** chain_transfers rows: the sweeps this server made (batch 6). */
+    chainTransfers?: Row[];
   } = {},
 ) {
   const state = {
     topups: init.topups ?? [],
     receipts: init.receipts ?? [],
     addresses: init.addresses ?? [],
+    chainTransfers: init.chainTransfers ?? [],
     balances: { ...(init.balances ?? {}) } as Record<string, bigint>,
     ledger: [] as Row[],
   };
@@ -204,6 +207,13 @@ export function makeDb(
         const hit = state.receipts.filter((r) => matches(r, args.where));
         for (const row of hit) Object.assign(row, args.data);
         return { count: hit.length };
+      },
+    },
+    chainTransfer: {
+      findUnique: async (args: { where: { txSignature: string } }) => {
+        calls.push({ op: "chainTransfer.findUnique", args });
+        const row = state.chainTransfers.find((r) => r.txSignature === args.where.txSignature);
+        return row ? { ...row } : null;
       },
     },
     depositAddress: {

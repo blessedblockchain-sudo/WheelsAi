@@ -77,6 +77,7 @@ Updated 2026-10-08.
 
 ## Deploy and billing
 
+- **A model deployment can be started while the workers that watch and bill it are off.** Nothing on the path that starts a deployment reads `DEPLOYMENT_STATUS_INTERVAL_MS` or `GPU_BILLING_INTERVAL_MS`. With either at 0 and a Nosana account set, the GPU is started, the row is never moved on or never billed, and nothing but the customer's own Stop ends it before Nosana's timeout. Serving is already refused in that state (`gpuBillingBlock` in `services/hostedModel.ts`) and fine-tuning refuses to start (`orphanSweepEnabled`); starting a deployment should answer 503 with "nothing was reserved or charged" in the same way. Found on 2026-10-11 while preparing the devnet payments run, whose start script switched those workers off with the account still loaded; that script now leaves the account out (`start-api.sh --run`, with `WITH_NOSANA=1` to keep it and the workers).
 - If a request that changed the replica count crashed after Nosana applied the change, the time until the status worker reconciles the count (about 5 minutes plus one tick) is billed at the old count.
 - When Nosana had already stopped a deployment and no stop time was recorded, the final billing window ends at the last billed second, so up to one billing interval goes unbilled.
 - A training job that completes normally does not have its leftover Nosana vault reclaimed. Cancelled and failed training jobs, and every agent deployment, are handed to the orphan sweep.

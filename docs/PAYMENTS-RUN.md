@@ -219,8 +219,8 @@ This is done by a person at a browser. It costs nothing. It is the gate before m
 the transfer each real wallet signs is one the server accepts.
 
 1. Set Phantom and Solflare to devnet. Use the browser extensions: Solflare's web wallet, opened without
-   the extension, is a mainnet wallet. Get devnet SOL from Solana's faucet and 10 devnet USDC from
-   Circle's faucet (Solana, devnet) into each.
+   the extension, is a mainnet wallet. Get devnet SOL from Solana's faucet into each, and devnet USDC
+   from Circle's faucet (Solana, devnet): 10 into each, and 1 more into either for step 4.
 2. Make a database for the run, make a key for devnet only, and start the API and the web app. No other
    WheelsAI API may be running: it would share the port and the queues.
 
@@ -252,8 +252,26 @@ the transfer each real wallet signs is one the server accepts.
    curl -s -H "x-admin-key: devnet-run-admin-key-0123456789" http://localhost:4000/api/platform/money
    ```
 
+Checked on 2026-10-11, before any wallet. The run's API was started on devnet on its own empty
+database. Its money report read the chain (the paying wallet and no deposit address, every figure zero)
+and a Pyth price that was 5 to 22 seconds old on four readings. `browser-run-start.cjs` then signed up a
+new person in a browser and opened the Billing page, 13 of 13: the API named devnet, USDC and SOL were
+offered, each of the four packs showed "Pay with Wallet", "Show my deposit address" was there, no card
+button was drawn and the page fitted a phone. That check ran on a second empty database, removed
+afterwards, with a key of its own that was never written down, so the run's database still holds
+nothing. Steps 3 to 5 need the wallets and are still to do.
+
 SOL on devnet: Pyth's price account there is updated irregularly. When it is more than two minutes old
-the API refuses SOL, by design, and USDC still works.
+the API refuses SOL, by design, and USDC still works. The money report says how old the price is, under
+`health.solPrice`. The Billing page offers SOL beside USDC either way; a payment in SOL asked for while
+the price is old is answered "We could not get a current SOL price, so nothing was prepared. Pay with
+USDC, or try again in a minute."
+
+Nosana on a run: the run's API has every worker off that payments do not need, the two that watch and
+bill a GPU among them, so `start-api.sh --run` gives it no Nosana access at all and a model cannot be
+deployed on it (`GET /api/platform/compute` with the report's key says `"mode":"none"`). A run that
+should also deploy a model is started with `WITH_NOSANA=1`, which keeps the Nosana account of
+`apps/api/.env` and both workers. That run can spend Nosana credits.
 
 ## Mainnet: what it needs
 

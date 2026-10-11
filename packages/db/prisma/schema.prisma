@@ -355,6 +355,11 @@ model CreditTransaction {
   description  String?
   referenceId  String?  @map("reference_id") // Stripe charge ID, usage period, etc.
   balanceAfter BigInt   @map("balance_after")
+  // GPU-seconds this row charged for: the seconds of the window times the
+  // replicas that ran, for 'gpu_usage'; the seconds billed, for
+  // 'training_usage'. Null on every other row. It is what "GPU hours" on the
+  // Billing page is the sum of: measured, never estimated.
+  gpuSeconds   BigInt?  @map("gpu_seconds")
   createdAt    DateTime @default(now()) @map("created_at")
 
   // Restrict, not Cascade (G6): this table IS the billing audit trail. A

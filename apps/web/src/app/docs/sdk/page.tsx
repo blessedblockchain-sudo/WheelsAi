@@ -209,8 +209,13 @@ if (agentGpu.available) {
             resource: <code>billing</code>,
             methods: (
               <>
-                <code>getBalance</code>, <code>getTransactions</code>, <code>getUsage</code>, <code>plan</code>,{" "}
-                <code>packages</code>, <code>checkout</code>, <code>subscriptionCheckout</code>, <code>portal</code>
+                <code>getBalance</code>, <code>getHolds</code>, <code>getTransactions</code>,{" "}
+                <code>exportTransactions</code>, <code>getUsage</code>, <code>plan</code>, <code>packages</code>,{" "}
+                <code>checkout</code>, <code>subscriptionCheckout</code>, <code>portal</code>,{" "}
+                <code>topups.prepare</code>, <code>topups.submit</code>, <code>topups.reconcile</code>,{" "}
+                <code>topups.get</code>, <code>topups.list</code>, <code>depositAddress.get</code>,{" "}
+                <code>depositAddress.issue</code>, <code>depositAddress.prepareUsdc</code>,{" "}
+                <code>depositAddress.check</code>, <code>deposits.list</code>
               </>
             ),
             endpoint: <code>/api/billing/...</code>,

@@ -9,14 +9,16 @@ import { DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Billing and plans API",
   description:
-    "WheelsAI billing API: credit balance, ledger transactions, usage, credit packages and live payment rails, plan and limits, Stripe checkout and portal, Solana wallet top-ups in USDC or SOL, your organization's deposit address for transfers from an exchange or any wallet, and linking a wallet.",
+    "WheelsAI billing API: credit balance, what is held and why, this month's spending by kind, ledger transactions and their CSV export, credit packages and live payment rails, plan and limits, Stripe checkout and portal, Solana wallet top-ups in USDC or SOL, your organization's deposit address for transfers from an exchange or any wallet, and linking a wallet.",
 };
 
 const toc = [
   { id: "credits", title: "Credits" },
   { id: "balance", title: "Balance", sub: true },
+  { id: "holds", title: "Holds", sub: true },
+  { id: "usage", title: "Spending and usage", sub: true },
   { id: "transactions", title: "Transactions", sub: true },
-  { id: "usage", title: "Usage", sub: true },
+  { id: "transactions-export", title: "Export", sub: true },
   { id: "packages", title: "Packages and rails", sub: true },
   { id: "plan", title: "Plan" },
   { id: "get-plan", title: "Current plan and usage", sub: true },
@@ -51,25 +53,279 @@ export default function BillingApiPage() {
     >
       <h2 id="credits">Credits</h2>
 
+      <p>
+        These five endpoints are what the <strong>Billing</strong> page shows. Amounts are US dollars. A refusal is{" "}
+        <code>&#123; error, message &#125;</code>, where <code>message</code> is a plain sentence you can show as it is.
+      </p>
+
       <Endpoint id="balance" method="GET" path="/api/billing/balance" auth="API key or session" title="Credit balance">
-        <CodeBlock language="json" code={`{ "balance": { "available": 12.5, "pending": 0, "total": 12.5 } }`} />
-        <p>Amounts are US dollars.</p>
+        <CodeBlock language="json" code={`{ "balance": { "available": 40, "held": 10, "total": 50, "pending": 10 } }`} />
+        <Fields
+          title="Answer"
+          fields={[
+            { name: "available", type: "number", description: "What you can spend now." },
+            {
+              name: "held",
+              type: "number",
+              description: (
+                <>
+                  What is set aside for things that are running or awaited: the total of <a href="#holds">the holds</a>.
+                </>
+              ),
+            },
+            { name: "total", type: "number", description: <><code>available</code> plus <code>held</code>.</> },
+            { name: "pending", type: "number", description: <>The same figure as <code>held</code>, kept for older callers.</> },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="holds" method="GET" path="/api/billing/holds" auth="API key or session" title="What is held, and why">
+        <CodeBlock
+          language="json"
+          code={`{
+  "holds": [
+    {
+      "kind": "deployment",
+      "id": "22222222-2222-4222-8222-222222222222",
+      "name": "support-llm",
+      "amount": 6,
+      "since": "2026-10-11T09:00:00.000Z",
+      "note": "Held while this deployment runs. It comes back when the deployment stops."
+    },
+    {
+      "kind": "try_it",
+      "id": "try_it",
+      "name": "Try it messages",
+      "amount": 4,
+      "since": "2026-10-11T08:58:00.000Z",
+      "note": "Held for a few minutes while a Try it message you pay for is answered."
+    }
+  ],
+  "total": 10
+}`}
+        />
+        <p>
+          One entry for each thing that holds credits now, newest first. <code>name</code> is what you called it,{" "}
+          <code>since</code> is when the credits were set aside, and <code>note</code> is a sentence that says why they are
+          held and when they come back. <code>total</code> is the <code>held</code> of{" "}
+          <a href="#balance">the balance</a>. The values above are an example.
+        </p>
+        <DocTable
+          caption="The kinds of hold"
+          columns={[
+            { key: "kind", label: "Kind" },
+            { key: "what", label: "What holds the credits" },
+            { key: "back", label: "When they come back" },
+          ]}
+          rows={[
+            { kind: <code>deployment</code>, what: "A model deployment that is running.", back: "When the deployment stops." },
+            { kind: <code>agent_deployment</code>, what: "An agent running on its own GPU.", back: "When it stops." },
+            { kind: <code>fine_tuning</code>, what: "A fine-tuning run.", back: "What the run does not use comes back when it ends." },
+            { kind: <code>job</code>, what: "A job you hired.", back: "It is paid when the work is accepted, by you or when the review window closes, or comes back when the job is refunded." },
+            {
+              kind: <code>try_it</code>,
+              what: (
+                <>
+                  Try it messages you pay for on your own listing. One entry covers all of them, with the{" "}
+                  <code>id</code> <code>try_it</code>.
+                </>
+              ),
+              back: "Within a few minutes, once each message is answered.",
+            },
+          ]}
+        />
+      </Endpoint>
+
+      <Endpoint id="usage" method="GET" path="/api/billing/usage" auth="API key or session" title="This month's spending and usage">
+        <CodeBlock
+          language="json"
+          code={`{
+  "usage": {
+    "month": "2026-10",
+    "currentMonth": 17.25,
+    "spend": [
+      { "group": "gpu", "label": "GPU time", "amount": 12.5 },
+      { "group": "inference", "label": "Inference", "amount": 0 },
+      { "group": "fine_tuning", "label": "Fine-tuning", "amount": 3 },
+      { "group": "paid_use", "label": "Paid use of listings", "amount": -0.25 },
+      { "group": "subscriptions", "label": "Subscriptions", "amount": 0 },
+      { "group": "jobs", "label": "Jobs", "amount": 2 },
+      { "group": "try_it", "label": "Try it messages you paid for", "amount": 0 }
+    ],
+    "gpuHours": 4.5,
+    "requests": 120,
+    "inputTokens": 9000,
+    "outputTokens": 4000
+  }
+}`}
+        />
+        <p>
+          The month is the UTC calendar month, named in <code>month</code>. The values above are an example.
+        </p>
+        <Fields
+          title="Answer"
+          fields={[
+            { name: "month", type: "string", description: <>The month these figures cover, as <code>YYYY-MM</code> (UTC).</> },
+            { name: "currentMonth", type: "number", description: <>What you spent this month: the sum of <code>spend</code>.</> },
+            {
+              name: "spend",
+              type: "array",
+              description: (
+                <>
+                  One entry for each kind of spending, always the same seven in the same order, zero included.{" "}
+                  <code>label</code> is the heading to show. <code>amount</code> is what was charged under it this month,
+                  less what came back, so it is below zero when more came back this month than was charged. A job counts
+                  in the month its work was accepted, not the month it was hired.
+                </>
+              ),
+            },
+            { name: "gpuHours", type: "number", description: "The GPU hours you were charged for this month." },
+            {
+              name: "requests, inputTokens, outputTokens",
+              type: "number",
+              description: <>Counts of your <code>/v1</code> traffic this month.</>,
+            },
+          ]}
+        />
       </Endpoint>
 
       <Endpoint id="transactions" method="GET" path="/api/billing/transactions" auth="API key or session" title="Ledger transactions">
+        <Fields
+          title="Query"
+          fields={[
+            { name: "limit", type: "number", description: "How many rows to answer, 1 to 200. 50 when left out." },
+            {
+              name: "cursor",
+              type: "string",
+              description: (
+                <>
+                  The <code>nextCursor</code> of the answer before, to read the page after it. Send it back unchanged.
+                </>
+              ),
+            },
+            {
+              name: "filter",
+              type: "\"added\" | \"spent\" | \"held\"",
+              description:
+                "Credits added, spending with what came back of it, or holds with their releases. Leave out for every row.",
+            },
+          ]}
+        />
+        <CodeBlock
+          language="json"
+          code={`{
+  "transactions": [
+    {
+      "id": "b7c1f0de-5a41-4c1e-9d0b-3f2a6c8e1d21",
+      "amount": -1.25,
+      "type": "gpu_usage",
+      "kind": "spent",
+      "label": "GPU time",
+      "description": "GPU time",
+      "balanceAfter": 48.75,
+      "createdAt": "2026-10-03T08:30:00.000Z"
+    },
+    {
+      "id": "0d9a4e77-2b63-4f0a-8c15-7e9b1a2c3d44",
+      "amount": 50,
+      "type": "purchase",
+      "kind": "added",
+      "label": "Credits added",
+      "description": "Credits added",
+      "balanceAfter": 50,
+      "createdAt": "2026-10-02T10:00:00.000Z"
+    }
+  ],
+  "nextCursor": null
+}`}
+        />
         <p>
-          The 50 most recent ledger rows, newest first: <code>id</code>, <code>amount</code> (USD, negative for charges),{" "}
-          <code>type</code>, <code>description</code> and <code>createdAt</code>. Types include purchases, bonuses, usage,
-          holds and their releases, and refunds.
+          Ledger rows, newest first. <code>amount</code> carries its own sign: above zero for credits arriving, below zero
+          for credits leaving. <code>balanceAfter</code> is your balance after the row. <code>label</code> is what the row
+          is called, ready to show, and <code>description</code> is the row&apos;s own text, or the label when it has none.{" "}
+          <code>nextCursor</code> is <code>null</code> when there are no more rows. The values above are an example.
+        </p>
+        <DocTable
+          caption="What kind says about a row"
+          columns={[
+            { key: "kind", label: "Kind" },
+            { key: "meaning", label: "What it means" },
+            { key: "filter", label: "Listed by the filter" },
+          ]}
+          rows={[
+            { kind: <code>added</code>, meaning: "Credits arriving: bought, granted as a bonus, or earnings taken as credits.", filter: <code>added</code> },
+            { kind: <code>taken_back</code>, meaning: "Credits removed again because a card payment was refunded.", filter: <code>added</code> },
+            { kind: <code>spent</code>, meaning: "Credits used.", filter: <code>spent</code> },
+            { kind: <code>returned</code>, meaning: "A charge, or the unused part of one, coming back.", filter: <code>spent</code> },
+            { kind: <code>held</code>, meaning: "Credits set aside for something that is running or awaited.", filter: <code>held</code> },
+            { kind: <code>released</code>, meaning: "A hold coming back.", filter: <code>held</code> },
+            { kind: <code>other</code>, meaning: "Any other change to your credits.", filter: "None; listed when no filter is sent." },
+          ]}
+        />
+        <p>
+          <code>400</code> <code>invalid_request</code> when <code>limit</code>, <code>cursor</code> or <code>filter</code>{" "}
+          cannot be read.
         </p>
       </Endpoint>
 
-      <Endpoint id="usage" method="GET" path="/api/billing/usage" auth="API key or session" title="This month's usage">
+      <Endpoint id="transactions-export" method="GET" path="/api/billing/transactions/export" auth="API key or session" title="Download the ledger as a CSV file">
+        <Fields
+          title="Query"
+          fields={[
+            { name: "from", type: "YYYY-MM-DD", description: "The first day, in UTC." },
+            { name: "to", type: "YYYY-MM-DD", description: "The last day, in UTC. Rows of this day are included." },
+          ]}
+        />
         <p>
-          Totals since the start of the month for your <code>/v1</code> traffic: <code>requests</code>,{" "}
-          <code>inputTokens</code>, <code>outputTokens</code>, GPU hours and cost, with the metered compute seconds under{" "}
-          <code>metered</code>.
+          Send both dates or neither. With neither, the file covers the current UTC month up to today. The file is open to
+          every plan.
         </p>
+        <CodeBlock
+          language="bash"
+          code={`curl -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -o credits.csv \\
+  "$WHEELSAI_API_URL/api/billing/transactions/export?from=2026-09-01&to=2026-09-30"`}
+        />
+        <p>
+          The answer is <code>text/csv</code>, with{" "}
+          <code>Content-Disposition: attachment; filename=&quot;wheelsai-credits-2026-09-01-to-2026-09-30.csv&quot;</code>{" "}
+          naming the file after the two dates. It holds every ledger row of the range, oldest first.
+        </p>
+        <DocTable
+          caption="The columns of the file"
+          columns={[
+            { key: "column", label: "Column" },
+            { key: "holds", label: "What it holds" },
+          ]}
+          rows={[
+            { column: "Date (UTC)", holds: "When the row was written, as an ISO date and time." },
+            { column: "Type", holds: <>The row&apos;s <code>type</code>.</> },
+            { column: "What", holds: <>The row&apos;s <code>label</code>.</> },
+            { column: "Description", holds: "The row's own text." },
+            { column: "Amount (USD)", holds: "A number with its own sign." },
+            { column: "Balance after (USD)", holds: "Your balance after the row, as a number." },
+          ]}
+        />
+        <DocTable
+          caption="Refusals"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            {
+              status: "400",
+              error: <code>invalid_range</code>,
+              when: "A date cannot be read, the end is before the start, or only one of the two was sent.",
+            },
+            {
+              status: "400",
+              error: <code>range_too_large</code>,
+              when: "The range holds more than 100,000 rows. Choose a shorter range.",
+            },
+          ]}
+        />
       </Endpoint>
 
       <Endpoint id="packages" method="GET" path="/api/billing/packages" auth="API key or session" title="Credit packages and live payment rails">

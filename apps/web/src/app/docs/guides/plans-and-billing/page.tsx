@@ -15,6 +15,7 @@ const toc = [
   { id: "api-calls", title: "What counts as an API call" },
   { id: "limits", title: "When you hit a limit" },
   { id: "credits", title: "Credits and the ledger" },
+  { id: "billing-page", title: "What the Billing page shows", sub: true },
   { id: "what-uses-credits", title: "What uses credits", sub: true },
   { id: "paid-use", title: "Paying to use an agent", sub: true },
   { id: "rails", title: "Ways to pay" },
@@ -134,10 +135,66 @@ export default function PlansBillingPage() {
       <p>
         Credits are a US dollar balance held in cents. Every change to it, whether a purchase, bonus, usage charge, hold, release
         or refund, is written as a ledger row that records the balance after the change, inside the same database transaction.
-        You can see the most recent rows under <strong>Billing</strong> or with <code>GET /api/billing/transactions</code>.
+        You can read every row under <strong>Billing</strong> or with <code>GET /api/billing/transactions</code>.
       </p>
       <p>
         New organizations start at $0. Verifying the owner&apos;s email adds a one-time $5.00 bonus.
+      </p>
+
+      <h3 id="billing-page">What the Billing page shows</h3>
+      <p>
+        <strong>Billing</strong> in the dashboard is where you read your credits. Every figure on it is added up from
+        what your organization bought, used and set aside, and the month it speaks of is the calendar month in UTC.
+      </p>
+      <ul>
+        <li>
+          <strong>Available Credits</strong> is what you can spend now.
+        </li>
+        <li>
+          <strong>Held</strong> is what is set aside for things that are running or awaited. It is not spent, and it is
+          not part of what is available until it comes back.
+        </li>
+        <li>
+          <strong>Spent This Month</strong> is what you were charged this month, less what came back.
+        </li>
+        <li>
+          <strong>GPU Hours This Month</strong> is the GPU time you were charged for this month.
+        </li>
+      </ul>
+      <p>
+        When anything is held, <strong>What is held</strong> lists each hold with its name, its amount and a sentence
+        that says when it comes back.
+      </p>
+      <DocTable
+        caption="What can hold credits"
+        columns={[
+          { key: "what", label: "Held for" },
+          { key: "back", label: "When it comes back" },
+        ]}
+        rows={[
+          { what: "A model deployment that is running", back: "When the deployment stops." },
+          { what: "An agent running on its own GPU", back: "When it stops." },
+          { what: "A fine-tuning run", back: "What the run does not use comes back when it ends." },
+          { what: "A job you hired", back: "It is paid when the work is accepted, by you or when the review window closes, or comes back when the job is refunded." },
+          { what: "A Try it message you pay for on your own listing", back: "Within a few minutes, once the message is answered." },
+        ]}
+      />
+      <p>
+        <strong>Spending this month</strong> splits the month by kind, one line for each kind you spent on: GPU time,
+        inference, fine-tuning, paid use of listings, subscriptions, jobs, and Try it messages you paid for. A refund
+        counts against the kind it belongs to in the month it arrives, so a line reads as returned when more came back
+        than was charged. A job counts when its work is accepted, not when you hire it: until then its price is held.
+      </p>
+      <p>
+        <strong>Transaction History</strong> lists the ledger, newest first. Each row shows what it is, its date and
+        time, its amount with its own sign (a plus for credits arriving, a minus for credits leaving) and your balance
+        after it. You can show everything, only credits added, only spending, or only holds, and{" "}
+        <strong>Load more</strong> reads further back.
+      </p>
+      <p>
+        <strong>Export</strong> downloads the ledger as a CSV file for this month, last month or the last 90 days. The
+        file holds every row of the range you choose, oldest first, with the balance after each one. For other dates,
+        use <Link href="/docs/api/billing#transactions-export">the export endpoint</Link>.
       </p>
 
       <h3 id="what-uses-credits">What uses credits</h3>

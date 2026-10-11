@@ -368,6 +368,9 @@ export type AcceptSignedTopupResult =
       exact: boolean;
       /** How many instructions the wallet added (0 when exact). */
       addedInstructions: number;
+      /** The program of each instruction the wallet added, in order. For
+       * the log: it is how an operator learns what a wallet really adds. */
+      addedPrograms: string[];
     }
   | {
       ok: false;
@@ -375,6 +378,10 @@ export type AcceptSignedTopupResult =
       code: "unreadable_transaction" | "message_mismatch";
       /** What exactly was wrong, for the log. */
       reason: AcceptSignedTopupRefusal;
+      /** With reason "instructions": the program of the first instruction
+       * that is neither a prepared one nor one a wallet may add. For the
+       * log. */
+      program?: string;
     };
 
 interface FlatInstruction {
@@ -455,10 +462,14 @@ export function acceptSignedTopupTransaction(args: {
     code: "unreadable_transaction",
     reason,
   });
-  const mismatch = (reason: AcceptSignedTopupRefusal): AcceptSignedTopupResult => ({
+  const mismatch = (
+    reason: AcceptSignedTopupRefusal,
+    program?: string,
+  ): AcceptSignedTopupResult => ({
     ok: false,
     code: "message_mismatch",
     reason,
+    ...(program !== undefined ? { program } : {}),
   });
 
   let vtx: VersionedTransaction;
@@ -475,6 +486,7 @@ export function acceptSignedTopupTransaction(args: {
   const exact =
     Buffer.from(messageBytes).toString("base64") === args.unsignedMessageB64;
   let addedInstructions = 0;
+  const addedPrograms: string[] = [];
 
   if (!exact) {
     const message = vtx.message;
@@ -514,8 +526,9 @@ export function acceptSignedTopupTransaction(args: {
         next += 1;
       } else if (WALLET_ADDED_PROGRAM_IDS.includes(ix.programId)) {
         addedInstructions += 1;
+        addedPrograms.push(ix.programId);
       } else {
-        return mismatch("instructions");
+        return mismatch("instructions", ix.programId);
       }
     }
     if (next !== preparedIxs.length) return mismatch("instructions");
@@ -555,6 +568,7 @@ export function acceptSignedTopupTransaction(args: {
     rawTxBase64: Buffer.from(vtx.serialize()).toString("base64"),
     exact,
     addedInstructions,
+    addedPrograms,
   };
 }
 

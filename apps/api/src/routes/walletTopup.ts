@@ -791,12 +791,27 @@ export function createWalletTopupRoutes(
         if (!accepted.ok) {
           // Row untouched: the customer can sign the prepared transfer.
           logger.warn(
-            { topupId: row.id, reason: accepted.reason },
+            {
+              topupId: row.id,
+              reason: accepted.reason,
+              ...(accepted.program !== undefined ? { program: accepted.program } : {}),
+            },
             "signed top-up not accepted",
           );
           return refuse(reply, 400, accepted.code, accepted.code);
         }
         const txSignature = accepted.txSignatureB58;
+        // What the wallet handed back, next to what was prepared: exact, or
+        // with instructions of its own added, and of which programs.
+        logger.info(
+          {
+            topupId: row.id,
+            exact: accepted.exact,
+            addedInstructions: accepted.addedInstructions,
+            addedPrograms: accepted.addedPrograms,
+          },
+          "signed top-up accepted",
+        );
 
         // Claim before broadcast: the signature and the signed bytes are
         // on the row before the network sees them.

@@ -111,6 +111,7 @@ test("the prepared bytes, signed, are accepted as exact (SOL and USDC)", () => {
     assert.ok(result.ok, JSON.stringify(result));
     assert.equal(result.exact, true);
     assert.equal(result.addedInstructions, 0);
+    assert.deepEqual(result.addedPrograms, []);
     assert.equal(result.rawTxBase64, signed);
     assert.equal(result.txSignatureB58, signatureOfSignedTransaction(signed));
   }
@@ -142,6 +143,28 @@ test("a wallet's guard instruction is accepted, with accounts of the transfer", 
   const result = accept(signed, "USDC");
   assert.ok(result.ok, JSON.stringify(result));
   assert.equal(result.addedInstructions, 2);
+  // Which programs the wallet added, in order: what the log says of a real wallet.
+  assert.deepEqual(result.addedPrograms, [
+    "ComputeBudget111111111111111111111111111111",
+    "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95",
+  ]);
+});
+
+test("a refusal for an instruction of another program names that program, for the log", () => {
+  const stranger = Keypair.generate().publicKey;
+  const refused = accept(
+    rebuild([
+      ...preparedInstructions(),
+      new TransactionInstruction({ programId: stranger, keys: [], data: Buffer.from([1]) }),
+    ]),
+  );
+  assert.ok(!refused.ok);
+  assert.equal(refused.code, "message_mismatch");
+  assert.equal(refused.reason, "instructions");
+  assert.equal(refused.program, stranger.toBase58());
+  // A refusal for another reason names none.
+  const otherBlockhash = accept(rebuild([feePrice(), ...preparedInstructions()], { blockhash: Keypair.generate().publicKey.toBase58() }));
+  assert.ok(!otherBlockhash.ok && otherBlockhash.reason === "blockhash" && otherBlockhash.program === undefined, JSON.stringify(otherBlockhash));
 });
 
 test("the two programs a wallet may add are exactly these", () => {

@@ -957,6 +957,66 @@ start can still take a few seconds longer than later ones (4.3 seconds on D).
 
 ---
 
+## Third live run: an agent on a model its organization runs (2026-10-11)
+
+The first two runs proved a model deployment and its own `/v1` address. This one proves the
+step after it: an agent that thinks on that deployment, chosen on the screens.
+
+An agent whose model is `wheelsai/<model id>` has been answered from its organization's own
+deployment of that model since `17746bd` (`services/hostedModel.ts`). Until 2026-10-11 no
+screen offered that choice and it had never run against a GPU: `docs/AGENT-V1-RUN.md` said
+"not run live". The model choice now offers it (commits `fdc4d98` to `4f92054`), and this run
+is the first time an agent answered from a Nosana node.
+
+It was driven in a browser as the demo organization's owner, on the code of those commits: the
+API with the account's key on port 4020, the built web app on 3120, `NOSANA_MIN_CREDITS_USD=1`
+(the account held $4.668, under the product's floor of $5). One deployment, created and
+stopped through the dashboard. All times UTC.
+
+| Step | What happened |
+|---|---|
+| A new agent, before any deployment | Its Settings offered no model of the organization's own and said how to get one: "To have this agent think on a GPU you run, deploy a model on Nosana, then choose it here." with a link to the new deployment screen. The demo organization's stand-in deployments were not offered: an agent cannot be answered from one |
+| 15:43:31, Deploy | Llama 3.2 3B, Ollama, the Premium tier (RTX 4090), named `agent-brain-154326`. Nosana id `5XXqtjo2o7t3uJCMBEVqtZyM6gaWVXJ8zBNYtiXK1fuF` |
+| While it started | The agent's model choice listed it as "Llama 3.2 3B Instruct (starting)" and would not let it be chosen |
+| 101 seconds after the click | The deployment was `running`: the node had answered the platform's one-token request |
+| The agent's model choice | Under "Your models on Nosana": "Llama 3.2 3B Instruct (your deployment agent-brain-154326)". Chosen and saved: the agent's model was stored as `wheelsai/llama-3.2-3b`, and Settings said "This agent answers from your deployment agent-brain-154326. It can answer only while that deployment is running. Its GPU time is billed by the second on the deployment." |
+| The agent's chat screen | Its own picker held the agent's model. "In one short sentence, what is a GPU?" was answered 3,189 ms after it was sent: "A GPU (Graphics Processing Unit) is a computer chip designed specifically for handling graphics and other parallel computational tasks." |
+| The platform's record of that request | `request_latency_samples`: surface `agent_playground`, model `wheelsai/llama-3.2-3b`, provider `nosana`, outcome `ok`, 3,116 ms, 23 tokens out. No free provider took part |
+| A second message, through the API | 200, model `wheelsai/llama-3.2-3b`, 39 tokens in and 3 out |
+| 111 seconds after the create, Stop | The deployment was `stopped` (`user_stopped`) |
+| The agent after the stop | 503 `hosted_model_not_running`, with the reason in plain words and nothing answering in its place. The model choice no longer offered the model, still showed what the agent is set to, and Settings said "This agent is set to a model your organization is not running now, so it cannot answer." |
+
+What it cost. The organization: a hold of $0.90 taken and returned, and $0.01 for the GPU
+seconds. The platform, on Nosana: $0.303 reserved at the listing and returned within six
+minutes of the stop; settled credits went from $23.332 to $23.344, so the run cost $0.012.
+Afterwards the account read $4.656 available, $0 reserved, and every deployment stopped
+(`scripts/nosana-access-check.ts`, which only reads).
+
+What it settled:
+
+- An agent's own chat runs against an Ollama node through the same runtime as any other
+  model: the node's OpenAI-compatible address, no key, no redirect followed.
+- The list a model choice is drawn from agrees with the chat path at each moment it was
+  looked at: not offered before the deployment, shown and not selectable while it started,
+  selectable once it ran, gone once it stopped. Each entry's "can it answer" is asked of the
+  function the chat path itself calls (`resolveHostedModel`), not worked out a second time.
+- A model the organization runs is never chosen for an agent by a fallback: the chat screen
+  kept the agent's model, and an agent with no model of its own stays on a free model.
+
+Not reached by this run: an agent with tools on a hosted model (the agent had none), a
+streamed answer (the chat screen streams only free models), a task agent's run and a
+scheduled run on a hosted model, a visitor on the agent's public page or a buyer of its use
+being answered from the GPU (by the code they are, in the owner's organization; they read
+"unavailable" when the model is not running), a fine-tuned model as an agent's model, and
+vLLM as the engine behind an agent.
+
+The check that drove it is a script kept with the working files of the run
+(`live-agent-on-gpu.cjs`), with its log and screenshots; 15 of its 16 checks passed, and the
+sixteenth was the script's own mistake about a column (it looked for an HTTP status on a
+record that does not carry one for this kind of request).
+
+---
+
 ## Settled by the 2026-10-07 verification
 
 The live runs of 2026-10-08 corrected two rows of this table. Credits for a job show as

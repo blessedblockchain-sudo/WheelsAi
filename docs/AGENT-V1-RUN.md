@@ -467,8 +467,10 @@ only; none of them has a recorded run, for the reason given with each.
   result sent back, a typed 400), with the **model server scripted** in vLLM's format. It
   shows the client accepts what the proxy sends. It does not show a GPU node, vLLM's parser
   flags or the `v0.6.3` image working; those need a real deployment.
-- **Agents on a WheelsAI-hosted model** (`wheelsai/<model id>`) resolve to the organization's
-  own running deployment instead of answering 501. *Not run live:* same reason.
+- **Agents on a model their organization runs** (`wheelsai/<model id>`) resolve to the
+  organization's own running deployment instead of answering 501. *Run live since:* on
+  2026-10-11 an agent answered from a Nosana node, chosen in its Settings
+  (`docs/NOSANA-DEPLOY-RUN.md`, "Third live run").
 - **Graph agents.** An agent whose `entrypoint` is `graph` answers the playground and `/v1`
   by running its saved graph. *Not run live:* it needs migration
   `20261007110000_agent_entrypoint_usage`, which had not been applied to the demo database

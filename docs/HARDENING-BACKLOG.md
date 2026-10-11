@@ -82,6 +82,18 @@ Updated 2026-10-08.
 - When Nosana had already stopped a deployment and no stop time was recorded, the final billing window ends at the last billed second, so up to one billing interval goes unbilled.
 - A training job that completes normally does not have its leftover Nosana vault reclaimed. Cancelled and failed training jobs, and every agent deployment, are handed to the orphan sweep.
 
+## An agent on a model its organization runs
+
+The model choice in an agent's Settings offers the models the organization runs on Nosana, and an agent answered from one on a live GPU on 2026-10-11 (`docs/NOSANA-DEPLOY-RUN.md`, "Third live run"). Left open:
+
+- **Stopping a deployment does not say which agents are set to it.** The agents then cannot answer; their Settings say so afterwards, and their chat answers 503 with the reason. Nothing warns at the Stop button.
+- **An agent on sale whose model is its creator's own deployment stops answering buyers when that deployment stops.** A buyer reads "unavailable"; a monthly subscriber has paid for the month. Nothing pauses the sale or tells the creator. It needs a decision: warn at Stop, pause the listing, or answer from another model.
+- Run live only as an owner's chat, without tools, on Ollama. A task agent's run, a scheduled run, an agent with tools, a visitor's or a buyer's chat, a fine-tuned model and vLLM behind an agent are covered by unit tests only.
+- The platform's record of an agent's chat on such a model (`request_latency_samples`) names the model and `nosana` as the provider, and no deployment.
+- `GET /api/agents/hosted-models` answers 500 when the list cannot be read, where the models route answers `hostedModels: null` and its other lists.
+- Three sentences a customer can read still call such a model "WheelsAI-hosted": two in `services/openaiCompat.ts` and one in `services/mastra-runtime.ts`. The screens and the owner's sentence say "a model your organization runs".
+- The picker has no component test: its words and its order are tested as pure helpers (`apps/web/src/lib/model-choice.ts`), and the screens were driven once in a browser by the live check.
+
 ## Nosana access
 
 Paying Nosana with a dashboard API key and prepaid credits, beside the wallet. Two live runs took place on 2026-10-08 (nine deployments on the 4090, 3060 and A100 markets created and stopped through the API, six on the Ollama engine and three on vLLM; six of them served requests, one was never listed, one found no node and one served while Nosana's record said it did not; `docs/NOSANA-DEPLOY-RUN.md`, "First live run" and "Second live run"). They led to the fixes listed there, and what those leave open is the list "From the live runs" below. On 2026-10-07 our code was checked against Nosana's current API with read-only requests (the API document, the manager and node sources, GETs with the founder's key); what that settled is in `docs/NOSANA-DEPLOY-RUN.md`, "Settled by the 2026-10-07 verification", and the defects it found that would have failed or misbilled the first paid run were fixed in the same build (the paginated list and the exact name lookup, `running` and billing gated on an online endpoint, the Ollama definition, `required_vram`, jobs and events read from their own routes). The steps neither run reached are the checklist in that document (part 2), and what is still open is its part 3.

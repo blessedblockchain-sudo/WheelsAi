@@ -14,10 +14,13 @@
  *                      the grant in one transaction, exactly once)
  *       landed_failed  failed, code failed_on_chain
  *       dead           expired, code never_landed
- *       in_flight      a row still `submitting` that holds its signed
- *                      bytes gets the SAME bytes broadcast again (the
- *                      same transaction cannot pay twice); if the node
- *                      took them it becomes `submitted`. Otherwise wait.
+ *       in_flight      a row that holds its signed bytes gets the SAME
+ *                      bytes broadcast again, on every pass until the
+ *                      chain says what became of them (the same
+ *                      transaction cannot pay twice). A node can take a
+ *                      transfer and still drop it, so a row already
+ *                      `submitted` is sent again too. A `submitting` row
+ *                      the node took becomes `submitted`. Otherwise wait.
  *       unknown        wait. Nothing is inferred from a failed read.
  *   - a `prepared` row past its time with no signature: expired, code
  *     unsigned_expired. Nobody signed it, so nothing can have moved.
@@ -283,12 +286,13 @@ async function decideOne(
     }
 
     case "in_flight": {
-      if (row.status !== "submitting" || !row.signedTxB64) {
+      if (!row.signedTxB64) {
         return { topupId: row.id, action: "waiting", fate };
       }
-      // The first send may never have reached a node. These are the
-      // bytes the wallet signed, so sending them again is the same
-      // transaction: it lands once or not at all.
+      // The first send may never have reached a node, or reached one
+      // that then dropped it. These are the bytes the wallet signed, so
+      // sending them again is the same transaction: it lands once or
+      // not at all.
       let sent: TopupResendResult;
       try {
         sent = await deps.resendSignedBytes({
@@ -301,6 +305,9 @@ async function decideOne(
       if (!sent.ok) {
         // Nothing is inferred from a send that was not taken.
         return { topupId: row.id, action: "waiting", fate, detail: sent.detail };
+      }
+      if (row.status !== "submitting") {
+        return { topupId: row.id, action: "resent", fate };
       }
       const marked = await deps.markSubmitted({ id: row.id });
       return { topupId: row.id, action: marked ? "resent" : "lost_race", fate };

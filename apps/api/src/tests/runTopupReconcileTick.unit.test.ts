@@ -332,8 +332,24 @@ test("in_flight: a `submitting` row's own signed bytes are sent again, unchanged
   assert.equal(w.table.get("t1")?.status, "submitted");
 });
 
-test("in_flight: a `submitted` row is left to land; nothing is sent", async () => {
-  const w = makeWorld([stored({ status: "submitted" })], { sig_t1: "in_flight" });
+test("in_flight: a `submitted` row's bytes are sent again too, since a node can take a transfer and drop it", async () => {
+  const bytes = Buffer.from("the exact bytes the wallet returned").toString("base64");
+  const w = makeWorld([stored({ status: "submitted", signedTxB64: bytes })], { sig_t1: "in_flight" });
+  const res = await w.run();
+  assert.equal(res.resent, 1);
+  assert.equal(w.state.sends.length, 1);
+  assert.equal(w.state.sends[0]?.signedTxB64, bytes, "the same bytes: the same transaction cannot pay twice");
+  assert.equal(w.state.sends[0]?.txSignature, "sig_t1");
+  assert.equal(w.table.get("t1")?.status, "submitted");
+
+  // And again on the next pass, for as long as the chain has not said.
+  await w.run();
+  assert.equal(w.state.sends.length, 2);
+  assert.equal(w.table.get("t1")?.status, "submitted");
+});
+
+test("in_flight: a `submitted` row with no stored bytes is left to land; nothing is sent", async () => {
+  const w = makeWorld([stored({ status: "submitted", signedTxB64: null })], { sig_t1: "in_flight" });
   const res = await w.run();
   assert.equal(res.waiting, 1);
   assert.equal(w.state.sends.length, 0);

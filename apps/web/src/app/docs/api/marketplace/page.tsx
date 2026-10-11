@@ -152,7 +152,10 @@ export default function MarketplaceApiPage() {
           <code>POST /api/marketplace/listings/&#123;id&#125;/archive</code> withdraws it. <code>GET /api/marketplace/my-listings</code>{" "}
           lists your organization&apos;s listings in every state; each carries <code>allowedTools</code> and{" "}
           <code>buyers</code>: <code>&#123; copies, using, subscribed &#125;</code>, how many people have a copy, use the agent,
-          or hold a subscription.
+          or hold a subscription. Each also carries <code>paused</code>: <code>null</code> when the listing is not paused,
+          and <code>&#123; since &#125;</code> while the model its agent runs on is not running; <code>since</code> is when
+          that was first seen (an ISO date), or <code>null</code> when it has not been noted yet. See{" "}
+          <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>.
         </p>
       </Endpoint>
 
@@ -197,6 +200,14 @@ export default function MarketplaceApiPage() {
           <li><code>409</code> <code>sells_copies</code>: the listing sells copies; install it instead.</li>
           <li><code>409</code> <code>own_agent</code>: it is your organization&apos;s own agent.</li>
           <li><code>409</code> <code>not_offered</code>: the listing is not on sale.</li>
+          <li>
+            <code>409</code> <code>listing_paused</code>: the model the agent runs on is not running. Nothing was started
+            and nothing was charged; try again later. This covers a first start, a new month and accepting a new price.
+          </li>
+          <li>
+            <code>503</code> <code>service_unavailable</code>: whether the agent is paused could not be checked just now.
+            Nothing was started and nothing was charged; try again later.
+          </li>
           <li>
             <code>409</code> <code>copy_subscription_active</code> with <code>until</code> (an ISO date): your organization
             holds a copy of this agent with a month paid for. Remove the copy, or cancel its renewal and start after that
@@ -302,7 +313,9 @@ export default function MarketplaceApiPage() {
           Lists your organization&apos;s monthly subscriptions with their status and current period.{" "}
           <code>POST /api/marketplace/subscriptions/&#123;listingId&#125;/cancel</code> stops renewal at the end of the paid
           period, and <code>.../resume</code> undoes that. Renewals are charged from credits once per 30-day period; an unpaid
-          renewal is <code>past_due</code> and retried for 3 days before the install is suspended.
+          renewal is <code>past_due</code> and retried for 3 days before the install is suspended. A subscription for use of
+          an agent is not renewed while its listing is paused, and the month paid for is made longer by the time the
+          listing was paused.
         </p>
       </Endpoint>
 

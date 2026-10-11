@@ -24,6 +24,7 @@ const toc = [
   { id: "get-deployment", title: "Get a deployment", sub: true },
   { id: "update-deployment", title: "Scale a deployment", sub: true },
   { id: "restart-deployment", title: "Restart", sub: true },
+  { id: "dependents", title: "Agents that answer from it", sub: true },
   { id: "delete-deployment", title: "Stop", sub: true },
   { id: "metrics", title: "Metrics", sub: true },
   { id: "logs", title: "Events", sub: true },
@@ -236,6 +237,33 @@ export default function DeploymentsApiPage() {
         </p>
       </Endpoint>
 
+      <Endpoint id="dependents" method="GET" path="/api/deployments/{deploymentId}/dependents" auth="API key or session" title="Agents that answer from a deployment">
+        <p>
+          Read it before a stop. Returns the agents of your organization that will stop answering if this deployment is
+          stopped now: agents set to the model it runs, when no other running deployment of yours would answer for
+          that model. It changes nothing. A deployment that is not live has none.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "agents": [
+    {
+      "id": "…",
+      "name": "Support Bot",
+      "onSale": true,
+      "listing": { "id": "…", "title": "Support Bot", "pricingModel": "monthly", "subscribers": 3 }
+    }
+  ]
+}`}
+        />
+        <p>
+          <code>onSale</code> is whether the agent has a published listing that sells use; <code>listing</code> is that
+          listing, or <code>null</code>. <code>subscribers</code> counts its subscriptions that are <code>active</code> or{" "}
+          <code>past_due</code>. A listing whose agent cannot answer is paused; see{" "}
+          <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>.
+        </p>
+      </Endpoint>
+
       <Endpoint id="delete-deployment" method="DELETE" path="/api/deployments/{deploymentId}" auth="API key or session" title="Stop a deployment">
         <p>
           Stops the deployment&apos;s Nosana jobs and marks it <code>stopped</code>. The admission reservation is returned to
@@ -249,6 +277,10 @@ export default function DeploymentsApiPage() {
           <code>fundsReleased</code> is <code>false</code> when the GPUs were still winding down as the call returned;
           that is confirmed in the background and does not change what you are billed. Your reservation is returned and
           GPU billing ends at the stop either way.
+        </p>
+        <p>
+          Agents set to this deployment&apos;s model stop answering, and their listings that sell use are paused:
+          nobody can start using them and nobody is charged. <code>GET .../dependents</code> lists them beforehand.
         </p>
       </Endpoint>
 

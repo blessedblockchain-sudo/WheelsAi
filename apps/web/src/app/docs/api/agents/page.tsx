@@ -1382,7 +1382,8 @@ if reply.tool_calls:
   "subscription": null,
   "balanceCents": 495,
   "canAccept": true,
-  "startBlocked": null
+  "startBlocked": null,
+  "paused": false
 }`}
         />
         <ul>
@@ -1407,6 +1408,11 @@ if reply.tool_calls:
             while your organization holds a copy of this agent with a month paid for. Starting waits until{" "}
             <code>until</code> (an ISO date): remove the copy, or cancel its renewal and start after that date. While it is
             set, <code>canAccept</code> is <code>false</code>.
+          </li>
+          <li>
+            <code>paused</code> is <code>true</code> while the model the agent runs on is not running: nobody can start
+            or use it and nobody is charged, and a month already paid for is made longer by that time. The other fields
+            stay what they are.
           </li>
           <li>
             <code>404</code> <code>agent_not_found</code>.
@@ -1573,6 +1579,7 @@ if reply.tool_calls:
           { status: <code>429</code>, code: <code>too_many_refunds</code>, when: "Several of your answers could not be delivered today. Try again tomorrow." },
           { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
           { status: <code>502</code>, code: <><code>model_error</code>, <code>answer_withheld</code></>, when: <>The agent could not answer, or its answer could not be shown. <code>refundedCents</code> says what was given back.</> },
+          { status: <code>503</code>, code: <code>agent_paused</code>, when: "The model the agent runs on is not running. Nothing was charged. Try again later." },
           { status: <code>503</code>, code: <><code>agent_unavailable</code>, <code>rate_limiter_unavailable</code></>, when: "The agent or the limit check is not available right now. Try again in a moment." },
         ]}
       />

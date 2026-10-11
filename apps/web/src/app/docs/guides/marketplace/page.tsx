@@ -16,6 +16,7 @@ const toc = [
   { id: "who-can-use", title: "Who can use it?", sub: true },
   { id: "earn", title: "What you earn", sub: true },
   { id: "guaranteed", title: "Guaranteed delivery", sub: true },
+  { id: "model-stops", title: "When the model stops", sub: true },
   { id: "publish", title: "Publish a listing" },
   { id: "pricing", title: "Pricing models" },
   { id: "free", title: "Free", sub: true },
@@ -104,6 +105,31 @@ export default function MarketplaceGuidePage() {
         Copies are sold only when you ask for them. <strong>Sell copies instead</strong>, also under More options, gives
         each buyer their own copy, including its instructions, and you cannot take a copy back; see{" "}
         <a href="#use-or-copies">Sell use, or sell copies</a>.
+      </p>
+
+      <h3 id="model-stops">When the model stops</h3>
+      <p>
+        An agent can answer from a model your organization runs on a GPU. When that deployment stops, the agent cannot
+        answer, and a listing that sells use of it is <strong>paused</strong> for as long as the model is not running.
+        Agents on any other model are never paused.
+      </p>
+      <ul>
+        <li>Nobody can start using the agent, and nobody is charged.</li>
+        <li>
+          People who pay monthly keep the days they paid for: no subscription is renewed while the listing is paused,
+          and a month already paid for is made longer by that time.
+        </li>
+        <li>
+          It goes back on sale by itself when the model runs again. Deploy the model again, or give the agent another
+          model.
+        </li>
+      </ul>
+      <p>
+        <strong>Stop</strong> on a deployment names the agents that answer from it, and the ones on sale, before it
+        stops anything. While a listing is paused the Sell tab says so, and the agent&apos;s page tells people that it
+        is paused and that nobody is charged. In the API a start is refused with <code>409</code>{" "}
+        <code>listing_paused</code> and a use with <code>503</code> <code>agent_paused</code>; see the{" "}
+        <Link href="/docs/api/marketplace#use">marketplace reference</Link>.
       </p>
 
       <h2 id="publish">Publish a listing</h2>

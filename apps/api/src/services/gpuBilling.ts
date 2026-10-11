@@ -215,6 +215,8 @@ export interface GpuBillingTx {
         description: string;
         referenceId: string;
         balanceAfter: bigint;
+        /** The GPU-seconds the row charges for (gpu_usage rows). */
+        gpuSeconds?: bigint;
       };
     }): Promise<unknown>;
   };
@@ -396,6 +398,8 @@ export async function chargeGpuWindow(
         })`,
         referenceId: args.deploymentId,
         balanceAfter,
+        // What the month's GPU hours are summed from: every replica's time.
+        gpuSeconds: BigInt(coveredSeconds) * BigInt(args.replicas),
       },
     });
   } else {

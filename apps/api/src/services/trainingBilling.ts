@@ -163,6 +163,8 @@ export interface TrainingReservePrisma {
         description: string;
         referenceId: string;
         balanceAfter: bigint;
+        /** The GPU-seconds the row charges for (training_usage rows). */
+        gpuSeconds?: bigint;
       };
     }): Promise<unknown>;
   };
@@ -432,6 +434,8 @@ export async function settleTrainingJob(
         description: `Fine-tuning usage (${tier}, ${billedSeconds}s)`,
         referenceId: args.jobId,
         balanceAfter: balanceCents,
+        // What the month's GPU hours are summed from.
+        gpuSeconds: BigInt(billedSeconds),
       },
     });
   }

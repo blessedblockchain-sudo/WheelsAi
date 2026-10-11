@@ -146,6 +146,7 @@ interface LedgerRow {
   description: string;
   referenceId: string;
   balanceAfter: bigint;
+  gpuSeconds?: bigint;
 }
 
 interface JobRow {
@@ -722,4 +723,27 @@ test("settle: over every outcome the organization pays the charge and nothing el
     assert.equal(db.state.ledger.filter((row) => row.type === "training_reservation_release").length, 1);
     assert.equal(db.state.ledger.every((row) => row.referenceId === JOB), true);
   }
+});
+
+test("settle: the training_usage row carries gpuSeconds, the seconds billed; the hold rows carry none", async () => {
+  const db = await admitted({ status: "finalizing" });
+  const result = await settleTrainingJob({
+    tx: db.tx,
+    jobId: JOB,
+    orgId: ORG,
+    fromStatuses: ["finalizing"],
+    toStatus: "completed",
+    charge: { kind: "seconds_run", billableMs: 600_000 },
+    now: at(700),
+  });
+  assert.ok(result.settled);
+  assert.equal(result.billedSeconds, 600);
+  assert.deepEqual(
+    db.state.ledger.map((row) => [row.type, row.gpuSeconds]),
+    [
+      ["training_reservation", undefined],
+      ["training_reservation_release", undefined],
+      ["training_usage", 600n],
+    ],
+  );
 });

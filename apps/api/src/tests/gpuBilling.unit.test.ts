@@ -219,7 +219,7 @@ interface DepRow {
 interface DbState {
   deployments: DepRow[];
   balances: Record<string, bigint>;
-  ledger: Array<{ orgId: string; amountCents: bigint; type: string; referenceId: string; balanceAfter: bigint; description: string }>;
+  ledger: Array<{ orgId: string; amountCents: bigint; type: string; referenceId: string; balanceAfter: bigint; description: string; gpuSeconds?: bigint }>;
 }
 
 function makeTxDb(initial: { deployment: Partial<DepRow>; balance: bigint }) {
@@ -587,4 +587,34 @@ test("replica_change takes what the org has (Nosana already applied the change) 
   assert.equal(out.shortfallCents, 2n);
   assert.equal(db.state.balances.org_1, 0n);
   assert.deepEqual(db.state.deployments[0]!.billedThroughAt, at(T0, 100));
+});
+
+// ============================================
+// The GPU-seconds a row charged for (the Billing page's GPU hours)
+// ============================================
+
+test("chargeGpuWindow: the gpu_usage row carries gpuSeconds, the covered seconds times the replicas", async () => {
+  const one = makeTxDb({ deployment: {}, balance: 500n });
+  const single = await chargeGpuWindow(one.tx, {
+    ...baseArgs,
+    billedThroughAt: T0,
+    now: at(T0, 100), // 2 cents cover 80 s at one replica
+    mode: "tick",
+  });
+  assert.ok(single.kind === "charged");
+  assert.equal(one.state.ledger[0]!.gpuSeconds, 80n);
+
+  const two = makeTxDb({ deployment: { replicas: 2 }, balance: 500n });
+  const double = await chargeGpuWindow(two.tx, {
+    ...baseArgs,
+    replicas: 2,
+    billedThroughAt: T0,
+    now: at(T0, 100), // 100 s x 2 x 250 uUSD = 5 cents exactly
+    mode: "tick",
+  });
+  assert.ok(double.kind === "charged");
+  assert.equal(double.coveredSeconds, 100);
+  assert.equal(two.state.ledger.length, 1);
+  assert.equal(two.state.ledger[0]!.type, "gpu_usage");
+  assert.equal(two.state.ledger[0]!.gpuSeconds, 200n, "every replica's time");
 });

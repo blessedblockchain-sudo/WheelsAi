@@ -365,10 +365,10 @@ for await (const chunk of stream) {
           { status: <code>429</code>, when: <>Monthly API calls used up (<code>plan_limit_reached</code>), a rate limit, or the model server is at capacity (<code>provider_rate_limited</code>, with its <code>retry-after</code>).</> },
           {
             status: <code>502</code>,
-            when: "The GPU node could not be reached, answered with a redirect, refused the request with 401, 403 or 404, answered a streaming request without a stream, or answered 200 with a body that is not a completion. Nothing is charged for the request.",
+            when: "The GPU node could not be reached, answered with a redirect, refused the request with 401, 403 or 404, answered a streaming request without a stream, or answered 200 with a body that is not a completion. Nothing is charged for the request, and a request paid with x402 has its payment returned to your credit balance.",
           },
           { status: <code>504</code>, when: <>The model server did not start answering, or stopped sending, within the timeout (<code>upstream_timeout</code>).</> },
-          { status: <>other <code>5xx</code></>, when: "The model server's own status. Nothing is charged for the request." },
+          { status: <>other <code>5xx</code></>, when: "The model server's own status. Nothing is charged for the request, and a request paid with x402 has its payment returned to your credit balance." },
           {
             status: <code>503</code>,
             when: (
@@ -433,26 +433,86 @@ for await (const chunk of stream) {
     "asset": "USDC",
     "amount": "<amount in the asset's base units, as a string>",
     "amountUsd": 0.0012,
-    "payTo": "<recipient address>",
+    "payTo": "<the treasury wallet>",
+    "payToTokenAccount": "<the treasury's USDC token account>",
+    "mint": "<the USDC mint>",
     "memo": "deployment:<id>;request:<requestId>",
-    "validUntil": 1790000000
+    "validUntil": 1790000000,
+    "quote": null
   },
   "requestId": "x402_...",
-  "reason": "optional detail, e.g. why a previous payment was refused"
+  "reason": "<set when a payment was presented and refused, see below>"
 }`}
       />
       <p>
         <code>network</code> names the Solana network to pay on (<code>solana:mainnet</code>), and <code>asset</code> the
-        token to pay with (USDC). The quote is based on the request&apos;s
-        estimated tokens with a 20% buffer and expires at <code>validUntil</code> (Unix seconds).
+        asset to pay with: <code>USDC</code> or <code>SOL</code>. The price is based on the request&apos;s estimated tokens
+        with a 20% buffer. <code>validUntil</code> (Unix seconds) is when the challenge expires: a SOL price is held until
+        then.
+      </p>
+      <DocTable
+        caption="What the payment object asks for, by asset"
+        columns={[
+          { key: "field", label: "Field" },
+          { key: "usdc", label: "USDC" },
+          { key: "sol", label: "SOL" },
+        ]}
+        rows={[
+          {
+            field: <code>amount</code>,
+            usdc: "USDC base units (6 decimals), so 1200 is $0.0012.",
+            sol: "Lamports, worked out from the SOL price at the moment of the challenge.",
+          },
+          {
+            field: <code>payTo</code>,
+            usdc: "The treasury wallet. Do not send USDC to this address itself.",
+            sol: "The treasury wallet. The transfer goes to this address.",
+          },
+          {
+            field: <code>payToTokenAccount</code>,
+            usdc: "The treasury's USDC token account. The transfer must go to this account.",
+            sol: <code>null</code>,
+          },
+          { field: <code>mint</code>, usdc: "The USDC mint on this network.", sol: <code>null</code> },
+          {
+            field: <code>quote</code>,
+            usdc: <code>null</code>,
+            sol: "A token that holds the SOL price the amount was worked out at. Send it back with the payment.",
+          },
+        ]}
+      />
+      <p>
+        When SOL is the asset and no current SOL price can be read, the challenge asks for USDC instead. USDC can always be
+        used.
       </p>
       <p>
-        <strong>2. Pay.</strong> Build a Solana transaction that transfers at least <code>amount</code> of <code>asset</code> to{" "}
-        <code>payTo</code>, sign it with the paying wallet as fee payer, and serialize it as base64.
+        <strong>2. Pay.</strong> Build one Solana transaction with a single transfer that carries at least{" "}
+        <code>amount</code>, sign it with the paying wallet as fee payer, and serialize it as base64. Do not send it to the
+        network yourself: WheelsAI sends it when you retry.
       </p>
+      <ul>
+        <li>
+          <strong>USDC:</strong> a token transfer (<code>transfer</code> or <code>transferChecked</code>) to{" "}
+          <code>payToTokenAccount</code>. A checked transfer must name <code>mint</code> and 6 decimals. A transfer to{" "}
+          <code>payTo</code> itself, or to any other account, is refused.
+        </li>
+        <li>
+          <strong>SOL:</strong> a System Program transfer to <code>payTo</code>.
+        </li>
+        <li>
+          One transfer must carry the whole amount: two smaller transfers are not added together. Pay the amount asked; no
+          change is given for a larger transfer on a request that is served.
+        </li>
+        <li>
+          Legacy and version 0 transactions are both accepted, with every required signature in place. A transaction that
+          uses address lookup tables is refused. Other instructions a wallet adds, such as a compute budget or a memo, are
+          fine.
+        </li>
+      </ul>
       <p>
         <strong>3. Retry</strong> the same request body with the payment attached, and the <code>X-Request-Id</code> from the
-        challenge so the payment and request are correlated:
+        challenge so the payment and request are correlated. For SOL, include the <code>quote</code> from the challenge; for
+        USDC it can be left out.
       </p>
       <CodeBlock
         language="bash"
@@ -460,13 +520,75 @@ for await (const chunk of stream) {
   -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
   -H "Content-Type: application/json" \\
   -H "X-Request-Id: $REQUEST_ID" \\
-  -H 'X-Payment: {"signature":"<base64 signed transaction>","network":"solana:mainnet"}' \\
+  -H 'X-Payment: {"signature":"<base64 signed transaction>","network":"solana:mainnet","quote":"<quote from the challenge, for SOL>"}' \\
   -d @request.json`}
       />
       <p>
-        WheelsAI checks the network, expiry, signatures, recipient and amount before running the request. An invalid payment
-        gets a fresh <code>402</code> with the <code>reason</code>. A transaction can pay for one request only; reusing it
-        returns <code>409</code>. Verified payments are then settled on-chain by a background worker.
+        WheelsAI reads the transaction, checks its signatures, destination, asset and amount against the request&apos;s
+        price, sends it to the network and waits for it to land before running the request. For SOL the price is worked out
+        again from the retried body at the price held in <code>quote</code>, so the amount in the challenge is the amount
+        that is checked. A transaction can pay for one request only; presenting it again returns <code>409</code> (
+        <code>payment_already_used</code>).
+      </p>
+      <p>
+        <strong>When a payment is refused.</strong> The answer is a fresh <code>402</code> with a new challenge.{" "}
+        <code>error.message</code> says why in a sentence, and <code>reason</code> is one of:
+      </p>
+      <DocTable
+        caption="Reasons a presented payment is refused"
+        columns={[
+          { key: "reason", label: "reason" },
+          { key: "meaning", label: "What it means" },
+          { key: "money", label: "Your payment" },
+        ]}
+        rows={[
+          {
+            reason: <code>quote_expired</code>,
+            meaning:
+              "SOL only. The quote is missing, has expired, or was issued for another organization or deployment. Send the request again to get a new price.",
+            money: "Not sent. Nothing was taken.",
+          },
+          {
+            reason: <code>payment_invalid</code>,
+            meaning:
+              "The transaction could not be read, or it does not pay the right address, asset or amount. Check all three and send the request again.",
+            money: "Not sent. Nothing was taken.",
+          },
+          {
+            reason: <code>payment_failed_on_chain</code>,
+            meaning: "The transaction reached the network and failed there. Send the request again.",
+            money: "Nothing was taken.",
+          },
+          {
+            reason: <code>payment_not_confirmed</code>,
+            meaning: "The transaction was sent and did not confirm in time. Send the request again with a new payment.",
+            money: "If it lands later, it is returned to your credit balance.",
+          },
+        ]}
+      />
+      <p>
+        <strong>When a paid request fails.</strong> If your payment landed and the request then produced no answer (the GPU
+        node failed, timed out or answered with an error), the payment is returned to your organization&apos;s credit
+        balance, once. You get the error the request would have had, with a <code>payment</code> object added to the body:
+      </p>
+      <CodeBlock
+        language="json"
+        code={`{
+  "error": { "message": "...", "type": "...", "param": null, "code": "..." },
+  "payment": {
+    "status": "returned",
+    "amountUsd": 0.0012,
+    "message": "Your payment for this request was returned to your credit balance. Amounts under a cent add up and appear once they reach a cent."
+  }
+}`}
+      />
+      <p>
+        What is returned is the value of what you sent, in US dollars; for SOL, at the price in your quote. The transfer
+        itself is not sent back to your wallet. A single request usually costs less than a cent, so returned amounts add up
+        and move to your balance in whole cents, each time as a ledger row labelled{" "}
+        <strong>Paid request returned as credits</strong> (type <code>x402_refund</code>). A request that is refused before
+        the payment is looked at, for example <code>503</code> when the deployment has no healthy GPU node, does not touch
+        your transaction at all.
       </p>
       <Callout>
         <p>

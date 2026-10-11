@@ -441,10 +441,13 @@ export default function PlansBillingPage() {
       <h3 id="x402">x402 per request</h3>
       <p>
         Calls to a <code>/v1</code> deployment that is billed per request can be paid one request
-        at a time with a signed Solana payment instead of from credits. A dedicated deployment is billed for GPU time and is
-        never challenged for an x402 payment. The API answers <code>402 Payment Required</code> with the exact amount, asset and recipient;
-        your client signs a matching transfer and retries with an <code>X-Payment</code> header. A payment transaction can be
-        used once. See the <Link href="/docs/api/inference#x402">x402 flow</Link> for the headers and body.
+        at a time with a signed Solana payment, in USDC or SOL, instead of from credits. A dedicated deployment is billed for GPU time and is
+        never challenged for an x402 payment. The API answers <code>402 Payment Required</code> with the exact amount, asset and destination;
+        your client signs a matching transfer and retries with an <code>X-Payment</code> header. USDC goes to the token account
+        the answer names, and a SOL price is held for you by the <code>quote</code> in the answer. A payment transaction can be
+        used once. If a paid request then fails, the payment is returned to your credit balance: amounts under a cent add up
+        and appear, as <strong>Paid request returned as credits</strong>, once they reach a cent. See the{" "}
+        <Link href="/docs/api/inference#x402">x402 flow</Link> for the headers and body.
       </p>
       <Callout>
         <p>x402 payments go to the platform treasury, not to a marketplace creator.</p>

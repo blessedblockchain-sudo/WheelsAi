@@ -89,6 +89,7 @@ model Organization {
   walletTopUps    WalletTopUp[]
   depositAddress  DepositAddress?
   onchainReceipts OnchainReceipt[]
+  chainTransfers  ChainTransfer[]
 
   // Marketplace relations
   publisherProfile   PublisherProfile?
@@ -623,6 +624,72 @@ model OnchainReceipt {
   @@index([orgId, createdAt])
   @@index([status])
   @@map("onchain_receipts")
+}
+
+// A transfer the platform itself sends on chain: moving what customers
+// paid off their deposit addresses, to the wallet that pays creators (the
+// hot wallet) or to the treasury. Claim first: the row is written with its
+// signature, the signed bytes and the last block height they can land at
+// BEFORE anything is broadcast, and only what the chain says ends it.
+//
+// One 'sent' row at a time per sending address and asset: a partial unique
+// index in the migration (Prisma does not model it).
+model ChainTransfer {
+  id                   String    @id @default(uuid()) @db.Uuid
+  // 'sweep_to_hot' | 'sweep_to_treasury' | 'hot_to_treasury'
+  kind                 String
+  network              String // 'solana:devnet' | 'solana:mainnet'
+  asset                String // 'USDC' | 'SOL'
+  fromAddress          String    @map("from_address")
+  toAddress            String    @map("to_address")
+  // The organization whose deposit address it left; null for a transfer
+  // from the hot wallet.
+  orgId                String?   @map("org_id") @db.Uuid
+  // Base units: lamports, or USDC with 6 decimals.
+  amountRaw            BigInt    @map("amount_raw")
+  // What the transaction cost, and who paid it. A SOL sweep pays its own
+  // fee out of the address it empties; the hot wallet pays for the rest.
+  feeLamports          BigInt    @default(0) @map("fee_lamports")
+  feePayer             String    @map("fee_payer")
+  // 'sent': signed and handed to the network, not ended yet.
+  // 'landed' | 'failed' (it failed on the chain) | 'dead' (it can no
+  // longer land; the same money is planned again).
+  status               String    @default("sent")
+  txSignature          String    @unique @map("tx_signature")
+  signedTxB64          String    @map("signed_tx_b64")
+  lastValidBlockHeight BigInt    @map("last_valid_block_height")
+  // The chain's own words about a failure, for operators.
+  failureReason        String?   @map("failure_reason")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  settledAt            DateTime? @map("settled_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  // Restrict: a record of money moving.
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Restrict)
+
+  @@index([status])
+  @@index([fromAddress, asset])
+  @@index([orgId, createdAt])
+  @@map("chain_transfers")
+}
+
+// The platform's wallets that are not derived from the master key.
+// 'treasury': where money leaves the product to. It is used only after it
+// was proven (scripts/treasury-verify.ts): a transfer from that address to
+// the hot wallet, signed by it. An address that is not the one in
+// TREASURY_WALLET_ADDRESS is never sent to, whatever this row says.
+model PlatformWallet {
+  role           String // 'treasury'
+  network        String // 'solana:devnet' | 'solana:mainnet'
+  address        String
+  verifiedAt     DateTime @map("verified_at")
+  // The transfer that proved it.
+  proofSignature String   @map("proof_signature")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@id([role, network])
+  @@map("platform_wallets")
 }
 
 // ============================================

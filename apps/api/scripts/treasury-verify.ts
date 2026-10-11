@@ -26,9 +26,11 @@
  * SOLANA_NETWORK, SOLANA_RPC_URL, TREASURY_WALLET_ADDRESS.
  *
  * Exit code: 0 proven (or already proven), 1 refused or no proof found,
- * 2 bad arguments.
+ * 2 bad arguments, 3 no proof found while some transactions could not be
+ * loaded (run it again before sending anything).
  */
 
+import "./quiet-queries.js";
 import "dotenv/config";
 
 import { PublicKey } from "@solana/web3.js";
@@ -111,7 +113,8 @@ async function main(): Promise<number> {
 
   out(`Chain: ${network}`);
   out(result.message);
-  return result.outcome === "proven" || result.outcome === "already_proven" ? 0 : 1;
+  if (result.outcome === "proven" || result.outcome === "already_proven") return 0;
+  return result.outcome === "not_found" && result.unreadable > 0 ? 3 : 1;
 }
 
 main()

@@ -20,6 +20,7 @@
  * failed, 2 bad arguments.
  */
 
+import "./quiet-queries.js";
 import "dotenv/config";
 
 import { prisma } from "../src/lib/prisma.js";

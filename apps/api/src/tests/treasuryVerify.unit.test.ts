@@ -220,14 +220,33 @@ test("not found: nothing is written and the operator is told what to do", async 
   const res = await verifyTreasury({ dryRun: false }, w.deps);
   assert.equal(res.outcome, "not_found");
   assert.deepEqual(w.saved, []);
+  // One of them could not be loaded, and it may be the proof: the operator
+  // is told to run it again, not to send a second 0.1 SOL.
+  assert.match(res.message, /and 1 of them could not be loaded: one of those may be the proof/);
+  assert.match(res.message, /Nothing was written\. Run this again before sending anything\./);
   assert.ok(
     res.message.endsWith(
-      `Nothing was written. Send 0.1 SOL from the treasury wallet to ${HOT}, then run this again.`,
+      `Only if it then finds no proof with every transaction loaded, send 0.1 SOL from the treasury wallet to ${HOT}.`,
     ),
     res.message,
   );
-  assert.match(res.message, /1 of them could not be loaded/);
+  assert.ok(res.outcome === "not_found" && res.unreadable === 1);
   assert.ok(!res.message.includes("—"), "no em dash in operator text");
+
+  // Every transaction loaded and none is the proof: now sending is what is asked for.
+  const loaded = setup([
+    transferFacts("sig_stranger", { from: STRANGER }),
+    transferFacts("sig_short", { lamports: TENTH - 1n }),
+  ]);
+  const res3 = await verifyTreasury({ dryRun: false }, loaded.deps);
+  assert.ok(res3.outcome === "not_found" && res3.unreadable === 0);
+  assert.ok(
+    res3.message.endsWith(
+      `Nothing was written. Send 0.1 SOL from the treasury wallet to ${HOT}, then run this again.`,
+    ),
+    res3.message,
+  );
+  assert.ok(!/could not be loaded/.test(res3.message));
 
   const empty = setup([]);
   const res2 = await verifyTreasury({ dryRun: false }, empty.deps);
@@ -334,4 +353,8 @@ test("the script binds the core to the settings, the node at finalized and the o
   assert.ok(!/new\s+Connection\s*\(/.test(script));
   assert.ok(!/sendRawTransaction|sendTransaction|\.sign\(|keypair\(\)/.test(script));
   assert.ok(!script.includes("—"));
+  // A proof that may only have failed to load has an exit code of its own.
+  assert.match(script, /result\.outcome === "not_found" && result\.unreadable > 0 \? 3 : 1/);
+  // Its own lines are all it prints: the database client is told not to print its queries.
+  assert.ok(script.indexOf('import "./quiet-queries.js";') >= 0 && script.indexOf('import "./quiet-queries.js";') < script.indexOf('import "dotenv/config";'));
 });

@@ -200,6 +200,10 @@ export async function verifyTreasury(
     };
   }
 
+  // A transaction that could not be loaded may be the proof itself: a
+  // node that is rate limited, or one that listed a signature another has
+  // not caught up with. Sending again would not help and is not asked for.
+  const none = `No proof found for ${treasury} in the last ${entries.length} transactions of the hot wallet`;
   return {
     outcome: "not_found",
     address: treasury,
@@ -207,8 +211,10 @@ export async function verifyTreasury(
     looked,
     unreadable,
     message:
-      `No proof found for ${treasury} in the last ${entries.length} transactions of the hot wallet` +
-      (unreadable > 0 ? ` (${unreadable} of them could not be loaded)` : "") +
-      `. Nothing was written. Send 0.1 SOL from the treasury wallet to ${hotWallet}, then run this again.`,
+      unreadable > 0
+        ? `${none}, and ${unreadable} of them could not be loaded: one of those may be the proof. Nothing was written. ` +
+          `Run this again before sending anything. Only if it then finds no proof with every transaction loaded, ` +
+          `send 0.1 SOL from the treasury wallet to ${hotWallet}.`
+        : `${none}. Nothing was written. Send 0.1 SOL from the treasury wallet to ${hotWallet}, then run this again.`,
   };
 }

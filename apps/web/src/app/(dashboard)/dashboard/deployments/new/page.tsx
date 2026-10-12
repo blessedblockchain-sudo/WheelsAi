@@ -26,7 +26,7 @@ import {
   getApiErrorBody,
   getErrorMessage,
 } from "@/lib/api";
-import { COMPUTE_PAUSED_MESSAGE, isComputePaused } from "@/lib/deployments";
+import { COMPUTE_PAUSED_MESSAGE, estimatedMonthlyCost, isComputePaused } from "@/lib/deployments";
 import { deploymentEndpointPattern } from "@/lib/public-urls";
 import { cn } from "@/lib/utils";
 
@@ -329,11 +329,7 @@ function NewDeploymentContent() {
     return params.toString();
   }
 
-  // Ollama has slightly lower overhead
-  const engineMultiplier = selectedEngine === "ollama" ? 0.95 : 1.0;
-  const estimatedCost = selectedGpu
-    ? selectedGpu.pricePerHour * replicas * 24 * 30 * engineMultiplier
-    : 0;
+  const estimatedCost = selectedGpu ? estimatedMonthlyCost(selectedGpu.pricePerHour, replicas) : 0;
 
   return (
     <div className="flex flex-col">
@@ -758,7 +754,6 @@ function NewDeploymentContent() {
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Based on 24/7 usage.
-                    {selectedEngine === "ollama" && " Ollama offers ~5% lower overhead."}
                   </p>
                 </div>
 

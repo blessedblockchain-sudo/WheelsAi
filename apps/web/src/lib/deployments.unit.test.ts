@@ -12,6 +12,7 @@ import { ApiError } from "./api";
 import {
   COMPUTE_PAUSED_MESSAGE,
   deploymentEndNote,
+  estimatedMonthlyCost,
   isComputePaused,
   stopConfirmation,
 } from "./deployments";
@@ -165,4 +166,19 @@ test("the deployment page explains an ended run and has no vault wording", () =>
   for (const path of ["[id]/page.tsx", "new/page.tsx", "page.tsx"]) {
     assert.doesNotMatch(page(path), /vault/i, `${path} must not say vault`);
   }
+});
+
+test("the monthly figure is the price per hour times the replicas, 24 hours for 30 days", () => {
+  assert.equal(estimatedMonthlyCost(1, 1), 720);
+  assert.equal(estimatedMonthlyCost(0.5, 2), 720);
+  assert.equal(estimatedMonthlyCost(0.25, 3), 540);
+  assert.equal(estimatedMonthlyCost(0, 4), 0);
+});
+
+test("the new-deployment page prices every engine the same", () => {
+  const source = page("new/page.tsx");
+  assert.match(source, /estimatedMonthlyCost\(selectedGpu\.pricePerHour, replicas\)/);
+  assert.doesNotMatch(source, /engineMultiplier/);
+  assert.doesNotMatch(source, /0\.95/);
+  assert.doesNotMatch(source, /lower overhead/i);
 });

@@ -101,3 +101,11 @@ export function stopConfirmation(result: { fundsReleased?: boolean }): string {
     ? "Deployment stopped. Its GPUs are winding down."
     : "Deployment stopped";
 }
+
+/**
+ * A month of a deployment that never stops: the price per hour times the
+ * replicas, 24 hours a day for 30 days. The same for every engine.
+ */
+export function estimatedMonthlyCost(pricePerHour: number, replicas: number): number {
+  return pricePerHour * replicas * 24 * 30;
+}

@@ -356,3 +356,142 @@ test("negative or absent settledPaidRequests never RAISES the bar", async () => 
   });
   assert.ok(negative.eligible);
 });
+
+// ============================================
+// The gate's numbers come from the server's settings
+// ============================================
+//
+// TOKEN_LAUNCH_MIN_REPUTATION and TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS.
+// Every test here passes a source object: none changes the process
+// environment, so no other test file can be affected.
+
+const rawSettings = (extra: Record<string, string> = {}) => ({
+  NODE_ENV: "development",
+  DATABASE_URL: "postgresql://wheelsai:wheelsai@localhost:5432/wheelsai",
+  JWT_SECRET: "12345678901234567890123456789012",
+  ...extra,
+});
+
+test("with the two settings unset the gate is 50 and 7 days", async () => {
+  setupEnv();
+  const { launchGateThresholds } = await import("../services/tokenEligibility.js");
+  const { validateEnv } = await import("../config/env.js");
+  assert.deepEqual(launchGateThresholds({}), { minReputation: 50, minDeploymentAgeDays: 7 });
+  // The same through the settings parser, which is what the server reads.
+  assert.deepEqual(launchGateThresholds(validateEnv(rawSettings())), {
+    minReputation: 50,
+    minDeploymentAgeDays: 7,
+  });
+});
+
+test("the two settings, when set, are the gate's numbers", async () => {
+  setupEnv();
+  const { launchGateThresholds } = await import("../services/tokenEligibility.js");
+  const { validateEnv } = await import("../config/env.js");
+  const parsed = validateEnv(
+    rawSettings({ TOKEN_LAUNCH_MIN_REPUTATION: "10", TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: "0" }),
+  );
+  assert.deepEqual(launchGateThresholds(parsed), { minReputation: 10, minDeploymentAgeDays: 0 });
+  // One setting alone moves only its own number.
+  assert.deepEqual(launchGateThresholds({ TOKEN_LAUNCH_MIN_REPUTATION: 20 }), {
+    minReputation: 20,
+    minDeploymentAgeDays: 7,
+  });
+});
+
+test("the settings are read as the process environment holds them, and a value that cannot be read is the production rule", async () => {
+  const { launchGateThresholds } = await import("../services/tokenEligibility.js");
+  assert.deepEqual(
+    launchGateThresholds({ TOKEN_LAUNCH_MIN_REPUTATION: "10", TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: "0" }),
+    { minReputation: 10, minDeploymentAgeDays: 0 },
+  );
+  for (const bad of ["", "  ", "abc", "-1", "101"]) {
+    assert.equal(launchGateThresholds({ TOKEN_LAUNCH_MIN_REPUTATION: bad }).minReputation, 50, bad);
+  }
+  for (const bad of ["", "abc", "-1", "1.5"]) {
+    assert.equal(
+      launchGateThresholds({ TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: bad }).minDeploymentAgeDays,
+      7,
+      bad,
+    );
+  }
+});
+
+test("the gate's module loads with no settings at all", async () => {
+  // Routes import this file at the top, and their tests load them before
+  // any setting exists: it must not pull in the settings parser, which
+  // ends the process when a required setting is missing.
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("../services/tokenEligibility.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /^import /m);
+});
+
+test("checkTokenEligibility uses the lowered numbers when the caller passes none", async () => {
+  setupEnv();
+  const { checkTokenEligibility, launchGateThresholds } = await import(
+    "../services/tokenEligibility.js"
+  );
+  // A day-old agent with a reputation of 12: refused by the production rule.
+  const young = { ...validInput(), reputationScore: 12, deploymentAgeDays: 1 };
+  const production = checkTokenEligibility(young, launchGateThresholds({}));
+  assert.ok(!production.eligible);
+  assert.deepEqual(production.reasons, ["reputation_too_low", "uptime_insufficient"]);
+
+  const lowered = launchGateThresholds({
+    TOKEN_LAUNCH_MIN_REPUTATION: 10,
+    TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: 1,
+  });
+  assert.deepEqual(checkTokenEligibility(young, lowered), { eligible: true });
+
+  // Still inclusive, and still a gate: one point or one day under is refused.
+  const under = checkTokenEligibility(
+    { ...young, reputationScore: 9, deploymentAgeDays: 0 },
+    lowered,
+  );
+  assert.ok(!under.eligible);
+  assert.deepEqual(under.reasons, ["reputation_too_low", "uptime_insufficient"]);
+});
+
+test("a number on the input still wins over the settings", async () => {
+  setupEnv();
+  const { checkTokenEligibility, launchGateThresholds } = await import(
+    "../services/tokenEligibility.js"
+  );
+  const lowered = launchGateThresholds({
+    TOKEN_LAUNCH_MIN_REPUTATION: 10,
+    TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: 1,
+  });
+  const r = checkTokenEligibility(
+    { ...validInput(), reputationScore: 60, deploymentAgeDays: 10, minReputation: 70, minDeploymentAgeDays: 14 },
+    lowered,
+  );
+  assert.ok(!r.eligible);
+  assert.deepEqual(r.reasons, ["reputation_too_low", "uptime_insufficient"]);
+});
+
+test("lowering the settings leaves the other three conditions hard", async () => {
+  setupEnv();
+  const { checkTokenEligibility, launchGateThresholds } = await import(
+    "../services/tokenEligibility.js"
+  );
+  const open = launchGateThresholds({
+    TOKEN_LAUNCH_MIN_REPUTATION: 0,
+    TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: 0,
+  });
+  const r = checkTokenEligibility(
+    {
+      reputationScore: 0,
+      deploymentAgeDays: 0,
+      hasPublishedListing: false,
+      alreadyTokenized: true,
+      creatorAddress: "",
+    },
+    open,
+  );
+  assert.ok(!r.eligible);
+  assert.deepEqual(r.reasons, [
+    "already_tokenized",
+    "creator_address_missing",
+    "listing_not_published",
+  ]);
+});

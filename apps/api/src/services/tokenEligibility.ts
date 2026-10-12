@@ -25,6 +25,64 @@ export const ELIGIBILITY_DEFAULTS = {
   minDeploymentAgeDays: 7,
 } as const;
 
+export interface LaunchGateThresholds {
+  minReputation: number;
+  minDeploymentAgeDays: number;
+}
+
+/**
+ * Where the two settings are read from: the process environment as the
+ * server has it, or the parsed settings of config/env.ts (numbers).
+ */
+export interface LaunchGateSource {
+  TOKEN_LAUNCH_MIN_REPUTATION?: number | string;
+  TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS?: number | string;
+}
+
+/**
+ * The gate's two numbers as this server is configured
+ * (TOKEN_LAUNCH_MIN_REPUTATION, TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS).
+ * Unset, they are ELIGIBILITY_DEFAULTS: the production rule. A devnet
+ * rehearsal may lower them. The launch route, the eligibility preview and
+ * the wizard must all read them from here, so what the wizard promises is
+ * what the route enforces.
+ *
+ * The default source is process.env, not the parsed `env` of config/env.ts.
+ * Importing that module validates every setting the moment it is loaded
+ * and ends the process when one is missing, and this file is imported by
+ * routes whose tests load them before any setting exists. The server has
+ * already refused to start on a value config/env.ts does not accept, so
+ * here a value that cannot be read is treated as unset: the production
+ * rule, never a lower one.
+ */
+export function launchGateThresholds(
+  source: LaunchGateSource = process.env as LaunchGateSource,
+): LaunchGateThresholds {
+  return {
+    minReputation:
+      readGateNumber(source.TOKEN_LAUNCH_MIN_REPUTATION, { max: 100, whole: false }) ??
+      ELIGIBILITY_DEFAULTS.minReputation,
+    minDeploymentAgeDays:
+      readGateNumber(source.TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS, { whole: true }) ??
+      ELIGIBILITY_DEFAULTS.minDeploymentAgeDays,
+  };
+}
+
+// The same bounds config/env.ts sets: reputation 0 to 100, days a whole
+// number from 0. An empty value counts as unset.
+function readGateNumber(
+  value: number | string | undefined,
+  rule: { max?: number; whole: boolean },
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "string" && value.trim() === "") return undefined;
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  if (rule.max !== undefined && parsed > rule.max) return undefined;
+  if (rule.whole && !Number.isInteger(parsed)) return undefined;
+  return parsed;
+}
+
 /**
  * Sybil discount (B4/T7): every SETTLED x402 payment attributed to the
  * agent shaves one point off the reputation requirement, capped at half
@@ -68,6 +126,7 @@ export interface EligibilityInput {
    * Discounts the reputation requirement — see the constants above.
    */
   settledPaidRequests?: number;
+  // Left out, the two numbers are the server's: launchGateThresholds().
   minReputation?: number;
   minDeploymentAgeDays?: number;
 }
@@ -76,10 +135,17 @@ export type EligibilityResult =
   | { eligible: true }
   | { eligible: false; reasons: EligibilityReason[] };
 
-export function checkTokenEligibility(input: EligibilityInput): EligibilityResult {
-  const minReputation = input.minReputation ?? ELIGIBILITY_DEFAULTS.minReputation;
-  const minDeploymentAgeDays =
-    input.minDeploymentAgeDays ?? ELIGIBILITY_DEFAULTS.minDeploymentAgeDays;
+/**
+ * `gate` is the two numbers in force: the server's settings unless a test
+ * passes its own. A number on the input itself still wins over both, so a
+ * caller with a rule of its own keeps it.
+ */
+export function checkTokenEligibility(
+  input: EligibilityInput,
+  gate: LaunchGateThresholds = launchGateThresholds(),
+): EligibilityResult {
+  const minReputation = input.minReputation ?? gate.minReputation;
+  const minDeploymentAgeDays = input.minDeploymentAgeDays ?? gate.minDeploymentAgeDays;
 
   const reasons: EligibilityReason[] = [];
 

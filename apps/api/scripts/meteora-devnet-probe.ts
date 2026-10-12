@@ -20,6 +20,7 @@
 /* eslint-disable no-console */
 
 import {
+  ComputeBudgetProgram,
   Connection,
   Keypair,
   PublicKey,
@@ -39,10 +40,12 @@ import {
   MigratedCollectFeeMode,
   MigrationFeeOption,
   MigrationOption,
+  SwapMode,
   TokenAuthorityOption,
   TokenDecimal,
   TokenType,
   buildCurveWithMarketCap,
+  getCurrentPoint,
 } from "@meteora-ag/dynamic-bonding-curve-sdk";
 
 const WSOL = new PublicKey("So11111111111111111111111111111111111111112");
@@ -238,6 +241,67 @@ async function main(): Promise<void> {
     });
     const bought = await simulate(connection, payer, buy);
     report("buy 0.01 SOL of the token", bought.ok, bought.detail);
+
+    // 3b. The same buy as the routes build it: a partial fill (it can never
+    // pay past the graduation threshold), behind two compute-budget
+    // instructions so a wallet has no reason to add its own.
+    const currentPoint = await getCurrentPoint(connection, poolConfig.activationType);
+    const quoteOf = (lamports: BN) =>
+      client.pool.swapQuote2({
+        // The whole account as getPool returns it: the quote reads poolState itself.
+        virtualPool: read,
+        config: poolConfig,
+        swapBaseForQuote: false,
+        hasReferral: false,
+        eligibleForFirstSwapWithMinFee: false,
+        currentPoint,
+        slippageBps: 100,
+        swapMode: SwapMode.PartialFill,
+        amountIn: lamports,
+      });
+    try {
+      const small = quoteOf(amountIn);
+      report(
+        "quote a partial-fill buy of 0.01 SOL",
+        small.amountLeft.isZero() && small.includedFeeInputAmount.eq(amountIn),
+        `uses ${small.includedFeeInputAmount.toString()} of ${amountIn.toString()} lamports, ${small.amountLeft.toString()} left, ${small.outputAmount.toString()} raw tokens out, least ${small.minimumAmountOut?.toString()}`,
+      );
+      const partial = await client.pool.swap2({
+        owner: payer,
+        pool: poolAddress,
+        swapBaseForQuote: false,
+        referralTokenAccount: null,
+        swapMode: SwapMode.PartialFill,
+        amountIn,
+        minimumAmountOut: small.minimumAmountOut ?? new BN(0),
+      });
+      const own = partial.instructions.filter((ix) => ix.programId.equals(ComputeBudgetProgram.programId)).length;
+      partial.instructions.unshift(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+      );
+      const filled = await simulate(connection, payer, partial);
+      report(
+        "partial-fill buy of 0.01 SOL with our compute-budget instructions",
+        filled.ok,
+        `${filled.detail}; the SDK's own compute-budget instructions: ${own}`,
+      );
+    } catch (error) {
+      report("partial-fill buy", false, (error as Error).message.slice(0, 300));
+    }
+    // A buy far larger than the curve can take: the quote must say how
+    // much of it is used, not throw.
+    try {
+      const huge = new BN("1000000000000000"); // one million SOL
+      const over = quoteOf(huge);
+      report(
+        "quote a buy larger than the curve can take",
+        over.amountLeft.gt(new BN(0)),
+        `uses ${over.includedFeeInputAmount.toString()} lamports, ${over.amountLeft.toString()} left, ${over.outputAmount.toString()} raw tokens out; the curve's threshold is ${poolConfig.migrationQuoteThreshold.toString()} and it holds ${pool.quoteReserve.toString()}`,
+      );
+    } catch (error) {
+      report("quote a buy larger than the curve can take", false, (error as Error).message.slice(0, 300));
+    }
 
     // 4. A sell, by the pool's creator when they hold some of the token (a
     // public RPC refuses the call that lists a token's largest holders).

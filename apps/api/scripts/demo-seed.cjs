@@ -364,7 +364,8 @@ async function main() {
     executionMode: "sequential",
     steps: [
       { name: "Collect changes", stepType: "agent", agentId: researchAnalyst.id },
-      { name: "Draft release notes", stepType: "agent", agentId: releaseNotes.id },
+      // The second step is asked to work on what the first one wrote: without a prompt it would get the run's own prompt.
+      { name: "Draft release notes", stepType: "agent", agentId: releaseNotes.id, promptTemplate: "Write release notes from this research: {{previous.output}}" },
     ],
   });
   if (workflow.status !== 200 && workflow.status !== 201) say(`   (the workflow was not saved: ${workflow.status} ${short(workflow.body, 300)})`);

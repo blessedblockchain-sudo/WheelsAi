@@ -2,7 +2,7 @@
 
 Everything the code now needs from outside the repository before the matching claim can go live. Each item names the setting it fills (see the full list in `.env.example`) and what it unlocks. Until an item is done, the feature behind it answers honestly: a 501 or 503 with the reason, or a "not configured" state in the dashboard. Nothing is faked.
 
-Updated 2026-10-11. Tick items off here as they land.
+Updated 2026-10-12. Tick items off here as they land.
 
 ## 1. Domain, hosting and origins
 
@@ -112,6 +112,18 @@ The platform pays Nosana in one of two ways. Pick one; both unlock model and age
 - [ ] The fee router: a funded `FEE_ROUTER_WALLET_PRIVATE_KEY`, then `FEE_ROUTER_INTERVAL_MS`.
 - [ ] The reputation attestor: whitelist the wallet with the oracle's `add_attestor`, then set `REPUTATION_ATTESTOR_PRIVATE_KEY` and `REPUTATION_ATTESTATION_INTERVAL_MS`.
 - [ ] Bags (mainnet only): `LAUNCHPAD=bags`, `BAGS_API_KEY`, `BAGS_FEE_RECIPIENT`.
+
+### Agent tokens on Meteora's bonding curve
+
+The feature, its routes and what it leaves unbuilt are in `docs/METEORA-TOKENS.md`; the settings are in `docs/DEPLOY-RUNBOOK.md`, section 14. No wallet of ours signs or pays for anything in it, so the walk that proves it can only be done by a person with a wallet. The server does need `WALLET_MASTER_KEY` set (`docs/DEPLOY-RUNBOOK.md`, section 3.3): the launch routes are off without it. Until `LAUNCHPAD=meteora` is set, tokens launch on pump.fun as before.
+
+- [ ] **The fee wallet's address.** Choose the wallet that will claim the platform's share of trading fees and give its address for `METEORA_FEE_CLAIMER_ADDRESS` (the API refuses to start with `LAUNCHPAD=meteora` and no such address). Only the address goes on the server; its key stays with you. It is written into every token's curve for good, so use a wallet you will keep, and a different one on devnet and on mainnet if you want them apart. `METEORA_LEFTOVER_RECEIVER_ADDRESS` is optional and defaults to the same wallet.
+- [ ] **A wallet on devnet.** Phantom set to devnet, holding devnet SOL from a faucet. The rehearsal curve is full at 1.391 SOL raised, and the wallet also pays trading fees, network fees and the rent of the accounts created, so have a few SOL. This wallet is the token's creator: the same one must be connected to claim fees.
+- [ ] **A picture for the agent's token.** A launch is refused without one. Give the image you want people to see on the token.
+- [ ] **Say whether the gate may be lowered for the walk.** A new agent does not pass the launch gate (reputation 50, a deployment running for 7 days). For the devnet walk only, `TOKEN_LAUNCH_MIN_REPUTATION` and `TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS` can be lowered on the devnet server; the wizard then shows the lowered numbers. The other way is to walk with an agent that already passes.
+- [ ] **Do the devnet walk** by the steps in `docs/METEORA-TOKENS.md`, part 5: connect, launch with the "Devnet rehearsal" curve, buy, sell, claim, buy until the curve is full, graduate. Each step is signed in your wallet in the browser. Its table is where the signatures go.
+- [ ] **The word for mainnet.** Nothing of this has run on mainnet and nothing will without your go-ahead. Before giving it: the devnet walk recorded, the fee wallet for mainnet chosen, an RPC provider's endpoint in place of the public one, the two gate settings unset (the defaults are the rule the product states), and the preset to offer first decided. A mainnet launch creates a real token that cannot be taken back, and the first buyers pay real SOL.
+- [ ] **Decide what happens to the platform's share of fees.** It collects on chain for the fee wallet. Claiming it and moving it to an agent's GPU treasury is not built (`docs/METEORA-TOKENS.md`, part 6); until it is, claiming is something you do with that wallet outside WheelsAI.
 
 ## 10. Company and legal content
 

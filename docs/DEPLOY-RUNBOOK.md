@@ -30,6 +30,7 @@ Two files are the reference for every setting:
 11. [Upgrades and migrations](#11-upgrades-and-migrations)
 12. [Rotating secrets](#12-rotating-secrets)
 13. [Money: the treasury, the money report and plans](#13-money-the-treasury-the-money-report-and-plans)
+14. [Agent tokens: turning the launchpad on](#14-agent-tokens-turning-the-launchpad-on)
 
 ## 1. Prerequisites
 
@@ -147,6 +148,7 @@ reference at `/docs/api` on the web app.
 | Try it without signing in | `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (Cloudflare Turnstile). Without them, visitors sign in to use Try it. |
 | Funded Try it messages | `TRIAL_FUNDED_MESSAGE_CENTS`, the price of one funded message. |
 | Fine-tuning | Section 10. |
+| Agent tokens | Section 14. |
 | Custom domains | Section 7. |
 | Public status page | `STATUS_PAGE_ORG_ID`: an organization whose uptime monitors `/status` shows. |
 
@@ -174,7 +176,7 @@ them calls `http://localhost:4000`.
 | `NEXT_PUBLIC_APP_URL` | The web app's public origin. |
 | `NEXT_PUBLIC_SOLANA_CLUSTER` | `mainnet-beta` in production. |
 | `NEXT_PUBLIC_SOLANA_RPC_URL` | The RPC endpoint browsers use for wallet transactions. |
-| `NEXT_PUBLIC_LAUNCHPAD` | The token launchpad, `pumpfun` by default. |
+| `NEXT_PUBLIC_LAUNCHPAD` | The token launchpad, `pumpfun` by default. The launch wizard asks the API which launchpad it uses (section 14) and falls back to this value only when that call fails, so keep it equal to the API's `LAUNCHPAD`. |
 | `NEXT_PUBLIC_ENABLE_TOKEN_UI`, `NEXT_PUBLIC_ENABLE_TRADING` | `true` to show the agent-token and trading pages. |
 
 The web app's origin must be in the API's `CORS_ORIGIN`: the landing page and the status page
@@ -748,3 +750,51 @@ and after.
   webhook would undo the change. Change that plan in Stripe, or pass `--force` to set it anyway
   knowing that.
 - `--dry-run` prints what would change and writes nothing.
+
+## 14. Agent tokens: turning the launchpad on
+
+An agent that passes the launch gate can launch a token. `LAUNCHPAD` on the API chooses where:
+`pumpfun` (the default), `bags` (mainnet only), or `meteora`, which is Meteora's Dynamic Bonding
+Curve used directly, on devnet and mainnet. This section covers `meteora`; the feature, its
+routes and what it leaves unbuilt are in `docs/METEORA-TOKENS.md`.
+
+**No key of the API's signs a transaction that moves money here.** It builds each transaction,
+the person's browser wallet signs it, and the API checks the signed transaction is the one it
+built before sending it. It does need `WALLET_MASTER_KEY` (section 3.3), which here signs only
+the short-lived tokens that tie a submit to its prepare.
+
+| Setting (API) | Value |
+| --- | --- |
+| `LAUNCHPAD` | `meteora`. |
+| `WALLET_MASTER_KEY` | Required, as for every launchpad. Without it the API starts, logs that `/api/tokens/launch/{prepare,submit}` are disabled, and the trade, fee and graduation routes that need a login answer `503 prepare_unavailable`. |
+| `METEORA_FEE_CLAIMER_ADDRESS` | Required: the API refuses to start without it, or with a value that is not a Solana address. The address of the wallet that may claim the platform's share of trading fees. It is written into the curve config of every token launched and cannot be changed for that token afterwards, so set it to a wallet you will keep. An address only: never put its key on the server. |
+| `METEORA_LEFTOVER_RECEIVER_ADDRESS` | Optional. Where a curve's unsold tokens go after graduation. Defaults to the fee wallet. |
+| `METEORA_CURVE_CACHE_MS` | How long a pool's state read from the chain is kept. 5000 by default. Raise it if your RPC provider limits requests; 0 reads every time. |
+| `SOLANA_RPC_URL`, `SOLANA_NETWORK` | The node and the network (`devnet` or `mainnet-beta`). A public endpoint limits requests and answers `429` under little load; use a provider's endpoint for anything people rely on. |
+| `TOKEN_LAUNCH_MIN_REPUTATION` | The launch gate: the reputation an agent needs. 50 by default. |
+| `TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS` | The launch gate: the days its oldest running deployment must have run. 7 by default. |
+
+Leave the two gate settings unset in production: the defaults are the rule the product states.
+They exist so that a devnet rehearsal can walk a new agent through a launch. The wizard, the
+eligibility route and the launch route all read them from one place, so whatever is set is both
+what people are shown and what is enforced.
+
+On the web app, build with `NEXT_PUBLIC_ENABLE_TOKEN_UI=true` and `NEXT_PUBLIC_ENABLE_TRADING=true`
+to show the token pages and the trade panel, and with `NEXT_PUBLIC_SOLANA_CLUSTER` and
+`NEXT_PUBLIC_SOLANA_RPC_URL` for the same network as the API (section 4).
+
+Check it:
+
+```bash
+# Public, no login. "launchpad" is "meteora", "network" is the API's network,
+# "presets" lists the curves on offer (the "rehearsal" curve only on devnet),
+# and "gate" carries the numbers in force.
+curl -s https://<api>/api/tokens/launchpad
+```
+
+No migration is needed and no worker is added: a pool's state is read from the chain when a page
+asks for it. The pump.fun trade indexer leaves Meteora tokens alone.
+
+Changing `LAUNCHPAD` later does not move tokens already launched. Each token keeps the launchpad
+it was launched on, and the curve routes answer `404 not_a_curve_token` for a token that is not
+on Meteora.

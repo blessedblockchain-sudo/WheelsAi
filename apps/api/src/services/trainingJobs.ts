@@ -24,6 +24,7 @@
 
 import { createHash } from "node:crypto";
 
+import { classifyGpuFacingUrl, gpuFacingOrigin, gpuFacingRefusal } from "../lib/gpuFacingUrl.js";
 import { rowAccessMode, type NosanaAccessMode } from "../config/nosanaAccess.js";
 import {
   trainingNosanaTimeoutSeconds,
@@ -333,8 +334,24 @@ export interface TrainingRuntime {
    * run limit plus allowance is raised to it (trainingNosanaTimeoutSeconds).
    */
   nosanaMinTimeoutSeconds?: number;
-  /** PUBLIC_API_URL without a trailing slash; null when unset. */
-  publicApiUrl: string | null;
+  /**
+   * The address a container on a GPU node uses to reach this API
+   * (GPU_FACING_API_URL, else PUBLIC_API_URL) without a trailing slash; null
+   * when neither is set.
+   */
+  gpuFacingApiUrl: string | null;
+  /**
+   * The "GPU nodes" run on this machine (the development stand-in for
+   * Nosana), so a local address is reachable from them.
+   */
+  gpuNodesAreLocal: boolean;
+  /**
+   * Where the storage links handed to a node point, when configuration says
+   * so: this API's own origin for the local driver, the origin of a custom
+   * S3_ENDPOINT for the s3 driver. Null when the s3 driver uses the cloud
+   * provider's own endpoint, or there is no store.
+   */
+  storageLinkOrigin: string | null;
   /** The development Nosana mock is on: nothing would really run. */
   nosanaMock: boolean;
   /** A Nosana credential is configured. */
@@ -697,6 +714,28 @@ export interface TrainingOperatorBlocker {
 }
 
 /**
+ * True when the storage links a training container is handed point where a
+ * GPU node cannot reach: this machine or a private network. Never true when
+ * the nodes are local, or when configuration does not say where they point.
+ */
+function storageLinksNotReachable(runtime: TrainingRuntime): boolean {
+  return (
+    !runtime.gpuNodesAreLocal &&
+    runtime.storageLinkOrigin !== null &&
+    !classifyGpuFacingUrl(runtime.storageLinkOrigin).reachable
+  );
+}
+
+/** The same, for the address a training run reports to. False when it is not set. */
+function callbacksNotReachable(runtime: TrainingRuntime): boolean {
+  return (
+    !runtime.gpuNodesAreLocal &&
+    runtime.gpuFacingApiUrl !== null &&
+    !classifyGpuFacingUrl(runtime.gpuFacingApiUrl).reachable
+  );
+}
+
+/**
  * Why no job can start on this deployment, in operator language. The codes
  * are the ones customers receive; the sentences are for the operator only.
  * `storageReason` is the storage config's own reason when it has one.
@@ -711,6 +750,16 @@ export function trainingOperatorBlockers(
     blockers.push({
       code: "dataset_storage_not_configured",
       message: `Object storage for datasets and adapters is not configured${storageReason ? ` (${storageReason})` : ""}. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.`,
+    });
+  } else if (storageLinksNotReachable(runtime)) {
+    const origin = gpuFacingOrigin(runtime.storageLinkOrigin!);
+    const why = gpuFacingRefusal(runtime.storageLinkOrigin!);
+    blockers.push({
+      code: "dataset_storage_not_reachable",
+      message:
+        store.kind === "local"
+          ? `A GPU node cannot reach ${origin}, where the local storage driver hands out datasets and takes back adapters: it is ${why}. Use a bucket (STORAGE_DRIVER=s3 with DATASETS_BUCKET and its keys).`
+          : `A GPU node cannot reach ${origin} (S3_ENDPOINT): it is ${why}. Point S3_ENDPOINT at a bucket a GPU node can reach.`,
     });
   }
   if (!runtime.image.configured) {
@@ -735,10 +784,15 @@ export function trainingOperatorBlockers(
       message: "No GPU tier has a market on the configured Nosana network (see NOSANA_MARKETS_JSON).",
     });
   }
-  if (!runtime.publicApiUrl) {
+  if (!runtime.gpuFacingApiUrl) {
     blockers.push({
       code: "training_callbacks_not_configured",
-      message: "PUBLIC_API_URL is not set, so a training run has no address to report to.",
+      message: "Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set, so a training run has no address to report to.",
+    });
+  } else if (callbacksNotReachable(runtime)) {
+    blockers.push({
+      code: "training_callbacks_not_reachable",
+      message: `A GPU node cannot reach ${gpuFacingOrigin(runtime.gpuFacingApiUrl)}, the address a training run reports to: it is ${gpuFacingRefusal(runtime.gpuFacingApiUrl)}. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.`,
     });
   }
   if (runtime.pollIntervalMs <= 0) {
@@ -810,7 +864,7 @@ export async function describeTrainingCapabilities(deps: TrainingDeps, args: { o
         deployable: !runtime.nosanaMock && Object.hasOwn(runtime.tiers, tier),
       })),
     },
-    callbacks: { configured: runtime.publicApiUrl !== null },
+    callbacks: { configured: runtime.gpuFacingApiUrl !== null },
     poller: { enabled: runtime.pollIntervalMs > 0 },
     gatedModels: { available: runtime.hfToken !== undefined },
     runLimit: {
@@ -1236,6 +1290,10 @@ export async function createTrainingJob(
   if (!deps.getStore()) {
     return refuse(503, "dataset_storage_not_configured", TRAINING_UNAVAILABLE_REFUSAL);
   }
+  // A GPU node could not fetch the dataset or hand back the adapter.
+  if (storageLinksNotReachable(runtime)) {
+    return refuse(503, "dataset_storage_not_reachable", TRAINING_UNAVAILABLE_REFUSAL);
+  }
   // 8. The image.
   if (!runtime.image.configured) {
     return refuse(501, "training_image_not_configured", TRAINING_UNAVAILABLE_REFUSAL);
@@ -1253,8 +1311,11 @@ export async function createTrainingJob(
     return preflightRefusal(err);
   }
   // 10. Callbacks.
-  if (!runtime.publicApiUrl) {
+  if (!runtime.gpuFacingApiUrl) {
     return refuse(503, "training_callbacks_not_configured", TRAINING_UNAVAILABLE_REFUSAL);
+  }
+  if (callbacksNotReachable(runtime)) {
+    return refuse(503, "training_callbacks_not_reachable", TRAINING_UNAVAILABLE_REFUSAL);
   }
   // 11. The poller: with it off nothing would ever end a job.
   if (runtime.pollIntervalMs <= 0) {
@@ -1588,6 +1649,16 @@ async function retireLostSubmit(deps: TrainingDeps, row: TrainingJobRow): Promis
 }
 
 /**
+ * The address a training run reports its progress to. The nonce in the URL
+ * lets the signature be checked before any lookup. The door of a development
+ * machine (infra/gpu-door) passes exactly this shape and nothing near it, so
+ * the two change together (tests/gpuDoor.unit.test.ts holds them to it).
+ */
+export function trainingCallbackUrl(gpuFacingApiUrl: string, jobId: string, submitNonce: string): string {
+  return `${gpuFacingApiUrl}/api/training/jobs/${jobId}/events?n=${submitNonce}`;
+}
+
+/**
  * Submits a pending job to Nosana. One submitter claims the row
  * (pending -> submitting, with a fresh nonce); the deployment is created
  * under a name made of the job id and that nonce, so a deployment whose id
@@ -1631,7 +1702,11 @@ export async function submitTrainingJob(
   const store = deps.getStore();
   if (!store) return failBefore("object storage is not configured");
   if (!runtime.image.configured) return failBefore("the training image is not configured");
-  if (!runtime.publicApiUrl) return failBefore("PUBLIC_API_URL is not set");
+  if (!runtime.gpuFacingApiUrl) return failBefore("neither GPU_FACING_API_URL nor PUBLIC_API_URL is set");
+  // A job can wait while settings change: what admission accepted is asked again.
+  if (callbacksNotReachable(runtime)) {
+    return failBefore(`the address a GPU node reports to is ${gpuFacingRefusal(runtime.gpuFacingApiUrl)}`);
+  }
   if (runtime.nosanaMock) return failBefore("the Nosana mock is on");
 
   const dataset = await deps.prisma.dataset.findFirst({
@@ -1680,6 +1755,24 @@ export async function submitTrainingJob(
         contentType: METRICS_CONTENT_TYPE,
       }),
     ]);
+    // A node that cannot reach a link trains nothing and costs credits. Only
+    // which link is named: the link itself is a credential.
+    if (!runtime.gpuNodesAreLocal) {
+      const links = [
+        ["dataset", datasetUrl.url],
+        ["adapter", adapterUrl.url],
+        ["metrics", metricsUrl.url],
+      ] as const;
+      for (const [name, link] of links) {
+        const verdict = classifyGpuFacingUrl(link);
+        if (verdict.reachable) continue;
+        return failBefore(
+          verdict.reason === "local_name" || verdict.reason === "private_address"
+            ? `the ${name} link points at this machine or a private network`
+            : `the ${name} link is not a plain http or https address`,
+        );
+      }
+    }
     const built = buildTrainingJobDefinition({
       image: runtime.image.reference,
       registry: runtime.image.registry,
@@ -1694,8 +1787,7 @@ export async function submitTrainingJob(
       datasetSha256: row.datasetSha256,
       adapterUploadUrl: adapterUrl.url,
       metricsUploadUrl: metricsUrl.url,
-      // The nonce in the URL lets the signature be checked before any lookup.
-      callbackUrl: `${runtime.publicApiUrl}/api/training/jobs/${jobId}/events?n=${submitNonce}`,
+      callbackUrl: trainingCallbackUrl(runtime.gpuFacingApiUrl, jobId, submitNonce),
       callbackSecret: deps.callbackSecret(jobId, submitNonce),
       hyperparams: row.hyperparams,
       maxRuntimeSeconds: row.maxRuntimeSeconds,

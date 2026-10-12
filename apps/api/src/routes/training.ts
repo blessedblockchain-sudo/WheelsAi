@@ -351,11 +351,13 @@ export function createTrainingRoutes(deps: TrainingRouteDeps): FastifyPluginAsyn
    * 409 dataset_not_validated; 422 dataset_row_count_unknown; 409
    * dataset_changed_since_validation; 400 unsupported_method /
    * unsupported_gpu_count / hf_token_required / unknown_gpu_tier /
-   * tier_too_small; 503 dataset_storage_not_configured; 501
+   * tier_too_small; 503 dataset_storage_not_configured /
+   * dataset_storage_not_reachable; 501
    * training_image_not_configured; 501 training_requires_real_nosana /
    * nosana_not_configured / gpu_market_not_configured or 503
    * compute_capacity_unavailable / nosana_unavailable; 503
-   * training_callbacks_not_configured; 503 training_poller_disabled; 503
+   * training_callbacks_not_configured /
+   * training_callbacks_not_reachable; 503 training_poller_disabled; 503
    * training_orphan_sweep_disabled; 409 training_quota_exceeded; 409
    * training_free_failure_limit; 402 insufficient_credits.
    */

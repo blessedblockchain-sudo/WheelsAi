@@ -583,7 +583,10 @@ export function makeRuntime(overrides: Partial<TrainingRuntime> = {}): TrainingR
     datasetMaxBytes: 200 * 1024 * 1024,
     datasetMaxRows: 200_000,
     batchJobTimeoutSeconds: 21_600,
-    publicApiUrl: "https://api.example.com",
+    gpuFacingApiUrl: "https://api.example.com",
+    gpuNodesAreLocal: false,
+    // The fake store's links are on a public name (issueTransferUrl below).
+    storageLinkOrigin: null,
     nosanaMock: false,
     nosanaConfigured: true,
     tiers,

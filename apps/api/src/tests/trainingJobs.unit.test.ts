@@ -181,7 +181,7 @@ test("create: every refusal of the documented order, each leaving no row and no 
     [501, "gpu_market_not_configured", () => (w.nosana.state.preflightError = { code: "nosana_credits_low" })],
     [503, "compute_capacity_unavailable", () => (w.nosana.state.preflightError = new Error("socket hang up"))],
     [503, "nosana_unavailable", () => (w.nosana.state.preflightError = null)],
-    [503, "training_callbacks_not_configured", () => (w.world.runtime.publicApiUrl = "https://api.example.com")],
+    [503, "training_callbacks_not_configured", () => (w.world.runtime.gpuFacingApiUrl = "https://api.example.com")],
     [503, "training_poller_disabled", () => (w.world.runtime.pollIntervalMs = 15_000)],
     [503, "training_orphan_sweep_disabled", () => (w.world.runtime.orphanSweepEnabled = true)],
     [409, "training_quota_exceeded", () => blockers.forEach((job) => (job.status = "completed"))],
@@ -203,7 +203,7 @@ test("create: every refusal of the documented order, each leaving no row and no 
   w.world.runtime.image = { configured: false, reason: "TRAINING_IMAGE not set" };
   w.world.runtime.nosanaMock = true;
   w.nosana.state.preflightError = { code: "nosana_not_configured" };
-  w.world.runtime.publicApiUrl = null;
+  w.world.runtime.gpuFacingApiUrl = null;
   w.world.runtime.pollIntervalMs = 0;
   w.world.runtime.orphanSweepEnabled = false;
   w.db.balances[0]!.balanceCents = 10n;
@@ -1792,7 +1792,7 @@ test("capabilities: can start when everything is configured; each blocker is nam
     ...w.world.runtime,
     image: { configured: false, reason: "TRAINING_IMAGE not set" },
     nosanaConfigured: false,
-    publicApiUrl: null,
+    gpuFacingApiUrl: null,
     pollIntervalMs: 0,
     orphanSweepEnabled: false,
     batchJobTimeoutSeconds: 1_000,
@@ -1825,7 +1825,7 @@ test("capabilities: can start when everything is configured; each blocker is nam
   assert.match(operatorByCode.dataset_storage_not_configured!, /DATASETS_BUCKET/);
   assert.match(operatorByCode.training_image_not_configured!, /TRAINING_IMAGE not set/);
   assert.match(operatorByCode.nosana_not_configured!, /NOSANA_API_KEY/);
-  assert.match(operatorByCode.training_callbacks_not_configured!, /PUBLIC_API_URL/);
+  assert.match(operatorByCode.training_callbacks_not_configured!, /Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set/);
   assert.match(operatorByCode.training_poller_disabled!, /TRAINING_POLL_INTERVAL_MS/);
   assert.match(operatorByCode.training_orphan_sweep_disabled!, /DEPLOYMENT_STATUS_INTERVAL_MS/);
   assert.match(operatorByCode.training_run_limit_unavailable!, /NOSANA_BATCH_JOB_TIMEOUT_SECONDS/);
@@ -1866,4 +1866,247 @@ test("the dataset of a job can be deleted afterwards and the detail still names 
   w.db.datasets[0]!.deletedAt = new Date();
   const detail = (await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }))!;
   assert.deepEqual(detail.dataset, { id: DATASET, name: "support tickets", rowCount: 50, deleted: true });
+});
+
+// ============================================
+// A mistake costs nothing: an address a GPU node cannot reach is refused first
+// ============================================
+
+const LOCAL_API = "http://localhost:4000";
+
+test("blockers: storage links and the progress address a GPU node cannot reach, each with its operator sentence", () => {
+  const w = makeWorld();
+  const codes = (runtime: Partial<World["world"]["runtime"]>, store: unknown = w.realStore) =>
+    trainingOperatorBlockers({ ...w.world.runtime, ...runtime }, store as never).map((blocker) => blocker.code);
+  const sentence = (code: string, runtime: Partial<World["world"]["runtime"]>, store: unknown = w.realStore) =>
+    trainingOperatorBlockers({ ...w.world.runtime, ...runtime }, store as never).find((blocker) => blocker.code === code)
+      ?.message;
+
+  assert.deepEqual(codes({}), []);
+
+  // The local driver: its links are on this API's own origin.
+  assert.deepEqual(codes({ storageLinkOrigin: LOCAL_API }), ["dataset_storage_not_reachable"]);
+  assert.equal(
+    sentence("dataset_storage_not_reachable", { storageLinkOrigin: LOCAL_API }),
+    "A GPU node cannot reach http://localhost:4000, where the local storage driver hands out datasets and takes back adapters: it is this machine or a private network. Use a bucket (STORAGE_DRIVER=s3 with DATASETS_BUCKET and its keys).",
+  );
+  // The s3 driver with a custom endpoint on a private network.
+  const s3 = { ...w.realStore, kind: "s3" };
+  assert.equal(
+    sentence("dataset_storage_not_reachable", { storageLinkOrigin: "http://minio:9000" }, s3),
+    "A GPU node cannot reach http://minio:9000 (S3_ENDPOINT): it is this machine or a private network. Point S3_ENDPOINT at a bucket a GPU node can reach.",
+  );
+  // An address that is not one is not called a private network.
+  assert.equal(
+    sentence("dataset_storage_not_reachable", { storageLinkOrigin: "ftp://files.example.com" }, s3),
+    "A GPU node cannot reach ftp://files.example.com (S3_ENDPOINT): it is not a plain http or https address. Point S3_ENDPOINT at a bucket a GPU node can reach.",
+  );
+  assert.equal(
+    sentence("training_callbacks_not_reachable", { gpuFacingApiUrl: "https://user:pw@api.example.com" }),
+    "A GPU node cannot reach https://api.example.com, the address a training run reports to: it is not a plain http or https address. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.",
+  );
+  // A public endpoint, or the provider's own (null), blocks nothing.
+  assert.deepEqual(codes({ storageLinkOrigin: "https://acct.r2.cloudflarestorage.com" }, s3), []);
+  assert.deepEqual(codes({ storageLinkOrigin: null }, s3), []);
+
+  // The address a run reports to.
+  assert.deepEqual(codes({ gpuFacingApiUrl: LOCAL_API }), ["training_callbacks_not_reachable"]);
+  assert.equal(
+    sentence("training_callbacks_not_reachable", { gpuFacingApiUrl: `${LOCAL_API}/base/path` }),
+    "A GPU node cannot reach http://localhost:4000, the address a training run reports to: it is this machine or a private network. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.",
+  );
+  assert.equal(
+    sentence("training_callbacks_not_configured", { gpuFacingApiUrl: null }),
+    "Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set, so a training run has no address to report to.",
+  );
+
+  // Both at once, each right after its "not configured" sibling's place.
+  assert.deepEqual(
+    codes({
+      storageLinkOrigin: LOCAL_API,
+      gpuFacingApiUrl: "http://192.168.1.20:4000",
+      image: { configured: false, reason: "TRAINING_IMAGE not set" },
+      pollIntervalMs: 0,
+    }),
+    [
+      "dataset_storage_not_reachable",
+      "training_image_not_configured",
+      "training_callbacks_not_reachable",
+      "training_poller_disabled",
+    ],
+  );
+
+  // Never "not configured" and "not reachable" together.
+  assert.deepEqual(codes({ storageLinkOrigin: LOCAL_API, gpuFacingApiUrl: null }, null), [
+    "dataset_storage_not_configured",
+    "training_callbacks_not_configured",
+  ]);
+
+  // The development stand-in runs the node on this machine: nothing to refuse.
+  assert.deepEqual(codes({ gpuNodesAreLocal: true, storageLinkOrigin: LOCAL_API, gpuFacingApiUrl: LOCAL_API }), []);
+  assert.deepEqual(codes({ gpuNodesAreLocal: true, gpuFacingApiUrl: null }), ["training_callbacks_not_configured"]);
+});
+
+test("capabilities: an unreachable address is one calm sentence for the customer, and no new field", async () => {
+  const w = makeWorld();
+  const fields = Object.keys(await describeTrainingCapabilities(w.deps));
+  w.world.runtime = { ...w.world.runtime, storageLinkOrigin: LOCAL_API, gpuFacingApiUrl: LOCAL_API };
+  const blocked = await describeTrainingCapabilities(w.deps);
+  assert.equal(blocked.canStart, false);
+  assert.deepEqual(blocked.blockers, [
+    { code: "dataset_storage_not_reachable", message: TRAINING_UNAVAILABLE_MESSAGE },
+    { code: "training_callbacks_not_reachable", message: TRAINING_UNAVAILABLE_MESSAGE },
+  ]);
+  assert.deepEqual(Object.keys(blocked), fields);
+  // Set, so still "configured": the page reads canStart.
+  assert.deepEqual(blocked.callbacks, { configured: true });
+  assert.ok(!JSON.stringify(blocked).includes("localhost"), "the address is the operator's");
+});
+
+test("create: storage a GPU node cannot reach is refused before Nosana is asked, with nothing written", async () => {
+  const w = makeWorld();
+  w.world.runtime.storageLinkOrigin = LOCAL_API;
+  // Later conditions are broken too: this refusal comes first.
+  w.world.runtime.image = { configured: false, reason: "TRAINING_IMAGE not set" };
+  w.world.runtime.gpuFacingApiUrl = LOCAL_API;
+
+  const refused = await createTrainingJob(w.deps, { orgId: ORG, input: JOB_INPUT });
+  assert.ok(!refused.ok);
+  assert.deepEqual([refused.status, refused.code], [503, "dataset_storage_not_reachable"]);
+  assert.equal(
+    refused.message,
+    "Fine-tuning is temporarily unavailable. Nothing was created and no credits were held. Try again later.",
+  );
+  assert.equal(w.db.jobs.length, 0, "no job row");
+  assert.equal(w.db.ledger.length, 0, "no ledger entry");
+  assert.equal(w.db.balance(), START_BALANCE);
+  assert.deepEqual(w.nosana.calls, [], "Nosana was not asked");
+  assert.deepEqual(w.events(), []);
+  assert.equal(w.deferred.length, 0);
+
+  // On the stand-in the same settings admit the job.
+  w.world.runtime.image = { configured: true, reference: IMAGE, registry: null };
+  w.world.runtime.gpuNodesAreLocal = true;
+  const admitted = await createTrainingJob(w.deps, { orgId: ORG, input: JOB_INPUT });
+  assert.equal(admitted.ok, true);
+});
+
+test("create: a progress address a GPU node cannot reach is refused in the place of its sibling, with nothing written", async () => {
+  const w = makeWorld();
+  w.world.runtime.gpuFacingApiUrl = "http://10.0.0.5:4000";
+  // The next step is broken too: this refusal comes first.
+  w.world.runtime.pollIntervalMs = 0;
+
+  const refused = await createTrainingJob(w.deps, { orgId: ORG, input: JOB_INPUT });
+  assert.ok(!refused.ok);
+  assert.deepEqual([refused.status, refused.code], [503, "training_callbacks_not_reachable"]);
+  assert.equal(
+    refused.message,
+    "Fine-tuning is temporarily unavailable. Nothing was created and no credits were held. Try again later.",
+  );
+  assert.equal(w.db.jobs.length, 0, "no job row");
+  assert.equal(w.db.ledger.length, 0, "no ledger entry");
+  assert.equal(w.db.balance(), START_BALANCE);
+  assert.equal(w.nosana.deployments.size, 0);
+  assert.ok(w.nosana.calls.every((call) => call.startsWith("preflight:")), "only the read-only pre-flight ran");
+  assert.deepEqual(w.events(), []);
+  assert.equal(w.deferred.length, 0);
+
+  // Not set at all keeps its own code.
+  w.world.runtime.gpuFacingApiUrl = null;
+  const unset = await createTrainingJob(w.deps, { orgId: ORG, input: JOB_INPUT });
+  assert.deepEqual(!unset.ok && unset.code, "training_callbacks_not_configured");
+});
+
+/** A world whose log lines are kept, to prove what is never written to them. */
+function makeLoggedWorld() {
+  const w = makeWorld();
+  const lines: string[] = [];
+  const keep = (context: Record<string, unknown>, message: string) =>
+    void lines.push(`${message} ${JSON.stringify(context)}`);
+  w.deps.log = { info: keep, warn: keep, error: keep };
+  return { w, lines };
+}
+
+test("submit: the progress address became unreachable while the job waited - failed before Nosana, hold returned", async () => {
+  const { w, lines } = makeLoggedWorld();
+  const jobId = await admit(w);
+  w.world.runtime.gpuFacingApiUrl = LOCAL_API;
+  const callsBefore = w.nosana.calls.length;
+
+  const result = await submitTrainingJob(w.deps, jobId);
+  assert.deepEqual(result, {
+    ok: false,
+    code: "submit_failed",
+    message: "the address a GPU node reports to is this machine or a private network",
+  });
+  const job = w.db.job(jobId);
+  assert.deepEqual([job.status, job.failureCode, job.actualCostCents], ["failed", "submit_failed", 0n]);
+  assert.deepEqual(w.db.ledgerOf(jobId), [RESERVATION, RELEASE]);
+  assert.equal(w.db.balance(), START_BALANCE);
+  assert.equal(w.nosana.deployments.size, 0);
+  assert.equal(w.nosana.calls.length, callsBefore, "nothing was sent to Nosana");
+  assert.ok(lines.some((line) => line.includes("this machine or a private network")), "the operator reads why");
+
+  // Not set at all: its own reason, naming both settings.
+  w.world.runtime.gpuFacingApiUrl = "https://api.example.com";
+  const second = await admit(w, { name: "Support bot v2" });
+  w.world.runtime.gpuFacingApiUrl = null;
+  const unset = await submitTrainingJob(w.deps, second);
+  assert.deepEqual(!unset.ok && unset.message, "neither GPU_FACING_API_URL nor PUBLIC_API_URL is set");
+});
+
+test("submit: a link that points at this machine ends the submit; the link is in no log line and no answer", async () => {
+  for (const [name, at] of [
+    ["dataset", "get"],
+    ["adapter", "adapter.tar.gz"],
+    ["metrics", "metrics.json"],
+  ] as const) {
+    const { w, lines } = makeLoggedWorld();
+    const jobId = await admit(w);
+    const issue = w.deps.issueTransferUrl;
+    const issued: string[] = [];
+    w.deps.issueTransferUrl = async (args) => {
+      const link = await issue(args);
+      const mine = name === "dataset" ? args.op === at : args.key.endsWith(at);
+      if (!mine) return link;
+      const local = { ...link, url: `http://localhost:4000/api/storage/t/secret-token-${name}?sig=secret-sig` };
+      issued.push(local.url);
+      return local;
+    };
+    const callsBefore = w.nosana.calls.length;
+
+    const result = await submitTrainingJob(w.deps, jobId);
+    assert.equal(issued.length, 1, `${name}: one local link was issued`);
+    assert.deepEqual(result, {
+      ok: false,
+      code: "submit_failed",
+      message: `the ${name} link points at this machine or a private network`,
+    });
+    const job = w.db.job(jobId);
+    assert.deepEqual([job.status, job.failureCode], ["failed", "submit_failed"]);
+    assert.deepEqual(w.db.ledgerOf(jobId), [RESERVATION, RELEASE]);
+    assert.equal(w.nosana.deployments.size, 0);
+    assert.equal(w.nosana.calls.length, callsBefore, `${name}: nothing was sent to Nosana`);
+
+    const said = [...lines, JSON.stringify(result), JSON.stringify(job, (_key, value) => (typeof value === "bigint" ? String(value) : value))].join("\n");
+    assert.ok(!said.includes("secret-token"), `${name}: the link is not logged, answered or stored`);
+    assert.ok(!said.includes("secret-sig"));
+    assert.ok(!said.includes("/api/storage/t/"));
+  }
+});
+
+test("submit: on the stand-in a local link and a local progress address are sent as they are", async () => {
+  const w = makeWorld();
+  w.world.runtime.gpuNodesAreLocal = true;
+  w.world.runtime.gpuFacingApiUrl = LOCAL_API;
+  w.world.runtime.storageLinkOrigin = LOCAL_API;
+  const issue = w.deps.issueTransferUrl;
+  w.deps.issueTransferUrl = async (args) => ({ ...(await issue(args)), url: `${LOCAL_API}/api/storage/t/token-${args.op}` });
+
+  const jobId = await admit(w);
+  await w.drain();
+  assert.equal(w.db.job(jobId).status, "queued");
+  assert.equal(w.nosana.deployments.size, 1);
+  assert.ok(JSON.stringify(w.nosana.only().definition).includes(`${LOCAL_API}/api/training/jobs/${jobId}/events?n=`));
 });

@@ -15,6 +15,12 @@
  * Without --pool it looks at the program's most recent transactions to find
  * a pool that exists, and tries the trade and claim steps against it.
  *
+ * Three devnet pools the steps were accepted against on 2026-10-12 (other
+ * people's pools, so they may have moved on since):
+ *   still trading           2txQvXSBjmW78DNMGmtQkZLuMjjCkohjEAPCshVAsPqe
+ *   full, locker still due  iaSX6GfhzpXiLsdraLr5PryRz8fG85JLwxaRe89QxXb
+ *   full, ready to move     13VZvyU85HiedK7pRjYt3No8iZbDXohLgd1mD7k4Hvzn
+ *
  * Exit 0 when every step it could try was accepted, 1 otherwise.
  */
 /* eslint-disable no-console */
@@ -347,16 +353,24 @@ async function main(): Promise<void> {
   if (complete && !pool.isMigrated) {
     const option = poolConfig.migrationFeeOption as number;
     const dammConfig = DAMM_V2_MIGRATION_FEE_ADDRESS[option];
-    try {
+    // The pool says which step is next: 1 the curve is full and the
+    // creator's locked tokens still need their locker, 2 the locker is made
+    // or there is nothing to lock, so the pool can move. Each step is
+    // refused out of turn, so only the one that is due is tried.
+    const stage = pool.migrationProgress as number;
+    if (stage === 1) {
       const locker = await client.migration.createLocker({ payer, pool: poolAddress });
       const locked = await simulate(connection, payer, locker);
       report("graduation: the locker for vested tokens", locked.ok, locked.detail);
-    } catch (error) {
-      report("graduation: the locker for vested tokens", null, (error as Error).message.slice(0, 160));
+      report("graduation: move the pool into DAMM v2", null, "comes after the locker; pass --pool with one whose locker is made");
+    } else if (stage === 2) {
+      report("graduation: the locker for vested tokens", null, "made already, or this curve locks nothing");
+      const migration = await client.migration.migrateToDammV2({ payer, pool: poolAddress, dammConfig });
+      const migrated = await simulate(connection, payer, migration.transaction);
+      report("graduation: move the pool into DAMM v2", migrated.ok, migrated.detail);
+    } else {
+      report("graduation", null, `the pool's progress is ${stage}, which is not a step this probe knows`);
     }
-    const migration = await client.migration.migrateToDammV2({ payer, pool: poolAddress, dammConfig });
-    const migrated = await simulate(connection, payer, migration.transaction);
-    report("graduation: move the pool into DAMM v2", migrated.ok, migrated.detail);
   } else {
     report("graduation", null, pool.isMigrated ? "this pool has already graduated" : "this pool's curve is not complete yet");
   }

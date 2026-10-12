@@ -499,12 +499,37 @@ export interface TrainingJobMetrics {
   logSource?: "callbacks" | "nosana_result";
   /** A summary of metrics.json, once the job is finalised. */
   result?: Record<string, unknown>;
+  /**
+   * The stored adapter once its hash matched the trainer's report, and the
+   * etag storage gave for it just before it was hashed. Finalisation's own
+   * note, so that a later pass does not download the archive again. Never
+   * shown to the customer (publicJobMetrics).
+   */
+  verifiedAdapter?: { sha256: string; bytes: number; etag: string };
 }
 
 const MAX_LOSS_POINTS = 500;
 
 function readJobMetrics(value: unknown): TrainingJobMetrics {
   return isRecord(value) ? ({ ...value } as TrainingJobMetrics) : {};
+}
+
+/** The remembered adapter check, or null when it is absent or not in the shape this service writes. */
+function readVerifiedAdapter(metrics: TrainingJobMetrics): { sha256: string; bytes: number; etag: string } | null {
+  const value: unknown = metrics.verifiedAdapter;
+  if (!isRecord(value)) return null;
+  const { sha256, bytes, etag } = value;
+  if (typeof sha256 !== "string" || !SHA256_PATTERN.test(sha256)) return null;
+  if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes <= 0) return null;
+  if (typeof etag !== "string" || etag.length === 0) return null;
+  return { sha256, bytes, etag };
+}
+
+/** The metrics a customer is shown: everything but what finalisation keeps for itself. */
+function publicJobMetrics(metrics: TrainingJobMetrics): TrainingJobMetrics {
+  const shown = { ...metrics };
+  delete shown.verifiedAdapter;
+  return shown;
 }
 
 function pushPoint(
@@ -2828,14 +2853,47 @@ async function finalizeStep(deps: TrainingDeps, row: TrainingJobRow): Promise<St
   if (!expected) return reject("adapter_invalid");
   if (expected.adapterBytes !== head.size) return reject("adapter_invalid");
 
+  // A pass that comes back here (the retire was not handled) must not download
+  // the whole archive again. The hash of an earlier pass stands only while
+  // storage reports the same size AND the same etag as it did just before that
+  // pass read the object, and only for what the trainer still reports. The
+  // etag says "nothing changed"; with no etag from storage, or on size alone,
+  // the object is read again.
+  const etag = typeof head.etag === "string" && head.etag.length > 0 ? head.etag : null;
+  const remembered = readVerifiedAdapter(jobMetrics);
   let stored: Awaited<ReturnType<typeof sha256OfObject>>;
-  try {
-    stored = await sha256OfObject(store, keys.adapterKey, runtime.adapterMaxBytes);
-  } catch (err) {
-    deps.log.warn({ jobId: row.id, error: describeError(err) }, "Adapter could not be hashed; will retry");
-    return { action: "waiting" };
+  if (
+    remembered &&
+    etag !== null &&
+    remembered.etag === etag &&
+    remembered.bytes === head.size &&
+    remembered.sha256 === expected.adapterSha256
+  ) {
+    stored = { sha256: remembered.sha256, bytes: remembered.bytes };
+  } else {
+    try {
+      stored = await sha256OfObject(store, keys.adapterKey, runtime.adapterMaxBytes);
+    } catch (err) {
+      deps.log.warn({ jobId: row.id, error: describeError(err) }, "Adapter could not be hashed; will retry");
+      return { action: "waiting" };
+    }
+    if (!stored || stored.sha256 !== expected.adapterSha256) return reject("adapter_invalid");
+    if (etag !== null) {
+      // The etag is the one read BEFORE the hash: an object replaced in between
+      // has another etag by the next pass, and is read again.
+      jobMetrics.verifiedAdapter = { sha256: stored.sha256, bytes: stored.bytes, etag };
+      try {
+        await deps.prisma.trainingJob.updateMany({
+          where: { id: row.id, status: "finalizing" },
+          data: { metrics: { ...jobMetrics } },
+        });
+      } catch (err) {
+        // The note only saves a download. The adapter is verified whether or
+        // not it could be written, so the step goes on.
+        deps.log.warn({ jobId: row.id, error: describeError(err) }, "The verified adapter could not be noted on the job");
+      }
+    }
   }
-  if (!stored || stored.sha256 !== expected.adapterSha256) return reject("adapter_invalid");
 
   // The model row: unique on the job, so a second finaliser finds the first's.
   let model = await deps.prisma.fineTunedModel.findUnique({ where: { trainingJobId: row.id } });
@@ -3122,7 +3180,7 @@ export async function getTrainingJobDetail(deps: TrainingDeps, args: { orgId: st
       orderBy: { createdAt: "asc" },
     }),
   ]);
-  const metrics = readJobMetrics(row.metrics);
+  const metrics = publicJobMetrics(readJobMetrics(row.metrics));
   return {
     ...serializeTrainingJob(row, deps.now()),
     hyperparams: row.hyperparams ?? null,

@@ -1088,6 +1088,187 @@ test("finalise: a deployment that can be neither stopped nor recorded keeps the 
   assert.equal(w.db.fineTuned.length, 1);
 });
 
+/**
+ * A job whose run ended well and whose deployment can be neither stopped nor
+ * recorded: every pass of finalisation ends in stop_retry. `reads` counts the
+ * downloads of the adapter archive.
+ */
+async function toUnretirable(w: World) {
+  let uploaded = { adapterBytes: 0, adapterSha256: "" };
+  const jobId = await toFinalizing(w, (id) => {
+    uploaded = w.storeAdapter(id);
+    return [eventLine(trainerEvent(1, "uploaded", uploaded)), eventLine(trainerEvent(2, "completed"))];
+  });
+  const adapterKey = trainingArtifactKeys(ORG, jobId).adapterKey;
+  const reads = { count: 0 };
+  const getStream = w.realStore.getStream;
+  w.realStore.getStream = async (key, range) => {
+    if (key === adapterKey) reads.count += 1;
+    return getStream(key, range);
+  };
+  w.nosana.state.stopError = new Error("stop refused");
+  w.world.orphanRecordFails = true;
+  const pass = async () => (await reconcileTrainingJob(w.deps, jobId)).action;
+  return { jobId, adapterKey, uploaded, reads, pass };
+}
+
+test("finalise: passes that wait on the retire read the adapter once, and the job completes from the remembered hash", async () => {
+  const w = makeWorld();
+  const { jobId, adapterKey, uploaded, reads, pass } = await toUnretirable(w);
+  const etag = (await w.realStore.head(adapterKey))!.etag;
+
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 1);
+  assert.deepEqual((w.db.job(jobId).metrics as any).verifiedAdapter, {
+    sha256: uploaded.adapterSha256,
+    bytes: uploaded.adapterBytes,
+    etag,
+  });
+  // Finalisation's own note: the customer's view of the job does not carry it.
+  const waiting = (await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }))!;
+  assert.equal("verifiedAdapter" in waiting.metrics, false);
+  assert.deepEqual(waiting.metrics.uploaded, uploaded);
+
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 1, "the second pass did not download the archive");
+
+  w.world.orphanRecordFails = false;
+  assert.equal(await pass(), "completed");
+  assert.equal(reads.count, 1);
+  assert.equal(w.db.job(jobId).status, "completed");
+  assert.equal(w.db.fineTuned.length, 1);
+  const model = w.db.fineTuned[0]!;
+  assert.equal(model.adapterKey, adapterKey);
+  assert.equal(model.adapterBytes, BigInt(uploaded.adapterBytes));
+  assert.equal(model.adapterSha256, uploaded.adapterSha256);
+  const done = (await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }))!;
+  assert.equal("verifiedAdapter" in done.metrics, false);
+  assert.equal((done.metrics.result as any).stopReason, "finished");
+});
+
+test("finalise: another etag on a later pass reads the adapter again and remembers the new one", async () => {
+  const w = makeWorld();
+  const { jobId, adapterKey, uploaded, reads, pass } = await toUnretirable(w);
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 1);
+
+  // The same bytes and size, but storage no longer says "nothing changed".
+  const head = w.realStore.head;
+  w.realStore.head = async (key) => {
+    const found = await head(key);
+    return found && key === adapterKey ? { ...found, etag: `${found.etag}-again` } : found;
+  };
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 2);
+  assert.match((w.db.job(jobId).metrics as any).verifiedAdapter.etag, /-again$/);
+  assert.equal((w.db.job(jobId).metrics as any).verifiedAdapter.sha256, uploaded.adapterSha256);
+
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 2, "the new etag is the remembered one");
+});
+
+test("finalise: storage that gives no etag has the adapter read on every pass", async () => {
+  const w = makeWorld();
+  const { jobId, uploaded, reads, pass } = await toUnretirable(w);
+  const head = w.realStore.head;
+  w.realStore.head = async (key) => {
+    const found = await head(key);
+    return found ? { size: found.size } : null;
+  };
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 2, "the same size alone is not a reason to skip");
+  assert.equal((w.db.job(jobId).metrics as any).verifiedAdapter, undefined);
+
+  w.world.orphanRecordFails = false;
+  assert.equal(await pass(), "completed");
+  assert.equal(reads.count, 3);
+  assert.equal(w.db.fineTuned[0]!.adapterSha256, uploaded.adapterSha256);
+});
+
+test("finalise: a remembered hash that is not the one the trainer reports is not trusted", async () => {
+  const w = makeWorld();
+  const { jobId, uploaded, reads, pass } = await toUnretirable(w);
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 1);
+
+  // The note on the row was altered: the etag and size still agree with storage.
+  const job = w.db.job(jobId);
+  const noted = (job.metrics as any).verifiedAdapter;
+  job.metrics = { ...(job.metrics as any), verifiedAdapter: { ...noted, sha256: "e".repeat(64) } };
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 2, "the object was read");
+  assert.equal((job.metrics as any).verifiedAdapter.sha256, uploaded.adapterSha256, "and the note put right");
+
+  // The trainer's report is now another hash: the note cannot stand in for the check.
+  job.metrics = { ...(job.metrics as any), uploaded: { ...uploaded, adapterSha256: "f".repeat(64) } };
+  w.nosana.state.stopError = null;
+  w.world.orphanRecordFails = false;
+  assert.equal((await reconcileTrainingJob(w.deps, jobId)).to, "failed");
+  assert.equal(reads.count, 3);
+  assert.equal(job.failureCode, "adapter_invalid");
+  assert.equal(job.actualCostCents, 0n);
+});
+
+test("finalise: a remembered hash does not stand for an adapter that has gone or been replaced", async () => {
+  // Gone: the note is on the row, the object is not in storage.
+  const gone = makeWorld();
+  const first = await toUnretirable(gone);
+  assert.equal(await first.pass(), "stop_retry");
+  assert.ok((gone.db.job(first.jobId).metrics as any).verifiedAdapter);
+  gone.realStore.objects.delete(first.adapterKey);
+  gone.nosana.state.stopError = null;
+  gone.world.orphanRecordFails = false;
+  assert.equal((await reconcileTrainingJob(gone.deps, first.jobId)).to, "failed");
+  assert.equal(gone.db.job(first.jobId).failureCode, "adapter_missing");
+  assert.equal(first.reads.count, 1);
+
+  // Replaced by other bytes of the same size: storage gives another etag, so it is read and refused.
+  const swapped = makeWorld();
+  const second = await toUnretirable(swapped);
+  assert.equal(await second.pass(), "stop_retry");
+  const other = Buffer.from(swapped.realStore.objects.get(second.adapterKey)!);
+  other[0] = other[0]! ^ 0xff;
+  swapped.realStore.objects.set(second.adapterKey, other);
+  assert.equal((await swapped.realStore.head(second.adapterKey))!.size, second.uploaded.adapterBytes);
+  swapped.nosana.state.stopError = null;
+  swapped.world.orphanRecordFails = false;
+  assert.equal((await reconcileTrainingJob(swapped.deps, second.jobId)).to, "failed");
+  assert.equal(second.reads.count, 2, "the replaced object was read");
+  assert.equal(swapped.db.job(second.jobId).failureCode, "adapter_invalid");
+  assert.equal(swapped.db.job(second.jobId).actualCostCents, 0n);
+});
+
+test("finalise: a note that cannot be written does not hold the job; the adapter is read again next time", async () => {
+  const w = makeWorld();
+  const { jobId, uploaded, reads, pass } = await toUnretirable(w);
+  const jobs = (w.deps.prisma as any).trainingJob;
+  const updateMany = jobs.updateMany;
+  let refused = 0;
+  jobs.updateMany = async (args: any) => {
+    // Only the write of the note: metrics alone, before the trainer's summary is added.
+    if (args.data?.metrics?.verifiedAdapter && !args.data.metrics.result && Object.keys(args.data).length === 1) {
+      refused += 1;
+      throw new Error("write refused");
+    }
+    return updateMany(args);
+  };
+  assert.equal(await pass(), "stop_retry", "the step went on to the retire");
+  assert.equal(refused, 1);
+  assert.equal((w.db.job(jobId).metrics as any).verifiedAdapter, undefined);
+  assert.equal(w.db.fineTuned.length, 1);
+
+  assert.equal(await pass(), "stop_retry");
+  assert.equal(reads.count, 2, "with no note the archive is hashed again");
+
+  w.world.orphanRecordFails = false;
+  assert.equal(await pass(), "completed");
+  assert.equal(reads.count, 3);
+  assert.equal(w.db.job(jobId).status, "completed");
+  assert.equal(w.db.fineTuned[0]!.adapterSha256, uploaded.adapterSha256);
+  assert.equal(w.db.fineTuned[0]!.adapterBytes, BigInt(uploaded.adapterBytes));
+});
+
 test("the model slug is strict whatever the job is called", () => {
   const id = "aaaaaaaa-0000-4000-8000-000000000001";
   for (const name of ["Support bot v1", "  $(rm -rf /) ", "日本語", "a".repeat(100), "--x--"]) {

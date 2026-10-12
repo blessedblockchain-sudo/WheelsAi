@@ -75,8 +75,9 @@ export default function ApiOverviewPage() {
           spend. See <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.
         </li>
         <li>
-          Some actions need a person, not a key: managing API keys, two-factor settings, switching organizations, buying credits
-          or a plan, and requesting marketplace payouts. Those endpoints answer <code>401</code> to a key.
+          Some actions need a person, not a key: managing API keys, two-factor settings, switching organizations, renaming
+          an organization, buying credits or a plan, and requesting marketplace payouts. Those endpoints answer{" "}
+          <code>401</code> to a key.
         </li>
       </ul>
 

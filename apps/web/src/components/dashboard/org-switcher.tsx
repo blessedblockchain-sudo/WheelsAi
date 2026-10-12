@@ -5,6 +5,7 @@ import { Check, ChevronsUpDown, Building2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { authApi, getErrorMessage } from "@/lib/api";
+import { ORGANIZATION_RENAMED_EVENT, organizationRenamedOf, withOrganizationRenamed } from "@/lib/organization-name";
 
 type Org = { id: string; name: string; role: string; current: boolean };
 
@@ -22,6 +23,16 @@ export function OrgSwitcher() {
       .listOrgs()
       .then((res) => setOrgs(res.organizations))
       .catch(() => undefined);
+  }, []);
+
+  // The Account page renamed an organization: show the new name without a reload.
+  useEffect(() => {
+    function onRenamed(event: Event) {
+      const renamed = organizationRenamedOf((event as CustomEvent).detail);
+      if (renamed) setOrgs((list) => withOrganizationRenamed(list, renamed));
+    }
+    window.addEventListener(ORGANIZATION_RENAMED_EVENT, onRenamed);
+    return () => window.removeEventListener(ORGANIZATION_RENAMED_EVENT, onRenamed);
   }, []);
 
   const current = orgs.find((o) => o.current);

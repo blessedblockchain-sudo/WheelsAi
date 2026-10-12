@@ -45,7 +45,8 @@ export default function MarketplaceGuidePage() {
       <p>
         Open one of your agents and choose its <strong>Sell</strong> tab. It asks one question,{" "}
         <strong>Who can use it?</strong>, and saving your answer puts the agent on sale. People use your agent on its page
-        or through the API. They never get its instructions, its settings or its code.
+        or through the API. They never get its instructions, its settings or its code. Buyers see it as sold by your
+        organization&apos;s name, which an owner or admin can change under <strong>Account</strong>.
       </p>
 
       <h3 id="who-can-use">Who can use it?</h3>

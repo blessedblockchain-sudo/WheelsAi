@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import bs58 from "bs58";
 
 import { Header } from "@/components/dashboard/header";
+import { OrganizationCard } from "@/components/dashboard/organization-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -146,11 +147,11 @@ export default function SettingsPage() {
     return (
       <div className="flex flex-col">
         <Header title="Account" description="Manage your account and preferences" />
-        <div className="p-8" aria-busy="true">
+        <div className="p-4 sm:p-8" aria-busy="true">
           <span className="sr-only">Loading settings</span>
-          <div className="flex gap-8">
+          <div className="flex flex-col gap-6 md:flex-row md:gap-8">
             {/* Sidebar skeleton: four tabs, then Log out */}
-            <div className="w-48 shrink-0 space-y-1">
+            <div className="w-full shrink-0 space-y-1 md:w-48">
               {Array.from({ length: 4 }).map((_, i) => (
                 <Skeleton key={i} className="h-9 w-full" />
               ))}
@@ -159,7 +160,7 @@ export default function SettingsPage() {
               </div>
             </div>
             {/* Profile card skeleton: four fields and the save button */}
-            <div className="flex-1">
+            <div className="min-w-0 flex-1">
               <Card>
                 <CardHeader>
                   <Skeleton className="h-6 w-48" />
@@ -197,10 +198,10 @@ export default function SettingsPage() {
         description="Manage your account and preferences"
       />
 
-      <div className="p-8">
-        <div className="flex gap-8">
+      <div className="p-4 sm:p-8">
+        <div className="flex flex-col gap-6 md:flex-row md:gap-8">
           {/* Sidebar */}
-          <div className="w-48 shrink-0">
+          <div className="w-full shrink-0 md:w-48">
             <nav className="space-y-1">
               {tabs.map((tab) => (
                 <button
@@ -231,7 +232,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Content */}
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
             {showLoadError && (
               <ErrorState
                 title="Couldn't load your profile"
@@ -343,6 +344,9 @@ export default function SettingsPage() {
                 </CardContent>
               </Card>
             )}
+
+            {/* The organization's name loads by itself: it shows whether or not the profile did. */}
+            {activeTab === "profile" && <OrganizationCard className="mt-6" />}
 
             {/* Password tab (two-factor sign-in is the Security page) */}
             {activeTab === "security" && (

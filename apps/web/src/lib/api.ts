@@ -1164,6 +1164,35 @@ export interface UserSettings {
   };
 }
 
+/** The organization the session is in, as the Account page shows it. */
+export interface OrganizationSettings {
+  id: string;
+  name: string;
+  /** The caller is signed in as an owner or admin of it. */
+  canRename: boolean;
+  /** It has a seller's profile, so buyers see its name. */
+  sells: boolean;
+}
+
+export interface RenameOrganizationResult {
+  organization: OrganizationSettings;
+  /** false when the name sent is the name it already has. */
+  changed: boolean;
+  listingsUpdated: number;
+}
+
+/**
+ * The body of a refused rename, on the ApiError's `data`: 400 `invalid_name`, 400 `name_reserved`,
+ * 409 `name_taken`, 429 `name_change_limit`. `message` is the sentence to show as it comes; the limit's
+ * sentence gives its moment in UTC, so the card says that moment (`retryAt`) on the reader's own clock.
+ */
+export interface RenameOrganizationRefusal {
+  error: "invalid_name" | "name_reserved" | "name_taken" | "name_change_limit";
+  message: string;
+  /** Only with `name_change_limit`: the ISO time from which a change is allowed again. */
+  retryAt?: string;
+}
+
 export const settingsApi = {
   getProfile: () =>
     api<{ profile: UserProfile }>("/api/settings/profile"),
@@ -1201,6 +1230,16 @@ export const settingsApi = {
     api<{ walletAddress: string; message: string }>("/api/settings/link-wallet", {
       method: "POST",
       body: { walletAddress, signature, nonce },
+    }),
+
+  organization: () =>
+    api<{ organization: OrganizationSettings }>("/api/settings/organization"),
+
+  /** Owner or admin only. Refused with `invalid_name`, `name_reserved`, `name_taken` or `name_change_limit`. */
+  renameOrganization: (name: string) =>
+    api<RenameOrganizationResult>("/api/settings/organization", {
+      method: "PATCH",
+      body: { name },
     }),
 
   getBranding: () =>

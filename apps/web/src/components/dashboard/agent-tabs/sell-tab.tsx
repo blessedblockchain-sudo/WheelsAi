@@ -22,6 +22,7 @@ import {
   getErrorMessage,
   getValidationError,
   marketplaceApi,
+  settingsApi,
   type AgentDetail,
   type Capabilities,
   type MarketplaceListing,
@@ -30,6 +31,7 @@ import {
 import { codeOf, listingForAgent } from "@/lib/agent-page";
 import { PUBLIC_LINK_WORDS } from "@/lib/agent-share";
 import { SELL_PAUSED_NOTICE, listingIsPaused } from "@/lib/listing-pause";
+import { soldByLine } from "@/lib/organization-name";
 import {
   LISTING_LINE_MAX,
   SELL_LINE_TOO_SHORT,
@@ -97,6 +99,21 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   const lineRef = useRef<HTMLInputElement>(null);
   const focusStatus = useRef(false);
   const mounted = useRef(true);
+  // The name buyers see. Asked for once; the line about it is left out when it cannot be read.
+  const [seller, setSeller] = useState<{ name: string; canRename: boolean } | null>(null);
+
+  useEffect(() => {
+    let current = true;
+    settingsApi
+      .organization()
+      .then((res) => {
+        if (current) setSeller({ name: res.organization.name, canRename: res.organization.canRename });
+      })
+      .catch(() => undefined);
+    return () => {
+      current = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -296,6 +313,21 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     </p>
   );
 
+  const soldByWords = seller ? soldByLine(seller.name, seller.canRename) : null;
+  const soldBy = soldByWords && (
+    <p className="break-words text-sm text-muted-foreground">
+      {soldByWords.sentence}
+      {soldByWords.action && (
+        <>
+          {" "}
+          <Link href={soldByWords.action.href} className={textLink}>
+            {soldByWords.action.label}
+          </Link>
+        </>
+      )}
+    </p>
+  );
+
   const editListing = listing && (
     <Link
       href={`/dashboard/marketplace/publish?edit=${encodeURIComponent(listing.id)}`}
@@ -384,6 +416,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
         <Card>
           <CardContent className="space-y-5 py-6">
             {question}
+            {soldBy}
             {problem}
             <div className="flex flex-wrap items-center gap-2">
               <Button type="button" onClick={() => void save()} isLoading={busy === "save"} disabled={busy !== null || unchanged}>
@@ -439,6 +472,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
             )}
           </div>
         )}
+        {soldBy}
         {problem}
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" onClick={() => void save()} isLoading={busy === "save"} disabled={busy !== null}>

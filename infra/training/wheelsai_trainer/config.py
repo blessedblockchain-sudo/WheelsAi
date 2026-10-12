@@ -33,7 +33,8 @@ DEFAULT_EVAL_SPLIT = 0.05
 
 # Every variable the container reads. Anything else in the environment is
 # ignored; nothing is read from files or arguments except --device,
-# --work-dir and --resume-from, which the image's ENTRYPOINT never sets.
+# --work-dir and --resume-from. Of those the image's ENTRYPOINT sets one,
+# --device cuda.
 ENV_NAMES = (
     "JOB_ID",
     "BASE_MODEL",

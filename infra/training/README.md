@@ -61,9 +61,18 @@ and the tests work; any other scheme is exit 10. Both PUTs send an exact
 above are fixed: a presigned URL that signs the content type must sign
 exactly those.
 
-Arguments exist for running outside the image and are never set by the
-ENTRYPOINT: `--device auto|cpu|cuda` (default `auto`), `--work-dir DIR`
-(default `/workspace`), `--resume-from DIR`.
+Arguments: `--device auto|cpu|cuda` (default `auto`), `--work-dir DIR`
+(default `/workspace`), `--resume-from DIR`. The image's ENTRYPOINT sets one
+of them, `--device cuda`: on a node that shows no GPU the run ends in
+seconds with exit 10, `cuda_unavailable`, and does not train on the
+processor. A job definition carries no command. An argument given after the
+image name is added to the ENTRYPOINT, and the last `--device` wins.
+
+A run writes in two places: the work directory and the model cache
+(`HF_HOME`, `/workspace/hf` in the image). When the user the container runs
+as cannot write one of them, the run moves it (the work directory to a new
+temporary folder, the model cache under the work directory) and says so in
+one line on stderr.
 
 ### Hyperparameters
 

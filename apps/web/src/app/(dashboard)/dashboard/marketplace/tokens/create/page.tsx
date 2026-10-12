@@ -1,13 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
-import { VersionedTransaction } from "@solana/web3.js";
 import { Header } from "@/components/dashboard/header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -19,9 +19,19 @@ import { cn } from "@/lib/utils";
 import {
   marketplaceApi,
   tokenApi,
+  type LaunchpadInfo,
   type MarketplaceListing,
   getErrorMessage,
 } from "@/lib/api";
+import { CurvePresetCard } from "@/components/dashboard/curve-preset-card";
+import { signPreparedTransaction } from "@/components/dashboard/token-curve-sign";
+import {
+  GRADUATION_EXPLANATION,
+  explorerAddressUrl,
+  explorerTxUrl,
+  launchpadLabel,
+  presetFacts,
+} from "@/lib/token-curve";
 import {
   ArrowLeft,
   ArrowRight,
@@ -32,12 +42,12 @@ import {
   Wallet,
   Shield,
   Sparkles,
+  ExternalLink,
 } from "lucide-react";
 
-// Display label for the active launchpad. Mirrors the backend LAUNCHPAD env
-// (Bags is gated off until its adapter ships, so this is pump.fun today).
-const LAUNCHPAD_LABEL =
-  process.env.NEXT_PUBLIC_LAUNCHPAD === "bags" ? "Bags" : "pump.fun";
+// The launchpad's name comes from GET /api/tokens/launchpad. This build-time
+// setting is only what the page says when that call fails.
+const FALLBACK_LAUNCHPAD_LABEL = launchpadLabel(process.env.NEXT_PUBLIC_LAUNCHPAD);
 
 type Step = 1 | 2 | 3 | 4;
 
@@ -63,6 +73,12 @@ export default function CreateTokenPage() {
   const [eligibility, setEligibility] = useState<Record<string, EligibilityResult>>({});
   const [checkingEligibility, setCheckingEligibility] = useState<string | null>(null);
 
+  // Which launchpad is on, its curves and the launch gate. Null until the
+  // call answers, and for good when it fails: the page then works as it did
+  // before the call existed.
+  const [launchpad, setLaunchpad] = useState<LaunchpadInfo | null>(null);
+  const [presetId, setPresetId] = useState<string | null>(null);
+
   // Step 1: Selected listing
   const [selectedListingId, setSelectedListingId] = useState<string | null>(null);
 
@@ -76,6 +92,13 @@ export default function CreateTokenPage() {
 
   // Step 4: Creating
   const [isCreating, setIsCreating] = useState(false);
+
+  // Set once the launch is on chain and saved: the page shows where it went.
+  const [launched, setLaunched] = useState<{
+    tokenId: string;
+    mintAddress: string;
+    txSignature: string;
+  } | null>(null);
 
   // Recovery: set when the mint broadcast on-chain but persistence failed.
   const [recovery, setRecovery] = useState<{
@@ -93,6 +116,33 @@ export default function CreateTokenPage() {
   // agent's listing icon. Without one, prepare would fail server-side, so
   // block the flow early with an actionable message.
   const missingIcon = !!selectedListing && !selectedListing.iconUrl;
+
+  const launchpadName = launchpad ? launchpadLabel(launchpad.launchpad) : FALLBACK_LAUNCHPAD_LABEL;
+  const isMeteora = launchpad?.launchpad === "meteora";
+  const presets = launchpad?.presets ?? [];
+  const selectedPreset = presets.find((p) => p.id === presetId) ?? null;
+  // The gate's numbers: from the launchpad call, else from the eligibility
+  // answer for the agent chosen. Never a number written into this page.
+  const gate = launchpad?.gate ?? selectedEligibility?.requirements ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    tokenApi
+      .launchpadInfo()
+      .then((info) => {
+        if (cancelled) return;
+        setLaunchpad(info);
+        const first =
+          info.presets.find((p) => p.id === info.defaultPreset) ?? info.presets[0] ?? null;
+        setPresetId(first ? first.id : null);
+      })
+      .catch(() => {
+        // The fallback label and the eligibility answer carry the page.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const loadListings = useCallback(async () => {
     try {
@@ -131,7 +181,7 @@ export default function CreateTokenPage() {
         ...prev,
         [listingId]: {
           eligible: false,
-          reasons: ["Failed to check eligibility"],
+          reasons: ["Could not check whether this agent can launch a token. Try again."],
         },
       }));
     } finally {
@@ -161,18 +211,17 @@ export default function CreateTokenPage() {
       return;
     }
     if (!signTransaction) {
-      toast.error(
-        "This wallet doesn't support transaction signing — try a different wallet.",
-      );
+      toast.error("This wallet cannot sign a transaction here. Try a different wallet.");
       return;
     }
 
     if (!selectedListingId || !selectedListing) return;
 
     // Browser-partial-sign flow (Phase 1.5):
-    //   1. POST /launch/prepare  → server prepares pump.fun create tx,
-    //                              signs mint half, returns base64 +
-    //                              short-lived HMAC prepareToken.
+    //   1. POST /launch/prepare  → server prepares the launchpad's create
+    //                              tx, signs its own half (the mint, and on
+    //                              Meteora the curve config), returns
+    //                              base64 + short-lived HMAC prepareToken.
     //   2. Wallet signs the tx.  → user reviews + approves in their wallet.
     //   3. POST /launch/submit   → server broadcasts the fully-signed
     //                              tx, persists AgentToken + AgentTreasury.
@@ -188,38 +237,34 @@ export default function CreateTokenPage() {
         symbol: tokenSymbol,
         description: tokenDescription || tokenName,
         imageUri: selectedListing.iconUrl ?? undefined,
+        // On Meteora the first buy is made on the token's page: the server
+        // refuses a launch that carries one.
         initialBuySol:
-          initialBuySol && parsedBuy > 0 ? parsedBuy : undefined,
+          !isMeteora && initialBuySol && parsedBuy > 0 ? parsedBuy : undefined,
+        preset: selectedPreset?.id,
       });
       prepareTokenForRecovery = prepared.prepareToken;
 
-      // Deserialize the partial-signed tx and let the wallet add its
-      // signature. wallet.signTransaction preserves existing signatures
-      // (the mint slot the server already filled) and only signs the
-      // creator slot matching the wallet's pubkey.
-      const partialBytes = Uint8Array.from(
-        atob(prepared.partialSignedTxBase64),
-        (c) => c.charCodeAt(0),
+      // The wallet adds its signature. wallet.signTransaction preserves
+      // existing signatures (the slots the server already filled) and only
+      // signs the creator slot matching the wallet's pubkey.
+      const signedTxBase64 = await signPreparedTransaction(
+        signTransaction,
+        prepared.partialSignedTxBase64,
       );
-      const tx = VersionedTransaction.deserialize(partialBytes);
-      const signedTx = await signTransaction(tx);
-
-      const signedBytes = signedTx.serialize();
-      // Base64-encode without going through Node's Buffer (browser
-      // bundle stays small).
-      let binary = "";
-      for (let i = 0; i < signedBytes.length; i++) {
-        binary += String.fromCharCode(signedBytes[i]!);
-      }
-      const signedTxBase64 = btoa(binary);
 
       const result = await tokenApi.submitLaunch({
         prepareToken: prepared.prepareToken,
         signedTxBase64,
       });
 
-      toast.success("Token created successfully!");
-      router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
+      toast.success("Token created");
+      setLaunched({
+        tokenId: result.tokenId,
+        mintAddress: result.mintAddress,
+        txSignature: result.txSignature,
+      });
+      setIsCreating(false);
     } catch (err: any) {
       // The mint broadcast but the server couldn't persist it. The token
       // exists on-chain — switch to the recovery panel instead of dropping
@@ -252,11 +297,11 @@ export default function CreateTokenPage() {
         mintAddress: recovery.mintAddress,
         txSignature: recovery.txSignature,
       });
-      toast.success("Token linked successfully!");
+      toast.success("Token linked");
       router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
     } catch (err: any) {
       toast.error(
-        getErrorMessage(err, "Retry failed — please try again or contact support.")
+        getErrorMessage(err, "The retry failed. Try again, or contact support.")
       );
       setIsRetrying(false);
     }
@@ -268,7 +313,10 @@ export default function CreateTokenPage() {
         return !!selectedListingId && !!selectedEligibility?.eligible;
       case 2:
         return (
-          tokenName.length >= 2 && tokenSymbol.length >= 2 && !missingIcon
+          tokenName.length >= 2 &&
+          tokenSymbol.length >= 2 &&
+          !missingIcon &&
+          (presets.length === 0 || selectedPreset !== null)
         );
       case 3:
         return true;
@@ -279,26 +327,90 @@ export default function CreateTokenPage() {
     }
   };
 
+  // Why "Next" cannot be pressed, in one sentence.
+  const nextBlockedReason = (): string | null => {
+    if (canProceed()) return null;
+    if (step === 1) {
+      if (!selectedListingId) return "Choose an agent first.";
+      if (checkingEligibility) return "Checking whether this agent can launch a token.";
+      return "This agent cannot launch a token yet. The reasons are listed under it.";
+    }
+    if (step === 2) {
+      if (missingIcon) return "This agent needs an icon before it can launch a token.";
+      if (tokenName.length < 2) return "Give the token a name of at least 2 characters.";
+      if (tokenSymbol.length < 2) return "Give the token a symbol of at least 2 characters.";
+      return "Choose a curve first.";
+    }
+    return null;
+  };
+
   const stepLabels = ["Select Agent", "Token Details", "Review", "Confirm"];
 
   return (
     <div className="flex flex-col">
       <Header
         title="Create Agent Token"
-        description={`Launch a token for your AI agent on the ${LAUNCHPAD_LABEL} bonding curve`}
+        description={`Launch a token for your AI agent on the ${launchpadName} bonding curve`}
       />
 
       <div className="p-8 max-w-3xl mx-auto w-full space-y-6">
-        {recovery ? (
+        {launched ? (
+          <Card data-testid="token-launched">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Check className="h-5 w-5 text-green-600" />
+                Token launched
+              </CardTitle>
+              <CardDescription>
+                {tokenName} (${tokenSymbol}) is on {launchpadName}
+                {launchpad?.network === "devnet" ? ", on Solana's devnet" : ""}.
+                {isMeteora
+                  ? " The first buy is made on the token's page."
+                  : ""}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-lg border p-4 space-y-3 text-sm">
+                <div>
+                  <p className="text-muted-foreground">Mint</p>
+                  <p className="break-all font-mono text-xs">{launched.mintAddress}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Transaction</p>
+                  <p className="break-all font-mono text-xs">{launched.txSignature}</p>
+                </div>
+              </div>
+              <Link
+                href={`/dashboard/marketplace/tokens/${launched.tokenId}`}
+                className={cn(buttonVariants(), "w-full")}
+              >
+                <ArrowRight className="mr-2 h-4 w-4" />
+                Go to the token&apos;s page
+              </Link>
+              {/* The explorer needs the network. Without the launchpad call it is not known, so no link is made up. */}
+              {launchpad && (
+                <a
+                  href={explorerTxUrl(launched.txSignature, launchpad.network)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-1 text-sm text-primary underline-offset-4 hover:underline"
+                >
+                  View the transaction on Solana&apos;s explorer
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                </a>
+              )}
+            </CardContent>
+          </Card>
+        ) : recovery ? (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Check className="h-5 w-5 text-green-600" />
-                Token launched — finishing up
+                Token launched, one step left
               </CardTitle>
               <CardDescription>
-                Your token was created on-chain, but we couldn&apos;t link it
-                to your dashboard. Nothing is lost — retry to finish linking.
+                Your token was created on chain, but it could not be linked to
+                your dashboard. Nothing is lost. Retry to finish linking.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -306,7 +418,11 @@ export default function CreateTokenPage() {
                 <div className="flex justify-between gap-4">
                   <span className="text-muted-foreground shrink-0">Mint</span>
                   <a
-                    href={`https://solscan.io/token/${recovery.mintAddress}`}
+                    href={
+                      launchpad
+                        ? explorerAddressUrl(recovery.mintAddress, launchpad.network)
+                        : `https://solscan.io/token/${recovery.mintAddress}`
+                    }
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-xs truncate text-primary hover:underline"
@@ -319,7 +435,11 @@ export default function CreateTokenPage() {
                     Transaction
                   </span>
                   <a
-                    href={`https://solscan.io/tx/${recovery.txSignature}`}
+                    href={
+                      launchpad
+                        ? explorerTxUrl(recovery.txSignature, launchpad.network)
+                        : `https://solscan.io/tx/${recovery.txSignature}`
+                    }
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-xs truncate text-primary hover:underline"
@@ -338,10 +458,10 @@ export default function CreateTokenPage() {
                 ) : (
                   <ArrowRight className="mr-2 h-4 w-4" />
                 )}
-                {isRetrying ? "Linking..." : "Retry linking"}
+                {isRetrying ? "Linking" : "Retry linking"}
               </Button>
               <p className="text-xs text-muted-foreground text-center">
-                Still failing? Your token is safe at the mint above — contact
+                Still failing? Your token is safe at the mint above. Contact
                 support with this address.
               </p>
             </CardContent>
@@ -507,8 +627,7 @@ export default function CreateTokenPage() {
               {missingIcon && (
                 <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-600">
                   This agent has no icon image. Add an icon to its marketplace
-                  listing before launching a token — pump.fun requires an image
-                  for the token metadata.
+                  listing before launching a token: a token needs a picture.
                 </div>
               )}
               <div>
@@ -549,24 +668,56 @@ export default function CreateTokenPage() {
                   maxLength={500}
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Initial buy (optional)
-                </label>
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  inputMode="decimal"
-                  value={initialBuySol}
-                  onChange={(e) => setInitialBuySol(e.target.value)}
-                  placeholder="0"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Seed the bonding curve with your own SOL (spent from your
-                  connected wallet). Leave blank to skip.
+              {isMeteora ? (
+                <p className="text-sm text-muted-foreground">
+                  The first buy is made on the token&apos;s page after launch.
                 </p>
-              </div>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Initial buy (optional)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    inputMode="decimal"
+                    value={initialBuySol}
+                    onChange={(e) => setInitialBuySol(e.target.value)}
+                    placeholder="0"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Seed the bonding curve with your own SOL (spent from your
+                    connected wallet). Leave blank to skip.
+                  </p>
+                </div>
+              )}
+              {presets.length > 0 && (
+                <div>
+                  <p className="block text-sm font-medium mb-1" id="curve-choice-label">
+                    Curve
+                  </p>
+                  <p className="text-xs text-muted-foreground mb-3">
+                    The curve sets how the price rises as people buy, what
+                    trading costs and what you earn. It cannot be changed
+                    after launch. {GRADUATION_EXPLANATION}
+                  </p>
+                  <div
+                    className="space-y-3"
+                    role="radiogroup"
+                    aria-labelledby="curve-choice-label"
+                  >
+                    {presets.map((preset) => (
+                      <CurvePresetCard
+                        key={preset.id}
+                        preset={preset}
+                        selected={preset.id === presetId}
+                        onSelect={() => setPresetId(preset.id)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -613,46 +764,62 @@ export default function CreateTokenPage() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <h4 className="text-sm font-medium">Supply Breakdown</h4>
-                <div className="rounded-lg border p-4 space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">
-                      Bonding Curve (80%)
-                    </span>
-                    <span className="font-mono">800,000,000</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">
-                      Reserved (20%)
-                    </span>
-                    <span className="font-mono">200,000,000</span>
+              {selectedPreset ? (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">
+                    Curve: {selectedPreset.name}
+                  </h4>
+                  <div className="rounded-lg border p-4 space-y-2 text-sm">
+                    <p>{selectedPreset.summary}</p>
+                    <ul className="space-y-1 text-muted-foreground">
+                      {presetFacts(selectedPreset).map((fact) => (
+                        <li key={fact}>{fact}</li>
+                      ))}
+                    </ul>
                   </div>
                 </div>
-              </div>
-
-              <div className="space-y-2">
-                <h4 className="text-sm font-medium">Anti-Scam Requirements</h4>
-                <div className="rounded-lg border p-4 space-y-2">
-                  {[
-                    `Creator reputation score >= ${
-                      selectedEligibility?.requirements?.minReputation ?? 50
-                    }`,
-                    `Agent uptime >= ${
-                      selectedEligibility?.requirements?.minDeploymentAgeDays ??
-                      7
-                    } days`,
-                    `Creator lockup period: ${
-                      selectedEligibility?.requirements?.creatorLockupDays ?? 30
-                    } days`,
-                  ].map((req) => (
-                    <div key={req} className="flex items-center gap-2 text-sm">
-                      <Check className="h-4 w-4 text-green-600 shrink-0" />
-                      {req}
+              ) : (
+                !isMeteora && (
+                  <div className="space-y-2">
+                    <h4 className="text-sm font-medium">Supply Breakdown</h4>
+                    <div className="rounded-lg border p-4 space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          Bonding Curve (80%)
+                        </span>
+                        <span className="font-mono">800,000,000</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">
+                          Reserved (20%)
+                        </span>
+                        <span className="font-mono">200,000,000</span>
+                      </div>
                     </div>
-                  ))}
+                  </div>
+                )
+              )}
+
+              {gate && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium">Anti-Scam Requirements</h4>
+                  <div className="rounded-lg border p-4 space-y-2">
+                    {[
+                      `Creator reputation score >= ${gate.minReputation}`,
+                      `Agent uptime >= ${gate.minDeploymentAgeDays} days`,
+                      // On Meteora what is locked is the curve's own, named above.
+                      ...(isMeteora
+                        ? []
+                        : [`Creator lockup period: ${gate.creatorLockupDays} days`]),
+                    ].map((req) => (
+                      <div key={req} className="flex items-center gap-2 text-sm">
+                        <Check className="h-4 w-4 text-green-600 shrink-0" />
+                        {req}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -666,7 +833,7 @@ export default function CreateTokenPage() {
                 Confirm & Create
               </CardTitle>
               <CardDescription>
-                Connect your wallet and create the token on {LAUNCHPAD_LABEL}
+                Connect your wallet and create the token on {launchpadName}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -701,18 +868,32 @@ export default function CreateTokenPage() {
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-muted-foreground">Platform</span>
-                      <span>{LAUNCHPAD_LABEL} bonding curve</span>
+                      <span>{launchpadName} bonding curve</span>
                     </div>
+                    {selectedPreset && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Curve</span>
+                        <span>{selectedPreset.name}</span>
+                      </div>
+                    )}
                   </div>
 
-                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm text-yellow-500">
-                    By creating this token, you agree to the{" "}
-                    {selectedEligibility?.requirements?.creatorLockupDays ?? 30}
-                    -day creator lockup period. Your tokens will be locked and
-                    cannot be sold for{" "}
-                    {selectedEligibility?.requirements?.creatorLockupDays ?? 30}{" "}
-                    days after creation.
-                  </div>
+                  {isMeteora ? (
+                    <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground">
+                      Your wallet signs one transaction. It creates the token
+                      and its curve, and your wallet pays Solana&apos;s fees
+                      for it. WheelsAI never holds your wallet&apos;s key.
+                    </div>
+                  ) : (
+                    gate && (
+                      <div className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-sm text-yellow-500">
+                        By creating this token, you agree to the{" "}
+                        {gate.creatorLockupDays}-day creator lockup period.
+                        Your tokens will be locked and cannot be sold for{" "}
+                        {gate.creatorLockupDays} days after creation.
+                      </div>
+                    )
+                  )}
 
                   <Button
                     className="w-full"
@@ -724,7 +905,7 @@ export default function CreateTokenPage() {
                     ) : (
                       <Coins className="mr-2 h-4 w-4" />
                     )}
-                    {isCreating ? "Creating Token..." : "Create Token"}
+                    {isCreating ? "Creating the token" : "Create token"}
                   </Button>
                 </>
               )}
@@ -733,6 +914,9 @@ export default function CreateTokenPage() {
         )}
 
         {/* Navigation */}
+        {step < 4 && nextBlockedReason() && (
+          <p className="text-right text-xs text-muted-foreground">{nextBlockedReason()}</p>
+        )}
         <div className="flex justify-between">
           <Button
             variant="outline"

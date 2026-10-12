@@ -591,7 +591,8 @@ function WalletsTab({
         </CardHeader>
         <CardContent>
           {profile?.walletAddress ? (
-            <div className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
+            <>
+              <div className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-green-400 to-purple-500">
                   <Wallet className="h-5 w-5 text-white" />
@@ -617,7 +618,28 @@ function WalletsTab({
                   </button>
                 )}
               </div>
-            </div>
+              </div>
+              {connectedAddress && connectedAddress !== profile.walletAddress && (
+                <div className="mt-3 rounded-lg border p-4">
+                  <p className="break-words text-sm text-muted-foreground">
+                    A different wallet is connected in this browser:{" "}
+                    <code>
+                      {connectedAddress.slice(0, 8)}...{connectedAddress.slice(-8)}
+                    </code>
+                    . Linking it replaces the wallet above for this account. Your wallet signs a
+                    short message to show it is yours. No transfer is made.
+                  </p>
+                  <Button className="mt-3" variant="outline" onClick={handleLink} disabled={isLinking}>
+                    {isLinking ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Wallet className="mr-2 h-4 w-4" />
+                    )}
+                    {isLinking ? "Linking..." : "Link this wallet instead"}
+                  </Button>
+                </div>
+              )}
+            </>
           ) : connectedAddress ? (
             <div className="rounded-lg border p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

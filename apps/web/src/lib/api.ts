@@ -6349,7 +6349,12 @@ export interface AgentToken {
   agentListingId: string;
   mintAddress: string;
   pumpfunUrl?: string | null;
+  /** "pumpfun", "bags" or "meteora". Absent from an API older than the field. */
+  launchpad?: string | null;
+  /** The pump.fun curve, or the pool's address for a token on Meteora. */
   bondingCurveAddress?: string | null;
+  /** The curve config WheelsAI built for a token on Meteora. */
+  meteoraConfigKey?: string | null;
   creatorAddress: string;
   name: string;
   symbol: string;
@@ -6405,6 +6410,111 @@ export interface TokenSnapshot {
   holders: number;
   timestamp: string;
 }
+
+// ---- Tokens on WheelsAI's own Meteora curve ----
+//
+// An amount travels twice: as a string of raw units (lamports, or a token's
+// smallest unit) and as a decimal string for people. Neither is a number
+// here, so nothing is rounded on the way to the page.
+
+export type SolanaNetworkName = "devnet" | "mainnet-beta";
+
+/** One curve a creator can choose in the wizard. */
+export interface CurvePreset {
+  id: string;
+  name: string;
+  summary: string;
+  startValueSol: string;
+  graduationValueSol: string;
+  raisedAtGraduationSol: string;
+  fee: { startPercent: string; endPercent: string; seconds: number };
+  creatorFeeSharePercent: number;
+  creatorLocked: null | {
+    percentOfSupply: string;
+    cliffSeconds: number;
+    periods: number;
+    totalSeconds: number;
+  };
+  liquidityLockedPercent: number;
+  /** For a drawing only. */
+  points: Array<{ soldPercent: number; priceSol: number }>;
+}
+
+export interface LaunchpadInfo {
+  launchpad: string;
+  network: SolanaNetworkName;
+  quote: string;
+  /** Empty for a launchpad that has no curve to choose. */
+  presets: CurvePreset[];
+  defaultPreset: string;
+  gate: {
+    minReputation: number;
+    minDeploymentAgeDays: number;
+    creatorLockupDays: number;
+  };
+}
+
+export type TokenCurveState = "trading" | "full" | "graduated";
+
+export interface TokenCurve {
+  launchpad: "meteora";
+  network: SolanaNetworkName;
+  mintAddress: string;
+  poolAddress: string;
+  configAddress: string;
+  state: TokenCurveState;
+  priceSol: string;
+  marketCapSol: string;
+  raisedLamports: string;
+  raisedSol: string;
+  graduationLamports: string;
+  graduationSol: string;
+  /** 0 to 1. */
+  progress: number;
+  feePercentNow: string;
+  creatorAddress: string;
+  creatorClaimableLamports: string;
+  creatorClaimableSol: string;
+  creatorFeeSharePercent: number;
+  creatorLocked: null | {
+    amount: string;
+    cliffSeconds: number;
+    periods: number;
+    totalSeconds: number;
+  };
+  graduatedPoolAddress: string | null;
+  readAt: string;
+}
+
+export type TokenTradeSide = "buy" | "sell";
+
+/** `amount` is SOL for a buy and tokens for a sell, as a decimal string. */
+export interface TokenTradeRequest {
+  side: TokenTradeSide;
+  amount: string;
+  slippageBps?: number;
+}
+
+export interface TokenTradeQuote {
+  side: TokenTradeSide;
+  amountIn: string;
+  amountInRaw: string;
+  amountOut: string;
+  amountOutRaw: string;
+  minimumOut: string;
+  minimumOutRaw: string;
+  feeSol: string;
+  priceSolAfter: string;
+}
+
+/** What every `prepare` of the curve answers: a transaction for the wallet to sign. */
+export interface PreparedCurveTransaction {
+  /** Base64 v0 transaction. */
+  transaction: string;
+  prepareToken: string;
+}
+
+export type GraduationStep = "locker" | "migrate";
 
 export const tokenApi = {
   // NOTE: the custodial POST /api/tokens/create client was removed — the
@@ -6485,12 +6595,16 @@ export const tokenApi = {
     telegram?: string;
     website?: string;
     initialBuySol?: number;
+    /** The curve chosen, for a launchpad that offers presets. */
+    preset?: string;
   }) =>
     api<{
       partialSignedTxBase64: string;
       mintAddress: string;
       creatorPubkey: string;
       prepareToken: string;
+      preset?: string;
+      poolAddress?: string;
     }>("/api/tokens/launch/prepare", {
       method: "POST",
       body: data,
@@ -6526,6 +6640,65 @@ export const tokenApi = {
       method: "POST",
       body: data,
     }),
+
+  // ============================================
+  // Tokens on WheelsAI's own Meteora curve
+  // ============================================
+  //
+  // Every action is two calls with the wallet in between, as the launch is:
+  // `prepare` answers a transaction the server built, the wallet signs it,
+  // `submit` checks it is the same transaction and sends it.
+
+  /** Which launchpad is on, its curves and the launch gate. Public. */
+  launchpadInfo: () => api<LaunchpadInfo>("/api/tokens/launchpad"),
+
+  /** The curve as the chain has it. 404 for a token that is not on Meteora. */
+  getCurve: (id: string) => api<TokenCurve>(`/api/tokens/${id}/curve`),
+
+  quoteTrade: (id: string, data: TokenTradeRequest) =>
+    api<TokenTradeQuote>(`/api/tokens/${id}/trade/quote`, {
+      method: "POST",
+      body: data,
+    }),
+
+  prepareTrade: (id: string, data: TokenTradeRequest & { wallet: string }) =>
+    api<PreparedCurveTransaction & { quote: TokenTradeQuote; expiresAt: string }>(
+      `/api/tokens/${id}/trade/prepare`,
+      { method: "POST", body: data }
+    ),
+
+  submitTrade: (id: string, data: { prepareToken: string; signedTransaction: string }) =>
+    api<{
+      signature: string;
+      trade: { side: TokenTradeSide; solLamports: string; tokenAmountRaw: string };
+    }>(`/api/tokens/${id}/trade/submit`, { method: "POST", body: data }),
+
+  /** Only the pool's creator, as the chain has it, is answered. */
+  prepareFeeClaim: (id: string, data: { wallet: string }) =>
+    api<PreparedCurveTransaction>(`/api/tokens/${id}/fees/prepare`, {
+      method: "POST",
+      body: data,
+    }),
+
+  submitFeeClaim: (id: string, data: { prepareToken: string; signedTransaction: string }) =>
+    api<{ signature: string; claimedLamports: string }>(`/api/tokens/${id}/fees/submit`, {
+      method: "POST",
+      body: data,
+    }),
+
+  /** One step of graduation. Any wallet may pay for it. */
+  prepareGraduation: (id: string, data: { wallet: string }) =>
+    api<PreparedCurveTransaction & { step: GraduationStep; stepsLeftAfterThis: number }>(
+      `/api/tokens/${id}/graduate/prepare`,
+      { method: "POST", body: data }
+    ),
+
+  /** `graduatedPoolAddress` is answered after the `migrate` step only. */
+  submitGraduation: (id: string, data: { prepareToken: string; signedTransaction: string }) =>
+    api<{ signature: string; step: GraduationStep; graduatedPoolAddress?: string }>(
+      `/api/tokens/${id}/graduate/submit`,
+      { method: "POST", body: data }
+    ),
 };
 
 // ============================================

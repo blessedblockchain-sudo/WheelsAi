@@ -95,7 +95,9 @@ export const CURVE_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS = 1;
  * give the field no named values and never read it, so these are the
  * numbers of the program's own source: 0 before the curve is full, 1 full,
  * 2 the locker made (or not needed, when the config locks nothing), 3 the
- * DAMM v2 pool created.
+ * DAMM v2 pool created. Devnet agreed with 1 and 2 in simulation on
+ * 2026-10-12 (scripts/meteora-bindings-probe.ts): a full pool reading 1
+ * took the locker and refused the move, one reading 2 the reverse.
  */
 export const MIGRATION_PROGRESS_CURVE_FULL = 1;
 export const MIGRATION_PROGRESS_LOCKER_MADE = 2;

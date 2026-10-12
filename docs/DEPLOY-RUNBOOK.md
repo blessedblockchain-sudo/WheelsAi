@@ -760,8 +760,10 @@ routes and what it leaves unbuilt are in `docs/METEORA-TOKENS.md`.
 
 **No key of the API's signs a transaction that moves money here.** It builds each transaction,
 the person's browser wallet signs it, and the API checks the signed transaction is the one it
-built before sending it. It does need `WALLET_MASTER_KEY` (section 3.3), which here signs only
-the short-lived tokens that tie a submit to its prepare.
+built before sending it. A wallet may add its own priority-fee instructions to a buy, a sell, a
+fee claim or the locker step, which it alone signs, and nothing else; the launch and the move to
+the Meteora pool must come back byte for byte. The API does need `WALLET_MASTER_KEY` (section
+3.3), which here signs only the short-lived tokens that tie a submit to its prepare.
 
 | Setting (API) | Value |
 | --- | --- |
@@ -773,11 +775,29 @@ the short-lived tokens that tie a submit to its prepare.
 | `SOLANA_RPC_URL`, `SOLANA_NETWORK` | The node and the network (`devnet` or `mainnet-beta`). A public endpoint limits requests and answers `429` under little load; use a provider's endpoint for anything people rely on. |
 | `TOKEN_LAUNCH_MIN_REPUTATION` | The launch gate: the reputation an agent needs. 50 by default. |
 | `TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS` | The launch gate: the days its oldest running deployment must have run. 7 by default. |
+| `NODE_ENV` | Outside `development` and `test`, a token's picture link that leads to this machine or a private network is refused (`400 picture_link_refused`), at the first address and at every redirect. Unset counts as `development`, which allows such links, so set it on any server people can reach. |
 
 Leave the two gate settings unset in production: the defaults are the rule the product states.
 They exist so that a devnet rehearsal can walk a new agent through a launch. The wizard, the
 eligibility route and the launch route all read them from one place, so whatever is set is both
-what people are shown and what is enforced.
+what people are shown and what is enforced. An API that starts with either number below its
+default says so once in its log: "The token launch gate is lower than the rule", with both
+numbers and the network. Nothing refuses lowered numbers on mainnet, so look for that line after
+a deploy.
+
+The RPC endpoint is asked for more than reads. A submit asks for the status of the signed
+transaction's signature with a search of the node's history (`getSignatureStatuses`), once
+before it sends and once more when the wait for the confirmation fails, and reads the confirmed
+transaction back for a trade's amounts. A provider's endpoint must serve those.
+
+A launch is built for the wallet linked to the account, which the API reads from the login
+session. Linking a wallet under Settings issues the session cookie again, so it takes effect at
+once in that browser. A session issued before the link keeps the old value until it is refreshed
+(`POST /api/auth/refresh`) or signed in again. A launch from an account with no linked wallet
+answers `400 wallet_required`.
+
+A token's picture and metadata are uploaded to `https://pump.fun/api/ipfs`, so the API must be
+able to reach that host and the picture's own link.
 
 On the web app, build with `NEXT_PUBLIC_ENABLE_TOKEN_UI=true` and `NEXT_PUBLIC_ENABLE_TRADING=true`
 to show the token pages and the trade panel, and with `NEXT_PUBLIC_SOLANA_CLUSTER` and
@@ -793,7 +813,20 @@ curl -s https://<api>/api/tokens/launchpad
 ```
 
 No migration is needed and no worker is added: a pool's state is read from the chain when a page
-asks for it. The pump.fun trade indexer leaves Meteora tokens alone.
+asks for it. Two older workers leave Meteora tokens alone: the pump.fun trade indexer takes only
+tokens whose launchpad is `pumpfun`, and the fee router (`FEE_ROUTER_INTERVAL_MS`) pays 1% of
+recorded volume on pump.fun tokens' trades only. A Meteora token shares its fees on chain,
+through its curve.
+
+A buy, a sell, a claim or a graduation step that was sent and not seen confirmed answers
+`502 transaction_not_confirmed` with the transaction's `signature`. The same submit may be posted
+again, which is what the page's "Check again" button does: a transaction that has landed is
+recorded and not sent a second time, for up to ten minutes after its prepare token ran out. One
+the chain refused answers `409 transaction_failed`. A launch that was sent and not seen confirmed
+is saved through `POST /api/tokens/launch/reconcile` while its prepare token lasts (5 minutes).
+
+On mainnet Meteora's own service graduates full pools. The token's row is brought in line the
+next time its curve is read (the token's page, a quote, any prepare), not on a schedule.
 
 Changing `LAUNCHPAD` later does not move tokens already launched. Each token keeps the launchpad
 it was launched on, and the curve routes answer `404 not_a_curve_token` for a token that is not

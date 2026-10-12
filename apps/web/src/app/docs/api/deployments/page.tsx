@@ -152,8 +152,10 @@ export default function DeploymentsApiPage() {
             deleted) or <code>fine_tuned_model_not_servable</code>; <code>400</code>{" "}
             <code>engine_not_supported_for_adapters</code>, <code>fine_tuned_model_base_mismatch</code> (a{" "}
             <code>modelId</code> that is not its base model) or <code>tier_too_small_for_serving</code> (with{" "}
-            <code>requiredVramGb</code>); <code>503</code> <code>adapter_download_not_configured</code> when serving
-            fine-tuned models is temporarily unavailable.
+            <code>requiredVramGb</code>); <code>503</code> <code>adapter_download_not_configured</code>,{" "}
+            <code>adapter_download_not_reachable</code>, <code>adapter_storage_not_reachable</code> or{" "}
+            <code>adapter_storage_not_configured</code> when deploying fine-tuned models is temporarily unavailable.
+            Nothing was reserved; try again later.
           </li>
           <li>
             <code>402</code> <code>insufficient_credits</code>: the one-hour reservation (GPU rate × 3,600 × replicas) is more

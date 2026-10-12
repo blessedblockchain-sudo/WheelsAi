@@ -76,6 +76,7 @@ export default function TrainingApiPage() {
             { name: "methods", type: "array", description: <><code>lora</code> and <code>qlora</code>.</> },
             { name: "hyperparameters", type: "object", description: <><code>bounds</code> (<code>min</code>, <code>max</code>, <code>integer</code> per key), <code>defaults</code> and <code>loraRanks</code>.</> },
             { name: "gatedModels.available", type: "boolean", description: "Whether base models that need a Hugging Face token can be trained." },
+            { name: "deploy", type: "object", description: <><code>available</code> says whether a <a href="#deploy">fine-tuned model can be deployed</a> now, and <code>blockers</code> lists each reason it cannot as <code>&#123; code, message &#125;</code>. It is about the platform only: your GPU tier and your credits are checked when you create the deployment.</> },
           ]}
         />
       </Endpoint>
@@ -354,7 +355,7 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
           <li><code>422</code> <code>dataset_row_count_unknown</code>.</li>
           <li><code>409</code> <code>dataset_changed_since_validation</code>.</li>
           <li><code>400</code> <code>unsupported_method</code>, <code>unsupported_gpu_count</code>, <code>hf_token_required</code>, <code>unknown_gpu_tier</code> or <code>tier_too_small</code> (with <code>requiredVramGb</code>).</li>
-          <li><code>501</code> or <code>503</code> with one of the <code>blockers</code> codes of the capabilities, when fine-tuning is temporarily unavailable (nothing is charged); or <code>503</code> <code>compute_capacity_unavailable</code> when new GPU jobs are paused (retry later).</li>
+          <li><code>501</code> or <code>503</code> with one of the <code>blockers</code> codes of the capabilities (among them <code>503</code> <code>dataset_storage_not_reachable</code> and <code>503</code> <code>training_callbacks_not_reachable</code>), when fine-tuning is temporarily unavailable (nothing is charged); or <code>503</code> <code>compute_capacity_unavailable</code> when new GPU jobs are paused (retry later).</li>
           <li><code>409</code> <code>training_quota_exceeded</code> (with <code>activeJobs</code> and <code>limit</code>).</li>
           <li><code>409</code> <code>training_free_failure_limit</code> (with <code>limit</code> and <code>retryAt</code>): see <a href="#billing">What a job costs</a>.</li>
           <li><code>402</code> <code>insufficient_credits</code> (with <code>requiredCents</code> and <code>balanceCents</code>): the hold is more than your balance.</li>
@@ -379,6 +380,13 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
           one, and <code>ledger</code>: the credit entries of this job, each with <code>type</code> (
           <code>training_reservation</code>, <code>training_reservation_release</code> or <code>training_usage</code>),{" "}
           <code>amountCents</code> and <code>balanceAfterCents</code>.
+        </p>
+        <p>
+          The single-job response also has <code>nosana</code>:{" "}
+          <code>&#123; deploymentId, jobAddress, jobUrl &#125;</code>, each <code>null</code> for a job that never
+          reached Nosana. <code>jobAddress</code> is the address of the run&apos;s job on the Nosana network, an
+          account on Solana that anyone can look up, and <code>jobUrl</code> is Nosana&apos;s own page for that job,
+          or <code>null</code> when there is no page to link to.
         </p>
       </Endpoint>
 
@@ -425,7 +433,11 @@ curl -X PUT "$UPLOAD_URL" -H "Content-Type: $UPLOAD_CONTENT_TYPE" --data-binary 
           <code>name</code>, <code>slug</code>, <code>baseModelId</code>, <code>baseModelHfId</code>, <code>method</code>,{" "}
           <code>loraR</code>, <code>adapterBytes</code>, <code>adapterSha256</code>, <code>metrics</code>,{" "}
           <code>trainingJob</code>, <code>deployments</code> (every deployment that names it) and{" "}
-          <code>activeDeployments</code>. <code>GET /api/training/fine-tuned-models/&#123;id&#125;</code> returns one.
+          <code>activeDeployments</code>. <code>GET /api/training/fine-tuned-models/&#123;id&#125;</code> returns one,
+          and there <code>trainingJob</code> (<code>id</code>, <code>name</code>, <code>status</code>, <code>completedAt</code>) also
+          carries the <code>nosana</code> record of the job that produced the model, as described under{" "}
+          <a href="#get-job">List and get jobs</a>. <code>trainingJob</code> is <code>null</code> when that job is no
+          longer on record.
         </p>
         <p>
           <code>DELETE /api/training/fine-tuned-models/&#123;id&#125;</code> removes the adapter from storage. It answers{" "}

@@ -15,13 +15,22 @@ import {
 import { prisma } from "../lib/prisma.js";
 import { loadIndexerHealthByPrisma } from "../services/loadIndexerHealthByPrisma.js";
 import {
-  ELIGIBILITY_DEFAULTS,
   CREATOR_LOCKUP_DAYS,
+  launchGateThresholds,
+  type LaunchGateThresholds,
 } from "../services/tokenEligibility.js";
 
 const logger = createLogger("routes:tokens");
 
-export const tokenRoutes: FastifyPluginAsync = async (app) => {
+export interface TokenRoutesOptions {
+  /**
+   * The launch gate's two numbers. Left out (as index.ts mounts it), they
+   * are the server's settings; a test passes its own.
+   */
+  launchGate?: LaunchGateThresholds;
+}
+
+export const tokenRoutes: FastifyPluginAsync<TokenRoutesOptions> = async (app, opts) => {
   // Public routes
 
   // GET / - List all tokens
@@ -221,9 +230,13 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         });
 
         const params = paramsSchema.parse(request.params);
+        // Read once per request, so the preview's sentences and the
+        // requirements below can never name different numbers.
+        const gate = opts.launchGate ?? launchGateThresholds();
         const result = await checkTokenEligibility(
           params.agentListingId,
-          request.auth!.orgId
+          request.auth!.orgId,
+          gate
         );
 
         // Surface the live thresholds so the UI renders the real
@@ -231,8 +244,8 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         return reply.send({
           ...result,
           requirements: {
-            minReputation: ELIGIBILITY_DEFAULTS.minReputation,
-            minDeploymentAgeDays: ELIGIBILITY_DEFAULTS.minDeploymentAgeDays,
+            minReputation: gate.minReputation,
+            minDeploymentAgeDays: gate.minDeploymentAgeDays,
             creatorLockupDays: CREATOR_LOCKUP_DAYS,
           },
         });

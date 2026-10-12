@@ -10,10 +10,11 @@ import { deriveCreatorKeypair } from "./creatorKeypairs.js";
 import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
 import { solToLamports, tokensToRaw } from "../lib/tokenUnits.js";
 import {
-  ELIGIBILITY_DEFAULTS,
   CREATOR_LOCKUP_DAYS,
   MAX_PAID_DISCOUNT_POINTS,
   PAID_REQUEST_DISCOUNT_POINTS,
+  launchGateThresholds,
+  type LaunchGateThresholds,
 } from "./tokenEligibility.js";
 
 const logger = createLogger("agent-token-service");
@@ -88,10 +89,9 @@ export interface HolderData {
 // Constants
 // ============================================
 
-// Single source of truth lives in services/tokenEligibility.ts; alias here
-// so the rest of this file reads unchanged and the values can't drift.
-const MIN_REPUTATION_SCORE = ELIGIBILITY_DEFAULTS.minReputation;
-const MIN_DEPLOYMENT_DAYS = ELIGIBILITY_DEFAULTS.minDeploymentAgeDays;
+// The launch gate's two numbers are not constants of this file: the preview
+// below reads them from launchGateThresholds() in services/tokenEligibility.ts,
+// the same place the launch route's check reads them, so the values can't drift.
 
 // ============================================
 // Eligibility Checks
@@ -99,12 +99,17 @@ const MIN_DEPLOYMENT_DAYS = ELIGIBILITY_DEFAULTS.minDeploymentAgeDays;
 
 /**
  * Check if an agent listing is eligible for token creation
+ *
+ * `gate` is the two numbers in force: the server's settings unless a test
+ * passes its own. The sentences returned name those numbers.
  */
 export async function checkTokenEligibility(
   agentListingId: string,
-  orgId: string
+  orgId: string,
+  gate: LaunchGateThresholds = launchGateThresholds()
 ): Promise<TokenEligibilityResult> {
   const reasons: string[] = [];
+  const { minReputation, minDeploymentAgeDays } = gate;
 
   try {
     // Check if listing exists and belongs to org
@@ -186,7 +191,7 @@ export async function checkTokenEligibility(
       settledPaidRequests * PAID_REQUEST_DISCOUNT_POINTS,
       MAX_PAID_DISCOUNT_POINTS
     );
-    const effectiveMinReputation = MIN_REPUTATION_SCORE - paidDiscount;
+    const effectiveMinReputation = minReputation - paidDiscount;
 
     if (!publisherProfile) {
       reasons.push("Publisher profile not found");
@@ -194,7 +199,7 @@ export async function checkTokenEligibility(
       reasons.push(
         `Publisher reputation score (${publisherProfile.reputationScore}) must be at least ${effectiveMinReputation}` +
           (paidDiscount > 0
-            ? ` (${MIN_REPUTATION_SCORE} minus ${paidDiscount} for on-chain-paid usage)`
+            ? ` (${minReputation} minus ${paidDiscount} for on-chain-paid usage)`
             : "")
       );
     }
@@ -209,9 +214,9 @@ export async function checkTokenEligibility(
       const deploymentAge = Date.now() - oldestDeployment.createdAt.getTime();
       const deploymentDays = deploymentAge / (1000 * 60 * 60 * 24);
 
-      if (deploymentDays < MIN_DEPLOYMENT_DAYS) {
+      if (deploymentDays < minDeploymentAgeDays) {
         reasons.push(
-          `Agent must be deployed for at least ${MIN_DEPLOYMENT_DAYS} days (current: ${Math.floor(deploymentDays)} days)`
+          `Agent must be deployed for at least ${minDeploymentAgeDays} days (current: ${Math.floor(deploymentDays)} days)`
         );
       }
     }

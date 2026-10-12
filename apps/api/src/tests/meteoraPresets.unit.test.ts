@@ -10,13 +10,16 @@ import {
   isPresetOffered,
   listPresets,
   presetGraduationLamports,
+  presetSupplySplit,
+  sampleCurvePoints,
 } from "../services/launchpad/meteoraPresets.js";
 
 // Drives services/launchpad/meteoraPresets.ts: the four curves a creator
 // can pick from. Pure: the SDK's builder and math run here, no network.
 //
-// The numbers below are the founder's. A change to a preset must fail here
-// first, so it is a decision somebody made and not a slip.
+// The numbers below are the lead's, fixed in the approved plan. A change to
+// a preset must fail here first, so it is a decision somebody made and not
+// a slip.
 
 const ALL = ["community", "committed", "long", "rehearsal"] as const;
 
@@ -28,7 +31,7 @@ const RAISED_AT_GRADUATION: Record<(typeof ALL)[number], { shown: string; threeD
   community: { shown: "64", threeDecimals: "64.000" },
   committed: { shown: "77.395", threeDecimals: "77.395" },
   long: { shown: "173.607", threeDecimals: "173.607" },
-  rehearsal: { shown: "1.391", threeDecimals: "1.391" },
+  rehearsal: { shown: "0.348", threeDecimals: "0.348" },
 };
 
 for (const id of ALL) {
@@ -102,31 +105,53 @@ test("the fee each preset starts at, and the steps it falls in, are what goes on
   }
 });
 
-test("the creator's locked tokens reach the chain whole, in the periods promised", () => {
-  const expected: Record<string, { raw: bigint; cliff: number; periods: number; every: number } | null> = {
+test("the creator's locked tokens reach the chain whole: nothing at the end of the wait, then equal parts", () => {
+  const expected: Record<string, { raw: bigint; cliff: number; periods: number; every: number; each: bigint } | null> = {
     community: null,
-    committed: { raw: 100_000_000n * 1_000_000n, cliff: 30 * 86_400, periods: 12, every: 30 * 86_400 },
-    long: { raw: 50_000_000n * 1_000_000n, cliff: 30 * 86_400, periods: 24, every: 30 * 86_400 },
-    rehearsal: { raw: 100_000_000n * 1_000_000n, cliff: 600, periods: 6, every: 600 },
+    committed: { raw: 100_000_000n * 1_000_000n, cliff: 30 * 86_400, periods: 10, every: 30 * 86_400, each: 10_000_000n * 1_000_000n },
+    long: { raw: 50_000_000n * 1_000_000n, cliff: 30 * 86_400, periods: 20, every: 30 * 86_400, each: 2_500_000n * 1_000_000n },
+    rehearsal: { raw: 100_000_000n * 1_000_000n, cliff: 600, periods: 5, every: 600, each: 20_000_000n * 1_000_000n },
   };
   for (const id of ALL) {
     const vesting = buildPresetCurve(id).lockedVesting;
     const perPeriod = BigInt(vesting.amountPerPeriod.toString());
     const periods = BigInt(vesting.numberOfPeriod.toString());
     const atCliff = BigInt(vesting.cliffUnlockAmount.toString());
+    // Nothing is released when the wait ends, for any preset: the builder
+    // would put what does not divide evenly there, and nothing is left over.
+    assert.equal(atCliff, 0n, `${id}: nothing at the end of the wait`);
     const want = expected[id];
     if (!want) {
-      assert.equal(perPeriod * periods + atCliff, 0n, `${id} locks nothing`);
+      assert.equal(perPeriod * periods, 0n, `${id} locks nothing`);
       continue;
     }
-    // The SDK releases whole tokens each period and puts the few left over
-    // by that rounding at the end of the cliff. The total is exact.
-    assert.equal(perPeriod * periods + atCliff, want.raw, `${id} total`);
-    assert.ok(atCliff < 1_000_000n * periods, `${id}: only rounding is released at the cliff`);
+    assert.equal(perPeriod, want.each, `${id}: each part`);
+    assert.equal(perPeriod * periods, want.raw, `${id} total`);
     assert.equal(Number(periods), want.periods);
     assert.equal(Number(vesting.cliffDurationFromMigrationTime.toString()), want.cliff);
     assert.equal(Number(vesting.frequency.toString()), want.every);
   }
+});
+
+test("the supply split of each preset comes from its curve and adds up to the supply", () => {
+  // Whole tokens the curve sells before it is full, as the builder's curve
+  // gives them (the SDK's getBaseTokenForSwap from the start price to the
+  // price at the threshold), and the rest of the 1,000,000,000.
+  const expected: Record<(typeof ALL)[number], bigint> = {
+    community: 799_999_986n,
+    committed: 706_513_339n,
+    long: 776_393_195n,
+    rehearsal: 621_884_518n,
+  };
+  for (const id of ALL) {
+    const split = presetSupplySplit(id);
+    assert.equal(split.curveSupply, expected[id], `${id}: sold on the curve`);
+    assert.equal(split.curveSupply + split.reservedSupply, 1_000_000_000n, `${id}: adds up`);
+    // The drawing's last point is the same share of the supply.
+    const lastPoint = describePreset(id).points[23]!.soldPercent;
+    assert.ok(Math.abs(Number(split.curveSupply) / 1e7 - lastPoint) < 0.001, `${id}: agrees with the drawing`);
+  }
+  assert.throws(() => presetSupplySplit("nope"), /unknown_preset/);
 });
 
 // ============================================
@@ -187,8 +212,8 @@ test("the other three: fee, share and what is locked", () => {
   assert.deepEqual(committed.creatorLocked, {
     percentOfSupply: "10",
     cliffSeconds: 2_592_000,
-    periods: 12,
-    totalSeconds: 31_104_000,
+    periods: 10,
+    totalSeconds: 25_920_000,
   });
 
   const long = describePreset("long");
@@ -199,20 +224,20 @@ test("the other three: fee, share and what is locked", () => {
   assert.deepEqual(long.creatorLocked, {
     percentOfSupply: "5",
     cliffSeconds: 2_592_000,
-    periods: 24,
-    totalSeconds: 62_208_000,
+    periods: 20,
+    totalSeconds: 51_840_000,
   });
 
   const rehearsal = describePreset("rehearsal");
   assert.equal(rehearsal.name, "Devnet rehearsal");
-  assert.equal(rehearsal.startValueSol, "1");
-  assert.equal(rehearsal.graduationValueSol, "5");
+  assert.equal(rehearsal.startValueSol, "0.25");
+  assert.equal(rehearsal.graduationValueSol, "1.25");
   assert.deepEqual(rehearsal.fee, { startPercent: "5", endPercent: "1", seconds: 120 });
   assert.deepEqual(rehearsal.creatorLocked, {
     percentOfSupply: "10",
     cliffSeconds: 600,
-    periods: 6,
-    totalSeconds: 3600,
+    periods: 5,
+    totalSeconds: 3000,
   });
 });
 
@@ -264,4 +289,31 @@ test("soldPercent is a share of the whole supply, not of what is for sale", () =
 
 test("a description is the same every time it is asked for", () => {
   assert.deepEqual(describePreset("long"), describePreset("long"));
+});
+
+// ============================================
+// The same drawing for a config read from the chain
+// ============================================
+
+test("sampleCurvePoints gives a preset's points, and the same for a curve padded with zeros", () => {
+  for (const id of ALL) {
+    const built = buildPresetCurve(id);
+    const points = describePreset(id).points;
+    assert.deepEqual(sampleCurvePoints(built), points, `${id}: from the builder`);
+
+    // The chain keeps a curve in 20 slots and leaves the unused ones at zero.
+    const zero = built.sqrtStartPrice.sub(built.sqrtStartPrice);
+    const padded = [...built.curve];
+    while (padded.length < 20) padded.push({ sqrtPrice: zero, liquidity: zero });
+    assert.ok(padded.length > built.curve.length, `${id}: the padding added something`);
+    assert.deepEqual(
+      sampleCurvePoints({
+        sqrtStartPrice: built.sqrtStartPrice,
+        migrationQuoteThreshold: built.migrationQuoteThreshold,
+        curve: padded,
+      }),
+      points,
+      `${id}: padded as the chain pads it`,
+    );
+  }
 });

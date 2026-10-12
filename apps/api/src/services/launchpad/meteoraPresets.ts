@@ -10,7 +10,7 @@
  * output is what the wizard's description and drawing are made from, so a
  * creator is never shown a curve other than the one that is created.
  *
- * The numbers are the founder's and are pinned by
+ * The numbers are the lead's, fixed in the approved plan, and are pinned by
  * tests/meteoraPresets.unit.test.ts: a change here shows up there.
  */
 
@@ -28,6 +28,7 @@ import {
   TokenDecimal,
   TokenType,
   buildCurveWithMarketCap,
+  getBaseTokenForSwap,
   getDeltaAmountBaseUnsigned,
   getMigrationThresholdPrice,
   getPriceFromSqrtPrice,
@@ -108,8 +109,8 @@ const PRESETS: readonly PresetDefinition[] = [
     creatorLocked: {
       tokens: 100_000_000,
       cliffSeconds: 30 * SECONDS_PER_DAY,
-      periods: 12,
-      totalSeconds: 360 * SECONDS_PER_DAY,
+      periods: 10,
+      totalSeconds: 300 * SECONDS_PER_DAY,
     },
     devnetOnly: false,
   },
@@ -125,8 +126,8 @@ const PRESETS: readonly PresetDefinition[] = [
     creatorLocked: {
       tokens: 50_000_000,
       cliffSeconds: 30 * SECONDS_PER_DAY,
-      periods: 24,
-      totalSeconds: 720 * SECONDS_PER_DAY,
+      periods: 20,
+      totalSeconds: 600 * SECONDS_PER_DAY,
     },
     devnetOnly: false,
   },
@@ -135,15 +136,15 @@ const PRESETS: readonly PresetDefinition[] = [
     name: "Devnet rehearsal",
     summary:
       "A very small curve that fills quickly, for practising a whole launch on devnet.",
-    startValueSol: 1,
-    graduationValueSol: 5,
+    startValueSol: 0.25,
+    graduationValueSol: 1.25,
     fee: { startBps: 500, endBps: 100, seconds: 120, steps: 12 },
     creatorFeeSharePercent: 50,
     creatorLocked: {
       tokens: 100_000_000,
       cliffSeconds: 600,
-      periods: 6,
-      totalSeconds: 3600,
+      periods: 5,
+      totalSeconds: 3000,
     },
     devnetOnly: true,
   },
@@ -253,6 +254,28 @@ export function presetGraduationLamports(id: string): bigint {
   return BigInt(buildPresetCurve(id).migrationQuoteThreshold.toString());
 }
 
+/**
+ * How the supply is split for this preset, in whole tokens: what the curve
+ * sells before it is full, and the rest of the supply (what goes into the
+ * graduated pool and what is locked for the creator). Read from the
+ * builder's output with the SDK's own sum over the curve, from the start
+ * price to the price at which the curve is full. A part of a token is not
+ * counted as sold, so the two always add up to the whole supply.
+ */
+export function presetSupplySplit(id: string): { curveSupply: bigint; reservedSupply: bigint } {
+  const curve = buildPresetCurve(id);
+  const fullAt = getMigrationThresholdPrice(
+    curve.migrationQuoteThreshold,
+    curve.sqrtStartPrice,
+    curve.curve,
+  );
+  const soldRaw = BigInt(
+    getBaseTokenForSwap(curve.sqrtStartPrice, fullAt, curve.curve).toString(),
+  );
+  const curveSupply = soldRaw / 10n ** BigInt(METEORA_TOKEN_DECIMALS);
+  return { curveSupply, reservedSupply: BigInt(METEORA_TOKEN_SUPPLY) - curveSupply };
+}
+
 // ============================================
 // A preset as the wizard shows it
 // ============================================
@@ -285,11 +308,21 @@ function decimalString(numerator: bigint, denominator: bigint, places: number): 
   return fraction.length > 0 ? `${whole}.${fraction}` : whole.toString();
 }
 
+/** A curve as `sampleCurvePoints` reads it: the builder's output or a config read from the chain. */
+export interface CurveToSample {
+  sqrtStartPrice: ConfigParameters["sqrtStartPrice"];
+  migrationQuoteThreshold: ConfigParameters["migrationQuoteThreshold"];
+  curve: Array<{
+    sqrtPrice: ConfigParameters["sqrtStartPrice"];
+    liquidity: ConfigParameters["sqrtStartPrice"];
+  }>;
+}
+
 /**
  * Raw token units sold when the price has climbed from the curve's start to
  * `sqrtPrice`, summed over the curve's segments with the SDK's own math.
  */
-function soldRawAt(curve: ConfigParameters, sqrtPrice: ConfigParameters["sqrtStartPrice"]): bigint {
+function soldRawAt(curve: CurveToSample, sqrtPrice: CurveToSample["sqrtStartPrice"]): bigint {
   let sold = 0n;
   let lower = curve.sqrtStartPrice;
   for (const segment of curve.curve) {
@@ -311,8 +344,18 @@ function soldRawAt(curve: ConfigParameters, sqrtPrice: ConfigParameters["sqrtSta
  * price (the unit the curve itself is stored in). At each point: the share
  * of the whole supply sold by then, and the price of one token in SOL.
  * These are the only floats in this file, and nothing is decided on them.
+ *
+ * Takes the builder's output or a config read from the chain. The chain
+ * stores a curve in a fixed number of slots and fills the unused ones with
+ * zeros: those are left out here, so both give the same points. It reads a
+ * token of our own making (6 decimals, the supply above, priced in SOL).
  */
-function samplePoints(curve: ConfigParameters): PresetDescription["points"] {
+export function sampleCurvePoints(config: CurveToSample): PresetDescription["points"] {
+  const curve: CurveToSample = {
+    sqrtStartPrice: config.sqrtStartPrice,
+    migrationQuoteThreshold: config.migrationQuoteThreshold,
+    curve: config.curve.filter((segment) => !segment.sqrtPrice.isZero() && !segment.liquidity.isZero()),
+  };
   const start = curve.sqrtStartPrice;
   const end = getMigrationThresholdPrice(curve.migrationQuoteThreshold, start, curve.curve);
   const span = end.sub(start);
@@ -360,7 +403,7 @@ export function describePreset(id: string): PresetDescription {
         }
       : null,
     liquidityLockedPercent: 100,
-    points: samplePoints(curve),
+    points: sampleCurvePoints(curve),
   };
 }
 

@@ -12,6 +12,8 @@
  * for the pool account, one for its config the first time only (a config
  * never changes, so it is kept for the life of the process), and two for
  * the chain's clock. The routes keep a reading for METEORA_CURVE_CACHE_MS.
+ * A submit asks once for the status of the transaction's signature before
+ * it sends, and once more only when the wait for the confirmation failed.
  * Nothing here lists accounts: the pool's address comes from the token's
  * row, or is derived from its config and mint.
  */
@@ -21,11 +23,10 @@ import BN from "bn.js";
 import {
   DAMM_V2_MIGRATION_FEE_ADDRESS,
   DynamicBondingCurveClient,
+  SwapMode,
   TradeDirection,
-  deriveBaseKeyForLocker,
   deriveDammV2PoolAddress,
   deriveDbcPoolAddress,
-  deriveEscrow,
   getCurrentPoint,
   getTotalFeeNumeratorFromIncludedFeeAmount,
   type PoolConfig,
@@ -37,14 +38,19 @@ import { prisma } from "@wheelsai/db";
 import { env } from "../config/env.js";
 import { getSolanaConnection } from "../lib/solana.js";
 import { getSolQuote } from "../services/buildSolPriceDeps.js";
+import { sampleCurvePoints } from "../services/launchpad/meteoraPresets.js";
 import {
   CURVE_QUOTE_MINT,
   type ConfirmedTransactionRead,
   type CurveChain,
+  type CurvePoint,
   type CurveSnapshot,
   type TokenBalanceRead,
 } from "../services/meteoraCurve.js";
+import { createLogger } from "../utils/logger.js";
 import type { CurveTokenRow, TokenCurveRouteDeps } from "./tokenCurve.js";
+
+const logger = createLogger("token-curve-chain");
 
 // The most a u64 holds: "claim everything that is waiting".
 const U64_MAX = new BN("18446744073709551615");
@@ -94,6 +100,32 @@ export function createSdkCurveChain(deps: {
     return config;
   }
 
+  // A config never changes, so neither does the line its curve draws.
+  const drawings = new Map<string, CurvePoint[]>();
+
+  function pointsOf(address: PublicKey, config: PoolConfig): CurvePoint[] {
+    const key = address.toBase58();
+    const kept = drawings.get(key);
+    if (kept) return kept;
+    let points: CurvePoint[];
+    try {
+      // The same sampling the presets' cards use, on the config the chain
+      // has: the unused slots of its curve are zeros, which it leaves out.
+      points = sampleCurvePoints({
+        sqrtStartPrice: config.sqrtStartPrice,
+        migrationQuoteThreshold: config.migrationQuoteThreshold,
+        curve: config.curve,
+      });
+    } catch (err) {
+      // The line is for a drawing. A config it cannot be sampled from still
+      // has a pool that can be read and traded, so the page gets no line.
+      logger.warn({ err, config: key }, "the curve of a config could not be sampled; its drawing is left empty");
+      points = [];
+    }
+    drawings.set(key, points);
+    return points;
+  }
+
   return {
     async readCurve(poolAddress) {
       const address = new PublicKey(poolAddress);
@@ -112,10 +144,18 @@ export function createSdkCurveChain(deps: {
         mintAddress: state.baseMint.toBase58(),
         creatorAddress: state.creator.toBase58(),
         quoteVault: state.quoteVault.toBase58(),
+        baseVault: state.baseVault.toBase58(),
         sqrtPrice: toBigInt(state.sqrtPrice),
         quoteReserve: toBigInt(state.quoteReserve),
         migrationQuoteThreshold: toBigInt(config.migrationQuoteThreshold),
         isMigrated: Number(state.isMigrated) !== 0,
+        // A u8 the SDK gives no names to: see MIGRATION_PROGRESS_* in
+        // services/meteoraCurve.ts for what its values mean.
+        migrationProgress: Number(state.migrationProgress),
+        finishCurveTimestamp: Number(state.finishCurveTimestamp.toString()),
+        // What client.state.getPoolFeeMetrics returns as
+        // total.totalTradingQuoteFee, from the pool account already read.
+        tradingFeesLamports: toBigInt(state.metrics.totalTradingQuoteFee),
         // What client.state.getPoolFeeBreakdown returns as
         // creator.unclaimedQuoteFee. That call reads the pool and its config
         // again; both are in hand, so the field is taken as it is.
@@ -131,6 +171,7 @@ export function createSdkCurveChain(deps: {
         graduatedPoolAddress: dammConfig
           ? deriveDammV2PoolAddress(dammConfig, state.baseMint, config.quoteMint).toBase58()
           : null,
+        curvePoints: pointsOf(state.config, config),
         handle: { pool, config } satisfies SdkHandle,
       };
     },
@@ -158,10 +199,15 @@ export function createSdkCurveChain(deps: {
 
     quoteSwap(snapshot, input) {
       const { pool, config } = handleOf(snapshot);
-      const result = client.pool.swapQuote({
+      // A buy is a partial fill: a buy that would run past the graduation
+      // threshold takes only what fills the curve, where an exact-in swap
+      // would keep the excess and give no tokens for it. A sell has no such
+      // end to run past, so it is an exact amount in.
+      const result = client.pool.swapQuote2({
         virtualPool: pool,
         config,
         swapBaseForQuote: input.sell,
+        swapMode: input.sell ? SwapMode.ExactIn : SwapMode.PartialFill,
         amountIn: new BN(input.amountIn.toString()),
         // The allowance is applied by the caller, in whole numbers.
         slippageBps: 0,
@@ -170,6 +216,9 @@ export function createSdkCurveChain(deps: {
         currentPoint: new BN(input.currentPoint.toString()),
       });
       return {
+        // What the swap takes of the amount in, fees included. The rest
+        // (the result's amountLeft) never leaves the wallet for good.
+        amountInUsed: toBigInt(result.includedFeeInputAmount),
         amountOut: toBigInt(result.outputAmount),
         // CollectFeeMode.QuoteToken on every curve launched here: each of
         // the three fees is taken in SOL, whichever way the trade goes.
@@ -179,9 +228,13 @@ export function createSdkCurveChain(deps: {
     },
 
     async buildSwap(input) {
-      const tx = await client.pool.swap({
+      // The same modes as the quote. For a buy the SDK wraps the whole
+      // amount in as SOL, the program takes what the curve has left to sell,
+      // and the SDK's closing instruction gives the rest back to the wallet.
+      const tx = await client.pool.swap2({
         owner: new PublicKey(input.wallet),
         pool: new PublicKey(input.poolAddress),
+        swapMode: input.sell ? SwapMode.ExactIn : SwapMode.PartialFill,
         amountIn: new BN(input.amountIn.toString()),
         minimumAmountOut: new BN(input.minimumOut.toString()),
         swapBaseForQuote: input.sell,
@@ -200,12 +253,6 @@ export function createSdkCurveChain(deps: {
         maxQuoteAmount: U64_MAX,
       });
       return tx.instructions;
-    },
-
-    async lockerExists(poolAddress) {
-      // The same address client.migration.createLocker creates the escrow at.
-      const escrow = deriveEscrow(deriveBaseKeyForLocker(new PublicKey(poolAddress)));
-      return (await connection.getAccountInfo(escrow, "confirmed")) !== null;
     },
 
     async buildLocker(input) {
@@ -284,6 +331,19 @@ export function createSdkCurveChain(deps: {
         if (attempt < READ_BACK_ATTEMPTS - 1) await wait(READ_BACK_WAIT_MS);
       }
       return null;
+    },
+
+    async signatureStatus(signature) {
+      // One request. The history is searched too, so a transaction of a few
+      // minutes ago that the node no longer keeps at hand is still found.
+      const { value } = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      const status = value[0];
+      if (!status) return "not_seen";
+      if (status.err) return "failed";
+      // "processed" may still be dropped by the cluster: not yet a success.
+      return status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized"
+        ? "succeeded"
+        : "not_seen";
     },
   };
 }
@@ -369,7 +429,7 @@ export function buildTokenCurveRouteDeps(): TokenCurveRouteDeps {
       });
       return { created: written.count > 0 };
     },
-    markGraduated: async ({ tokenId, graduatedPoolAddress, at }) => {
+    markGraduated: async ({ tokenId, graduatedPoolAddress, at, creatorLockupEnd }) => {
       // Only a BONDING row graduates, so a repeat changes nothing.
       await prisma.agentToken.updateMany({
         where: { id: tokenId, status: "BONDING" },
@@ -379,6 +439,9 @@ export function buildTokenCurveRouteDeps(): TokenCurveRouteDeps {
           // The column's name is older than this use: for a meteora token it
           // holds the address of the Meteora DAMM v2 pool, not a Raydium one.
           raydiumPoolId: graduatedPoolAddress,
+          // The creator's lock starts at graduation, so its date is first
+          // known now. A config that locks nothing leaves the column alone.
+          ...(creatorLockupEnd ? { creatorLockupEnd } : {}),
         },
       });
     },

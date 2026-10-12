@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Fastify from "fastify";
 import {
+  ComputeBudgetProgram,
   Keypair,
   PublicKey,
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js";
+import bs58 from "bs58";
 
 import {
   createTokenCurveRoutes,
@@ -15,11 +17,14 @@ import {
   type TokenCurveRouteDeps,
 } from "../routes/tokenCurve.js";
 import {
+  COMPUTE_BUDGET_PROGRAM_ID,
   CURVE_QUOTE_MINT,
+  LIGHTHOUSE_PROGRAM_ID,
   type ConfirmedTransactionRead,
   type CurveChain,
   type CurveSnapshot,
   type CurveTradeRow,
+  type SignatureStatus,
 } from "../services/meteoraCurve.js";
 
 function setupEnv() {
@@ -47,6 +52,7 @@ const POOL = Keypair.fromSeed(new Uint8Array(32).fill(24)).publicKey.toBase58();
 const CONFIG = Keypair.fromSeed(new Uint8Array(32).fill(25)).publicKey.toBase58();
 const VAULT = Keypair.fromSeed(new Uint8Array(32).fill(26)).publicKey.toBase58();
 const DAMM_POOL = Keypair.fromSeed(new Uint8Array(32).fill(27)).publicKey.toBase58();
+const BASE_VAULT = Keypair.fromSeed(new Uint8Array(32).fill(28)).publicKey.toBase58();
 const CREATOR = creator.publicKey.toBase58();
 const TRADER = trader.publicKey.toBase58();
 
@@ -55,6 +61,14 @@ const PUMP_ID = "1c1f7c0e-6f1d-4d7c-9d55-1c5f0a2b3c4d";
 const OTHER_CURVE_ID = "2d2f7c0e-6f1d-4d7c-9d55-1c5f0a2b3c4d";
 
 const THRESHOLD = 64_000_000_000n;
+/** When the fake's full curves were finished, unix seconds. */
+const FINISHED_AT = 1_791_813_000;
+
+// A drawing's points are passed through as they are; two are enough to see it.
+const POINTS = [
+  { soldPercent: 0, priceSol: 0.00000002 },
+  { soldPercent: 80, priceSol: 0.00000032 },
+];
 
 const NO_LOCK = { amountPerPeriod: 0n, cliffUnlockAmount: 0n, cliffSeconds: 0, periods: 0, frequencySeconds: 0 };
 const LOCKED = {
@@ -72,17 +86,32 @@ function snapshot(overrides: Partial<CurveSnapshot> = {}): CurveSnapshot {
     mintAddress: MINT,
     creatorAddress: CREATOR,
     quoteVault: VAULT,
+    baseVault: BASE_VAULT,
     sqrtPrice: 1n << 54n,
     quoteReserve: 1_250_000_000n,
     migrationQuoteThreshold: THRESHOLD,
     isMigrated: false,
+    migrationProgress: 0,
+    finishCurveTimestamp: 0,
+    tradingFeesLamports: 15_000_123n,
     creatorClaimableLamports: 2_329_499n,
     creatorFeeSharePercent: 70,
     lockedVesting: NO_LOCK,
     graduatedPoolAddress: DAMM_POOL,
+    curvePoints: POINTS,
     handle: null,
     ...overrides,
   };
+}
+
+/** A pool whose curve is full, as the chain has it: 1 full, 2 the locker made or not needed. */
+function fullPool(overrides: Partial<CurveSnapshot> = {}): CurveSnapshot {
+  return snapshot({ quoteReserve: THRESHOLD, migrationProgress: 2, finishCurveTimestamp: FINISHED_AT, ...overrides });
+}
+
+/** A pool that has moved into its DAMM v2 pool. */
+function graduatedPool(overrides: Partial<CurveSnapshot> = {}): CurveSnapshot {
+  return fullPool({ isMigrated: true, migrationProgress: 3, ...overrides });
 }
 
 function memo(signers: PublicKey[], text: string): TransactionInstruction {
@@ -93,19 +122,27 @@ function memo(signers: PublicKey[], text: string): TransactionInstruction {
   });
 }
 
-/** The fake's signature for a transaction: the same bytes give the same one. */
+/**
+ * A transaction's signature as the chain has it: its first signature,
+ * base58. (One byte says how many signatures follow; each is 64 bytes.)
+ */
 function signatureOf(raw: Uint8Array): string {
-  return `sig_${Buffer.from(raw.slice(1, 9)).toString("hex")}`;
+  return bs58.encode(raw.slice(1, 65));
 }
 
 interface World {
   /** What the pool reads as. null: no pool. A function may throw. */
   pool: CurveSnapshot | null | (() => CurveSnapshot);
-  lockerExists: boolean;
   /** What the confirmed transaction reads back as. */
   confirmed: ConfirmedTransactionRead | null | (() => ConfirmedTransactionRead);
   sendError: Error | null;
   confirmError: Error | null;
+  /** What the chain knows of each signature. One it has not heard of is "not_seen". */
+  statuses: Record<string, SignatureStatus>;
+  /** What a transaction becomes on the fake chain once it is sent. */
+  statusAfterSend: SignatureStatus;
+  /** When set, asking for a status fails. */
+  statusError: Error | null;
   auth: { userId: string | null; orgId: string } | null;
   nowMs: number;
   tokens: Record<string, CurveTokenRow>;
@@ -119,9 +156,10 @@ interface World {
     sent: Uint8Array[];
     confirmedWith: Array<{ signature: string; blockhash: string; lastValidBlockHeight: number }>;
     readBack: string[];
+    statusAsked: string[];
   };
   trades: CurveTradeRow[];
-  graduations: Array<{ tokenId: string; graduatedPoolAddress: string; at: Date }>;
+  graduations: Array<{ tokenId: string; graduatedPoolAddress: string; at: Date; creatorLockupEnd: Date | null }>;
   recordTradeError: Error | null;
   markGraduatedError: Error | null;
   positionKeypairs: Keypair[];
@@ -130,10 +168,12 @@ interface World {
 function makeWorld(overrides: Partial<World> = {}): World {
   return {
     pool: snapshot(),
-    lockerExists: false,
     confirmed: null,
     sendError: null,
     confirmError: null,
+    statuses: {},
+    statusAfterSend: "succeeded",
+    statusError: null,
     auth: { userId: "user_1", orgId: "org_1" },
     nowMs: Date.parse("2026-10-12T14:00:00.000Z"),
     tokens: {
@@ -157,6 +197,7 @@ function makeWorld(overrides: Partial<World> = {}): World {
       sent: [],
       confirmedWith: [],
       readBack: [],
+      statusAsked: [],
     },
     trades: [],
     graduations: [],
@@ -177,17 +218,19 @@ function fakeChain(world: World): CurveChain {
     tradeFeeNumerator: () => 12_000_000n,
     quoteSwap: (snap, input) => {
       world.calls.quotes.push(input);
+      if (input.sell && input.amountIn === 777_000_000n) throw new Error("Amount is too small");
       if (input.sell) {
         const amountOut = input.amountIn / 50n;
-        return { amountOut, feeLamports: amountOut / 100n, nextSqrtPrice: 1n << 54n };
+        return { amountInUsed: input.amountIn, amountOut, feeLamports: amountOut / 100n, nextSqrtPrice: 1n << 54n };
       }
-      // As the SDK does: a buy of more than the curve has left is refused.
-      if (input.amountIn > snap.migrationQuoteThreshold - snap.quoteReserve) {
-        throw new Error("Insufficient Liquidity");
-      }
+      // As the SDK's partial fill does: a buy takes no more than the curve
+      // has left to raise, and gives tokens for what it takes.
+      const left = snap.migrationQuoteThreshold - snap.quoteReserve;
+      const used = input.amountIn > left ? left : input.amountIn;
       return {
-        amountOut: input.amountIn * 46_500n + 120_000n,
-        feeLamports: (input.amountIn * 12n) / 1000n,
+        amountInUsed: used,
+        amountOut: used * 46_500n + 120_000n,
+        feeLamports: (used * 12n) / 1000n,
         nextSqrtPrice: 1n << 64n,
       };
     },
@@ -199,7 +242,6 @@ function fakeChain(world: World): CurveChain {
       world.calls.claims.push(input);
       return [memo([new PublicKey(input.creator)], "claim")];
     },
-    lockerExists: async () => world.lockerExists,
     buildLocker: async (input) => {
       world.calls.lockers.push(input);
       return [memo([new PublicKey(input.payer)], "locker")];
@@ -218,6 +260,7 @@ function fakeChain(world: World): CurveChain {
     send: async (raw) => {
       if (world.sendError) throw world.sendError;
       world.calls.sent.push(raw);
+      world.statuses[signatureOf(raw)] = world.statusAfterSend;
       return signatureOf(raw);
     },
     confirm: async (signature, sentWith) => {
@@ -227,6 +270,11 @@ function fakeChain(world: World): CurveChain {
     readTransaction: async (signature) => {
       world.calls.readBack.push(signature);
       return typeof world.confirmed === "function" ? world.confirmed() : world.confirmed;
+    },
+    signatureStatus: async (signature) => {
+      world.calls.statusAsked.push(signature);
+      if (world.statusError) throw world.statusError;
+      return world.statuses[signature] ?? "not_seen";
     },
   };
 }
@@ -250,6 +298,10 @@ async function makeApp(world: World, depOverrides: Partial<TokenCurveRouteDeps> 
     },
     markGraduated: async (input) => {
       if (world.markGraduatedError) throw world.markGraduatedError;
+      // As the table does it: only a BONDING row graduates.
+      const row = world.tokens[input.tokenId];
+      if (!row || row.status !== "BONDING") return;
+      world.tokens[input.tokenId] = { ...row, status: "GRADUATED" };
       world.graduations.push(input);
     },
     solUsd: async () => 200,
@@ -274,6 +326,40 @@ async function post(app: App, path: string, payload: unknown) {
 async function get(app: App, path: string) {
   const response = await app.inject({ method: "GET", url: `/api/tokens/${path}` });
   return { status: response.statusCode, body: response.json() as Record<string, any> };
+}
+
+/** The instructions of a prepared transaction, as a wallet that changes it would see them. */
+function instructionsOf(transactionBase64: string): TransactionInstruction[] {
+  const tx = VersionedTransaction.deserialize(Buffer.from(transactionBase64, "base64"));
+  return TransactionMessage.decompile(tx.message).instructions;
+}
+
+/** A wallet that makes its own transaction of these instructions and signs it. */
+function signOwn(signer: Keypair, instructions: TransactionInstruction[], blockhash = BLOCKHASH): string {
+  const message = new TransactionMessage({
+    payerKey: signer.publicKey,
+    recentBlockhash: blockhash,
+    instructions,
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(message);
+  tx.sign([signer]);
+  return Buffer.from(tx.serialize()).toString("base64");
+}
+
+/** A confirmed trade as the chain reports it: the pool's two vaults before and after. */
+function vaultsMoved(sol: [string, string], tokens: [string, string]): ConfirmedTransactionRead {
+  return {
+    blockTime: 1_791_813_700,
+    accountKeys: [TRADER, "TraderTokenAccount", VAULT, BASE_VAULT],
+    preTokenBalances: [
+      { accountIndex: 2, mint: CURVE_QUOTE_MINT, owner: "PoolAuthority", amountRaw: sol[0] },
+      { accountIndex: 3, mint: MINT, owner: "PoolAuthority", amountRaw: tokens[0] },
+    ],
+    postTokenBalances: [
+      { accountIndex: 2, mint: CURVE_QUOTE_MINT, owner: "PoolAuthority", amountRaw: sol[1] },
+      { accountIndex: 3, mint: MINT, owner: "PoolAuthority", amountRaw: tokens[1] },
+    ],
+  };
 }
 
 /** What the browser wallet does: sign the transaction it was handed, change nothing. */
@@ -322,12 +408,16 @@ test("curve: a trading pool is answered in full, without a login", async () => {
     creatorFeeSharePercent: 70,
     creatorLocked: null,
     graduatedPoolAddress: null,
+    // The pool's lifetime trading fees, and the line of its own config.
+    tradingFeesLamports: "15000123",
+    tradingFeesSol: "0.015000123",
+    curvePoints: POINTS,
     readAt: "2026-10-12T14:00:00.000Z",
   });
 });
 
 test("curve: full when the threshold is reached, graduated when the pool has moved", async () => {
-  const world = makeWorld({ pool: snapshot({ quoteReserve: THRESHOLD, lockedVesting: LOCKED }) });
+  const world = makeWorld({ pool: fullPool({ migrationProgress: 1, lockedVesting: LOCKED }) });
   const app = await makeApp(world);
   const full = await get(app, `${TOKEN_ID}/curve`);
   assert.equal(full.body.state, "full");
@@ -340,11 +430,59 @@ test("curve: full when the threshold is reached, graduated when the pool has mov
     totalSeconds: 31_104_000,
   });
 
-  world.pool = snapshot({ quoteReserve: THRESHOLD, isMigrated: true });
+  world.pool = graduatedPool();
   world.nowMs += 5000;
   const graduated = await get(app, `${TOKEN_ID}/curve`);
   assert.equal(graduated.body.state, "graduated");
   assert.equal(graduated.body.graduatedPoolAddress, DAMM_POOL);
+});
+
+test("curve: a pool the chain says has graduated is graduated whatever our row says, and reading it repairs the row", async () => {
+  // Meteora's own service moved the pool; our row still says BONDING.
+  const world = makeWorld({ pool: graduatedPool({ lockedVesting: LOCKED }) });
+  const app = await makeApp(world);
+  const first = await get(app, `${TOKEN_ID}/curve`);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.state, "graduated");
+  assert.equal(first.body.graduatedPoolAddress, DAMM_POOL);
+  // Status, when, the DAMM v2 pool, and the creator's lock date: the moment
+  // the curve was finished plus the config's wait.
+  assert.deepEqual(world.graduations, [
+    {
+      tokenId: TOKEN_ID,
+      graduatedPoolAddress: DAMM_POOL,
+      at: new Date(world.nowMs),
+      creatorLockupEnd: new Date((FINISHED_AT + LOCKED.cliffSeconds) * 1000),
+    },
+  ]);
+  assert.equal(world.tokens[TOKEN_ID]!.status, "GRADUATED");
+
+  // The row is in line now: reading again writes nothing.
+  world.nowMs += 6000;
+  await get(app, `${TOKEN_ID}/curve`);
+  await post(app, `${TOKEN_ID}/trade/quote`, BUY);
+  assert.equal(world.graduations.length, 1);
+
+  // Its progress alone says so too, before the other flag is read.
+  const byProgress = makeWorld({ pool: fullPool({ migrationProgress: 3 }) });
+  const answer = await get(await makeApp(byProgress), `${TOKEN_ID}/curve`);
+  assert.equal(answer.body.state, "graduated");
+  assert.equal(byProgress.graduations.length, 1);
+  // Nothing is locked for the creator: no lock date is written.
+  assert.equal(byProgress.graduations[0]!.creatorLockupEnd, null);
+});
+
+test("curve: a row that cannot be repaired does not spoil the answer, and is tried again", async () => {
+  const world = makeWorld({ pool: graduatedPool(), markGraduatedError: new Error("database is down") });
+  const app = await makeApp(world);
+  const answer = await get(app, `${TOKEN_ID}/curve`);
+  assert.equal(answer.status, 200);
+  assert.equal(answer.body.state, "graduated");
+  assert.equal(world.graduations.length, 0);
+
+  world.markGraduatedError = null;
+  await get(app, `${TOKEN_ID}/curve`);
+  assert.equal(world.graduations.length, 1);
 });
 
 test("curve: the pool is read once for readers that arrive within the cache time", async () => {
@@ -423,6 +561,8 @@ test("quote: a buy, without a login", async () => {
     side: "buy",
     amountIn: "0.1",
     amountInRaw: "100000000",
+    amountInUsed: "0.1",
+    amountInUsedRaw: "100000000",
     amountOut: "4650000.12",
     amountOutRaw: "4650000120000",
     minimumOut: "4603500.1188",
@@ -442,6 +582,8 @@ test("quote: a sell is in tokens, and the allowance defaults to 100 basis points
     side: "sell",
     amountIn: "2500",
     amountInRaw: "2500000000",
+    amountInUsed: "2500",
+    amountInUsedRaw: "2500000000",
     amountOut: "0.05",
     amountOutRaw: "50000000",
     minimumOut: "0.0495",
@@ -471,15 +613,53 @@ test("quote: 400 invalid_amount for anything that is not a positive amount the c
   assert.equal(dust.status, 400);
   assert.equal(dust.body.error, "invalid_amount");
 
-  // More SOL than the curve has left to raise: the SDK's refusal, with what is left.
-  const tooMuch = await post(app, `${TOKEN_ID}/trade/quote`, { side: "buy", amount: "100" });
-  assert.equal(tooMuch.status, 400);
-  assert.deepEqual(tooMuch.body, {
-    error: "invalid_amount",
-    message: "Insufficient Liquidity",
-    remainingLamports: "62750000000",
-    remainingSol: "62.75",
+  // What the SDK itself refuses comes back with its own words.
+  const refused = await post(app, `${TOKEN_ID}/trade/quote`, { side: "sell", amount: "777" });
+  assert.equal(refused.status, 400);
+  assert.deepEqual(refused.body, { error: "invalid_amount", message: "Amount is too small" });
+});
+
+test("quote: a buy of more SOL than the curve has left is a partial fill, and says how much it takes", async () => {
+  const world = makeWorld();
+  const app = await makeApp(world);
+  // 62.75 SOL are left to raise; 100 are offered.
+  const { status, body } = await post(app, `${TOKEN_ID}/trade/quote`, { side: "buy", amount: "100" });
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.equal(body.amountIn, "100");
+  assert.equal(body.amountInRaw, "100000000000");
+  assert.equal(body.amountInUsed, "62.75");
+  assert.equal(body.amountInUsedRaw, "62750000000");
+  // What comes out, and the least accepted, are for the 62.75 that are taken.
+  assert.equal(body.amountOutRaw, (62_750_000_000n * 46_500n + 120_000n).toString());
+  assert.equal(body.minimumOutRaw, (((62_750_000_000n * 46_500n + 120_000n) * 9_900n) / 10_000n).toString());
+  assert.equal(body.feeSol, "0.753");
+});
+
+test("buy that fills the curve: built with the whole amount typed, recorded with what the trade takes", async () => {
+  const world = makeWorld();
+  const app = await makeApp(world);
+  const prepared = await post(app, `${TOKEN_ID}/trade/prepare`, { side: "buy", amount: "100", wallet: TRADER });
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
+  assert.equal(prepared.body.quote.amountInUsedRaw, "62750000000");
+  // The chain takes of the 100 only what the curve has left to sell.
+  const minimumOut = ((62_750_000_000n * 46_500n + 120_000n) * 9_900n) / 10_000n;
+  assert.deepEqual(world.calls.swaps, [
+    { poolAddress: POOL, wallet: TRADER, sell: false, amountIn: 100_000_000_000n, minimumOut },
+  ]);
+
+  // The confirmed transaction cannot be read back: the quote's numbers are
+  // written, and for the SOL that is what the trade takes, not what was typed.
+  const sent = await post(app, `${TOKEN_ID}/trade/submit`, {
+    prepareToken: prepared.body.prepareToken,
+    signedTransaction: signAs(prepared.body.transaction, trader),
   });
+  assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  assert.deepEqual(sent.body.trade, {
+    side: "buy",
+    solLamports: "62750000000",
+    tokenAmountRaw: (62_750_000_000n * 46_500n + 120_000n).toString(),
+  });
+  assert.equal(world.trades[0]!.solLamports, 62_750_000_000n);
 });
 
 test("quote and prepare: a sell of more tokens than exist is refused before anything is quoted or built", async () => {
@@ -586,6 +766,22 @@ test("trade prepare: an unsigned transaction for the wallet, the quote, a token,
   assert.equal(tx.message.recentBlockhash, BLOCKHASH);
   assert.ok(tx.signatures.every((signature) => signature.every((byte) => byte === 0)), "nothing is signed");
 
+  // It begins with its own compute budget, each instruction once, so the
+  // wallet has no reason to add one: a limit of 200,000 units, a price of 1.
+  const instructions = TransactionMessage.decompile(tx.message).instructions;
+  assert.deepEqual(
+    instructions.map((instruction) => instruction.programId.toBase58()),
+    [COMPUTE_BUDGET_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID, MEMO.toBase58()],
+  );
+  assert.deepEqual(
+    Buffer.from(instructions[0]!.data),
+    Buffer.from(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }).data),
+  );
+  assert.deepEqual(
+    Buffer.from(instructions[1]!.data),
+    Buffer.from(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }).data),
+  );
+
   // The swap is built with the quote's amount in and the least accepted out.
   assert.deepEqual(world.calls.swaps, [
     { poolAddress: POOL, wallet: TRADER, sell: false, amountIn: 100_000_000n, minimumOut: 4_603_500_118_800n },
@@ -609,14 +805,10 @@ test("trade prepare: refusals", async () => {
   assert.equal(world.calls.swaps.length, 0);
 });
 
-test("buy: sent as signed, confirmed, one row with the chain's token amount, and the pool is read again", async () => {
+test("buy: sent as signed, confirmed, one row with the chain's two amounts, and the pool is read again", async () => {
   const world = makeWorld({
-    confirmed: {
-      blockTime: 1_791_813_700,
-      accountKeys: [TRADER, "TraderTokenAccount", VAULT],
-      preTokenBalances: [],
-      postTokenBalances: [{ accountIndex: 1, mint: MINT, owner: TRADER, amountRaw: "4649999000000" }],
-    },
+    // The SOL vault gained 0.0999 SOL and the token vault lost 4,649,999 tokens.
+    confirmed: vaultsMoved(["1250000000", "1349900000"], ["900000000000000", "895350001000000"]),
   });
   const app = await makeApp(world);
   await get(app, `${TOKEN_ID}/curve`);
@@ -632,10 +824,12 @@ test("buy: sent as signed, confirmed, one row with the chain's token amount, and
   const signature = signatureOf(Buffer.from(signedTransaction, "base64"));
   assert.deepEqual(body, {
     signature,
-    // SOL is the amount in; tokens are what the wallet's balance grew by.
-    trade: { side: "buy", solLamports: "100000000", tokenAmountRaw: "4649999000000" },
+    // Both from the pool's vaults: the SOL one gained, the tokens the other lost.
+    trade: { side: "buy", solLamports: "99900000", tokenAmountRaw: "4649999000000" },
     recorded: true,
   });
+  // The chain was asked once about the signature, before anything was sent.
+  assert.deepEqual(world.calls.statusAsked, [signature]);
 
   assert.equal(world.calls.sent.length, 1);
   assert.deepEqual(Buffer.from(world.calls.sent[0]!), Buffer.from(signedTransaction, "base64"));
@@ -648,11 +842,11 @@ test("buy: sent as signed, confirmed, one row with the chain's token amount, and
   assert.equal(row.txSignature, signature);
   assert.equal(row.traderAddress, TRADER);
   assert.equal(row.side, "buy");
-  assert.equal(row.solLamports, 100_000_000n);
+  assert.equal(row.solLamports, 99_900_000n);
   assert.equal(row.tokenAmountRaw, 4_649_999_000_000n);
-  assert.equal(row.solAmount, 0.1);
+  assert.equal(row.solAmount, 0.0999);
   assert.equal(row.tokenAmount, 4_649_999);
-  assert.ok(Math.abs(row.priceUsd - (0.1 / 4_649_999) * 200) < 1e-15);
+  assert.ok(Math.abs(row.priceUsd - (0.0999 / 4_649_999) * 200) < 1e-15);
   assert.equal(row.timestamp.toISOString(), new Date(1_791_813_700 * 1000).toISOString());
 
   // The remembered reading was dropped by the submit.
@@ -660,20 +854,9 @@ test("buy: sent as signed, confirmed, one row with the chain's token amount, and
   assert.equal(world.calls.readCurve, 2);
 });
 
-test("sell: tokens are the amount in, SOL is what left the pool's vault", async () => {
+test("sell: tokens are what the pool's token vault gained, SOL is what left its SOL vault", async () => {
   const world = makeWorld({
-    confirmed: {
-      blockTime: 1_791_813_700,
-      accountKeys: [TRADER, "TraderTokenAccount", VAULT],
-      preTokenBalances: [
-        { accountIndex: 1, mint: MINT, owner: TRADER, amountRaw: "9000000000" },
-        { accountIndex: 2, mint: CURVE_QUOTE_MINT, owner: "PoolAuthority", amountRaw: "1250000000" },
-      ],
-      postTokenBalances: [
-        { accountIndex: 1, mint: MINT, owner: TRADER, amountRaw: "6500000000" },
-        { accountIndex: 2, mint: CURVE_QUOTE_MINT, owner: "PoolAuthority", amountRaw: "1200300000" },
-      ],
-    },
+    confirmed: vaultsMoved(["1250000000", "1200300000"], ["900000000000000", "900002500000000"]),
   });
   const app = await makeApp(world);
   const prepared = await post(app, `${TOKEN_ID}/trade/prepare`, { ...SELL, wallet: TRADER });
@@ -730,8 +913,10 @@ test("trade: the same signature a second time writes no second row", async () =>
   const second = await post(app, `${TOKEN_ID}/trade/submit`, submission);
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
-  assert.equal(second.body.signature, first.body.signature);
+  assert.deepEqual(second.body, first.body);
   assert.equal(world.trades.length, 1);
+  // The second time the chain already has it: it is not sent again.
+  assert.equal(world.calls.sent.length, 1);
 });
 
 test("trade: a row that cannot be written does not turn a confirmed trade into an error", async () => {
@@ -836,38 +1021,30 @@ test("submit: a tampered transaction is never sent", async () => {
   const app = await makeApp(world);
   const prepared = await prepareBuy(app);
 
-  // The same wallet signs a different message: a bigger buy, another
-  // blockhash, an added instruction. Each is a valid, fully signed
-  // transaction, and none is the one that was built.
+  // The same wallet signs a transaction of its own making. Each is valid
+  // and fully signed, and none is the one that was built.
   const built = VersionedTransaction.deserialize(Buffer.from(prepared.transaction, "base64"));
-  const variants = [
-    { blockhash: BLOCKHASH, instructions: [memo([trader.publicKey], "swap buy 9900000000 0")] },
-    {
-      blockhash: Keypair.generate().publicKey.toBase58(),
-      instructions: [memo([trader.publicKey], "swap buy 100000000 4603500118800")],
-    },
-    {
-      blockhash: BLOCKHASH,
-      instructions: [
-        memo([trader.publicKey], "swap buy 100000000 4603500118800"),
-        memo([trader.publicKey], "and something else"),
-      ],
-    },
-  ];
-  for (const variant of variants) {
-    const message = new TransactionMessage({
-      payerKey: trader.publicKey,
-      recentBlockhash: variant.blockhash,
-      instructions: variant.instructions,
-    }).compileToV0Message();
-    const tampered = new VersionedTransaction(message);
-    tampered.sign([trader]);
+  const ours = instructionsOf(prepared.transaction);
+  const [limit, price, swap] = ours as [TransactionInstruction, TransactionInstruction, TransactionInstruction];
+  const stranger = Keypair.fromSeed(new Uint8Array(32).fill(41));
+  const variants: Record<string, string> = {
+    "a bigger buy": signOwn(trader, [limit, price, memo([trader.publicKey], "swap buy 9900000000 0")]),
+    "an added instruction": signOwn(trader, [...ours, memo([trader.publicKey], "and something else")]),
+    "an unknown program in front": signOwn(trader, [
+      new TransactionInstruction({ programId: stranger.publicKey, keys: [], data: Buffer.alloc(0) }),
+      ...ours,
+    ]),
+    "the work taken out": signOwn(trader, [limit, price]),
+    "a reordered pair": signOwn(trader, [limit, swap, price]),
+    "another fee payer": signOwn(stranger, [limit, price, memo([stranger.publicKey], "swap buy 100000000 4603500118800")]),
+  };
+  for (const [name, signedTransaction] of Object.entries(variants)) {
     const { status, body } = await post(app, `${TOKEN_ID}/trade/submit`, {
       prepareToken: prepared.prepareToken,
-      signedTransaction: Buffer.from(tampered.serialize()).toString("base64"),
+      signedTransaction,
     });
-    assert.equal(status, 400);
-    assert.deepEqual(body, { error: "transaction_mismatch", reason: "message_mismatch" });
+    assert.equal(status, 400, name);
+    assert.deepEqual(body, { error: "transaction_mismatch", reason: "message_mismatch" }, name);
   }
 
   const junk = await post(app, `${TOKEN_ID}/trade/submit`, {
@@ -878,6 +1055,7 @@ test("submit: a tampered transaction is never sent", async () => {
   assert.deepEqual(junk.body, { error: "transaction_mismatch", reason: "undecodable" });
 
   assert.equal(world.calls.sent.length, 0);
+  assert.equal(world.calls.statusAsked.length, 0);
   assert.equal(world.trades.length, 0);
 
   // The one that was built still goes through.
@@ -888,6 +1066,43 @@ test("submit: a tampered transaction is never sent", async () => {
   });
   assert.equal(honest.status, 200);
   assert.equal(world.calls.sent.length, 1);
+});
+
+test("submit: what a wallet adds for itself is accepted, and the transaction is sent as the wallet signed it", async () => {
+  // Phantom, asked to sign a transaction that carries no signature yet, may
+  // add priority-fee instructions and Lighthouse assertions of its own.
+  const assertion = new TransactionInstruction({
+    programId: new PublicKey(LIGHTHOUSE_PROGRAM_ID),
+    keys: [{ pubkey: trader.publicKey, isSigner: false, isWritable: false }],
+    data: Buffer.from("the balance did not fall by more than expected", "utf8"),
+  });
+  const walletPrice = ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250_000 });
+  const changes: Array<(ours: TransactionInstruction[]) => string> = [
+    (ours) => signOwn(trader, [walletPrice, ...ours]),
+    (ours) => signOwn(trader, [...ours, assertion]),
+    (ours) => signOwn(trader, [walletPrice, ...ours, assertion]),
+    // A fresher blockhash, and nothing else.
+    (ours) => signOwn(trader, ours, Keypair.generate().publicKey.toBase58()),
+  ];
+  for (const change of changes) {
+    const world = makeWorld();
+    const app = await makeApp(world);
+    const prepared = await prepareBuy(app);
+    const signedTransaction = change(instructionsOf(prepared.transaction));
+    assert.notEqual(signedTransaction, signAs(prepared.transaction, trader));
+    const { status, body } = await post(app, `${TOKEN_ID}/trade/submit`, {
+      prepareToken: prepared.prepareToken,
+      signedTransaction,
+    });
+    assert.equal(status, 200, JSON.stringify(body));
+    assert.equal(world.calls.sent.length, 1);
+    assert.deepEqual(Buffer.from(world.calls.sent[0]!), Buffer.from(signedTransaction, "base64"));
+    assert.equal(body.signature, signatureOf(Buffer.from(signedTransaction, "base64")));
+    assert.equal(world.trades.length, 1);
+    // Confirmed with the blockhash the wallet signed, whichever that is.
+    const sentTx = VersionedTransaction.deserialize(world.calls.sent[0]!);
+    assert.equal(world.calls.confirmedWith[0]!.blockhash, sentTx.message.recentBlockhash);
+  }
 });
 
 test("submit: a transaction without its signature is never sent", async () => {
@@ -918,7 +1133,7 @@ test("submit: a refusal by the node is 502 send_failed, an unconfirmed transacti
   });
   assert.equal(refused.trades.length, 0);
 
-  const lost = makeWorld({ confirmError: new Error("block height exceeded") });
+  const lost = makeWorld({ confirmError: new Error("block height exceeded"), statusAfterSend: "not_seen" });
   const lostApp = await makeApp(lost);
   const second = await prepareBuy(lostApp);
   const signedTransaction = signAs(second.transaction, trader);
@@ -934,6 +1149,220 @@ test("submit: a refusal by the node is 502 send_failed, an unconfirmed transacti
   });
   assert.equal(lost.trades.length, 0);
   assert.equal(lost.calls.readBack.length, 0);
+  // Asked before the send, and once more when the wait failed.
+  const lostSignature = signatureOf(Buffer.from(signedTransaction, "base64"));
+  assert.deepEqual(lost.calls.statusAsked, [lostSignature, lostSignature]);
+
+  // The same when the chain cannot even be asked.
+  const mute = makeWorld({ confirmError: new Error("block height exceeded") });
+  const muteApp = await makeApp(mute);
+  const third = await prepareBuy(muteApp);
+  mute.statusError = new Error("429 Too Many Requests");
+  const unasked = await post(muteApp, `${TOKEN_ID}/trade/submit`, {
+    prepareToken: third.prepareToken,
+    signedTransaction: signAs(third.transaction, trader),
+  });
+  assert.equal(unasked.status, 502);
+  assert.equal(unasked.body.error, "transaction_not_confirmed");
+  assert.equal(typeof unasked.body.signature, "string");
+  // A status that could not be asked before the send did not stop a live token from sending.
+  assert.equal(mute.calls.sent.length, 1);
+  assert.equal(mute.trades.length, 0);
+});
+
+// ============================================
+// A sent transaction that was not seen confirmed, and a submit posted again
+// ============================================
+
+test("submit: the wait for the confirmation fails but the transaction succeeded: it is recorded as confirmed", async () => {
+  const world = makeWorld({
+    confirmError: new Error("block height exceeded"),
+    statusAfterSend: "succeeded",
+    confirmed: vaultsMoved(["1250000000", "1349900000"], ["900000000000000", "895350001000000"]),
+  });
+  const app = await makeApp(world);
+  const prepared = await prepareBuy(app);
+  const signedTransaction = signAs(prepared.transaction, trader);
+  const { status, body } = await post(app, `${TOKEN_ID}/trade/submit`, {
+    prepareToken: prepared.prepareToken,
+    signedTransaction,
+  });
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.deepEqual(body, {
+    signature: signatureOf(Buffer.from(signedTransaction, "base64")),
+    trade: { side: "buy", solLamports: "99900000", tokenAmountRaw: "4649999000000" },
+    recorded: true,
+  });
+  assert.equal(world.trades.length, 1);
+});
+
+test("submit: a transaction that failed on chain is 409 transaction_failed with its signature, and nothing is recorded", async () => {
+  const world = makeWorld({
+    confirmError: new Error("the transaction failed on chain: {\"InstructionError\":[2,{\"Custom\":6001}]}"),
+    statusAfterSend: "failed",
+  });
+  const app = await makeApp(world);
+  const prepared = await prepareBuy(app);
+  const submission = {
+    prepareToken: prepared.prepareToken,
+    signedTransaction: signAs(prepared.transaction, trader),
+  };
+  const signature = signatureOf(Buffer.from(submission.signedTransaction, "base64"));
+  const { status, body } = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(status, 409);
+  assert.deepEqual(body, {
+    error: "transaction_failed",
+    signature,
+    message: "The chain refused this transaction. Nothing was changed by it.",
+  });
+  assert.equal(world.trades.length, 0);
+  assert.equal(world.calls.readBack.length, 0);
+
+  // Posted again: the chain already says it failed, so it is not sent a second time.
+  const again = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(again.status, 409);
+  assert.equal(again.body.error, "transaction_failed");
+  assert.equal(again.body.signature, signature);
+  assert.equal(world.calls.sent.length, 1);
+  assert.equal(world.trades.length, 0);
+});
+
+test("submit is safe to post again: a transaction that landed after all is recorded once and never sent twice", async () => {
+  const world = makeWorld({ confirmError: new Error("block height exceeded"), statusAfterSend: "not_seen" });
+  const app = await makeApp(world);
+  const prepared = await prepareBuy(app);
+  const submission = {
+    prepareToken: prepared.prepareToken,
+    signedTransaction: signAs(prepared.transaction, trader),
+  };
+  const signature = signatureOf(Buffer.from(submission.signedTransaction, "base64"));
+  const first = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(first.status, 502);
+  assert.equal(first.body.error, "transaction_not_confirmed");
+  assert.equal(first.body.signature, signature);
+  assert.equal(world.trades.length, 0);
+
+  // It did land. Four minutes later the page asks again with the same body:
+  // the token ran out long ago, and still vouches for what already succeeded.
+  world.statuses[signature] = "succeeded";
+  world.nowMs += 240_000;
+  const second = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  assert.equal(second.body.signature, signature);
+  assert.equal(second.body.recorded, true);
+  assert.equal(world.trades.length, 1);
+  assert.equal(world.trades[0]!.txSignature, signature);
+
+  const third = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(third.status, 200);
+  assert.equal(world.trades.length, 1);
+  assert.equal(world.calls.sent.length, 1, "sent once, by the first call only");
+});
+
+test("submit: an expired token is never a reason to send, and its grace covers nothing but the clock", async () => {
+  const world = makeWorld();
+  const app = await makeApp(world);
+  const prepared = await prepareBuy(app);
+  const submission = {
+    prepareToken: prepared.prepareToken,
+    signedTransaction: signAs(prepared.transaction, trader),
+  };
+  const signature = signatureOf(Buffer.from(submission.signedTransaction, "base64"));
+
+  // Ran out two minutes ago and the chain has not seen the transaction.
+  world.nowMs += 210_000;
+  const notSeen = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(notSeen.status, 400);
+  assert.deepEqual(notSeen.body, { error: "prepare_token_invalid", reason: "expired" });
+
+  // The chain cannot be asked: the same, nothing is taken on trust.
+  world.statusError = new Error("429 Too Many Requests");
+  const unasked = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(unasked.status, 400);
+  assert.deepEqual(unasked.body, { error: "prepare_token_invalid", reason: "expired" });
+  world.statusError = null;
+
+  // The transaction did succeed (the wallet sent it itself, say). Every
+  // other check still stands: the user, the kind, the token, the message.
+  world.statuses[signature] = "succeeded";
+  world.auth = { userId: "user_2", orgId: "org_1" };
+  assert.equal((await post(app, `${TOKEN_ID}/trade/submit`, submission)).status, 403);
+  world.auth = { userId: "user_1", orgId: "org_1" };
+  const asFees = await post(app, `${TOKEN_ID}/fees/submit`, submission);
+  assert.deepEqual(asFees.body, { error: "prepare_token_invalid", reason: "wrong_kind" });
+  const elsewhere = await post(app, `${OTHER_CURVE_ID}/trade/submit`, submission);
+  assert.deepEqual(elsewhere.body, { error: "prepare_token_invalid", reason: "wrong_token" });
+  const other = signOwn(trader, [memo([trader.publicKey], "something else that succeeded")]);
+  world.statuses[signatureOf(Buffer.from(other, "base64"))] = "succeeded";
+  const crossed = await post(app, `${TOKEN_ID}/trade/submit`, {
+    prepareToken: prepared.prepareToken,
+    signedTransaction: other,
+  });
+  assert.deepEqual(crossed.body, { error: "transaction_mismatch", reason: "message_mismatch" });
+  assert.equal(world.trades.length, 0);
+
+  // With everything in order it is recorded, and nothing is sent.
+  const recorded = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(recorded.status, 200, JSON.stringify(recorded.body));
+  assert.equal(world.trades.length, 1);
+
+  // Ten minutes after it ran out the token is no good for anything.
+  world.nowMs = Date.parse(prepared.expiresAt) + 600_000;
+  const tooLate = await post(app, `${TOKEN_ID}/trade/submit`, submission);
+  assert.equal(tooLate.status, 400);
+  assert.deepEqual(tooLate.body, { error: "prepare_token_invalid", reason: "expired" });
+
+  assert.equal(world.calls.sent.length, 0);
+});
+
+test("submit: the signature of another transaction that succeeded gets nothing recorded and nothing sent", async () => {
+  // Someone else's buy has succeeded on chain; its signature is public.
+  const world = makeWorld({ confirmed: vaultsMoved(["1250000000", "1350000000"], ["900000000000", "895000000000"]) });
+  const app = await makeApp(world);
+  const theirs = VersionedTransaction.deserialize(
+    Buffer.from(signOwn(creator, [memo([creator.publicKey], "someone else's buy")]), "base64"),
+  );
+  world.statuses[bs58.encode(theirs.signatures[0]!)] = "succeeded";
+
+  // Our own prepared transaction, never signed: the slot holds their signature.
+  const withTheirs = (transactionBase64: string) => {
+    const tx = VersionedTransaction.deserialize(Buffer.from(transactionBase64, "base64"));
+    tx.signatures[0] = theirs.signatures[0]!;
+    return Buffer.from(tx.serialize()).toString("base64");
+  };
+  const prepared = await prepareBuy(app);
+  const trade = await post(app, `${TOKEN_ID}/trade/submit`, {
+    prepareToken: prepared.prepareToken,
+    signedTransaction: withTheirs(prepared.transaction),
+  });
+  assert.equal(trade.status, 400);
+  assert.deepEqual(trade.body, { error: "transaction_mismatch", reason: "bad_signature" });
+  assert.equal(world.trades.length, 0);
+
+  // The same against the grace of a token that ran out.
+  world.nowMs += 240_000;
+  const late = await post(app, `${TOKEN_ID}/trade/submit`, {
+    prepareToken: prepared.prepareToken,
+    signedTransaction: withTheirs(prepared.transaction),
+  });
+  assert.deepEqual(late.body, { error: "transaction_mismatch", reason: "bad_signature" });
+  assert.equal(world.trades.length, 0);
+
+  // A full pool that has NOT moved must not be written as graduated.
+  world.pool = fullPool();
+  const move = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
+  assert.equal(move.status, 200, JSON.stringify(move.body));
+  assert.equal(move.body.step, "migrate");
+  const graduated = await post(app, `${TOKEN_ID}/graduate/submit`, {
+    prepareToken: move.body.prepareToken,
+    signedTransaction: withTheirs(move.body.transaction),
+  });
+  assert.deepEqual(graduated.body, { error: "transaction_mismatch", reason: "bad_signature" });
+  assert.equal(world.graduations.length, 0);
+  assert.equal(world.tokens[TOKEN_ID]!.status, "BONDING");
+
+  assert.equal(world.calls.sent.length, 0);
+  assert.deepEqual(world.calls.statusAsked, [], "the chain is not even asked about a signature that is not ours");
 });
 
 // ============================================
@@ -1018,6 +1447,21 @@ test("fees: the claim is built for the creator, sent as signed, and answers what
   assert.equal(world.calls.sent.length, 1);
   // A claim is not a trade.
   assert.equal(world.trades.length, 0);
+
+  // The claim begins with its own compute budget too.
+  assert.deepEqual(
+    instructionsOf(prepared.body.transaction).map((instruction) => instruction.programId.toBase58()),
+    [COMPUTE_BUDGET_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID, MEMO.toBase58()],
+  );
+
+  // Posted again: the same answer, and the claim is not sent a second time.
+  const again = await post(app, `${TOKEN_ID}/fees/submit`, {
+    prepareToken: prepared.body.prepareToken,
+    signedTransaction,
+  });
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.body, body);
+  assert.equal(world.calls.sent.length, 1);
 });
 
 test("fees: when the confirmed transaction cannot be read, the prepared amount is answered", async () => {
@@ -1043,7 +1487,7 @@ test("graduate prepare: 409 curve_not_full while trading, 409 already_graduated 
   assert.equal(early.status, 409);
   assert.deepEqual(early.body, { error: "curve_not_full" });
 
-  world.pool = snapshot({ quoteReserve: THRESHOLD, isMigrated: true });
+  world.pool = graduatedPool();
   world.tokens[TOKEN_ID] = { ...world.tokens[TOKEN_ID]!, status: "GRADUATED" };
   const late = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
   assert.equal(late.status, 409);
@@ -1054,18 +1498,19 @@ test("graduate prepare: 409 curve_not_full while trading, 409 already_graduated 
 });
 
 test("graduate prepare: a pool that graduated without us brings the row in line", async () => {
-  const world = makeWorld({ pool: snapshot({ quoteReserve: THRESHOLD, isMigrated: true }) });
+  const world = makeWorld({ pool: graduatedPool() });
   const app = await makeApp(world);
   const { status, body } = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
   assert.equal(status, 409);
   assert.equal(body.error, "already_graduated");
   assert.deepEqual(world.graduations, [
-    { tokenId: TOKEN_ID, graduatedPoolAddress: DAMM_POOL, at: new Date(world.nowMs) },
+    { tokenId: TOKEN_ID, graduatedPoolAddress: DAMM_POOL, at: new Date(world.nowMs), creatorLockupEnd: null },
   ]);
 });
 
-test("graduation in two steps: the locker first when tokens are locked and it is not there, then the move", async () => {
-  const world = makeWorld({ pool: snapshot({ quoteReserve: THRESHOLD, lockedVesting: LOCKED }) });
+test("graduation in two steps: the locker first when tokens are locked and the pool's progress says it is not made, then the move", async () => {
+  // Progress 1: the curve is full and the locker is still to be made.
+  const world = makeWorld({ pool: fullPool({ migrationProgress: 1, lockedVesting: LOCKED }) });
   const app = await makeApp(world);
 
   // Step 1: the locker. Any wallet may pay.
@@ -1082,6 +1527,17 @@ test("graduation in two steps: the locker first when tokens are locked and it is
   assert.equal(lockerStep.body.stepsLeftAfterThis, 1);
   assert.deepEqual(world.calls.lockers, [{ poolAddress: POOL, payer: TRADER }]);
   assert.equal(world.calls.migrations.length, 0);
+  // The wallet alone signs the locker: it carries its own compute budget,
+  // 400,000 units because its cost was never measured.
+  const lockerInstructions = instructionsOf(lockerStep.body.transaction);
+  assert.deepEqual(
+    lockerInstructions.map((instruction) => instruction.programId.toBase58()),
+    [COMPUTE_BUDGET_PROGRAM_ID, COMPUTE_BUDGET_PROGRAM_ID, MEMO.toBase58()],
+  );
+  assert.deepEqual(
+    Buffer.from(lockerInstructions[0]!.data),
+    Buffer.from(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }).data),
+  );
 
   const lockerSigned = signAs(lockerStep.body.transaction, trader);
   const lockerSent = await post(app, `${TOKEN_ID}/graduate/submit`, {
@@ -1096,8 +1552,9 @@ test("graduation in two steps: the locker first when tokens are locked and it is
   // The locker alone graduates nothing.
   assert.equal(world.graduations.length, 0);
 
-  // Step 2: the move. The server has signed with both position keypairs.
-  world.lockerExists = true;
+  // Step 2: the move. Progress 2: the locker is made. The server has signed
+  // with both position keypairs.
+  world.pool = fullPool({ migrationProgress: 2, lockedVesting: LOCKED });
   const migrateStep = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
   assert.equal(migrateStep.status, 200);
   assert.equal(migrateStep.body.step, "migrate");
@@ -1106,6 +1563,12 @@ test("graduation in two steps: the locker first when tokens are locked and it is
 
   const tx = VersionedTransaction.deserialize(Buffer.from(migrateStep.body.transaction, "base64"));
   assert.equal(tx.message.header.numRequiredSignatures, 3);
+  // Signed by the server first, so the wallet leaves it alone: it is as the
+  // SDK made it, with no compute budget of ours in front.
+  assert.deepEqual(
+    instructionsOf(migrateStep.body.transaction).map((instruction) => instruction.programId.toBase58()),
+    [MEMO.toBase58()],
+  );
   const keys = tx.message.staticAccountKeys.map((key) => key.toBase58());
   assert.equal(keys[0], TRADER);
   assert.ok(tx.signatures[0]!.every((byte) => byte === 0), "the payer's slot is left for the wallet");
@@ -1136,14 +1599,58 @@ test("graduation in two steps: the locker first when tokens are locked and it is
     step: "migrate",
     graduatedPoolAddress: DAMM_POOL,
   });
-  // What is written: the token, the DAMM v2 pool's address, and when.
+  // What is written: the token, the DAMM v2 pool's address, when, and the
+  // creator's lock date: the moment the curve was finished plus the wait.
   assert.deepEqual(world.graduations, [
-    { tokenId: TOKEN_ID, graduatedPoolAddress: DAMM_POOL, at: new Date(world.nowMs) },
+    {
+      tokenId: TOKEN_ID,
+      graduatedPoolAddress: DAMM_POOL,
+      at: new Date(world.nowMs),
+      creatorLockupEnd: new Date((FINISHED_AT + LOCKED.cliffSeconds) * 1000),
+    },
   ]);
+
+  // Posted again: the same answer, nothing sent, nothing written twice.
+  const again = await post(app, `${TOKEN_ID}/graduate/submit`, {
+    prepareToken: migrateStep.body.prepareToken,
+    signedTransaction: migrateSigned,
+  });
+  assert.equal(again.status, 200);
+  assert.deepEqual(again.body, migrated.body);
+  assert.equal(world.calls.sent.length, 2);
+  assert.equal(world.graduations.length, 1);
+});
+
+test("graduation: the move must come back byte for byte, whatever a wallet would add", async () => {
+  const world = makeWorld({ pool: fullPool() });
+  const app = await makeApp(world);
+  const step = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
+  assert.equal(step.body.step, "migrate");
+
+  // The wallet rebuilds the move with a priority fee of its own in front.
+  // The position keypairs sign it too, as they would if they could be asked.
+  const message = new TransactionMessage({
+    payerKey: trader.publicKey,
+    recentBlockhash: BLOCKHASH,
+    instructions: [
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250_000 }),
+      ...instructionsOf(step.body.transaction),
+    ],
+  }).compileToV0Message();
+  const changed = new VersionedTransaction(message);
+  changed.sign([trader, ...world.positionKeypairs]);
+  const { status, body } = await post(app, `${TOKEN_ID}/graduate/submit`, {
+    prepareToken: step.body.prepareToken,
+    signedTransaction: Buffer.from(changed.serialize()).toString("base64"),
+  });
+  assert.equal(status, 400);
+  assert.deepEqual(body, { error: "transaction_mismatch", reason: "message_mismatch" });
+  assert.equal(world.calls.sent.length, 0);
+  assert.equal(world.graduations.length, 0);
 });
 
 test("graduation in one step when the config locks nothing for the creator", async () => {
-  const world = makeWorld({ pool: snapshot({ quoteReserve: THRESHOLD }) });
+  const world = makeWorld({ pool: fullPool() });
   const app = await makeApp(world);
   const step = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
   assert.equal(step.status, 200);
@@ -1153,7 +1660,7 @@ test("graduation in one step when the config locks nothing for the creator", asy
 });
 
 test("graduation: a tampered move is never sent, and a failed move graduates nothing", async () => {
-  const world = makeWorld({ pool: snapshot({ quoteReserve: THRESHOLD }) });
+  const world = makeWorld({ pool: fullPool() });
   const app = await makeApp(world);
   const step = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
 
@@ -1168,18 +1675,33 @@ test("graduation: a tampered move is never sent, and a failed move graduates not
   assert.equal(world.calls.sent.length, 0);
 
   world.confirmError = new Error("the transaction failed on chain");
+  world.statusAfterSend = "failed";
   const failed = await post(app, `${TOKEN_ID}/graduate/submit`, {
     prepareToken: other.body.prepareToken,
     signedTransaction: signAs(other.body.transaction, trader),
   });
-  assert.equal(failed.status, 502);
-  assert.equal(failed.body.error, "transaction_not_confirmed");
+  assert.equal(failed.status, 409);
+  assert.equal(failed.body.error, "transaction_failed");
+  assert.equal(world.graduations.length, 0);
+
+  // Sent, and not seen confirmed: nothing is written, the signature is answered.
+  world.statusAfterSend = "not_seen";
+  world.confirmError = new Error("block height exceeded");
+  const third = await post(app, `${TOKEN_ID}/graduate/prepare`, { wallet: TRADER });
+  const thirdSigned = signAs(third.body.transaction, trader);
+  const lost = await post(app, `${TOKEN_ID}/graduate/submit`, {
+    prepareToken: third.body.prepareToken,
+    signedTransaction: thirdSigned,
+  });
+  assert.equal(lost.status, 502);
+  assert.equal(lost.body.error, "transaction_not_confirmed");
+  assert.equal(lost.body.signature, signatureOf(Buffer.from(thirdSigned, "base64")));
   assert.equal(world.graduations.length, 0);
 });
 
 test("graduation: moved on chain but not written is 500 persistence_failed with everything the page needs", async () => {
   const world = makeWorld({
-    pool: snapshot({ quoteReserve: THRESHOLD }),
+    pool: fullPool(),
     markGraduatedError: new Error("database is down"),
   });
   const app = await makeApp(world);

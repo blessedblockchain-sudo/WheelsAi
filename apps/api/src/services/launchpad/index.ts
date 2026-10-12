@@ -11,15 +11,24 @@
  * LAUNCHPAD=bags until the spike validates it), so this branch only runs
  * post-spike. It requires BAGS_API_KEY + FEE_ROUTER_WALLET_PRIVATE_KEY
  * (the platform fee wallet that signs the config + receives the fee share).
+ *
+ * meteora works on devnet and mainnet and needs no key at all: only the
+ * address of the platform's fee wallet (METEORA_FEE_CLAIMER_ADDRESS), which
+ * config/env.ts already refuses to start without.
  */
 
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { BagsSDK } from "@bagsfm/bags-sdk";
+import { DynamicBondingCurveClient } from "@meteora-ag/dynamic-bonding-curve-sdk";
 
 import { env } from "../../config/env.js";
 import { getSolanaConnection } from "../../lib/solana.js";
 import { createPumpfunAdapter } from "./pumpfunAdapter.js";
 import { createBagsAdapter } from "./bagsAdapter.js";
+import {
+  createMeteoraAdapter,
+  createMeteoraMetadataUploader,
+} from "./meteoraAdapter.js";
 import type { LaunchpadAdapter } from "./types.js";
 
 export type { LaunchpadAdapter } from "./types.js";
@@ -70,6 +79,39 @@ export function getLaunchpadAdapter(): LaunchpadAdapter {
         sendRawTransaction,
         confirmTransaction: async (signature: string) => {
           await connection.confirmTransaction(signature, "confirmed");
+        },
+      });
+    }
+    case "meteora": {
+      if (!env.METEORA_FEE_CLAIMER_ADDRESS) {
+        throw new Error(
+          "LAUNCHPAD=meteora requires METEORA_FEE_CLAIMER_ADDRESS, the address " +
+            "of the wallet that claims the platform's share of trading fees.",
+        );
+      }
+      const feeClaimer = new PublicKey(env.METEORA_FEE_CLAIMER_ADDRESS);
+      return createMeteoraAdapter({
+        client: new DynamicBondingCurveClient(connection, "confirmed"),
+        network: env.SOLANA_NETWORK,
+        feeClaimer,
+        // Unsold tokens go to the fee wallet unless another address is named.
+        leftoverReceiver: env.METEORA_LEFTOVER_RECEIVER_ADDRESS
+          ? new PublicKey(env.METEORA_LEFTOVER_RECEIVER_ADDRESS)
+          : feeClaimer,
+        uploadMetadata: createMeteoraMetadataUploader(fetch),
+        getLatestBlockhash: () => connection.getLatestBlockhash("confirmed"),
+        sendRawTransaction,
+        confirmTransaction: async (signature, sentWith) => {
+          const result = await connection.confirmTransaction(
+            { signature, ...sentWith },
+            "confirmed",
+          );
+          // Confirmed and failed is still failed: the pool does not exist.
+          if (result.value.err) {
+            throw new Error(
+              `the transaction failed on chain: ${JSON.stringify(result.value.err)}`,
+            );
+          }
         },
       });
     }

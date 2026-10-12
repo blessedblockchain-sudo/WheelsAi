@@ -427,6 +427,31 @@ def test_exit_10_qlora_without_cuda(storage, tiny_model_dir, tmp_path, capsys):
     assert storage.callback_events()[-1]["code"] == "qlora_requires_cuda"
 
 
+def test_exit_10_a_gpu_was_demanded_and_none_is_visible(storage, tiny_model_dir, tmp_path, capsys, monkeypatch):
+    # The image's ENTRYPOINT passes --device cuda: a node sold as a GPU that
+    # shows none must refuse within seconds, not train on its processor.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    storage.objects["/dataset"] = fixture_bytes()
+    code = runner.main(["--device", "cuda", "--work-dir", str(tmp_path / "work")], base_env(storage, tiny_model_dir))
+    events = [event for event in map(parse_event_line, capsys.readouterr().out.splitlines()) if event]
+    assert code == 10
+    failed = expect_failure(events, 10, "cuda_unavailable", None)
+    # The customer reads this sentence: it names no flag they never set.
+    assert failed["message"] == "No usable GPU is visible to this run (CUDA is not available), so nothing was trained."
+    assert "started" not in types(events)
+    # Nothing was fetched or uploaded, and the API was told.
+    assert storage.count("GET", "/dataset") == 0 and storage.uploads == {}
+    assert storage.callback_events()[-1]["code"] == "cuda_unavailable"
+
+
+def test_the_last_device_on_the_command_line_wins():
+    # The image's ENTRYPOINT ends with --device cuda; the CPU proof adds --device cpu after it.
+    assert runner.parse_args(["--device", "cuda", "--device", "cpu"]).device == "cpu"
+    assert runner.parse_args([]).device == "auto"
+
+
 def test_exit_10_bad_hyperparameter_is_reported_to_the_callback(storage, tiny_model_dir, tmp_path, capsys):
     env = base_env(storage, tiny_model_dir, hyperparams={"learningRate": 5})
     code, events, _ = run_trainer(env, tmp_path / "work", capsys)

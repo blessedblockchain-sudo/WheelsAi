@@ -86,7 +86,10 @@ def resolve_device(requested: str) -> str:
     if torch.cuda.is_available():
         return "cuda"
     if requested == "cuda":
-        raise ConfigError("--device cuda was asked for but no CUDA GPU is visible", code="cuda_unavailable")
+        raise ConfigError(
+            "No usable GPU is visible to this run (CUDA is not available), so nothing was trained.",
+            code="cuda_unavailable",
+        )
     return "cpu"
 
 

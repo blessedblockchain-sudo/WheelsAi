@@ -393,6 +393,32 @@ export function trainingTransferUrlTtlSeconds(
   );
 }
 
+// ============================================
+// The address a GPU node uses to reach this API
+// ============================================
+
+/**
+ * The address a container on a GPU node uses to reach this API:
+ * GPU_FACING_API_URL (config/env.ts), or PUBLIC_API_URL when it is unset.
+ * Trimmed, without a trailing slash; null when neither is set.
+ *
+ * Two uses only: the progress address of a training run and the adapter
+ * download of a deployed fine-tuned model. Everything else that names this
+ * API (the endpoints shown to customers, OAuth redirects, the local storage
+ * driver's links, which a browser uses too) stays on PUBLIC_API_URL.
+ */
+export function resolveGpuFacingApiUrl(
+  source:
+    | { GPU_FACING_API_URL?: string | undefined; PUBLIC_API_URL?: string | undefined }
+    | NodeJS.ProcessEnv = process.env,
+): string | null {
+  for (const value of [source.GPU_FACING_API_URL, source.PUBLIC_API_URL]) {
+    const address = value?.trim().replace(/\/+$/, "");
+    if (address) return address;
+  }
+  return null;
+}
+
 let cached: TrainingConfig | null = null;
 
 /** Process-wide config, parsed once from process.env on first use. */

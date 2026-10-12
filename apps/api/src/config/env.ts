@@ -298,6 +298,11 @@ const envSchema = z.object({
   // by Slack/GitHub, so they cannot be derived from the request.
   PUBLIC_API_URL: z.string().url().optional(),
   PUBLIC_WEB_URL: z.string().url().optional(),
+  // The address a container on a GPU node uses to reach this API: the
+  // progress address of a training run and the adapter download of a
+  // deployed fine-tuned model, nothing else. Unset means PUBLIC_API_URL
+  // (config/training.ts, resolveGpuFacingApiUrl).
+  GPU_FACING_API_URL: z.string().url().optional(),
 
   // Transactional email (verification, password reset, invites, alerts).
   // "log" writes the message to the API log and is refused outside
@@ -635,6 +640,7 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     for (const [name, value] of [
       ["PUBLIC_API_URL", data.PUBLIC_API_URL],
       ["PUBLIC_WEB_URL", data.PUBLIC_WEB_URL],
+      ["GPU_FACING_API_URL", data.GPU_FACING_API_URL],
     ] as const) {
       if (!value) continue;
       // An http redirect_uri puts the OAuth code in cleartext, and

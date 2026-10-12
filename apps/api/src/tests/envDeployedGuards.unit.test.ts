@@ -30,6 +30,8 @@ for (const [name, override] of [
   ["ENCRYPTION_KEY equal to JWT_SECRET", { ENCRYPTION_KEY: "a".repeat(32) }],
   ["default localhost CORS", { CORS_ORIGIN: "http://localhost:3000" }],
   ["http PUBLIC_API_URL", { PUBLIC_API_URL: "http://api.example.app" }],
+  ["http GPU_FACING_API_URL", { GPU_FACING_API_URL: "http://gpu.example.app" }],
+  ["localhost GPU_FACING_API_URL", { GPU_FACING_API_URL: "https://localhost:4000" }],
 ] as const) {
   test(`staging refuses ${name}`, () => {
     const envIn: Record<string, string | undefined> = { ...STAGING, ...override };
@@ -75,4 +77,15 @@ test("outside development the wallet rail needs the worker that finishes top-ups
 test("COOKIE_DOMAIN accepts a parent domain and rejects junk", () => {
   assert.equal(validateEnv({ ...STAGING, COOKIE_DOMAIN: ".example.app" }).COOKIE_DOMAIN, ".example.app");
   assert.throws(() => validateEnv({ ...STAGING, COOKIE_DOMAIN: "https://example.app/" }));
+});
+
+test("GPU_FACING_API_URL: https on a public host passes when deployed; anything goes in development", () => {
+  assert.doesNotThrow(() => validateEnv({ ...STAGING, GPU_FACING_API_URL: "https://gpu.example.app" }));
+  assert.throws(
+    () => validateEnv({ ...STAGING, GPU_FACING_API_URL: "http://gpu.example.app" }),
+    /GPU_FACING_API_URL must be an https URL on a public host outside development/,
+  );
+  const development = { ...STAGING, NODE_ENV: "development" };
+  assert.doesNotThrow(() => validateEnv({ ...development, GPU_FACING_API_URL: "http://localhost:4180" }));
+  assert.throws(() => validateEnv({ ...development, GPU_FACING_API_URL: "not an address" }));
 });

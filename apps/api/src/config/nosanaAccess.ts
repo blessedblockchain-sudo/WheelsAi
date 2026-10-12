@@ -333,6 +333,31 @@ export function resetNosanaAccessConfigForTests(): void {
 }
 
 /**
+ * True when the "GPU nodes" run on this machine: in development, with
+ * NOSANA_API_URL set to a loopback host, which is the development stand-in
+ * for Nosana and nothing else. A container it starts can reach a local
+ * address, so the "can a GPU node reach this" checks (lib/gpuFacingUrl.ts)
+ * pass there.
+ *
+ * Never outside development: parseApiUrl accepts https on any host, and a
+ * deployed API must not lose those checks to a loopback address.
+ * The in-process mock (ALLOW_NOSANA_MOCK) is not this: it runs nothing.
+ */
+export function nosanaNodesAreLocal(
+  config: Pick<NosanaAccessConfig, "apiUrl"> = getNosanaAccessConfig(),
+  nodeEnv: string | undefined = process.env.NODE_ENV,
+): boolean {
+  // Unset means development, as in the schema above.
+  if ((nodeEnv ?? "development") !== "development") return false;
+  if (!config.apiUrl) return false;
+  try {
+    return LOOPBACK_HOSTS.has(new URL(config.apiUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The mode recorded on a row that stores a Nosana id. A null column means the
  * row predates the stamp, and everything before it was created by the wallet.
  */

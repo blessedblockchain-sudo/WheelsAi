@@ -63,6 +63,8 @@ export interface ByteRange {
 
 export interface ObjectStore {
   readonly kind: "s3" | "local";
+  /** s3 only: the custom endpoint (S3_ENDPOINT); null or absent means the provider's own. */
+  readonly endpoint?: string | null;
   /** null when the object does not exist. */
   head(key: string): Promise<ObjectHead | null>;
   /** Throws ObjectNotFoundError when the object does not exist. */
@@ -198,9 +200,11 @@ export class S3ObjectStore implements ObjectStore {
   readonly kind = "s3" as const;
   readonly client: S3Client;
   readonly bucket: string;
+  readonly endpoint: string | null;
 
   constructor(config: S3StoreConfig, client?: S3Client) {
     this.bucket = config.bucket;
+    this.endpoint = config.endpoint ?? null;
     this.client = client ?? new S3Client(buildS3ClientConfig(config));
   }
 
@@ -587,20 +591,53 @@ export interface TransferDeps {
   now: () => number;
 }
 
+/**
+ * The origin of this API in a local-driver link. PUBLIC_API_URL, not the
+ * GPU-facing address: a browser uses these links too. The local driver is
+ * development only, so localhost is an honest default for it; the s3 driver
+ * never uses this value.
+ */
+export function localTransferOrigin(): string {
+  const origin =
+    process.env.PUBLIC_API_URL?.trim() || `http://localhost:${process.env.API_PORT ?? "4000"}`;
+  return origin.replace(/\/+$/, "");
+}
+
 /** Production wiring, read lazily so tests can set the environment first. */
 export function buildTransferDeps(): TransferDeps {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error("JWT_SECRET is required to sign storage transfer tokens");
-  // The local driver is development only, so localhost is an honest default
-  // for it; the s3 driver never uses this value.
-  const origin =
-    process.env.PUBLIC_API_URL?.trim() || `http://localhost:${process.env.API_PORT ?? "4000"}`;
   return {
     store: getObjectStore(),
     secret,
-    publicOrigin: origin.replace(/\/+$/, ""),
+    publicOrigin: localTransferOrigin(),
     now: Date.now,
   };
+}
+
+/** The origin of a custom S3_ENDPOINT, or null: another driver, or the provider's own endpoint. */
+export function customS3EndpointOrigin(store: ObjectStore | null): string | null {
+  if (store?.kind !== "s3" || !store.endpoint) return null;
+  try {
+    return new URL(store.endpoint).origin;
+  } catch {
+    // Not an address at all: handed on as it is, for the check to refuse.
+    return store.endpoint;
+  }
+}
+
+/**
+ * Where the links handed to a training container point, when configuration
+ * alone says so: this API for the local driver, a custom S3_ENDPOINT for the
+ * s3 driver. Null when the s3 driver uses the provider's own endpoint, or
+ * there is no store.
+ */
+export function storageLinkOrigin(
+  store: ObjectStore | null,
+  localOrigin: () => string = localTransferOrigin,
+): string | null {
+  if (!store) return null;
+  return store.kind === "local" ? localOrigin() : customS3EndpointOrigin(store);
 }
 
 /**

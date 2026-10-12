@@ -540,13 +540,20 @@ The image a fine-tuning job runs on a GPU node is built from `infra/training` (b
 specified in `infra/training/README.md`.
 
 ```bash
-docker build -t wheelsai-trainer infra/training     # the build context is this folder
-docker tag wheelsai-trainer <registry>/<repository>:<version>
-docker push <registry>/<repository>:<version>
-docker buildx imagetools inspect <registry>/<repository>:<version>   # read the digest
+# From a machine that is logged in to the registry (docker login):
+bash infra/training/scripts/publish-image.sh <registry host>/<account>/wheelsai-trainer          # build
+python infra/training/scripts/cpu_proof.py --image <registry host>/<account>/wheelsai-trainer:<short commit>   # run it here, no GPU
+bash infra/training/scripts/publish-image.sh <registry host>/<account>/wheelsai-trainer --push   # publish
 ```
 
-The image is several gigabytes. From GitLab CI, the manual `trainer-image` job builds and pushes
+The last line the script prints is `TRAINING_IMAGE=<repository>@sha256:<digest>`: the value to
+set. It refuses to publish while a file that goes into the image is not committed, and after a
+push to Docker Hub it asks the registry for the manifest with no login, as a GPU node would.
+
+The image is 6.32 GB on disk and 3.27 GB to pull; all but 117 MB of that is the base, which the
+registry takes from `pytorch/pytorch` and is not uploaded. On a poor link the packages still go
+up in four layers of at most 42 MB, because a registry restarts a layer from nothing when the
+connection drops. From GitLab CI, the manual `trainer-image` job builds and pushes
 it after the trainer tests pass, and prints the line to set. It pushes to the project's registry
 unless the `TRAINER_IMAGE_REPOSITORY`, `TRAINER_REGISTRY`, `TRAINER_REGISTRY_USER` and
 `TRAINER_REGISTRY_PASSWORD` CI variables point elsewhere.

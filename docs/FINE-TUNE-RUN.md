@@ -966,8 +966,8 @@ charged nothing for those codes.
 
 | # | Do | Expect |
 |---|---|---|
-| P1 | **Publish the training image.** Press the manual `trainer-image` job in a pipeline on the default branch (`docs/FOUNDER-ACTIONS.md`, section 14). | It ends green and prints `TRAINING_IMAGE=<repository>@sha256:<digest>`. Record the digest, the image size and how long the job took. |
-| P2 | From a machine that is not signed in to the registry: `docker manifest inspect <repository>@sha256:<digest>`. | The manifest is printed. **Prefer a public image for this first run.** If it asks for credentials the repository is private: set the three `TRAINING_IMAGE_REGISTRY_*` variables (a read-only token). `authentication.docker` is a valid key and the node hands it to the pull, but no private pull has run end to end, and the image reference must name its registry host (`ghcr.io/...@sha256:...`). |
+| P1 | **Publish the training image.** Press the manual `trainer-image` job in a pipeline on the default branch (`docs/FOUNDER-ACTIONS.md`, section 14), or by hand: `bash infra/training/scripts/publish-image.sh docker.io/<account>/wheelsai-trainer --push`. | It ends green and prints `TRAINING_IMAGE=<repository>@sha256:<digest>`. Record the digest, the image size and how long the job took. **Done by hand on 2026-10-12:** `docker.io/bprime/wheelsai-trainer@sha256:e99da13be989e6a868be2ef6d8f68e0c9aa860c034701ab830bec62d1a0ffcbb`, 3.27 GB to pull. |
+| P2 | From a machine that is not signed in to the registry: `docker manifest inspect <repository>@sha256:<digest>`. | The manifest is printed (2026-10-12: the registry served it by digest and by tag to a request with no credential). **Prefer a public image for this first run.** If it asks for credentials the repository is private: set the three `TRAINING_IMAGE_REGISTRY_*` variables (a read-only token). `authentication.docker` is a valid key and the node hands it to the pull, but no private pull has run end to end, and the image reference must name its registry host (`ghcr.io/...@sha256:...`). |
 | P3 | **The bucket.** Create it, set the storage variables, add the CORS rule (`docs/FOUNDER-ACTIONS.md`, section 15), then `cd apps/api && npx tsx scripts/object-store-smoke.ts`. | Every line of the smoke test passes, including "a link refuses another size". |
 | P4 | **`PUBLIC_API_URL`.** Set it to the API's public HTTPS origin. From a machine outside your network: `curl -s -o /dev/null -w "%{http_code}\n" <PUBLIC_API_URL>/health` and `curl -s -X POST -H "content-type: application/json" -d "{}" "<PUBLIC_API_URL>/api/training/jobs/00000000-0000-4000-8000-000000000000/events?n=aaaaaaaaaaaaaaaa"`. | `200`, and `{"error":"invalid_callback_signature",...}` with status 401. The second shows the callback route is reachable and refuses an unsigned body. A GPU node must be able to do the same; a private address or a development tunnel that needs a browser step will not work. |
 | P5 | Apply migration `20261012100000_fine_tuning` (`prisma migrate deploy`). | "All migrations have been successfully applied." |
@@ -1174,7 +1174,8 @@ Nosana:
 
 The training image and the GPU path (the list that closes `infra/training/README.md`):
 
-- **The image has never been built or pulled.** P1, P2, step 7.
+- **No GPU node has pulled the image.** It was built, run on a machine with no GPU and published
+  on 2026-10-12 (`infra/training/README.md`, "The image"); P1 and P2 are done by hand. Step 7.
 - **QLoRA**: 4-bit loading with bitsandbytes on the node's driver. Only its refusal on CPU is
   tested. Step 7 and 8.
 - **Memory**: the catalog's requirement per model and method (12 GB for Phi-3 mini with QLoRA,

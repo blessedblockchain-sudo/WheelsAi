@@ -28,7 +28,8 @@ infra/training/
   wheelsai_trainer/       config, data, events, callbacks, upload, runner, errors
   fixtures/tiny.jsonl     40 alpaca rows
   tests/                  offline pytest suite (CPU)
-  scripts/cpu_proof.py    realism run on a small real model (CPU)
+  scripts/cpu_proof.py    realism run on a small real model (CPU), here or inside the image
+  scripts/publish-image.sh  builds the image and publishes it by digest
   pytest.ini, ruff.toml   test and lint settings (`uvx ruff check infra/training`)
 ```
 
@@ -309,14 +310,14 @@ cd infra/training
 PYTHONDONTWRITEBYTECODE=1 ~/.cache/wheelsai/trainer-venv/bin/python -m pytest
 ```
 
-Measured on this machine (8 cores, 15 GB, no GPU), 2026-10-07:
+Measured on this machine (8 cores, 15 GB, no GPU), 2026-10-12:
 
 ```
 $ ~/.cache/wheelsai/trainer-venv/bin/python -m pytest
-........................................................................ [ 49%]
-........................................................................ [ 99%]
-.                                                                        [100%]
-145 passed in 36.40s
+........................................................................ [ 45%]
+........................................................................ [ 91%]
+.............                                                            [100%]
+157 passed in 45.01s
 ```
 
 The same suite in a network namespace that has a loopback interface and
@@ -324,7 +325,7 @@ nothing else:
 
 ```
 $ unshare -rn sh -c 'ip link set lo up; ~/.cache/wheelsai/trainer-venv/bin/python -m pytest'
-145 passed in 38.30s
+157 passed in 43.77s
 ```
 
 Installing took 36 s once the Python download (15 s) was done; the
@@ -332,7 +333,7 @@ environment is 1.0 GB. Versions in it: Python 3.11.15, torch 2.4.1+cpu,
 transformers 4.46.3, peft 0.13.2, accelerate 1.1.1, tokenizers 0.20.3,
 safetensors 0.4.5, pyarrow 17.0.0.
 
-What the suite covers (145 tests):
+What the suite covers (157 tests):
 
 - `test_config.py`: every variable, every hyperparameter bound, unknown
   keys, URL schemes, credentials kept out of `repr`.
@@ -351,6 +352,11 @@ What the suite covers (145 tests):
   format and file type, eval split, accumulation, `maxSteps`, the time
   limit, resume, no credential in any output, and one test per exit code:
   10, 11, 12, 13, 14, 20, 1, and 30 by sending SIGTERM to a real process.
+  A GPU that was demanded and is not visible (exit 10, `cuda_unavailable`),
+  the last `--device` winning, and the folders a run cannot write: moved
+  and said, the model cache following the work directory, a cache named
+  outright left alone, nothing raised when no other folder can be made,
+  and train.py as a process using the moved cache.
 
 Exit 13 and 14 are produced by replacing the forward pass (an out-of-memory
 error and a NaN loss cannot be provoked honestly on a random model on CPU);
@@ -358,11 +364,12 @@ everything else runs the code a job runs.
 
 ## CPU proof on a real model
 
-`scripts/cpu_proof.py` runs `train.py` as a separate process, as the image's
-ENTRYPOINT would, against `HuggingFaceTB/SmolLM2-135M-Instruct` (a 270 MB
+`scripts/cpu_proof.py` runs `train.py` as a separate process with
+`--device cpu`, against `HuggingFaceTB/SmolLM2-135M-Instruct` (a 270 MB
 download, once) and the 40-row fixture, then reloads base + adapter with
 peft and generates. The fixture teaches one answer style, so the effect is
-visible in a sentence.
+visible in a sentence. With `--image` the same run happens inside the built
+image: see "The image" below.
 
 ```sh
 cd infra/training
@@ -458,30 +465,128 @@ GPU throughput or about the models in the catalog.
 
 ```sh
 docker build -t wheelsai-trainer infra/training     # context is this folder
+bash infra/training/scripts/publish-image.sh docker.io/<account>/wheelsai-trainer          # build
+bash infra/training/scripts/publish-image.sh docker.io/<account>/wheelsai-trainer --push   # build, publish, print the digest
 ```
 
 Base `pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime`, pinned by digest
 (`sha256:ac7c098a…7126`, read from the registry on 2026-10-07). The build
-installs `requirements.txt` and `requirements-gpu.txt` over the base's torch
-and fails if torch was replaced or a pin does not import.
+needs BuildKit (Docker 23 or later). What it does, in order:
 
-**The image has not been built.** Building pulls a base of several
-gigabytes, which was deliberately not done on this machine. What was
-checked instead:
+- The packages of `requirements.txt` and `requirements-gpu.txt` go in as
+  four layers (numpy, pyarrow, the rest, bitsandbytes), each installed
+  under `requirements.txt` as constraints. A registry takes a layer as one
+  upload and starts it again from nothing when the connection drops; the
+  largest of these is 42 MB to upload. The pip cache is a build cache
+  mount, so a rebuild on the same machine downloads nothing it already has.
+- bitsandbytes ships 16 CUDA libraries of about 25 MB each and loads the one
+  named after torch's CUDA version. That one (`cuda121`), its variant for
+  cards below compute capability 7.5 and the CPU stub are kept; the other
+  14 are removed in the same step.
+- A step with no network: `pip install --no-index` of both files (it fails
+  if a pin is missing or at another version), the imports, torch still
+  2.4.1 with CUDA, and the two bitsandbytes CUDA libraries loaded with
+  `ctypes`, which resolves their CUDA libraries without a GPU. `HF_HOME`
+  points away for this step.
+- `/workspace` is removed and made for uid 10001 (group 10001), and a last
+  step run as that user fails the build when the model cache or
+  `/workspace` cannot be written.
+- `ENTRYPOINT ["python", "/app/train.py", "--device", "cuda"]`.
+
+### Built and published, 2026-10-12
+
+The first build of the image, on this machine, at commit `bbfc70e`:
+
+| | |
+|---|---|
+| Reference | `docker.io/bprime/wheelsai-trainer@sha256:e99da13be989e6a868be2ef6d8f68e0c9aa860c034701ab830bec62d1a0ffcbb` (tag `bbfc70e`) |
+| On disk | 6.32 GB: the base is 5.93 GB, the packages 393 MB in four layers (78, 134, 128 and 53 MB) |
+| To pull | 3.27 GB in 16 layers: the base's five are 3.16 GB, ours 117 MB (22.5, 41.6, 36.9 and 16.1 MB for the packages) |
+| To build | the base once (3.16 GB to download) and 198 MB of wheels (40 of them; bitsandbytes is 122 MB); a rebuild with both cached took 72 s and downloaded nothing |
+| To publish | 126 MB sent: the registry took the base's layers from `pytorch/pytorch` ("Mounted from"), so only our layers were uploaded |
+| With no login | the registry served the manifest by digest and by tag to a request with no credential; its config digest is the image id tested below |
+
+What the first build found, all fixed in the Dockerfile above:
+
+- The image's user could not create its model cache. The import check ran
+  as root with `HF_HOME=/workspace/hf`, importing transformers made
+  `/workspace/hf/hub`, and only `/workspace` itself was handed to uid
+  10001. Every job would have ended at the model download with
+  `PermissionError`, after the GPU was rented. A local run with a ready
+  cache mounted over that folder did not see it.
+- Started with no argument on a machine with no GPU, the image trained on
+  the processor and ended as a success. On a node sold as a GPU that shows
+  none, that run would have been charged.
+- As one layer the packages were 240 MB to upload, and over a link that
+  dropped every connection after one to six minutes that upload never
+  finished (two tries, 245 MB sent for nothing).
+
+### The image, run on this machine
+
+`scripts/cpu_proof.py --image <reference>` starts the image with docker as a
+node does and never pulls it. No GPU is used: what it proves is the image,
+not CUDA.
+
+```sh
+~/.cache/wheelsai/trainer-venv/bin/python infra/training/scripts/cpu_proof.py \
+    --image docker.io/bprime/wheelsai-trainer:bbfc70e --hf-cache ~/.cache/wheelsai/hf
+```
+
+- It starts the image twice. First with no command, as a job definition
+  does: no GPU is handed to the container, so the image must refuse with
+  exit 10, `cuda_unavailable`. Then with `--device cpu`, as the image's own
+  user in its own `/workspace`.
+- With `--hf-cache` the loopback server answers as the Hugging Face hub from
+  a local cache that already holds the model, so the container downloads
+  the model from this machine into its own cache and nothing is fetched
+  from the internet.
+- It fails when the trainer had to move off a folder it could not write.
+  With `--user UID:GID` the container is started as someone else, as some
+  hosts do, and then that move is what must happen.
+
+Output on the published image, 2026-10-12 (step and phase events left out):
 
 ```
-$ docker build --check infra/training
-Check complete, no warnings found.
+--- started as a node starts it, with no GPU ---
+WHEELSAI_EVENT {"v":1,"seq":1,"ts":"2026-10-12T11:57:27.461Z","type":"failed","exitCode":10,"code":"cuda_unavailable","message":"No usable GPU is visible to this run (CUDA is not available), so nothing was trained.","phase":null}
+exit code  10   refused, as it must
+model      HuggingFaceTB/SmolLM2-135M-Instruct
+dataset    fixtures/tiny.jsonl (5740 bytes)
+image      docker.io/bprime/wheelsai-trainer:bbfc70e
+--- train.py output ---
+WHEELSAI_EVENT {"v":1,"seq":16,"ts":"2026-10-12T11:58:26.317Z","type":"uploaded","adapterBytes":18092374,"adapterSha256":"2e1b11408e94a88de5031156bf6f4b00c912934b7a52a61caefd7a322e170626"}
+WHEELSAI_EVENT {"v":1,"seq":17,"ts":"2026-10-12T11:58:26.317Z","type":"completed","finalTrainLoss":0.182407,"finalEvalLoss":0.315895,"trainSeconds":51.406,"steps":27,"totalSteps":27,"stopReason":"finished"}
+--- end of train.py output ---
+exit code  0   wall clock 69.1s
+eval loss   step 9: 0.3997, step 18: 0.3472, step 27: 0.3159
+first step 2.7710 -> mean of last 10 steps 0.1824
+adapter    18092374 bytes (tar.gz), sha256 2e1b11408e94a88de5031156bf6f4b00c912934b7a52a61caefd7a322e170626
+callbacks  17 received, 17 with a valid signature
+model      8 files downloaded from this machine: ['config.json', 'generation_config.json', 'merges.txt', 'model.safetensors', 'special_tokens_map.json', 'tokenizer.json', 'tokenizer_config.json', 'vocab.json']
+           asked for and not part of the model: ['adapter_config.json', 'added_tokens.json']
+prompt     Add 7 and 8, in WheelsAI report style.
+base       'Here\'s the updated report style:\n\n"WheelsAI report style:\n\n"WheelsAI report style:\n\n"WheelsAI report'
+adapter    'REPORT 19: 7 plus 8 is 15. END OF REPORT.'
 ```
 
-- The base tag exists and its digest is the one in the Dockerfile
-  (`docker buildx imagetools inspect`, manifest only).
-- The pins resolve together against torch 2.4.1 on Linux / Python 3.11,
-  bitsandbytes 0.44.1 included (`uv pip compile`, no install).
-- The build context holds only `train.py`, `wheelsai_trainer/*.py` and the
-  two requirement files (checked by exporting it through a scratch build).
-- The `trainer-test` CI job's script was rehearsed in a clean
-  `python:3.11-slim` container: see "CI" below.
+The same with `--user 12345:12345`:
+
+```
+The work directory /workspace cannot be written by uid 12345; using /tmp/wheelsai-trainer-pfk0xyo_
+The model cache /workspace/hf cannot be written by uid 12345; using /tmp/wheelsai-trainer-pfk0xyo_/hf
+exit code  0   wall clock 68.6s
+```
+
+Also checked from inside the image, as its user, against the real hub with
+the pinned client (`huggingface_hub` 0.26.2): `config.json` of
+`microsoft/Phi-3-mini-4k-instruct` downloads into the image's own cache,
+the two weight files are announced (4.97 GB and 2.67 GB) and the first
+megabyte of one is served. With the image's library versions on this
+machine, the tokenizers of the two open catalog models load and render a
+conversation without sentencepiece: Phi-3 mini (`LlamaTokenizerFast`, pad
+token `<|endoftext|>`, the system role kept) and Qwen2-7B-Instruct
+(`Qwen2TokenizerFast`). The gated models were not checked: that needs a
+Hugging Face token.
 
 ### CI
 
@@ -497,13 +602,15 @@ Check complete, no warnings found.
   `trainer-image.env`. It pushes to this project's registry unless the
   `TRAINER_IMAGE_REPOSITORY`, `TRAINER_REGISTRY`, `TRAINER_REGISTRY_USER`
   and `TRAINER_REGISTRY_PASSWORD` CI variables point elsewhere. It has
-  never been run.
+  never been run: the image above was built and published by hand, with
+  `scripts/publish-image.sh`, which does the same build.
 
 Nothing is published without a person pressing `trainer-image`. The API
 should be given the digest form, never a tag.
 
-Rehearsal of `trainer-test` on this machine (a clean container, the job's
-own commands):
+Rehearsal of `trainer-test` on this machine on 2026-10-07 (a clean
+container, the job's own commands; the suite had 145 tests then and has 157
+now, and the rehearsal has not been repeated):
 
 ```
 $ docker run --rm -v "$PWD/infra/training:/src:ro" python:3.11-slim sh -c \
@@ -526,8 +633,9 @@ cached.
 Everything above ran on CPU. The following is written but has never
 executed, and stays unproven until the first run on a GPU node:
 
-- **The image itself**: that the build completes, its size, and that a node
-  pulls it.
+- **A node pulling the image**: the build, its size and a request with no
+  login are covered above. No GPU node has pulled it, and how long that
+  takes (3.27 GB) is not known.
 - **QLoRA**: 4-bit loading with bitsandbytes (`METHOD=qlora`),
   `prepare_model_for_kbit_training`, gradient checkpointing, and
   bitsandbytes against the node's driver. On CPU the method is refused with

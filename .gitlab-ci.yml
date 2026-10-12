@@ -221,9 +221,11 @@ trainer-test:
 # A GPU node pulls without credentials, so the repository has to be public
 # or the API has to be given pull credentials; see docs/FOUNDER-ACTIONS.md.
 #
-# The image is about 6-7 GB (CUDA runtime plus torch), so the job gets its
-# own timeout. It has never been run: the Dockerfile passes
-# `docker build --check` and its pins resolve, but no build has completed.
+# The image is 6.32 GB on disk and 3.27 GB to pull (CUDA runtime plus
+# torch), so the job gets its own timeout. This job has never been run. The
+# same build was made and published by hand on 2026-10-12 with
+# infra/training/scripts/publish-image.sh; infra/training/README.md has the
+# figures.
 trainer-image:
   stage: images
   needs: [trainer-test]

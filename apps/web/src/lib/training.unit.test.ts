@@ -641,7 +641,7 @@ test("no record is shown for a job that never reached Nosana, or for an API that
 
 test("only Nosana's own page for a job is ever a link", () => {
   for (const jobUrl of [
-    "javascript:alert(1)",
+    "javascript:void(0)",
     `http://explore.nosana.com/jobs/${ADDRESS}`,
     `https://explore.nosana.com.example.org/jobs/${ADDRESS}`,
     `https://example.org/jobs/${ADDRESS}`,

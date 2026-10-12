@@ -6446,7 +6446,8 @@ export interface LaunchpadInfo {
   quote: string;
   /** Empty for a launchpad that has no curve to choose. */
   presets: CurvePreset[];
-  defaultPreset: string;
+  /** Null when there are no presets. */
+  defaultPreset: string | null;
   gate: {
     minReputation: number;
     minDeploymentAgeDays: number;
@@ -6484,6 +6485,12 @@ export interface TokenCurve {
   };
   graduatedPoolAddress: string | null;
   readAt: string;
+  // The members below are absent from an API older than they are.
+  /** The pool's lifetime trading fees in SOL, as the chain counts them. */
+  tradingFeesLamports?: string;
+  tradingFeesSol?: string;
+  /** The curve's shape, from the pool's own config. For a drawing only. */
+  curvePoints?: Array<{ soldPercent: number; priceSol: number }>;
 }
 
 export type TokenTradeSide = "buy" | "sell";
@@ -6505,6 +6512,12 @@ export interface TokenTradeQuote {
   minimumOutRaw: string;
   feeSol: string;
   priceSolAfter: string;
+  /**
+   * How much of `amountIn` the trade takes. Smaller than `amountIn` for a buy
+   * that would fill the curve. Absent from an API older than the members.
+   */
+  amountInUsed?: string;
+  amountInUsedRaw?: string;
 }
 
 /** What every `prepare` of the curve answers: a transaction for the wallet to sign. */
@@ -6602,6 +6615,8 @@ export const tokenApi = {
       partialSignedTxBase64: string;
       mintAddress: string;
       creatorPubkey: string;
+      /** The wallet the transaction was built for: the account's linked wallet. Absent from an older API. */
+      creatorAddress?: string;
       prepareToken: string;
       preset?: string;
       poolAddress?: string;
@@ -6616,7 +6631,8 @@ export const tokenApi = {
       mintAddress: string;
       txSignature: string;
       treasuryPdaAddress: string;
-      creatorLockupEnd: string;
+      /** Null for a token on Meteora: its lock, if it has one, starts at graduation. */
+      creatorLockupEnd: string | null;
     }>("/api/tokens/launch/submit", {
       method: "POST",
       body: data,
@@ -6634,7 +6650,8 @@ export const tokenApi = {
       mintAddress: string;
       txSignature: string;
       treasuryPdaAddress: string;
-      creatorLockupEnd: string;
+      /** Null for a token on Meteora: its lock, if it has one, starts at graduation. */
+      creatorLockupEnd: string | null;
       alreadyExisted: boolean;
     }>("/api/tokens/launch/reconcile", {
       method: "POST",

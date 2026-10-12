@@ -41,6 +41,8 @@ interface TokenTradePanelProps {
   /** For a token on Meteora: the curve as the page last read it. */
   curve?: TokenCurve | null;
   curveLoading?: boolean;
+  /** For a token on Meteora: the curve call answered that the token has no curve. */
+  curveMissing?: boolean;
   /** For a token on Meteora: called after a trade, so the page reads the curve again. */
   onTraded?: () => void;
 }
@@ -70,6 +72,7 @@ export function TokenTradePanel(props: TokenTradePanelProps) {
         mintAddress={props.mintAddress}
         curve={props.curve ?? null}
         curveLoading={props.curveLoading ?? false}
+        curveMissing={props.curveMissing ?? false}
         onTraded={props.onTraded ?? (() => {})}
       />
     );

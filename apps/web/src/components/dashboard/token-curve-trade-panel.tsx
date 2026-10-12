@@ -15,9 +15,12 @@ import { getTokenBalance } from "@/lib/pumpfun-trade";
 import {
   NOT_ENOUGH_SOL_SENTENCE,
   NOT_ENOUGH_TOKENS_SENTENCE,
+  NO_CURVE_NO_TRADE_SENTENCE,
   SOL_DECIMALS,
+  STILL_NOT_CONFIRMED_SENTENCE,
   TOKEN_DECIMALS,
   WALLET_CANNOT_SIGN_SENTENCE,
+  canCheckAgain,
   curveErrorSentence,
   explorerAddressUrl,
   explorerTxUrl,
@@ -25,15 +28,19 @@ import {
   formatLamports,
   formatTokenUnits,
   parseTypedAmount,
+  partialFillLine,
   rawExceeds,
-  sentSignatureFromError,
+  sentTransactionFromError,
   shareOfRaw,
+  tookTooLongToSign,
   tradingClosedSentence,
   typedAmountProblem,
+  type SentTransaction,
 } from "@/lib/token-curve";
 import { cn } from "@/lib/utils";
 
 import { signPreparedTransaction } from "./token-curve-sign";
+import { SentTransactionNotice } from "./token-sent-notice";
 
 /** How long the field must be still before a quote is asked for. */
 const QUOTE_DELAY_MS = 400;
@@ -55,6 +62,8 @@ interface TokenCurveTradePanelProps {
   /** Null while the curve is being read, and when it could not be read. */
   curve: TokenCurve | null;
   curveLoading: boolean;
+  /** The curve call answered that this token has no curve: the page has stopped asking. */
+  curveMissing?: boolean;
   /** Called after a trade is sent, so the page reads the curve again. */
   onTraded: () => void;
 }
@@ -71,6 +80,7 @@ export function TokenCurveTradePanel({
   mintAddress,
   curve,
   curveLoading,
+  curveMissing = false,
   onTraded,
 }: TokenCurveTradePanelProps) {
   const { publicKey, connected, signTransaction } = useWallet();
@@ -84,6 +94,13 @@ export function TokenCurveTradePanel({
   const [stage, setStage] = useState<Stage>("idle");
   const [error, setError] = useState<string | null>(null);
   const [lastSignature, setLastSignature] = useState<string | null>(null);
+  // Signing took too long: the line under the button offers to prepare again.
+  const [expired, setExpired] = useState(false);
+  // A trade that was sent and that the server could not vouch for. The body
+  // it was posted with is kept, so "Check again" posts the same one.
+  const [sent, setSent] = useState<SentTransaction | null>(null);
+  const sentBody = useRef<{ prepareToken: string; signedTransaction: string } | null>(null);
+  const [checking, setChecking] = useState(false);
 
   const [quote, setQuote] = useState<TokenTradeQuote | null>(null);
   const [quoting, setQuoting] = useState(false);
@@ -169,6 +186,18 @@ export function TokenCurveTradePanel({
         ? NOT_ENOUGH_TOKENS_SENTENCE
         : null;
 
+  const traded = (result: Awaited<ReturnType<typeof tokenApi.submitTrade>>) => {
+    setSent(null);
+    sentBody.current = null;
+    setLastSignature(result.signature);
+    toast.success(
+      result.trade.side === "buy"
+        ? `Bought ${formatTokenUnits(result.trade.tokenAmountRaw)} ${symbol}`
+        : `Sold ${formatTokenUnits(result.trade.tokenAmountRaw)} ${symbol}`
+    );
+    setAmount("");
+  };
+
   const trade = async () => {
     if (!connected || !publicKey) {
       setVisible(true);
@@ -181,6 +210,9 @@ export function TokenCurveTradePanel({
     if (typedAmount === null) return;
 
     setError(null);
+    setExpired(false);
+    setSent(null);
+    sentBody.current = null;
     setLastSignature(null);
     setStage("preparing");
     try {
@@ -196,22 +228,17 @@ export function TokenCurveTradePanel({
       setStage("signing");
       const signedTransaction = await signPreparedTransaction(signTransaction, prepared.transaction);
       setStage("sending");
-      const result = await tokenApi.submitTrade(tokenId, {
-        prepareToken: prepared.prepareToken,
-        signedTransaction,
-      });
-      setLastSignature(result.signature);
-      toast.success(
-        result.trade.side === "buy"
-          ? `Bought ${formatTokenUnits(result.trade.tokenAmountRaw)} ${symbol}`
-          : `Sold ${formatTokenUnits(result.trade.tokenAmountRaw)} ${symbol}`
-      );
-      setAmount("");
+      const body = { prepareToken: prepared.prepareToken, signedTransaction };
+      sentBody.current = body;
+      traded(await tokenApi.submitTrade(tokenId, body));
     } catch (err) {
-      setError(curveErrorSentence(err, "The trade did not go through. Try again."));
-      // Sent but not seen confirmed: the signature is shown, so the person
-      // can look before trading again.
-      setLastSignature(sentSignatureFromError(err));
+      // Sent and not seen confirmed, or refused by the chain: the signature
+      // and its link are shown, and what was typed stays in the field.
+      const wasSent = sentTransactionFromError(err);
+      setSent(wasSent);
+      if (!canCheckAgain(wasSent)) sentBody.current = null;
+      setExpired(tookTooLongToSign(err));
+      setError(wasSent ? null : curveErrorSentence(err, "The trade did not go through. Try again."));
       // Whatever went wrong, the quote on screen is no longer the one to trust.
       setQuoteNonce((n) => n + 1);
     } finally {
@@ -221,13 +248,40 @@ export function TokenCurveTradePanel({
     }
   };
 
+  // The same body once more. The server sends nothing a second time: it
+  // records the trade if the transaction has landed.
+  const checkAgain = async () => {
+    const body = sentBody.current;
+    if (!body || checking) return;
+    setChecking(true);
+    setError(null);
+    try {
+      traded(await tokenApi.submitTrade(tokenId, body));
+    } catch (err) {
+      const wasSent = sentTransactionFromError(err);
+      if (wasSent) {
+        setSent(wasSent);
+        if (wasSent.kind === "failed") sentBody.current = null;
+      } else {
+        // The signature stays on the page: it is all there is to follow.
+        setError(STILL_NOT_CONFIRMED_SENTENCE);
+      }
+    } finally {
+      setChecking(false);
+      onTraded();
+      void refreshBalances();
+    }
+  };
+
   // One sentence under a button that cannot be pressed.
   const disabledReason = closed
     ? closed
     : !curve
-      ? curveLoading
-        ? "Reading the curve."
-        : "The curve could not be read from Solana just now, so trading is paused."
+      ? curveMissing
+        ? NO_CURVE_NO_TRADE_SENTENCE
+        : curveLoading
+          ? "Reading the curve."
+          : "The curve could not be read from Solana just now, so trading is paused."
       : !connected
         ? null
         : amountProblem
@@ -308,6 +362,7 @@ export function TokenCurveTradePanel({
                 setSide(choice);
                 setAmount("");
                 setError(null);
+                setExpired(false);
               }}
               disabled={busy}
             >
@@ -330,6 +385,7 @@ export function TokenCurveTradePanel({
             onChange={(e) => {
               setAmount(e.target.value);
               setError(null);
+              setExpired(false);
             }}
             disabled={busy || closed !== null}
           />
@@ -385,6 +441,9 @@ export function TokenCurveTradePanel({
                   <span className="text-muted-foreground">Trading fee</span>
                   <span className="break-all font-mono">{formatDecimal(quote.feeSol)} SOL</span>
                 </div>
+                {partialFillLine(quote) && (
+                  <p className="pt-1 text-xs text-yellow-600">{partialFillLine(quote)}</p>
+                )}
               </>
             ) : quoteError ? (
               <p className="text-red-600">{quoteError}</p>
@@ -424,21 +483,38 @@ export function TokenCurveTradePanel({
             {error}
           </p>
         )}
+        {expired && !busy && (
+          <Button size="sm" variant="outline" className="w-full" onClick={() => void trade()}>
+            Prepare again
+          </Button>
+        )}
+
+        {sent && (
+          <SentTransactionNotice
+            sent={sent}
+            network={network}
+            checking={checking}
+            onCheckAgain={() => void checkAgain()}
+          />
+        )}
 
         {lastSignature && (
           <div className="space-y-1 text-xs">
             <p className="text-muted-foreground">
               Sent. Signature <span className="break-all font-mono">{lastSignature}</span>
             </p>
-            <a
-              href={explorerTxUrl(lastSignature, network)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-primary hover:underline"
-            >
-              <ExternalLink className="h-3 w-3" aria-hidden />
-              View the transaction on Solana&apos;s explorer
-            </a>
+            {/* The explorer needs the network. Without a curve read it is not known, so no link is made up. */}
+            {network && (
+              <a
+                href={explorerTxUrl(lastSignature, network)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" aria-hidden />
+                View the transaction on Solana&apos;s explorer
+              </a>
+            )}
           </div>
         )}
 

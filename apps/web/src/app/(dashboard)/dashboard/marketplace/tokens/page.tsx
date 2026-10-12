@@ -23,6 +23,7 @@ import {
   ArrowUpDown,
 } from "lucide-react";
 import { getErrorMessage } from "@/lib/api";
+import { NO_FIGURE, curveListLabel } from "@/lib/token-curve";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -183,6 +184,11 @@ export default function TokenMarketplacePage() {
               100
             : 0;
         const isPositive = priceChange >= 0;
+        // A token on Meteora has no dollar price here: say where it trades, not $0.
+        const curveLabel = token.priceUsd > 0 ? null : curveListLabel(token);
+        if (curveLabel) {
+          return <div className="text-right text-sm font-medium">{curveLabel}</div>;
+        }
         return (
           <div className="text-right">
             <div className="font-medium">{formatUsd(token.priceUsd)}</div>
@@ -209,7 +215,11 @@ export default function TokenMarketplacePage() {
       sortable: true,
       className: "text-right",
       render: (token) => (
-        <span className="text-right block font-medium">{formatUsd(token.marketCapUsd)}</span>
+        <span className="text-right block font-medium">
+          {curveListLabel(token) && !(token.marketCapUsd > 0)
+            ? NO_FIGURE
+            : formatUsd(token.marketCapUsd)}
+        </span>
       ),
     },
     {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { Coins, ExternalLink, GraduationCap, Loader2, Wallet } from "lucide-react";
@@ -12,8 +12,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { tokenApi, type TokenCurve } from "@/lib/api";
 import {
   GRADUATION_EXPLANATION,
+  NO_CURVE_SENTENCE,
   REQUEST_EXPIRED_SENTENCE,
+  STILL_NOT_CONFIRMED_SENTENCE,
   WALLET_CANNOT_SIGN_SENTENCE,
+  canCheckAgain,
   curveErrorSentence,
   curveStateSentence,
   explorerAddressUrl,
@@ -28,10 +31,17 @@ import {
   progressLabel,
   progressPercent,
   progressPercentLabel,
+  sentTransactionFromError,
+  tookTooLongToSign,
+  type SentTransaction,
 } from "@/lib/token-curve";
 import { cn } from "@/lib/utils";
 
 import { signPreparedTransaction } from "./token-curve-sign";
+import { SentTransactionNotice } from "./token-sent-notice";
+
+/** What a `submit` of the curve is posted with. Kept so "Check again" posts the same body. */
+type SubmitBody = { prepareToken: string; signedTransaction: string };
 
 /** An address on its own line with a link to Solana's explorer. It has no place to break, so it is cut into lines. */
 function AddressLine({
@@ -83,6 +93,7 @@ export function TokenCurveCard({
   curve,
   loading,
   stale = false,
+  missing = false,
   onChanged,
 }: {
   tokenId: string;
@@ -91,6 +102,8 @@ export function TokenCurveCard({
   loading: boolean;
   /** The latest read failed and `curve` is the one before it. */
   stale?: boolean;
+  /** The curve call answered 404: this token has no curve, and the page has stopped asking. */
+  missing?: boolean;
   /** Called after graduation moves, so the page reads the curve again. */
   onChanged: () => void;
 }) {
@@ -138,7 +151,7 @@ export function TokenCurveCard({
               <p className="mt-2 text-xs text-muted-foreground">{GRADUATION_EXPLANATION}</p>
             </div>
 
-            <dl className="grid gap-3 sm:grid-cols-3">
+            <dl className="grid gap-3 sm:grid-cols-2">
               <div>
                 <dt className="text-muted-foreground">Price</dt>
                 <dd className="break-all font-mono">{formatPriceSol(curve.priceSol)} SOL</dd>
@@ -151,6 +164,13 @@ export function TokenCurveCard({
                 <dt className="text-muted-foreground">Graduates at</dt>
                 <dd className="font-mono">{formatDecimal(curve.graduationSol)} SOL raised</dd>
               </div>
+              {/* Absent from an API older than the member: then the line is left out, never shown empty. */}
+              {typeof curve.tradingFeesSol === "string" && (
+                <div>
+                  <dt className="text-muted-foreground">Trading fees since launch</dt>
+                  <dd className="break-all font-mono">{formatDecimal(curve.tradingFeesSol)} SOL</dd>
+                </div>
+              )}
             </dl>
 
             {curve.creatorLocked && (
@@ -180,6 +200,8 @@ export function TokenCurveCard({
               />
             )}
           </>
+        ) : missing ? (
+          <p className="text-muted-foreground">{NO_CURVE_SENTENCE}</p>
         ) : loading ? (
           <div className="space-y-3" aria-busy="true">
             <Skeleton className="h-4 w-1/2" />
@@ -223,6 +245,33 @@ function GraduateSection({
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signatures, setSignatures] = useState<string[]>([]);
+  // Signing took too long: the button offers to prepare the step again.
+  const [expired, setExpired] = useState(false);
+  // A step that was sent and that the server could not vouch for, with the
+  // body it was posted with, so "Check again" posts the same one.
+  const [sent, setSent] = useState<SentTransaction | null>(null);
+  const sentBody = useRef<SubmitBody | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  // Only the move into the pool is graduation. A lock that went through is
+  // not, whatever count came with it.
+  const stepLanded = (step: string, signature: string): boolean => {
+    setSignatures((prev) => (prev.includes(signature) ? prev : [...prev, signature]));
+    return step === "migrate";
+  };
+
+  const failed = (err: unknown) => {
+    const wasSent = sentTransactionFromError(err);
+    setSent(wasSent);
+    if (!canCheckAgain(wasSent)) sentBody.current = null;
+    setExpired(tookTooLongToSign(err));
+    setNote(null);
+    setError(
+      wasSent
+        ? null
+        : curveErrorSentence(err, "Graduation did not go through. Try again.", REQUEST_EXPIRED_SENTENCE)
+    );
+  };
 
   const graduate = async () => {
     if (!connected || !publicKey) {
@@ -235,6 +284,9 @@ function GraduateSection({
     }
     setBusy(true);
     setError(null);
+    setExpired(false);
+    setSent(null);
+    sentBody.current = null;
     onBegun();
     let graduated = false;
     try {
@@ -249,14 +301,11 @@ function GraduateSection({
           `${graduationStepLabel(done, prepared.stepsLeftAfterThis)}. ${graduationStepSentence(prepared.step)} Approve it in your wallet.`
         );
         const signedTransaction = await signPreparedTransaction(signTransaction, prepared.transaction);
-        const result = await tokenApi.submitGraduation(tokenId, {
-          prepareToken: prepared.prepareToken,
-          signedTransaction,
-        });
-        setSignatures((prev) => [...prev, result.signature]);
-        // Only the move into the pool is graduation. A lock that went
-        // through is not, whatever count came with it.
-        if (prepared.step === "migrate" || result.step === "migrate") {
+        const body = { prepareToken: prepared.prepareToken, signedTransaction };
+        sentBody.current = body;
+        const result = await tokenApi.submitGraduation(tokenId, body);
+        sentBody.current = null;
+        if (stepLanded(prepared.step === "migrate" ? "migrate" : result.step, result.signature)) {
           graduated = true;
           break;
         }
@@ -264,12 +313,41 @@ function GraduateSection({
       setNote(graduated ? "The token has graduated." : null);
       if (graduated) toast.success("The token has graduated");
     } catch (err) {
-      setNote(null);
-      setError(
-        curveErrorSentence(err, "Graduation did not go through. Try again.", REQUEST_EXPIRED_SENTENCE)
-      );
+      failed(err);
     } finally {
       setBusy(false);
+      onChanged();
+    }
+  };
+
+  // The same body once more. The server sends nothing a second time: it
+  // records the step if the transaction has landed.
+  const checkAgain = async () => {
+    const body = sentBody.current;
+    if (!body || checking) return;
+    setChecking(true);
+    setError(null);
+    try {
+      const result = await tokenApi.submitGraduation(tokenId, body);
+      setSent(null);
+      sentBody.current = null;
+      if (stepLanded(result.step, result.signature)) {
+        setNote("The token has graduated.");
+        toast.success("The token has graduated");
+      } else {
+        setNote("That step went through. Press Graduate for the next one.");
+      }
+    } catch (err) {
+      const wasSent = sentTransactionFromError(err);
+      if (wasSent) {
+        setSent(wasSent);
+        if (wasSent.kind === "failed") sentBody.current = null;
+      } else {
+        // The signature stays on the page: it is all there is to follow.
+        setError(STILL_NOT_CONFIRMED_SENTENCE);
+      }
+    } finally {
+      setChecking(false);
       onChanged();
     }
   };
@@ -293,7 +371,13 @@ function GraduateSection({
             ) : (
               <Wallet className="mr-2 h-4 w-4" />
             )}
-            {busy ? "Graduating" : connected ? "Graduate" : "Connect a wallet to graduate"}
+            {busy
+              ? "Graduating"
+              : !connected
+                ? "Connect a wallet to graduate"
+                : expired
+                  ? "Prepare again"
+                  : "Graduate"}
           </Button>
         </>
       )}
@@ -306,6 +390,14 @@ function GraduateSection({
         <p className="text-xs text-red-600" role="alert">
           {error}
         </p>
+      )}
+      {sent && (
+        <SentTransactionNotice
+          sent={sent}
+          network={network}
+          checking={checking}
+          onCheckAgain={() => void checkAgain()}
+        />
       )}
       {signatures.map((signature) => (
         <div key={signature}>
@@ -334,12 +426,25 @@ export function TokenCreatorFeesCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [claimed, setClaimed] = useState<{ signature: string; lamports: string } | null>(null);
+  // As in the trade panel: signing that took too long, and a claim that was
+  // sent and not seen confirmed, with the body "Check again" posts once more.
+  const [expired, setExpired] = useState(false);
+  const [sent, setSent] = useState<SentTransaction | null>(null);
+  const sentBody = useRef<SubmitBody | null>(null);
+  const [checking, setChecking] = useState(false);
 
   if (!curve || !publicKey || !isSameAddress(publicKey.toBase58(), curve.creatorAddress)) {
     return null;
   }
 
   const nothingToClaim = !/[1-9]/.test(curve.creatorClaimableLamports);
+
+  const claimDone = (result: { signature: string; claimedLamports: string }) => {
+    setSent(null);
+    sentBody.current = null;
+    setClaimed({ signature: result.signature, lamports: result.claimedLamports });
+    toast.success("Fees claimed");
+  };
 
   const claim = async () => {
     if (!signTransaction) {
@@ -348,21 +453,49 @@ export function TokenCreatorFeesCard({
     }
     setBusy(true);
     setError(null);
+    setExpired(false);
+    setSent(null);
+    sentBody.current = null;
     try {
       const prepared = await tokenApi.prepareFeeClaim(tokenId, { wallet: publicKey.toBase58() });
       const signedTransaction = await signPreparedTransaction(signTransaction, prepared.transaction);
-      const result = await tokenApi.submitFeeClaim(tokenId, {
-        prepareToken: prepared.prepareToken,
-        signedTransaction,
-      });
-      setClaimed({ signature: result.signature, lamports: result.claimedLamports });
-      toast.success("Fees claimed");
+      const body = { prepareToken: prepared.prepareToken, signedTransaction };
+      sentBody.current = body;
+      claimDone(await tokenApi.submitFeeClaim(tokenId, body));
     } catch (err) {
+      const wasSent = sentTransactionFromError(err);
+      setSent(wasSent);
+      if (!canCheckAgain(wasSent)) sentBody.current = null;
+      setExpired(tookTooLongToSign(err));
       setError(
-        curveErrorSentence(err, "The claim did not go through. Try again.", REQUEST_EXPIRED_SENTENCE)
+        wasSent
+          ? null
+          : curveErrorSentence(err, "The claim did not go through. Try again.", REQUEST_EXPIRED_SENTENCE)
       );
     } finally {
       setBusy(false);
+      onChanged();
+    }
+  };
+
+  // The same body once more. The server sends nothing a second time.
+  const checkAgain = async () => {
+    const body = sentBody.current;
+    if (!body || checking) return;
+    setChecking(true);
+    setError(null);
+    try {
+      claimDone(await tokenApi.submitFeeClaim(tokenId, body));
+    } catch (err) {
+      const wasSent = sentTransactionFromError(err);
+      if (wasSent) {
+        setSent(wasSent);
+        if (wasSent.kind === "failed") sentBody.current = null;
+      } else {
+        setError(STILL_NOT_CONFIRMED_SENTENCE);
+      }
+    } finally {
+      setChecking(false);
       onChanged();
     }
   };
@@ -391,7 +524,7 @@ export function TokenCreatorFeesCard({
           ) : (
             <Coins className="mr-2 h-4 w-4" />
           )}
-          {busy ? "Claiming" : "Claim"}
+          {busy ? "Claiming" : expired ? "Prepare again" : "Claim"}
         </Button>
         {nothingToClaim && !busy && (
           <p className="text-xs text-muted-foreground">There are no fees to claim yet.</p>
@@ -400,6 +533,14 @@ export function TokenCreatorFeesCard({
           <p className="text-xs text-red-600" role="alert">
             {error}
           </p>
+        )}
+        {sent && (
+          <SentTransactionNotice
+            sent={sent}
+            network={curve.network}
+            checking={checking}
+            onCheckAgain={() => void checkAgain()}
+          />
         )}
         {claimed && (
           <div className="space-y-1">

@@ -107,6 +107,7 @@ function agentTokenToCardData(token: AgentToken): TokenCardData {
     volume24h: token.volume24h,
     holders: token.holders,
     status: token.status,
+    launchpad: token.launchpad,
     agentName: token.agentListing?.title,
     createdAt: token.createdAt,
   };

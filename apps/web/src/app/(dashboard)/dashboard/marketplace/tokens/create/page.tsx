@@ -25,12 +25,25 @@ import {
 } from "@/lib/api";
 import { CurvePresetCard } from "@/components/dashboard/curve-preset-card";
 import { signPreparedTransaction } from "@/components/dashboard/token-curve-sign";
+import { SentTransactionNotice } from "@/components/dashboard/token-sent-notice";
 import {
   GRADUATION_EXPLANATION,
+  PICTURE_LINK_HELP,
+  PICTURE_LINK_NOT_A_LINK_SENTENCE,
   explorerAddressUrl,
   explorerTxUrl,
+  isNoLinkedWalletRefusal,
+  launchCheckSentence,
+  launchErrorSentence,
   launchpadLabel,
+  linkedWalletMismatchSentence,
+  preparedForAnotherWallet,
   presetFacts,
+  presetLockSentence,
+  readPictureLink,
+  sentTransactionFromError,
+  tookTooLongToSign,
+  type SentTransaction,
 } from "@/lib/token-curve";
 import {
   ArrowLeft,
@@ -43,6 +56,7 @@ import {
   Shield,
   Sparkles,
   ExternalLink,
+  RefreshCw,
 } from "lucide-react";
 
 // The launchpad's name comes from GET /api/tokens/launchpad. This build-time
@@ -74,9 +88,10 @@ export default function CreateTokenPage() {
   const [checkingEligibility, setCheckingEligibility] = useState<string | null>(null);
 
   // Which launchpad is on, its curves and the launch gate. Null until the
-  // call answers, and for good when it fails: the page then works as it did
-  // before the call existed.
+  // call answers. Until it has, a launch cannot be prepared: the build-time
+  // fallback names a launchpad, it does not know this one's curves or rules.
   const [launchpad, setLaunchpad] = useState<LaunchpadInfo | null>(null);
+  const [launchpadFailed, setLaunchpadFailed] = useState(false);
   const [presetId, setPresetId] = useState<string | null>(null);
 
   // Step 1: Selected listing
@@ -89,9 +104,21 @@ export default function CreateTokenPage() {
   // Optional creator "dev buy" in SOL (spends the user's own SOL via the
   // wallet-signed tx). Empty string = no initial buy.
   const [initialBuySol, setInitialBuySol] = useState("");
+  // Asked for only when the agent's listing has no icon: a token needs a picture.
+  const [pictureLink, setPictureLink] = useState("");
 
   // Step 4: Creating
   const [isCreating, setIsCreating] = useState(false);
+  // Why the last try did not launch, as a line that stays on the page.
+  // `settings` adds a link to Settings, where an account's wallet is linked.
+  const [problem, setProblem] = useState<{ sentence: string; settings: boolean } | null>(null);
+  // Signing took too long: the button offers to prepare again.
+  const [expired, setExpired] = useState(false);
+  // A launch that was sent and that the server could not vouch for, with
+  // what "Check again" needs to ask whether the token is on Solana.
+  const [sent, setSent] = useState<SentTransaction | null>(null);
+  const [sentLaunch, setSentLaunch] = useState<{ prepareToken: string; mintAddress: string } | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
 
   // Set once the launch is on chain and saved: the page shows where it went.
   const [launched, setLaunched] = useState<{
@@ -116,6 +143,9 @@ export default function CreateTokenPage() {
   // agent's listing icon. Without one, prepare would fail server-side, so
   // block the flow early with an actionable message.
   const missingIcon = !!selectedListing && !selectedListing.iconUrl;
+  // A picture link typed here stands in for the missing icon.
+  const picture = readPictureLink(pictureLink);
+  const missingPicture = missingIcon && !picture.ok;
 
   const launchpadName = launchpad ? launchpadLabel(launchpad.launchpad) : FALLBACK_LAUNCHPAD_LABEL;
   const isMeteora = launchpad?.launchpad === "meteora";
@@ -125,24 +155,29 @@ export default function CreateTokenPage() {
   // answer for the agent chosen. Never a number written into this page.
   const gate = launchpad?.gate ?? selectedEligibility?.requirements ?? null;
 
-  useEffect(() => {
+  const loadLaunchpad = useCallback(() => {
     let cancelled = false;
+    setLaunchpadFailed(false);
     tokenApi
       .launchpadInfo()
       .then((info) => {
         if (cancelled) return;
-        setLaunchpad(info);
-        const first =
-          info.presets.find((p) => p.id === info.defaultPreset) ?? info.presets[0] ?? null;
+        const presets = Array.isArray(info.presets) ? info.presets : [];
+        setLaunchpad({ ...info, presets });
+        // `defaultPreset` is null when the launchpad has no curve to choose.
+        const first = presets.find((p) => p.id === info.defaultPreset) ?? presets[0] ?? null;
         setPresetId(first ? first.id : null);
       })
       .catch(() => {
-        // The fallback label and the eligibility answer carry the page.
+        // The fallback label carries the page's title. Nothing can be launched.
+        if (!cancelled) setLaunchpadFailed(true);
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => loadLaunchpad(), [loadLaunchpad]);
 
   const loadListings = useCallback(async () => {
     try {
@@ -216,6 +251,8 @@ export default function CreateTokenPage() {
     }
 
     if (!selectedListingId || !selectedListing) return;
+    // Never with the fallback's assumptions: see `launchpad` above.
+    if (!launchpad) return;
 
     // Browser-partial-sign flow (Phase 1.5):
     //   1. POST /launch/prepare  → server prepares the launchpad's create
@@ -226,9 +263,14 @@ export default function CreateTokenPage() {
     //   3. POST /launch/submit   → server broadcasts the fully-signed
     //                              tx, persists AgentToken + AgentTreasury.
     setIsCreating(true);
+    setProblem(null);
+    setExpired(false);
+    setSent(null);
+    setSentLaunch(null);
     // Hoisted so the catch can hand the recovery flow the same prepare
     // token if persistence fails after the mint is already on-chain.
     let prepareTokenForRecovery: string | null = null;
+    let preparedMint: string | null = null;
     try {
       const parsedBuy = Number(initialBuySol);
       const prepared = await tokenApi.prepareLaunch({
@@ -236,7 +278,8 @@ export default function CreateTokenPage() {
         name: tokenName,
         symbol: tokenSymbol,
         description: tokenDescription || tokenName,
-        imageUri: selectedListing.iconUrl ?? undefined,
+        // `||`, not `??`: an icon saved as an empty string is a missing icon.
+        imageUri: selectedListing.iconUrl || (picture.ok ? picture.url : undefined),
         // On Meteora the first buy is made on the token's page: the server
         // refuses a launch that carries one.
         initialBuySol:
@@ -244,6 +287,21 @@ export default function CreateTokenPage() {
         preset: selectedPreset?.id,
       });
       prepareTokenForRecovery = prepared.prepareToken;
+      preparedMint = prepared.mintAddress;
+
+      // The server built this for the account's linked wallet. A different
+      // wallet connected here could only sign a transaction the server will
+      // refuse, so it is not asked to.
+      const connectedAddress = publicKey.toBase58();
+      const linkedElsewhere = preparedForAnotherWallet(prepared, connectedAddress);
+      if (linkedElsewhere) {
+        setProblem({
+          sentence: linkedWalletMismatchSentence(linkedElsewhere, connectedAddress),
+          settings: true,
+        });
+        setIsCreating(false);
+        return;
+      }
 
       // The wallet adds its signature. wallet.signTransaction preserves
       // existing signatures (the slots the server already filled) and only
@@ -283,8 +341,52 @@ export default function CreateTokenPage() {
         setIsCreating(false);
         return;
       }
-      toast.error(getErrorMessage(err, "Failed to create token"));
+      // Sent and not seen confirmed, or refused by the chain: the signature
+      // and its link are shown. Nothing typed is lost either way.
+      const wasSent = sentTransactionFromError(err);
+      if (wasSent) {
+        setSent(wasSent);
+        setSentLaunch(
+          wasSent.kind === "not_confirmed" && prepareTokenForRecovery && preparedMint
+            ? { prepareToken: prepareTokenForRecovery, mintAddress: preparedMint }
+            : null
+        );
+      } else {
+        setProblem({
+          sentence: launchErrorSentence(err, "The token could not be created. Try again."),
+          settings: isNoLinkedWalletRefusal(err),
+        });
+        setExpired(tookTooLongToSign(err));
+      }
       setIsCreating(false);
+    }
+  };
+
+  // A launch that was sent and not seen confirmed. Sending it again would
+  // not record it, so this asks the route that does: is the token on Solana?
+  // If it is, it is saved and the page moves on.
+  const handleCheckLaunch = async () => {
+    if (!sent || !sentLaunch || isChecking) return;
+    setIsChecking(true);
+    setProblem(null);
+    try {
+      const result = await tokenApi.reconcileLaunch({
+        prepareToken: sentLaunch.prepareToken,
+        mintAddress: sentLaunch.mintAddress,
+        txSignature: sent.signature,
+      });
+      toast.success("Token created");
+      setLaunched({
+        tokenId: result.tokenId,
+        mintAddress: result.mintAddress,
+        txSignature: result.txSignature,
+      });
+      setSent(null);
+      setSentLaunch(null);
+    } catch (err) {
+      setProblem({ sentence: launchCheckSentence(err), settings: false });
+    } finally {
+      setIsChecking(false);
     }
   };
 
@@ -300,14 +402,13 @@ export default function CreateTokenPage() {
       toast.success("Token linked");
       router.push(`/dashboard/marketplace/tokens/${result.tokenId}`);
     } catch (err: any) {
-      toast.error(
-        getErrorMessage(err, "The retry failed. Try again, or contact support.")
-      );
+      toast.error(launchCheckSentence(err, "The retry failed. Try again, or contact support."));
       setIsRetrying(false);
     }
   };
 
   const canProceed = (): boolean => {
+    if (!launchpad) return false;
     switch (step) {
       case 1:
         return !!selectedListingId && !!selectedEligibility?.eligible;
@@ -315,7 +416,7 @@ export default function CreateTokenPage() {
         return (
           tokenName.length >= 2 &&
           tokenSymbol.length >= 2 &&
-          !missingIcon &&
+          !missingPicture &&
           (presets.length === 0 || selectedPreset !== null)
         );
       case 3:
@@ -330,13 +431,22 @@ export default function CreateTokenPage() {
   // Why "Next" cannot be pressed, in one sentence.
   const nextBlockedReason = (): string | null => {
     if (canProceed()) return null;
+    if (!launchpad) {
+      return launchpadFailed
+        ? "The launchpad's details could not be read, so a launch cannot be prepared."
+        : "Reading the launchpad's details.";
+    }
     if (step === 1) {
       if (!selectedListingId) return "Choose an agent first.";
       if (checkingEligibility) return "Checking whether this agent can launch a token.";
       return "This agent cannot launch a token yet. The reasons are listed under it.";
     }
     if (step === 2) {
-      if (missingIcon) return "This agent needs an icon before it can launch a token.";
+      if (missingPicture) {
+        return picture.ok === false && picture.reason === "not_a_link"
+          ? PICTURE_LINK_NOT_A_LINK_SENTENCE
+          : "This agent has no icon. Type a picture link first: a token needs a picture.";
+      }
       if (tokenName.length < 2) return "Give the token a name of at least 2 characters.";
       if (tokenSymbol.length < 2) return "Give the token a symbol of at least 2 characters.";
       return "Choose a curve first.";
@@ -350,7 +460,12 @@ export default function CreateTokenPage() {
     <div className="flex flex-col">
       <Header
         title="Create Agent Token"
-        description={`Launch a token for your AI agent on the ${launchpadName} bonding curve`}
+        description={
+          // While the launchpad is being read its name is not known, so none is said.
+          launchpad || launchpadFailed
+            ? `Launch a token for your AI agent on the ${launchpadName} bonding curve`
+            : "Launch a token for your AI agent"
+        }
       />
 
       <div className="p-8 max-w-3xl mx-auto w-full space-y-6">
@@ -418,11 +533,7 @@ export default function CreateTokenPage() {
                 <div className="flex justify-between gap-4">
                   <span className="text-muted-foreground shrink-0">Mint</span>
                   <a
-                    href={
-                      launchpad
-                        ? explorerAddressUrl(recovery.mintAddress, launchpad.network)
-                        : `https://solscan.io/token/${recovery.mintAddress}`
-                    }
+                    href={explorerAddressUrl(recovery.mintAddress, launchpad?.network)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-xs truncate text-primary hover:underline"
@@ -435,11 +546,7 @@ export default function CreateTokenPage() {
                     Transaction
                   </span>
                   <a
-                    href={
-                      launchpad
-                        ? explorerTxUrl(recovery.txSignature, launchpad.network)
-                        : `https://solscan.io/tx/${recovery.txSignature}`
-                    }
+                    href={explorerTxUrl(recovery.txSignature, launchpad?.network)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="font-mono text-xs truncate text-primary hover:underline"
@@ -468,6 +575,32 @@ export default function CreateTokenPage() {
           </Card>
         ) : (
         <>
+        {/* Until the launchpad has answered, nothing can be prepared. */}
+        {!launchpad && (
+          <div
+            className="flex flex-wrap items-center gap-3 rounded-lg border p-4 text-sm text-muted-foreground"
+            role="status"
+            data-testid="launchpad-loading"
+          >
+            {launchpadFailed ? (
+              <>
+                <span className="min-w-0 flex-1 basis-48">
+                  The launchpad&apos;s details could not be read, so a launch cannot be prepared.
+                </span>
+                <Button size="sm" variant="outline" onClick={() => loadLaunchpad()}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Try again
+                </Button>
+              </>
+            ) : (
+              <>
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+                <span>Reading the launchpad&apos;s details.</span>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Progress bar */}
         <div className="flex items-center gap-2">
           {stepLabels.map((label, i) => (
@@ -625,9 +758,25 @@ export default function CreateTokenPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               {missingIcon && (
-                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-600">
-                  This agent has no icon image. Add an icon to its marketplace
-                  listing before launching a token: a token needs a picture.
+                <div>
+                  <label className="block text-sm font-medium mb-1" htmlFor="token-picture-link">
+                    Picture link
+                  </label>
+                  <Input
+                    id="token-picture-link"
+                    type="url"
+                    inputMode="url"
+                    autoComplete="off"
+                    value={pictureLink}
+                    onChange={(e) => setPictureLink(e.target.value)}
+                    placeholder="https://"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    This agent has no icon, and a token needs a picture. {PICTURE_LINK_HELP}
+                  </p>
+                  {picture.ok === false && picture.reason === "not_a_link" && (
+                    <p className="text-xs text-red-600 mt-1">{PICTURE_LINK_NOT_A_LINK_SENTENCE}</p>
+                  )}
                 </div>
               )}
               <div>
@@ -879,10 +1028,14 @@ export default function CreateTokenPage() {
                   </div>
 
                   {isMeteora ? (
-                    <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground">
-                      Your wallet signs one transaction. It creates the token
-                      and its curve, and your wallet pays Solana&apos;s fees
-                      for it. WheelsAI never holds your wallet&apos;s key.
+                    <div className="p-3 bg-muted rounded-lg text-sm text-muted-foreground space-y-2">
+                      <p>
+                        Your wallet signs one transaction. It creates the token
+                        and its curve, and your wallet pays Solana&apos;s fees
+                        for it. WheelsAI never holds your wallet&apos;s key.
+                      </p>
+                      {/* What this curve locks, not the 30-day rule of the other launchpads. */}
+                      {selectedPreset && <p>{presetLockSentence(selectedPreset)}</p>}
                     </div>
                   ) : (
                     gate && (
@@ -898,15 +1051,46 @@ export default function CreateTokenPage() {
                   <Button
                     className="w-full"
                     onClick={handleCreate}
-                    disabled={isCreating}
+                    disabled={isCreating || isChecking}
                   >
                     {isCreating ? (
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     ) : (
                       <Coins className="mr-2 h-4 w-4" />
                     )}
-                    {isCreating ? "Creating the token" : "Create token"}
+                    {isCreating
+                      ? "Creating the token"
+                      : expired
+                        ? "Prepare again"
+                        : "Create token"}
                   </Button>
+
+                  {problem && (
+                    <div
+                      className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-600 space-y-2"
+                      role="alert"
+                      data-testid="launch-problem"
+                    >
+                      <p className="break-words">{problem.sentence}</p>
+                      {problem.settings && (
+                        <Link
+                          href="/dashboard/settings"
+                          className="inline-block font-medium underline underline-offset-4"
+                        >
+                          Open Settings
+                        </Link>
+                      )}
+                    </div>
+                  )}
+
+                  {sent && (
+                    <SentTransactionNotice
+                      sent={sent}
+                      network={launchpad?.network}
+                      checking={isChecking}
+                      onCheckAgain={() => void handleCheckLaunch()}
+                    />
+                  )}
                 </>
               )}
             </CardContent>

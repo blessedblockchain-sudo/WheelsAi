@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { SparkChart } from "./token-chart";
 import { cn } from "@/lib/utils";
+import { NO_FIGURE, curveListLabel } from "@/lib/token-curve";
 import { TrendingUp, TrendingDown } from "lucide-react";
 
 export interface TokenCardData {
@@ -16,6 +17,8 @@ export interface TokenCardData {
   volume24h: number;
   holders: number;
   status: "BONDING" | "GRADUATED" | "FAILED";
+  /** "meteora" for a token on WheelsAI's own Meteora curve. Absent from an API older than the field. */
+  launchpad?: string | null;
   priceHistory?: number[];
   agentName?: string;
   createdAt: string;
@@ -49,6 +52,9 @@ export function TokenCard({ token, onClick }: TokenCardProps) {
       : 0;
 
   const isPositive = priceChange >= 0;
+  // A token on Meteora is priced in SOL on its curve and has no dollar price
+  // here: a zero would read as worthless, so the card says where it trades.
+  const curveLabel = token.priceUsd > 0 ? null : curveListLabel(token);
 
   return (
     <Card
@@ -95,6 +101,9 @@ export function TokenCard({ token, onClick }: TokenCardProps) {
 
         {/* Price + Change */}
         <div className="flex items-end justify-between">
+          {curveLabel ? (
+            <div className="text-sm font-semibold">{curveLabel}</div>
+          ) : (
           <div>
             <div className="text-lg font-bold">{formatUsd(token.priceUsd)}</div>
             <div
@@ -112,6 +121,7 @@ export function TokenCard({ token, onClick }: TokenCardProps) {
               {priceChange.toFixed(2)}%
             </div>
           </div>
+          )}
 
           {/* Spark chart */}
           {token.priceHistory && token.priceHistory.length >= 2 && (
@@ -123,7 +133,9 @@ export function TokenCard({ token, onClick }: TokenCardProps) {
         <div className="grid grid-cols-3 gap-2 pt-2 border-t text-xs">
           <div>
             <div className="text-muted-foreground">MCap</div>
-            <div className="font-medium">{formatUsd(token.marketCapUsd)}</div>
+            <div className="font-medium">
+              {curveLabel && !(token.marketCapUsd > 0) ? NO_FIGURE : formatUsd(token.marketCapUsd)}
+            </div>
           </div>
           <div>
             <div className="text-muted-foreground">Volume</div>

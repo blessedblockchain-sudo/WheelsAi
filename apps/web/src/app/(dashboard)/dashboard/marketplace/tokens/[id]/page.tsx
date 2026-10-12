@@ -14,11 +14,18 @@ import { TokenChart } from "@/components/dashboard/token-chart";
 import { TokenTradePanel } from "@/components/dashboard/token-trade-panel";
 import { BondingCurveProgress } from "@/components/dashboard/bonding-curve-progress";
 import { TokenCurveCard, TokenCreatorFeesCard } from "@/components/dashboard/token-curve-card";
+import { TokenCurveChart } from "@/components/dashboard/token-curve-chart";
 import { usePolling } from "@/lib/use-polling";
 import { cn } from "@/lib/utils";
 import { ArrowRightLeft, Coins, Copy } from "lucide-react";
 import { getErrorMessage, tokenApi, type TokenCurve } from "@/lib/api";
-import { NO_FIGURE, formatDecimal, formatPriceSol, isMeteoraToken } from "@/lib/token-curve";
+import {
+  NO_FIGURE,
+  curveReadFailure,
+  formatDecimal,
+  formatPriceSol,
+  isMeteoraToken,
+} from "@/lib/token-curve";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -274,7 +281,17 @@ export default function TokenDetailPage() {
   // A token on Meteora: the curve is read from the chain through the API,
   // every 10 seconds and after any action. Other tokens never ask for it.
   const onCurve = isMeteoraToken(data?.token);
-  const curveFetcher = useCallback(() => tokenApi.getCurve(tokenId), [tokenId]);
+  // A 404 from the curve call is a token with no curve here: the page says
+  // so and stops asking. Anything else (a 503 from a busy RPC) is asked again.
+  const [curveMissing, setCurveMissing] = useState(false);
+  const curveFetcher = useCallback(async () => {
+    try {
+      return await tokenApi.getCurve(tokenId);
+    } catch (err) {
+      if (curveReadFailure(err) === "no_curve") setCurveMissing(true);
+      throw err;
+    }
+  }, [tokenId]);
   const {
     data: curve,
     isLoading: curveLoading,
@@ -283,12 +300,12 @@ export default function TokenDetailPage() {
   } = usePolling<TokenCurve>({
     fetcher: curveFetcher,
     interval: 10_000,
-    enabled: onCurve,
+    enabled: onCurve && !curveMissing,
   });
   // A public RPC refuses a read now and then. The last curve read stays on
   // the page and the card says, with its time, that it is not fresh.
-  const liveCurve = curve;
-  const curveStale = curve !== null && curveError !== null;
+  const liveCurve = curveMissing ? null : curve;
+  const curveStale = liveCurve !== null && curveError !== null;
   // After an action: the curve first, then the trades and the token's row.
   const refreshAfterAction = useCallback(() => {
     void refreshCurve();
@@ -390,7 +407,9 @@ export default function TokenDetailPage() {
                           {onCurve
                             ? liveCurve
                               ? `${formatPriceSol(liveCurve.priceSol)} SOL`
-                              : "Price not read yet"
+                              : curveMissing
+                                ? "No price here"
+                                : "Price not read yet"
                             : formatUsd(token.priceUsd)}
                         </h2>
                         <LiveDot />
@@ -447,6 +466,7 @@ export default function TokenDetailPage() {
                 curve={liveCurve}
                 loading={curveLoading}
                 stale={curveStale}
+                missing={curveMissing}
                 onChanged={refreshAfterAction}
               />
             )}
@@ -458,7 +478,12 @@ export default function TokenDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="h-[300px]">
-                  <TokenChart data={chartData} width={700} height={300} showAxes />
+                  {/* A token on Meteora with no price history yet: its curve, with a mark at the price now. */}
+                  {onCurve && chartData.length < 2 ? (
+                    <TokenCurveChart points={liveCurve?.curvePoints} priceSol={liveCurve?.priceSol} />
+                  ) : (
+                    <TokenChart data={chartData} width={700} height={300} showAxes />
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -547,6 +572,7 @@ export default function TokenDetailPage() {
               launchpad={token.launchpad}
               curve={liveCurve}
               curveLoading={curveLoading}
+              curveMissing={curveMissing}
               onTraded={refreshAfterAction}
             />
 

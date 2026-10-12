@@ -237,7 +237,8 @@ def main() -> int:
         "--user",
         default=None,
         metavar="UID:GID",
-        help="with --image: start the container as this user, not the image's own (a host that does that)",
+        help="with --image: start the container as this user, one that is neither the image's own (10001) nor "
+        "root, as a host might; the trainer must then move off /workspace",
     )
     parser.add_argument(
         "--hf-cache",
@@ -307,8 +308,10 @@ def main() -> int:
         first = as_a_node + ["--name", f"{container}-refusal", args.image]
         try:
             refusal = subprocess.run(first, env=env, capture_output=True, text=True, timeout=REFUSAL_SECONDS)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as running:
             subprocess.run(["docker", "kill", f"{container}-refusal"], capture_output=True)
+            # What it had printed so far says what it was doing instead.
+            sys.stdout.write(running.stdout if isinstance(running.stdout, str) else (running.stdout or b"").decode(errors="replace"))
             print(f"the image was still running after {REFUSAL_SECONDS} s: it did not refuse to run without a GPU")
             shutil.rmtree(work_dir, ignore_errors=True)
             return 1
@@ -338,16 +341,28 @@ def main() -> int:
         print(f"work dir   {work_dir}")
     print("--- train.py output ---", flush=True)
     started = time.monotonic()
-    result = subprocess.run(command, env=env, stderr=subprocess.PIPE, text=True)
+    # Error output is shown as it comes, so a run that hangs is not silent,
+    # and kept, because one of its lines decides the result below.
+    said: list = []
+    process = subprocess.Popen(command, env=env, stderr=subprocess.PIPE, text=True)
+
+    def relay() -> None:
+        for line in process.stderr:
+            said.append(line)
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    relaying = threading.Thread(target=relay, daemon=True)
+    relaying.start()
+    returncode = process.wait()
+    relaying.join(timeout=10)
     wall = time.monotonic() - started
-    sys.stderr.write(result.stderr)
-    sys.stderr.flush()
     print("--- end of train.py output ---")
-    print(f"exit code  {result.returncode}   wall clock {wall:.1f}s")
-    if result.returncode != 0:
+    print(f"exit code  {returncode}   wall clock {wall:.1f}s")
+    if returncode != 0:
         shutil.rmtree(work_dir, ignore_errors=True)
-        return result.returncode
-    if args.image and (MOVED in result.stderr) != bool(args.user):
+        return returncode
+    if args.image and (MOVED in "".join(said)) != bool(args.user):
         # A run that finished is not enough: the trainer works around a
         # folder it cannot write, which is exactly what a broken image has.
         if args.user:

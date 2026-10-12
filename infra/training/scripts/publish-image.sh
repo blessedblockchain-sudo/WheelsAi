@@ -145,6 +145,7 @@ if [ "$REGISTRY_HOST" = "docker.io" ] || [ "$REGISTRY_HOST" = "index.docker.io" 
     *)
       echo "The registry did not serve this digest to a request with no login (HTTP $STATUS)." >&2
       echo "Make the repository public, or give the API pull credentials (TRAINING_IMAGE_REGISTRY_*)." >&2
+      echo "It is published all the same, as $REPOSITORY@$DIGEST" >&2
       exit 1
       ;;
   esac

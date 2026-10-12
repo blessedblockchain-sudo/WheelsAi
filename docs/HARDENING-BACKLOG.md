@@ -345,7 +345,7 @@ The first build of the image and the read-through before the first GPU run (2026
 - The trainer follows redirects on its uploads and reports, and a 302 turns a PUT or a POST into a GET. Signed S3 and R2 links do not redirect; a proxy put in front of the API could.
 - Publishing from a laptop: a registry restarts a layer's upload from nothing when the connection drops, which is why the packages are four small layers. An image with one large layer of ours could not be published over a poor link. A hosted runner (the `trainer-image` job) is the lasting answer.
 - The image sits in a personal Docker Hub account. Docker Hub limits pulls from a machine with no login, and a node that pulls many images could meet that limit.
-- `scripts/cpu_proof.py --image` holds the training run's error output until the run ends, so a run that hangs shows nothing until it is stopped; the events an image printed before the two-minute limit of the refusal check are dropped; and `--user` with the image's own user or root fails by design ("expected to move") without the help text saying so.
+- `scripts/cpu_proof.py --image` cannot stop a container when the proof itself is killed with SIGTERM: the container then runs to its own end. An interrupt from the keyboard reaches it.
 
 What a GPU node can reach, the door, and a run's record on Nosana (2026-10-12; `apps/api/src/lib/gpuFacingUrl.ts`, `services/nosanaExplorer.ts`, `infra/gpu-door/`):
 

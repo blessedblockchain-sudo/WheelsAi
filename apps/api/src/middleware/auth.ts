@@ -332,7 +332,7 @@ export type MemberRoleLookup = (
   userId: string
 ) => Promise<string | null>;
 
-const lookupMemberRole: MemberRoleLookup = async (orgId, userId) => {
+export const lookupMemberRole: MemberRoleLookup = async (orgId, userId) => {
   const membership = await prisma.orgMember.findUnique({
     where: { orgId_userId: { orgId, userId } },
     select: { role: true },

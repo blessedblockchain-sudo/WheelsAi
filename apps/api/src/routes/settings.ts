@@ -7,6 +7,8 @@ import { hashPassword, verifyPassword } from "../services/auth.js";
 import { sendVerificationEmail } from "./emailAuth.js";
 import { createLinkWalletRoutes } from "./linkWallet.js";
 import { buildLinkWalletDeps } from "./linkWalletBindings.js";
+import { createOrganizationNameRoutes } from "./organizationName.js";
+import { buildOrganizationNameDeps } from "./organizationNameBindings.js";
 
 const updateProfileSchema = z.object({
   displayName: z.string().max(100).optional(),
@@ -240,6 +242,10 @@ export const settingsRoutes: FastifyPluginAsync = async (fastify) => {
   // (routes/linkWallet.ts). Registered here so the paths stay under
   // /api/settings and the auth hook above covers them.
   await fastify.register(createLinkWalletRoutes(buildLinkWalletDeps()));
+
+  // The organization's name: GET and PATCH /organization
+  // (routes/organizationName.ts).
+  await fastify.register(createOrganizationNameRoutes(buildOrganizationNameDeps()));
 
   // ============================================
   // Branding / White-label

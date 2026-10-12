@@ -19,13 +19,20 @@
  *
  * Everything that reaches the job definition is checked against a strict
  * pattern first (assertValidAdapterConfig).
+ *
+ * A GPU node must be able to reach the address it fetches from, and the
+ * bucket the route redirects it to: adapterServingOperatorBlockers says when
+ * it cannot, and a deployment is refused before anything is reserved.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { prisma as defaultPrisma } from "@wheelsai/db";
 
+import { nosanaNodesAreLocal } from "../config/nosanaAccess.js";
+import { resolveGpuFacingApiUrl } from "../config/training.js";
 import { findTrainableModel } from "../config/trainingCatalog.js";
+import { classifyGpuFacingUrl, gpuFacingOrigin, gpuFacingRefusal } from "../lib/gpuFacingUrl.js";
 import { createLogger } from "../utils/logger.js";
 import {
   InvalidAdapterConfigError,
@@ -34,7 +41,7 @@ import {
   type VllmAdapterConfig,
 } from "./nosana.js";
 import { MARKETS } from "./nosanaMarkets.js";
-import type { ObjectStore } from "./objectStore.js";
+import { customS3EndpointOrigin, getObjectStore, type ObjectStore } from "./objectStore.js";
 
 const logger = createLogger("fine-tuned-models");
 
@@ -96,10 +103,11 @@ export function verifyAdapterGrant(grant: AdapterGrant, signature: unknown, secr
 
 /**
  * The URL a deployment's container fetches its adapter from. No expiry: see
- * the file comment. `publicApiUrl` is PUBLIC_API_URL.
+ * the file comment. `gpuFacingApiUrl` is the address a GPU node reaches this
+ * API at (GPU_FACING_API_URL, else PUBLIC_API_URL).
  */
-export function adapterDownloadUrl(publicApiUrl: string, grant: AdapterGrant, secret: string): string {
-  const origin = publicApiUrl.trim().replace(/\/+$/, "");
+export function adapterDownloadUrl(gpuFacingApiUrl: string, grant: AdapterGrant, secret: string): string {
+  const origin = gpuFacingApiUrl.trim().replace(/\/+$/, "");
   return (
     `${origin}${FINE_TUNED_MODELS_PREFIX}/${grant.fineTunedModelId}/adapter` +
     `?d=${grant.deploymentId}&g=${grant.runGeneration}&sig=${signAdapterGrant(grant, secret)}`
@@ -111,8 +119,22 @@ export function adapterDownloadUrl(publicApiUrl: string, grant: AdapterGrant, se
 // ============================================
 
 export interface AdapterServingDeps {
-  /** PUBLIC_API_URL: where a container on a GPU node reaches this API. */
-  publicApiUrl: () => string | undefined;
+  /**
+   * Where a container on a GPU node reaches this API: GPU_FACING_API_URL,
+   * else PUBLIC_API_URL.
+   */
+  gpuFacingApiUrl: () => string | undefined;
+  /**
+   * The "GPU nodes" run on this machine (the development stand-in for
+   * Nosana), so a local address is reachable from them.
+   */
+  gpuNodesAreLocal: () => boolean;
+  /**
+   * The store the download route reads. With the s3 driver the route
+   * redirects the node to the bucket, so a custom S3_ENDPOINT must be
+   * reachable too; the local driver's bytes are streamed by the route itself.
+   */
+  getStore: () => ObjectStore | null;
   /** Signs adapter URLs (JWT_SECRET, under its own domain string). */
   signingSecret: () => string;
   /** GB of GPU memory of a tier, or null for a tier that does not exist. */
@@ -122,7 +144,9 @@ export interface AdapterServingDeps {
 /** Production wiring, read lazily so tests can set the environment first. */
 export function buildAdapterServingDeps(): AdapterServingDeps {
   return {
-    publicApiUrl: () => process.env.PUBLIC_API_URL?.trim() || undefined,
+    gpuFacingApiUrl: () => resolveGpuFacingApiUrl(process.env) ?? undefined,
+    gpuNodesAreLocal: () => nosanaNodesAreLocal(),
+    getStore: () => getObjectStore(),
     signingSecret: () => {
       const secret = process.env.JWT_SECRET;
       if (!secret) throw new Error("JWT_SECRET is required to sign adapter download URLs");
@@ -165,7 +189,7 @@ export type AdapterServingRefusal = {
     | "unknown_gpu_tier"
     | "tier_too_small_for_serving"
     | "fine_tuned_model_not_servable"
-    | "adapter_download_not_configured";
+    | AdapterServingOperatorBlocker["code"];
   message: string;
   requiredVramGb?: number;
 };
@@ -182,16 +206,64 @@ const PROBE_GRANT: AdapterGrant = {
   runGeneration: 0,
 };
 
+/** A platform-side reason no fine-tuned model can be deployed, as the operator reads it. */
+export interface AdapterServingOperatorBlocker {
+  code:
+    | "adapter_download_not_configured"
+    | "adapter_download_not_reachable"
+    | "adapter_storage_not_reachable";
+  message: string;
+}
+
+/**
+ * Why a GPU node could not fetch an adapter on this deployment, in operator
+ * language: the operator view (GET /api/platform/compute) and the start-up
+ * log read it, and prepareAdapterServing and adapterForRun refuse on the
+ * first entry, so what is refused and what is reported cannot differ.
+ * Customers only ever see the code and one calm sentence.
+ *
+ * `store` is the store the download route reads (the server's own when
+ * omitted). Neither "not reachable" blocker applies when the nodes are local.
+ */
+export function adapterServingOperatorBlockers(
+  serving: Pick<AdapterServingDeps, "gpuFacingApiUrl" | "gpuNodesAreLocal" | "getStore">,
+  store: ObjectStore | null = serving.getStore(),
+): AdapterServingOperatorBlocker[] {
+  const blockers: AdapterServingOperatorBlocker[] = [];
+  const gpuFacingApiUrl = serving.gpuFacingApiUrl();
+  const nodesAreLocal = serving.gpuNodesAreLocal();
+  if (!gpuFacingApiUrl) {
+    blockers.push({
+      code: "adapter_download_not_configured",
+      message:
+        "Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set, so a GPU node has nowhere to fetch a fine-tuned model's adapter from.",
+    });
+  } else if (!nodesAreLocal && !classifyGpuFacingUrl(gpuFacingApiUrl).reachable) {
+    blockers.push({
+      code: "adapter_download_not_reachable",
+      message: `A GPU node cannot reach ${gpuFacingOrigin(gpuFacingApiUrl)}, where a deployment fetches its adapter: it is ${gpuFacingRefusal(gpuFacingApiUrl)}. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.`,
+    });
+  }
+  const redirectOrigin = customS3EndpointOrigin(store);
+  if (!nodesAreLocal && redirectOrigin !== null && !classifyGpuFacingUrl(redirectOrigin).reachable) {
+    blockers.push({
+      code: "adapter_storage_not_reachable",
+      message: `A GPU node cannot reach ${gpuFacingOrigin(redirectOrigin)} (S3_ENDPOINT), where the adapter download is redirected: it is ${gpuFacingRefusal(redirectOrigin)}.`,
+    });
+  }
+  return blockers;
+}
+
 function adapterConfig(
   serving: AdapterServingDeps,
-  publicApiUrl: string,
+  gpuFacingApiUrl: string,
   model: ServableFineTunedModel,
   adapterName: string,
   grant: AdapterGrant,
 ): VllmAdapterConfig {
   return {
     name: adapterName,
-    downloadUrl: adapterDownloadUrl(publicApiUrl, grant, serving.signingSecret()),
+    downloadUrl: adapterDownloadUrl(gpuFacingApiUrl, grant, serving.signingSecret()),
     maxRank: model.loraR,
     sha256: model.adapterSha256,
     bytes: Number(model.adapterBytes),
@@ -202,8 +274,9 @@ function adapterConfig(
  * Decides whether `orgId` may deploy (or restart a deployment of) a
  * fine-tuned model on `gpuTier`, before any row or credit moves. Refusals in
  * order: 404 not found (another organization's model is not found), 409 not
- * ready, 400 engine, 400 tier, 409 not servable, 503 no public API URL.
- * Read-only.
+ * ready, 400 engine, 400 tier, 409 not servable, 503 no address a GPU node
+ * can fetch the adapter from (not set, or not reachable from a node), 503 a
+ * bucket a GPU node cannot reach. Read-only.
  */
 export async function prepareAdapterServing(
   deps: { prisma: Pick<Db, "fineTunedModel">; serving: AdapterServingDeps },
@@ -289,19 +362,23 @@ export async function prepareAdapterServing(
     return notServable("This fine-tuned model's name cannot be served. Contact support.");
   }
 
-  const publicApiUrl = deps.serving.publicApiUrl();
-  const notConfigured: AdapterServingRefusal = {
+  const gpuFacingApiUrl = deps.serving.gpuFacingApiUrl();
+  // One customer sentence for every platform-side reason; which setting is
+  // wrong is said to the operator, in the log and in the operator view.
+  const unavailable = (code: AdapterServingOperatorBlocker["code"]): AdapterServingRefusal => ({
     ok: false,
     status: 503,
-    code: "adapter_download_not_configured",
+    code,
     message: "Deploying fine-tuned models is temporarily unavailable. Nothing was reserved. Try again later.",
-  };
-  if (!publicApiUrl) {
+  });
+  const blocker = adapterServingOperatorBlockers(deps.serving)[0];
+  if (blocker || !gpuFacingApiUrl) {
+    const code = blocker?.code ?? "adapter_download_not_configured";
     logger.warn(
-      { fineTunedModelId: row.id },
-      "Fine-tuned model deploy refused: PUBLIC_API_URL is not set, so a GPU node has nowhere to fetch the adapter from",
+      { fineTunedModelId: row.id, code },
+      `Fine-tuned model deploy refused: ${blocker?.message ?? "no address a GPU node can fetch the adapter from"}`,
     );
-    return notConfigured;
+    return unavailable(code);
   }
 
   // The same check the job definition makes at submit, made here so that a
@@ -309,16 +386,16 @@ export async function prepareAdapterServing(
   try {
     assertValidAdapterConfig(
       { hfModelId: row.baseModelHfId },
-      adapterConfig(deps.serving, publicApiUrl, fineTunedModel, adapterName, PROBE_GRANT),
+      adapterConfig(deps.serving, gpuFacingApiUrl, fineTunedModel, adapterName, PROBE_GRANT),
     );
   } catch (err) {
     if (!(err instanceof InvalidAdapterConfigError)) throw err;
     if (err.field === "adapter.downloadUrl") {
       logger.warn(
         { fineTunedModelId: row.id },
-        "Fine-tuned model deploy refused: PUBLIC_API_URL is not a plain http(s) address a GPU node can fetch the adapter from",
+        "Fine-tuned model deploy refused: GPU_FACING_API_URL (or PUBLIC_API_URL) is not a plain http(s) address a GPU node can fetch the adapter from",
       );
-      return notConfigured;
+      return unavailable("adapter_download_not_configured");
     }
     logger.error({ fineTunedModelId: row.id, field: err.field }, "Fine-tuned model is not servable");
     return notServable("This fine-tuned model's stored details cannot be served. Contact support.");
@@ -330,20 +407,22 @@ export async function prepareAdapterServing(
 /**
  * The adapter part of one run's job definition. Built on every submit and
  * restart: the URL names the run generation, so a previous run's URL stops
- * working when the run does. Throws when PUBLIC_API_URL has gone since
- * prepareAdapterServing accepted the deployment.
+ * working when the run does. Makes the checks of prepareAdapterServing
+ * again and throws when the address a GPU node fetches from has gone, or
+ * can no longer be reached from a node, since the deployment was accepted.
  */
 export function adapterForRun(
   serving: AdapterServingDeps,
   model: ServableFineTunedModel,
   run: { deploymentId: string; runGeneration: number },
 ): VllmAdapterConfig {
-  const publicApiUrl = serving.publicApiUrl();
+  const gpuFacingApiUrl = serving.gpuFacingApiUrl();
   const adapterName = adapterNameForSlug(model.slug);
-  if (!publicApiUrl || !adapterName) {
-    throw new InvalidAdapterConfigError(publicApiUrl ? "adapter.name" : "adapter.downloadUrl");
+  if (!gpuFacingApiUrl || adapterServingOperatorBlockers(serving).length > 0) {
+    throw new InvalidAdapterConfigError("adapter.downloadUrl");
   }
-  return adapterConfig(serving, publicApiUrl, model, adapterName, {
+  if (!adapterName) throw new InvalidAdapterConfigError("adapter.name");
+  return adapterConfig(serving, gpuFacingApiUrl, model, adapterName, {
     fineTunedModelId: model.id,
     deploymentId: run.deploymentId,
     runGeneration: run.runGeneration,

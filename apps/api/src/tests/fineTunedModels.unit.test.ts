@@ -14,6 +14,7 @@ import {
   FINE_TUNED_MODELS_PREFIX,
   adapterDownloadUrl,
   adapterForRun,
+  adapterServingOperatorBlockers,
   deleteFineTunedModel,
   lockReadyFineTunedModel,
   prepareAdapterServing,
@@ -230,7 +231,9 @@ async function makeApp(opts: {
 }
 
 const SERVING: AdapterServingDeps = {
-  publicApiUrl: () => "https://api.example.com",
+  gpuFacingApiUrl: () => "https://api.example.com",
+  gpuNodesAreLocal: () => false,
+  getStore: () => null,
   signingSecret: () => SECRET,
   tierVramGb: (tier) => ({ "3060": 12, "4090": 24, a100: 40 })[tier] ?? null,
 };
@@ -333,7 +336,7 @@ test("prepareAdapterServing: accepted for the owner on a tier that fits; each re
     400,
     "engine_not_supported_for_adapters",
   ]);
-  assert.deepEqual(await refusal(prepare({ gpuTier: "nope" }, { publicApiUrl: () => undefined })), [
+  assert.deepEqual(await refusal(prepare({ gpuTier: "nope" }, { gpuFacingApiUrl: () => undefined })), [
     400,
     "unknown_gpu_tier",
   ]);
@@ -341,7 +344,7 @@ test("prepareAdapterServing: accepted for the owner on a tier that fits; each re
   // An 8B base needs more than a 12 GB card to load unquantised.
   const small = await prepare(
     {},
-    { publicApiUrl: () => undefined },
+    { gpuFacingApiUrl: () => undefined },
     { baseModelId: "llama-3.1-8b", baseModelHfId: "meta-llama/Meta-Llama-3.1-8B-Instruct" },
   );
   assert.ok(!small.ok);
@@ -367,16 +370,175 @@ test("prepareAdapterServing: accepted for the owner on a tier that fits; each re
     "fine_tuned_model_not_servable",
   ]);
 
-  // No PUBLIC_API_URL: a GPU node has nowhere to fetch the adapter from.
-  const noUrl = await prepare({}, { publicApiUrl: () => undefined });
+  // No address set: a GPU node has nowhere to fetch the adapter from.
+  const noUrl = await prepare({}, { gpuFacingApiUrl: () => undefined });
   assert.ok(!noUrl.ok);
   assert.deepEqual([noUrl.status, noUrl.code], [503, "adapter_download_not_configured"]);
   assert.equal(noUrl.message, "Deploying fine-tuned models is temporarily unavailable. Nothing was reserved. Try again later.");
   assert.ok(!/PUBLIC_API_URL/.test(noUrl.message), "the setting is the operator's, in the log, not the customer's");
-  assert.deepEqual(await refusal(prepare({}, { publicApiUrl: () => "https://user:pw@api.example.com" })), [
+  // An address with a user name in it is not one a GPU node is sent to.
+  assert.deepEqual(await refusal(prepare({}, { gpuFacingApiUrl: () => "https://user:pw@api.example.com" })), [
     503,
-    "adapter_download_not_configured",
+    "adapter_download_not_reachable",
   ]);
+  // On the stand-in the reachability check is off; the job definition's own check still refuses it.
+  assert.deepEqual(
+    await refusal(
+      prepare({}, { gpuFacingApiUrl: () => "https://user:pw@api.example.com", gpuNodesAreLocal: () => true }),
+    ),
+    [503, "adapter_download_not_configured"],
+  );
+});
+
+const LOCAL_API = "http://localhost:4000";
+const s3Store = (endpoint: string | null) => ({ kind: "s3", endpoint }) as never;
+const SERVABLE = {
+  id: MODEL_ID,
+  slug: "support-tone",
+  baseModelId: "phi-3-mini",
+  baseModelHfId: "microsoft/Phi-3-mini-4k-instruct",
+  loraR: 32,
+  adapterSha256: SHA,
+  adapterBytes: 18_092_371n,
+};
+
+test("adapterServingOperatorBlockers: what a GPU node cannot reach, in the operator's words", () => {
+  const blockers = (serving: Partial<AdapterServingDeps> = {}) =>
+    adapterServingOperatorBlockers({ ...SERVING, ...serving });
+
+  assert.deepEqual(blockers(), []);
+  assert.deepEqual(blockers({ gpuFacingApiUrl: () => undefined }), [
+    {
+      code: "adapter_download_not_configured",
+      message:
+        "Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set, so a GPU node has nowhere to fetch a fine-tuned model's adapter from.",
+    },
+  ]);
+  assert.deepEqual(blockers({ gpuFacingApiUrl: () => `${LOCAL_API}/base` }), [
+    {
+      code: "adapter_download_not_reachable",
+      message:
+        "A GPU node cannot reach http://localhost:4000, where a deployment fetches its adapter: it is this machine or a private network. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.",
+    },
+  ]);
+  assert.deepEqual(blockers({ getStore: () => s3Store("http://minio:9000") }), [
+    {
+      code: "adapter_storage_not_reachable",
+      message:
+        "A GPU node cannot reach http://minio:9000 (S3_ENDPOINT), where the adapter download is redirected: it is this machine or a private network.",
+    },
+  ]);
+  // An address with a user name in it is refused, and is not called a private network.
+  assert.deepEqual(blockers({ gpuFacingApiUrl: () => "https://user:pw@api.example.com" }), [
+    {
+      code: "adapter_download_not_reachable",
+      message:
+        "A GPU node cannot reach https://api.example.com, where a deployment fetches its adapter: it is not a plain http or https address. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.",
+    },
+  ]);
+  // The store may be handed in: it wins over the server's own.
+  assert.deepEqual(
+    adapterServingOperatorBlockers(SERVING, s3Store("http://192.168.1.20:9000")).map((blocker) => blocker.code),
+    ["adapter_storage_not_reachable"],
+  );
+  // Both, the address first. Never "not configured" with "not reachable" for the address.
+  assert.deepEqual(
+    blockers({ gpuFacingApiUrl: () => LOCAL_API, getStore: () => s3Store("http://minio:9000") }).map((b) => b.code),
+    ["adapter_download_not_reachable", "adapter_storage_not_reachable"],
+  );
+  assert.deepEqual(
+    blockers({ gpuFacingApiUrl: () => undefined, getStore: () => s3Store("http://minio:9000") }).map((b) => b.code),
+    ["adapter_download_not_configured", "adapter_storage_not_reachable"],
+  );
+
+  // A public bucket, the provider's own endpoint, and the local driver (the
+  // route streams its bytes itself) block nothing.
+  assert.deepEqual(blockers({ getStore: () => s3Store("https://acct.r2.cloudflarestorage.com") }), []);
+  assert.deepEqual(blockers({ getStore: () => s3Store(null) }), []);
+  assert.deepEqual(blockers({ getStore: () => ({ kind: "local" }) as never }), []);
+
+  // The development stand-in runs the node on this machine.
+  assert.deepEqual(
+    blockers({
+      gpuNodesAreLocal: () => true,
+      gpuFacingApiUrl: () => LOCAL_API,
+      getStore: () => s3Store("http://localhost:9000"),
+    }),
+    [],
+  );
+  assert.deepEqual(
+    blockers({ gpuNodesAreLocal: () => true, gpuFacingApiUrl: () => undefined }).map((b) => b.code),
+    ["adapter_download_not_configured"],
+  );
+});
+
+test("prepareAdapterServing: an address or a bucket a GPU node cannot reach is refused, with one customer sentence", async () => {
+  const prepare = (serving: Partial<AdapterServingDeps>, gpuTier = "3060") =>
+    prepareAdapterServing(
+      { prisma: makeDb({ models: [ftm()] }).prisma as never, serving: { ...SERVING, ...serving } },
+      { orgId: ORG, fineTunedModelId: MODEL_ID, engine: "vllm", gpuTier },
+    );
+  const sentence = "Deploying fine-tuned models is temporarily unavailable. Nothing was reserved. Try again later.";
+
+  const address = await prepare({ gpuFacingApiUrl: () => LOCAL_API });
+  assert.ok(!address.ok);
+  assert.deepEqual([address.status, address.code, address.message], [503, "adapter_download_not_reachable", sentence]);
+
+  const bucket = await prepare({ getStore: () => s3Store("http://minio:9000") });
+  assert.ok(!bucket.ok);
+  assert.deepEqual([bucket.status, bucket.code, bucket.message], [503, "adapter_storage_not_reachable", sentence]);
+
+  // Both wrong: the address is named first.
+  const both = await prepare({ gpuFacingApiUrl: () => "http://10.0.0.5:4000", getStore: () => s3Store("http://minio:9000") });
+  assert.deepEqual(!both.ok && both.code, "adapter_download_not_reachable");
+
+  // The request's own faults still come first.
+  const tier = await prepare({ gpuFacingApiUrl: () => LOCAL_API }, "nope");
+  assert.deepEqual(!tier.ok && tier.code, "unknown_gpu_tier");
+
+  // The stand-in: the node is on this machine, so both pass.
+  const standIn = await prepare({
+    gpuNodesAreLocal: () => true,
+    gpuFacingApiUrl: () => LOCAL_API,
+    getStore: () => s3Store("http://localhost:9000"),
+  });
+  assert.ok(standIn.ok);
+  // A local store with a public address: nothing is redirected.
+  assert.ok((await prepare({ getStore: () => ({ kind: "local" }) as never })).ok);
+});
+
+test("adapterForRun: every submit and restart makes the same checks, and throws on the address field", () => {
+  const run = { deploymentId: DEP_ID, runGeneration: 2 };
+  const refused = (serving: Partial<AdapterServingDeps>) => {
+    try {
+      adapterForRun({ ...SERVING, ...serving }, SERVABLE, run);
+    } catch (err) {
+      return [(err as Error).name, (err as { field?: string }).field];
+    }
+    return null;
+  };
+  assert.deepEqual(refused({ gpuFacingApiUrl: () => undefined }), ["InvalidAdapterConfigError", "adapter.downloadUrl"]);
+  assert.deepEqual(refused({ gpuFacingApiUrl: () => LOCAL_API }), ["InvalidAdapterConfigError", "adapter.downloadUrl"]);
+  assert.deepEqual(refused({ getStore: () => s3Store("http://minio:9000") }), [
+    "InvalidAdapterConfigError",
+    "adapter.downloadUrl",
+  ]);
+  // Nothing of the address is in what is thrown.
+  try {
+    adapterForRun({ ...SERVING, gpuFacingApiUrl: () => "http://10.9.8.7:4000" }, SERVABLE, run);
+    assert.fail("expected a refusal");
+  } catch (err) {
+    assert.ok(!(err as Error).message.includes("10.9.8.7"));
+  }
+  assert.deepEqual(refused({}), null);
+
+  // The stand-in: the URL is built on the local address.
+  const local = adapterForRun(
+    { ...SERVING, gpuNodesAreLocal: () => true, gpuFacingApiUrl: () => `${LOCAL_API}/` },
+    SERVABLE,
+    run,
+  );
+  assert.ok(local.downloadUrl.startsWith(`${LOCAL_API}${FINE_TUNED_MODELS_PREFIX}/${MODEL_ID}/adapter?d=${DEP_ID}&g=2&sig=`));
 });
 
 test("adapterForRun: one URL per run, signed for that run only", () => {
@@ -400,7 +562,7 @@ test("adapterForRun: one URL per run, signed for that run only", () => {
     new URL(second.downloadUrl).searchParams.get("sig"),
     signAdapterGrant({ fineTunedModelId: MODEL_ID, deploymentId: DEP_ID, runGeneration: 1 }, SECRET),
   );
-  assert.throws(() => adapterForRun({ ...SERVING, publicApiUrl: () => undefined }, model, { deploymentId: DEP_ID, runGeneration: 0 }));
+  assert.throws(() => adapterForRun({ ...SERVING, gpuFacingApiUrl: () => undefined }, model, { deploymentId: DEP_ID, runGeneration: 0 }));
 });
 
 test("lockReadyFineTunedModel: true for the owner's ready model, false otherwise", async () => {

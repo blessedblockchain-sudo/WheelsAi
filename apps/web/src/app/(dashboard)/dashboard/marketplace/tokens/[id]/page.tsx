@@ -13,10 +13,12 @@ import { toast } from "sonner";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { TokenTradePanel } from "@/components/dashboard/token-trade-panel";
 import { BondingCurveProgress } from "@/components/dashboard/bonding-curve-progress";
+import { TokenCurveCard, TokenCreatorFeesCard } from "@/components/dashboard/token-curve-card";
 import { usePolling } from "@/lib/use-polling";
 import { cn } from "@/lib/utils";
 import { ArrowRightLeft, Coins, Copy } from "lucide-react";
-import { getErrorMessage } from "@/lib/api";
+import { getErrorMessage, tokenApi, type TokenCurve } from "@/lib/api";
+import { NO_FIGURE, formatDecimal, formatPriceSol, isMeteoraToken } from "@/lib/token-curve";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -27,6 +29,8 @@ interface TokenDetail {
   imageUri?: string | null;
   mintAddress: string;
   pumpfunUrl?: string | null;
+  /** "meteora" for a token on WheelsAI's own Meteora curve. */
+  launchpad?: string | null;
   bondingCurveAddress?: string | null;
   creatorAddress: string;
   totalSupply: number;
@@ -267,6 +271,30 @@ export default function TokenDetailPage() {
     onError: handleLoadError,
   });
 
+  // A token on Meteora: the curve is read from the chain through the API,
+  // every 10 seconds and after any action. Other tokens never ask for it.
+  const onCurve = isMeteoraToken(data?.token);
+  const curveFetcher = useCallback(() => tokenApi.getCurve(tokenId), [tokenId]);
+  const {
+    data: curve,
+    isLoading: curveLoading,
+    error: curveError,
+    refresh: refreshCurve,
+  } = usePolling<TokenCurve>({
+    fetcher: curveFetcher,
+    interval: 10_000,
+    enabled: onCurve,
+  });
+  // A public RPC refuses a read now and then. The last curve read stays on
+  // the page and the card says, with its time, that it is not fresh.
+  const liveCurve = curve;
+  const curveStale = curve !== null && curveError !== null;
+  // After an action: the curve first, then the trades and the token's row.
+  const refreshAfterAction = useCallback(() => {
+    void refreshCurve();
+    void refresh();
+  }, [refreshCurve, refresh]);
+
   // "Try again" on the load error shows the skeleton until the retry settles.
   const [retrying, setRetrying] = useState(false);
   const retryLoad = async () => {
@@ -358,16 +386,32 @@ export default function TokenDetailPage() {
                     )}
                     <div>
                       <div className="flex items-center gap-2">
-                        <h2 className="text-2xl font-bold">{formatUsd(token.priceUsd)}</h2>
+                        <h2 className="text-2xl font-bold break-all">
+                          {onCurve
+                            ? liveCurve
+                              ? `${formatPriceSol(liveCurve.priceSol)} SOL`
+                              : "Price not read yet"
+                            : formatUsd(token.priceUsd)}
+                        </h2>
                         <LiveDot />
                       </div>
-                      <div className="flex items-center gap-4 mt-1 text-sm">
-                        <span className="text-muted-foreground">
-                          MCap: {formatUsd(token.marketCapUsd)}
-                        </span>
-                        <span className="text-muted-foreground">
-                          Vol: {formatUsd(token.volume24h)}
-                        </span>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-sm">
+                        {onCurve ? (
+                          liveCurve && (
+                            <span className="text-muted-foreground">
+                              Value of the whole supply: {formatDecimal(liveCurve.marketCapSol, 4)} SOL
+                            </span>
+                          )
+                        ) : (
+                          <>
+                            <span className="text-muted-foreground">
+                              MCap: {formatUsd(token.marketCapUsd)}
+                            </span>
+                            <span className="text-muted-foreground">
+                              Vol: {formatUsd(token.volume24h)}
+                            </span>
+                          </>
+                        )}
                         <span className="text-muted-foreground">Holders: {token.holders}</span>
                       </div>
                       {lastUpdated && (
@@ -395,6 +439,17 @@ export default function TokenDetailPage() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* The curve, for a token on Meteora */}
+            {onCurve && (
+              <TokenCurveCard
+                tokenId={token.id}
+                curve={liveCurve}
+                loading={curveLoading}
+                stale={curveStale}
+                onChanged={refreshAfterAction}
+              />
+            )}
 
             {/* Price Chart */}
             <Card>
@@ -447,7 +502,10 @@ export default function TokenDetailPage() {
                                 {trade.side === "buy" ? "Buy" : "Sell"}
                               </span>
                             </td>
-                            <td className="py-2 font-mono">{formatUsd(trade.priceUsd)}</td>
+                            <td className="py-2 font-mono">
+                              {/* A trade on the curve is saved with 0 when no SOL price could be read: that is no price, not a price of zero. */}
+                              {onCurve && !(trade.priceUsd > 0) ? NO_FIGURE : formatUsd(trade.priceUsd)}
+                            </td>
                             <td className="py-2 font-mono">{trade.solAmount.toFixed(4)}</td>
                             <td className="py-2 font-mono">
                               {trade.tokenAmount.toLocaleString(undefined, {
@@ -486,23 +544,38 @@ export default function TokenDetailPage() {
               status={token.status}
               pumpfunUrl={token.pumpfunUrl}
               mintAddress={token.mintAddress}
+              launchpad={token.launchpad}
+              curve={liveCurve}
+              curveLoading={curveLoading}
+              onTraded={refreshAfterAction}
             />
 
-            {/* Bonding Curve */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Bonding Curve</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <BondingCurveProgress
-                  status={token.status}
-                  marketCapUsd={token.marketCapUsd}
-                  priceUsd={token.priceUsd}
-                  holders={token.holders}
-                  volume24h={token.volume24h}
-                />
-              </CardContent>
-            </Card>
+            {/* The creator's fees: renders only for the creator's own wallet */}
+            {onCurve && (
+              <TokenCreatorFeesCard
+                tokenId={token.id}
+                curve={liveCurve}
+                onChanged={refreshAfterAction}
+              />
+            )}
+
+            {/* Bonding Curve: pump.fun's own threshold, so not for a token on Meteora */}
+            {!onCurve && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Bonding Curve</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <BondingCurveProgress
+                    status={token.status}
+                    marketCapUsd={token.marketCapUsd}
+                    priceUsd={token.priceUsd}
+                    holders={token.holders}
+                    volume24h={token.volume24h}
+                  />
+                </CardContent>
+              </Card>
+            )}
 
             {/* Token Info */}
             <Card>
@@ -534,6 +607,9 @@ export default function TokenDetailPage() {
                   <span className="text-muted-foreground">Total Supply</span>
                   <span className="font-mono">{(token.totalSupply / 1e6).toFixed(0)}M</span>
                 </div>
+                {/* These three are pump.fun's split and our 30-day rule as the row holds them. On Meteora the curve's own lock is in the Curve card. */}
+                {!onCurve && (
+                  <>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Curve Supply</span>
                   <span className="font-mono">{(token.curveSupply / 1e6).toFixed(0)}M</span>
@@ -549,6 +625,8 @@ export default function TokenDetailPage() {
                       Until {new Date(token.creatorLockupEnd).toLocaleDateString()}
                     </span>
                   </div>
+                )}
+                  </>
                 )}
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Created</span>

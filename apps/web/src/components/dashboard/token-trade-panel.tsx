@@ -25,7 +25,8 @@ import {
   getTokenBalance,
 } from "@/lib/pumpfun-trade";
 import { featureFlags } from "@/lib/feature-flags";
-import { getErrorMessage } from "@/lib/api";
+import { getErrorMessage, type TokenCurve } from "@/lib/api";
+import { TokenCurveTradePanel } from "./token-curve-trade-panel";
 
 interface TokenTradePanelProps {
   tokenId: string;
@@ -35,6 +36,13 @@ interface TokenTradePanelProps {
   status: string;
   pumpfunUrl?: string | null;
   mintAddress: string;
+  /** "meteora" trades inside the app on the curve; anything else is as before. */
+  launchpad?: string | null;
+  /** For a token on Meteora: the curve as the page last read it. */
+  curve?: TokenCurve | null;
+  curveLoading?: boolean;
+  /** For a token on Meteora: called after a trade, so the page reads the curve again. */
+  onTraded?: () => void;
 }
 
 type TradeState =
@@ -51,6 +59,21 @@ type TradeState =
  * lib/pumpfun-trade.ts). Until then we link out to the venue itself.
  */
 export function TokenTradePanel(props: TokenTradePanelProps) {
+  // A token on Meteora is not behind the trading flag: that flag keeps the
+  // unsafe client-built pump.fun trade off, and this trade is built and
+  // checked by the server.
+  if (props.launchpad === "meteora") {
+    return (
+      <TokenCurveTradePanel
+        tokenId={props.tokenId}
+        symbol={props.symbol}
+        mintAddress={props.mintAddress}
+        curve={props.curve ?? null}
+        curveLoading={props.curveLoading ?? false}
+        onTraded={props.onTraded ?? (() => {})}
+      />
+    );
+  }
   if (!featureFlags.trading) {
     return (
       <Card>

@@ -33,6 +33,10 @@
     "./ledger": {
       "types": "./src/ledger.ts",
       "default": "./src/ledger.ts"
+    },
+    "./organization-name": {
+      "types": "./src/organizationName.ts",
+      "default": "./src/organizationName.ts"
     }
   },
   "scripts": {

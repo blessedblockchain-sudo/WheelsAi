@@ -4,7 +4,8 @@
  * Wires the production deps for runTokenIndexerOuterTick:
  *
  *   loadActiveTokensByPrisma     → loadActiveTokens (BONDING + GRADUATED
- *                                  rows with their trade_index_cursor)
+ *                                  rows with their trade_index_cursor),
+ *                                  then only the pump.fun ones are kept
  *   fetchTokenTradesSince        → cursor-bounded, paginated trade fetch
  *                                  over the hardened PumpFunClient
  *   buildTokenTradeIndexerTickDeps
@@ -130,13 +131,26 @@ export function buildTokenIndexerOuterTickDeps(
         prisma: input.prisma as never,
       });
       tokenMeta.clear();
-      for (const row of rows) {
+      if (rows.length === 0) return [];
+
+      // This indexer reads pump.fun's API. A token launched anywhere else
+      // (a Meteora curve) is not there: asking would fail the token every
+      // tick, and a pump.fun answer must never set its price or graduate
+      // it. Only the tokens the second read names as pump.fun's are kept.
+      const pumpfunRows = (await input.prisma.agentToken.findMany({
+        where: { id: { in: rows.map((r) => r.id) }, launchpad: "pumpfun" },
+        select: { id: true },
+      })) as Array<{ id: string }>;
+      const pumpfunIds = new Set(pumpfunRows.map((r) => r.id));
+      const kept = rows.filter((r) => pumpfunIds.has(r.id));
+
+      for (const row of kept) {
         tokenMeta.set(row.id, {
           since: row.tradeIndexCursor ?? new Date(0),
           status: row.status,
         });
       }
-      return rows.map((r) => ({ id: r.id, mintAddress: r.mintAddress }));
+      return kept.map((r) => ({ id: r.id, mintAddress: r.mintAddress }));
     },
 
     sinceFor: (tokenId) => tokenMeta.get(tokenId)?.since ?? new Date(0),

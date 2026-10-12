@@ -28,6 +28,8 @@ interface FakeTokenRow {
   mintAddress: string;
   status: "BONDING" | "GRADUATED";
   tradeIndexCursor: Date | null;
+  /** Absent means "pumpfun", the column's default. */
+  launchpad?: string;
 }
 
 interface RawTrade {
@@ -88,6 +90,16 @@ function makePrismaStub(tokens: FakeTokenRow[]) {
     agentToken: {
       findMany: async (args: unknown) => {
         log.push({ op: "agentToken.findMany", args });
+        // The second read of a tick asks which of the active tokens are
+        // pump.fun's; the first (the active tokens) has no such filter.
+        const where = (args as { where?: { launchpad?: string; id?: { in: string[] } } }).where;
+        if (where?.launchpad) {
+          return tokens.filter(
+            (t) =>
+              (t.launchpad ?? "pumpfun") === where.launchpad &&
+              (where.id?.in ?? []).includes(t.id),
+          );
+        }
         return tokens;
       },
       updateMany: async (args: {
@@ -409,4 +421,50 @@ test("outer deps: trade persist failure fails the token and leaves its cursor un
   assert.equal(result.failed, 1);
   assert.equal(stub.cursorWrites.length, 0); // cursor NOT advanced past unpersisted trades
   assert.equal(statsRec.calls.length, 0); // legacy trio not reached
+});
+
+// ============================================
+// Only pump.fun's tokens are this indexer's
+// ============================================
+
+test("outer deps: a token from another launchpad is left alone (no trade fetch, no stats, no graduation, no cursor)", async () => {
+  const stats = makeStatsRecorder(tokenInfo({ isGraduated: true, raydiumPoolId: "RayPool1" }));
+  const { result, pageCalls, statsRec, stub } = await buildAndRun({
+    tokens: [
+      bondingToken({ id: "tok_pump", mintAddress: "MintPump" }),
+      bondingToken({ id: "tok_curve", mintAddress: "MintCurve", launchpad: "meteora" }),
+      bondingToken({ id: "tok_bags", mintAddress: "MintBags", launchpad: "bags" }),
+    ],
+    pages: {
+      MintPump: [[trade("s1", "2026-06-12T11:00:00Z")]],
+      MintCurve: [[trade("s2", "2026-06-12T11:00:00Z")]],
+      MintBags: [[trade("s3", "2026-06-12T11:00:00Z")]],
+    },
+    stats,
+  });
+
+  assert.equal(result.processed, 1);
+  assert.equal(result.failed, 0);
+  assert.deepEqual([...new Set(pageCalls.map((c) => c.mint))], ["MintPump"]);
+  assert.deepEqual(
+    statsRec.calls.filter((c) => c.op === "getTokenInfo").map((c) => c.args[0]),
+    ["MintPump"],
+  );
+  assert.deepEqual(
+    statsRec.calls.filter((c) => c.op === "graduateToken").map((c) => c.args[0]),
+    ["tok_pump"],
+  );
+  assert.deepEqual(stub.cursorWrites.map((w) => w.id), ["tok_pump"]);
+
+  const second = stub.log.filter((l) => l.op === "agentToken.findMany")[1] as
+    | { args: { where: { launchpad: string; id: { in: string[] } } } }
+    | undefined;
+  assert.equal(second?.args.where.launchpad, "pumpfun");
+  assert.deepEqual(second?.args.where.id.in, ["tok_pump", "tok_curve", "tok_bags"]);
+});
+
+test("outer deps: with no active token the launchpad is not asked for", async () => {
+  const { result, stub } = await buildAndRun({ tokens: [] });
+  assert.equal(result.processed, 0);
+  assert.equal(stub.log.filter((l) => l.op === "agentToken.findMany").length, 1);
 });

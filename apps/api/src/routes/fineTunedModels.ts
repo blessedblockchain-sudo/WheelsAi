@@ -2,7 +2,8 @@
  * /api/training/fine-tuned-models
  *
  *   GET    /             the organization's fine-tuned models
- *   GET    /:id          one of them, with the deployments that serve it
+ *   GET    /:id          one of them, with the deployments that serve it and
+ *                        the record on Nosana of the job that made it
  *   DELETE /:id          409 model_in_use while an active deployment serves it
  *   GET    /:id/adapter  the adapter archive, for a deployment's container
  *
@@ -34,6 +35,7 @@ import {
   type AdapterDownloadDeps,
   type FineTunedModelsDeps,
 } from "../services/fineTunedModels.js";
+import { nosanaNetworkOfCredential } from "../services/nosanaExplorer.js";
 import { ObjectNotFoundError, getObjectStore } from "../services/objectStore.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -48,6 +50,7 @@ export function buildFineTunedModelRouteDeps(): FineTunedModelRouteDeps {
   return {
     prisma: defaultPrisma,
     getStore: () => getObjectStore(),
+    nosanaNetwork: (credential) => nosanaNetworkOfCredential(credential),
     now: () => new Date(),
     signingSecret: () => {
       const secret = process.env.JWT_SECRET;

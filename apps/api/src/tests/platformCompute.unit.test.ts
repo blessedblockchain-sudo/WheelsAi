@@ -65,6 +65,7 @@ const { buildGpuComputeProbe, buildPlatformComputeDeps } = await import(
   "../routes/platformComputeBindings.js"
 );
 const { createStatusRoutes } = await import("../routes/status.js");
+const { adapterServingOperatorBlockers } = await import("../services/fineTunedModels.js");
 const { NosanaClient } = await import("../services/nosana.js");
 const { getNosanaAccessConfig, resetNosanaAccessConfigForTests } = await import(
   "../config/nosanaAccess.js"
@@ -560,6 +561,27 @@ test("training: whether a fine-tuned model can be deployed is said beside it, wi
     canDeployFineTuned: null,
     deployBlockers: [],
   });
+
+  // No object store: the operator reads which settings to set, from the serving code's own list.
+  const noStore = await computePlatformCompute(
+    deps({
+      trainingBlockers: async () => [],
+      deployBlockers: async () =>
+        adapterServingOperatorBlockers({
+          gpuFacingApiUrl: () => "https://api.example.com",
+          gpuNodesAreLocal: () => false,
+          getStore: () => null,
+        }),
+    }),
+  );
+  assert.equal(noStore.training.canDeployFineTuned, false);
+  assert.deepEqual(noStore.training.deployBlockers, [
+    {
+      code: "adapter_storage_not_configured",
+      message:
+        "Object storage is not configured, so a deployment has nowhere to fetch a fine-tuned model's adapter from. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.",
+    },
+  ]);
 
   // Reported on its own too, when the training blockers are not.
   const alone = await computePlatformCompute(deps({ deployBlockers: async () => unreachable }));

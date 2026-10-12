@@ -22,6 +22,7 @@ import {
   type AdapterServingOperatorBlocker,
 } from "./fineTunedModels.js";
 import { getNosanaClient, isNosanaMockEnabled } from "./nosana.js";
+import { nosanaNetworkOfCredential } from "./nosanaExplorer.js";
 import { listDeployableTiers, MARKETS } from "./nosanaMarkets.js";
 import { recordNosanaOrphan, type NosanaOrphanPrisma } from "./nosanaOrphans.js";
 import { getObjectStore, issueTransferUrl, storageLinkOrigin } from "./objectStore.js";
@@ -159,6 +160,8 @@ export function buildTrainingDeps(
     getNosana: () => getNosanaClient(),
     getRuntime: resolveTrainingRuntime,
     getStore: () => getObjectStore(),
+    deployBlockers: readAdapterServingOperatorBlockers,
+    nosanaNetwork: (credential) => nosanaNetworkOfCredential(credential),
     issueTransferUrl: (args) => issueTransferUrl(args),
     callbackSecret: (jobId, submitNonce) => deriveTrainingCallbackSecret(jobId, submitNonce),
     recordOrphan: (args) => recordNosanaOrphan(prisma as NosanaOrphanPrisma, args),

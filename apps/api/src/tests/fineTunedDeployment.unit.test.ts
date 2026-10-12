@@ -252,7 +252,8 @@ function makeNosana() {
 const SERVING: AdapterServingDeps = {
   gpuFacingApiUrl: () => "https://api.example.com",
   gpuNodesAreLocal: () => false,
-  getStore: () => null,
+  // A store whose bytes the download route streams itself: nothing to reach.
+  getStore: () => ({ kind: "local" }) as never,
   signingSecret: () => SECRET,
   tierVramGb: (tier) => ({ "3060": 12, "4090": 24, a100: 40 })[tier] ?? null,
 };
@@ -433,6 +434,7 @@ test("create with fineTunedModelId: every refusal comes before the pre-flight, t
     ["a tier that does not exist", { fineTunedModelId: MODEL_ID, gpuTier: "nope" }, {}, 400, "unknown_gpu_tier"],
     ["a tier too small for the base model", { fineTunedModelId: LLAMA_FT_ID, gpuTier: "3060" }, {}, 400, "tier_too_small_for_serving"],
     ["no PUBLIC_API_URL", { fineTunedModelId: MODEL_ID }, { gpuFacingApiUrl: () => undefined }, 503, "adapter_download_not_configured"],
+    ["no object store", { fineTunedModelId: MODEL_ID }, { getStore: () => null }, 503, "adapter_storage_not_configured"],
   ];
   for (const [what, payload, serving, status, code] of cases) {
     const db = makeDb();
@@ -578,6 +580,7 @@ test("restart: refused with the named reason, and the row untouched, when the mo
   const cases: Array<[string, Record<string, unknown>, Partial<AdapterServingDeps>, number, string]> = [
     ["a deleted model", { fineTunedModelId: DELETED_ID }, {}, 409, "fine_tuned_model_not_ready"],
     ["no PUBLIC_API_URL", {}, { gpuFacingApiUrl: () => undefined }, 503, "adapter_download_not_configured"],
+    ["no object store", {}, { getStore: () => null }, 503, "adapter_storage_not_configured"],
     ["a tier too small", { fineTunedModelId: LLAMA_FT_ID, modelId: "llama-3.1-8b" }, {}, 400, "tier_too_small_for_serving"],
   ];
   for (const [what, over, serving, status, code] of cases) {

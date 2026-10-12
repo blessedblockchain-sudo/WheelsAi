@@ -611,6 +611,13 @@ export function makeWorld(options: { balanceCents?: bigint } = {}) {
     emitted: [] as Array<{ orgId: string; event: TrainingWebhookEvent; data: Record<string, unknown> }>,
     orphans: [] as Array<Record<string, unknown>>,
     orphanRecordFails: false,
+    /** What keeps a fine-tuned model from being deployed, as the operator reads it. */
+    deployBlockers: [] as Array<{ code: string; message: string }>,
+    /** The network each Nosana credential's jobs are on; null = not Nosana's own network. */
+    nosanaNetworks: { wallet: "mainnet", api_key: "mainnet" } as Record<
+      "wallet" | "api_key",
+      "mainnet" | "devnet" | null
+    >,
     ids: 0,
   };
 
@@ -656,6 +663,8 @@ export function makeWorld(options: { balanceCents?: bigint } = {}) {
     getNosana: async () => nosana.port as never,
     getRuntime: async () => world.runtime,
     getStore: () => world.store,
+    deployBlockers: async () => world.deployBlockers,
+    nosanaNetwork: (credential) => world.nosanaNetworks[credential],
     issueTransferUrl: async (args) => ({
       url: `https://store.example.com/${args.key}?op=${args.op}&ttl=${args.ttlSeconds}&sig=abc`,
       method: args.op === "put" ? "PUT" : "GET",

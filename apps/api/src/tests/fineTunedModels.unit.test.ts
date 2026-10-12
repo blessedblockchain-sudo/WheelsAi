@@ -109,8 +109,19 @@ function dep(over: Partial<Dep> = {}): Dep {
   };
 }
 
-function makeDb(seed: { models?: Ftm[]; deployments?: Dep[] }) {
+/** The Nosana columns of the training job that made the models; null = the job row is gone. */
+type JobOnNosana = {
+  nosanaJobId: string | null;
+  nosanaJobAddress: string | null;
+  nosanaAccessMode: string | null;
+} | null;
+
+function makeDb(seed: { models?: Ftm[]; deployments?: Dep[]; job?: JobOnNosana }) {
   const state = { models: seed.models ?? [ftm()], deployments: seed.deployments ?? [] };
+  const job: JobOnNosana =
+    seed.job === undefined ? { nosanaJobId: null, nosanaJobAddress: null, nosanaAccessMode: null } : seed.job;
+  /** How many times a model was read with its relations. */
+  const reads = { models: 0 };
   /** Runs between the delete's claim and its in-use count. */
   const hooks: { afterClaim?: () => void } = {};
 
@@ -126,7 +137,7 @@ function makeDb(seed: { models?: Ftm[]; deployments?: Dep[] }) {
   const withRelations = (m: Ftm) => ({
     ...m,
     baseModel: { displayName: "Phi-3 Mini", parameters: 3_800_000_000n, minGpuTier: "3060" },
-    trainingJob: { id: m.trainingJobId, name: "tone run", status: "completed", completedAt: T_NOW },
+    trainingJob: job && { id: m.trainingJobId, name: "tone run", status: "completed", completedAt: T_NOW, ...job },
     deployments: state.deployments
       .filter((d) => d.fineTunedModelId === m.id)
       .map((d) => ({ id: d.id, name: d.name, slug: d.slug, status: d.status })),
@@ -136,6 +147,7 @@ function makeDb(seed: { models?: Ftm[]; deployments?: Dep[] }) {
     fineTunedModel: {
       findMany: async ({ where }: any) => state.models.filter((m) => modelMatches(m, where)).map(withRelations),
       findFirst: async ({ where }: any) => {
+        reads.models += 1;
         const m = state.models.find((x) => modelMatches(x, where));
         return m ? withRelations(m) : null;
       },
@@ -174,7 +186,7 @@ function makeDb(seed: { models?: Ftm[]; deployments?: Dep[] }) {
       }
     },
   };
-  return { prisma, state, hooks };
+  return { prisma, state, hooks, reads };
 }
 
 /** An object store that presigns, as the s3 driver does. */
@@ -210,6 +222,8 @@ async function makeApp(opts: {
   db: ReturnType<typeof makeDb>;
   store?: ObjectStore | null;
   orgId?: string | null;
+  /** The network each Nosana credential's jobs are on (mainnet for both when omitted). */
+  nosanaNetwork?: (credential: "wallet" | "api_key") => "mainnet" | "devnet" | null;
 }) {
   const app = Fastify();
   app.decorateRequest("auth", null);
@@ -222,6 +236,7 @@ async function makeApp(opts: {
     createFineTunedModelRoutes({
       prisma: opts.db.prisma as never,
       getStore: () => (opts.store === undefined ? presigningStore({}).store : opts.store),
+      nosanaNetwork: opts.nosanaNetwork ?? (() => "mainnet"),
       now: () => T_NOW,
       signingSecret: () => SECRET,
     }),
@@ -233,7 +248,8 @@ async function makeApp(opts: {
 const SERVING: AdapterServingDeps = {
   gpuFacingApiUrl: () => "https://api.example.com",
   gpuNodesAreLocal: () => false,
-  getStore: () => null,
+  // A store whose bytes the download route streams itself: nothing to reach.
+  getStore: () => ({ kind: "local" }) as never,
   signingSecret: () => SECRET,
   tierVramGb: (tier) => ({ "3060": 12, "4090": 24, a100: 40 })[tier] ?? null,
 };
@@ -441,6 +457,31 @@ test("adapterServingOperatorBlockers: what a GPU node cannot reach, in the opera
     adapterServingOperatorBlockers(SERVING, s3Store("http://192.168.1.20:9000")).map((blocker) => blocker.code),
     ["adapter_storage_not_reachable"],
   );
+  // No object store at all: the download route would answer the node with 404. Named first.
+  assert.deepEqual(blockers({ getStore: () => null }), [
+    {
+      code: "adapter_storage_not_configured",
+      message:
+        "Object storage is not configured, so a deployment has nowhere to fetch a fine-tuned model's adapter from. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.",
+    },
+  ]);
+  assert.deepEqual(adapterServingOperatorBlockers(SERVING, null).map((blocker) => blocker.code), [
+    "adapter_storage_not_configured",
+  ]);
+  assert.deepEqual(
+    blockers({ getStore: () => null, gpuFacingApiUrl: () => undefined }).map((b) => b.code),
+    ["adapter_storage_not_configured", "adapter_download_not_configured"],
+  );
+  assert.deepEqual(
+    blockers({ getStore: () => null, gpuFacingApiUrl: () => LOCAL_API }).map((b) => b.code),
+    ["adapter_storage_not_configured", "adapter_download_not_reachable"],
+  );
+  // Local nodes still need a store to fetch from.
+  assert.deepEqual(
+    blockers({ getStore: () => null, gpuNodesAreLocal: () => true }).map((b) => b.code),
+    ["adapter_storage_not_configured"],
+  );
+
   // Both, the address first. Never "not configured" with "not reachable" for the address.
   assert.deepEqual(
     blockers({ gpuFacingApiUrl: () => LOCAL_API, getStore: () => s3Store("http://minio:9000") }).map((b) => b.code),
@@ -488,6 +529,17 @@ test("prepareAdapterServing: an address or a bucket a GPU node cannot reach is r
   assert.ok(!bucket.ok);
   assert.deepEqual([bucket.status, bucket.code, bucket.message], [503, "adapter_storage_not_reachable", sentence]);
 
+  // No object store: the same sentence, and it is named before the address.
+  const noStore = await prepare({ getStore: () => null });
+  assert.ok(!noStore.ok);
+  assert.deepEqual([noStore.status, noStore.code, noStore.message], [503, "adapter_storage_not_configured", sentence]);
+  assert.ok(!/STORAGE_DRIVER|DATASETS_BUCKET|AWS_/.test(noStore.message), "the setting is the operator's");
+  const noStoreNoAddress = await prepare({ getStore: () => null, gpuFacingApiUrl: () => undefined });
+  assert.deepEqual(!noStoreNoAddress.ok && noStoreNoAddress.code, "adapter_storage_not_configured");
+  // The request's own faults still come before it.
+  const noStoreBadTier = await prepare({ getStore: () => null }, "nope");
+  assert.deepEqual(!noStoreBadTier.ok && noStoreBadTier.code, "unknown_gpu_tier");
+
   // Both wrong: the address is named first.
   const both = await prepare({ gpuFacingApiUrl: () => "http://10.0.0.5:4000", getStore: () => s3Store("http://minio:9000") });
   assert.deepEqual(!both.ok && both.code, "adapter_download_not_reachable");
@@ -523,6 +575,8 @@ test("adapterForRun: every submit and restart makes the same checks, and throws 
     "InvalidAdapterConfigError",
     "adapter.downloadUrl",
   ]);
+  // The object store has gone since the deployment was accepted.
+  assert.deepEqual(refused({ getStore: () => null }), ["InvalidAdapterConfigError", "adapter.downloadUrl"]);
   // Nothing of the address is in what is thrown.
   try {
     adapterForRun({ ...SERVING, gpuFacingApiUrl: () => "http://10.9.8.7:4000" }, SERVABLE, run);
@@ -615,10 +669,69 @@ test("list and detail: the organization's own models, with base model, method, r
   assert.deepEqual(list.json().fineTunedModels, [expected]);
   assert.ok(!JSON.stringify(list.json()).includes("adapters/"), "the object key is not shown");
 
+  // The detail is the list's view, and the job's record on Nosana: empty for a job that never reached it.
+  const readsBefore = db.reads.models;
   const detail = await app.inject({ method: "GET", url: `${FINE_TUNED_MODELS_PREFIX}/${MODEL_ID}` });
   assert.equal(detail.statusCode, 200);
-  assert.deepEqual(detail.json().fineTunedModel, expected);
+  assert.deepEqual(detail.json().fineTunedModel, {
+    ...expected,
+    trainingJob: { ...expected.trainingJob, nosana: { deploymentId: null, jobAddress: null, jobUrl: null } },
+  });
+  assert.equal(db.reads.models - readsBefore, 1, "the job's record comes with the model's own read");
+  assert.ok(!("nosana" in list.json().fineTunedModels[0].trainingJob), "the list does not carry it");
   await app.close();
+});
+
+const JOB_ADDRESS = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+
+test("detail: the training job that made the model, with its record on Nosana", async () => {
+  const detailOf = async (
+    job: JobOnNosana,
+    nosanaNetwork?: (credential: "wallet" | "api_key") => "mainnet" | "devnet" | null,
+  ) => {
+    const app = await makeApp({ db: makeDb({ job }), nosanaNetwork });
+    const res = await app.inject({ method: "GET", url: `${FINE_TUNED_MODELS_PREFIX}/${MODEL_ID}` });
+    assert.equal(res.statusCode, 200);
+    await app.close();
+    return res.json().fineTunedModel;
+  };
+  const stored = { nosanaJobId: "dm_tone_run", nosanaJobAddress: JOB_ADDRESS, nosanaAccessMode: "api_key" };
+
+  const model = await detailOf(stored);
+  assert.deepEqual(model.trainingJob, {
+    id: JOB_ID,
+    name: "tone run",
+    status: "completed",
+    completedAt: T_NOW.toISOString(),
+    nosana: {
+      deploymentId: "dm_tone_run",
+      jobAddress: JOB_ADDRESS,
+      jobUrl: `https://explore.nosana.com/jobs/${JOB_ADDRESS}`,
+    },
+  });
+  assert.equal(model.trainingJobId, JOB_ID, "what the detail said before is still said");
+
+  // The network is the one of the credential that created the job; a null column is the wallet.
+  const apiOnMainnet = (credential: "wallet" | "api_key") => (credential === "api_key" ? "mainnet" : "devnet");
+  assert.ok((await detailOf(stored, apiOnMainnet)).trainingJob.nosana.jobUrl);
+  for (const nosanaAccessMode of ["wallet", null]) {
+    assert.deepEqual((await detailOf({ ...stored, nosanaAccessMode }, apiOnMainnet)).trainingJob.nosana, {
+      deploymentId: "dm_tone_run",
+      jobAddress: JOB_ADDRESS,
+      jobUrl: null,
+    });
+  }
+  // Submitted, and not yet listed as a job: an id and no address.
+  assert.deepEqual((await detailOf({ ...stored, nosanaJobAddress: null })).trainingJob.nosana, {
+    deploymentId: "dm_tone_run",
+    jobAddress: null,
+    jobUrl: null,
+  });
+
+  // The job row is gone.
+  const orphan = await detailOf(null);
+  assert.equal(orphan.trainingJob, null);
+  assert.equal(orphan.trainingJobId, JOB_ID);
 });
 
 test("cross-organization: another organization's model is a 404 on detail and delete, and absent from its list", async () => {

@@ -100,6 +100,8 @@ test("POST /jobs: 201 with the hold; then list, detail, logs, cancel and retry",
   assert.equal(detail.job.status, "queued");
   assert.deepEqual(detail.job.ledger.map((row: { type: string }) => row.type), ["training_reservation"]);
   assert.equal(detail.job.dataset.name, "support tickets");
+  assert.deepEqual(Object.keys(detail.job.nosana), ["deploymentId", "jobAddress", "jobUrl"]);
+  assert.equal(detail.job.nosana.jobUrl, null);
   const logs = (await app.inject({ url: `/api/training/jobs/${jobId}/logs` })).json();
   assert.deepEqual([logs.logs, logs.totalLines, logs.source], ["", 0, "none"]);
 
@@ -188,6 +190,22 @@ test("GET /capabilities and /models tell a page what can start and why not", asy
   const ready = (await app.inject({ url: "/api/training/capabilities" })).json();
   assert.equal(ready.canStart, true);
   assert.deepEqual(ready.storage, { configured: true, driver: "local", maxDatasetBytes: 209715200, maxDatasetRows: 200000 });
+  assert.deepEqual(ready.deploy, { available: true, blockers: [] });
+
+  // A fine-tuned model cannot be deployed here: said beside it, and a job can still start.
+  w.world.deployBlockers = [{ code: "adapter_storage_not_configured", message: "Set STORAGE_DRIVER." }];
+  const noDeploy = (await app.inject({ url: "/api/training/capabilities" })).json();
+  assert.equal(noDeploy.canStart, true);
+  assert.deepEqual(noDeploy.deploy, {
+    available: false,
+    blockers: [
+      {
+        code: "adapter_storage_not_configured",
+        message: "Deploying fine-tuned models is temporarily unavailable. Try again later.",
+      },
+    ],
+  });
+  w.world.deployBlockers = [];
 
   w.world.runtime.image = { configured: false, reason: "TRAINING_IMAGE not set" };
   const blocked = (await app.inject({ url: "/api/training/capabilities" })).json();

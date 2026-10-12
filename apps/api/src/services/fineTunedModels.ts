@@ -20,9 +20,10 @@
  * Everything that reaches the job definition is checked against a strict
  * pattern first (assertValidAdapterConfig).
  *
- * A GPU node must be able to reach the address it fetches from, and the
- * bucket the route redirects it to: adapterServingOperatorBlockers says when
- * it cannot, and a deployment is refused before anything is reserved.
+ * There must be an object store to fetch from, and a GPU node must be able
+ * to reach the address it fetches from and the bucket the route redirects it
+ * to: adapterServingOperatorBlockers says when one of these does not hold,
+ * and a deployment is refused before anything is reserved.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -40,6 +41,11 @@ import {
   assertValidAdapterConfig,
   type VllmAdapterConfig,
 } from "./nosana.js";
+import {
+  nosanaRecord,
+  type NosanaNetworkReader,
+  type NosanaRecord,
+} from "./nosanaExplorer.js";
 import { MARKETS } from "./nosanaMarkets.js";
 import { customS3EndpointOrigin, getObjectStore, type ObjectStore } from "./objectStore.js";
 
@@ -209,6 +215,7 @@ const PROBE_GRANT: AdapterGrant = {
 /** A platform-side reason no fine-tuned model can be deployed, as the operator reads it. */
 export interface AdapterServingOperatorBlocker {
   code:
+    | "adapter_storage_not_configured"
     | "adapter_download_not_configured"
     | "adapter_download_not_reachable"
     | "adapter_storage_not_reachable";
@@ -223,7 +230,9 @@ export interface AdapterServingOperatorBlocker {
  * Customers only ever see the code and one calm sentence.
  *
  * `store` is the store the download route reads (the server's own when
- * omitted). Neither "not reachable" blocker applies when the nodes are local.
+ * omitted). No store at all comes first: the download route would answer the
+ * node with 404. Neither "not reachable" blocker applies when the nodes are
+ * local.
  */
 export function adapterServingOperatorBlockers(
   serving: Pick<AdapterServingDeps, "gpuFacingApiUrl" | "gpuNodesAreLocal" | "getStore">,
@@ -232,6 +241,13 @@ export function adapterServingOperatorBlockers(
   const blockers: AdapterServingOperatorBlocker[] = [];
   const gpuFacingApiUrl = serving.gpuFacingApiUrl();
   const nodesAreLocal = serving.gpuNodesAreLocal();
+  if (!store) {
+    blockers.push({
+      code: "adapter_storage_not_configured",
+      message:
+        "Object storage is not configured, so a deployment has nowhere to fetch a fine-tuned model's adapter from. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.",
+    });
+  }
   if (!gpuFacingApiUrl) {
     blockers.push({
       code: "adapter_download_not_configured",
@@ -274,9 +290,10 @@ function adapterConfig(
  * Decides whether `orgId` may deploy (or restart a deployment of) a
  * fine-tuned model on `gpuTier`, before any row or credit moves. Refusals in
  * order: 404 not found (another organization's model is not found), 409 not
- * ready, 400 engine, 400 tier, 409 not servable, 503 no address a GPU node
- * can fetch the adapter from (not set, or not reachable from a node), 503 a
- * bucket a GPU node cannot reach. Read-only.
+ * ready, 400 engine, 400 tier, 409 not servable, 503 no object store to
+ * fetch the adapter from, 503 no address a GPU node can fetch it from (not
+ * set, or not reachable from a node), 503 a bucket a GPU node cannot reach.
+ * Read-only.
  */
 export async function prepareAdapterServing(
   deps: { prisma: Pick<Db, "fineTunedModel">; serving: AdapterServingDeps },
@@ -408,8 +425,9 @@ export async function prepareAdapterServing(
  * The adapter part of one run's job definition. Built on every submit and
  * restart: the URL names the run generation, so a previous run's URL stops
  * working when the run does. Makes the checks of prepareAdapterServing
- * again and throws when the address a GPU node fetches from has gone, or
- * can no longer be reached from a node, since the deployment was accepted.
+ * again and throws when the object store or the address a GPU node fetches
+ * from has gone, or can no longer be reached from a node, since the
+ * deployment was accepted.
  */
 export function adapterForRun(
   serving: AdapterServingDeps,
@@ -461,6 +479,8 @@ export interface FineTunedModelsDeps {
   prisma: Pick<Db, "fineTunedModel" | "deployment" | "$transaction">;
   /** null when object storage is not configured. */
   getStore: () => ObjectStore | null;
+  /** The network a Nosana credential's jobs are on; null when they are not on Nosana's own network. */
+  nosanaNetwork: NosanaNetworkReader;
   now: () => Date;
 }
 
@@ -485,12 +505,30 @@ export interface FineTunedModelView {
   createdAt: Date;
 }
 
+/** The detail: the list's view, and what Nosana knows the job that made the model by. */
+export interface FineTunedModelDetailView extends FineTunedModelView {
+  trainingJob: (NonNullable<FineTunedModelView["trainingJob"]> & { nosana: NosanaRecord }) | null;
+}
+
 const VIEW_INCLUDE = {
   baseModel: { select: { displayName: true } },
   trainingJob: { select: { id: true, name: true, status: true, completedAt: true } },
   deployments: {
     select: { id: true, name: true, slug: true, status: true },
     orderBy: { createdAt: "desc" as const },
+  },
+};
+
+// The detail reads the job's Nosana columns in the same query.
+const DETAIL_INCLUDE = {
+  ...VIEW_INCLUDE,
+  trainingJob: {
+    select: {
+      ...VIEW_INCLUDE.trainingJob.select,
+      nosanaJobId: true,
+      nosanaJobAddress: true,
+      nosanaAccessMode: true,
+    },
   },
 };
 
@@ -542,16 +580,26 @@ export async function listFineTunedModels(
   return rows.map(toView);
 }
 
-/** One model of `orgId`, or null: another organization's, deleted, or unknown. */
+/**
+ * One model of `orgId`, or null: another organization's, deleted, or unknown.
+ * Its training job carries its record on Nosana (`trainingJob.nosana`).
+ */
 export async function getFineTunedModel(
-  deps: Pick<FineTunedModelsDeps, "prisma">,
+  deps: Pick<FineTunedModelsDeps, "prisma" | "nosanaNetwork">,
   args: { orgId: string; id: string },
-): Promise<FineTunedModelView | null> {
+): Promise<FineTunedModelDetailView | null> {
   const row = await deps.prisma.fineTunedModel.findFirst({
     where: { id: args.id, orgId: args.orgId, status: "ready" },
-    include: VIEW_INCLUDE,
+    include: DETAIL_INCLUDE,
   });
-  return row ? toView(row) : null;
+  if (!row) return null;
+  const view = toView(row);
+  return {
+    ...view,
+    trainingJob: view.trainingJob
+      ? { ...view.trainingJob, nosana: nosanaRecord(row.trainingJob!, deps.nosanaNetwork) }
+      : null,
+  };
 }
 
 class FineTunedModelInUseError extends Error {
@@ -597,7 +645,7 @@ async function removeAdapterObjects(
  * (lockReadyFineTunedModel): whichever commits first, the other sees it.
  */
 export async function deleteFineTunedModel(
-  deps: FineTunedModelsDeps,
+  deps: Pick<FineTunedModelsDeps, "prisma" | "getStore" | "now">,
   args: { orgId: string; id: string },
 ): Promise<DeleteFineTunedModelResult> {
   const { prisma } = deps;

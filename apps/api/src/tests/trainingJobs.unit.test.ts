@@ -6,12 +6,14 @@ import test from "node:test";
 import {
   cancelTrainingJob,
   createTrainingJob,
+  DEPLOY_UNAVAILABLE_MESSAGE,
   estimateTrainingJob,
   finalizeTrainingJob,
   fineTunedModelSlug,
   getTrainingJobDetail,
   getTrainingJobLogs,
   describeTrainingCapabilities,
+  listTrainingJobs,
   listTrainingModels,
   placeableTrainingTiers,
   readTrainerJobResult,
@@ -2109,4 +2111,142 @@ test("submit: on the stand-in a local link and a local progress address are sent
   assert.equal(w.db.job(jobId).status, "queued");
   assert.equal(w.nosana.deployments.size, 1);
   assert.ok(JSON.stringify(w.nosana.only().definition).includes(`${LOCAL_API}/api/training/jobs/${jobId}/events?n=`));
+});
+
+const NOSANA_JOB_ADDRESS = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+
+test("detail: the job's record on Nosana - always there, empty until the job reaches Nosana", async () => {
+  const w = makeWorld();
+  const jobId = await admit(w);
+  const nosanaOf = async () => (await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }))!.nosana;
+
+  // Admitted, not yet submitted: nothing on Nosana.
+  assert.deepEqual(await nosanaOf(), { deploymentId: null, jobAddress: null, jobUrl: null });
+
+  // Submitted: Nosana's deployment manager has it, and no node has listed a job yet.
+  await w.drain();
+  const deploymentId = w.db.job(jobId).nosanaJobId;
+  assert.ok(deploymentId);
+  assert.deepEqual(await nosanaOf(), { deploymentId, jobAddress: null, jobUrl: null });
+
+  // The job's address, as Nosana gives it, with Nosana's own page for it.
+  w.db.job(jobId).nosanaJobAddress = NOSANA_JOB_ADDRESS;
+  assert.deepEqual(await nosanaOf(), {
+    deploymentId,
+    jobAddress: NOSANA_JOB_ADDRESS,
+    jobUrl: `https://explore.nosana.com/jobs/${NOSANA_JOB_ADDRESS}`,
+  });
+
+  // A stored value that is not an address by its form is shown, and never made into a link.
+  w.db.job(jobId).nosanaJobAddress = "job-address-1";
+  assert.deepEqual(await nosanaOf(), { deploymentId, jobAddress: "job-address-1", jobUrl: null });
+  w.db.job(jobId).nosanaJobAddress = `${NOSANA_JOB_ADDRESS.slice(0, 30)}/../x?y=1`;
+  assert.equal((await nosanaOf()).jobUrl, null);
+
+  // The list does not carry it.
+  const [listed] = await listTrainingJobs(w.deps, { orgId: ORG });
+  assert.equal(listed!.id, jobId);
+  assert.ok(!("nosana" in listed!));
+});
+
+test("detail: the link is for the network of the credential that created the job", async () => {
+  const w = makeWorld();
+  const jobId = await toRunning(w);
+  const row = w.db.job(jobId);
+  row.nosanaJobAddress = NOSANA_JOB_ADDRESS;
+  const jobUrl = async () => (await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }))!.nosana.jobUrl;
+  const link = `https://explore.nosana.com/jobs/${NOSANA_JOB_ADDRESS}`;
+
+  // The API key on mainnet, the wallet on devnet: only the key's jobs get a link.
+  w.world.nosanaNetworks = { wallet: "devnet", api_key: "mainnet" };
+  row.nosanaAccessMode = "api_key";
+  assert.equal(await jobUrl(), link);
+  row.nosanaAccessMode = "wallet";
+  assert.equal(await jobUrl(), null);
+  // A row from before the column was stamped was created by the wallet.
+  row.nosanaAccessMode = null;
+  assert.equal(await jobUrl(), null);
+
+  // The other way round.
+  w.world.nosanaNetworks = { wallet: "mainnet", api_key: "devnet" };
+  assert.equal(await jobUrl(), link);
+  row.nosanaAccessMode = "wallet";
+  assert.equal(await jobUrl(), link);
+  row.nosanaAccessMode = "api_key";
+  assert.equal(await jobUrl(), null);
+
+  // A backend that is not Nosana's own (the development stand-in): Nosana has no
+  // record of the run, so the answer gives none.
+  w.world.nosanaNetworks = { wallet: null, api_key: null };
+  assert.deepEqual((await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }))!.nosana, {
+    deploymentId: null,
+    jobAddress: null,
+    jobUrl: null,
+  });
+});
+
+test("capabilities: whether a fine-tuned model can be deployed here, with one sentence for every reason", async () => {
+  const w = makeWorld();
+  assert.deepEqual((await describeTrainingCapabilities(w.deps)).deploy, { available: true, blockers: [] });
+  assert.equal(DEPLOY_UNAVAILABLE_MESSAGE, "Deploying fine-tuned models is temporarily unavailable. Try again later.");
+
+  const operator = [
+    { code: "adapter_storage_not_configured", message: "Object storage is not configured. Set STORAGE_DRIVER." },
+    { code: "adapter_download_not_configured", message: "Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set." },
+    { code: "adapter_download_not_reachable", message: "A GPU node cannot reach http://localhost:4000." },
+    { code: "adapter_storage_not_reachable", message: "A GPU node cannot reach http://minio:9000 (S3_ENDPOINT)." },
+  ];
+  for (const blocker of operator) {
+    w.world.deployBlockers = [blocker];
+    const capabilities = await describeTrainingCapabilities(w.deps, { orgId: ORG });
+    assert.deepEqual(
+      capabilities.deploy,
+      {
+        available: false,
+        blockers: [{ code: blocker.code, message: "Deploying fine-tuned models is temporarily unavailable. Try again later." }],
+      },
+      blocker.code,
+    );
+    // Starting a job is its own question.
+    assert.equal(capabilities.canStart, true, blocker.code);
+    assert.deepEqual(capabilities.blockers, [], blocker.code);
+  }
+
+  // Several at once, in the operator's order; what to set stays with the operator.
+  w.world.deployBlockers = operator;
+  const all = (await describeTrainingCapabilities(w.deps)).deploy;
+  assert.equal(all.available, false);
+  assert.deepEqual(all.blockers.map((blocker) => blocker.code), operator.map((blocker) => blocker.code));
+  for (const blocker of all.blockers) assert.equal(blocker.message, DEPLOY_UNAVAILABLE_MESSAGE);
+  assert.ok(!/STORAGE_DRIVER|PUBLIC_API_URL|S3_ENDPOINT|localhost|minio/.test(JSON.stringify(all)));
+
+  // What keeps a job from starting does not keep a model from being deployed.
+  w.world.deployBlockers = [];
+  w.world.runtime = { ...w.world.runtime, image: { configured: false, reason: "TRAINING_IMAGE not set" } };
+  const noImage = await describeTrainingCapabilities(w.deps);
+  assert.equal(noImage.canStart, false);
+  assert.deepEqual(noImage.deploy, { available: true, blockers: [] });
+});
+
+test("capabilities: a deploy read that fails is one more blocker, and the rest of the answer is still given", async () => {
+  const w = makeWorld();
+  const logged: string[] = [];
+  const deps = {
+    ...w.deps,
+    deployBlockers: async () => {
+      throw new Error("S3_ENDPOINT http://minio:9000 is not a valid address");
+    },
+    log: { ...w.deps.log, error: (_context: unknown, message: string) => void logged.push(message) },
+  };
+  const capabilities = await describeTrainingCapabilities(deps, { orgId: ORG });
+  assert.equal(capabilities.canStart, true);
+  assert.deepEqual(capabilities.blockers, []);
+  assert.equal(capabilities.storage.configured, true);
+  assert.deepEqual(capabilities.deploy, {
+    available: false,
+    blockers: [{ code: "deploy_readiness_unknown", message: DEPLOY_UNAVAILABLE_MESSAGE }],
+  });
+  // What went wrong is the operator's to read, in the log.
+  assert.ok(!/S3_ENDPOINT|minio/.test(JSON.stringify(capabilities)));
+  assert.deepEqual(logged, ["Whether a fine-tuned model can be deployed could not be read"]);
 });

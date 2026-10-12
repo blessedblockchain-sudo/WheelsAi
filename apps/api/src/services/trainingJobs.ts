@@ -48,6 +48,7 @@ import {
   type DatasetRecord,
 } from "./dataset.js";
 import type { DeploymentJobSnapshot, NosanaClient } from "./nosana.js";
+import { nosanaRecord, type NosanaNetworkReader } from "./nosanaExplorer.js";
 import { isMockNosanaId } from "./nosanaIds.js";
 import type { RecordNosanaOrphanArgs } from "./nosanaOrphans.js";
 import { computeRefusal, runDeployPreflight, type DeployPreflightPort } from "./nosanaPreflight.js";
@@ -396,6 +397,13 @@ export interface TrainingDeps {
   getNosana(): Promise<TrainingNosanaPort>;
   getRuntime(): Promise<TrainingRuntime>;
   getStore(): ObjectStore | null;
+  /**
+   * What keeps a fine-tuned model from being deployed on this deployment
+   * (adapterServingOperatorBlockers), in operator language.
+   */
+  deployBlockers(): Promise<Array<{ code: string; message: string }>>;
+  /** The network a Nosana credential's jobs are on; null when they are not on Nosana's own network. */
+  nosanaNetwork: NosanaNetworkReader;
   issueTransferUrl(args: IssueTransferUrlArgs): Promise<TransferUrl>;
   /** deriveTrainingCallbackSecret, bound to the server secret. */
   callbackSecret(jobId: string, submitNonce: string): string;
@@ -831,7 +839,19 @@ export function trainingBlockers(runtime: TrainingRuntime, store: ObjectStore | 
 }
 
 /**
- * What a page needs to know before it offers to start a job. With `orgId`,
+ * The one sentence a customer reads for every platform-side reason a
+ * fine-tuned model cannot be deployed. The refusal of a deploy itself adds
+ * that nothing was reserved (prepareAdapterServing).
+ */
+export const DEPLOY_UNAVAILABLE_MESSAGE =
+  "Deploying fine-tuned models is temporarily unavailable. Try again later.";
+
+/** The code in `deploy.blockers` when the platform's own reasons could not be read. */
+export const DEPLOY_READINESS_UNKNOWN = "deploy_readiness_unknown";
+
+/**
+ * What a page needs to know before it offers to start a job, and whether a
+ * fine-tuned model can be deployed here (`deploy`). With `orgId`,
  * the organization's own blocker is added: the limit of free failures (R4).
  */
 export async function describeTrainingCapabilities(deps: TrainingDeps, args: { orgId?: string } = {}) {
@@ -843,9 +863,23 @@ export async function describeTrainingCapabilities(deps: TrainingDeps, args: { o
     if (limit) blockers.push({ code: limit.code, message: limit.message });
   }
   const bounds = trainingRunLimitBounds(runtime, runtime.batchJobTimeoutSeconds);
+  // The platform only: a tier that is too small or credits that are too low
+  // are the deploy screen's to say.
+  // A read that fails must not take the rest of the answer with it: whether
+  // a job can start is still said. A deploy would fail on the same read, so
+  // it is not offered.
+  let deployCodes: string[];
+  try {
+    deployCodes = (await deps.deployBlockers()).map((blocker) => blocker.code);
+  } catch (err) {
+    deps.log.error({ error: describeError(err) }, "Whether a fine-tuned model can be deployed could not be read");
+    deployCodes = [DEPLOY_READINESS_UNKNOWN];
+  }
+  const deployBlockers = deployCodes.map((code) => ({ code, message: DEPLOY_UNAVAILABLE_MESSAGE }));
   return {
     canStart: blockers.length === 0,
     blockers,
+    deploy: { available: deployBlockers.length === 0, blockers: deployBlockers },
     storage: {
       configured: store !== null,
       driver: store?.kind ?? null,
@@ -2955,7 +2989,10 @@ export async function listTrainingJobs(
   }));
 }
 
-/** One job, with its money: the hold, the cost so far, and its ledger rows by reference. */
+/**
+ * One job, with its money: the hold, the cost so far, and its ledger rows by
+ * reference; and what Nosana knows the run by (`nosana`).
+ */
 export async function getTrainingJobDetail(deps: TrainingDeps, args: { orgId: string; jobId: string }) {
   const row = await deps.prisma.trainingJob.findFirst({ where: { id: args.jobId, orgId: args.orgId } });
   if (!row) return null;
@@ -2985,6 +3022,7 @@ export async function getTrainingJobDetail(deps: TrainingDeps, args: { orgId: st
     metrics,
     partial: isRecord(metrics.result) ? metrics.result.stopReason === "max_runtime" : null,
     fineTunedModel: model ? { id: model.id, slug: model.slug, name: model.name } : null,
+    nosana: nosanaRecord(row, deps.nosanaNetwork),
     ledger: ledger.map((entry) => ({
       id: entry.id,
       type: entry.type,

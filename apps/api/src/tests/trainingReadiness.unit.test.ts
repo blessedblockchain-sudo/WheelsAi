@@ -51,6 +51,11 @@ test("start-up: each missing fine-tuning setting is logged once, as an operator 
     byCode.adapter_download_not_configured,
     "Fine-tuned models cannot be deployed: Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set, so a GPU node has nowhere to fetch a fine-tuned model's adapter from.",
   );
+  // And with no object store there is nothing to fetch it from at all.
+  assert.equal(
+    byCode.adapter_storage_not_configured,
+    "Fine-tuned models cannot be deployed: Object storage is not configured, so a deployment has nowhere to fetch a fine-tuned model's adapter from. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.",
+  );
   for (const line of lines) {
     assert.match(line.message, /^(Fine-tuning cannot start|Fine-tuned models cannot be deployed): /);
   }
@@ -74,7 +79,8 @@ test("start-up: an address a GPU node cannot reach is logged as the reason no fi
     process.env.GPU_FACING_API_URL = "https://door.example.com/";
     const withDoor: string[] = [];
     await logTrainingReadiness({ warn: (context) => withDoor.push(String(context.code)) });
-    assert.ok(!withDoor.some((code) => code.startsWith("adapter_")));
+    // (The object store is still unset in this file: that line stays.)
+    assert.ok(!withDoor.some((code) => code.startsWith("adapter_download_")));
   } finally {
     delete process.env.PUBLIC_API_URL;
     delete process.env.GPU_FACING_API_URL;
@@ -93,6 +99,7 @@ test("start-up: a configuration that cannot be read is logged, never thrown", as
   // The training read failed; why a fine-tuned model cannot be deployed is its own read, and is still said.
   assert.deepEqual(lines, [
     "Fine-tuning readiness could not be read at start-up",
+    "Fine-tuned models cannot be deployed: Object storage is not configured, so a deployment has nowhere to fetch a fine-tuned model's adapter from. Set STORAGE_DRIVER, or AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and DATASETS_BUCKET.",
     "Fine-tuned models cannot be deployed: Neither GPU_FACING_API_URL nor PUBLIC_API_URL is set, so a GPU node has nowhere to fetch a fine-tuned model's adapter from.",
   ]);
 });

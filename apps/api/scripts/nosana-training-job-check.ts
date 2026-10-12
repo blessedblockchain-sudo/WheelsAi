@@ -22,8 +22,12 @@
  *     its shape: opStates, the exit code, the log entries;
  *   - whether the trainer's WHEELSAI_EVENT lines can be recovered from it.
  *
- * It prints shapes and counts, never log text: a training log can quote rows
- * of the customer's dataset. Event lines are reported by type only.
+ * It prints shapes and counts, never the trainer's log text: a training log
+ * can quote rows of the customer's dataset. Event lines are reported by type
+ * only. The one text it prints is what Nosana and the node said about the
+ * job outside the trainer's output (the result's status, its errors, the
+ * node's own log entries), redacted as readTrainerJobResult gives it: that is
+ * where a run that failed before the trainer started explains itself.
  *
  * Exit code: 0 read, 1 could not be read, 2 wrong arguments.
  */
@@ -33,7 +37,7 @@
 import "dotenv/config";
 
 import { getNosanaClient } from "../src/services/nosana.js";
-import { readTrainerJobResult } from "../src/services/trainingJobs.js";
+import { readTrainerJobResult, redactNodeText } from "../src/services/trainingJobs.js";
 import { isTerminalTrainerEvent, parseTrainerEventsFromLog } from "../src/services/trainingStateMachine.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,6 +122,18 @@ async function main(): Promise<number> {
   if (read.logText !== null && events.length === 0) {
     console.log("  The log is readable but no line BEGINS with 'WHEELSAI_EVENT ': Nosana prefixes or wraps the lines in a way");
     console.log("  readTrainerJobResult does not strip. Record the first 40 characters of one such line by hand.");
+  }
+
+  const status = isRecord(result) ? result.status : undefined;
+  const errors = isRecord(result) ? result.errors : undefined;
+  console.log("\nwhat Nosana and the node said (redacted; the errors are in the report below)");
+  console.log(`  result status: ${typeof status === "string" ? JSON.stringify(redactNodeText(status.slice(0, 2_000)).slice(0, 200)) : "not a string"}`);
+  console.log(`  result errors: ${Array.isArray(errors) ? errors.length : errors === undefined ? "not present" : `not a list (a ${typeof errors})`}`);
+  if (read.nodeReport === null) {
+    console.log("  node report: none");
+  } else {
+    console.log(`  node report: ${read.nodeReport.length} characters`);
+    for (const line of read.nodeReport.split("\n")) console.log(`    ${line}`);
   }
   return 0;
 }

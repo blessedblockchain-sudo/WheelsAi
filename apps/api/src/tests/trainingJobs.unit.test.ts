@@ -17,6 +17,7 @@ import {
   listTrainingModels,
   placeableTrainingTiers,
   readTrainerJobResult,
+  redactNodeText,
   reconcileTrainingJob,
   recordTrainingEvent,
   retryTrainingJob,
@@ -1181,18 +1182,253 @@ test("no callback, a failed run: the failure reason comes from the log", async (
 
 test("readTrainerJobResult: tolerant of every shape it does not know", () => {
   for (const odd of [null, undefined, 3, "x", [], {}, { opStates: "no" }, { opStates: [null] }, { opStates: [{ logs: "x" }] }]) {
-    assert.deepEqual(readTrainerJobResult(odd), { exitCode: null, logText: null });
+    assert.deepEqual(readTrainerJobResult(odd), { exitCode: null, logText: null, nodeReport: null });
   }
-  assert.deepEqual(readTrainerJobResult(jobResult(0, ["a", "b\n"])), { exitCode: 0, logText: "a\nb\n" });
-  // The op named "train" is the one read; stdin is not a log.
+  // The fake result carries a status, and that is all there is beside the trainer's output.
+  assert.deepEqual(readTrainerJobResult(jobResult(0, ["a", "b\n"])), { exitCode: 0, logText: "a\nb\n", nodeReport: "status: success" });
+  // The op named "train" is the one read; stdin is not a log (it is part of the node's report).
   const two = {
     opStates: [
       { operationId: "other", exitCode: 5, logs: [] },
       { operationId: "train", exitCode: 14, logs: [{ type: "stdin", log: "no" }, { type: "stderr", log: "yes" }] },
     ],
   };
-  assert.deepEqual(readTrainerJobResult(two), { exitCode: 14, logText: "yes\n" });
+  assert.deepEqual(readTrainerJobResult(two), { exitCode: 14, logText: "yes\n", nodeReport: "stdin: no" });
   assert.equal(readTrainerJobResult({ opStates: [{ exitCode: 1.5, logs: [] }] }).exitCode, null);
+});
+
+// What a node could quote back from the job definition it was given.
+const NODE_CALLBACK_SECRET = "ab12".repeat(16);
+const NODE_SIGNED_LINK = `https://store.example/wheelsai/training/job-1/adapter.tar.gz?X-Amz-Credential=AKIAEXAMPLE&X-Amz-Signature=${"9f".repeat(32)}`;
+
+test("readTrainerJobResult: a run that failed on the node keeps what Nosana and the node said", () => {
+  const failed = {
+    status: "failed",
+    errors: ["manifest unknown"],
+    opStates: [
+      {
+        operationId: "train",
+        status: "failed",
+        exitCode: null,
+        logs: [{ type: "nodeerr", log: "Cannot pull image: manifest unknown\n" }],
+      },
+    ],
+  };
+  assert.deepEqual(readTrainerJobResult(failed), {
+    exitCode: null,
+    logText: null,
+    nodeReport: "status: failed\nerror: manifest unknown\nop status: failed\nnodeerr: Cannot pull image: manifest unknown",
+  });
+  // The top of the result speaks even when no operation is listed at all.
+  assert.deepEqual(readTrainerJobResult({ status: "failed", errors: ["no space left on device"], opStates: [] }), {
+    exitCode: null,
+    logText: null,
+    nodeReport: "status: failed\nerror: no space left on device",
+  });
+});
+
+test("readTrainerJobResult: the trainer's own output is not part of the node's report", () => {
+  const onlyTrainer = {
+    opStates: [{ operationId: "train", exitCode: 0, logs: [{ type: "stdout", log: "a" }, { type: "stderr", log: "b\n" }] }],
+  };
+  assert.deepEqual(readTrainerJobResult(onlyTrainer), { exitCode: 0, logText: "a\nb\n", nodeReport: null });
+});
+
+test("readTrainerJobResult: a node's text that quotes the job definition comes out without its secrets", () => {
+  const quoted = {
+    status: "failed",
+    errors: [{ message: "container create failed", env: { CALLBACK_SECRET: NODE_CALLBACK_SECRET, HF_TOKEN: "hf_abcDEF123456" } }],
+    opStates: [
+      {
+        operationId: "train",
+        exitCode: null,
+        logs: [
+          {
+            type: "nodeerr",
+            log:
+              `create failed for env ADAPTER_UPLOAD_URL=${NODE_SIGNED_LINK} CALLBACK_SECRET=${NODE_CALLBACK_SECRET} ` +
+              `auth {"username":"wheels","password":"s3cr3t-Registry"} header Authorization: Bearer eyJhbGciOi.payload.sig ` +
+              "pull https://wheels:s3cr3t-Registry@registry.example/v2/trainer/manifests/latest: no space left on device",
+          },
+        ],
+      },
+    ],
+  };
+  const { nodeReport } = readTrainerJobResult(quoted);
+  assert.ok(nodeReport);
+  for (const secret of [NODE_CALLBACK_SECRET, "X-Amz", "AKIAEXAMPLE", "9f9f9f9f", "hf_abcDEF123456", "s3cr3t-Registry", "eyJhbGciOi"]) {
+    assert.ok(!nodeReport.includes(secret), `${secret} is not in the report`);
+  }
+  // What the operator needs is still there: where it failed and why.
+  assert.ok(nodeReport.includes("https://store.example/wheelsai/training/job-1/adapter.tar.gz?[redacted]"));
+  assert.ok(nodeReport.includes("https://[redacted]@registry.example/v2/trainer/manifests/latest"));
+  assert.ok(nodeReport.includes("container create failed"));
+  assert.ok(nodeReport.endsWith("no space left on device"));
+});
+
+test("redactNodeText: what it replaces and what it leaves", () => {
+  assert.equal(redactNodeText("GET https://h.example/a/b?sig=1&x=2 failed"), "GET https://h.example/a/b?[redacted] failed");
+  assert.equal(redactNodeText("see https://h.example/a/b for more"), "see https://h.example/a/b for more");
+  assert.equal(redactNodeText("Authorization: Bearer abc.def"), "Authorization: Bearer [redacted]");
+  assert.equal(redactNodeText("token hf_abcd1234 and nos_key_1234"), "token [redacted] and [redacted]");
+  assert.equal(redactNodeText(`digest sha256:${"0a".repeat(32)} unknown`), "digest sha256:[redacted] unknown");
+  assert.equal(redactNodeText(`key ${"Ab1+".repeat(10)}== refused`), "key [redacted] refused");
+  assert.equal(redactNodeText('{\\"HF_TOKEN\\":\\"plainvalue\\"}'), '{\\"HF_TOKEN\\":\\"[redacted]\\"}');
+  assert.equal(redactNodeText("REGISTRY_PASSWORD=hunter2 next"), "REGISTRY_PASSWORD=[redacted] next");
+  // Plain words, a job id and a path in one case are left alone.
+  const plain = "job 0b8f6c1e-2a54-4c1e-9d0a-6f1c2b3a4d5e: write /var/lib/docker/overlay2/layers/diff: no space left on device";
+  assert.equal(redactNodeText(plain), plain);
+});
+
+test("redactNodeText: a named secret goes whole, whatever punctuation it holds", () => {
+  // A registry password may hold , ; & } and ): none of them ends the value.
+  assert.equal(
+    redactNodeText('{"docker":{"username":"wheels","password":"p4ss,w&rd;x}y)z","server":"ghcr.io"}}'),
+    '{"docker":{"username":"wheels","password":"[redacted]","server":"ghcr.io"}}',
+  );
+  assert.equal(
+    redactNodeText('{\\"password\\":\\"p4ss,w&rd;x\\",\\"server\\":\\"ghcr.io\\"}'),
+    '{\\"password\\":\\"[redacted]\\",\\"server\\":\\"ghcr.io\\"}',
+  );
+  assert.equal(redactNodeText("-e REGISTRY_PASSWORD=p4ss,w&rd;x}y)z -e NEXT=1"), "-e REGISTRY_PASSWORD=[redacted] -e NEXT=1");
+  assert.equal(redactNodeText("REGISTRY_PASSWORD='p4ss,word' rest"), "REGISTRY_PASSWORD='[redacted]' rest");
+  // A value that begins like a hash loses its tail too.
+  assert.equal(redactNodeText(`PASSWORD=${"ab".repeat(16)},tail-of-it next`), "PASSWORD=[redacted] next");
+  assert.equal(redactNodeText('"Authorization": "Bearer abc.def", "x": 1'), '"Authorization": "Bearer [redacted]", "x": 1');
+  assert.equal(redactNodeText("X-Api-Key: abcd1234"), "X-Api-Key: [redacted]");
+  // A name with nothing after it does not take the next line with it.
+  assert.equal(redactNodeText("secret:\nnodeerr: container create failed"), "secret:\nnodeerr: container create failed");
+});
+
+test("redactNodeText: a link quoted by a Go program loses its whole query string", () => {
+  const quoted = `"https://s3.example/bkt/key?X-Amz-Algorithm=AWS4-HMAC-SHA256\\u0026X-Amz-Credential=AKIAEXAMPLE\\u0026sig=Zm9v%2BYmFy"`;
+  assert.equal(redactNodeText(quoted), '"https://s3.example/bkt/key?[redacted]"');
+});
+
+test("readTrainerJobResult: a node that sends a great deal of text costs no more than its end", () => {
+  // Someone else's machine wrote this: 12 MB shaped to make a pattern work hard.
+  const started = Date.now();
+  const huge = readTrainerJobResult({
+    status: "failed",
+    opStates: [{ operationId: "train", exitCode: null, logs: [{ type: "nodeerr", log: `${"secret".repeat(2_000_000)} the cause: disk full` }] }],
+  });
+  assert.ok(Date.now() - started < 5_000, "bounded work");
+  assert.ok(huge.nodeReport!.length <= 4_000);
+  assert.ok(huge.nodeReport!.endsWith("the cause: disk full"));
+  // One run of hex far longer than any pattern is given at once.
+  const hex = readTrainerJobResult({ opStates: [{ operationId: "train", logs: [{ type: "nodeerr", log: "a".repeat(12_000_000) }] }] });
+  assert.equal(hex.nodeReport, "[redacted]");
+
+  // The bound on the work cuts before the redaction: what it cut through is dropped, not kept as half a secret.
+  const half = readTrainerJobResult({
+    opStates: [
+      {
+        operationId: "train",
+        logs: [{ type: "nodeerr", log: `${"x".repeat(70_000)}REGISTRY_PASSWORD=${"Tail-Of-Password,".repeat(40)} ${"aB1+".repeat(15_950)} end` }],
+      },
+    ],
+  });
+  assert.equal(half.nodeReport, "[redacted] end");
+});
+
+test("readTrainerJobResult: the cut never begins in the middle of a character", () => {
+  for (const lead of ["", "x"]) {
+    const { nodeReport } = readTrainerJobResult({
+      opStates: [{ operationId: "train", logs: [{ type: "nodeerr", log: `${lead}${"\u{1F600}".repeat(3_000)}` }] }],
+    });
+    assert.ok(nodeReport);
+    const first = nodeReport.charCodeAt(0);
+    assert.ok(first < 0xdc00 || first > 0xdfff, "does not begin with the second half of a pair");
+    assert.ok(nodeReport.length >= 3_999 && nodeReport.length <= 4_000);
+  }
+});
+
+test("readTrainerJobResult: a long node report keeps its end, from a line start", () => {
+  const logs = Array.from({ length: 400 }, (_, i) => ({ type: "nodeerr", log: `line ${i} of the pull` }));
+  logs.push({ type: "nodeerr", log: "the cause: disk full" });
+  const { nodeReport } = readTrainerJobResult({ status: "failed", opStates: [{ operationId: "train", exitCode: null, logs }] });
+  assert.ok(nodeReport);
+  assert.ok(nodeReport.length <= 4_000);
+  assert.ok(nodeReport.endsWith("nodeerr: the cause: disk full"));
+  assert.ok(nodeReport.startsWith("nodeerr: line "), "cut at a line boundary");
+  assert.ok(!nodeReport.includes("status: failed"), "the beginning is what goes");
+
+  // One line longer than the cut has no boundary to move to: its end is kept as it is.
+  const one = readTrainerJobResult({ opStates: [{ operationId: "train", logs: [{ type: "nodeerr", log: `${"x ".repeat(5_000)}END` }] }] });
+  assert.equal(one.nodeReport!.length, 4_000);
+  assert.ok(one.nodeReport!.endsWith("END"));
+});
+
+test("readTrainerJobResult: odd shapes in the node's part do not throw", () => {
+  const circular: Record<string, unknown> = {};
+  circular.self = circular;
+  const odd = {
+    status: 7,
+    errors: "not an array",
+    opStates: [
+      {
+        operationId: "train",
+        status: null,
+        exitCode: 1,
+        logs: [null, 3, "text", { type: "nodeerr" }, { type: "nodeerr", log: 5 }, { type: 9, log: "typed by a number" }, { log: "no type" }],
+      },
+    ],
+  };
+  assert.deepEqual(readTrainerJobResult(odd), { exitCode: 1, logText: null, nodeReport: null });
+  const objects = readTrainerJobResult({ errors: [{ code: "E_PULL", detail: ["a", 1] }, null, 4, circular, 10n], opStates: "no" });
+  assert.equal(objects.exitCode, null);
+  assert.equal(
+    objects.nodeReport,
+    'error: {"code":"E_PULL","detail":["a",1]}\nerror: null\nerror: 4\nerror: [object Object]\nerror: 10',
+  );
+});
+
+test("the node's report goes to the operator's log line and nowhere a customer reads", async () => {
+  const w = makeWorld();
+  const seen: Array<{ context: Record<string, unknown>; message: string }> = [];
+  w.deps.log.info = (context, message) => void seen.push({ context, message });
+  const jobId = await toRunning(w);
+  w.advance(40);
+  endRun(w, null);
+  w.nosana.only().job!.jobResult = {
+    status: "failed",
+    errors: ["NODE_SAID_manifest unknown"],
+    opStates: [
+      {
+        operationId: "train",
+        exitCode: null,
+        logs: [{ type: "nodeerr", log: `NODE_SAID_cannot pull, CALLBACK_SECRET=${NODE_CALLBACK_SECRET}` }],
+      },
+    ],
+  };
+  assert.equal((await reconcileTrainingJob(w.deps, jobId)).action, "waiting");
+  w.advance(301);
+  assert.equal((await reconcileTrainingJob(w.deps, jobId)).to, "failed");
+
+  const ended = seen.filter((entry) => entry.message === "Training run ended");
+  assert.equal(ended.length, 1);
+  assert.equal(ended[0]!.context.exitCode, null);
+  assert.equal(ended[0]!.context.resultLogChars, 0);
+  assert.equal(
+    ended[0]!.context.nodeReport,
+    "status: failed\nerror: NODE_SAID_manifest unknown\nnodeerr: NODE_SAID_cannot pull, CALLBACK_SECRET=[redacted]",
+  );
+
+  // Not on the row, not in a route's answer, not in the logs, not in a webhook.
+  const job = w.db.job(jobId);
+  assert.equal(job.failureCode, "no_exit_code");
+  const big = (_key: string, value: unknown) => (typeof value === "bigint" ? value.toString() : value);
+  const customerSide = JSON.stringify(
+    {
+      row: job,
+      detail: await getTrainingJobDetail(w.deps, { orgId: ORG, jobId }),
+      list: await listTrainingJobs(w.deps, { orgId: ORG }),
+      logs: await getTrainingJobLogs(w.deps, { orgId: ORG, jobId, tail: 1000 }),
+      webhooks: w.emitted,
+    },
+    big,
+  );
+  assert.doesNotMatch(customerSide, /NODE_SAID|manifest unknown|nodeReport/);
 });
 
 // ============================================

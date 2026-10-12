@@ -599,23 +599,137 @@ function reportedTerminalEvent(row: Pick<TrainingJobRow, "reportedOutcome">): Tr
 const LOG_TIMESTAMP_PREFIX =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2}) /;
 const MAX_RESULT_LOG_CHARS = 4 * 1024 * 1024;
+/** The node's report keeps its end: that is where the cause of an error is. */
+const MAX_NODE_REPORT_CHARS = 4_000;
+/** How far into the kept end a line break may be for the cut to move to it. */
+const NODE_REPORT_LINE_SEARCH_CHARS = 200;
+/**
+ * How much of what the node said is redacted at all. A node is someone
+ * else's machine and can send any amount of text; only the end is kept, so
+ * only the end is worked on.
+ */
+const MAX_NODE_REPORT_RAW_CHARS = 64_000;
+
+// A link quoted by a Go program has its `&` written as &: that is still
+// the link, and what follows it is still the credential.
+const NODE_TEXT_URL = /https?:\/\/(?:[^\s"'<>\\]|\\u0026)+/gi;
+const NODE_TEXT_AUTH_HEADER = /\b(Bearer|Basic)\s+[^\s"'\\,;]+/gi;
+const NODE_TEXT_KNOWN_TOKEN = /\b(?:hf|nos)_[A-Za-z0-9_-]{4,}/g;
+const NODE_TEXT_HEX_RUN = /[0-9a-f]{32,}/gi;
+const NODE_TEXT_BASE64_RUN = /[A-Za-z0-9+/_=-]{32,}/g;
+/**
+ * A name that says its value is a credential, with the value after `=` or
+ * `:`. The value runs to the closing quote when it is quoted and to the next
+ * white space when it is not: a registry password may hold `,` `;` `&` `}`
+ * and `)`, so none of them ends it. The rest of the name is bounded so that
+ * a long run of such names costs no more than its length.
+ */
+const NODE_TEXT_NAMED_SECRET =
+  /((?:secret|token|password|passwd|authorization|api[_-]?key|credential)[A-Za-z0-9_.-]{0,128}\\?["']?[ \t]*[=:][ \t]*\\?["']?(?:(?:Bearer|Basic)[ \t]+)?)(?:(?<=["'])[^"'\\\n]+|[^\s"'\\]+)/gi;
+
+/**
+ * Text a node wrote about a job, made fit for the operator's log. A node's
+ * error can quote what it was asked to run, and the job definition carries
+ * the callback secret, the signed links (their query string is the
+ * credential), a Hugging Face token and registry credentials. So: a URL
+ * loses its query string and any user and password in front of its host; a
+ * Bearer or Basic value, an hf_ or nos_ token, the value of anything named
+ * like a secret, and every run of 32 or more hex characters go; so does a
+ * run of 32 or more base64 characters that mixes digits with both cases.
+ * It errs on the side of removing: an image digest and a node's address go
+ * too.
+ */
+export function redactNodeText(text: string): string {
+  return text
+    .replace(NODE_TEXT_URL, (url) => {
+      const bare = url.replace(/^(https?:\/\/)[^/?#@]*@/i, "$1[redacted]@");
+      const query = bare.indexOf("?");
+      return query === -1 ? bare : `${bare.slice(0, query)}?[redacted]`;
+    })
+    .replace(NODE_TEXT_AUTH_HEADER, "$1 [redacted]")
+    .replace(NODE_TEXT_KNOWN_TOKEN, "[redacted]")
+    .replace(NODE_TEXT_HEX_RUN, "[redacted]")
+    .replace(NODE_TEXT_BASE64_RUN, (run) =>
+      /\d/.test(run) && /[a-z]/.test(run) && /[A-Z]/.test(run) ? "[redacted]" : run,
+    )
+    .replace(NODE_TEXT_NAMED_SECRET, "$1[redacted]");
+}
+
+/** One value of a node's report as text; never throws on what it is given. */
+function nodeReportValue(value: unknown): string {
+  if (typeof value === "string") return value.trimEnd();
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * What Nosana and the node said about a job outside the trainer's own
+ * output, redacted, its last MAX_NODE_REPORT_CHARS characters. For the
+ * operator only: it never goes on the job row or to the customer.
+ */
+function readNodeReport(jobResult: unknown, op: unknown): string | null {
+  const items: string[] = [];
+  if (isRecord(jobResult)) {
+    if (typeof jobResult.status === "string") items.push(`status: ${jobResult.status}`);
+    for (const error of Array.isArray(jobResult.errors) ? jobResult.errors : []) {
+      items.push(`error: ${nodeReportValue(error)}`);
+    }
+  }
+  if (isRecord(op)) {
+    if (typeof op.status === "string") items.push(`op status: ${op.status}`);
+    for (const entry of Array.isArray(op.logs) ? op.logs : []) {
+      if (!isRecord(entry) || typeof entry.type !== "string" || typeof entry.log !== "string") continue;
+      if (entry.type === "stdout" || entry.type === "stderr") continue;
+      items.push(`${entry.type}: ${entry.log.trimEnd()}`);
+    }
+  }
+  if (items.length === 0) return null;
+
+  // Redacted first and only then cut to size: a cut made first could leave
+  // half a secret that no pattern knows any more. The one cut made before is
+  // the bound on the work, far above what is kept, and what it may have cut
+  // through goes with it: the text up to the first white space (no secret of
+  // the job definition holds any).
+  let raw = items.join("\n");
+  if (raw.length > MAX_NODE_REPORT_RAW_CHARS) {
+    raw = raw.slice(-MAX_NODE_REPORT_RAW_CHARS);
+    const gap = raw.search(/\s/);
+    if (gap !== -1) raw = raw.slice(gap + 1);
+  }
+  const report = redactNodeText(raw);
+  if (report.length <= MAX_NODE_REPORT_CHARS) return report;
+  const end = report.slice(-MAX_NODE_REPORT_CHARS);
+  const lineBreak = end.indexOf("\n");
+  if (lineBreak !== -1 && lineBreak < NODE_REPORT_LINE_SEARCH_CHARS) return end.slice(lineBreak + 1);
+  // Never begin with the second half of a character cut in two.
+  const first = end.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? end.slice(1) : end;
+}
 
 /**
  * The exit code and the log text out of a deployment job's result
  * (JobResults.opStates of the Nosana API), read defensively: the shape is
  * known from the SDK's types, not from a run. A line that carries a
  * timestamp in front of an event line is given back without it, because an
- * event line must BEGIN with its prefix to count.
+ * event line must BEGIN with its prefix to count. `nodeReport` is the rest
+ * of what the result says (its status, its errors, the node's own log
+ * entries): a run that failed before the trainer started explains itself
+ * there and nowhere else.
  */
 export function readTrainerJobResult(jobResult: unknown): {
   exitCode: number | null;
   logText: string | null;
+  nodeReport: string | null;
 } {
   const ops = isRecord(jobResult) && Array.isArray(jobResult.opStates) ? jobResult.opStates : [];
   const op =
     ops.find((entry) => isRecord(entry) && entry.operationId === "train") ??
     (ops.length === 1 ? ops[0] : undefined);
-  if (!isRecord(op)) return { exitCode: null, logText: null };
+  const nodeReport = readNodeReport(jobResult, op);
+  if (!isRecord(op)) return { exitCode: null, logText: null, nodeReport };
 
   const exitCode =
     typeof op.exitCode === "number" && Number.isInteger(op.exitCode) ? op.exitCode : null;
@@ -629,7 +743,7 @@ export function readTrainerJobResult(jobResult: unknown): {
       text = text.slice(-MAX_RESULT_LOG_CHARS);
     }
   }
-  if (text === "") return { exitCode, logText: null };
+  if (text === "") return { exitCode, logText: null, nodeReport };
 
   const lines = text.split("\n").map((line) => {
     const match = LOG_TIMESTAMP_PREFIX.exec(line);
@@ -637,7 +751,7 @@ export function readTrainerJobResult(jobResult: unknown): {
       ? line.slice(match[0].length)
       : line;
   });
-  return { exitCode, logText: lines.join("\n") };
+  return { exitCode, logText: lines.join("\n"), nodeReport };
 }
 
 interface NosanaView {
@@ -646,6 +760,8 @@ interface NosanaView {
   job: DeploymentJobSnapshot | null;
   exitCode: number | null;
   logText: string | null;
+  /** For the operator's log only: never stored on the row, never sent to the customer. */
+  nodeReport: string | null;
 }
 
 /** null = Nosana could not be read; nothing may be concluded from that. */
@@ -676,7 +792,7 @@ async function readNosana(deps: TrainingDeps, row: TrainingJobRow): Promise<Nosa
         deps.log.warn({ jobId: row.id, error: describeError(err) }, "Training job's Nosana job could not be read");
       }
     }
-    const result = job ? readTrainerJobResult(job.jobResult) : { exitCode: null, logText: null };
+    const result = job ? readTrainerJobResult(job.jobResult) : { exitCode: null, logText: null, nodeReport: null };
     return { deploymentState, jobAddress, job, ...result };
   } catch (err) {
     deps.log.warn({ jobId: row.id, error: describeError(err) }, "Training job's Nosana deployment could not be read");
@@ -2222,6 +2338,7 @@ async function reconcileRunning(deps: TrainingDeps, row: TrainingJobRow): Promis
           endFromNosana: plausibleTime(view?.job?.timeEnd, startedAt, now) !== null,
           exitCode: view?.exitCode ?? null,
           resultLogChars: view?.logText?.length ?? 0,
+          ...(view?.nodeReport ? { nodeReport: view.nodeReport } : {}),
           trainerEvent: terminalEvent?.type ?? null,
           trainerEventFrom: terminalEvent === null ? null : reportedTerminalEvent(row) ? "callback" : "nosana_result",
         },

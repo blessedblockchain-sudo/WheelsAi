@@ -25,8 +25,10 @@
  *                 was for.
  *
  * It also lists what keeps fine-tuning from starting (`training`): each
- * blocker's code, the one customers receive, with what to set; and the
- * deployments the status worker ended because Nosana could not place them
+ * blocker's code, the one customers receive, with what to set; beside it,
+ * what keeps a fine-tuned model from being deployed (`canDeployFineTuned`,
+ * `deployBlockers`: the address or the bucket a GPU node cannot reach); and
+ * the deployments the status worker ended because Nosana could not place them
  * (`placementFailures`), with Nosana's own message where this process has it.
  * Customers only ever see the reason's sentence.
  *
@@ -149,6 +151,8 @@ export interface PlatformComputeDeps {
   loadRunning: () => Promise<RunningComputeRow[]>;
   /** What keeps fine-tuning from starting, in operator language. Absent = not reported. */
   trainingBlockers?: () => Promise<Array<{ code: string; message: string }>>;
+  /** What keeps a fine-tuned model from being deployed, in operator language. Absent = not reported. */
+  deployBlockers?: () => Promise<Array<{ code: string; message: string }>>;
   /** Recent placement failures, newest first. Absent = not reported. */
   loadPlacementFailures?: () => Promise<PlacementFailureRow[]>;
   /** Called with the tiers found priced below cost (the wallet path refuses nothing in a request). */
@@ -244,6 +248,9 @@ export interface PlatformComputeResponse {
     /** Null when the section is not ok. */
     canStart: boolean | null;
     blockers: Array<{ code: string; message: string }>;
+    /** Whether a fine-tuned model can be deployed. Null when not reported or not readable. */
+    canDeployFineTuned: boolean | null;
+    deployBlockers: Array<{ code: string; message: string }>;
   };
   /** Deployments ended because Nosana could not place them, newest first. */
   placementFailures: {
@@ -418,7 +425,7 @@ export async function computePlatformCompute(
   const holds = (mode: NosanaAccessMode) => modes.includes(mode);
 
   // Every read at once; each is settled on its own so one failure costs one section.
-  const [credits, minimumDeploy, wallet, costs, lists, openRows, running, tierList, training, placement] = await Promise.all([
+  const [credits, minimumDeploy, wallet, costs, lists, openRows, running, tierList, training, deploy, placement] = await Promise.all([
     access.hasApiKey ? settle(deps.readCredits, timeoutMs) : null,
     access.hasApiKey ? settle(deps.minimumDeployCredits, timeoutMs) : null,
     access.hasWallet ? settle(deps.readWallet, timeoutMs) : null,
@@ -433,6 +440,7 @@ export async function computePlatformCompute(
     settle(deps.loadRunning, timeoutMs),
     deps.tiers(),
     deps.trainingBlockers ? settle(deps.trainingBlockers, timeoutMs) : null,
+    deps.deployBlockers ? settle(deps.deployBlockers, timeoutMs) : null,
     deps.loadPlacementFailures ? settle(deps.loadPlacementFailures, timeoutMs) : null,
   ]);
 
@@ -584,15 +592,25 @@ export async function computePlatformCompute(
       truncated: unreachable.length > MAX_LISTED,
     },
     rows: { state: openRows.ok && running.ok ? "ok" : "unreadable" },
-    training: !training
-      ? { state: "not_applicable", canStart: null, blockers: [] }
-      : training.ok
+    training: {
+      ...(!training
+        ? { state: "not_applicable" as const, canStart: null, blockers: [] }
+        : training.ok
+          ? {
+              state: "ok" as const,
+              canStart: training.value.length === 0,
+              blockers: training.value.map((blocker) => ({ code: blocker.code, message: blocker.message })),
+            }
+          : { state: "unreadable" as const, canStart: null, blockers: [] }),
+      // Read on its own: `state` speaks for `blockers`, and a read of these
+      // that fails or is not reported leaves null and an empty list.
+      ...(deploy?.ok
         ? {
-            state: "ok",
-            canStart: training.value.length === 0,
-            blockers: training.value.map((blocker) => ({ code: blocker.code, message: blocker.message })),
+            canDeployFineTuned: deploy.value.length === 0,
+            deployBlockers: deploy.value.map((blocker) => ({ code: blocker.code, message: blocker.message })),
           }
-        : { state: "unreadable", canStart: null, blockers: [] },
+        : { canDeployFineTuned: null, deployBlockers: [] }),
+    },
     placementFailures: !placement
       ? { state: "not_applicable", rows: [], truncated: false }
       : placement.ok

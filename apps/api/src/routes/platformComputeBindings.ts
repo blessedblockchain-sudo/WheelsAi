@@ -23,7 +23,10 @@ import {
   AGENT_DEPLOYMENT_NON_TERMINAL_STATUSES,
   MODEL_DEPLOYMENT_NON_TERMINAL_STATUSES,
 } from "../services/buildDeploymentStatusTickDeps.js";
-import { readTrainingOperatorBlockers } from "../services/buildTrainingDeps.js";
+import {
+  readAdapterServingOperatorBlockers,
+  readTrainingOperatorBlockers,
+} from "../services/buildTrainingDeps.js";
 import { getNosanaClient, type NosanaClient } from "../services/nosana.js";
 import { recentPlacementFailures } from "../services/nosanaPlacementFailures.js";
 import {
@@ -80,6 +83,8 @@ export interface BuildPlatformComputeDepsInput {
   adminKey: () => string | undefined;
   /** What keeps fine-tuning from starting, in operator language. */
   trainingBlockers?: () => Promise<Array<{ code: string; message: string }>>;
+  /** What keeps a fine-tuned model from being deployed, in operator language. */
+  deployBlockers?: () => Promise<Array<{ code: string; message: string }>>;
   /**
    * The placement failures this process's status worker observed, with
    * Nosana's own message (services/nosanaPlacementFailures.ts). Omit and the
@@ -104,6 +109,7 @@ export function buildPlatformComputeDeps(input: BuildPlatformComputeDepsInput): 
     adminKey: input.adminKey,
     now: input.now,
     ...(input.trainingBlockers ? { trainingBlockers: input.trainingBlockers } : {}),
+    ...(input.deployBlockers ? { deployBlockers: input.deployBlockers } : {}),
     async loadPlacementFailures() {
       const now = (input.now ?? (() => new Date()))();
       const since = new Date(now.getTime() - PLACEMENT_FAILURE_WINDOW_MS);
@@ -334,6 +340,7 @@ export function createPlatformComputeRoutesProduction(): FastifyPluginAsync {
       // Read per request, so rotating the key needs no reboot.
       adminKey: () => process.env.PLATFORM_ADMIN_KEY,
       trainingBlockers: readTrainingOperatorBlockers,
+      deployBlockers: readAdapterServingOperatorBlockers,
       observedPlacementFailures: recentPlacementFailures,
     }),
   );

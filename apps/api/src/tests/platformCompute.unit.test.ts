@@ -478,10 +478,22 @@ test("training: what keeps fine-tuning from starting is listed for the operator,
     { code: "training_poller_disabled", message: "The training poller is switched off (TRAINING_POLL_INTERVAL_MS is 0)." },
   ];
   const blocked = await computePlatformCompute(deps({ trainingBlockers: async () => missing }));
-  assert.deepEqual(blocked.training, { state: "ok", canStart: false, blockers: missing });
+  assert.deepEqual(blocked.training, {
+    state: "ok",
+    canStart: false,
+    blockers: missing,
+    canDeployFineTuned: null,
+    deployBlockers: [],
+  });
 
   const ready = await computePlatformCompute(deps({ trainingBlockers: async () => [] }));
-  assert.deepEqual(ready.training, { state: "ok", canStart: true, blockers: [] });
+  assert.deepEqual(ready.training, {
+    state: "ok",
+    canStart: true,
+    blockers: [],
+    canDeployFineTuned: null,
+    deployBlockers: [],
+  });
 
   const unreadable = await computePlatformCompute(
     deps({
@@ -490,11 +502,74 @@ test("training: what keeps fine-tuning from starting is listed for the operator,
       },
     }),
   );
-  assert.deepEqual(unreadable.training, { state: "unreadable", canStart: null, blockers: [] });
+  assert.deepEqual(unreadable.training, {
+    state: "unreadable",
+    canStart: null,
+    blockers: [],
+    canDeployFineTuned: null,
+    deployBlockers: [],
+  });
   assert.equal(unreadable.rows.state, "ok", "one unreadable section does not fail the view");
 
   const unreported = await computePlatformCompute(deps());
-  assert.deepEqual(unreported.training, { state: "not_applicable", canStart: null, blockers: [] });
+  assert.deepEqual(unreported.training, {
+    state: "not_applicable",
+    canStart: null,
+    blockers: [],
+    canDeployFineTuned: null,
+    deployBlockers: [],
+  });
+});
+
+test("training: whether a fine-tuned model can be deployed is said beside it, with what a GPU node cannot reach", async () => {
+  const unreachable = [
+    {
+      code: "adapter_download_not_reachable",
+      message:
+        "A GPU node cannot reach http://localhost:4000, where a deployment fetches its adapter: it is this machine or a private network. Set GPU_FACING_API_URL (or PUBLIC_API_URL) to a public address.",
+    },
+  ];
+  const blocked = await computePlatformCompute(
+    deps({ trainingBlockers: async () => [], deployBlockers: async () => unreachable }),
+  );
+  assert.deepEqual(blocked.training, {
+    state: "ok",
+    canStart: true,
+    blockers: [],
+    canDeployFineTuned: false,
+    deployBlockers: unreachable,
+  });
+
+  const ready = await computePlatformCompute(deps({ trainingBlockers: async () => [], deployBlockers: async () => [] }));
+  assert.equal(ready.training.canDeployFineTuned, true);
+  assert.deepEqual(ready.training.deployBlockers, []);
+
+  // A read that fails costs its own two fields and nothing else.
+  const unreadable = await computePlatformCompute(
+    deps({
+      trainingBlockers: async () => [],
+      deployBlockers: async () => {
+        throw new Error("config unreadable");
+      },
+    }),
+  );
+  assert.deepEqual(unreadable.training, {
+    state: "ok",
+    canStart: true,
+    blockers: [],
+    canDeployFineTuned: null,
+    deployBlockers: [],
+  });
+
+  // Reported on its own too, when the training blockers are not.
+  const alone = await computePlatformCompute(deps({ deployBlockers: async () => unreachable }));
+  assert.deepEqual(alone.training, {
+    state: "not_applicable",
+    canStart: null,
+    blockers: [],
+    canDeployFineTuned: false,
+    deployBlockers: unreachable,
+  });
 });
 
 test("training: the operator sentences come from the training service, under the codes customers receive", async () => {

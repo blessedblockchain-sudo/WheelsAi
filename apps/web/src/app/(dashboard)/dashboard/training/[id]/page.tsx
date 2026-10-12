@@ -7,6 +7,7 @@ import { ArrowLeft, RefreshCw, Rocket, RotateCw, Square } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
+import { NosanaRecord } from "@/components/dashboard/nosana-record";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -24,6 +25,7 @@ import { formatCents } from "@/lib/jobs";
 import {
   canCancelTraining,
   canRetryTraining,
+  deployUnavailableMessage,
   formatGpuRate,
   formatRunTime,
   insufficientCreditsSentence,
@@ -121,6 +123,9 @@ export default function TrainingJobPage() {
 
   const [job, setJob] = useState<TrainingJobDetail | null>(null);
   const [blockers, setBlockers] = useState<TrainingBlocker[] | null>(null);
+  // Why no fine-tuned model can be deployed right now; null while it can, and
+  // while that is not known: the API decides then.
+  const [deployUnavailable, setDeployUnavailable] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [logs, setLogs] = useState<TrainingJobLogs | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
@@ -159,8 +164,14 @@ export default function TrainingJobPage() {
     // Retry is offered only where a new job can start; a failed read leaves it enabled
     // and the API decides.
     trainingApi.getCapabilities().then(
-      (capabilities) => setBlockers(capabilities.blockers),
-      () => setBlockers([]),
+      (capabilities) => {
+        setBlockers(capabilities.blockers);
+        setDeployUnavailable(deployUnavailableMessage(capabilities));
+      },
+      () => {
+        setBlockers([]);
+        setDeployUnavailable(null);
+      },
     );
   }, [load, loadLogs]);
 
@@ -374,12 +385,28 @@ export default function TrainingJobPage() {
                 </Link>
                 <p className="font-mono text-xs text-muted-foreground">{job.fineTunedModel.slug}</p>
               </div>
-              <Link href={`/dashboard/deployments/new?fineTunedModel=${job.fineTunedModel.id}`}>
-                <Button>
-                  <Rocket className="mr-2 h-4 w-4" />
-                  Deploy
-                </Button>
-              </Link>
+              {deployUnavailable ? (
+                <div className="max-w-xs text-right">
+                  <Button disabled aria-describedby="training-deploy-unavailable" data-testid="training-deploy">
+                    <Rocket className="mr-2 h-4 w-4" />
+                    Deploy
+                  </Button>
+                  <p
+                    id="training-deploy-unavailable"
+                    className="mt-2 text-xs text-muted-foreground"
+                    data-testid="training-deploy-unavailable"
+                  >
+                    {deployUnavailable}
+                  </p>
+                </div>
+              ) : (
+                <Link href={`/dashboard/deployments/new?fineTunedModel=${job.fineTunedModel.id}`}>
+                  <Button data-testid="training-deploy">
+                    <Rocket className="mr-2 h-4 w-4" />
+                    Deploy
+                  </Button>
+                </Link>
+              )}
             </CardContent>
           </Card>
         )}
@@ -542,6 +569,8 @@ export default function TrainingJobPage() {
                     <Row label="Run limit">{formatRunTime(job.maxRuntimeSeconds)}</Row>
                   )}
                 </dl>
+
+                <NosanaRecord nosana={job.nosana} className="mt-4" />
 
                 {job.ledger.length > 0 && (
                   <div className="mt-4" data-testid="training-ledger">

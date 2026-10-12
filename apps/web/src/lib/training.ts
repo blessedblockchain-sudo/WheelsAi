@@ -10,6 +10,7 @@
 import {
   getApiErrorBody,
   type DatasetFileType,
+  type NosanaRecord,
   type TrainableModel,
   type TrainableModelMethod,
   type TrainingCapabilities,
@@ -20,6 +21,7 @@ import {
   type TrainingMethod,
 } from "./api";
 import { formatCents, formatDuration } from "./jobs";
+import { HOSTED_GROUP_LABEL } from "./model-choice";
 
 // ============================================
 // States
@@ -632,4 +634,81 @@ export function lossPolyline(
 /** A number read from the metrics summary, or null. */
 export function metricNumber(metrics: Record<string, unknown> | null | undefined, key: string): number | null {
   return metrics ? num(metrics[key]) : null;
+}
+
+// ============================================
+// The record on Nosana
+// ============================================
+
+export const NOSANA_RECORD_HEADING = "Record on Nosana";
+export const NOSANA_RECORD_EXPLANATION =
+  "This run is a job on the Nosana network. Anyone can look it up by its address.";
+
+/** The one form of link to a job this dashboard opens: Nosana's own page for it. */
+const NOSANA_JOB_PAGE = /^https:\/\/explore\.nosana\.com\/jobs\/[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+export interface NosanaRecordView {
+  jobAddress: string | null;
+  /** Set only when there is an address and the link is Nosana's page for a job. */
+  jobUrl: string | null;
+  deploymentId: string | null;
+}
+
+const text = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+
+/**
+ * What a page shows of a run's record on Nosana, or null when there is
+ * nothing to show: an older API that does not send it, or a job that never
+ * reached Nosana. A link that is not Nosana's page for a job is dropped, so
+ * nothing else can be opened from here.
+ */
+export function nosanaRecordView(nosana: Partial<NosanaRecord> | null | undefined): NosanaRecordView | null {
+  if (!nosana) return null;
+  const jobAddress = text(nosana.jobAddress);
+  const deploymentId = text(nosana.deploymentId);
+  if (jobAddress === null && deploymentId === null) return null;
+  const jobUrl = text(nosana.jobUrl);
+  return {
+    jobAddress,
+    jobUrl: jobAddress !== null && jobUrl !== null && NOSANA_JOB_PAGE.test(jobUrl) ? jobUrl : null,
+    deploymentId,
+  };
+}
+
+// ============================================
+// Using a fine-tuned model
+// ============================================
+
+/** Shown when the API says a deploy cannot work and gives no sentence of its own. */
+export const DEPLOY_UNAVAILABLE_MESSAGE =
+  "Deploying fine-tuned models is temporarily unavailable. Try again later.";
+
+/**
+ * Why Deploy is disabled for every fine-tuned model, in the API's sentence,
+ * or null when it is offered. Capabilities that are not read yet, failed to
+ * load or come from an older API leave Deploy offered: the API still refuses
+ * a deploy that cannot work.
+ */
+export function deployUnavailableMessage(
+  capabilities: Pick<TrainingCapabilities, "deploy"> | null | undefined,
+): string | null {
+  const deploy = capabilities?.deploy;
+  if (!deploy || deploy.available !== false) return null;
+  return text(deploy.blockers?.[0]?.message) ?? DEPLOY_UNAVAILABLE_MESSAGE;
+}
+
+/**
+ * Where a fine-tuned model is chosen for an agent, by the name the picker
+ * gives the group. It is said in the present only when a deployment of the
+ * model is running: `activeDeployments` also counts deployments that are
+ * still being built, and the picker does not list those.
+ */
+export function fineTunedModelAgentHint(model: {
+  deployments?: Array<{ status: string }> | null;
+}): string {
+  const where = `choose it in the agent's Settings, under "${HOSTED_GROUP_LABEL}".`;
+  return (model.deployments ?? []).some((deployment) => deployment.status === "running")
+    ? `This model can power an agent: ${where}`
+    : `Once it is deployed and running, this model can power an agent: ${where}`;
 }

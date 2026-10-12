@@ -23,6 +23,7 @@ import {
 } from "@/lib/api";
 import { formatCents } from "@/lib/jobs";
 import {
+  deployUnavailableMessage,
   formatBytes,
   formatRunTime,
   trainingCostView,
@@ -108,6 +109,8 @@ export default function TrainingPage() {
   const isLoading = data === null && loadError === null;
   const canStart = data?.capabilities.canStart ?? false;
   const totals = data ? trainingTotals(data.jobs) : null;
+  // Why no fine-tuned model can be deployed right now, or null when Deploy is offered.
+  const deployUnavailable = deployUnavailableMessage(data?.capabilities);
 
   return (
     <div className="flex flex-col">
@@ -305,12 +308,25 @@ export default function TrainingPage() {
                               </p>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
-                              <Link href={`/dashboard/deployments/new?fineTunedModel=${model.id}`}>
-                                <Button size="sm">
+                              {deployUnavailable ? (
+                                <Button
+                                  size="sm"
+                                  disabled
+                                  title={deployUnavailable}
+                                  aria-describedby="deploy-fine-tuned-unavailable"
+                                  data-testid="deploy-fine-tuned"
+                                >
                                   <Rocket className="mr-2 h-4 w-4" />
                                   Deploy
                                 </Button>
-                              </Link>
+                              ) : (
+                                <Link href={`/dashboard/deployments/new?fineTunedModel=${model.id}`}>
+                                  <Button size="sm" data-testid="deploy-fine-tuned">
+                                    <Rocket className="mr-2 h-4 w-4" />
+                                    Deploy
+                                  </Button>
+                                </Link>
+                              )}
                               {model.activeDeployments > 0 ? (
                                 <Link href="/dashboard/marketplace/offerings/new">
                                   <Button size="sm" variant="outline">
@@ -332,6 +348,17 @@ export default function TrainingPage() {
                             </div>
                           </div>
                         ))}
+                        {deployUnavailable && (
+                          // A disabled button shows no title on hover or on a phone, so the
+                          // sentence is also on the page, once for the whole list.
+                          <p
+                            id="deploy-fine-tuned-unavailable"
+                            className="text-xs text-muted-foreground"
+                            data-testid="deploy-fine-tuned-unavailable"
+                          >
+                            {deployUnavailable}
+                          </p>
+                        )}
                         <p className="text-xs text-muted-foreground">
                           A marketplace listing sells a running deployment, so List on marketplace opens
                           once a model is deployed.

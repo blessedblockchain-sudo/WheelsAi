@@ -7,6 +7,7 @@ import { ArrowLeft, Copy, Rocket, Store, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
+import { NosanaRecord } from "@/components/dashboard/nosana-record";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,11 +20,18 @@ import {
   fineTunedModelsApi,
   getApiErrorBody,
   getErrorMessage,
+  trainingApi,
   type DeploymentDetail,
   type FineTunedModel,
 } from "@/lib/api";
 import { deploymentSnippets } from "@/lib/public-urls";
-import { formatBytes, formatRunTime, metricNumber } from "@/lib/training";
+import {
+  deployUnavailableMessage,
+  fineTunedModelAgentHint,
+  formatBytes,
+  formatRunTime,
+  metricNumber,
+} from "@/lib/training";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -77,6 +85,9 @@ export default function FineTunedModelPage() {
   const [served, setServed] = useState<DeploymentDetail | null>(null);
   // Why a delete was refused (409 model_in_use).
   const [deleteRefusal, setDeleteRefusal] = useState<string | null>(null);
+  // Why no fine-tuned model can be deployed right now; null while it can, and
+  // while that is not known (not read yet, or the read failed): the API decides then.
+  const [deployUnavailable, setDeployUnavailable] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -101,6 +112,13 @@ export default function FineTunedModelPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    trainingApi.getCapabilities().then(
+      (capabilities) => setDeployUnavailable(deployUnavailableMessage(capabilities)),
+      () => setDeployUnavailable(null),
+    );
+  }, []);
 
   async function handleDelete() {
     setDeleteRefusal(null);
@@ -228,6 +246,7 @@ export default function FineTunedModelPage() {
                     )}
                   </Row>
                 </dl>
+                <NosanaRecord nosana={model.trainingJob?.nosana} className="mt-4" />
                 {partial && (
                   <p className="mt-3 rounded-md border border-border bg-muted p-3 text-sm text-foreground">
                     The run stopped at its run limit, so this adapter is from a partial run.
@@ -351,12 +370,33 @@ export default function FineTunedModelPage() {
                 <CardTitle className="text-base">Use this model</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <Link href={deployHref} className="block">
-                  <Button className="w-full" data-testid="model-deploy">
-                    <Rocket className="mr-2 h-4 w-4" />
-                    Deploy
-                  </Button>
-                </Link>
+                {deployUnavailable ? (
+                  <>
+                    <Button
+                      className="w-full"
+                      disabled
+                      aria-describedby="model-deploy-unavailable"
+                      data-testid="model-deploy"
+                    >
+                      <Rocket className="mr-2 h-4 w-4" />
+                      Deploy
+                    </Button>
+                    <p
+                      id="model-deploy-unavailable"
+                      className="text-xs text-muted-foreground"
+                      data-testid="model-deploy-unavailable"
+                    >
+                      {deployUnavailable}
+                    </p>
+                  </>
+                ) : (
+                  <Link href={deployHref} className="block">
+                    <Button className="w-full" data-testid="model-deploy">
+                      <Rocket className="mr-2 h-4 w-4" />
+                      Deploy
+                    </Button>
+                  </Link>
+                )}
                 {model.activeDeployments > 0 ? (
                   <Link href="/dashboard/marketplace/offerings/new" className="block">
                     <Button variant="outline" className="w-full">
@@ -375,6 +415,9 @@ export default function FineTunedModelPage() {
                     </p>
                   </>
                 )}
+                <p className="text-xs text-muted-foreground" data-testid="model-agent-hint">
+                  {fineTunedModelAgentHint(model)}
+                </p>
                 {!snippets && (
                   <p className="text-xs text-muted-foreground">
                     The /v1 example for this model appears here once a deployment of it is running.

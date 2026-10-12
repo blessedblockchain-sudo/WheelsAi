@@ -9,9 +9,16 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { ApiError, type TrainableModel, type TrainingCapabilities, type TrainingJob } from "./api";
+import { HOSTED_GROUP_LABEL } from "./model-choice";
 import {
+  DEPLOY_UNAVAILABLE_MESSAGE,
+  NOSANA_RECORD_EXPLANATION,
+  NOSANA_RECORD_HEADING,
   canCancelTraining,
   canRetryTraining,
+  deployUnavailableMessage,
+  fineTunedModelAgentHint,
+  nosanaRecordView,
   datasetFileTypeFromName,
   datasetRowFormat,
   datasetTrainingBlocker,
@@ -592,4 +599,177 @@ test("deployment creation sends fineTunedModelId and no modelId for a fine-tuned
   const source = page("deployments/new/page.tsx");
   assert.match(source, /useSearchParams\(\)\.get\("fineTunedModel"\)/);
   assert.match(source, /\? \{ fineTunedModelId: selectedFineTuned\.id \}\s+: \{ modelId: selectedModel\.id \}/);
+});
+
+// ============================================
+// The record on Nosana, and using a fine-tuned model
+// ============================================
+
+// The form of a Solana address; not a job that exists.
+const ADDRESS = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+const JOB_URL = `https://explore.nosana.com/jobs/${ADDRESS}`;
+
+test("a run's record on Nosana is shown as the API gave it", () => {
+  assert.deepEqual(nosanaRecordView({ deploymentId: "dep-1", jobAddress: ADDRESS, jobUrl: JOB_URL }), {
+    jobAddress: ADDRESS,
+    jobUrl: JOB_URL,
+    deploymentId: "dep-1",
+  });
+  // An address with no page to link to (a devnet run): the address, no link.
+  assert.deepEqual(nosanaRecordView({ deploymentId: null, jobAddress: ADDRESS, jobUrl: null }), {
+    jobAddress: ADDRESS,
+    jobUrl: null,
+    deploymentId: null,
+  });
+  // Submitted, no job yet: the deployment id alone.
+  assert.deepEqual(nosanaRecordView({ deploymentId: "dep-1", jobAddress: null, jobUrl: null }), {
+    jobAddress: null,
+    jobUrl: null,
+    deploymentId: "dep-1",
+  });
+});
+
+test("no record is shown for a job that never reached Nosana, or for an API that does not send one", () => {
+  assert.equal(nosanaRecordView(undefined), null);
+  assert.equal(nosanaRecordView(null), null);
+  assert.equal(nosanaRecordView({}), null);
+  assert.equal(nosanaRecordView({ deploymentId: null, jobAddress: null, jobUrl: null }), null);
+  assert.equal(nosanaRecordView({ deploymentId: "", jobAddress: "  ", jobUrl: null }), null);
+  // A link with nothing it is the page of is not a record.
+  assert.equal(nosanaRecordView({ deploymentId: null, jobAddress: null, jobUrl: JOB_URL }), null);
+});
+
+test("only Nosana's own page for a job is ever a link", () => {
+  for (const jobUrl of [
+    "javascript:alert(1)",
+    `http://explore.nosana.com/jobs/${ADDRESS}`,
+    `https://explore.nosana.com.example.org/jobs/${ADDRESS}`,
+    `https://example.org/jobs/${ADDRESS}`,
+    `https://explore.nosana.com/jobs/${ADDRESS}/../x`,
+    `https://explore.nosana.com/jobs/${ADDRESS}?next=x`,
+    "https://explore.nosana.com/jobs/",
+    `https://explore.nosana.com/jobs/${ADDRESS}?network=devnet`,
+  ]) {
+    const view = nosanaRecordView({ deploymentId: null, jobAddress: ADDRESS, jobUrl });
+    assert.equal(view?.jobUrl, null, jobUrl);
+    assert.equal(view?.jobAddress, ADDRESS);
+  }
+});
+
+test("the words of the record on Nosana", () => {
+  assert.equal(NOSANA_RECORD_HEADING, "Record on Nosana");
+  assert.equal(
+    NOSANA_RECORD_EXPLANATION,
+    "This run is a job on the Nosana network. Anyone can look it up by its address.",
+  );
+});
+
+test("Deploy is offered unless the API says a fine-tuned model cannot be deployed", () => {
+  const blocker = { code: "adapter_storage_not_configured", message: DEPLOY_UNAVAILABLE_MESSAGE };
+  assert.equal(deployUnavailableMessage({ deploy: { available: true, blockers: [] } }), null);
+  // Not read yet, failed to load, or an older API: the button stays as it was.
+  assert.equal(deployUnavailableMessage(null), null);
+  assert.equal(deployUnavailableMessage(undefined), null);
+  assert.equal(deployUnavailableMessage({}), null);
+  assert.equal(deployUnavailableMessage({ deploy: { available: false, blockers: [blocker] } }), blocker.message);
+  // The first blocker's sentence, as the API wrote it.
+  assert.equal(
+    deployUnavailableMessage({
+      deploy: {
+        available: false,
+        blockers: [
+          { code: "a", message: "First sentence." },
+          { code: "b", message: "Second sentence." },
+        ],
+      },
+    }),
+    "First sentence.",
+  );
+  // Not available and no sentence: the one sentence of the contract.
+  assert.equal(deployUnavailableMessage({ deploy: { available: false, blockers: [] } }), DEPLOY_UNAVAILABLE_MESSAGE);
+  assert.equal(
+    DEPLOY_UNAVAILABLE_MESSAGE,
+    "Deploying fine-tuned models is temporarily unavailable. Try again later.",
+  );
+});
+
+test("the agent hint names the picker's group by the picker's own label", () => {
+  assert.equal(
+    fineTunedModelAgentHint({ deployments: [] }),
+    `Once it is deployed and running, this model can power an agent: choose it in the agent's Settings, under "Your models on Nosana".`,
+  );
+  assert.equal(
+    fineTunedModelAgentHint({ deployments: [{ status: "stopped" }, { status: "running" }] }),
+    `This model can power an agent: choose it in the agent's Settings, under "Your models on Nosana".`,
+  );
+  assert.ok(fineTunedModelAgentHint({ deployments: [{ status: "running" }] }).includes(`"${HOSTED_GROUP_LABEL}"`));
+  // One copy of the group's name: the helper file never spells it out.
+  const helpers = readFileSync(join(here, "training.ts"), "utf8");
+  assert.doesNotMatch(helpers, /Your models on Nosana/);
+});
+
+test("the agent hint speaks in the present only for a running deployment", () => {
+  const later = fineTunedModelAgentHint({ deployments: [] });
+  // The API counts these as active deployments, and the agent's picker does not list them all.
+  for (const status of ["pending", "building", "deploying", "provisioning", "stopped", "failed"]) {
+    assert.equal(fineTunedModelAgentHint({ deployments: [{ status }] }), later, status);
+  }
+  // An answer without the list does not break the page.
+  assert.equal(fineTunedModelAgentHint({}), later);
+  assert.equal(fineTunedModelAgentHint({ deployments: null }), later);
+});
+
+test("the job page and the model page show the same record block, above the ledger on the job page", () => {
+  const jobPage = page("training/[id]/page.tsx");
+  assert.match(jobPage, /<NosanaRecord nosana=\{job\.nosana\} className="mt-4" \/>/);
+  assert.ok(jobPage.indexOf("<NosanaRecord") < jobPage.indexOf('data-testid="training-ledger"'));
+  assert.ok(jobPage.indexOf("<NosanaRecord") > jobPage.indexOf('data-testid="training-money"'));
+  assert.match(page("training/models/[id]/page.tsx"), /<NosanaRecord nosana=\{model\.trainingJob\?\.nosana\}/);
+
+  const block = readFileSync(join(here, "../components/dashboard/nosana-record.tsx"), "utf8");
+  assert.match(block, /data-testid="training-nosana"/);
+  assert.match(block, /nosanaRecordView\(nosana\)/);
+  assert.match(block, /target="_blank"\s+rel="noopener noreferrer"/);
+  assert.match(block, /View on Nosana/);
+  // The address is shown whole and can wrap; no link is built on the page.
+  assert.match(block, /break-all font-mono/);
+  assert.doesNotMatch(block, /\.slice\(/);
+  assert.doesNotMatch(block, /https?:\/\//);
+});
+
+test("the model page disables Deploy with the API's sentence and tells the owner about agents", () => {
+  const source = page("training/models/[id]/page.tsx");
+  assert.match(source, /setDeployUnavailable\(deployUnavailableMessage\(capabilities\)\)/);
+  // A failed read leaves the button as it was.
+  assert.match(source, /\(\) => setDeployUnavailable\(null\)/);
+  // Disabled, outside any link, and tied to its sentence for a screen reader.
+  assert.match(
+    source,
+    /<Button\s+className="w-full"\s+disabled\s+aria-describedby="model-deploy-unavailable"\s+data-testid="model-deploy"\s+>/,
+  );
+  assert.match(
+    source,
+    /id="model-deploy-unavailable"[^>]*data-testid="model-deploy-unavailable"\s*>\s+\{deployUnavailable\}/,
+  );
+  assert.match(source, /data-testid="model-agent-hint">\s+\{fineTunedModelAgentHint\(model\)\}/);
+  assert.equal(source.match(/getCapabilities\(\)/g)?.length, 1);
+});
+
+test("the job page disables Deploy on its model card the same way", () => {
+  const source = page("training/[id]/page.tsx");
+  assert.match(source, /setDeployUnavailable\(deployUnavailableMessage\(capabilities\)\)/);
+  assert.match(source, /<Button disabled aria-describedby="training-deploy-unavailable" data-testid="training-deploy">/);
+  assert.match(source, /id="training-deploy-unavailable"[^>]*>\s+\{deployUnavailable\}/);
+  assert.equal(source.match(/getCapabilities\(\)/g)?.length, 1);
+});
+
+test("the fine-tuned models list disables Deploy with the sentence as its title", () => {
+  const source = page("training/page.tsx");
+  assert.match(source, /const deployUnavailable = deployUnavailableMessage\(data\?\.capabilities\);/);
+  assert.match(
+    source,
+    /<Button\s+size="sm"\s+disabled\s+title=\{deployUnavailable\}\s+aria-describedby="deploy-fine-tuned-unavailable"\s+data-testid="deploy-fine-tuned"\s+>/,
+  );
+  // A disabled button shows no title, so the sentence is also on the page.
+  assert.match(source, /id="deploy-fine-tuned-unavailable"[^>]*>\s+\{deployUnavailable\}/);
 });

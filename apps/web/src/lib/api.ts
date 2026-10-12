@@ -1956,6 +1956,12 @@ export interface TrainingCapabilities {
     defaults: Record<string, unknown>;
     loraRanks: number[];
   };
+  /**
+   * Whether a fine-tuned model can be deployed on this server. About the
+   * platform only: the tier and the credits stay with the deploy screen.
+   * An older API does not send it.
+   */
+  deploy?: { available: boolean; blockers: TrainingBlocker[] };
 }
 
 export interface TrainableModelTier {
@@ -2082,6 +2088,19 @@ export interface TrainingJob {
   settledAt: string | null;
 }
 
+/**
+ * What Nosana itself knows a training run by. Every member is null for a job
+ * that never reached Nosana.
+ */
+export interface NosanaRecord {
+  /** The id of the deployment in Nosana's deployment manager. */
+  deploymentId: string | null;
+  /** The run's job on Nosana: an account on Solana anyone can look up. */
+  jobAddress: string | null;
+  /** Nosana's own page for the job, or null when there is none to show. */
+  jobUrl: string | null;
+}
+
 export interface TrainingLedgerEntry {
   id: string;
   type: "training_reservation" | "training_reservation_release" | "training_usage" | string;
@@ -2114,6 +2133,8 @@ export interface TrainingJobDetail extends Omit<TrainingJob, "datasetName"> {
   partial: boolean | null;
   fineTunedModel: { id: string; slug: string; name: string } | null;
   ledger: TrainingLedgerEntry[];
+  /** An older API does not send it. */
+  nosana?: NosanaRecord;
 }
 
 export interface CreateTrainingJobInput {
@@ -2249,7 +2270,14 @@ export interface FineTunedModel {
   /** A summary of the run's metrics file. */
   metrics: Record<string, unknown> | null;
   trainingJobId: string;
-  trainingJob: { id: string; name: string; status: string; completedAt: string | null } | null;
+  /** null when the job row is gone. Its `nosana` comes with GET /fine-tuned-models/:id only. */
+  trainingJob?: {
+    id: string;
+    name: string;
+    status?: string;
+    completedAt: string | null;
+    nosana?: NosanaRecord;
+  } | null;
   /** Every deployment that names this model, running or not. */
   deployments: Array<{ id: string; name: string; slug: string; status: string }>;
   activeDeployments: number;

@@ -7,8 +7,7 @@
  * the three kinds, a knowledge base, public pages, listings that sell use,
  * buyers who start, pay and review. A few things have no screen and are
  * written to the database by hand, and each is said so below:
- *   - the names of the organizations (nothing renames one), verified emails,
- *     and the demo organization's two teammates
+ *   - verified emails, and the demo organization's two teammates
  *   - the demo credits each organization starts with (one ledger row,
  *     "Demo credits")
  *   - 29 days of past sales of one listing, so the Earnings page has a
@@ -137,8 +136,8 @@ async function signUp(key) {
   const orgId = r.body.organization.id;
   const userId = r.body.user.id;
   await client.must("PATCH", "/api/settings/profile", { displayName: o.person });
-  // By hand: nothing in the product renames an organization, and a seeded person has no inbox to verify from.
-  sql(`update organizations set name=${lit(o.name)} where id='${orgId}'`);
+  await client.must("PATCH", "/api/settings/organization", { name: o.name });
+  // By hand: a seeded person has no inbox to verify from.
   sql(`update users set email_verified=true where id='${userId}'`);
   // By hand: the credits a demo organization starts with, as one ledger row dated before everything else.
   sql(

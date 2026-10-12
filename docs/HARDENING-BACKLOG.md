@@ -44,6 +44,22 @@ Updated 2026-10-11.
 - Rolling an agent back to a version that has no graph snapshot leaves the current graph in place.
 - Removing a member does not revoke their sessions (`removeMember` in `apps/api/src/services/enterprise.ts` deletes the membership row and blocklists no token), so a removed member's token keeps working on every member-level session route until it expires. Paid use of a creator's agent (`POST /api/a/:handle/chat`, `/run` and `/v1/chat/completions` with `model: "a/<handle>"`) now reads the membership again at each use and answers `403 not_a_member`; the other member-level routes do not, among them agent chat on a metered copy, which spends the same credits. The fix for all of them is to revoke or version a member's sessions on removal.
 
+## An organization's name
+
+An owner or admin can change the organization's name under Account (`PATCH /api/settings/organization`, 2026-10-12). The rule a name must pass is one file the API and the web share (`packages/shared/src/organizationName.ts`); the rename writes the organization, its seller profile and the name stored on each of its listings in one transaction, and at most three changes in 30 days. Left open:
+
+- **A seller's name can still be copied by signing up.** The check for a name another seller uses, and for a name that reads as the platform, runs at a rename only. A new organization is named after the first part of its sign-up email with no check, and its first listing makes it a seller under that name. So `acme@...` can sell beside a seller called "Acme", and `wheelsai@...` can sell as "wheelsai". Closing it means checking the name where an organization starts to sell (a first listing, a first offering) and sending the person to Account to rename first. The payout paths that also create a seller profile must not refuse.
+- "Another seller already uses that name" compares the whole name, ignoring capitals. Other punctuation, or a letter from another alphabet that looks the same, gets past it. A stored comparison form of each name, with a unique index, would close most of it and would also settle two organizations asking for one name at the same moment, which can both pass today.
+- A listing or a first seller profile written at the very moment of a rename can keep the old name: those writers read the organization's name without the lock the rename takes.
+- Characters that draw nothing are refused, and that includes the zero-width joiners that correct spelling needs in Persian and some Indic scripts, and inside some emoji. A name in those scripts has to be written without them for now.
+- Sign-up cannot choose the name, and an organization's first name is never held to the rule: it can be one character or longer than 60. Once changed, the organization cannot go back to such a name.
+- The sidebar shows the new name at once only in the browser tab that renamed. A teammate, or another tab, shows the old one until its next load. Invitation emails already sent keep the old name.
+- A person in two organizations renames the one they are in: there is no renaming another without switching to it.
+- The seller's page address (the profile's slug) keeps the form of the first name.
+- The limit is counted from the audit rows of renames. Nothing deletes audit rows today; a retention job shorter than 30 days would loosen the limit without saying so.
+- The route allows ten tries a minute, counted for an address, not for a person, and a try over that is answered in the limiter's own words ("Rate limit exceeded, retry in 1 minute"), which the card shows as they come.
+- The rename has run against a real Postgres through the demo seed and a browser script (`workfiles/e2e-org-rename.cjs`); two renames of one organization at the same moment have not been raced.
+
 ## Skills, tool loop and graph engine
 
 - A buyer's copy of a marketplace agent that no install row points at any more still runs without the trial restrictions. Recognising it needs a provenance column on `Agent`, written when the copy is made.

@@ -105,8 +105,8 @@ test("GET /launchpad: a preset arrives as the wizard's PresetDescription", async
   assert.deepEqual(body.presets[1].creatorLocked, {
     percentOfSupply: "10",
     cliffSeconds: 2_592_000,
-    periods: 12,
-    totalSeconds: 31_104_000,
+    periods: 10,
+    totalSeconds: 25_920_000,
   });
 });
 
@@ -125,6 +125,9 @@ test("GET /launchpad for another launchpad has no presets", async () => {
     assert.equal(res.statusCode, 200);
     assert.equal(body.launchpad, launchpad);
     assert.deepEqual(body.presets, []);
+    // Nothing to pick from, so nothing is the default: null, and present.
+    assert.equal("defaultPreset" in body, true);
+    assert.equal(body.defaultPreset, null);
     assert.equal(body.quote, "SOL");
     assert.equal(body.gate.creatorLockupDays, 30);
   }

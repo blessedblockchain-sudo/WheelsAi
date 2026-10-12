@@ -35,18 +35,27 @@
  * steps 3 to 5 of prepare and step 4 of submit its own way. On the meteora
  * launchpad prepare also takes the curve `preset` the creator picked and
  * answers with `preset` and `poolAddress`, and submit saves the curve's
- * config and pool with the token.
+ * config, its pool and its supply split with the token. A meteora token is
+ * saved with no creator lock date: nothing is locked before graduation.
  *
  * Failure-recovery contract:
  *   prepare:
  *     - 400 not_eligible           → no side effects
  *     - 400 wallet_required        → no side effects
  *     - 400 listing_required       → no side effects
- *     - 502 pumpfun_prepare_failed → no side effects
+ *     - 400 <a LaunchRefusal code> → no side effects; the creator can fix
+ *       it (invalid_preset, first_buy_not_supported, picture_required,
+ *       name_too_long, symbol_too_long, metadata_link_too_long,
+ *       picture_link_refused)
+ *     - 502 picture_upload_failed  → no side effects
+ *     - 502 launch_prepare_failed  → no side effects
  *   submit:
  *     - 400 prepare_token_invalid  → no side effects
  *     - 400 org/creator_mismatch   → no side effects
- *     - 502 pumpfun_submit_failed  → no AgentToken row
+ *     - 502 launch_submit_failed   → no AgentToken row
+ *     - 502 transaction_not_confirmed → the launch was sent and its
+ *       confirmation was not seen. No AgentToken row yet; the answer
+ *       carries `signature` and `mintAddress` for POST /launch/reconcile.
  *     - 500 persistence_failed     → response surfaces mintAddress +
  *       txSignature so the wizard can recover (mint exists on-chain).
  */
@@ -70,6 +79,10 @@ import type {
   PrepareLaunchResult,
   BroadcastLaunchResult,
 } from "../services/launchpad/types.js";
+import {
+  LaunchNotConfirmed,
+  LaunchRefusal,
+} from "../services/launchpad/launchRefusal.js";
 import { deriveTreasuryPda } from "../lib/programs/agentTreasury.js";
 import { createLogger } from "../utils/logger.js";
 import type { EligibilityState } from "./tokenLaunch.js";
@@ -83,6 +96,31 @@ function contextString(
 ): string | undefined {
   const value = context[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * A whole number of tokens the adapter put in its context under `key` (a
+ * string of digits, because the context travels as JSON), or undefined.
+ */
+function contextTokenCount(
+  context: Record<string, unknown>,
+  key: string,
+): bigint | undefined {
+  const value = contextString(context, key);
+  return value !== undefined && /^\d{1,20}$/.test(value)
+    ? BigInt(value)
+    : undefined;
+}
+
+/**
+ * When the creator's own tokens stop being locked, as saved at launch.
+ * pump.fun and Bags: the launch plus CREATOR_LOCKUP_DAYS. Our own Meteora
+ * curve: null. On the community curve nothing is ever locked; on the
+ * others the lock starts at graduation, and the date is written then.
+ */
+function creatorLockupEndAtLaunch(launchpad: string, at: Date): Date | null {
+  if (launchpad === "meteora") return null;
+  return new Date(at.getTime() + CREATOR_LOCKUP_DAYS * 86_400 * 1000);
 }
 
 // ============================================
@@ -131,7 +169,8 @@ export interface PersistAgentTokenWithTreasuryInput {
   mintAddress: string;
   txSignature: string;
   creatorAddress: string;
-  creatorLockupEnd: Date;
+  /** Null for a meteora launch: see creatorLockupEndAtLaunch. */
+  creatorLockupEnd: Date | null;
   name: string;
   symbol: string;
   description: string;
@@ -145,18 +184,25 @@ export interface PersistAgentTokenWithTreasuryInput {
   meteoraConfigKey?: string;
   /** The curve pool's address (meteora). Undefined for the others. */
   bondingCurveAddress?: string;
+  /**
+   * Whole tokens the curve sells before graduation, and the rest of the
+   * supply (meteora, from the chosen preset's curve). Undefined for the
+   * others, which keep the columns' defaults.
+   */
+  curveSupply?: bigint;
+  reservedSupply?: bigint;
   treasuryPdaAddress: string;
   treasuryAuthorityBump: number;
 }
 
 export interface PersistAgentTokenWithTreasuryResult {
   tokenId: string;
-  creatorLockupEnd: Date;
+  creatorLockupEnd: Date | null;
 }
 
 export interface ReconcileLaunchResult {
   tokenId: string;
-  creatorLockupEnd: Date;
+  creatorLockupEnd: Date | null;
   /** True when the token row already existed (idempotent replay). */
   alreadyExisted: boolean;
 }
@@ -291,6 +337,14 @@ export function createPartialSignTokenRoutes(
           { err, agentId: body.agentId, launchpad: deps.launchpad.id },
           "launch prepare failed",
         );
+        // What the creator can fix reaches the browser with its own code
+        // (and the one upload failure with its own 502).
+        if (err instanceof LaunchRefusal) {
+          return reply.status(err.status).send({
+            error: err.code,
+            message: err.message,
+          });
+        }
         return reply.status(502).send({
           error: "launch_prepare_failed",
           message: (err as Error).message,
@@ -319,6 +373,10 @@ export function createPartialSignTokenRoutes(
         partialSignedTxBase64: prepared.partialSignedTxBase64,
         mintAddress: prepared.mintAddress,
         creatorPubkey: prepared.creatorPubkey,
+        // The wallet the transaction was built for: the account's linked
+        // wallet. The wizard compares it with the connected wallet before
+        // it asks for a signature.
+        creatorAddress: walletAddress,
         prepareToken,
         // Present when the adapter gives them (meteora): the curve that
         // will be created, and where its pool will live.
@@ -406,15 +464,24 @@ export function createPartialSignTokenRoutes(
           { err, mint: tokenPayload.mintAddress, launchpad: deps.launchpad.id },
           "launch submit failed",
         );
+        // Sent, and the confirmation was not seen: the launch may have
+        // landed. The signature travels as a member so the wizard can link
+        // to it and ask /launch/reconcile to save the token.
+        if (err instanceof LaunchNotConfirmed) {
+          return reply.status(502).send({
+            error: "transaction_not_confirmed",
+            signature: err.signature,
+            mintAddress: tokenPayload.mintAddress,
+            message: err.message,
+          });
+        }
         return reply.status(502).send({
           error: "launch_submit_failed",
           message: (err as Error).message,
         });
       }
 
-      const lockupEnd = new Date(
-        now().getTime() + CREATOR_LOCKUP_DAYS * 86_400 * 1000,
-      );
+      const lockupEnd = creatorLockupEndAtLaunch(tokenPayload.launchpad, now());
       try {
         const persisted = await deps.persistAgentTokenWithTreasury({
           agentListingId: tokenPayload.agentListingId,
@@ -433,6 +500,11 @@ export function createPartialSignTokenRoutes(
             tokenPayload.context,
             "poolAddress",
           ),
+          curveSupply: contextTokenCount(tokenPayload.context, "curveSupply"),
+          reservedSupply: contextTokenCount(
+            tokenPayload.context,
+            "reservedSupply",
+          ),
           treasuryPdaAddress: treasuryPda.toBase58(),
           treasuryAuthorityBump: treasuryBump,
         });
@@ -441,7 +513,7 @@ export function createPartialSignTokenRoutes(
           mintAddress: submitted.mintAddress,
           txSignature: submitted.txSignature,
           treasuryPdaAddress: treasuryPda.toBase58(),
-          creatorLockupEnd: persisted.creatorLockupEnd.toISOString(),
+          creatorLockupEnd: persisted.creatorLockupEnd?.toISOString() ?? null,
         });
       } catch (err) {
         logger.error(
@@ -546,9 +618,7 @@ export function createPartialSignTokenRoutes(
       }
 
       const [treasuryPda, treasuryBump] = deriveTreasuryPda(mintPub);
-      const lockupEnd = new Date(
-        now().getTime() + CREATOR_LOCKUP_DAYS * 86_400 * 1000,
-      );
+      const lockupEnd = creatorLockupEndAtLaunch(tokenPayload.launchpad, now());
 
       try {
         const result = await deps.reconcileLaunch({
@@ -568,6 +638,11 @@ export function createPartialSignTokenRoutes(
             tokenPayload.context,
             "poolAddress",
           ),
+          curveSupply: contextTokenCount(tokenPayload.context, "curveSupply"),
+          reservedSupply: contextTokenCount(
+            tokenPayload.context,
+            "reservedSupply",
+          ),
           treasuryPdaAddress: treasuryPda.toBase58(),
           treasuryAuthorityBump: treasuryBump,
         });
@@ -576,7 +651,7 @@ export function createPartialSignTokenRoutes(
           mintAddress: tokenPayload.mintAddress,
           txSignature: body.txSignature,
           treasuryPdaAddress: treasuryPda.toBase58(),
-          creatorLockupEnd: result.creatorLockupEnd.toISOString(),
+          creatorLockupEnd: result.creatorLockupEnd?.toISOString() ?? null,
           alreadyExisted: result.alreadyExisted,
         });
       } catch (err) {

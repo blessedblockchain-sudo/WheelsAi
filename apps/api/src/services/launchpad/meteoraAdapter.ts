@@ -22,13 +22,25 @@
  *        receiver are the platform's configured addresses.
  *     5. Compile it to a v0 transaction with the creator as fee payer, sign
  *        with the two fresh keypairs, leave the creator's slot empty.
- *     → context: { configKey, poolAddress, preset, messageHash,
- *                  lastValidBlockHeight }
+ *     → context: { configKey, poolAddress, preset, curveSupply,
+ *                  reservedSupply, messageHash, lastValidBlockHeight }
  *   broadcastLaunch
  *     The signed transaction must carry the same message, byte for byte
  *     (its sha256 is compared with context.messageHash), name the expected
  *     mint and creator, and have every signature slot filled. Then it is
  *     sent and confirmed. Anything else is refused before it is sent.
+ *
+ * The launch carries no compute-budget instruction: one would cost 52
+ * bytes the launch does not have. It does not need one for a wallet's sake
+ * either. A wallet adds its own fee instructions only to a transaction
+ * nobody has signed yet, and this one reaches the wallet already signed by
+ * the config and the mint, so the wallet must leave it as it is. That is
+ * why the check at broadcast can stay strict.
+ *
+ * What the creator can fix is refused with a LaunchRefusal (a code and a
+ * plain sentence, launchpad/launchRefusal.ts), which the route answers as a
+ * 400. A sent launch whose confirmation was not seen is a
+ * LaunchNotConfirmed that carries the signature.
  *
  * Every chain and network call sits behind MeteoraAdapterDeps, so the tests
  * run with no network (tests/meteoraAdapter.unit.test.ts).
@@ -50,11 +62,13 @@ import {
 
 import { fetchImageBytes } from "../fetchImageBytes.js";
 import { uploadPumpfunMetadata } from "../pumpfunIpfs.js";
+import { LaunchNotConfirmed, LaunchRefusal } from "./launchRefusal.js";
 import {
   DEFAULT_PRESET_ID,
   METEORA_QUOTE_MINT,
   buildPresetCurve,
   isPresetOffered,
+  presetSupplySplit,
   type SolanaNetwork,
 } from "./meteoraPresets.js";
 import type {
@@ -153,32 +167,37 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
     async prepareLaunch(input: PrepareLaunchInput): Promise<PrepareLaunchResult> {
       const preset = input.preset?.trim() || DEFAULT_PRESET_ID;
       if (!isPresetOffered(preset, deps.network)) {
-        throw new Error(
-          `unknown_preset: "${preset}" is not a curve that can be chosen here`,
+        throw new LaunchRefusal(
+          "invalid_preset",
+          `"${preset}" is not a curve that can be chosen here.`,
         );
       }
       if (input.initialBuySol !== undefined && input.initialBuySol > 0) {
-        throw new Error(
-          "first_buy_not_in_launch: the first buy is made on the token's page after the launch, not in the launch itself",
+        throw new LaunchRefusal(
+          "first_buy_not_supported",
+          "The first buy is made on the token's page after the launch, not in the launch itself.",
         );
       }
       if (!input.metadata.imageUrl || input.metadata.imageUrl.trim().length === 0) {
-        throw new Error(
-          "image_required: the agent needs a picture before it can launch a token",
+        throw new LaunchRefusal(
+          "picture_required",
+          "The agent needs a picture before it can launch a token.",
         );
       }
       // Refused here, before the creator is asked to sign a launch the
       // chain would then turn down.
       const nameBytes = Buffer.byteLength(input.metadata.name, "utf8");
       if (nameBytes > MAX_TOKEN_NAME_BYTES) {
-        throw new Error(
-          `name_too_long: the token's name is ${nameBytes} bytes and the chain holds ${MAX_TOKEN_NAME_BYTES}; accented letters and emoji count for more than one`,
+        throw new LaunchRefusal(
+          "name_too_long",
+          `The token's name is ${nameBytes} bytes and the chain holds ${MAX_TOKEN_NAME_BYTES}. Accented letters and emoji count for more than one.`,
         );
       }
       const symbolBytes = Buffer.byteLength(input.metadata.symbol, "utf8");
       if (symbolBytes > MAX_TOKEN_SYMBOL_BYTES) {
-        throw new Error(
-          `symbol_too_long: the token's symbol is ${symbolBytes} bytes and the chain holds ${MAX_TOKEN_SYMBOL_BYTES}; accented letters and emoji count for more than one`,
+        throw new LaunchRefusal(
+          "symbol_too_long",
+          `The token's symbol is ${symbolBytes} bytes and the chain holds ${MAX_TOKEN_SYMBOL_BYTES}. Accented letters and emoji count for more than one.`,
         );
       }
       let creator: PublicKey;
@@ -193,7 +212,20 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
       const config = generateKeypair();
       const mint = generateKeypair();
 
-      const metadataUri = await deps.uploadMetadata(input.metadata);
+      // A link the fetch refuses is the creator's to fix and passes through
+      // as it is. Anything else that stops the upload is not their doing:
+      // it gets its own code so the screen can say "try again".
+      let metadataUri: string;
+      try {
+        metadataUri = await deps.uploadMetadata(input.metadata);
+      } catch (err) {
+        if (err instanceof LaunchRefusal) throw err;
+        throw new LaunchRefusal(
+          "picture_upload_failed",
+          `The token's picture could not be uploaded (${(err as Error).message ?? "unknown"}).`,
+          { cause: err },
+        );
+      }
 
       const built = await deps.client.partner.createConfigAndPool({
         ...buildPresetCurve(preset),
@@ -224,6 +256,11 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
       // throws on anything too long instead of saying how long it is. Every
       // signature slot counts, the creator's empty one too, so this is the
       // size the signed transaction will have.
+      //
+      // The name and the symbol were held to the chain's limits above, and a
+      // launch with both at their longest fits. What is left to vary in
+      // length is the link to the uploaded metadata, so that is what the
+      // refusal names.
       let size: number;
       try {
         size =
@@ -231,13 +268,16 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
           64 * message.header.numRequiredSignatures +
           message.serialize().length;
       } catch (err) {
-        throw new Error(
-          `transaction_too_large: the launch does not fit in one transaction of ${MAX_TRANSACTION_BYTES} bytes (${(err as Error).message})`,
+        throw new LaunchRefusal(
+          "metadata_link_too_long",
+          `The launch does not fit in one transaction of ${MAX_TRANSACTION_BYTES} bytes. It is the link to the token's uploaded metadata that is too long, not the name or the symbol.`,
+          { cause: err },
         );
       }
       if (size > MAX_TRANSACTION_BYTES) {
-        throw new Error(
-          `transaction_too_large: the launch is ${size} bytes and one transaction holds ${MAX_TRANSACTION_BYTES}; a shorter name or symbol may fit`,
+        throw new LaunchRefusal(
+          "metadata_link_too_long",
+          `The launch is ${size} bytes and one transaction holds ${MAX_TRANSACTION_BYTES}. It is the link to the token's uploaded metadata that is too long, not the name or the symbol.`,
         );
       }
       const tx = new VersionedTransaction(message);
@@ -255,6 +295,11 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
         );
       }
 
+      // What is saved with the token: how many whole tokens this curve
+      // sells before it is full, and the rest of the supply. Strings,
+      // because the context travels as JSON inside the prepare token.
+      const split = presetSupplySplit(preset);
+
       return {
         partialSignedTxBase64: Buffer.from(tx.serialize()).toString("base64"),
         mintAddress: mint.publicKey.toBase58(),
@@ -267,6 +312,8 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
             config.publicKey,
           ).toBase58(),
           preset,
+          curveSupply: split.curveSupply.toString(),
+          reservedSupply: split.reservedSupply.toString(),
           messageHash: messageHashOf(tx),
           // Not a secret and not a decision: it lets the confirmation stop
           // waiting once the blockhash the transaction was built on is dead.
@@ -378,9 +425,10 @@ export function createMeteoraAdapter(deps: MeteoraAdapterDeps): LaunchpadAdapter
           lastValidBlockHeight,
         });
       } catch (err) {
-        // The signature is named so a launch that did land after all can
-        // still be found and saved (POST /launch/reconcile).
-        throw new Error(
+        // The signature is carried, and named, so a launch that did land
+        // after all can still be found and saved (POST /launch/reconcile).
+        throw new LaunchNotConfirmed(
+          txSignature,
           `not_confirmed: the launch was sent as ${txSignature} and was not confirmed (${(err as Error).message ?? "unknown"})`,
           { cause: err as Error },
         );

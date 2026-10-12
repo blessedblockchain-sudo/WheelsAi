@@ -9,6 +9,11 @@ import {
 } from "../routes/tokenLaunchPartialSign.js";
 import { signPrepareToken } from "../services/launchpadPrepareToken.js";
 import type { LaunchpadAdapter } from "../services/launchpad/types.js";
+import {
+  LaunchNotConfirmed,
+  LaunchRefusal,
+  type LaunchRefusalCode,
+} from "../services/launchpad/launchRefusal.js";
 
 function setupEnv() {
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
@@ -222,6 +227,8 @@ test("/prepare 200 returns partial-signed tx + prepare token", async () => {
   assert.equal(body.partialSignedTxBase64, "FAKE_PARTIAL_SIGNED_TX_BASE64");
   assert.equal(body.mintAddress, makeFixedMint().publicKey.toBase58());
   assert.equal(body.creatorPubkey, USER_WALLET);
+  // The wallet the transaction was built for: the account's linked wallet.
+  assert.equal(body.creatorAddress, USER_WALLET);
   assert.ok(typeof body.prepareToken === "string" && body.prepareToken.length > 0);
   // Token has three base64url segments
   assert.equal(body.prepareToken.split(".").length, 3);
@@ -423,6 +430,50 @@ test("/submit 200 returns persisted ids + on-chain refs on the happy path", asyn
   assert.equal(captured.persistInput.creatorAddress, USER_WALLET);
   assert.equal(captured.persistInput.agentListingId, "listing_1");
   assert.equal(captured.persistInput.orgId, "org_1");
+  // pump.fun keeps its lock: the launch plus 30 days. And the supply split
+  // is left to the columns' defaults.
+  assert.equal(
+    captured.persistInput.creatorLockupEnd.toISOString(),
+    "2026-06-26T00:00:00.000Z",
+  );
+  assert.equal(body.creatorLockupEnd, "2026-06-26T00:00:00.000Z");
+  assert.equal(captured.persistInput.curveSupply, undefined);
+  assert.equal(captured.persistInput.reservedSupply, undefined);
+});
+
+test("/submit 502 transaction_not_confirmed carries the signature and the mint (and no persist)", async () => {
+  let persistCalled = false;
+  const app = await makeApp({
+    deps: {
+      launchpad: makeMockLaunchpad({
+        broadcastLaunch: async () => {
+          throw new LaunchNotConfirmed(
+            "sent_signature_abc",
+            "not_confirmed: the launch was sent as sent_signature_abc and was not confirmed (block height exceeded)",
+          );
+        },
+      }),
+      persistAgentTokenWithTreasury: async () => {
+        persistCalled = true;
+        return { tokenId: "should-not-happen", creatorLockupEnd: null };
+      },
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/submit",
+    payload: {
+      prepareToken: makeValidPrepareToken(),
+      signedTxBase64: "anything",
+    },
+  });
+  assert.equal(res.statusCode, 502);
+  const body = JSON.parse(res.body);
+  assert.equal(body.error, "transaction_not_confirmed");
+  assert.equal(body.signature, "sent_signature_abc");
+  // With the signature, what /launch/reconcile asks for.
+  assert.equal(body.mintAddress, makeFixedMint().publicKey.toBase58());
+  assert.equal(persistCalled, false);
 });
 
 // ============================================
@@ -562,6 +613,9 @@ const METEORA_CONTEXT = {
   configKey: "CoNFigKey1111111111111111111111111111111111",
   poolAddress: "PooLAddress11111111111111111111111111111111",
   preset: "committed",
+  // Whole tokens, as strings: the adapter takes them from the preset's curve.
+  curveSupply: "706513339",
+  reservedSupply: "293486661",
   messageHash: "ab".repeat(32),
   lastValidBlockHeight: 4242,
 };
@@ -609,6 +663,7 @@ test("/prepare passes the chosen preset to the launchpad and answers with the pr
   const body = JSON.parse(res.body);
   assert.equal(body.preset, "committed");
   assert.equal(body.poolAddress, METEORA_CONTEXT.poolAddress);
+  assert.equal(body.creatorAddress, USER_WALLET);
   assert.ok(typeof body.prepareToken === "string" && body.prepareToken.length > 0);
 });
 
@@ -641,12 +696,48 @@ test("/prepare without a preset leaves the choice to the launchpad, and a pump.f
   assert.equal("poolAddress" in body, false);
 });
 
-test("/prepare 502 carries the launchpad's sentence when it refuses a preset", async () => {
+test("/prepare answers a refusal the creator can fix as a 400 with its code", async () => {
+  const codes: LaunchRefusalCode[] = [
+    "invalid_preset",
+    "first_buy_not_supported",
+    "picture_required",
+    "name_too_long",
+    "symbol_too_long",
+    "metadata_link_too_long",
+    "picture_link_refused",
+  ];
+  for (const code of codes) {
+    const app = await makeApp({
+      deps: {
+        launchpad: makeMeteoraLaunchpad({
+          prepareLaunch: async () => {
+            throw new LaunchRefusal(code, "A plain sentence about it.");
+          },
+        }),
+      },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/launch/prepare",
+      payload: validPrepareBody(),
+    });
+    assert.equal(res.statusCode, 400, code);
+    assert.deepEqual(JSON.parse(res.body), {
+      error: code,
+      message: "A plain sentence about it.",
+    });
+  }
+});
+
+test("/prepare answers a failed upload of the picture as a 502 with its own code", async () => {
   const app = await makeApp({
     deps: {
       launchpad: makeMeteoraLaunchpad({
         prepareLaunch: async () => {
-          throw new Error('unknown_preset: "moonshot" is not a curve that can be chosen here');
+          throw new LaunchRefusal(
+            "picture_upload_failed",
+            "The token's picture could not be uploaded (upstream timed out).",
+          );
         },
       }),
     },
@@ -654,12 +745,31 @@ test("/prepare 502 carries the launchpad's sentence when it refuses a preset", a
   const res = await app.inject({
     method: "POST",
     url: "/launch/prepare",
-    payload: { ...validPrepareBody(), preset: "moonshot" },
+    payload: validPrepareBody(),
+  });
+  assert.equal(res.statusCode, 502);
+  assert.equal(JSON.parse(res.body).error, "picture_upload_failed");
+});
+
+test("/prepare keeps 502 launch_prepare_failed for an error that is not the creator's to fix", async () => {
+  const app = await makeApp({
+    deps: {
+      launchpad: makeMeteoraLaunchpad({
+        prepareLaunch: async () => {
+          throw new Error("unexpected_signers: the launch transaction asks for other signatures");
+        },
+      }),
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/prepare",
+    payload: validPrepareBody(),
   });
   assert.equal(res.statusCode, 502);
   const body = JSON.parse(res.body);
   assert.equal(body.error, "launch_prepare_failed");
-  assert.match(body.message, /unknown_preset/);
+  assert.match(body.message, /unexpected_signers/);
 });
 
 test("/submit saves a meteora launch with its config and its pool, and hands the adapter its context", async () => {
@@ -693,12 +803,47 @@ test("/submit saves a meteora launch with its config and its pool, and hands the
     },
   });
   assert.equal(res.statusCode, 200);
-  assert.equal(JSON.parse(res.body).txSignature, "meteora_signature");
+  const body = JSON.parse(res.body);
+  assert.equal(body.txSignature, "meteora_signature");
   // The context comes back out of the signed token untouched.
   assert.deepEqual(captured.broadcastInput.context, METEORA_CONTEXT);
   assert.equal(captured.persistInput.launchpad, "meteora");
   assert.equal(captured.persistInput.meteoraConfigKey, METEORA_CONTEXT.configKey);
   assert.equal(captured.persistInput.bondingCurveAddress, METEORA_CONTEXT.poolAddress);
+  // The supply split is the chosen curve's, not pump.fun's 800M and 200M.
+  assert.equal(captured.persistInput.curveSupply, 706_513_339n);
+  assert.equal(captured.persistInput.reservedSupply, 293_486_661n);
+  // Nothing is locked before graduation: no date at launch, in the row or the answer.
+  assert.equal(captured.persistInput.creatorLockupEnd, null);
+  assert.equal("creatorLockupEnd" in body, true);
+  assert.equal(body.creatorLockupEnd, null);
+});
+
+test("/submit saves no supply split when the context's numbers are not whole numbers", async () => {
+  const captured: any = {};
+  const app = await makeApp({
+    deps: {
+      launchpad: makeMeteoraLaunchpad(),
+      persistAgentTokenWithTreasury: async (input) => {
+        captured.persistInput = input;
+        return { tokenId: "tok_curve", creatorLockupEnd: input.creatorLockupEnd };
+      },
+    },
+  });
+  const res = await app.inject({
+    method: "POST",
+    url: "/launch/submit",
+    payload: {
+      prepareToken: makeValidPrepareToken({
+        launchpad: "meteora",
+        context: { ...METEORA_CONTEXT, curveSupply: "7.5e8", reservedSupply: 250000000 },
+      }),
+      signedTxBase64: "anything",
+    },
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(captured.persistInput.curveSupply, undefined);
+  assert.equal(captured.persistInput.reservedSupply, undefined);
 });
 
 test("/submit saves no pool for a pump.fun launch", async () => {
@@ -754,6 +899,10 @@ test("/reconcile saves a meteora launch the same way submit would have", async (
   assert.equal(captured.input.meteoraConfigKey, METEORA_CONTEXT.configKey);
   assert.equal(captured.input.bondingCurveAddress, METEORA_CONTEXT.poolAddress);
   assert.equal(captured.input.txSignature, "meteora_signature");
+  assert.equal(captured.input.curveSupply, 706_513_339n);
+  assert.equal(captured.input.reservedSupply, 293_486_661n);
+  assert.equal(captured.input.creatorLockupEnd, null);
+  assert.equal(JSON.parse(res.body).creatorLockupEnd, null);
 });
 
 // The row itself. agentTokenCreateData is the pure half of the production
@@ -786,9 +935,15 @@ test("a meteora launch is saved with its pool and config and no pump.fun link", 
       launchpad: "meteora",
       meteoraConfigKey: METEORA_CONTEXT.configKey,
       bondingCurveAddress: METEORA_CONTEXT.poolAddress,
+      curveSupply: 706_513_339n,
+      reservedSupply: 293_486_661n,
+      creatorLockupEnd: null,
     }),
     { id: "listing_1", iconUrl: "https://example.com/icon.png" },
   );
+  assert.equal(data.curveSupply, 706_513_339n);
+  assert.equal(data.reservedSupply, 293_486_661n);
+  assert.equal(data.creatorLockupEnd, null);
   assert.equal(data.launchpad, "meteora");
   assert.equal(data.meteoraConfigKey, METEORA_CONTEXT.configKey);
   assert.equal(data.bondingCurveAddress, METEORA_CONTEXT.poolAddress);
@@ -808,6 +963,10 @@ test("a pump.fun launch keeps its pump.fun link, and a Bags launch has none", as
   assert.equal(pump.pumpfunUrl, `https://pump.fun/coin/${FIXED_MINT_B58}`);
   assert.equal(pump.bondingCurveAddress, undefined);
   assert.equal(pump.meteoraConfigKey, undefined);
+  // The columns' defaults stand, and the lock is the launch plus 30 days.
+  assert.equal(pump.curveSupply, undefined);
+  assert.equal(pump.reservedSupply, undefined);
+  assert.equal(pump.creatorLockupEnd?.toISOString(), "2026-06-26T00:00:00.000Z");
 
   const bags = agentTokenCreateData(
     persistInput({ launchpad: "bags", meteoraConfigKey: METEORA_CONTEXT.configKey }),

@@ -93,7 +93,12 @@ export function buildEligibilityDeps(): Parameters<
  *   - bags:     the Meteora fee-share config.
  *   - meteora:  the curve config WheelsAI built for the token and the
  *               curve pool's address. No pump.fun link: the token is not
- *               on pump.fun, and a link there would lead nowhere.
+ *               on pump.fun, and a link there would lead nowhere. The
+ *               supply split is the chosen curve's own (what it sells
+ *               before graduation, and the rest), where the others keep
+ *               the columns' defaults, which are pump.fun's. No creator
+ *               lock date: nothing is locked before graduation, and the
+ *               date is written then for a curve that locks tokens.
  */
 export function agentTokenCreateData(
   input: PersistAgentTokenWithTreasuryInput,
@@ -115,6 +120,8 @@ export function agentTokenCreateData(
     launchpad: input.launchpad,
     meteoraConfigKey: input.meteoraConfigKey,
     bondingCurveAddress: input.bondingCurveAddress,
+    curveSupply: input.curveSupply,
+    reservedSupply: input.reservedSupply,
     creatorLockupEnd: input.creatorLockupEnd,
     status: "BONDING" as const,
     treasuryAddress: input.treasuryPdaAddress,
@@ -159,7 +166,7 @@ async function persistAgentTokenWithTreasury(
     });
     return {
       tokenId: created.id,
-      creatorLockupEnd: created.creatorLockupEnd ?? input.creatorLockupEnd,
+      creatorLockupEnd: created.creatorLockupEnd,
     };
   });
 }
@@ -183,7 +190,7 @@ async function reconcileLaunch(
   if (existing) {
     return {
       tokenId: existing.id,
-      creatorLockupEnd: existing.creatorLockupEnd ?? input.creatorLockupEnd,
+      creatorLockupEnd: existing.creatorLockupEnd,
       alreadyExisted: true,
     };
   }
@@ -201,7 +208,7 @@ async function reconcileLaunch(
     if (racy) {
       return {
         tokenId: racy.id,
-        creatorLockupEnd: racy.creatorLockupEnd ?? input.creatorLockupEnd,
+        creatorLockupEnd: racy.creatorLockupEnd,
         alreadyExisted: true,
       };
     }

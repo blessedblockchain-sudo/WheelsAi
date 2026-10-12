@@ -34,7 +34,8 @@ export interface TokenLaunchpadInfo {
   network: SolanaNetwork;
   quote: "SOL";
   presets: PresetDescription[];
-  defaultPreset: string;
+  /** Null when this launchpad has no presets to pick from. */
+  defaultPreset: string | null;
   gate: {
     minReputation: number;
     minDeploymentAgeDays: number;
@@ -61,7 +62,7 @@ export function createTokenLaunchpadInfoRoutes(
         network: deps.network,
         quote: "SOL",
         presets,
-        defaultPreset: DEFAULT_PRESET_ID,
+        defaultPreset: presets.length > 0 ? DEFAULT_PRESET_ID : null,
         gate: {
           minReputation: gate.minReputation,
           minDeploymentAgeDays: gate.minDeploymentAgeDays,

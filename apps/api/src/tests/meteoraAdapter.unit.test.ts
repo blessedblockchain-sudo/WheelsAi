@@ -21,6 +21,12 @@ import {
   createMeteoraMetadataUploader,
   type MeteoraAdapterDeps,
 } from "../services/launchpad/meteoraAdapter.js";
+import {
+  LaunchNotConfirmed,
+  LaunchRefusal,
+  type LaunchRefusalCode,
+} from "../services/launchpad/launchRefusal.js";
+import { presetSupplySplit } from "../services/launchpad/meteoraPresets.js";
 import type { PrepareLaunchInput } from "../services/launchpad/types.js";
 
 // Drives services/launchpad/meteoraAdapter.ts with a fake SDK client and
@@ -32,6 +38,7 @@ const LAST_VALID_BLOCK_HEIGHT = 4242;
 const MEMO = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
 const WSOL = new PublicKey("So11111111111111111111111111111111111111112");
 const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111";
 const METADATA_URI = "https://ipfs.io/ipfs/QmWATWQ7fVPP2EFGu71UkfnqhYXDYH566qy47CnJDgvs8u";
 
 const creator = Keypair.fromSeed(new Uint8Array(32).fill(3));
@@ -134,6 +141,19 @@ function encode(tx: VersionedTransaction): string {
 
 const isEmpty = (signature: Uint8Array) => signature.every((byte) => byte === 0);
 
+/** A check for assert.rejects: a refusal the creator can fix, with this code and status. */
+function refusal(code: LaunchRefusalCode, sentence?: RegExp, status: 400 | 502 = 400) {
+  return (err: unknown) => {
+    assert.ok(err instanceof LaunchRefusal, `a LaunchRefusal, got ${String(err)}`);
+    assert.equal(err.code, code);
+    assert.equal(err.status, status);
+    // The sentence is for a person: the code is not repeated in it.
+    assert.ok(!err.message.includes(code), err.message);
+    if (sentence) assert.match(err.message, sentence);
+    return true;
+  };
+}
+
 /** A prepared launch, and the same transaction signed by the creator as a wallet would. */
 async function prepareAndSign(capture: Capture, adapter = makeAdapter(capture)) {
   const prepared = await adapter.prepareLaunch(launchInput());
@@ -182,6 +202,9 @@ test("prepareLaunch's context carries the config, the derived pool, the preset a
       configKeypair.publicKey,
     ).toBase58(),
     preset: "community",
+    // What the community curve sells before it is full, and the rest.
+    curveSupply: "799999986",
+    reservedSupply: "200000014",
     messageHash: createHash("sha256").update(tx.message.serialize()).digest("hex"),
     lastValidBlockHeight: LAST_VALID_BLOCK_HEIGHT,
   });
@@ -215,6 +238,11 @@ test("prepareLaunch passes the chosen preset on", async () => {
   const capture: Capture = { calls: [] };
   const result = await makeAdapter(capture).prepareLaunch(launchInput({ preset: "committed" }));
   assert.equal(result.context.preset, "committed");
+  // The supply split saved with the token is the chosen curve's own.
+  const split = presetSupplySplit("committed");
+  assert.equal(result.context.curveSupply, split.curveSupply.toString());
+  assert.equal(result.context.reservedSupply, split.reservedSupply.toString());
+  assert.notEqual(result.context.curveSupply, "799999986");
   assert.equal(capture.params.creatorTradingFeePercentage, 50);
   assert.notEqual(capture.params.lockedVesting.amountPerPeriod.toString(), "0");
 });
@@ -223,7 +251,7 @@ test("prepareLaunch refuses a preset it does not know, before anything is upload
   const capture: Capture = { calls: [] };
   await assert.rejects(
     makeAdapter(capture).prepareLaunch(launchInput({ preset: "moonshot" })),
-    /unknown_preset/,
+    refusal("invalid_preset", /"moonshot" is not a curve that can be chosen here/),
   );
   assert.deepEqual(capture.calls, []);
 });
@@ -238,7 +266,7 @@ test("prepareLaunch offers the rehearsal preset on devnet and refuses it on main
     makeAdapter(onMainnet, { network: "mainnet-beta" }).prepareLaunch(
       launchInput({ preset: "rehearsal" }),
     ),
-    /unknown_preset/,
+    refusal("invalid_preset"),
   );
   assert.deepEqual(onMainnet.calls, []);
 });
@@ -247,7 +275,7 @@ test("prepareLaunch refuses a first buy and says where it is made", async () => 
   const capture: Capture = { calls: [] };
   await assert.rejects(
     makeAdapter(capture).prepareLaunch(launchInput({ initialBuySol: 0.5 })),
-    /first_buy_not_in_launch: the first buy is made on the token's page after the launch/,
+    refusal("first_buy_not_supported", /The first buy is made on the token's page after the launch/),
   );
   assert.deepEqual(capture.calls, []);
 
@@ -264,7 +292,7 @@ test("prepareLaunch refuses a token with no picture", async () => {
       makeAdapter(capture).prepareLaunch(
         launchInput({ metadata: { ...launchInput().metadata, imageUrl } }),
       ),
-      /image_required/,
+      refusal("picture_required"),
     );
     assert.deepEqual(capture.calls, []);
   }
@@ -278,7 +306,7 @@ test("prepareLaunch refuses a name or a symbol longer in bytes than the chain ho
     makeAdapter(longName).prepareLaunch(
       launchInput({ metadata: { ...launchInput().metadata, name: accented } }),
     ),
-    /name_too_long: the token's name is 40 bytes and the chain holds 32/,
+    refusal("name_too_long", /The token's name is 40 bytes and the chain holds 32/),
   );
   assert.deepEqual(longName.calls, []);
 
@@ -288,7 +316,7 @@ test("prepareLaunch refuses a name or a symbol longer in bytes than the chain ho
     makeAdapter(longSymbol).prepareLaunch(
       launchInput({ metadata: { ...launchInput().metadata, symbol: accented.slice(0, 6) } }),
     ),
-    /symbol_too_long: the token's symbol is 12 bytes and the chain holds 10/,
+    refusal("symbol_too_long", /The token's symbol is 12 bytes and the chain holds 10/),
   );
   assert.deepEqual(longSymbol.calls, []);
 
@@ -302,20 +330,77 @@ test("prepareLaunch refuses a name or a symbol longer in bytes than the chain ho
   assert.ok(atLimit.calls.includes("createConfigAndPool"));
 });
 
-test("prepareLaunch refuses a transaction over 1,232 bytes with a clear error", async () => {
+test("prepareLaunch refuses a transaction over 1,232 bytes, and says it is the metadata's link", async () => {
   // A message that fits on its own and is too long once three signatures
   // are counted: the error says how long.
   const justOver: Capture = { calls: [] };
   await assert.rejects(
     makeAdapter(justOver, {}, 900).prepareLaunch(launchInput()),
-    /transaction_too_large: the launch is 1[23]\d\d bytes and one transaction holds 1232/,
+    refusal(
+      "metadata_link_too_long",
+      /The launch is 1[23]\d\d bytes and one transaction holds 1232\. It is the link to the token's uploaded metadata that is too long, not the name or the symbol/,
+    ),
   );
   // A message too long to encode at all is refused with the same code.
   const farOver: Capture = { calls: [] };
   await assert.rejects(
     makeAdapter(farOver, {}, 1500).prepareLaunch(launchInput()),
-    /transaction_too_large: the launch does not fit in one transaction of 1232 bytes/,
+    refusal(
+      "metadata_link_too_long",
+      /The launch does not fit in one transaction of 1232 bytes\. It is the link/,
+    ),
   );
+});
+
+test("with the real SDK, a metadata link that is too long is what the refusal names", async () => {
+  const connection = new Connection("http://127.0.0.1:9", "confirmed");
+  (connection as any).getAccountInfo = async () => ({
+    owner: TOKEN_PROGRAM,
+    data: Buffer.alloc(82),
+    lamports: 1,
+    executable: false,
+  });
+  const client = new DynamicBondingCurveClient(connection, "confirmed");
+  const capture: Capture = { calls: [] };
+  const adapter = makeAdapter(capture, {
+    client,
+    // The chain holds 200 bytes of link; the transaction has room for fewer.
+    uploadMetadata: async () => `https://ipfs.io/ipfs/${"Q".repeat(179)}`,
+  });
+  await assert.rejects(
+    adapter.prepareLaunch(
+      launchInput({
+        metadata: { ...launchInput().metadata, name: "A".repeat(32), symbol: "ABCDEFGHIJ" },
+      }),
+    ),
+    refusal("metadata_link_too_long"),
+  );
+});
+
+test("prepareLaunch passes on a picture link the fetch refused, and gives a failed upload its own code", async () => {
+  // Refused by the fetch (services/fetchImageBytes.ts): the creator's to fix.
+  const refused: Capture = { calls: [] };
+  await assert.rejects(
+    makeAdapter(refused, {
+      uploadMetadata: async () => {
+        throw new LaunchRefusal("picture_link_refused", "The picture's link cannot be used.");
+      },
+    }).prepareLaunch(launchInput()),
+    refusal("picture_link_refused"),
+  );
+  assert.deepEqual(refused.calls, [], "nothing was built");
+
+  // Anything else that stops the upload: a 502 of its own, not the creator's doing.
+  const failed: Capture = { calls: [] };
+  await assert.rejects(
+    makeAdapter(failed, {
+      uploadMetadata: async () => {
+        throw new Error("pumpfun_ipfs: upload returned 503 ()");
+      },
+    }).prepareLaunch(launchInput()),
+    refusal("picture_upload_failed", /could not be uploaded \(pumpfun_ipfs: upload returned 503/, 502),
+  );
+  assert.deepEqual(failed.calls, []);
 });
 
 test("prepareLaunch refuses a transaction that wants a signature nobody here can give", async () => {
@@ -370,6 +455,13 @@ test("the real SDK's launch fits in one transaction for every preset, with three
     assert.ok(keys.includes(result.context.poolAddress as string), `${preset}: the derived pool`);
     assert.ok(keys.includes(feeClaimer.toBase58()), preset);
     assert.ok(keys.includes(leftoverReceiver.toBase58()), preset);
+    // No compute-budget instruction: it would cost bytes the launch does
+    // not have, and a transaction the server signed first is left alone
+    // by the wallet anyway.
+    const programs = tx.message.compiledInstructions.map(
+      (instruction) => keys[instruction.programIdIndex],
+    );
+    assert.ok(!programs.includes(COMPUTE_BUDGET), `${preset}: no compute-budget instruction`);
   }
   // Every preset has the same accounts and the same shape of data, so the
   // size does not depend on which one was picked.
@@ -615,7 +707,7 @@ test("broadcastLaunch reports a refused send as rpc_submit", async () => {
   assert.ok(!capture.calls.includes("confirmTransaction"));
 });
 
-test("broadcastLaunch names the signature when a sent launch is not confirmed", async () => {
+test("broadcastLaunch carries the signature when a sent launch is not confirmed", async () => {
   const capture: Capture = { calls: [] };
   const adapter = makeAdapter(capture, {
     confirmTransaction: async () => {
@@ -630,8 +722,18 @@ test("broadcastLaunch names the signature when a sent launch is not confirmed", 
       expectedCreatorPubkey: prepared.creatorPubkey,
       context: prepared.context,
     }),
-    /not_confirmed: the launch was sent as launch_signature .*block height exceeded/,
+    (err: unknown) => {
+      assert.ok(err instanceof LaunchNotConfirmed, String(err));
+      // As a member, for /launch/reconcile, and still in the sentence.
+      assert.equal(err.signature, "launch_signature");
+      assert.match(
+        err.message,
+        /not_confirmed: the launch was sent as launch_signature .*block height exceeded/,
+      );
+      return true;
+    },
   );
+  assert.ok(capture.calls.includes("sendRawTransaction"));
 });
 
 // ============================================
@@ -668,4 +770,23 @@ test("the metadata upload fetches the picture, uploads it with the metadata and 
   assert.equal(form?.get("symbol"), "ELZ");
   assert.equal(form?.get("description"), "Eliza Token", "an empty description falls back to the name");
   assert.ok(form?.get("file"), "the picture's bytes are in the upload");
+});
+
+test("the metadata upload passes on a picture link that is not a web address, and requests nothing", async () => {
+  let requests = 0;
+  const fetchFn = (async () => {
+    requests += 1;
+    return new Response("", { status: 200 });
+  }) as unknown as typeof fetch;
+
+  await assert.rejects(
+    createMeteoraMetadataUploader(fetchFn)({
+      name: "Eliza Token",
+      symbol: "ELZ",
+      imageUrl: "file:///etc/passwd",
+      description: "An agent token",
+    }),
+    refusal("picture_link_refused"),
+  );
+  assert.equal(requests, 0);
 });

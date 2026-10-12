@@ -33,6 +33,7 @@ allowOutboundConnectAttempts(env.OUTBOUND_CONNECT_ATTEMPT_TIMEOUT_MS);
 import { createLogger, logger } from "./utils/logger.js";
 import { initSentry, registerSentryErrorCapture } from "./lib/sentry.js";
 import { BAGS_ADAPTER_IMPLEMENTED } from "./services/launchpad/bagsAdapter.js";
+import { ELIGIBILITY_DEFAULTS, launchGateThresholds } from "./services/tokenEligibility.js";
 import { registerAuthPlugins } from "./middleware/auth.js";
 import { authRoutes } from "./routes/auth.js";
 import { deploymentRoutes } from "./routes/deployments.js";
@@ -477,6 +478,19 @@ async function main() {
   } else {
     app.log.warn(
       "WALLET_MASTER_KEY unset — /api/tokens/launch/{prepare,submit} disabled",
+    );
+  }
+  // The launch gate's two numbers are settings, lowered for a rehearsal on
+  // devnet. A server that starts with a gate below the rule says so once,
+  // so a rehearsal's numbers never reach production unnoticed.
+  const launchGate = launchGateThresholds();
+  if (
+    launchGate.minReputation < ELIGIBILITY_DEFAULTS.minReputation ||
+    launchGate.minDeploymentAgeDays < ELIGIBILITY_DEFAULTS.minDeploymentAgeDays
+  ) {
+    app.log.warn(
+      { launchGate, rule: ELIGIBILITY_DEFAULTS, network: env.SOLANA_NETWORK },
+      "The token launch gate is lower than the rule (TOKEN_LAUNCH_MIN_REPUTATION, TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS)",
     );
   }
   // Transparency surfaces (remediation E1) — complete, tested route

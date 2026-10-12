@@ -21,6 +21,7 @@ import random
 import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -76,6 +77,57 @@ def library_versions() -> dict:
         except importlib.metadata.PackageNotFoundError:
             versions[name] = None
     return versions
+
+
+def can_write_in(path: str) -> bool:
+    """Whether this process can make files under `path`, creating it if need be."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        with tempfile.TemporaryFile(dir=path):
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def settle_directories(args) -> None:
+    """Move the work directory and the model cache off a folder this process
+    cannot write, and say so on stderr.
+
+    The image runs as its own user and owns /workspace. A host that starts
+    the container as another user, or mounts something of its own over
+    /workspace, would otherwise end every job at its first write, after the
+    GPU was rented. main() calls this first; started through train.py that
+    is before transformers or huggingface_hub is imported, and both read
+    HF_HOME once, at import. Never raises: when no other folder can be made
+    either, nothing is moved and the run reports the failure where it meets
+    it.
+    """
+
+    def say(what: str, path: str, target: str) -> None:
+        sys.stderr.write(f"The {what} {path} cannot be written by uid {os.getuid()}; using {target}\n")
+        sys.stderr.flush()
+
+    if not can_write_in(args.work_dir):
+        try:
+            fallback = tempfile.mkdtemp(prefix="wheelsai-trainer-")
+        except OSError:
+            return
+        say("work directory", args.work_dir, fallback)
+        args.work_dir = fallback
+
+    # A cache folder named outright is whoever started the run's to answer for.
+    if os.environ.get("HF_HUB_CACHE") or os.environ.get("TRANSFORMERS_CACHE"):
+        return
+    # HF_HOME as huggingface_hub works it out; models go into its hub folder.
+    cache_root = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    home = os.environ.get("HF_HOME") or os.path.join(cache_root, "huggingface")
+    if can_write_in(os.path.join(home, "hub")):
+        return
+    target = os.path.join(args.work_dir, "hf")
+    if can_write_in(os.path.join(target, "hub")):
+        say("model cache", home, target)
+        os.environ["HF_HOME"] = target
 
 
 def resolve_device(requested: str) -> str:
@@ -801,6 +853,7 @@ def _run_to_exit_code(args, env: Mapping[str, str], emitter: EventEmitter, holde
 def main(argv: list | None = None, env: Mapping[str, str] | None = None) -> int:
     """Run once and return the exit code. Never raises."""
     args = parse_args(argv)
+    settle_directories(args)
     env = os.environ if env is None else env
     emitter = EventEmitter()
     holder: dict = {"sender": None}

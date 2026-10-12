@@ -663,3 +663,146 @@ def test_exit_30_sigterm_during_training(storage, tiny_model_dir, tmp_path):
     # The stop reached the API before the process went away.
     assert storage.callback_events()[-1]["code"] == "interrupted"
     assert storage.uploads == {}
+
+
+# --- folders the process cannot write ---------------------------------------
+
+
+class _Args:
+    def __init__(self, work_dir):
+        self.work_dir = str(work_dir)
+
+
+@pytest.fixture
+def folders(tmp_path, monkeypatch):
+    """A place no one can write (a path under a file: the same for root), a
+    temp folder of this test's own, and the cache variables cleared."""
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x")
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr(runner.tempfile, "tempdir", None)
+    for name in ("HF_HUB_CACHE", "TRANSFORMERS_CACHE", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    return blocker
+
+
+def test_writable_folders_are_left_alone(folders, tmp_path, capsys):
+    args = _Args(tmp_path / "work")
+    runner.settle_directories(args)
+    assert args.work_dir == str(tmp_path / "work")
+    assert os.environ["HF_HOME"] == str(tmp_path / "hf")
+    assert capsys.readouterr().err == ""
+
+
+def test_a_work_directory_that_cannot_be_written_is_moved_and_said(folders, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HF_HOME", str(folders / "hf"))
+    args = _Args(folders / "workspace")
+    runner.settle_directories(args)
+    assert args.work_dir.startswith(str(tmp_path / "wheelsai-trainer-")) and os.path.isdir(args.work_dir)
+    # The model cache follows the work directory, so it stays on the job's own disk.
+    assert os.environ["HF_HOME"] == os.path.join(args.work_dir, "hf")
+    assert runner.can_write_in(args.work_dir) and runner.can_write_in(os.path.join(os.environ["HF_HOME"], "hub"))
+    said = capsys.readouterr().err.splitlines()
+    assert len(said) == 2
+    assert said[0].startswith(f"The work directory {folders / 'workspace'} cannot be written by uid")
+    assert said[1].startswith(f"The model cache {folders / 'hf'} cannot be written by uid")
+
+
+def test_only_the_model_cache_is_moved_when_only_it_cannot_be_written(folders, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HF_HOME", str(folders / "hf"))
+    args = _Args(tmp_path / "work")
+    runner.settle_directories(args)
+    assert args.work_dir == str(tmp_path / "work")
+    assert os.environ["HF_HOME"] == str(tmp_path / "work" / "hf")
+    assert len(capsys.readouterr().err.splitlines()) == 1
+
+
+def test_a_cache_whose_hub_folder_belongs_to_someone_else_is_moved(folders, tmp_path, monkeypatch, capsys):
+    # The defect the first image had: HF_HOME itself can be written, the
+    # hub folder inside it, where models go, cannot.
+    home = tmp_path / "hf"
+    home.mkdir()
+    (home / "hub").write_text("x")
+    args = _Args(tmp_path / "work")
+    runner.settle_directories(args)
+    assert os.environ["HF_HOME"] == str(tmp_path / "work" / "hf")
+    assert "The model cache" in capsys.readouterr().err
+
+
+def test_a_cache_folder_named_outright_is_not_touched(folders, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HF_HOME", str(folders / "hf"))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "elsewhere"))
+    args = _Args(tmp_path / "work")
+    runner.settle_directories(args)
+    assert os.environ["HF_HOME"] == str(folders / "hf")
+    assert capsys.readouterr().err == ""
+
+
+def test_the_default_cache_is_found_as_the_library_finds_it(folders, tmp_path, monkeypatch, capsys):
+    # No HF_HOME: huggingface_hub uses $XDG_CACHE_HOME/huggingface.
+    monkeypatch.delenv("HF_HOME")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(folders / "cache"))
+    args = _Args(tmp_path / "work")
+    runner.settle_directories(args)
+    assert os.environ["HF_HOME"] == str(tmp_path / "work" / "hf")
+    assert f"The model cache {folders / 'cache' / 'huggingface'} cannot be written" in capsys.readouterr().err
+
+
+def test_nothing_is_moved_and_nothing_raises_when_no_other_folder_can_be_made(folders, tmp_path, monkeypatch, capsys):
+    def no_temp_folder(*_args, **_kwargs):
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(runner.tempfile, "mkdtemp", no_temp_folder)
+    monkeypatch.setenv("HF_HOME", str(folders / "hf"))
+    args = _Args(folders / "workspace")
+    runner.settle_directories(args)
+    assert args.work_dir == str(folders / "workspace")
+    assert os.environ["HF_HOME"] == str(folders / "hf")
+    assert capsys.readouterr().err == ""
+
+
+def test_a_run_whose_folders_cannot_be_written_anywhere_still_reports_how_it_failed(
+    storage, tiny_model_dir, folders, monkeypatch, capsys
+):
+    def no_temp_folder(*_args, **_kwargs):
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(runner.tempfile, "mkdtemp", no_temp_folder)
+    storage.objects["/dataset"] = fixture_bytes()
+    code = runner.main(["--device", "cpu", "--work-dir", str(folders / "workspace")], base_env(storage, tiny_model_dir))
+    events = [event for event in map(parse_event_line, capsys.readouterr().out.splitlines()) if event]
+    assert code == 1
+    assert types(events)[-1] == "failed" and events[-1]["code"] == "unexpected"
+    assert storage.callback_events()[-1]["code"] == "unexpected"
+
+
+def test_a_run_goes_through_when_its_work_directory_cannot_be_written(storage, tiny_model_dir, folders, capsys):
+    storage.objects["/dataset"] = fixture_bytes()
+    code = runner.main(["--device", "cpu", "--work-dir", str(folders / "workspace")], base_env(storage, tiny_model_dir))
+    captured = capsys.readouterr()
+    events = [event for event in map(parse_event_line, captured.out.splitlines()) if event]
+    assert code == 0, captured.err
+    assert types(events)[-1] == "completed"
+    assert "/adapter" in storage.uploads
+    assert "cannot be written by uid" in captured.err
+
+
+def test_in_a_fresh_process_the_libraries_use_the_moved_cache(storage, tiny_model_dir, tmp_path):
+    # transformers writes <HF_HOME>/hub/version.txt when it is imported, so
+    # the file shows which folder the libraries took as their cache.
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("x")
+    work = tmp_path / "work"
+    storage.objects["/dataset"] = fixture_bytes()
+    env = subprocess_env({**base_env(storage, tiny_model_dir), "HF_HOME": str(blocker / "hf")})
+    result = subprocess.run(
+        [sys.executable, TRAIN_SCRIPT, "--device", "cpu", "--work-dir", str(work)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert f"The model cache {blocker / 'hf'} cannot be written by uid" in result.stderr
+    assert (work / "hf" / "hub" / "version.txt").is_file()

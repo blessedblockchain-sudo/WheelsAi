@@ -21,10 +21,10 @@ This document has six parts:
 5. [The devnet walk](#5-the-devnet-walk), with the place for its proof
 6. [What is not built](#6-what-is-not-built)
 
-**Devnet walk: not run yet.** Part 5 has the steps and the table to fill in. Until it is filled
-in, nothing in this document has been done by a person in a browser, and no transaction of this
-feature has been sent to devnet or to mainnet. What has run against devnet is a probe that asks
-the cluster to simulate the SDK's calls, described at the start of part 5.
+**Devnet walk: run on 2026-10-12.** One token went through every step on devnet: launch, buy,
+sell, fee claim, the buy that fills the curve, and both steps of graduation into a DAMM v2
+pool. Each transaction was approved in a browser wallet and can be opened on Solana's explorer.
+Part 5 has the signatures. Nothing has run on mainnet.
 
 ---
 
@@ -453,7 +453,8 @@ Devnet's public RPC answered 429 to the first probe's heavier calls, which is wh
 keeps what it reads.
 
 That shows the chain accepts what the server builds. It does not show the feature: no route was
-called, no screen and no browser wallet took part, and no transaction was sent.
+called, no screen and no browser wallet took part, and no transaction was sent. The walk further
+down is what shows the feature.
 
 ### Before the walk
 
@@ -524,41 +525,57 @@ For each step below: the transaction's signature, opened on `https://explorer.so
 A step counts only when a person signed it in the browser wallet. A transaction sent by a script
 is not proof of this feature.
 
-### Devnet walk: not run yet
+### Devnet walk: 2026-10-12
 
-To be filled in by the lead.
+One token went from launch to graduation on devnet. Every transaction was approved by the
+founder in Phantom, in their own Chrome. The app's own buttons were pressed by browser
+automation in that same window; no wallet prompt was. The screen was recorded, and the two
+videos cut from it are in `demo-video/2026-10-12/` (not in the repository).
 
 | | |
 | --- | --- |
-| Date | |
-| Commit | |
-| Network and RPC | |
-| Gate numbers on the server (reputation, days) | |
-| Wallet (address only) | |
-| Agent and listing | |
-| Preset | |
-| Mint | |
-| Curve config | |
-| Pool | |
+| Date | 2026-10-12, 15:57 to 16:04 UTC |
+| Commit | `65d8b23` (the web build was made a few commits earlier; the commits after it changed a test string, a comment and documents) |
+| Network and RPC | devnet, `https://api.devnet.solana.com` (the public endpoint) |
+| Gate numbers on the server (reputation, days) | 40 and 0, the demo's lowered gate |
+| Wallet (address only) | [`trCJczPeU7VbziS2r1mfMfpAuFABEJQjvinnwRndh5C`](https://explorer.solana.com/address/trCJczPeU7VbziS2r1mfMfpAuFABEJQjvinnwRndh5C?cluster=devnet) |
+| Agent and listing | Tagline Writer, listing `tagline-writer`, on sale at $0.10 a run |
+| Preset | `rehearsal` ("Devnet rehearsal") |
+| Mint | [`C8yWRWZxNLYSe4CLzTgWhPXcMHEquHKhBpx5vYSJtAtR`](https://explorer.solana.com/address/C8yWRWZxNLYSe4CLzTgWhPXcMHEquHKhBpx5vYSJtAtR?cluster=devnet) |
+| Curve config | [`FWY2CDFcsPBrKPXdzuUfHQRDqqvkkUR5S76kkbxGvPkH`](https://explorer.solana.com/address/FWY2CDFcsPBrKPXdzuUfHQRDqqvkkUR5S76kkbxGvPkH?cluster=devnet) |
+| Pool | [`6nAVYSg3Fo1LUDj1ZYbRKrVXmq2P73AGhFRda5fz2cid`](https://explorer.solana.com/address/6nAVYSg3Fo1LUDj1ZYbRKrVXmq2P73AGhFRda5fz2cid?cluster=devnet) |
 
 | Step | Signature | What the screen said | Result |
 | --- | --- | --- | --- |
-| Launch | | | |
-| Buy | | | |
-| Sell | | | |
-| Claim | | | |
-| Buys that filled the curve (the last one) | | | |
-| Graduate: locker | | | |
-| Graduate: migrate | | | |
+| Launch | [`21xUJxjm...SaUi`](https://explorer.solana.com/tx/21xUJxjm2cecq3cPUCmUvQVkWFWbZBbJLaMYEvoC1KQYxFfyi93ufwfdeFNztmmWWrjhR2Zubq3jz6VTe6uGSaUi?cluster=devnet) | "Token launched. Tagline Writer Token ($TAGL) is on Meteora, on Solana's devnet." | Finalized. 3 signatures, 143,214 units |
+| Buy | [`59QeVKpD...iVns`](https://explorer.solana.com/tx/59QeVKpDgwczVBdAPLJngQ4hrDqdvzo7yHeMeePwMeDYn5eQQrP9S7gR2gstvkYt1VUywWYTxHkpoDqCuwEkiVns?cluster=devnet) | "Sent." with the signature; then 0.0494 of 0.347644118 SOL raised, 14.2% | Finalized. 0.05 SOL for 168,366,964.939009 TAGL |
+| Sell | [`3agsuwtW...xWYy`](https://explorer.solana.com/tx/3agsuwtWrvcUjEQUMYRXoVoiboCgXkKHeq89UttvYCnVS34dbuu6hQ3X3EYFWs6skyMgD193kK3fDTA3MTiZxWYy?cluster=devnet) | "Sent."; then 0.033 SOL raised, 9.5% | Finalized. 50,000,000 TAGL for 0.016231374 SOL |
+| Claim | [`5F3nDmes...1Ath`](https://explorer.solana.com/tx/5F3nDmesRdFXZUzAybm9GJ33omXCMN86rKBZgQz3b33PH9PvMj7dUjUhK5QLFF22HajrzcyZ7qcHhE5xq7bv1Ath?cluster=devnet) | "Claimed 0.000278904 SOL." | Finalized |
+| Buys that filled the curve (the last one) | [`359C5qVL...5Mw8`](https://explorer.solana.com/tx/359C5qVLGHap721htEjH6JWGwBVrdmpS2SNcWU2mA4hWWb9eb2M3KKfQjLrQ4cQDZsCmJLy8fDkeCC8jzwoA5Mw8?cluster=devnet) | Before: "Only 0.318393777 SOL is needed to fill the curve. The other 0.181606223 SOL stays in your wallet." After: "The curve is full: it can graduate", 100% | Finalized. 0.5 SOL typed, 0.318393777 SOL taken, 503,517,553.232647 TAGL |
+| Graduate: locker | [`tK3K7vQm...FJi1`](https://explorer.solana.com/tx/tK3K7vQm9axLicx84xXZKHusHqBBp8pvp6k5f2HRNCYVAyoQk44j4xNsw7rtfaS6rLSkuVJjnYeU7fxAycWFJi1?cluster=devnet) | "Graduating. Step 2 of 2." followed | Finalized. 60,279 units |
+| Graduate: migrate | [`ywZPhFwT...xSAP`](https://explorer.solana.com/tx/ywZPhFwTLdf8m6iNbFw26vQsdq1aovxBv14f2Kso13qshYN4NNrgtHgtN26RYtWTUtT3989tKjJyeGqRqm6xSAP?cluster=devnet) | "The token has graduated." and the badge "Graduated" | Finalized. 3 signatures, 255,440 units |
 
 | After graduation | |
 | --- | --- |
-| DAMM v2 pool | |
-| `AgentToken` row (status, graduatedAt, raydiumPoolId, creatorLockupEnd) | |
-| `AgentTokenTrade` rows (count, signatures) | |
-| Whether the wallet added instructions of its own, and to which steps | |
-| `migrationProgress` before the locker, after it, after the move | |
-| Anything that did not go as written above | |
+| DAMM v2 pool | [`61AsBSmn6MFwEMWnLRDEyZ3qTqaWTsu4skKnmJCHkL63`](https://explorer.solana.com/address/61AsBSmn6MFwEMWnLRDEyZ3qTqaWTsu4skKnmJCHkL63?cluster=devnet), owned by Meteora's DAMM v2 program |
+| `AgentToken` row (status, graduatedAt, raydiumPoolId, creatorLockupEnd) | `GRADUATED`, `2026-10-12T16:04:01Z`, the DAMM v2 pool's address, `2026-10-12T16:13:12Z` (600 seconds after the curve became full at 16:03:12). `curveSupply` 621,884,518 and `reservedSupply` 378,115,482 |
+| `AgentTokenTrade` rows (count, signatures) | 3: the buy, the sell and the buy that filled the curve, each with its signature above. The last holds 0.318393777 SOL, not the 0.5 typed |
+| Whether the wallet added instructions of its own, and to which steps | To none. The buy, the claim and the locker each landed with exactly the two compute-budget instructions the server put in front and nothing else added; the launch and the move are signed by the server first |
+| `migrationProgress` before the locker, after it, after the move | 3 after the move, read from the pool account, with `isMigrated` set. Before and after the locker it was not read by hand: the page offered the locker first and the move second, which is what 1 and 2 mean in the code |
+| Anything that did not go as written above | See below |
+
+What did not go as written:
+
+- The first buy waited about two minutes in the wallet before it was approved. The server
+  refused it as expired, nothing was sent, and the page said "Signing took too long and the
+  quote expired, so nothing was sent. Prepare the trade again." The buy was prepared again and
+  went through. This is the rule working; the page gives no sign of how long a prompt may wait.
+- Linking the wallet under Settings took two tries: the first message was not signed in the
+  wallet, and the page said so.
+- "Check again" was never needed, so it has still not been seen working against a chain.
+- The row's `creatorLockupEnd` was not read between launch and graduation, so "null after
+  launch" is covered by the unit test only.
+- The claimed amount was read from the screen, not compared with the explorer's balance change.
 
 ## 6. What is not built
 

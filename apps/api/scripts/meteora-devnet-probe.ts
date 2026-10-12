@@ -11,6 +11,10 @@
  *   npx tsx scripts/meteora-devnet-probe.ts --payer <address>
  *   npx tsx scripts/meteora-devnet-probe.ts --payer <address> --pool <pool address>
  *   npx tsx scripts/meteora-devnet-probe.ts --payer <address> --rpc <url>
+ *   npx tsx scripts/meteora-devnet-probe.ts --payer <address> --presets
+ *
+ * With --presets it also builds the launch through the server's own adapter
+ * for each curve on offer and has devnet simulate each.
  *
  * Without --pool it looks at the program's most recent transactions to find
  * a pool that exists, and tries the trade and claim steps against it.
@@ -54,7 +58,13 @@ import {
   getCurrentPoint,
 } from "@meteora-ag/dynamic-bonding-curve-sdk";
 
+import { createMeteoraAdapter } from "../src/services/launchpad/meteoraAdapter.js";
+import { listPresets } from "../src/services/launchpad/meteoraPresets.js";
+
 const WSOL = new PublicKey("So11111111111111111111111111111111111111112");
+// A real link the launch's uploader returned on 2026-10-12, so the launch
+// below has the size a real one has without uploading anything again.
+const PROBE_METADATA_URI = "https://ipfs.io/ipfs/bafkreiddsgdcgll3kes6seqid22iknd7vg5ms3slnognx5ixgnowcgoic4";
 
 function arg(name: string): string | undefined {
   const at = process.argv.indexOf(`--${name}`);
@@ -208,6 +218,55 @@ async function main(): Promise<void> {
     report("a pool to try the other steps against", null, "none found in the program's latest transactions; pass --pool");
     process.exit(failed ? 1 : 0);
   }
+  // 2b. With --presets: the launch exactly as the server builds it, through
+  // the real adapter, once for each curve on offer on this cluster. The two
+  // fresh keypairs sign as they do in production; the creator's slot stays
+  // empty, which a simulation with signature checks off does not mind.
+  if (process.argv.includes("--presets")) {
+    const adapter = createMeteoraAdapter({
+      client,
+      network: "devnet",
+      feeClaimer: payer,
+      leftoverReceiver: payer,
+      uploadMetadata: async () => PROBE_METADATA_URI,
+      getLatestBlockhash: () => connection.getLatestBlockhash("confirmed"),
+      sendRawTransaction: async () => {
+        throw new Error("the probe sends nothing");
+      },
+      confirmTransaction: async () => {
+        throw new Error("the probe sends nothing");
+      },
+    });
+    for (const preset of listPresets("devnet")) {
+      try {
+        const prepared = await adapter.prepareLaunch({
+          creatorPubkey: payer.toBase58(),
+          preset: preset.id,
+          metadata: {
+            name: "WheelsAI rehearsal",
+            symbol: "WHLTEST",
+            description: "A rehearsal launch from WheelsAI on devnet.",
+            imageUrl: "https://example.invalid/icon.png",
+          },
+        });
+        const bytes = Buffer.from(prepared.partialSignedTxBase64, "base64");
+        const built = VersionedTransaction.deserialize(bytes);
+        const result = await connection.simulateTransaction(built, { sigVerify: false, replaceRecentBlockhash: true });
+        const logs = result.value.logs ?? [];
+        const why = logs.filter((line) => /Error|failed|custom program error/i.test(line)).slice(-2).join(" | ");
+        report(
+          `the server's own launch on the "${preset.id}" curve`,
+          result.value.err === null,
+          `${bytes.length} of 1232 bytes, ${built.message.header.numRequiredSignatures} signatures, ${result.value.unitsConsumed ?? "?"} units, graduates at ${preset.raisedAtGraduationSol} SOL` +
+            (result.value.err === null ? "" : `; ${JSON.stringify(result.value.err)} ${why}`.slice(0, 400)),
+        );
+      } catch (error) {
+        report(`the server's own launch on the "${preset.id}" curve`, false, (error as Error).message.slice(0, 300));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+  }
+
   const read = await client.state.getPool(poolAddress);
   if (!read) {
     report("read the pool", false, `${poolAddress.toBase58()} is not a pool this SDK can read`);

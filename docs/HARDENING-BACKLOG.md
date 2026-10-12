@@ -333,3 +333,15 @@ Serving a fine-tuned adapter (`apps/api/src/services/fineTunedModels.ts`, `route
 - `--max-lora-rank` is the smallest value vLLM 0.6.x accepts (8, 16, 32, 64, 128, 256) that is at least the adapter's rank (`vllmMaxLoraRank`), so a rank-4 adapter is served under 8; vLLM refuses `--max-lora-rank 4` at startup. Read from vLLM's `LoRAConfig`, not observed on a node.
 - `wheelsai/ft-<slug>` resolves for agents (`services/hostedModel.ts`), and `wheelsai/<base id>` no longer resolves to a deployment that serves an adapter. No page offers the `ft-` form yet.
 - The served-model check of a workflow model step accepts the base model's id for a deployment of a fine-tune of it.
+
+What a GPU node can reach, the door, and a run's record on Nosana (2026-10-12; `apps/api/src/lib/gpuFacingUrl.ts`, `services/nosanaExplorer.ts`, `infra/gpu-door/`):
+
+- "Can a GPU node reach this address" is decided from the address alone: this machine, a private range, or a name only a local resolver knows is refused. A public-looking name that resolves to a private address passes, since the check never touches the network.
+- Outside development the start-up check of `GPU_FACING_API_URL` is the one `PUBLIC_API_URL` has (https, and no "localhost" in the text). A private address such as `10.x` or `.internal` is not refused at start; it is refused when a job or a deploy is asked for.
+- The door has never stood behind a real tunnel. Whether the tunnel rewrites a header the door is strict about (the content type of a progress report, a `Content-Length` on the adapter request) is unknown until the first proof, and both callers treat the door's `404` as final. Check the door's health address and one made-up progress report through the tunnel before any credit is spent.
+- A stranger who finds the tunnel's address can fill the door's own limit, so real progress reports are answered `429` and live progress is lost. The run still finishes. The door passes shapes; the API's signature checks are what refuse a stranger.
+- A quick tunnel's address changes at every start, and a deployment keeps the address it was started with: after a new address a running training job reports to nowhere and a fine-tuned deployment cannot fetch its adapter on a restart.
+- A job's link to Nosana's page takes its network from today's configuration, not from when the job ran. A job made on devnet, read after the server moved to mainnet, would get a link to a page that does not know it. Stamping the network on the row needs a column.
+- The link's form (`https://explore.nosana.com/jobs/<job address>`) is the one Nosana's documentation gives. It has not been opened for a job of ours yet.
+- The record is shown for a training job only. The deployment that SERVES a fine-tuned model stores its deployment-manager id and no job address (a service deployment gets a new job at each rotation), so its page shows no record on Nosana.
+- A capabilities read that cannot tell whether a fine-tuned model can be deployed says it cannot (`deploy_readiness_unknown`), while the page treats a capabilities answer that failed to load as "offer Deploy". Both are deliberate; they are two answers to one doubt.

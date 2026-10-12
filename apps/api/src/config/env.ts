@@ -49,8 +49,27 @@ const envSchema = z.object({
 
   // Token launchpad selection. pumpfun works on devnet + mainnet (cheap
   // dev loop, default); bags is mainnet-only (Bags fee-share programs are
-  // not deployed on devnet — see memory/bags-ecosystem-eval).
-  LAUNCHPAD: z.enum(["pumpfun", "bags"]).default("pumpfun"),
+  // not deployed on devnet — see memory/bags-ecosystem-eval). meteora is
+  // Meteora's Dynamic Bonding Curve used directly, on devnet and mainnet:
+  // every token gets a curve config WheelsAI builds for it, and graduates
+  // into a DAMM v2 pool (services/launchpad/meteoraAdapter.ts).
+  LAUNCHPAD: z.enum(["pumpfun", "bags", "meteora"]).default("pumpfun"),
+  // LAUNCHPAD=meteora: the platform's fee wallet, named in every curve
+  // config as the wallet that may claim the platform's share of trading
+  // fees. An address only: no key of it is held or needed by this server.
+  METEORA_FEE_CLAIMER_ADDRESS: z.string().optional(),
+  // Where a curve's unsold tokens go after graduation. Defaults to the fee
+  // wallet above.
+  METEORA_LEFTOVER_RECEIVER_ADDRESS: z.string().optional(),
+  // How long a pool's state read from the chain is kept before it is read
+  // again. A public RPC limits requests; 0 reads every time.
+  METEORA_CURVE_CACHE_MS: z.coerce.number().int().min(0).default(5000),
+  // The launch gate (services/tokenEligibility.ts): an agent may launch a
+  // token once its reputation and the age of its oldest running deployment
+  // reach these. The defaults are the production rule; a devnet rehearsal
+  // may lower them, and the wizard shows the numbers in force.
+  TOKEN_LAUNCH_MIN_REPUTATION: z.coerce.number().min(0).max(100).default(50),
+  TOKEN_LAUNCH_MIN_DEPLOYMENT_AGE_DAYS: z.coerce.number().int().min(0).default(7),
   BAGS_API_KEY: z.string().optional(),
   // Optional static override for the platform fee-claimer wallet that
   // receives Bags fee-share payouts (which the treasury sweep then claims
@@ -724,6 +743,23 @@ export function validateEnv(raw: Record<string, string | undefined>) {
     throw new EnvValidationError(
       "WALLET_TOPUPS_ENABLED requires WALLET_MASTER_KEY — deposit addresses are derived from it"
     );
+  }
+  // A curve config names the platform's fee wallet for good. Starting
+  // without one would make the first launch fail, or worse, name a wallet
+  // nobody holds: the platform's share of fees could never be claimed.
+  const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+  if (data.LAUNCHPAD === "meteora") {
+    if (!data.METEORA_FEE_CLAIMER_ADDRESS || !SOLANA_ADDRESS.test(data.METEORA_FEE_CLAIMER_ADDRESS)) {
+      throw new EnvValidationError(
+        "LAUNCHPAD=meteora requires METEORA_FEE_CLAIMER_ADDRESS, the address of the wallet that claims the platform's share of trading fees"
+      );
+    }
+    if (
+      data.METEORA_LEFTOVER_RECEIVER_ADDRESS &&
+      !SOLANA_ADDRESS.test(data.METEORA_LEFTOVER_RECEIVER_ADDRESS)
+    ) {
+      throw new EnvValidationError("METEORA_LEFTOVER_RECEIVER_ADDRESS is not a Solana address");
+    }
   }
   // The payout executor can settle in credits with no wallet, but the
   // instant it needs to run the crypto rail it needs the payout wallet.

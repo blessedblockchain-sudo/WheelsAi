@@ -89,6 +89,8 @@ import { twoFactorRoutes } from "./routes/twoFactor.js";
 import { x402Routes } from "./routes/x402.js";
 import { openclawRoutes } from "./routes/openclaw.js";
 import { tokenRoutes } from "./routes/tokens.js";
+import { tokenLaunchpadInfoRoutes } from "./routes/tokenLaunchpadInfo.js";
+import { tokenCurveRoutes } from "./routes/tokenCurve.js";
 import { createPartialSignTokenRoutesProduction } from "./routes/tokenLaunchPartialSignBindings.js";
 import { createWalletTopupRoutesProduction } from "./routes/walletTopupBindings.js";
 import { createDepositAddressRoutesProduction } from "./routes/depositAddressBindings.js";
@@ -460,6 +462,8 @@ async function main() {
   await app.register(x402Routes, { prefix: "/api/x402" });
   await app.register(openclawRoutes, { prefix: "/api/openclaw" });
   await app.register(tokenRoutes, { prefix: "/api/tokens" });
+  await app.register(tokenLaunchpadInfoRoutes, { prefix: "/api/tokens" });
+  await app.register(tokenCurveRoutes, { prefix: "/api/tokens" });
   // Browser-partial-sign launch path (POST /api/tokens/launch/prepare
   // and POST /api/tokens/launch/submit). The legacy /api/tokens/create
   // path (custodial) stays mounted under tokenRoutes during the

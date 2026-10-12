@@ -14,8 +14,13 @@
  *              native fee-sharing to arbitrary wallets, which the treasury
  *              loop sweeps via fee_receive.
  *
- * Selection is env-driven (LAUNCHPAD=pumpfun|bags) so both ship in one
- * codebase — this is the adapter, not a fork.
+ *   - meteora: Meteora's Dynamic Bonding Curve used directly, on devnet and
+ *              mainnet. Each token gets a curve config WheelsAI builds for
+ *              it from a named preset, made in the same transaction as its
+ *              pool, and graduates into a DAMM v2 pool.
+ *
+ * Selection is env-driven (LAUNCHPAD=pumpfun|bags|meteora) so all ship in
+ * one codebase — this is the adapter, not a fork.
  *
  * Flow contract (both adapters):
  *   prepareLaunch:  build the create tx, sign any *server-held* slots
@@ -32,7 +37,7 @@
  * or mutate it.
  */
 
-export type LaunchpadId = "pumpfun" | "bags";
+export type LaunchpadId = "pumpfun" | "bags" | "meteora";
 
 export interface LaunchTokenMetadata {
   name: string;
@@ -61,6 +66,11 @@ export interface PrepareLaunchInput {
   metadata: LaunchTokenMetadata;
   /** Creator's optional initial buy in SOL. Defaults to 0 (no buy). */
   initialBuySol?: number;
+  /**
+   * The curve preset the creator picked, by id (meteora only; see
+   * launchpad/meteoraPresets.ts). Other adapters ignore it.
+   */
+  preset?: string;
 }
 
 /**

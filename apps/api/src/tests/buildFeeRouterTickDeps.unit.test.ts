@@ -188,7 +188,7 @@ test("buildFeeRouterTickDeps loadUnrouted aggregates fee per treasury", async ()
       {
         id: "treas_a",
         programInitialized: true,
-        token: { id: "tok_a", mintAddress: "MintA" },
+        token: { id: "tok_a", mintAddress: "MintA", launchpad: "pumpfun" },
       },
     ],
     trades: [
@@ -531,7 +531,7 @@ test("buildFeeRouterTickDeps drives a full claim→sign→submit→confirm round
       {
         id: "treas_a",
         programInitialized: true,
-        token: { id: "tok_a", mintAddress: MINT },
+        token: { id: "tok_a", mintAddress: MINT, launchpad: "pumpfun" },
       },
     ],
     trades: [

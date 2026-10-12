@@ -28,6 +28,14 @@
  * never overpay. A batch whose fee floors to 0 lamports is NOT claimed
  * (trades stay NULL) so sub-lamport volume keeps accumulating until it
  * crosses 1 lamport with later trades.
+ *
+ * pump.fun tokens only. Routing 1% of a token's recorded volume from the
+ * router's wallet is a rule written for pump.fun tokens. A token on a
+ * Meteora curve shares its trading fees on chain, through the curve
+ * itself, and its trades are recorded in the same table: routing 1% of
+ * that volume would pay from the router's wallet for fees it never
+ * received. A token on any other launchpad, or whose launchpad cannot be
+ * read, is left out.
  */
 
 import { BPS_DENOMINATOR } from "../lib/tokenUnits.js";
@@ -36,6 +44,9 @@ import type { UnroutedFeeRow } from "./runFeeRouterTick.js";
 /** Platform fee: 1% of routed SOL volume, in basis points. */
 const FEE_BPS = 100n;
 const BPS_DENOM = BigInt(BPS_DENOMINATOR);
+
+/** The only launchpad whose trades carry a fee this worker routes. */
+const ROUTED_LAUNCHPAD = "pumpfun";
 
 /** Per-treasury per-tick trade cap (D6a: "bounded batch size"). */
 export const DEFAULT_FEE_BATCH_TRADE_LIMIT = 500;
@@ -52,6 +63,7 @@ interface PrismaStub {
         token: {
           id: string;
           mintAddress: string;
+          launchpad?: string;
         };
       }>
     >;
@@ -96,12 +108,13 @@ export async function loadUnroutedFeesByPrisma(
     select: {
       id: true,
       programInitialized: true,
-      token: { select: { id: true, mintAddress: true } },
+      token: { select: { id: true, mintAddress: true, launchpad: true } },
     },
   });
 
   const rows: UnroutedFeeRow[] = [];
   for (const treasury of treasuries) {
+    if (treasury.token.launchpad !== ROUTED_LAUNCHPAD) continue;
     const trades = await deps.prisma.agentTokenTrade.findMany({
       where: {
         tokenId: treasury.token.id,

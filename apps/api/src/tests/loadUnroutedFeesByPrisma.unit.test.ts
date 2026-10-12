@@ -58,6 +58,9 @@ interface FakeTreasury {
   token: {
     id: string;
     mintAddress: string;
+    // Left out, the fixture is a pump.fun token, as the column's default is.
+    // `null` stands for a row whose launchpad could not be read.
+    launchpad?: string | null;
   };
 }
 
@@ -83,7 +86,16 @@ function makePrismaStub(opts: {
             }
             return true;
           });
-          return matched;
+          return matched.map((t) => ({
+            ...t,
+            token: {
+              id: t.token.id,
+              mintAddress: t.token.mintAddress,
+              ...(t.token.launchpad === null
+                ? {}
+                : { launchpad: t.token.launchpad ?? "pumpfun" }),
+            },
+          }));
         },
       },
       agentTokenTrade: {
@@ -502,4 +514,75 @@ test("loadUnroutedFeesByPrisma never routes more than 1% of volume (conservation
     // …and equals the exact integer-floored 1%.
     assert.equal(fee, expectedFee);
   }
+});
+
+// ============================================
+// pump.fun tokens only
+// ============================================
+
+test("loadUnroutedFeesByPrisma leaves a Meteora token's trades alone and never asks for them", async () => {
+  setupEnv();
+  const { loadUnroutedFeesByPrisma } = await import(
+    "../services/loadUnroutedFeesByPrisma.js"
+  );
+  const stub = makePrismaStub({
+    treasuries: [
+      {
+        id: "treasury-pump",
+        programInitialized: true,
+        token: { id: "token-pump", mintAddress: "MintPump" },
+      },
+      {
+        id: "treasury-curve",
+        programInitialized: true,
+        token: { id: "token-curve", mintAddress: "MintCurve", launchpad: "meteora" },
+      },
+    ],
+    trades: [
+      { id: "t1", tokenId: "token-pump", solAmount: 2, timestamp: new Date("2026-04-26T10:00:00Z") },
+      { id: "t2", tokenId: "token-curve", solAmount: 50, timestamp: new Date("2026-04-26T10:05:00Z") },
+    ],
+  });
+
+  const rows = await loadUnroutedFeesByPrisma({ now: NOW }, { prisma: stub.prisma as any });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.treasuryId, "treasury-pump");
+  assert.deepEqual(rows[0]!.tradeIds, ["t1"]);
+  assert.deepEqual(
+    stub.observed.tradeQueryArgs!.map((a) => a.where.tokenId),
+    ["token-pump"],
+    "the Meteora token's trades are not even read",
+  );
+  assert.equal(stub.observed.findManyArgs.select.token.select.launchpad, true);
+});
+
+test("loadUnroutedFeesByPrisma routes nothing for a token whose launchpad cannot be read", async () => {
+  setupEnv();
+  const { loadUnroutedFeesByPrisma } = await import(
+    "../services/loadUnroutedFeesByPrisma.js"
+  );
+  const stub = makePrismaStub({
+    treasuries: [
+      {
+        id: "treasury-unknown",
+        programInitialized: true,
+        token: { id: "token-unknown", mintAddress: "MintUnknown", launchpad: null },
+      },
+      {
+        id: "treasury-bags",
+        programInitialized: true,
+        token: { id: "token-bags", mintAddress: "MintBags", launchpad: "bags" },
+      },
+    ],
+    trades: [
+      { id: "t1", tokenId: "token-unknown", solAmount: 3, timestamp: new Date("2026-04-26T10:00:00Z") },
+      { id: "t2", tokenId: "token-bags", solAmount: 3, timestamp: new Date("2026-04-26T10:00:00Z") },
+    ],
+  });
+
+  const rows = await loadUnroutedFeesByPrisma({ now: NOW }, { prisma: stub.prisma as any });
+
+  assert.deepEqual(rows, []);
+  assert.deepEqual(stub.observed.tradeQueryArgs, []);
 });

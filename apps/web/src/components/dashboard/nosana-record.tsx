@@ -54,7 +54,11 @@ export function NosanaRecord({
               Copy
             </Button>
           </div>
-          <p className="break-all font-mono text-xs text-foreground" data-testid="training-nosana-address">
+          {/* An address has no place to break, so where it does not fit it is cut into even lines. */}
+          <p
+            className="break-all font-mono text-xs text-foreground [text-wrap:balance]"
+            data-testid="training-nosana-address"
+          >
             {jobAddress}
           </p>
         </>

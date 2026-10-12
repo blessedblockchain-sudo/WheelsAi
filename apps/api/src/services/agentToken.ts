@@ -13,6 +13,7 @@ import {
   CREATOR_LOCKUP_DAYS,
   MAX_PAID_DISCOUNT_POINTS,
   PAID_REQUEST_DISCOUNT_POINTS,
+  checkTokenEligibility as checkLaunchGate,
   launchGateThresholds,
   type LaunchGateThresholds,
 } from "./tokenEligibility.js";
@@ -102,6 +103,15 @@ export interface HolderData {
  *
  * `gate` is the two numbers in force: the server's settings unless a test
  * passes its own. The sentences returned name those numbers.
+ *
+ * This is the preview the wizard trusts, so it must decide as the launch
+ * route does (routes/tokenLaunchPartialSign.ts). It reads the same four
+ * facts the route's loader reads (services/loadEligibilityState.ts) and
+ * hands them to the same pure check; the sentences below only put that
+ * check's answer into words. A sentence is never added on a rule of its
+ * own: with the reputation set to 0 a missing publisher profile is not a
+ * refusal, and with the age set to 0 days neither is an agent that has
+ * no running deployment.
  */
 export async function checkTokenEligibility(
   agentListingId: string,
@@ -142,21 +152,12 @@ export async function checkTokenEligibility(
       return { eligible: false, reasons };
     }
 
-    // Check if listing is published
-    if (listing.status !== "published") {
-      reasons.push("Agent listing must be published before creating a token");
-    }
-
     // Check if token already exists
     const existingToken = await prisma.agentToken.findUnique({
       where: { agentListingId },
     });
 
-    if (existingToken) {
-      reasons.push("Token already exists for this agent listing");
-    }
-
-    // Check publisher reputation, with the sybil discount (B4/T7): every
+    // Publisher reputation, with the sybil discount (B4/T7): every
     // SETTLED x402 payment attributed to this agent shaves a point off the
     // requirement, capped — same math as the enforcement gate
     // (services/tokenEligibility.ts), so the public badge and the launch
@@ -187,36 +188,71 @@ export async function checkTokenEligibility(
         },
       });
     }
-    const paidDiscount = Math.min(
-      settledPaidRequests * PAID_REQUEST_DISCOUNT_POINTS,
-      MAX_PAID_DISCOUNT_POINTS
-    );
-    const effectiveMinReputation = minReputation - paidDiscount;
 
-    if (!publisherProfile) {
-      reasons.push("Publisher profile not found");
-    } else if (publisherProfile.reputationScore < effectiveMinReputation) {
-      reasons.push(
-        `Publisher reputation score (${publisherProfile.reputationScore}) must be at least ${effectiveMinReputation}` +
-          (paidDiscount > 0
-            ? ` (${minReputation} minus ${paidDiscount} for on-chain-paid usage)`
-            : "")
-      );
-    }
-
-    // Check agent deployment age
+    // The facts as the route's loader states them: an organization with no
+    // publisher profile has a reputation of 0, and an agent with no running
+    // deployment has run for 0 days. Whole days, never below 0.
+    const reputationScore = publisherProfile?.reputationScore ?? 0;
     const oldestDeployment =
       listing.agent.deployments.length > 0 ? listing.agent.deployments[0] : null;
+    const deploymentAgeDays = oldestDeployment
+      ? Math.max(
+          0,
+          Math.floor(
+            (Date.now() - oldestDeployment.createdAt.getTime()) / (1000 * 60 * 60 * 24)
+          )
+        )
+      : 0;
 
-    if (!oldestDeployment) {
-      reasons.push("Agent must have at least one running deployment");
-    } else {
-      const deploymentAge = Date.now() - oldestDeployment.createdAt.getTime();
-      const deploymentDays = deploymentAge / (1000 * 60 * 60 * 24);
+    const decision = checkLaunchGate(
+      {
+        reputationScore,
+        deploymentAgeDays,
+        hasPublishedListing: listing.status === "published",
+        alreadyTokenized: existingToken !== null,
+        // The wallet is not this check's to judge: the launch route refuses
+        // an account with no linked wallet before it reaches the gate
+        // (wallet_required), and the public agent page has no wallet at all.
+        creatorAddress: "checked-by-the-launch-route",
+        settledPaidRequests,
+      },
+      gate
+    );
+    const refused = new Set<string>(decision.eligible ? [] : decision.reasons);
 
-      if (deploymentDays < minDeploymentAgeDays) {
+    if (refused.has("listing_not_published")) {
+      reasons.push("Agent listing must be published before creating a token");
+    }
+
+    if (refused.has("already_tokenized")) {
+      reasons.push("Token already exists for this agent listing");
+    }
+
+    if (refused.has("reputation_too_low")) {
+      const paidDiscount = Math.min(
+        settledPaidRequests * PAID_REQUEST_DISCOUNT_POINTS,
+        MAX_PAID_DISCOUNT_POINTS
+      );
+      const effectiveMinReputation = minReputation - paidDiscount;
+
+      if (!publisherProfile) {
+        reasons.push("Publisher profile not found");
+      } else {
         reasons.push(
-          `Agent must be deployed for at least ${minDeploymentAgeDays} days (current: ${Math.floor(deploymentDays)} days)`
+          `Publisher reputation score (${publisherProfile.reputationScore}) must be at least ${effectiveMinReputation}` +
+            (paidDiscount > 0
+              ? ` (${minReputation} minus ${paidDiscount} for on-chain-paid usage)`
+              : "")
+        );
+      }
+    }
+
+    if (refused.has("uptime_insufficient")) {
+      if (!oldestDeployment) {
+        reasons.push("Agent must have at least one running deployment");
+      } else {
+        reasons.push(
+          `Agent must be deployed for at least ${minDeploymentAgeDays} days (current: ${deploymentAgeDays} days)`
         );
       }
     }

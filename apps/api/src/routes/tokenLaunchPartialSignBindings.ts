@@ -85,6 +85,42 @@ export function buildEligibilityDeps(): Parameters<
 // "your token is at <mint>; please retry persistence" instead of
 // silently dropping it.
 
+/**
+ * The AgentToken row a launch writes. Pure, and exported so a test can pin
+ * what each launchpad saves without a database.
+ *
+ *   - pump.fun: the link to the token's pump.fun page.
+ *   - bags:     the Meteora fee-share config.
+ *   - meteora:  the curve config WheelsAI built for the token and the
+ *               curve pool's address. No pump.fun link: the token is not
+ *               on pump.fun, and a link there would lead nowhere.
+ */
+export function agentTokenCreateData(
+  input: PersistAgentTokenWithTreasuryInput,
+  listing: { id: string; iconUrl: string | null },
+) {
+  return {
+    agentListingId: listing.id,
+    mintAddress: input.mintAddress,
+    pumpfunUrl:
+      input.launchpad === "pumpfun"
+        ? `${PUMPFUN_FRONTEND_BASE}/coin/${input.mintAddress}`
+        : undefined,
+    creatorAddress: input.creatorAddress,
+    // Creator-supplied token name (carried through the prepare token);
+    // listing.title is only the ownership-check join, not the name.
+    name: input.name,
+    symbol: input.symbol,
+    imageUri: input.imageUri ?? listing.iconUrl ?? undefined,
+    launchpad: input.launchpad,
+    meteoraConfigKey: input.meteoraConfigKey,
+    bondingCurveAddress: input.bondingCurveAddress,
+    creatorLockupEnd: input.creatorLockupEnd,
+    status: "BONDING" as const,
+    treasuryAddress: input.treasuryPdaAddress,
+  };
+}
+
 async function persistAgentTokenWithTreasury(
   input: PersistAgentTokenWithTreasuryInput,
 ): Promise<PersistAgentTokenWithTreasuryResult> {
@@ -112,22 +148,7 @@ async function persistAgentTokenWithTreasury(
       );
     }
     const created = await tx.agentToken.create({
-      data: {
-        agentListingId: listing.id,
-        mintAddress: input.mintAddress,
-        pumpfunUrl: `${PUMPFUN_FRONTEND_BASE}/coin/${input.mintAddress}`,
-        creatorAddress: input.creatorAddress,
-        // Creator-supplied token name (carried through the prepare token);
-        // listing.title is only the ownership-check join, not the name.
-        name: input.name,
-        symbol: input.symbol,
-        imageUri: input.imageUri ?? listing.iconUrl ?? undefined,
-        launchpad: input.launchpad,
-        meteoraConfigKey: input.meteoraConfigKey,
-        creatorLockupEnd: input.creatorLockupEnd,
-        status: "BONDING",
-        treasuryAddress: input.treasuryPdaAddress,
-      },
+      data: agentTokenCreateData(input, listing),
     });
     await tx.agentTreasury.create({
       data: {

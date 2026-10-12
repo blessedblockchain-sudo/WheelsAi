@@ -30,6 +30,13 @@
  *     5. persistAgentTokenWithTreasury — atomic AgentToken +
  *        AgentTreasury insert.
  *
+ * The steps above name pump.fun because it was the first launchpad. The
+ * route itself is launchpad-neutral: the adapter (services/launchpad) does
+ * steps 3 to 5 of prepare and step 4 of submit its own way. On the meteora
+ * launchpad prepare also takes the curve `preset` the creator picked and
+ * answers with `preset` and `poolAddress`, and submit saves the curve's
+ * config and pool with the token.
+ *
  * Failure-recovery contract:
  *   prepare:
  *     - 400 not_eligible           → no side effects
@@ -69,6 +76,15 @@ import type { EligibilityState } from "./tokenLaunch.js";
 
 const logger = createLogger("token-launch-partial-sign");
 
+/** A string the adapter put in its context under `key`, or undefined. */
+function contextString(
+  context: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = context[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 // ============================================
 // Schemas
 // ============================================
@@ -86,6 +102,9 @@ const prepareBodySchema = z.object({
   telegram: z.string().optional(),
   website: z.string().optional(),
   initialBuySol: z.number().nonnegative().optional(),
+  // The curve preset the creator picked, by id. Only the meteora launchpad
+  // reads it (and refuses one it does not offer); the others ignore it.
+  preset: z.string().min(1).max(40).optional(),
 });
 
 const submitBodySchema = z.object({
@@ -117,10 +136,15 @@ export interface PersistAgentTokenWithTreasuryInput {
   symbol: string;
   description: string;
   imageUri?: string;
-  /** Launchpad that minted this token ("pumpfun" | "bags"). */
+  /** Launchpad that minted this token ("pumpfun" | "bags" | "meteora"). */
   launchpad: string;
-  /** Bags Meteora fee-share config key; undefined for pump.fun. */
+  /**
+   * The Meteora curve config's address: Bags' fee-share config, or the
+   * config WheelsAI built for this token (meteora). Undefined for pump.fun.
+   */
   meteoraConfigKey?: string;
+  /** The curve pool's address (meteora). Undefined for the others. */
+  bondingCurveAddress?: string;
   treasuryPdaAddress: string;
   treasuryAuthorityBump: number;
 }
@@ -260,6 +284,7 @@ export function createPartialSignTokenRoutes(
           creatorPubkey: walletAddress,
           metadata,
           initialBuySol: body.initialBuySol,
+          preset: body.preset,
         });
       } catch (err) {
         logger.error(
@@ -295,6 +320,10 @@ export function createPartialSignTokenRoutes(
         mintAddress: prepared.mintAddress,
         creatorPubkey: prepared.creatorPubkey,
         prepareToken,
+        // Present when the adapter gives them (meteora): the curve that
+        // will be created, and where its pool will live.
+        preset: contextString(prepared.context, "preset"),
+        poolAddress: contextString(prepared.context, "poolAddress"),
       });
     });
 
@@ -399,10 +428,11 @@ export function createPartialSignTokenRoutes(
           description: tokenPayload.description,
           imageUri: tokenPayload.imageUri,
           launchpad: tokenPayload.launchpad,
-          meteoraConfigKey:
-            typeof tokenPayload.context.configKey === "string"
-              ? tokenPayload.context.configKey
-              : undefined,
+          meteoraConfigKey: contextString(tokenPayload.context, "configKey"),
+          bondingCurveAddress: contextString(
+            tokenPayload.context,
+            "poolAddress",
+          ),
           treasuryPdaAddress: treasuryPda.toBase58(),
           treasuryAuthorityBump: treasuryBump,
         });
@@ -533,10 +563,11 @@ export function createPartialSignTokenRoutes(
           description: tokenPayload.description,
           imageUri: tokenPayload.imageUri,
           launchpad: tokenPayload.launchpad,
-          meteoraConfigKey:
-            typeof tokenPayload.context.configKey === "string"
-              ? tokenPayload.context.configKey
-              : undefined,
+          meteoraConfigKey: contextString(tokenPayload.context, "configKey"),
+          bondingCurveAddress: contextString(
+            tokenPayload.context,
+            "poolAddress",
+          ),
           treasuryPdaAddress: treasuryPda.toBase58(),
           treasuryAuthorityBump: treasuryBump,
         });

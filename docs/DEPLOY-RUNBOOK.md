@@ -109,6 +109,7 @@ missing or unsafe, and prints which one.
 | --- | --- |
 | `COOKIE_DOMAIN` | The shared parent domain (for example `.example.com`) when the web app and the API run on sibling subdomains. Without it the web app never sees the session and sends users back to the sign-in page. |
 | `PUBLIC_API_URL` | The API's public HTTPS origin. Used for the endpoints shown to users, OAuth redirects, Telegram webhooks, and the addresses GPU nodes call back for fine-tuning. |
+| `GPU_FACING_API_URL` | Optional. The address a container on a GPU node uses to reach the API, when it is not `PUBLIC_API_URL`: a training run reports its progress there and a deployed fine-tuned model downloads its adapter from there. Unset means `PUBLIC_API_URL`. An address on this machine or a private network is refused before a GPU is rented (`training_callbacks_not_reachable`, `adapter_download_not_reachable`). |
 | `PUBLIC_WEB_URL` | The web app's public origin, used in email links and listing URLs. Falls back to `CORS_ORIGIN`. |
 
 ### 3.3 Platform keys

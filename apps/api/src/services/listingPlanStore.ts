@@ -1,13 +1,17 @@
 /**
  * The plans of a listing, as its creator writes and reads them.
  *
- * A creator sends the whole set of plans for a listing and it replaces what
- * the listing has, in one transaction:
+ * A creator sends the whole set of plans for a listing, and the ids of the
+ * plans they ended, and it replaces what the listing has, in one transaction:
  *
  *   a plan sent with its id   is changed in place and keeps its id and place
- *   a plan left out           is retired, never deleted: the people on it
+ *   a plan named as ended     is retired, never deleted: the people on it
  *                             hold its id and finish the 30 days they paid for
  *   a plan with no id         is created at a free place from 1 to 4
+ *
+ * Ending a plan is said, never implied. A plan on offer that is neither sent
+ * nor named is one the sender did not know of (a teammate added it, or the
+ * page is an old one), so the whole save is refused and nothing is written.
  *
  * Nothing here touches a subscription. People already on a plan keep the
  * terms they agreed to, which their own row carries (agent_subscriptions).
@@ -22,7 +26,7 @@
  */
 import { prisma } from "@wheelsai/db";
 
-import type { ValidationFailureBody } from "../lib/validationFailure.js";
+import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { checkPlanSet, MAX_PAID_PLANS, type PlanInput, type PlanSetCheck } from "./listingPlans.js";
 
 /** A plan as its creator sees it. Cents are whole cents. No buyer is named. */
@@ -43,6 +47,9 @@ export interface OwnerPlan {
 export const PLAN_STORE_MESSAGES = {
   listingNotFound: "This listing was not found.",
   changedElsewhere: "These plans were changed by another save at the same moment. Reload the page and try again.",
+  /** A plan is on offer that the sender neither sent nor ended: they did not know of it. */
+  changedSincePageLoaded: "These plans were changed somewhere else since this page was loaded. Reload the page and try again.",
+  keptAndEnded: "This plan is in the list of plans to keep and in the list of plans to end. Choose one.",
 } as const;
 
 export type SetPlansResult =
@@ -73,6 +80,33 @@ const CHANGED_ELSEWHERE: Refused = {
   code: "plans_changed",
   message: PLAN_STORE_MESSAGES.changedElsewhere,
 };
+
+const CHANGED_SINCE_PAGE_LOADED: Refused = {
+  ok: false,
+  status: 409,
+  code: "plans_changed",
+  message: PLAN_STORE_MESSAGES.changedSincePageLoaded,
+};
+
+/**
+ * A plan that is both sent and named as ended, told on its place in `ended`.
+ * Null when no plan is in both lists.
+ */
+function keptAndEnded(plans: readonly PlanInput[], ended: readonly string[]): Refused | null {
+  const sent = new Set(plans.flatMap((plan) => (plan.id === undefined ? [] : [plan.id])));
+  const fields: Record<string, string> = {};
+  ended.forEach((id, index) => {
+    if (sent.has(id)) fields[`ended[${index}]`] = PLAN_STORE_MESSAGES.keptAndEnded;
+  });
+  if (Object.keys(fields).length === 0) return null;
+  return {
+    ok: false,
+    status: 400,
+    code: "validation_failed",
+    message: PLAN_STORE_MESSAGES.keptAndEnded,
+    body: validationFailureFromFields(fields),
+  };
+}
 
 /** The statuses of a subscription that nothing has closed. */
 const OPEN_STATUSES = ["active", "past_due"];
@@ -141,15 +175,24 @@ export async function readOwnerPlans(db: PlanReader, listingIds: string[]): Prom
  * Replace the plans of a listing of this organization with the set sent.
  * Nothing is written unless the whole set passes the rules, and the writes
  * commit together or not at all. Answers the plans as they are afterwards.
+ *
+ * `ended` are the ids of the plans the sender ends. One that is not on offer
+ * on this listing (ended already, or never this listing's) changes nothing
+ * and is no error.
  */
 export async function replaceListingPlans(args: {
   listingId: string;
   orgId: string;
   plans: PlanInput[];
+  ended?: readonly string[];
   now?: Date;
 }): Promise<SetPlansResult> {
   const { listingId, orgId } = args;
   const now = args.now ?? new Date();
+  const ended = args.ended ?? [];
+  const both = keptAndEnded(args.plans, ended);
+  if (both) return both;
+  const named = new Set(ended);
   try {
     await prisma.$transaction(async (tx) => {
       // Somebody else's listing is not there to be told apart from none.
@@ -170,10 +213,19 @@ export async function replaceListingPlans(args: {
         where: { listingId, status: "active", kind: "paid" },
         select: { id: true, position: true },
       });
-      // An empty set ends every plan, and that is allowed on any listing: one
-      // that left pay per use can have no new plan, but its creator must be
-      // able to take the old ones off, or they would come back on offer
-      // unasked if the listing is ever sold per use again.
+      // Every plan on offer must be either sent or named as ended. Checked
+      // here, on the rows this transaction read, and before the rules of a
+      // plan: a sender who did not know of a plan is told to reload, not what
+      // is wrong with a set that was made from an old page.
+      const sent = new Set(args.plans.flatMap((plan) => (plan.id === undefined ? [] : [plan.id])));
+      if (onOffer.some((plan) => !sent.has(plan.id) && !named.has(plan.id))) {
+        throw new PlansRefused(CHANGED_SINCE_PAGE_LOADED);
+      }
+
+      // An empty set is allowed on any listing: one that left pay per use can
+      // have no new plan, but its creator must be able to take the old ones
+      // off, or they would come back on offer unasked if the listing is ever
+      // sold per use again.
       const check: PlanSetCheck =
         args.plans.length === 0
           ? { ok: true, plans: [] }
@@ -190,9 +242,10 @@ export async function replaceListingPlans(args: {
         );
       }
 
-      // Left out: retired. First, so that the places they held are free.
-      const kept = new Set(check.plans.flatMap((plan) => (plan.id === null ? [] : [plan.id])));
-      const leaving = onOffer.filter((plan) => !kept.has(plan.id)).map((plan) => plan.id);
+      // Named as ended: retired. First, so that the places they held are
+      // free. Only a plan that is on offer on this listing: an id that is
+      // ended already, or is another listing's, is not reached for.
+      const leaving = onOffer.filter((plan) => named.has(plan.id)).map((plan) => plan.id);
       if (leaving.length > 0) {
         const retired = await tx.listingPlan.updateMany({
           where: { id: { in: leaving }, listingId, status: "active" },

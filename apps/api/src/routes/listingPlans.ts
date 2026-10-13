@@ -3,12 +3,15 @@
  *
  *   PUT /api/marketplace/listings/:id/plans
  *
- * The body is the whole set, `{ plans: [{ id?, kind, name, priceCents,
- * includedUses, extraUsePriceCents }] }`, and it replaces what the listing
- * has: a plan sent with its id is changed in place, one left out is retired,
- * one with no id is new. People already on a plan keep the terms they agreed
- * to. The answer is the plans as they are now, as GET /my-listings shows
- * them.
+ * The body is the whole set and the plans that end, `{ plans: [{ id?, kind,
+ * name, priceCents, includedUses, extraUsePriceCents }], ended: [ids] }`, and
+ * it replaces what the listing has: a plan sent with its id is changed in
+ * place, one named in `ended` is retired, one with no id is new. Ending a
+ * plan is said, never implied: a plan on offer that is in neither list is one
+ * the sender did not know of, and the save is refused whole. `ended` may be
+ * left out when nothing is ended; an id in it that is no longer on offer is
+ * no error. People already on a plan keep the terms they agreed to. The
+ * answer is the plans as they are now, as GET /my-listings shows them.
  *
  * Who: an owner or admin of the organization the listing belongs to (their
  * role as it is now), or one of its API keys, which act for the organization
@@ -19,8 +22,9 @@
  *
  * Refusals are the listing's own (ListingError): 400 validation_failed with
  * a sentence for each field, 404 listing_not_found, 409 plans_not_available
- * for a listing that cannot have plans, and 409 plans_changed when another
- * save got there first.
+ * for a listing that cannot have plans, and 409 plans_changed when the plans
+ * were changed somewhere else since the page was loaded, or another save got
+ * there first.
  */
 import type { FastifyPluginAsync, preHandlerAsyncHookHandler } from "fastify";
 import { z } from "zod";
@@ -50,7 +54,13 @@ const planSchema = z.object({
   extraUsePriceCents: z.number().int().min(-100_000).max(100_000).nullable(),
 });
 
-const bodySchema = z.object({ plans: z.array(planSchema).max(MAX_PLANS_IN_BODY) });
+/** Every plan a listing has on offer can be named several times over. */
+const MAX_ENDED_IN_BODY = 20;
+
+const bodySchema = z.object({
+  plans: z.array(planSchema).max(MAX_PLANS_IN_BODY),
+  ended: z.array(z.string().uuid()).max(MAX_ENDED_IN_BODY).optional(),
+});
 
 export interface ListingPlanRouteDeps {
   guards: {
@@ -60,7 +70,7 @@ export interface ListingPlanRouteDeps {
     ownerOrAdmin: preHandlerAsyncHookHandler;
   };
   /** services/marketplace.ts, setListingPlans, when omitted. */
-  setPlans?: (listingId: string, orgId: string, plans: PlanInput[]) => Promise<OwnerPlan[]>;
+  setPlans?: (listingId: string, orgId: string, plans: PlanInput[], ended: readonly string[]) => Promise<OwnerPlan[]>;
 }
 
 export function createListingPlanRoutes(deps: ListingPlanRouteDeps): FastifyPluginAsync {
@@ -91,7 +101,7 @@ export function createListingPlanRoutes(deps: ListingPlanRouteDeps): FastifyPlug
         }));
 
         try {
-          return { plans: await setPlans(params.data.id, orgId, plans) };
+          return { plans: await setPlans(params.data.id, orgId, plans, body.data.ended ?? []) };
         } catch (error) {
           if (error instanceof ListingError) {
             return reply.status(error.status).send(error.body ?? { error: error.code, message: error.message });

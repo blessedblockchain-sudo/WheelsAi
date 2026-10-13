@@ -9,10 +9,12 @@ import { PLAN_STORE_MESSAGES } from "../services/listingPlanStore.js";
 // A creator's plans on a listing: PUT /api/marketplace/listings/:id/plans and
 // what GET /api/marketplace/my-listings shows of them, through the routes and
 // the real services over an in-memory database. What these pin: the set
-// replaces what the listing has (a plan sent with its id keeps it, one left
-// out is retired and never deleted, a new one takes a free place), nothing
-// is written unless the whole set passes, two saves at once give one 409 and
-// never a 500, and no subscription row is ever touched.
+// replaces what the listing has (a plan sent with its id keeps it, one named
+// as ended is retired and never deleted, a new one takes a free place), a
+// plan is ended only when its creator says so (one that is neither sent nor
+// named refuses the whole save), nothing is written unless the whole set
+// passes, two saves at once give one 409 and never a 500, and no
+// subscription row is ever touched.
 
 const LISTING_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_LISTING_ID = "22222222-2222-4222-8222-222222222222";
@@ -322,7 +324,7 @@ test("changing a plan keeps its id and its place, and the people on it are not t
   });
 });
 
-test("a plan left out is retired and never deleted, and a new plan takes its place", async () => {
+test("a plan named as ended is retired and never deleted, and a new plan takes its place", async () => {
   const world = makeWorld();
   await withApp(world, async (call) => {
     const first = await call("PUT", PLANS_URL, { plans: [starter(), pro()] });
@@ -330,7 +332,10 @@ test("a plan left out is retired and never deleted, and a new plan takes its pla
     world.state.subs.push({ id: "sub_1", planId: starterId, status: "active" });
     const before = Date.now();
 
-    const res = await call("PUT", PLANS_URL, { plans: [pro({ id: proId }), starter({ name: "Team", priceCents: 4900 })] });
+    const res = await call("PUT", PLANS_URL, {
+      plans: [pro({ id: proId }), starter({ name: "Team", priceCents: 4900 })],
+      ended: [starterId],
+    });
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.plans.map((plan: Row) => [plan.name, plan.status]), [
       ["Team", "active"],
@@ -346,11 +351,14 @@ test("a plan left out is retired and never deleted, and a new plan takes its pla
     assert.deepEqual([team.position, team.status], [1, "active"]);
 
     // A retired plan cannot be brought back by its id: it is no longer on the listing.
-    const back = await call("PUT", PLANS_URL, { plans: [starter({ id: starterId })] });
+    const teamId = res.body.plans[0].id;
+    const back = await call("PUT", PLANS_URL, {
+      plans: [starter({ id: starterId }), starter({ id: teamId, name: "Team", priceCents: 4900 }), pro({ id: proId })],
+    });
     assert.deepEqual(fieldOf(back, "plans[0].id"), [400, "validation_failed", PLAN_MESSAGES.gone]);
 
-    // An empty set ends them all.
-    const none = await call("PUT", PLANS_URL, { plans: [] });
+    // An empty set with every plan on offer named ends them all.
+    const none = await call("PUT", PLANS_URL, { plans: [], ended: [teamId, proId] });
     assert.deepEqual([none.status, none.body.plans], [200, []]);
     assert.equal(world.state.plans.length, 3);
     assert.ok(world.state.plans.every((p) => p.status === "retired"));
@@ -438,7 +446,7 @@ test("a listing that cannot have plans is refused 409 with the reason, whatever 
   );
 });
 
-test("an empty set ends the plans of a listing that left pay per use: retired, never deleted, and nobody on them is touched", async () => {
+test("an empty set that names every plan ends the plans of a listing that left pay per use: retired, never deleted, and nobody on them is touched", async () => {
   const PLAN_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const PLAN_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const world = makeWorld({
@@ -452,11 +460,20 @@ test("an empty set ends the plans of a listing that left pay per use: retired, n
   const before = structuredClone(world.state.subs);
   await withApp(world, async (call) => {
     // A plan is still not added, or kept, on such a listing.
-    const kept = await call("PUT", PLANS_URL, { plans: [{ id: PLAN_A, ...starter() }] });
+    const kept = await call("PUT", PLANS_URL, { plans: [{ id: PLAN_A, ...starter() }], ended: [PLAN_B] });
     assert.deepEqual([kept.status, kept.body.error], [409, "plans_not_available"]);
+    const both = await call("PUT", PLANS_URL, { plans: [{ id: PLAN_A, ...starter() }, { id: PLAN_B, ...pro() }] });
+    assert.deepEqual([both.status, both.body.error], [409, "plans_not_available"]);
     assert.equal(world.state.planWrites, 0);
 
-    const res = await call("PUT", PLANS_URL, { plans: [] });
+    // An empty set alone ends nothing: the plans it does not name are still there.
+    const alone = await call("PUT", PLANS_URL, { plans: [] });
+    assert.deepEqual([alone.status, alone.body], [409, { error: "plans_changed", message: PLAN_STORE_MESSAGES.changedSincePageLoaded }]);
+    const one = await call("PUT", PLANS_URL, { plans: [], ended: [PLAN_A] });
+    assert.deepEqual([one.status, one.body.error], [409, "plans_changed"]);
+    assert.equal(world.state.planWrites, 0);
+
+    const res = await call("PUT", PLANS_URL, { plans: [], ended: [PLAN_B, PLAN_A] });
     assert.deepEqual([res.status, res.body], [200, { plans: [] }]);
   });
   assert.equal(world.state.plans.length, 2);
@@ -487,6 +504,284 @@ test("another organization's listing is not found, and a member who is not an ow
     assert.equal(signedOut.status, 401);
   });
   assert.equal(world.state.planWrites, 0);
+});
+
+// ============================================
+// A plan is ended only when its creator says so
+// ============================================
+
+const PLAN_1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const PLAN_2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const PLAN_3 = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const PLAN_OLD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const PLAN_THEIRS = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const NEVER_A_PLAN = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+
+const stored = (over: Row) => ({
+  listingId: LISTING_ID,
+  kind: "paid",
+  name: "Starter",
+  priceCents: 900n,
+  includedUses: 500,
+  extraUsePriceCents: 5n,
+  status: "active",
+  retiredAt: null,
+  ...over,
+});
+
+/** Three plans on offer, one ended long ago, and one of another listing. */
+const threePlans = () =>
+  makeWorld({
+    plans: [
+      stored({ id: PLAN_1, position: 1 }),
+      stored({ id: PLAN_2, name: "Pro", priceCents: 2900n, includedUses: 2000, extraUsePriceCents: null, position: 2 }),
+      stored({ id: PLAN_3, name: "Team", priceCents: 9900n, includedUses: 5000, position: 3 }),
+      stored({ id: PLAN_OLD, name: "Old", position: 4, status: "retired", retiredAt: new Date(0) }),
+      stored({ id: PLAN_THEIRS, listingId: OTHER_LISTING_ID, name: "Theirs", position: 1 }),
+    ],
+    subs: [
+      { id: "sub_1", listingId: LISTING_ID, subscriberId: "org_buyer", planId: PLAN_3, status: "active", includedUses: 5000, usedInPeriod: 40 },
+      { id: "sub_2", listingId: LISTING_ID, subscriberId: "org_buyer_2", planId: PLAN_1, status: "past_due", includedUses: 500, usedInPeriod: 500 },
+    ],
+  });
+const SENT_1 = starter({ id: PLAN_1 });
+const SENT_2 = pro({ id: PLAN_2 });
+const SENT_3 = starter({ id: PLAN_3, name: "Team", priceCents: 9900, includedUses: 5000 });
+const PLANS_CHANGED = {
+  error: "plans_changed",
+  message: "These plans were changed somewhere else since this page was loaded. Reload the page and try again.",
+};
+
+test("a plan on offer that is neither sent nor named is 409, and nothing is written: not the plans that were sent either", async () => {
+  const world = threePlans();
+  const before = structuredClone(world.state.plans);
+  const subs = structuredClone(world.state.subs);
+  await withApp(world, async (call) => {
+    // A page loaded before a teammate added the third plan: it changes one, adds one and knows two.
+    const stale = await call("PUT", PLANS_URL, {
+      plans: [starter({ id: PLAN_1, priceCents: 1200 }), SENT_2, starter({ name: "New" })],
+    });
+    assert.deepEqual([stale.status, stale.body], [409, PLANS_CHANGED]);
+    // The same page ending one of the plans it does know of.
+    const ending = await call("PUT", PLANS_URL, { plans: [SENT_1], ended: [PLAN_2] });
+    assert.deepEqual([ending.status, ending.body], [409, PLANS_CHANGED]);
+    // Naming some other id does not help: the plan it did not know of (the third) is still in neither list.
+    const told = await call("PUT", PLANS_URL, { plans: [SENT_1], ended: [PLAN_2, NEVER_A_PLAN] });
+    assert.deepEqual([told.status, told.body], [409, PLANS_CHANGED]);
+    // Said before the rules of a plan: a set made from an old page is not argued with field by field.
+    const alsoWrong = await call("PUT", PLANS_URL, { plans: [starter({ id: PLAN_1, priceCents: 1 }), SENT_2] });
+    assert.deepEqual([alsoWrong.status, alsoWrong.body], [409, PLANS_CHANGED]);
+  });
+  assert.equal(world.state.planWrites, 0);
+  assert.deepEqual(world.state.plans, before);
+  assert.deepEqual(world.state.subs, subs);
+});
+
+test("a named plan is ended, the others are kept, and the rows of the people on it are untouched", async () => {
+  const world = threePlans();
+  const subs = structuredClone(world.state.subs);
+  const before = Date.now();
+  await withApp(world, async (call) => {
+    const res = await call("PUT", PLANS_URL, { plans: [SENT_1, SENT_2], ended: [PLAN_3] });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.plans.map((plan: Row) => [plan.id, plan.status, plan.subscribers]), [
+      [PLAN_1, "active", 1],
+      [PLAN_2, "active", 0],
+    ]);
+  });
+  const byId = (id: string) => world.state.plans.find((p) => p.id === id)!;
+  assert.equal(byId(PLAN_3).status, "retired");
+  assert.ok(byId(PLAN_3).retiredAt instanceof Date && byId(PLAN_3).retiredAt.getTime() >= before);
+  // Retired, never deleted, and its terms are as they were.
+  assert.deepEqual([byId(PLAN_3).name, byId(PLAN_3).priceCents, byId(PLAN_3).position], ["Team", 9900n, 3]);
+  assert.equal(world.state.plans.length, 5);
+  // The people on the ended plan still hold its id and their own count.
+  assert.deepEqual(world.state.subs, subs);
+  // Another listing's plan and the one ended long ago are as they were.
+  assert.deepEqual([byId(PLAN_THEIRS).status, byId(PLAN_OLD).retiredAt.getTime()], ["active", 0]);
+});
+
+test("a named id that is already ended, or was never this listing's, is no error and changes nothing", async () => {
+  const world = threePlans();
+  await withApp(world, async (call) => {
+    // The same ids twice, an ended one, another listing's, and one that was never a plan.
+    const res = await call("PUT", PLANS_URL, {
+      plans: [SENT_1, SENT_2, SENT_3],
+      ended: [PLAN_OLD, PLAN_THEIRS, NEVER_A_PLAN, PLAN_OLD],
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.plans.map((plan: Row) => plan.id), [PLAN_1, PLAN_2, PLAN_3]);
+
+    // A second tab ends a plan the first tab ended a moment ago: it is ended already.
+    const first = await call("PUT", PLANS_URL, { plans: [SENT_1, SENT_2], ended: [PLAN_3] });
+    assert.equal(first.status, 200);
+    const retiredAt = world.state.plans.find((p) => p.id === PLAN_3)!.retiredAt;
+    const again = await call("PUT", PLANS_URL, { plans: [SENT_1, SENT_2], ended: [PLAN_3] });
+    assert.equal(again.status, 200);
+    assert.deepEqual(again.body.plans.map((plan: Row) => plan.id), [PLAN_1, PLAN_2]);
+    // Not ended a second time: the day it ended is the day it ended.
+    assert.equal(world.state.plans.find((p) => p.id === PLAN_3)!.retiredAt, retiredAt);
+  });
+  const status = (id: string) => world.state.plans.find((p) => p.id === id)!.status;
+  // Another organization's plan cannot be ended by naming it.
+  assert.deepEqual([status(PLAN_THEIRS), status(PLAN_OLD), status(PLAN_1), status(PLAN_2)], ["active", "retired", "active", "active"]);
+  assert.equal(world.state.plans.find((p) => p.id === PLAN_OLD)!.retiredAt.getTime(), 0);
+});
+
+test("an id in both lists is refused on its field, and nothing is written", async () => {
+  const world = threePlans();
+  const before = structuredClone(world.state.plans);
+  const sentence = "This plan is in the list of plans to keep and in the list of plans to end. Choose one.";
+  await withApp(world, async (call) => {
+    const res = await call("PUT", PLANS_URL, { plans: [SENT_1, SENT_2], ended: [PLAN_3, PLAN_2] });
+    assert.deepEqual(fieldOf(res, "ended[1]"), [400, "validation_failed", sentence]);
+    assert.equal(res.body.message, sentence);
+    assert.deepEqual(Object.keys(res.body.fields), ["ended[1]"]);
+    assert.equal(sentence, PLAN_STORE_MESSAGES.keptAndEnded);
+  });
+  assert.equal(world.state.planWrites, 0);
+  assert.deepEqual(world.state.plans, before);
+});
+
+test("ended is a list of at most 20 ids: anything else is refused before the listing is read", async () => {
+  const world = threePlans();
+  await withApp(world, async (call) => {
+    const all = [SENT_1, SENT_2, SENT_3];
+    for (const ended of ["all", [7], ["not-an-id"], [null], { 0: PLAN_3 }, Array.from({ length: 21 }, () => PLAN_OLD)]) {
+      const res = await call("PUT", PLANS_URL, { plans: all, ended });
+      assert.deepEqual([res.status, res.body.error], [400, "validation_failed"], JSON.stringify(ended).slice(0, 40));
+    }
+    // Twenty is allowed, and so is an empty list.
+    const twenty = await call("PUT", PLANS_URL, { plans: all, ended: Array.from({ length: 20 }, () => PLAN_OLD) });
+    assert.equal(twenty.status, 200);
+    assert.equal((await call("PUT", PLANS_URL, { plans: all, ended: [] })).status, 200);
+  });
+  assert.equal(world.state.plans.filter((p) => p.status === "active" && p.listingId === LISTING_ID).length, 3);
+});
+
+test("ended left out with every plan sent is the save it always was", async () => {
+  const world = threePlans();
+  await withApp(world, async (call) => {
+    const res = await call("PUT", PLANS_URL, { plans: [starter({ id: PLAN_1, priceCents: 1200 }), SENT_2, SENT_3] });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.plans.map((plan: Row) => [plan.id, plan.priceCents, plan.status]), [
+      [PLAN_1, 1200, "active"],
+      [PLAN_2, 2900, "active"],
+      [PLAN_3, 9900, "active"],
+    ]);
+  });
+  // One row changed in place, none ended, none added.
+  assert.equal(world.state.plans.length, 5);
+  assert.equal(world.state.plans.filter((p) => p.status === "retired").length, 1);
+});
+
+test("an empty set that names every plan ends them all, and an empty set alone ends none", async () => {
+  const world = threePlans();
+  const subs = structuredClone(world.state.subs);
+  await withApp(world, async (call) => {
+    const alone = await call("PUT", PLANS_URL, { plans: [] });
+    assert.deepEqual([alone.status, alone.body], [409, PLANS_CHANGED]);
+    const empty = await call("PUT", PLANS_URL, { plans: [], ended: [] });
+    assert.deepEqual([empty.status, empty.body], [409, PLANS_CHANGED]);
+    const two = await call("PUT", PLANS_URL, { plans: [], ended: [PLAN_1, PLAN_2] });
+    assert.deepEqual([two.status, two.body], [409, PLANS_CHANGED]);
+    assert.equal(world.state.planWrites, 0);
+
+    const res = await call("PUT", PLANS_URL, { plans: [], ended: [PLAN_1, PLAN_2, PLAN_3] });
+    assert.deepEqual([res.status, res.body], [200, { plans: [] }]);
+    // A listing with no plan on offer takes an empty set as before.
+    assert.deepEqual((await call("PUT", PLANS_URL, { plans: [] })).body, { plans: [] });
+  });
+  assert.ok(world.state.plans.filter((p) => p.listingId === LISTING_ID).every((p) => p.status === "retired"));
+  assert.equal(world.state.plans.find((p) => p.id === PLAN_THEIRS)!.status, "active");
+  assert.deepEqual(world.state.subs, subs);
+});
+
+test("the plans on offer are judged as the save's own transaction reads them: a plan added a moment before refuses it", async () => {
+  const world = threePlans();
+  world.state.plans = world.state.plans.filter((p) => p.id !== PLAN_3);
+  // A teammate's plan lands after the route took the request and before this save reads the plans.
+  const readPlans = world.models.listingPlan.findMany;
+  let landed = false;
+  world.models.listingPlan.findMany = async (args: Row) => {
+    if (!landed && args.where.kind === "paid") {
+      landed = true;
+      world.state.plans.push(stored({ id: PLAN_3, name: "Team", priceCents: 9900n, includedUses: 5000, position: 3 }));
+    }
+    return readPlans(args);
+  };
+  const res = await withApp(world, (call) => call("PUT", PLANS_URL, { plans: [SENT_1], ended: [PLAN_2] }));
+  assert.deepEqual([res.status, res.body], [409, PLANS_CHANGED]);
+  assert.equal(world.state.planWrites, 0);
+  assert.deepEqual(
+    world.state.plans.filter((p) => p.listingId === LISTING_ID && p.status === "active").map((p) => p.id),
+    [PLAN_1, PLAN_2, PLAN_3],
+  );
+});
+
+test("a save that does not know of a plan another save is adding at the same moment never ends it", async () => {
+  const world = makeWorld({ plans: [stored({ id: PLAN_1, position: 1 })] });
+  // Both saves read the plans on offer before either writes.
+  const readPlans = world.models.listingPlan.findMany;
+  let readers = 0;
+  let bothRead!: () => void;
+  const bothHaveRead = new Promise<void>((resolve) => (bothRead = resolve));
+  world.models.listingPlan.findMany = async (args: Row) => {
+    const rows = await readPlans(args);
+    if (args.where.kind === "paid") {
+      if (++readers === 2) bothRead();
+      await bothHaveRead;
+    }
+    return rows;
+  };
+  await withApp(world, async (call) => {
+    const [adds, renames] = await Promise.all([
+      call("PUT", PLANS_URL, { plans: [SENT_1, pro()] }),
+      call("PUT", PLANS_URL, { plans: [starter({ id: PLAN_1, name: "Starter plus" })] }),
+    ]);
+    assert.deepEqual([adds.status, renames.status], [200, 200]);
+  });
+  // The plan one save added is on offer, though the other never named it.
+  assert.deepEqual(
+    world.state.plans.map((p) => [p.name, p.position, p.status]),
+    [
+      ["Starter plus", 1, "active"],
+      ["Pro", 2, "active"],
+    ],
+  );
+});
+
+test("the route hands the ids to the service as they were sent, and an empty list when none were", async () => {
+  const Fastify = (await import("fastify")).default;
+  const { createListingPlanRoutes } = await import("../routes/listingPlans.js");
+  const seen: Array<{ plans: number; ended: readonly string[] }> = [];
+  const app = Fastify();
+  app.decorateRequest("auth", null);
+  app.addHook("onRequest", async (request) => {
+    (request as unknown as { auth: unknown }).auth = OWNER;
+  });
+  await app.register(
+    createListingPlanRoutes({
+      guards: { auth: async () => {}, ownerOrAdmin: async () => {} },
+      setPlans: async (_listingId, _orgId, plans, ended) => {
+        seen.push({ plans: plans.length, ended });
+        return [];
+      },
+    }),
+  );
+  try {
+    await app.inject({ method: "PUT", url: PLANS_URL, payload: { plans: [starter()] } });
+    await app.inject({ method: "PUT", url: PLANS_URL, payload: { plans: [], ended: [PLAN_2, PLAN_1] } });
+    // A field the route does not know is not a reason to refuse, and is not passed on.
+    await app.inject({ method: "PUT", url: PLANS_URL, payload: { plans: [], ended: [], retire: [PLAN_3] } });
+  } finally {
+    await app.close();
+  }
+  assert.deepEqual(seen, [
+    { plans: 1, ended: [] },
+    { plans: 0, ended: [PLAN_2, PLAN_1] },
+    { plans: 0, ended: [] },
+  ]);
 });
 
 // ============================================

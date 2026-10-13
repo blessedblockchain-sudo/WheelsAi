@@ -1210,15 +1210,22 @@ export async function getMyListings(orgId: string, hooks: ListingPauseHooks = {}
 /**
  * Replace the plans of a listing with the set its creator sends
  * (services/listingPlanStore.ts): a plan sent with its id is changed in
- * place, one left out is retired, one with no id is new. People already on a
- * plan keep the terms they agreed to. Answers the plans as they are now.
+ * place, one named in `ended` is retired, one with no id is new. People
+ * already on a plan keep the terms they agreed to. Answers the plans as they
+ * are now.
  *
  * Throws ListingError: 400 validation_failed with a sentence for each field,
  * 404 listing_not_found, 409 plans_not_available for a listing that cannot
- * have plans, and 409 plans_changed when another save got there first.
+ * have plans, and 409 plans_changed when a plan on offer is neither sent nor
+ * named as ended, or another save got there first.
  */
-export async function setListingPlans(listingId: string, orgId: string, plans: PlanInput[]): Promise<OwnerPlan[]> {
-  const result = await replaceListingPlans({ listingId, orgId, plans });
+export async function setListingPlans(
+  listingId: string,
+  orgId: string,
+  plans: PlanInput[],
+  ended: readonly string[] = [],
+): Promise<OwnerPlan[]> {
+  const result = await replaceListingPlans({ listingId, orgId, plans, ended });
   if (!result.ok) throw new ListingError(result.status, result.code, result.message, result.body);
   logger.info({ listingId, orgId, plans: result.plans.length }, "The plans of a listing were set");
   return result.plans;

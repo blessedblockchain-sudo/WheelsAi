@@ -140,8 +140,9 @@ export type PlanSetCheck =
 
 /**
  * Checks the whole set of plans a creator sends for a listing. The set
- * replaces what the listing has: a plan with an id is changed in place and
- * a plan left out is retired, so an empty set is allowed and ends them all.
+ * replaces what the listing has: a plan with an id is changed in place, and
+ * the plans that end are named beside it (services/listingPlanStore.ts), so
+ * an empty set is allowed.
  *
  * `activePlanIds` are the ids of the listing's plans that are on offer now.
  * When it is given, an id that is not among them is refused: a plan of

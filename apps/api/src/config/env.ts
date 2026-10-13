@@ -426,6 +426,12 @@ const envSchema = z.object({
   // Set to 0 to disable.
   SUBSCRIPTION_RENEWAL_INTERVAL_MS: z.coerce.number().int().min(0).default(3_600_000),
 
+  // The sweeper for charges per use: gives back to the buyer every charge
+  // for one use that a crash left pending for more than 15 minutes. The
+  // creator is credited nothing for it.
+  // Set to 0 to disable.
+  PENDING_USE_SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(60_000),
+
   // Public /status page: the organisation whose uptime monitors are public
   // (the operator's own monitors of the platform's endpoints). Unset = the
   // page says there are no public monitors yet.

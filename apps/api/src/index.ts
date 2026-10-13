@@ -159,6 +159,8 @@ import {
   stopJobSweeperQueue,
   startTrialChargeReapQueue,
   stopTrialChargeReapQueue,
+  startPendingUseSweepQueue,
+  stopPendingUseSweepQueue,
   startUptimeProberQueue,
   stopUptimeProberQueue,
   startCustomDomainCheckQueue,
@@ -609,6 +611,7 @@ async function main() {
   await startJobRunnerQueue();
   await startJobSweeperQueue();
   await startTrialChargeReapQueue();
+  await startPendingUseSweepQueue();
   await startUptimeProberQueue();
   await startCustomDomainCheckQueue();
   await customDomainEdge.start();
@@ -669,6 +672,7 @@ async function main() {
       await stopJobRunnerQueue();
       await stopJobSweeperQueue();
       await stopTrialChargeReapQueue();
+      await stopPendingUseSweepQueue();
       await stopUptimeProberQueue();
       await stopCustomDomainCheckQueue();
       await stopAlertEvaluatorQueue();

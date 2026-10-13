@@ -48,6 +48,7 @@ export {
 export { startJobRunnerQueue, stopJobRunnerQueue } from "./job-runner.queue.js";
 export { startJobSweeperQueue, stopJobSweeperQueue } from "./job-sweeper.queue.js";
 export { startTrialChargeReapQueue, stopTrialChargeReapQueue } from "./trial-charge-reap.queue.js";
+export { startPendingUseSweepQueue, stopPendingUseSweepQueue } from "./pending-use-sweep.queue.js";
 export {
   startUptimeProberQueue,
   stopUptimeProberQueue,

@@ -54,12 +54,24 @@
  *           new plan's terms, starts a fresh 30 days, sets the count to zero
  *           and carries the uses that were left, once. The new plan's full
  *           price is charged in the same transaction. Nothing is refunded.
+ *   free trial
+ *           a plan row whose agreed price is nothing (a listing's free
+ *           trial, started once by a buyer's organization:
+ *           startTrialSubscription). Nothing is ever charged for it: not at
+ *           its start, which writes no revenue row, no credit row and no
+ *           earnings, and not at its end, where it is closed and never
+ *           renewed. It has no days of grace. `trialUsedAt` is set by that
+ *           start and by nothing else, and no writer here clears it. A paid
+ *           plan can be started over a running trial (startPlanSubscription):
+ *           the row takes the paid plan's terms and nothing of the trial. A
+ *           trial row cannot be moved up (judgePlanMove).
  *
  * Access for a monthly install = subscription active or past_due within
  * grace (see subscriptionGrantsAccess), enforced by resolveInstallBilling.
  *
  * Pure over an injected transaction surface.
  */
+import { onTrialPlan, TRIAL_DAYS } from "./listingPlans.js";
 import { splitRevenue } from "./marketplaceMetering.js";
 import { splitCreatorRevenue, type ContributorSplitTx } from "./contributorSplits.js";
 import { moveEarnings, type EarningsLedgerTx } from "./earningsLedger.js";
@@ -68,6 +80,7 @@ import {
   SUBSCRIPTION_PERIOD_DAYS,
   subscriptionGrantsAccess,
 } from "./subscriptionAccess.js";
+import { TrialAlreadyUsedError } from "./trialStart.js";
 
 export { PAST_DUE_GRACE_DAYS, SUBSCRIPTION_PERIOD_DAYS, subscriptionGrantsAccess };
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -126,6 +139,11 @@ export interface SubscriptionRow {
   usedInPeriod?: number;
   /** Uses carried into the current period by an earlier move. Read by a move to another plan. */
   carriedUses?: number;
+  /**
+   * When this buyer started the listing's free trial (AgentSubscription.trialUsedAt).
+   * Null = never. Set once by startTrialSubscription and never cleared.
+   */
+  trialUsedAt?: Date | null;
 }
 
 /** Whether a row is on a plan: it carries a count of included uses. */
@@ -297,6 +315,13 @@ async function chargePeriod(
  * grace after its period. The buyer is told to choose again the moment that
  * period ends, and the renewal worker may not have closed the row yet, so
  * the start they then make must not be refused as "already paid up".
+ *
+ * A `planStart` over a free trial is the one start that claims a row which
+ * still gives uses: a buyer may leave a trial for a paid plan at any time.
+ * Its claim names the trial row as it was read (its period, its plan and its
+ * price of nothing), so whatever else moved the row in between makes the
+ * claim miss before anything is charged: the trial's end, a stop, or another
+ * start of a plan, which would otherwise be charged a second time.
  */
 async function claimForStart(
   tx: SubscriptionTx,
@@ -318,10 +343,12 @@ async function claimForStart(
     const { plan: itsPlan, ...row } = found ?? { plan: null };
     current = found ? (row as SubscriptionRow) : null;
     const planEnded = current !== null && onPlan(current) && itsPlan?.status === "retired";
-    paidUp = subscriptionGrantsAccess(
-      current && { ...current, cancelAtPeriodEnd: current.cancelAtPeriodEnd || planEnded },
-      now,
-    );
+    paidUp =
+      !onTrialPlan(current) &&
+      subscriptionGrantsAccess(
+        current && { ...current, cancelAtPeriodEnd: current.cancelAtPeriodEnd || planEnded },
+        now,
+      );
   } else {
     current = await tx.agentSubscription.findUnique({ where: { listingId_subscriberId: key } });
     paidUp = subscriptionGrantsAccess(current, now);
@@ -339,7 +366,22 @@ async function claimForStart(
   // access always leaves that state when it is claimed (the status or
   // the period end changes), so a second claim on the same read misses.
   const claimed = await tx.agentSubscription.updateMany({
-    where: { id: current.id, status: current.status, currentPeriodEnd: current.currentPeriodEnd },
+    where: {
+      id: current.id,
+      status: current.status,
+      currentPeriodEnd: current.currentPeriodEnd,
+      // A plan started over a free trial: the trial row as it was read. A
+      // running trial does not leave its status or its period's end when
+      // nothing else claims it, so these are what make a second claim miss.
+      ...(planStart && onTrialPlan(current)
+        ? {
+            currentPeriodStart: current.currentPeriodStart,
+            planId: current.planId ?? null,
+            includedUses: current.includedUses,
+            priceCents: 0n,
+          }
+        : {}),
+    },
     data,
   });
   if (claimed.count !== 1) throw new SubscriptionClaimLostError();
@@ -485,24 +527,7 @@ export async function startPlanSubscription(
   const now = args.now ?? new Date();
   const end = new Date(now.getTime() + SUBSCRIPTION_PERIOD_DAYS * DAY_MS);
 
-  let licence: { id: string };
-  if (args.licence) {
-    const written = await tx.agentInstall.update({
-      where: { id: args.licence.id },
-      data:
-        args.licence.kind === "use"
-          ? { kind: "use" }
-          : { kind: "use", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
-    });
-    if (written.status !== "active") {
-      throw new Error("A plan was started on a licence that is not active: nothing was charged");
-    }
-    licence = written;
-  } else {
-    licence = await tx.agentInstall.create({
-      data: { listingId: args.listing.id, buyerId: args.buyerId, clonedAgentId: null, kind: "use", status: "active" },
-    });
-  }
+  const licence = await writePlanLicence(tx, args);
 
   const subscription = await claimForStart(
     tx,
@@ -541,10 +566,151 @@ export async function startPlanSubscription(
   return { subscription, revenueId, licenceId: licence.id };
 }
 
+/**
+ * The licence of a plan start or a free trial start: for use, with no
+ * agreement to a price per use written by it (see startPlanSubscription for
+ * why, and for what happens to a licence that was for a copy). Throws when
+ * the licence is not active once written: nothing has been claimed then.
+ *
+ * `onlyARunningAgreement` is a free trial's: a licence for use keeps its
+ * agreement to a price per use only if it was active when it was read. A
+ * buyer who stopped using the agent, or whose licence was stopped, is paying
+ * for nothing, and a trial that charges nothing must not bring their old
+ * price back to life: when it ends they would be charged per use without
+ * having chosen anything. Their agreement is cleared, and after the trial
+ * they choose. A status that was not passed is read as not active.
+ */
+async function writePlanLicence(
+  tx: PlanStartTx,
+  args: {
+    listing: Pick<ListingForBilling, "id">;
+    buyerId: string;
+    licence: { id: string; kind: string; status?: string } | null;
+  },
+  onlyARunningAgreement = false,
+): Promise<{ id: string }> {
+  if (!args.licence) {
+    return tx.agentInstall.create({
+      data: { listingId: args.listing.id, buyerId: args.buyerId, clonedAgentId: null, kind: "use", status: "active" },
+    });
+  }
+  const keepsAgreement =
+    args.licence.kind === "use" && (!onlyARunningAgreement || args.licence.status === "active");
+  const written = await tx.agentInstall.update({
+    where: { id: args.licence.id },
+    data: keepsAgreement
+      ? { kind: "use" }
+      : { kind: "use", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+  });
+  if (written.status !== "active") {
+    throw new Error("A plan was started on a licence that is not active: nothing was charged");
+  }
+  return written;
+}
+
+/**
+ * Start a listing's free trial for a buyer's organization: write their
+ * licence as a plan start does (for use, with no agreement to a price per
+ * use), and claim their subscription row with the trial's uses, a count of
+ * zero and TRIAL_DAYS days. Run inside the start's transaction, after the
+ * licence row was claimed. NOTHING is charged and no money row is written:
+ * no revenue, no credit transaction, no earnings.
+ *
+ * ONE claim decides it. The row is read here; a row that says a trial was
+ * started before (`trialUsedAt` is anything but null) throws
+ * TrialAlreadyUsedError, and a row that still gives access (a plan, a paid
+ * month, a trial that runs) throws SubscriptionClaimLostError. Otherwise the
+ * row is created, where the unique (listingId, subscriberId) stops a second
+ * creator, or moved off the exact state that was read by a statement that
+ * also requires `trialUsedAt` to still be null. So of two starts at the same
+ * moment one starts and the other writes nothing, and there is never a trial
+ * after one was used.
+ *
+ * What the row holds makes the code that exists end it: `cancelAtPeriodEnd`
+ * is true, so it has no days of grace (subscriptionGrantsAccess), and a
+ * price of nothing marks it as a trial (onTrialPlan), which the renewal
+ * closes and never charges. `trialUsedAt` is written here and by nothing
+ * else, and nothing clears it.
+ */
+export async function startTrialSubscription(
+  tx: PlanStartTx,
+  args: {
+    listing: Pick<ListingForBilling, "id">;
+    /** The listing's trial as the buyer was shown it: its id and its uses. */
+    trial: { planId: string; includedUses: number };
+    buyerId: string;
+    /**
+     * The buyer's licence row for the listing, already claimed, with its
+     * kind and its status as read BEFORE the claim; null when they have
+     * none yet.
+     */
+    licence: { id: string; kind: string; status: string } | null;
+    now?: Date;
+  },
+): Promise<{ subscription: SubscriptionRow; licenceId: string }> {
+  const { trial } = args;
+  if (!Number.isInteger(trial.includedUses) || trial.includedUses < 1) {
+    throw new Error("This free trial has no included uses");
+  }
+  const now = args.now ?? new Date();
+  const key = { listingId: args.listing.id, subscriberId: args.buyerId };
+
+  const licence = await writePlanLicence(tx, args, true);
+
+  const found = await tx.agentSubscription.findUnique({
+    where: { listingId_subscriberId: key },
+    include: { plan: { select: { status: true } } },
+  });
+  const { plan: itsPlan, ...row } = found ?? { plan: null };
+  const current = found ? (row as SubscriptionRow) : null;
+  // Only a row that says "never" has never had a trial: a row read without
+  // the column is refused with the rest.
+  if (current !== null && current.trialUsedAt !== null) throw new TrialAlreadyUsedError();
+  // A plan or a month that still gives access, read as a plan start reads it.
+  const planEnded = current !== null && onPlan(current) && itsPlan?.status === "retired";
+  if (
+    subscriptionGrantsAccess(current && { ...current, cancelAtPeriodEnd: current.cancelAtPeriodEnd || planEnded }, now)
+  ) {
+    throw new SubscriptionClaimLostError("You already have a paid-up subscription to this agent.");
+  }
+
+  const data = {
+    status: "active",
+    currentPeriodStart: now,
+    currentPeriodEnd: new Date(now.getTime() + TRIAL_DAYS * DAY_MS),
+    // Never renewed, never charged, no days of grace.
+    cancelAtPeriodEnd: true,
+    cancelledAt: null,
+    priceCents: 0n,
+    endReason: null,
+    lastRenewalAttemptAt: null,
+    planId: trial.planId,
+    includedUses: trial.includedUses,
+    // A trial always stops when its uses are gone.
+    extraUsePriceCents: null,
+    usedInPeriod: 0,
+    carriedUses: 0,
+    warnedLevel: 0,
+    trialUsedAt: now,
+  };
+  if (!current) {
+    const created = await tx.agentSubscription.create({ data: { ...key, ...data } });
+    return { subscription: created, licenceId: licence.id };
+  }
+  const claimed = await tx.agentSubscription.updateMany({
+    where: { id: current.id, status: current.status, currentPeriodEnd: current.currentPeriodEnd, trialUsedAt: null },
+    data,
+  });
+  if (claimed.count !== 1) throw new SubscriptionClaimLostError();
+  return { subscription: { ...current, ...data }, licenceId: licence.id };
+}
+
 /** Why a move to another plan is refused. Nothing was claimed or charged. */
 export type PlanMoveRefusal =
   /** No open subscription with a count of uses: nothing to move from. */
   | "not_on_plan"
+  /** The row is a free trial: a paid plan is started over it, and nothing of it is carried. */
+  | "on_trial"
   /** The plan asked for is the one the row is on. */
   | "same_plan"
   /** The plan asked for does not cost more than what the buyer agreed to pay for theirs. */
@@ -566,7 +732,8 @@ export class PlanMoveRefusedError extends Error {
  * Who can move: a row that still gives uses (the period paid for, or the
  * days of grace of a renewal being retried; a plan its creator ended, or
  * one set not to renew, has no grace, as at a use) and that is on a plan.
- * A month with no count is not on a plan and cannot move. The plan asked
+ * A month with no count is not on a plan and cannot move. Nor can a free
+ * trial: it carries nothing, and a paid plan is started over it. The plan asked
  * for must be another one, and must cost more for its 30 days than the
  * price this buyer agreed to: a move to a smaller plan would be a refund
  * by another name.
@@ -594,6 +761,9 @@ export function judgePlanMove(
   ) {
     return { ok: false, refusal: "not_on_plan" };
   }
+  // A free trial has no uses that were paid for, so none are carried: the
+  // buyer starts the plan they want, at any time.
+  if (onTrialPlan(current)) return { ok: false, refusal: "on_trial" };
   if (current.planId === target.planId) return { ok: false, refusal: "same_plan" };
   if (current.priceCents == null || target.priceCents <= current.priceCents) {
     return { ok: false, refusal: "not_bigger" };
@@ -816,6 +986,20 @@ export async function renewSubscription(
       data: { status: "suspended" },
     });
     return { kind: "cancelled" };
+  }
+
+  // A free trial whose days are over. It is closed whatever its flag says and
+  // never charged: a trial does not renew. The licence is left as it is, as
+  // for a plan its creator ended: a buyer who agreed to a price per use
+  // themselves during the trial goes on at that price, and everybody else is
+  // asked to choose (services/useAccess.ts). The branch below would suspend
+  // the licence, which stops even a buyer who agreed to pay per use.
+  if (plan && onTrialPlan(sub)) {
+    const closed = await tx.agentSubscription.updateMany({
+      where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] }, priceCents: 0n },
+      data: { status: "cancelled", cancelledAt: now, endReason: "plan_ended" },
+    });
+    return closed.count === 1 ? { kind: "cancelled" } : { kind: "lost_race" };
   }
 
   // The buyer cancelled: close at period end. The CAS includes the flag,

@@ -20,6 +20,14 @@
  * (services/marketplaceSubscriptions.ts) and by nothing else: when the plan
  * ends the buyer is charged per use only if they agreed to that themselves.
  *
+ * Two things about a listing's free trial are here too. A `shown` plan that
+ * is the listing's trial is a trial start: it is handed to
+ * services/trialStart.ts with the reads and the one write it needs, and
+ * nothing is charged (TrialAlreadyUsedError and TrialNeedsCreditsError are
+ * its own refusals). And a paid plan can be started over a trial that is
+ * still running, at any time: that is the normal start, the row takes the
+ * paid plan's terms and a fresh 30 days, and nothing of the trial is carried.
+ *
  * Throws UseStartError (404 listing_not_found, 409 own_agent, sells_copies,
  * not_offered, copy_subscription_active, listing_paused, 503
  * service_unavailable), PlanTermsChangedError (409 pricing_changed, with the
@@ -31,7 +39,7 @@ import { prisma, type Prisma } from "@wheelsai/db";
 
 import { createLogger } from "../utils/logger.js";
 import { listingPausedNow, reconcileListingPauses } from "./listingPause.js";
-import { samePlanTerms, type PlanTerms } from "./listingPlans.js";
+import { onTrialPlan, samePlanTerms, type PlanTerms } from "./listingPlans.js";
 import {
   afterLicenceStarted,
   claimLicence,
@@ -47,10 +55,28 @@ import {
 } from "./marketplace.js";
 import {
   startPlanSubscription,
+  startTrialSubscription,
   SubscriptionClaimLostError,
   type PlanStartTx,
 } from "./marketplaceSubscriptions.js";
-import { offersPlans, planOfferOf, readPlanOffers, type PlanOffer, type PlanOfferDb } from "./planOffers.js";
+import {
+  offersPlans,
+  planOfferOf,
+  readOffers,
+  readPlanOffers,
+  trialOfferOf,
+  type OffersDb,
+  type PlanOffer,
+  type PlanOfferDb,
+  type TrialOffer,
+} from "./planOffers.js";
+import {
+  hasAddedCredits,
+  startTrial,
+  TrialAlreadyUsedError,
+  TrialNeedsCreditsError,
+  type TrialPlanRow,
+} from "./trialStart.js";
 import {
   COPY_MONTH_BLOCKS_USE,
   copyMonthBlockingUse,
@@ -86,6 +112,12 @@ export class PlanTermsChangedError extends Error {
     readonly pricing: ListingPricingTerms,
     /** The plans on offer now. Empty when the listing offers none. */
     readonly plans: PlanOffer[],
+    /**
+     * Only on a refused start of a free trial: the trial on offer now, or
+     * null when the listing offers none. Left out for a paid plan, whose
+     * answer is what it was.
+     */
+    readonly trial?: TrialOffer | null,
   ) {
     super(PLAN_START_MESSAGES.termsChanged(listingTitle));
     this.name = "PlanTermsChangedError";
@@ -120,14 +152,29 @@ interface PricedListing {
 /** What a start that found other terms answers with: the listing's pricing and its plans, as they are. */
 export async function termsChanged(db: PlanOfferDb, listingId: string, listing: PricedListing): Promise<PlanTermsChangedError> {
   const plans = offersPlans(listing) ? (await readPlanOffers(db, listingId)).map(planOfferOf) : [];
+  return new PlanTermsChangedError(listing.title, pricingOf(listing), plans);
+}
+
+function pricingOf(listing: PricedListing): ListingPricingTerms {
+  return {
+    pricingModel: listing.pricingModel,
+    pricePerRequestCents: listing.pricePerRequestCents !== null ? Number(listing.pricePerRequestCents) : null,
+    monthlyPriceCents: listing.monthlyPriceCents !== null ? Number(listing.monthlyPriceCents) : null,
+  };
+}
+
+/**
+ * The same for a start of the free trial: the paid plans, and beside them
+ * the trial as it is offered now (null when the creator ended it, or the
+ * listing offers no plans any more).
+ */
+async function trialTermsChanged(db: OffersDb, listingId: string, listing: PricedListing): Promise<PlanTermsChangedError> {
+  const offers = offersPlans(listing) ? await readOffers(db, listingId) : { plans: [], trial: null };
   return new PlanTermsChangedError(
     listing.title,
-    {
-      pricingModel: listing.pricingModel,
-      pricePerRequestCents: listing.pricePerRequestCents !== null ? Number(listing.pricePerRequestCents) : null,
-      monthlyPriceCents: listing.monthlyPriceCents !== null ? Number(listing.monthlyPriceCents) : null,
-    },
-    plans,
+    pricingOf(listing),
+    offers.plans.map(planOfferOf),
+    trialOfferOf(offers.trial),
   );
 }
 
@@ -182,8 +229,16 @@ export async function refuseIfItCannotAnswer(listing: PlanListing, hooks: Listin
  * plan as they are here are what the buyer is held to. Throws UseStartError
  * when the listing is no longer there to start on, and PlanTermsChangedError
  * when the plan is not what was shown.
+ *
+ * `kind` is what the caller is starting: a paid plan, or the listing's free
+ * trial. A row of the other kind is not what was shown, whatever its terms.
  */
-export async function planAsOffered(tx: Prisma.TransactionClient, listingId: string, shown: PlanTerms) {
+export async function planAsOffered(
+  tx: Prisma.TransactionClient,
+  listingId: string,
+  shown: PlanTerms,
+  kind: "paid" | "trial" = "paid",
+) {
   const fresh = await tx.agentListing.findUnique({
     where: { id: listingId },
     select: {
@@ -206,10 +261,12 @@ export async function planAsOffered(tx: Prisma.TransactionClient, listingId: str
     fresh.pricingModel !== "per_request" ||
     plan === null ||
     plan.listingId !== listingId ||
-    plan.kind !== "paid" ||
+    plan.kind !== kind ||
     !samePlanTerms(shown, plan)
   ) {
-    throw await termsChanged(tx, listingId, fresh);
+    throw kind === "trial"
+      ? await trialTermsChanged(tx, listingId, fresh)
+      : await termsChanged(tx, listingId, fresh);
   }
   return plan;
 }
@@ -248,6 +305,11 @@ export async function startPlan(
   // A plan of another listing, one that was ended and one that does not
   // exist are the same case: not a plan this listing offers.
   const planNow = await prisma.listingPlan.findUnique({ where: { id: shown.id } });
+  // The plan that was sent is this listing's free trial: a trial start,
+  // which charges nothing and has its own rules about who may.
+  if (planNow !== null && planNow.listingId === listingId && planNow.kind === "trial") {
+    return startListingTrial(listing, buyerId, shown, planNow, hooks);
+  }
   const offered =
     listing.pricingModel === "per_request" &&
     planNow !== null &&
@@ -269,6 +331,8 @@ export async function startPlan(
           cancelAtPeriodEnd: true,
           endReason: true,
           includedUses: true,
+          // With the count, what says the row is a free trial.
+          priceCents: true,
           plan: { select: { status: true } },
         },
       })
@@ -307,7 +371,10 @@ export async function startPlan(
     },
     now,
   );
-  if (access === "subscribed") throw new AlreadyOnPlanError();
+  // A free trial that is still running is the one exception: a paid plan is
+  // started over it at any time. The claim names the trial row as it was
+  // read (startPlanSubscription), so this is not a way around it.
+  if (access === "subscribed" && !onTrialPlan(existingSub)) throw new AlreadyOnPlanError();
 
   await refuseIfItCannotAnswer(listing, hooks);
 
@@ -351,6 +418,117 @@ export async function startPlan(
   await afterLicenceStarted(listingId, listing.publisherId, "a start of a plan");
 
   logger.info({ listingId, buyerId, subscription: subscriptionId, plan: shown.id }, "Started a plan on an agent from the marketplace");
+
+  return { ...(await readUseState(listing, buyerId)), created: true };
+}
+
+/**
+ * Start the listing's free trial `shown` for the buyer's organization
+ * (services/trialStart.ts decides who may; this hands it its reads and its
+ * one write). The caller has refused what any start refuses about the
+ * listing. Nothing is charged, whatever happens.
+ *
+ * The write is one transaction, as a plan start's is: the trial compared
+ * again as it is offered there, the licence claimed, then
+ * startTrialSubscription, which writes the licence with no agreement to a
+ * price per use and claims the buyer's row once, and the listing's counters.
+ */
+async function startListingTrial(
+  listing: PlanListing,
+  buyerId: string,
+  shown: PlanTerms,
+  trial: TrialPlanRow,
+  hooks: ListingPauseHooks,
+): Promise<UseState & { created: true }> {
+  const listingId = listing.id;
+  const result = await startTrial(
+    { listing, trial, shown },
+    {
+      loadLicence: async () => {
+        const licence = await prisma.agentInstall.findUnique({
+          where: { listingId_buyerId: { listingId, buyerId } },
+        });
+        // Read whether or not there is a licence row: a row that says a
+        // trial was started before must be found.
+        const subRow = await prisma.agentSubscription.findUnique({
+          where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
+          select: {
+            status: true,
+            currentPeriodEnd: true,
+            cancelAtPeriodEnd: true,
+            endReason: true,
+            includedUses: true,
+            trialUsedAt: true,
+            plan: { select: { status: true } },
+          },
+        });
+        return { licence, sub: subRow && { ...subRow, planRetired: subRow.plan?.status === "retired" } };
+      },
+      addedCredits: () => hasAddedCredits(prisma, buyerId),
+      termsChanged: () => trialTermsChanged(prisma, listingId, listing),
+      refuseIfItCannotAnswer: () => refuseIfItCannotAnswer(listing, hooks),
+      claim: ({ licence, now }) =>
+        prisma
+          .$transaction(async (tx) => {
+            const plan = await planAsOffered(tx, listingId, shown, "trial");
+            await claimLicence(tx, licence);
+            const started = await startTrialSubscription(tx as unknown as PlanStartTx, {
+              listing: { id: listing.id },
+              trial: { planId: plan.id, includedUses: plan.includedUses },
+              buyerId,
+              // As it was read before the start: a licence that was for a
+              // copy has its agreement cleared there, and so has one for
+              // use that was not running (stopped by the buyer, or
+              // suspended); a running one for use keeps its own.
+              licence: licence ? { id: licence.id, kind: licence.kind, status: licence.status } : null,
+              now,
+            });
+            await countLicence(tx, { listingId, previousStatus: licence?.status });
+            return started.subscription.id;
+          })
+          .catch((err) => {
+            // The row says a trial was started before: another start of it
+            // got there first, or the read above was a moment old.
+            if (err instanceof TrialAlreadyUsedError) throw err;
+            // The buyer's row gives access now, or another writer took it
+            // first. This transaction rolled back whole.
+            if (err instanceof SubscriptionClaimLostError) throw new AlreadyOnPlanError();
+            if (isUniqueViolation(err) || err instanceof LicenceClaimLostError) {
+              throw new SubscriptionClaimLostError(USE_START_MESSAGES.claimLost);
+            }
+            throw err;
+          }),
+      logger,
+    },
+  );
+
+  if (!result.started) {
+    const { refusal } = result;
+    switch (refusal.reason) {
+      case "trial_already_used":
+        throw new TrialAlreadyUsedError();
+      case "trial_needs_credits":
+        throw new TrialNeedsCreditsError();
+      case "already_on_plan":
+        throw new AlreadyOnPlanError();
+      case "copy_subscription_active":
+        throw new UseStartError(
+          409,
+          COPY_MONTH_BLOCKS_USE,
+          copyMonthBlockingUseMessage(refusal.until, new Date()),
+          refusal.until,
+        );
+      case "service_unavailable":
+        throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+    }
+  }
+
+  await afterLicenceStarted(listingId, listing.publisherId, "a start of a free trial");
+
+  logger.info(
+    { listingId, buyerId, subscription: result.subscriptionId, trial: shown.id },
+    "Started a free trial of an agent from the marketplace",
+  );
 
   return { ...(await readUseState(listing, buyerId)), created: true };
 }

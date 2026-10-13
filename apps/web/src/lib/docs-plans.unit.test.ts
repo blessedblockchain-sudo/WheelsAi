@@ -63,7 +63,8 @@ test("the refusals of a plan are in the reference with the status the API answer
   assert.match(paidUse, /status: 429,\s+code: "plan_used_up"/);
   const startAndMove = apiSource("routes/marketplace.ts");
   assert.match(startAndMove, /status\(400\)\.send\(\{ error: "invalid_plan_move"/);
-  assert.match(startAndMove, /error instanceof PlanMoveError \|\|[\s\S]{0,120}reply\.status\(409\)/);
+  // A refused move is one of the refusals that answer 409, however many stand beside it in that list.
+  assert.match(startAndMove, /error instanceof PlanMoveError \|\|[\s\S]{0,400}?reply\.status\(409\)/);
 });
 
 test("in OpenAI's shape a used-up plan keeps its own code, and a folded code is told as reason", () => {

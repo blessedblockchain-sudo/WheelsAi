@@ -39,6 +39,7 @@ import { InsufficientCreditsError, SubscriptionClaimLostError } from "../service
 import { movePlan, PLAN_MOVE_MESSAGES, PlanMoveError } from "../services/planMove.js";
 import { AlreadyOnPlanError, PLAN_START_MESSAGES, PlanTermsChangedError, startPlan } from "../services/planStart.js";
 import { TokenRequiredError } from "../services/tokenAccess.js";
+import { TrialAlreadyUsedError, TrialNeedsCreditsError } from "../services/trialStart.js";
 
 const logger = createLogger("marketplace-routes");
 
@@ -529,12 +530,22 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
    * as they are when any term differs, 409 already_on_plan while a plan or
    * a month still runs. Starting a plan agrees to no price per use.
    *
+   * A `plan` that is the listing's free trial ({ id, priceCents: 0,
+   * includedUses, extraUsePriceCents: null }, the trial as shown) starts the
+   * trial instead: 7 days, its uses, nothing charged, once per organization
+   * and listing. 409 trial_already_used, 409 trial_needs_credits (credits
+   * were never added to the account), 409 already_on_plan, and 409
+   * pricing_changed with `trial` beside the plans when its terms differ.
+   * Over a trial that is running, a paid plan is started by the same request
+   * as any other start.
+   *
    * With `plan` and `switchNow: true` it moves a buyer who is on a plan up
    * to that bigger plan now: its full price is charged, a fresh 30 days
    * starts and the uses that were left are carried into it once. 409
    * not_on_plan, same_plan, not_a_bigger_plan; 409 pricing_changed as at a
-   * start; 409 subscription_claim_lost when the row changed first. Nothing
-   * is charged on any of them.
+   * start; 409 subscription_claim_lost when the row changed first; 409
+   * trial_cannot_move for a buyer on a free trial. Nothing is charged on any
+   * of them.
    */
   app.post(
     "/listings/:id/use",
@@ -599,15 +610,20 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
               message: error.message,
               pricing: error.pricing,
               plans: error.plans,
+              // Only when a free trial was asked for: the trial on offer now.
+              ...(error.trial !== undefined && { trial: error.trial }),
             });
           }
           // A plan or a month still runs, the buyer's row does not allow the
-          // move, or another request for this buyer got there first. Nothing
-          // was charged by this one.
+          // move, another request for this buyer got there first, or a free
+          // trial cannot be started: one was used before, or credits were
+          // never added. Nothing was charged by this one.
           if (
             error instanceof AlreadyOnPlanError ||
             error instanceof PlanMoveError ||
-            error instanceof SubscriptionClaimLostError
+            error instanceof SubscriptionClaimLostError ||
+            error instanceof TrialAlreadyUsedError ||
+            error instanceof TrialNeedsCreditsError
           ) {
             return reply.status(409).send({ error: error.code, message: error.message });
           }

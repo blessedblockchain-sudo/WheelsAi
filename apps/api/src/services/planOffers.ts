@@ -9,12 +9,17 @@
  * same wherever it is told and its terms can be sent back as they were
  * shown.
  *
+ * Such a listing can also offer one free trial. It is not one of the plans
+ * and is never in their list: it is told beside them, by itself, as its id,
+ * its uses and its days, wherever the plans are told one listing at a time.
+ *
  * Never told: a plan that was ended, how many people are on a plan, or
  * anything of the organization that sells it.
  *
  * Pure apart from the one read, which takes whatever client or transaction
  * the caller holds.
  */
+import { TRIAL_DAYS } from "./listingPlans.js";
 
 /** A plan on offer, as the database holds it. Cents are bigint. */
 export interface PlanOfferRow {
@@ -43,6 +48,42 @@ export const PLAN_OFFER_COLUMNS = {
   includedUses: true,
   extraUsePriceCents: true,
 } as const;
+
+/** A free trial on offer, as the database holds it. */
+export interface TrialOfferRow {
+  id: string;
+  includedUses: number;
+}
+
+/** The same as a buyer is told it. A trial costs nothing, so no price is among its fields. */
+export interface TrialOffer {
+  id: string;
+  includedUses: number;
+  /** How many days it lasts from its start. */
+  days: number;
+}
+
+export const TRIAL_OFFER_COLUMNS = { id: true, includedUses: true } as const;
+
+export interface TrialOfferDb {
+  listingPlan: {
+    findFirst(args: {
+      where: { listingId: string; status: "active"; kind: "trial" };
+      select: typeof TRIAL_OFFER_COLUMNS;
+    }): Promise<TrialOfferRow | null>;
+  };
+}
+
+/** The read of a listing's paid plans and its free trial together: each row says which it is. */
+export interface OffersDb {
+  listingPlan: {
+    findMany(args: {
+      where: { listingId: string; status: "active"; kind: { in: ["paid", "trial"] } };
+      orderBy: { position: "asc" };
+      select: typeof PLAN_OFFER_COLUMNS & { kind: true };
+    }): Promise<Array<PlanOfferRow & { kind: string }>>;
+  };
+}
 
 export interface PlanOfferDb {
   listingPlan: {
@@ -77,6 +118,44 @@ export function readPlanOffers(db: PlanOfferDb, listingId: string): Promise<Plan
     orderBy: { position: "asc" },
     select: PLAN_OFFER_COLUMNS,
   });
+}
+
+/** The listing's free trial on offer, or null when it offers none. Asked only of a listing that offers plans. */
+export function readTrialOffer(db: TrialOfferDb, listingId: string): Promise<TrialOfferRow | null> {
+  return db.listingPlan.findFirst({
+    where: { listingId, status: "active", kind: "trial" },
+    select: TRIAL_OFFER_COLUMNS,
+  });
+}
+
+/**
+ * The listing's paid plans on offer, in the order a buyer sees them, and its
+ * free trial, in ONE query. The paid plans are exactly what readPlanOffers
+ * answers; the trial is never among them.
+ */
+export async function readOffers(
+  db: OffersDb,
+  listingId: string,
+): Promise<{ plans: PlanOfferRow[]; trial: TrialOfferRow | null }> {
+  const rows = await db.listingPlan.findMany({
+    where: { listingId, status: "active", kind: { in: ["paid", "trial"] } },
+    orderBy: { position: "asc" },
+    select: { ...PLAN_OFFER_COLUMNS, kind: true },
+  });
+  const trial = rows.find((row) => row.kind === "trial") ?? null;
+  return {
+    // Field by field: the kind that told them apart stays here.
+    plans: rows
+      .filter((row) => row.kind === "paid")
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        priceCents: row.priceCents,
+        includedUses: row.includedUses,
+        extraUsePriceCents: row.extraUsePriceCents,
+      })),
+    trial: trial && { id: trial.id, includedUses: trial.includedUses },
+  };
 }
 
 /**
@@ -119,4 +198,10 @@ export function planOfferOf(row: PlanOfferRow): PlanOffer {
     includedUses: row.includedUses,
     extraUsePriceCents: row.extraUsePriceCents === null ? null : Number(row.extraUsePriceCents),
   };
+}
+
+/** A free trial as a buyer is told it: its id, its uses and its days. Null stays null. */
+export function trialOfferOf(row: TrialOfferRow | null | undefined): TrialOffer | null {
+  if (!row) return null;
+  return { id: row.id, includedUses: row.includedUses, days: TRIAL_DAYS };
 }

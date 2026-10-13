@@ -22,8 +22,12 @@
  * A move writes nothing on the licence. Like a start, it is not an
  * agreement to the listing's price per use.
  *
+ * A buyer on a free trial does not move: a trial carries nothing, and the
+ * plan they want is started over it by the normal start. Asked to move, they
+ * are told so (409 trial_cannot_move) and nothing is charged.
+ *
  * Throws UseStartError, PlanMoveError (409 not_on_plan, same_plan,
- * not_a_bigger_plan), PlanTermsChangedError (409 pricing_changed, with the
+ * not_a_bigger_plan, trial_cannot_move), PlanTermsChangedError (409 pricing_changed, with the
  * plans as they are), InsufficientCreditsError, and SubscriptionClaimLostError
  * when a renewal, a use or another move changed the row first. Nothing was
  * charged and nothing was changed on any of them.
@@ -57,18 +61,21 @@ export const PLAN_MOVE_MESSAGES = {
   notOnPlan: "You are not on a plan. Start one first.",
   samePlan: "You are already on this plan. Nothing was charged.",
   notBigger: "To move to a smaller plan, cancel the renewal and choose it when your plan ends.",
+  /** A free trial is not moved from: the plan is started over it, by the normal start. */
+  onTrial: "You are on a free trial. Start the plan you want: nothing of the trial is carried over.",
 } as const;
 
 const REFUSALS: Record<PlanMoveRefusal, { code: PlanMoveError["code"]; message: string }> = {
   not_on_plan: { code: "not_on_plan", message: PLAN_MOVE_MESSAGES.notOnPlan },
   same_plan: { code: "same_plan", message: PLAN_MOVE_MESSAGES.samePlan },
   not_bigger: { code: "not_a_bigger_plan", message: PLAN_MOVE_MESSAGES.notBigger },
+  on_trial: { code: "trial_cannot_move", message: PLAN_MOVE_MESSAGES.onTrial },
 };
 
 /** The buyer's own row does not allow this move. Nothing was charged or changed. */
 export class PlanMoveError extends Error {
   constructor(
-    readonly code: "not_on_plan" | "same_plan" | "not_a_bigger_plan",
+    readonly code: "not_on_plan" | "same_plan" | "not_a_bigger_plan" | "trial_cannot_move",
     message: string,
   ) {
     super(message);

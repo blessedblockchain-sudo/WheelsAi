@@ -9,6 +9,9 @@
  *                             time (limit, cursor, filter)
  *   GET /transactions/export  the ledger of a range of days as a CSV file,
  *                             for every plan
+ *   GET /marketplace-usage    the Usage page: the one balance, then what the
+ *                             organization has used and spent on each listing
+ *                             it pays to use (services/buyerUsage.ts)
  *
  * Every route reads the caller's own organization (a session or an API key
  * of it) and nothing else. No route here writes.
@@ -31,6 +34,7 @@ import {
   type BillingLedgerDeps,
   type BillingLedgerRefusalCode,
 } from "../services/billingLedger.js";
+import { readBuyerUsage, type BuyerUsageDeps } from "../services/buyerUsage.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("billing-ledger");
@@ -39,6 +43,8 @@ type Guard = (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 
 export interface BillingLedgerRouteDeps {
   ledger: BillingLedgerDeps;
+  /** The reads of GET /marketplace-usage. Without them that route is not mounted. */
+  usage?: BuyerUsageDeps;
   /** Tests pass a stand-in; production uses requireAuth. */
   guards?: { signedIn: Guard[] };
 }
@@ -118,5 +124,15 @@ export function createBillingLedgerRoutes(deps: BillingLedgerRouteDeps): Fastify
           .send(result.csv);
       }),
     );
+
+    // A read like the others: requireAuth does not count a GET as an API call.
+    const { usage } = deps;
+    if (usage) {
+      app.get(
+        "/marketplace-usage",
+        { preHandler: signedIn },
+        guarded("marketplace-usage", (orgId) => readBuyerUsage(usage, orgId)),
+      );
+    }
   };
 }

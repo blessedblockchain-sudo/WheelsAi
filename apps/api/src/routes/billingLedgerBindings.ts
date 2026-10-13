@@ -6,8 +6,9 @@
 import type { FastifyPluginAsync } from "fastify";
 
 import { buildBillingLedgerDeps } from "../services/buildBillingLedgerDeps.js";
+import { buildBuyerUsageDeps } from "../services/buildBuyerUsageDeps.js";
 import { createBillingLedgerRoutes } from "./billingLedger.js";
 
 export function createBillingLedgerRoutesProduction(): FastifyPluginAsync {
-  return createBillingLedgerRoutes({ ledger: buildBillingLedgerDeps() });
+  return createBillingLedgerRoutes({ ledger: buildBillingLedgerDeps(), usage: buildBuyerUsageDeps() });
 }

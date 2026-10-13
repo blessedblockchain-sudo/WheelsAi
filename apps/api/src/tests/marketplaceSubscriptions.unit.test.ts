@@ -9,14 +9,18 @@ import {
   markPastDueOrExpire,
   renewSubscription,
   startMonthlySubscription,
+  startPlanSubscription,
   SubscriptionClaimLostError,
   type ListingForBilling,
+  type PlanStartTx,
+  type PlanTerms,
   type SubscriptionRow,
   type SubscriptionTx,
 } from "../services/marketplaceSubscriptions.js";
 import { resolveInstallBilling } from "../services/marketplaceMetering.js";
 import { runSubscriptionRenewalTick } from "../services/runSubscriptionRenewalTick.js";
 import { installAccess, subscriptionGrantsAccess } from "../services/subscriptionAccess.js";
+import { useAccess } from "../services/useAccess.js";
 import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // Monthly marketplace subscriptions (claims ledger M1). What these pin:
@@ -61,8 +65,19 @@ interface State {
  */
 const listingMarkerNow = new Map<string, Date>();
 
+/**
+ * The status of each plan as the database holds it at this moment, which is
+ * what the relation filter of a plan's renewal claim reads (`plan: { status:
+ * "active" }`). Absent = active. A test sets one to stand for a creator who
+ * ended the plan after the row was loaded.
+ */
+const planStatusNow = new Map<string, string>();
+
 function matches(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
   return Object.entries(where).every(([k, cond]) => {
+    if (k === "plan") {
+      return (planStatusNow.get(String(row.planId)) ?? "active") === (cond as { status: string }).status;
+    }
     if (k === "listing") {
       const wanted = (cond as { pausedSince?: Date | null }).pausedSince;
       const held = listingMarkerNow.get(String(row.listingId)) ?? null;
@@ -127,12 +142,16 @@ function makeDb(opts: { balance?: bigint; noProfile?: boolean } = {}) {
       },
     },
     agentSubscription: {
-      async findUnique({ where }) {
+      async findUnique({ where, include }) {
         const key = where.listingId_subscriberId;
         const existing = [...state.subs.values()].find(
           (s) => s.listingId === key.listingId && s.subscriberId === key.subscriberId,
         );
-        return existing ? { ...existing } : null;
+        if (!existing) return null;
+        // The row's plan, only for a read that asks for it.
+        if (!include) return { ...existing };
+        const planId = existing.planId ?? null;
+        return { ...existing, plan: planId === null ? null : { status: planStatusNow.get(planId) ?? "active" } };
       },
       async create({ data }) {
         // The unique (listingId, subscriberId), as the database enforces it.
@@ -1390,4 +1409,744 @@ test("the renewal tick's loader carries the listing's pause marker, and its reco
   assert.deepEqual(await deps.reconcilePauses(), { examined: 0, paused: 0, resumed: 0, extendedSubscriptions: 0, errors: 0 });
   assert.equal(listingQueries.length, 1);
   assert.deepEqual(listingQueries[0]!.where.AND[0], {});
+});
+
+// ============================================
+// Plans: a subscription with a count of uses
+// ============================================
+
+/** The listing a plan lives on: use of the creator's agent, sold per request. */
+const PLAN_LISTING = { ...LISTING, monthlyPriceCents: 0n, pricingModel: "per_request", status: "published", sells: "use" };
+const STARTER: PlanTerms = { planId: "plan_1", priceCents: 900n, includedUses: 500, extraUsePriceCents: 4n };
+const PLAN_COLUMNS = ["planId", "includedUses", "extraUsePriceCents", "usedInPeriod", "carriedUses", "warnedLevel"] as const;
+
+type Licence = Record<string, unknown> & { id: string };
+
+/** The transaction of a plan start: the subscription's own, and the buyer's licence rows with every write to them. */
+function planStartTx(tx: SubscriptionTx, licences: Licence[], writes: Array<Record<string, unknown>>): PlanStartTx {
+  return {
+    ...tx,
+    agentInstall: {
+      ...tx.agentInstall,
+      async create({ data }) {
+        writes.push({ create: data });
+        const row = { id: `ins_${licences.length + 1}`, ...data };
+        licences.push(row);
+        return { id: row.id };
+      },
+      async update({ where, data }) {
+        writes.push({ update: data });
+        const row = licences.find((l) => l.id === where.id)!;
+        Object.assign(row, data);
+        return { id: row.id, status: String(row.status) };
+      },
+    },
+  };
+}
+
+/** A plan row as the renewal worker loads it: the licence is for use. */
+const planRow = (db: ReturnType<typeof makeDb>, more: Partial<SubscriptionRow> = {}): SubscriptionRow => ({
+  ...db.sub(),
+  licenceKind: "use",
+  ...more,
+});
+const planColumnsOf = (row: SubscriptionRow) => {
+  const r = row as unknown as Record<string, unknown>;
+  return Object.fromEntries(PLAN_COLUMNS.map((k) => [k, r[k]]));
+};
+
+/** A buyer on the Starter plan since T0, with `used` uses taken and a warning sent. */
+async function onPlan(opts: { balance?: bigint; used?: number } = {}) {
+  const db = makeDb(opts);
+  await db.inTransaction((tx) =>
+    startPlanSubscription(planStartTx(tx, [], []), { listing: PLAN_LISTING, plan: STARTER, buyerId: "org_buyer", licence: null, now: T0 }),
+  );
+  Object.assign(db.first(), { usedInPeriod: opts.used ?? 437, carriedUses: 20, warnedLevel: 85 });
+  return db;
+}
+
+test("starting a plan writes the copy of the terms, charges the full 30 days once and never writes a price per use on the licence", async () => {
+  const db = makeDb();
+  const licences: Licence[] = [];
+  const writes: Array<Record<string, unknown>> = [];
+  const started = await db.inTransaction((tx) =>
+    startPlanSubscription(planStartTx(tx, licences, writes), {
+      listing: PLAN_LISTING,
+      plan: STARTER,
+      buyerId: "org_buyer",
+      licence: null,
+      now: T0,
+    }),
+  );
+
+  const { id, ...row } = db.sub() as unknown as Record<string, unknown>;
+  assert.equal(id, started.subscription.id);
+  assert.deepEqual(row, {
+    listingId: "lst_1",
+    subscriberId: "org_buyer",
+    status: "active",
+    currentPeriodStart: T0,
+    currentPeriodEnd: at(30),
+    cancelAtPeriodEnd: false,
+    cancelledAt: null,
+    priceCents: 900n,
+    endReason: null,
+    lastRenewalAttemptAt: null,
+    planId: "plan_1",
+    includedUses: 500,
+    extraUsePriceCents: 4n,
+    usedInPeriod: 0,
+    carriedUses: 0,
+    warnedLevel: 0,
+  });
+
+  // The month's money, on the path a monthly subscription takes: the platform keeps 10%.
+  assert.equal(db.state.balances.get("org_buyer"), 9_100n);
+  assert.deepEqual(
+    db.state.revenue.map((r) => [r.type, r.status, r.grossAmountCents, r.platformFeeCents, r.creatorAmountCents, r.installId, r.subscriptionId]),
+    [["subscription", "settled", 900n, 90n, 810n, "ins_1", started.subscription.id]],
+  );
+  assert.deepEqual(
+    db.state.ledger.map((l) => [l.type, l.amountCents, l.description, l.balanceAfter]),
+    [["marketplace_subscription", -900n, "Subscription: Research Analyst", 9_100n]],
+  );
+  assert.equal(db.state.accrued.get("org_pub"), 810n);
+
+  // The licence it created: for use, and with no pricing agreed. Starting a
+  // plan is not an agreement to the listing's price per use.
+  assert.equal(started.licenceId, "ins_1");
+  assert.deepEqual(writes, [
+    { create: { listingId: "lst_1", buyerId: "org_buyer", clonedAgentId: null, kind: "use", status: "active" } },
+  ]);
+  assert.deepEqual(
+    [licences[0]!.acceptedPricingModel ?? null, licences[0]!.acceptedPricePerRequestCents ?? null],
+    [null, null],
+  );
+});
+
+test("a plan start leaves a per-request agreement the licence already held exactly as it is", async () => {
+  const db = makeDb();
+  const agreedAt = at(-40);
+  const licences: Licence[] = [
+    {
+      id: "ins_9",
+      listingId: "lst_1",
+      buyerId: "org_buyer",
+      kind: "use",
+      status: "active",
+      acceptedPricingModel: "per_request",
+      acceptedPricePerRequestCents: 5n,
+      pricingAcceptedAt: agreedAt,
+    },
+  ];
+  const writes: Array<Record<string, unknown>> = [];
+  const started = await db.inTransaction((tx) =>
+    startPlanSubscription(planStartTx(tx, licences, writes), {
+      listing: PLAN_LISTING,
+      plan: STARTER,
+      buyerId: "org_buyer",
+      licence: { id: "ins_9", kind: "use" },
+      now: T0,
+    }),
+  );
+  assert.equal(started.licenceId, "ins_9");
+  assert.deepEqual(writes, [{ update: { kind: "use" } }]);
+  assert.deepEqual(licences, [
+    {
+      id: "ins_9",
+      listingId: "lst_1",
+      buyerId: "org_buyer",
+      kind: "use",
+      status: "active",
+      acceptedPricingModel: "per_request",
+      acceptedPricePerRequestCents: 5n,
+      pricingAcceptedAt: agreedAt,
+    },
+  ]);
+  assert.equal(db.state.revenue[0]!.installId, "ins_9");
+});
+
+test("a plan started on a licence that was for a copy clears what the copy agreed to: the plan's end is never a charge per use", async () => {
+  const db = makeDb();
+  const licences: Licence[] = [
+    {
+      id: "ins_9",
+      listingId: "lst_1",
+      buyerId: "org_buyer",
+      kind: "copy",
+      status: "active",
+      acceptedPricingModel: "per_request",
+      acceptedPricePerRequestCents: 5n,
+      pricingAcceptedAt: at(-40),
+    },
+  ];
+  const writes: Array<Record<string, unknown>> = [];
+  await db.inTransaction((tx) =>
+    startPlanSubscription(planStartTx(tx, licences, writes), {
+      listing: PLAN_LISTING,
+      plan: STARTER,
+      buyerId: "org_buyer",
+      licence: { id: "ins_9", kind: "copy" },
+      now: T0,
+    }),
+  );
+  assert.deepEqual(writes, [
+    { update: { kind: "use", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null } },
+  ]);
+
+  // The creator ends the plan and its period runs out, on a listing still
+  // sold at the price the copy had agreed to. The buyer chooses; they are
+  // not charged per use. With the copy's agreement kept, this read
+  // "listing_pricing".
+  const [licence] = licences;
+  const accessAfter = (accepted: { pricingModel: string | null; pricePerRequestCents: bigint | null }) =>
+    useAccess(
+      {
+        licence: { kind: String(licence!.kind), status: String(licence!.status), accepted },
+        listing: { status: "published", sells: "use", pricingModel: "per_request", pricePerRequestCents: 5n },
+        sub: { ...db.sub(), status: "cancelled", endReason: "plan_ended" },
+      },
+      at(31),
+    );
+  assert.deepEqual(
+    [
+      accessAfter({
+        pricingModel: licence!.acceptedPricingModel as string | null,
+        pricePerRequestCents: licence!.acceptedPricePerRequestCents as bigint | null,
+      }),
+      accessAfter({ pricingModel: "per_request", pricePerRequestCents: 5n }),
+    ],
+    ["plan_ended", "listing_pricing"],
+  );
+});
+
+test("a plan start on a licence that is not active charges nothing and opens nothing", async () => {
+  for (const status of ["uninstalled", "suspended"]) {
+    const db = makeDb();
+    const licences: Licence[] = [{ id: "ins_9", listingId: "lst_1", buyerId: "org_buyer", kind: "use", status }];
+    await assert.rejects(
+      db.inTransaction((tx) =>
+        startPlanSubscription(planStartTx(tx, licences, []), {
+          listing: PLAN_LISTING,
+          plan: STARTER,
+          buyerId: "org_buyer",
+          licence: { id: "ins_9", kind: "use" },
+          now: T0,
+        }),
+      ),
+      /not active/,
+    );
+    assert.deepEqual([db.state.subs.size, db.state.revenue.length, db.state.balances.get("org_buyer")], [0, 0, 10_000n], status);
+  }
+});
+
+test("a buyer whose plan the creator ended can start a plan the moment its period ends, before the renewal worker has closed the row", async () => {
+  // One minute past the period: a row still open, as the worker has not run.
+  const justAfter = new Date(at(30).getTime() + 60_000);
+  const next: PlanTerms = { planId: "plan_2", priceCents: 2_900n, includedUses: 2_000, extraUsePriceCents: null };
+  const start = (db: Awaited<ReturnType<typeof onPlan>>) =>
+    db.inTransaction((tx) =>
+      startPlanSubscription(planStartTx(tx, [], []), { listing: PLAN_LISTING, plan: next, buyerId: "org_buyer", licence: null, now: justAfter }),
+    );
+
+  // A plan that is still sold is being renewed: its days of grace hold the row.
+  const renewing = await onPlan();
+  await assert.rejects(start(renewing), SubscriptionClaimLostError);
+  assert.deepEqual([renewing.state.revenue.length, renewing.state.balances.get("org_buyer")], [1, 9_100n]);
+
+  const ended = await onPlan();
+  planStatusNow.set("plan_1", "retired");
+  try {
+    // Inside the period it paid for, an ended plan is still paid up.
+    await assert.rejects(
+      ended.inTransaction((tx) =>
+        startPlanSubscription(planStartTx(tx, [], []), { listing: PLAN_LISTING, plan: next, buyerId: "org_buyer", licence: null, now: at(29) }),
+      ),
+      SubscriptionClaimLostError,
+    );
+    const started = await start(ended);
+    assert.equal("plan" in started.subscription, false);
+  } finally {
+    planStatusNow.delete("plan_1");
+  }
+  // Charged once for the new plan, on the same row, with a count from zero.
+  assert.deepEqual(
+    [ended.state.subs.size, ended.state.revenue.map((r) => r.grossAmountCents), ended.state.balances.get("org_buyer")],
+    [1, [900n, 2_900n], 6_200n],
+  );
+  assert.deepEqual(
+    { ...planColumnsOf(ended.sub()), status: ended.sub().status, start: ended.sub().currentPeriodStart },
+    {
+      planId: "plan_2",
+      includedUses: 2_000,
+      extraUsePriceCents: null,
+      usedInPeriod: 0,
+      carriedUses: 0,
+      warnedLevel: 0,
+      status: "active",
+      start: justAfter,
+    },
+  );
+});
+
+test("a plan start that cannot be paid for, is already paid up, or has terms that are not terms leaves nothing behind", async () => {
+  const broke = makeDb({ balance: 899n });
+  await assert.rejects(
+    broke.inTransaction((tx) =>
+      startPlanSubscription(planStartTx(tx, [], []), { listing: PLAN_LISTING, plan: STARTER, buyerId: "org_buyer", licence: null, now: T0 }),
+    ),
+    InsufficientCreditsError,
+  );
+  assert.deepEqual([broke.state.subs.size, broke.state.revenue.length, broke.state.balances.get("org_buyer")], [0, 0, 899n]);
+
+  // Already on a plan that is paid for: refused before any charge. The row keeps its count.
+  const paid = await onPlan();
+  await assert.rejects(
+    paid.inTransaction((tx) =>
+      startPlanSubscription(planStartTx(tx, [], []), {
+        listing: PLAN_LISTING,
+        plan: { ...STARTER, planId: "plan_2", includedUses: 2_000, priceCents: 2_900n },
+        buyerId: "org_buyer",
+        licence: null,
+        now: at(10),
+      }),
+    ),
+    SubscriptionClaimLostError,
+  );
+  assert.deepEqual([paid.state.revenue.length, paid.state.balances.get("org_buyer")], [1, 9_100n]);
+  assert.deepEqual(planColumnsOf(paid.sub()), {
+    planId: "plan_1",
+    includedUses: 500,
+    extraUsePriceCents: 4n,
+    usedInPeriod: 437,
+    carriedUses: 20,
+    warnedLevel: 85,
+  });
+
+  for (const plan of [
+    { ...STARTER, priceCents: 0n },
+    { ...STARTER, includedUses: 0 },
+    { ...STARTER, includedUses: 1.5 },
+    { ...STARTER, extraUsePriceCents: 0n },
+  ]) {
+    const db = makeDb();
+    const licences: Licence[] = [];
+    await assert.rejects(
+      db.inTransaction((tx) =>
+        startPlanSubscription(planStartTx(tx, licences, []), { listing: PLAN_LISTING, plan, buyerId: "org_buyer", licence: null, now: T0 }),
+      ),
+    );
+    assert.deepEqual([db.state.subs.size, db.state.revenue.length, licences.length], [0, 0, 0]);
+  }
+});
+
+test("a start with no plan writes none of a plan's columns, and a row that was on a plan drops them", async () => {
+  const legacy = await subscribed();
+  assert.deepEqual(Object.keys(legacy.first()).sort(), [
+    "cancelAtPeriodEnd",
+    "cancelledAt",
+    "currentPeriodEnd",
+    "currentPeriodStart",
+    "endReason",
+    "id",
+    "lastRenewalAttemptAt",
+    "listingId",
+    "priceCents",
+    "status",
+    "subscriberId",
+  ]);
+
+  // A lapsed month that is started again is claimed with the same columns as ever.
+  Object.assign(legacy.first(), { status: "expired" });
+  const claims: Array<Record<string, unknown>> = [];
+  const watched = (tx: SubscriptionTx): SubscriptionTx => ({
+    ...tx,
+    agentSubscription: {
+      ...tx.agentSubscription,
+      updateMany: (args) => {
+        claims.push(args.data);
+        return tx.agentSubscription.updateMany(args);
+      },
+    },
+  });
+  await legacy.inTransaction((tx) => startMonthlySubscription(watched(tx), { listing: LISTING, buyerId: "org_buyer", now: at(40) }));
+  assert.deepEqual(Object.keys(claims[0]!).sort(), [
+    "cancelAtPeriodEnd",
+    "cancelledAt",
+    "currentPeriodEnd",
+    "currentPeriodStart",
+    "endReason",
+    "lastRenewalAttemptAt",
+    "priceCents",
+    "status",
+  ]);
+
+  // A plan that ended, on a listing its creator then moved to a monthly
+  // price: the new month has no count, so the old one must not stay on the row.
+  const was = await onPlan();
+  Object.assign(was.first(), { status: "cancelled", endReason: "pricing_changed" });
+  await was.inTransaction((tx) => startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: at(40) }));
+  assert.deepEqual(planColumnsOf(was.sub()), {
+    planId: null,
+    includedUses: null,
+    extraUsePriceCents: null,
+    usedInPeriod: 0,
+    carriedUses: 0,
+    warnedLevel: 0,
+  });
+  assert.deepEqual([was.sub().status, was.sub().priceCents], ["active", 1500n]);
+});
+
+test("a plan renewal charges the agreed price and sets the count back to zero in the claim that moves the period start", async () => {
+  const db = await onPlan();
+  const statements: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
+  const outcome = await db.inTransaction((tx) =>
+    renewSubscription(
+      {
+        ...tx,
+        agentSubscription: {
+          ...tx.agentSubscription,
+          updateMany: (args) => {
+            statements.push(args);
+            return tx.agentSubscription.updateMany(args);
+          },
+        },
+      },
+      { sub: planRow(db), listing: PLAN_LISTING, now: at(30.5) },
+    ),
+  );
+  assert.deepEqual(outcome, { kind: "renewed", revenueId: db.state.revenue[1]!.id, newPeriodEnd: at(60) });
+
+  // ONE statement moves the period and resets the count, the carried uses
+  // and the warning: a take or a give-back keyed on the old period start
+  // can never land in a period whose count it does not belong to.
+  assert.deepEqual(statements, [
+    {
+      where: {
+        id: db.sub().id,
+        currentPeriodEnd: at(30),
+        status: { in: ["active", "past_due"] },
+        cancelAtPeriodEnd: false,
+        listing: { pausedSince: null },
+        plan: { status: "active" },
+      },
+      data: {
+        currentPeriodStart: at(30),
+        currentPeriodEnd: at(60),
+        status: "active",
+        lastRenewalAttemptAt: null,
+        usedInPeriod: 0,
+        carriedUses: 0,
+        warnedLevel: 0,
+      },
+    },
+  ]);
+  // Unused uses do not carry over, and the terms are the ones agreed to.
+  assert.deepEqual(planColumnsOf(db.sub()), {
+    planId: "plan_1",
+    includedUses: 500,
+    extraUsePriceCents: 4n,
+    usedInPeriod: 0,
+    carriedUses: 0,
+    warnedLevel: 0,
+  });
+  assert.deepEqual(
+    db.state.revenue.map((r) => [r.type, r.grossAmountCents, r.platformFeeCents, r.creatorAmountCents]),
+    [
+      ["subscription", 900n, 90n, 810n],
+      ["subscription_renewal", 900n, 90n, 810n],
+    ],
+  );
+  assert.equal(db.state.balances.get("org_buyer"), 8_200n);
+
+  // Not before its period ends: nothing is written.
+  const early = await onPlan();
+  assert.deepEqual(
+    await early.inTransaction((tx) => renewSubscription(tx, { sub: planRow(early), listing: PLAN_LISTING, now: at(29) })),
+    { kind: "not_due" },
+  );
+  assert.equal(planColumnsOf(early.sub()).usedInPeriod, 437);
+});
+
+test("a plan row is NOT closed because its listing is not monthly: it renews on a listing sold per request", async () => {
+  const db = await onPlan();
+  const outcome = await db.inTransaction((tx) =>
+    renewSubscription(tx, { sub: planRow(db), listing: PLAN_LISTING, now: at(30) }),
+  );
+  assert.deepEqual(
+    [outcome.kind, db.sub().status, db.sub().endReason, db.sub().currentPeriodEnd, db.state.installs[0]!.status, db.state.revenue.length],
+    ["renewed", "active", null, at(60), "active", 2],
+  );
+
+  // The same listing, and a row with no count: that one did leave monthly
+  // pricing, and ends as it always has.
+  const legacy = await subscribed();
+  const closed = await legacy.inTransaction((tx) =>
+    renewSubscription(tx, { sub: { ...legacy.sub(), licenceKind: "use" }, listing: PLAN_LISTING, now: at(30) }),
+  );
+  assert.deepEqual(
+    [closed.kind, legacy.sub().status, legacy.sub().endReason, legacy.state.installs[0]!.status, legacy.state.revenue.length],
+    ["cancelled", "cancelled", "pricing_changed", "suspended", 1],
+  );
+});
+
+test("a plan row is closed, uncharged, when its listing no longer sells use per request or is archived", async () => {
+  for (const [listing, endReason, install] of [
+    // Moved to a monthly price or to free: not what the buyer agreed to.
+    [{ ...PLAN_LISTING, pricingModel: "monthly", monthlyPriceCents: 1500n }, "pricing_changed", "suspended"],
+    [{ ...PLAN_LISTING, pricingModel: "free" }, "pricing_changed", "suspended"],
+    // Taken off sale, or sells copies now: there is nothing left to charge for.
+    [{ ...PLAN_LISTING, status: "archived" }, "use_ended", "active"],
+    [{ ...PLAN_LISTING, sells: "copies" }, "use_ended", "active"],
+  ] as const) {
+    const db = await onPlan();
+    const outcome = await db.inTransaction((tx) => renewSubscription(tx, { sub: planRow(db), listing, now: at(30) }));
+    assert.deepEqual(
+      [outcome.kind, db.sub().status, db.sub().endReason, db.state.installs[0]!.status, db.state.revenue.length, db.state.balances.get("org_buyer")],
+      ["cancelled", "cancelled", endReason, install, 1, 9_100n],
+      JSON.stringify(listing, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
+    );
+  }
+
+  // A plan row whose licence is not for use has nothing it could pay for.
+  const stray = await onPlan();
+  const outcome = await stray.inTransaction((tx) =>
+    renewSubscription(tx, { sub: planRow(stray, { licenceKind: "copy" }), listing: PLAN_LISTING, now: at(30) }),
+  );
+  assert.deepEqual([outcome.kind, stray.sub().endReason, stray.state.revenue.length], ["cancelled", "use_ended", 1]);
+});
+
+test("a plan its creator ended is not charged again: the row ends with its paid period, with plan_ended", async () => {
+  const db = await onPlan();
+  // Still inside the period paid for: nothing moves.
+  assert.deepEqual(
+    await db.inTransaction((tx) => renewSubscription(tx, { sub: planRow(db, { planRetired: true }), listing: PLAN_LISTING, now: at(29) })),
+    { kind: "not_due" },
+  );
+  assert.equal(db.sub().status, "active");
+
+  const outcome = await db.inTransaction((tx) =>
+    renewSubscription(tx, { sub: planRow(db, { planRetired: true }), listing: PLAN_LISTING, now: at(30) }),
+  );
+  assert.deepEqual(outcome, { kind: "cancelled" });
+  assert.deepEqual(
+    [db.sub().status, db.sub().endReason, db.sub().currentPeriodEnd, db.state.revenue.length, db.state.balances.get("org_buyer")],
+    ["cancelled", "plan_ended", at(30), 1, 9_100n],
+  );
+  // The licence is left as it is: a buyer who agreed to a price per use
+  // themselves goes on at it, and everybody else chooses.
+  assert.equal(db.state.installs[0]!.status, "active");
+
+  // Ended after the worker loaded the row: the claim reads the plan as it
+  // is at that moment, misses, and nothing is charged.
+  const late = await onPlan();
+  planStatusNow.set("plan_1", "retired");
+  try {
+    assert.deepEqual(
+      await late.inTransaction((tx) => renewSubscription(tx, { sub: planRow(late), listing: PLAN_LISTING, now: at(30) })),
+      { kind: "lost_race" },
+    );
+  } finally {
+    planStatusNow.delete("plan_1");
+  }
+  assert.deepEqual(
+    [late.sub().status, late.sub().currentPeriodEnd, planColumnsOf(late.sub()).usedInPeriod, late.state.revenue.length],
+    ["active", at(30), 437, 1],
+  );
+});
+
+test("a plan row found 4 days past its end expires and is not charged for a period that is already gone", async () => {
+  const db = await onPlan();
+  const outcome = await db.inTransaction((tx) => renewSubscription(tx, { sub: planRow(db), listing: PLAN_LISTING, now: at(34) }));
+  assert.deepEqual(outcome, { kind: "expired" });
+  assert.deepEqual(
+    [db.sub().status, db.sub().currentPeriodEnd, planColumnsOf(db.sub()).usedInPeriod, db.state.installs[0]!.status, db.state.revenue.length, db.state.balances.get("org_buyer")],
+    ["expired", at(30), 437, "suspended", 1, 9_100n],
+  );
+
+  // The tick counts it with the expired.
+  const ticked = await onPlan();
+  const deps = tickDeps(ticked, at(34));
+  assert.deepEqual(
+    await runSubscriptionRenewalTick({
+      ...deps,
+      loadDue: async (args) => (await deps.loadDue(args)).map((d) => ({ sub: { ...d.sub, licenceKind: "use" }, listing: PLAN_LISTING })),
+    }),
+    { scanned: 1, renewed: 0, cancelled: 0, paused: 0, pastDue: 0, expired: 1, errors: 0 },
+  );
+  assert.equal(ticked.state.revenue.length, 1);
+
+  // Inside the days of grace it still renews, from the old period end.
+  const inGrace = await onPlan();
+  const renewed = await inGrace.inTransaction((tx) =>
+    renewSubscription(tx, { sub: planRow(inGrace), listing: PLAN_LISTING, now: at(32.9) }),
+  );
+  assert.deepEqual([renewed.kind, inGrace.sub().currentPeriodEnd], ["renewed", at(60)]);
+
+  // A row with no count is left alone in this slice: found late, it renews as it always has.
+  const legacy = await subscribed();
+  const late = await legacy.inTransaction((tx) => renewSubscription(tx, { sub: legacy.sub(), listing: LISTING, now: at(34) }));
+  assert.deepEqual([late.kind, legacy.sub().status, legacy.state.revenue.length], ["renewed", "active", 2]);
+});
+
+test("credits short at a plan's renewal: the old count is kept through the grace and reset only when the renewal is paid", async () => {
+  const db = await onPlan({ balance: 900n });
+  const tick = (now: Date) => {
+    const deps = tickDeps(db, now);
+    return runSubscriptionRenewalTick({
+      ...deps,
+      loadDue: async (args) => (await deps.loadDue(args)).map((d) => ({ sub: { ...d.sub, licenceKind: "use" }, listing: PLAN_LISTING })),
+    });
+  };
+  const kept = () => [db.sub().status, db.sub().currentPeriodStart, db.sub().currentPeriodEnd, planColumnsOf(db.sub()).usedInPeriod, planColumnsOf(db.sub()).carriedUses];
+
+  assert.deepEqual(await tick(at(30.1)), { scanned: 1, renewed: 0, cancelled: 0, paused: 0, pastDue: 1, expired: 0, errors: 0 });
+  // The claim rolled back with the charge: same period, same count.
+  assert.deepEqual(kept(), ["past_due", T0, at(30), 437, 20]);
+  assert.deepEqual(await tick(at(31.5)), { scanned: 1, renewed: 0, cancelled: 0, paused: 0, pastDue: 0, expired: 0, errors: 0 });
+  assert.deepEqual(kept(), ["past_due", T0, at(30), 437, 20]);
+  assert.equal(db.state.revenue.length, 1);
+
+  // Paid inside the grace: a new period, and only now a new count.
+  db.state.balances.set("org_buyer", 1_000n);
+  assert.deepEqual(await tick(at(32)), { scanned: 1, renewed: 1, cancelled: 0, paused: 0, pastDue: 0, expired: 0, errors: 0 });
+  assert.deepEqual(kept(), ["active", at(30), at(60), 0, 0]);
+  assert.equal(db.state.balances.get("org_buyer"), 100n);
+
+  // Never paid: after the grace it expires, uncharged, and the licence is suspended.
+  const unpaid = await onPlan({ balance: 900n });
+  const deps = tickDeps(unpaid, at(33));
+  assert.deepEqual(
+    await runSubscriptionRenewalTick({
+      ...deps,
+      loadDue: async (args) => (await deps.loadDue(args)).map((d) => ({ sub: { ...d.sub, licenceKind: "use" }, listing: PLAN_LISTING })),
+    }),
+    { scanned: 1, renewed: 0, cancelled: 0, paused: 0, pastDue: 0, expired: 1, errors: 0 },
+  );
+  assert.deepEqual([unpaid.sub().status, planColumnsOf(unpaid.sub()).usedInPeriod, unpaid.state.installs[0]!.status], ["expired", 437, "suspended"]);
+});
+
+test("a paused listing leaves a plan row alone: not renewed, not closed, and its count untouched", async () => {
+  for (const more of [{}, { planRetired: true }, { cancelAtPeriodEnd: true }]) {
+    const db = await onPlan();
+    const before = structuredClone([...db.state.subs.values()]);
+    assert.deepEqual(
+      await db.inTransaction((tx) =>
+        renewSubscription(tx, { sub: planRow(db, more), listing: { ...PLAN_LISTING, pausedSince: at(20) }, now: at(34) }),
+      ),
+      { kind: "paused" },
+    );
+    assert.deepEqual([...db.state.subs.values()], before);
+    assert.equal(db.state.revenue.length, 1);
+  }
+});
+
+test("a buyer who cancelled a plan's renewal keeps it to the end of the period and is not charged again", async () => {
+  const db = await onPlan();
+  Object.assign(db.first(), { cancelAtPeriodEnd: true });
+  const outcome = await db.inTransaction((tx) => renewSubscription(tx, { sub: planRow(db), listing: PLAN_LISTING, now: at(30) }));
+  assert.deepEqual([outcome.kind, db.sub().status, db.state.revenue.length], ["cancelled", "cancelled", 1]);
+});
+
+test("a row with no count renews with exactly the columns it always did", async () => {
+  const db = await subscribed();
+  const statements: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
+  await db.inTransaction((tx) =>
+    renewSubscription(
+      {
+        ...tx,
+        agentSubscription: {
+          ...tx.agentSubscription,
+          updateMany: (args) => {
+            statements.push(args);
+            return tx.agentSubscription.updateMany(args);
+          },
+        },
+      },
+      { sub: { ...db.sub(), licenceKind: "use", includedUses: null, planId: null, planRetired: false }, listing: { ...LISTING, pricingModel: "monthly", status: "published", sells: "use" }, now: at(30) },
+    ),
+  );
+  assert.deepEqual(statements, [
+    {
+      where: {
+        id: db.sub().id,
+        currentPeriodEnd: at(30),
+        status: { in: ["active", "past_due"] },
+        cancelAtPeriodEnd: false,
+        listing: { pausedSince: null },
+      },
+      data: { currentPeriodStart: at(30), currentPeriodEnd: at(60), status: "active", lastRenewalAttemptAt: null },
+    },
+  ]);
+});
+
+test("the renewal tick's loader reads the marker of a plan and whether its creator ended it", async () => {
+  const { buildSubscriptionRenewalTickDeps } = await import("../services/buildSubscriptionRenewalTickDeps.js");
+  const includes: Array<Record<string, any>> = [];
+  const row = (id: string, plan: Record<string, unknown>) => ({
+    id,
+    listingId: "lst_1",
+    subscriberId: `org_${id}`,
+    status: "active",
+    currentPeriodStart: at(0),
+    currentPeriodEnd: at(30),
+    cancelAtPeriodEnd: false,
+    priceCents: 900n,
+    endReason: null,
+    planId: null,
+    includedUses: null,
+    plan: null,
+    ...plan,
+    listing: { id: "lst_1", title: "T", publisherId: "org_pub", monthlyPriceCents: null, pricingModel: "per_request", status: "published", sells: "use", pausedSince: null },
+  });
+  const fake = {
+    agentSubscription: {
+      findMany: async (args: Record<string, any>) => {
+        includes.push(args.include);
+        return [
+          row("on", { planId: "plan_1", includedUses: 500, plan: { status: "active" } }),
+          row("ended", { planId: "plan_2", includedUses: 100, plan: { status: "retired" } }),
+          row("legacy", {}),
+        ];
+      },
+    },
+    agentInstall: { findMany: async () => [] },
+  };
+  const due = await buildSubscriptionRenewalTickDeps(fake as never).loadDue({ now: at(31), limit: 10, excludeIds: [] });
+  assert.deepEqual(includes[0]!.plan, { select: { status: true } });
+  assert.deepEqual(
+    due.map((d) => [d.sub.id, d.sub.includedUses, d.sub.planId, d.sub.planRetired]),
+    [
+      ["on", 500, "plan_1", false],
+      ["ended", 100, "plan_2", true],
+      ["legacy", null, null, false],
+    ],
+  );
+});
+
+test("accepting a per-request price never closes a plan, and still closes a month with no count", async () => {
+  const { settleLicenceSubscription } = await import("../services/marketplace.js");
+  const listing = { id: "lst_1", title: "Research Analyst", publisherId: "org_pub", pricingModel: "per_request", pricePerRequestCents: 5n, monthlyPriceCents: null };
+  const run = async (existingSub: Record<string, unknown>) => {
+    const statements: unknown[] = [];
+    const tx = {
+      agentSubscription: {
+        updateMany: async (args: unknown) => {
+          statements.push(args);
+          return { count: 1 };
+        },
+      },
+    };
+    const result = await settleLicenceSubscription(tx as never, { listing, buyerId: "org_buyer", installId: "ins_1", existingSub: existingSub as never });
+    return { result, statements: statements.length };
+  };
+  const open = { id: "sub_1", status: "active", currentPeriodEnd: at(30), cancelAtPeriodEnd: false, endReason: null };
+
+  // A plan that is paid for, one whose renewal is being retried, and one that has ended: none is written to.
+  assert.deepEqual(await run({ ...open, includedUses: 500 }), { result: null, statements: 0 });
+  assert.deepEqual(await run({ ...open, status: "past_due", includedUses: 500 }), { result: null, statements: 0 });
+  assert.deepEqual(await run({ ...open, status: "cancelled", endReason: "plan_ended", includedUses: 500 }), { result: null, statements: 0 });
+  // A month with no count is closed by the acceptance, as before.
+  assert.deepEqual(await run({ ...open, includedUses: null }), { result: null, statements: 1 });
+  assert.deepEqual(await run(open), { result: null, statements: 1 });
 });

@@ -114,6 +114,8 @@ async function renewBatch(
       }
       if (outcome.kind === "renewed") result.renewed++;
       if (outcome.kind === "cancelled") result.cancelled++;
+      // A plan found past its days of grace: closed without a charge.
+      if (outcome.kind === "expired") result.expired++;
       if (outcome.kind === "paused") {
         result.paused++;
         // Still due, and it stays so for as long as the pause lasts: behind

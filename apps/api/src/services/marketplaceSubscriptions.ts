@@ -35,6 +35,20 @@
  *           and when the pause ends its month is made longer by the time
  *           the listing was paused.
  *
+ *   plan    a subscription with a count of uses (a creator-set plan on a
+ *           listing that sells use per request). The row carries a copy of
+ *           the terms the buyer agreed to: `includedUses` set is the
+ *           marker, and a row without it takes every path above untouched.
+ *           startPlanSubscription writes the copy and charges the first 30
+ *           days; a renewal charges the agreed price and sets the count
+ *           back to zero in the statement that moves the period. A plan
+ *           row is not closed because its listing is not monthly: it lives
+ *           on a listing sold per request, and is closed when that listing
+ *           stops selling use per request. A plan its creator ended is not
+ *           charged again: the row ends with its paid period, with
+ *           endReason 'plan_ended'. A plan row found more than the days of
+ *           grace past its end expires, uncharged for time already gone.
+ *
  * Access for a monthly install = subscription active or past_due within
  * grace (see subscriptionGrantsAccess), enforced by resolveInstallBilling.
  *
@@ -69,7 +83,7 @@ export class SubscriptionClaimLostError extends Error {
   }
 }
 
-export type SubscriptionEndReason = "pricing_changed" | "listing_archived" | "use_ended";
+export type SubscriptionEndReason = "pricing_changed" | "listing_archived" | "use_ended" | "plan_ended";
 
 export interface SubscriptionRow {
   id: string;
@@ -88,7 +102,35 @@ export interface SubscriptionRow {
    * Absent reads as a copy.
    */
   licenceKind?: string;
+  /**
+   * The marker of a plan (AgentSubscription.includedUses). Null or absent =
+   * a month with no count, which is started and renewed exactly as before
+   * plans existed. Set = the row is on a plan and carries the terms the
+   * buyer agreed to.
+   */
+  includedUses?: number | null;
+  /** The plan the row was started on. */
+  planId?: string | null;
+  /**
+   * True when the creator has ended that plan (ListingPlan.status is
+   * 'retired'). The row is not charged again: it ends with its paid period.
+   */
+  planRetired?: boolean;
 }
+
+/** Whether a row is on a plan: it carries a count of included uses. */
+const onPlan = (sub: Pick<SubscriptionRow, "includedUses">): boolean =>
+  sub.includedUses !== null && sub.includedUses !== undefined;
+
+/** What a row that is not on a plan holds in the plan's columns. */
+const NO_PLAN = {
+  planId: null,
+  includedUses: null,
+  usedInPeriod: 0,
+  carriedUses: 0,
+  extraUsePriceCents: null,
+  warnedLevel: 0,
+} as const;
 
 export interface ListingForBilling {
   id: string;
@@ -149,7 +191,9 @@ export interface SubscriptionTx extends EarningsLedgerTx {
   agentSubscription: {
     findUnique(args: {
       where: { listingId_subscriberId: { listingId: string; subscriberId: string } };
-    }): Promise<SubscriptionRow | null>;
+      /** Only a plan start asks for it: whether the plan the row is on was ended by its creator. */
+      include?: { plan: { select: { status: true } } };
+    }): Promise<(SubscriptionRow & { plan?: { status: string } | null }) | null>;
     create(args: { data: Record<string, unknown> }): Promise<SubscriptionRow>;
     updateMany(args: {
       where: Record<string, unknown>;
@@ -168,7 +212,7 @@ async function chargePeriod(
   tx: SubscriptionTx,
   args: {
     subscriptionId: string;
-    listing: ListingForBilling;
+    listing: Pick<ListingForBilling, "id" | "title" | "publisherId">;
     buyerId: string;
     type: "subscription" | "subscription_renewal";
     installId?: string | null;
@@ -233,6 +277,66 @@ async function chargePeriod(
 }
 
 /**
+ * The exclusive claim a start needs before it charges: the buyer's
+ * subscription row for the listing is created, or moved off the exact state
+ * that was read. Throws SubscriptionClaimLostError when the row is already
+ * paid up or another writer took it first; nothing has been charged then.
+ *
+ * `planStart` reads "paid up" the way a use on a plan does
+ * (services/useAccess.ts): a row on a plan its creator ended has no days of
+ * grace after its period. The buyer is told to choose again the moment that
+ * period ends, and the renewal worker may not have closed the row yet, so
+ * the start they then make must not be refused as "already paid up".
+ */
+async function claimForStart(
+  tx: SubscriptionTx,
+  key: { listingId: string; subscriberId: string },
+  dataFor: (current: SubscriptionRow | null) => Record<string, unknown>,
+  now: Date,
+  planStart = false,
+): Promise<SubscriptionRow> {
+  // Charging needs an exclusive claim on the subscription row. An upsert
+  // is not one: of two concurrent subscribes (or a subscribe racing the
+  // renewal worker) both would succeed and both would charge.
+  let current: SubscriptionRow | null;
+  let paidUp: boolean;
+  if (planStart) {
+    const found = await tx.agentSubscription.findUnique({
+      where: { listingId_subscriberId: key },
+      include: { plan: { select: { status: true } } },
+    });
+    const { plan: itsPlan, ...row } = found ?? { plan: null };
+    current = found ? (row as SubscriptionRow) : null;
+    const planEnded = current !== null && onPlan(current) && itsPlan?.status === "retired";
+    paidUp = subscriptionGrantsAccess(
+      current && { ...current, cancelAtPeriodEnd: current.cancelAtPeriodEnd || planEnded },
+      now,
+    );
+  } else {
+    current = await tx.agentSubscription.findUnique({ where: { listingId_subscriberId: key } });
+    paidUp = subscriptionGrantsAccess(current, now);
+  }
+  if (paidUp) {
+    throw new SubscriptionClaimLostError("You already have a paid-up subscription to this agent.");
+  }
+  const data = dataFor(current);
+  if (!current) {
+    // The unique (listingId, subscriberId) makes a concurrent creator fail
+    // here, which rolls its whole transaction back.
+    return tx.agentSubscription.create({ data: { ...key, ...data } });
+  }
+  // Compare-and-swap on the state that was read. A row that grants no
+  // access always leaves that state when it is claimed (the status or
+  // the period end changes), so a second claim on the same read misses.
+  const claimed = await tx.agentSubscription.updateMany({
+    where: { id: current.id, status: current.status, currentPeriodEnd: current.currentPeriodEnd },
+    data,
+  });
+  if (claimed.count !== 1) throw new SubscriptionClaimLostError();
+  return { ...current, ...data } as SubscriptionRow;
+}
+
+/**
  * Run inside the install transaction. Throws InsufficientCreditsError, or
  * SubscriptionClaimLostError when the subscription is already paid up or
  * another writer took it first.
@@ -258,30 +362,15 @@ export async function startMonthlySubscription(
     lastRenewalAttemptAt: null,
   };
 
-  // Charging needs an exclusive claim on the subscription row. An upsert
-  // is not one: of two concurrent subscribes (or a subscribe racing the
-  // renewal worker) both would succeed and both would charge.
-  const key = { listingId: args.listing.id, subscriberId: args.buyerId };
-  const current = await tx.agentSubscription.findUnique({ where: { listingId_subscriberId: key } });
-  if (subscriptionGrantsAccess(current, now)) {
-    throw new SubscriptionClaimLostError("You already have a paid-up subscription to this agent.");
-  }
-  let subscription: SubscriptionRow;
-  if (!current) {
-    // The unique (listingId, subscriberId) makes a concurrent creator fail
-    // here, which rolls its whole transaction back.
-    subscription = await tx.agentSubscription.create({ data: { ...key, ...period } });
-  } else {
-    // Compare-and-swap on the state that was read. A row that grants no
-    // access always leaves that state when it is claimed (the status or
-    // the period end changes), so a second claim on the same read misses.
-    const claimed = await tx.agentSubscription.updateMany({
-      where: { id: current.id, status: current.status, currentPeriodEnd: current.currentPeriodEnd },
-      data: period,
-    });
-    if (claimed.count !== 1) throw new SubscriptionClaimLostError();
-    subscription = { ...current, ...period };
-  }
+  const subscription = await claimForStart(
+    tx,
+    { listingId: args.listing.id, subscriberId: args.buyerId },
+    // A row that was on a plan and is started again as a plain month drops
+    // the plan's terms and its count, or the month would be counted against
+    // them. Every other row is written exactly what it always was.
+    (current) => (current && onPlan(current) ? { ...period, ...NO_PLAN } : period),
+    now,
+  );
 
   const { revenueId } = await chargePeriod(tx, {
     subscriptionId: subscription.id,
@@ -295,9 +384,158 @@ export async function startMonthlySubscription(
   return { subscription, revenueId };
 }
 
+/** The terms of a plan as the buyer agreed to them. The subscription row keeps this copy. */
+export interface PlanTerms {
+  /** ListingPlan.id. */
+  planId: string;
+  /** The price of each 30 days. */
+  priceCents: bigint;
+  includedUses: number;
+  /** What each use past the count costs. Null = the plan stops until it renews. */
+  extraUsePriceCents: bigint | null;
+}
+
+/**
+ * What a plan start needs besides a subscription's own tables: the buyer's
+ * licence row. The shapes are the whole of what it may write there: that
+ * the licence is for use, and nothing about pricing.
+ */
+export interface PlanStartTx extends SubscriptionTx {
+  agentInstall: SubscriptionTx["agentInstall"] & {
+    create(args: {
+      data: { listingId: string; buyerId: string; clonedAgentId: null; kind: "use"; status: "active" };
+    }): Promise<{ id: string }>;
+    update(args: {
+      where: { id: string };
+      data:
+        | { kind: "use" }
+        // A licence that was for a copy: what it agreed to was for the copy.
+        | { kind: "use"; acceptedPricingModel: null; acceptedPricePerRequestCents: null; pricingAcceptedAt: null };
+    }): Promise<{ id: string; status: string }>;
+  };
+}
+
+/**
+ * Start a plan: write the buyer's licence, claim their subscription row
+ * with a copy of the terms they agreed to and a count of zero, and charge
+ * the full 30 days at once, on the path a monthly subscription takes (the
+ * same split, the same ledger rows). Run inside the start's transaction,
+ * after the licence row was claimed (claimLicence, services/marketplace.ts).
+ * Throws InsufficientCreditsError, or SubscriptionClaimLostError when the
+ * buyer already holds a paid-up subscription or another writer took the
+ * row first. Either way the transaction rolls back whole.
+ *
+ * `plan` is what the buyer was shown and agreed to. The caller has already
+ * compared it with the plan as it is now (services/listingPlans.ts) and
+ * refused a difference: from here on these terms are the buyer's, whatever
+ * the creator does to the plan.
+ *
+ * The licence is written here, and not by the caller, for one reason:
+ * starting a plan is not an agreement to the listing's price per use
+ * (services/useAccess.ts). So this never writes acceptedPricingModel or
+ * acceptedPricePerRequestCents: a new licence has neither, and a licence
+ * for use that already agreed to a price per use keeps that agreement as it
+ * is. A plan start must not go through agreeToTerms and writeLicence, which
+ * write both.
+ *
+ * A licence that was for a COPY is different: whatever it agreed to, it
+ * agreed to for the copy, and holding a copy is not an agreement to pay for
+ * use. Turned into a licence for use it would carry that agreement along,
+ * and when the plan ended the buyer would be charged per use at a price
+ * they never accepted for use. So its agreement is cleared here (the only
+ * values the type allows are null), and after the plan the buyer chooses.
+ *
+ * The licence must be active once it is written. A licence the caller did
+ * not claim (still removed, or stopped) would be charged a full 30 days and
+ * read as no access, so that start throws before the row is claimed or
+ * anything is charged.
+ */
+export async function startPlanSubscription(
+  tx: PlanStartTx,
+  args: {
+    listing: Pick<ListingForBilling, "id" | "title" | "publisherId">;
+    plan: PlanTerms;
+    buyerId: string;
+    /** The buyer's licence row for the listing, already claimed, with its kind as read; null when they have none yet. */
+    licence: { id: string; kind: string } | null;
+    now?: Date;
+  },
+): Promise<{ subscription: SubscriptionRow; revenueId: string; licenceId: string }> {
+  const { plan } = args;
+  // The route and the plan's own rules check these first. Held again where
+  // the row is written: a count that is not a whole number above zero, or a
+  // price of nothing, is never stored as somebody's terms.
+  if (plan.priceCents <= 0n) throw new Error("This plan has no price set");
+  if (!Number.isInteger(plan.includedUses) || plan.includedUses < 1) {
+    throw new Error("This plan has no included uses");
+  }
+  if (plan.extraUsePriceCents !== null && plan.extraUsePriceCents <= 0n) {
+    throw new Error("This plan's price for an extra use is not above zero");
+  }
+  const now = args.now ?? new Date();
+  const end = new Date(now.getTime() + SUBSCRIPTION_PERIOD_DAYS * DAY_MS);
+
+  let licence: { id: string };
+  if (args.licence) {
+    const written = await tx.agentInstall.update({
+      where: { id: args.licence.id },
+      data:
+        args.licence.kind === "use"
+          ? { kind: "use" }
+          : { kind: "use", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+    });
+    if (written.status !== "active") {
+      throw new Error("A plan was started on a licence that is not active: nothing was charged");
+    }
+    licence = written;
+  } else {
+    licence = await tx.agentInstall.create({
+      data: { listingId: args.listing.id, buyerId: args.buyerId, clonedAgentId: null, kind: "use", status: "active" },
+    });
+  }
+
+  const subscription = await claimForStart(
+    tx,
+    { listingId: args.listing.id, subscriberId: args.buyerId },
+    () => ({
+      status: "active",
+      currentPeriodStart: now,
+      currentPeriodEnd: end,
+      cancelAtPeriodEnd: false,
+      cancelledAt: null,
+      // The price the buyer agrees to now; renewals charge this.
+      priceCents: plan.priceCents,
+      endReason: null,
+      lastRenewalAttemptAt: null,
+      // The copy of the terms, and a count that starts at zero.
+      planId: plan.planId,
+      includedUses: plan.includedUses,
+      extraUsePriceCents: plan.extraUsePriceCents,
+      usedInPeriod: 0,
+      carriedUses: 0,
+      warnedLevel: 0,
+    }),
+    now,
+    true,
+  );
+
+  const { revenueId } = await chargePeriod(tx, {
+    subscriptionId: subscription.id,
+    listing: args.listing,
+    buyerId: args.buyerId,
+    type: "subscription",
+    installId: licence.id,
+    priceCents: plan.priceCents,
+    now,
+  });
+  return { subscription, revenueId, licenceId: licence.id };
+}
+
 export type RenewalOutcome =
   | { kind: "renewed"; revenueId: string; newPeriodEnd: Date }
   | { kind: "cancelled" }
+  /** A plan found too long past its end: closed, the licence suspended, nothing charged. */
+  | { kind: "expired" }
   | { kind: "not_due" }
   | { kind: "lost_race" }
   /** The listing is paused: nothing was claimed, charged or closed. */
@@ -337,7 +575,11 @@ export async function renewSubscription(
   // without their consent. A copy subscription never takes this branch.
   const sellsUse = args.listing.sells === undefined || args.listing.sells === "use";
   const published = args.listing.status === undefined || args.listing.status === "published";
-  if (sub.licenceKind === "use" && !(sellsUse && published)) {
+  // A plan is uses of the creator's agent and nothing else. A plan row whose
+  // licence is not for use has nothing it could be charged for, and ends
+  // the same way.
+  const plan = onPlan(sub);
+  if ((sub.licenceKind === "use" && !(sellsUse && published)) || (plan && sub.licenceKind !== "use")) {
     const closed = await tx.agentSubscription.updateMany({
       where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
       data: { status: "cancelled", cancelledAt: now, endReason: "use_ended" },
@@ -361,7 +603,13 @@ export async function renewSubscription(
   // renew at (it predates priceCents and was never charged). The buyer
   // agreed to neither the new model nor the listing's current price, so
   // the subscription ends and the install is suspended until they accept.
-  const offMonthly = args.listing.pricingModel !== undefined && args.listing.pricingModel !== "monthly";
+  //
+  // A plan is the other way round. It lives on a listing sold per request,
+  // so "the listing is not monthly" is its normal state and never closes
+  // it: what ends a plan here is the listing no longer being sold per
+  // request.
+  const soldAs = plan ? "per_request" : "monthly";
+  const offMonthly = args.listing.pricingModel !== undefined && args.listing.pricingModel !== soldAs;
   if (offMonthly || sub.priceCents == null) {
     const closed = await tx.agentSubscription.updateMany({
       where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
@@ -395,6 +643,35 @@ export async function renewSubscription(
     return { kind: "cancelled" };
   }
 
+  if (plan) {
+    // The creator ended this plan. The buyer finishes the 30 days they paid
+    // for and is not charged again. The licence is left as it is: a buyer
+    // who agreed to a price per use themselves goes on at that price, and
+    // everybody else is asked to choose (services/useAccess.ts).
+    if (sub.planRetired === true) {
+      const closed = await tx.agentSubscription.updateMany({
+        where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
+        data: { status: "cancelled", cancelledAt: now, endReason: "plan_ended" },
+      });
+      return closed.count === 1 ? { kind: "cancelled" } : { kind: "lost_race" };
+    }
+    // Found past its days of grace, by a worker that was away or a buyer
+    // who could not pay until now. Renewing would charge for a period that
+    // began days ago, so the row expires as an unpaid one does, uncharged.
+    if (now.getTime() >= sub.currentPeriodEnd.getTime() + PAST_DUE_GRACE_DAYS * DAY_MS) {
+      const expired = await tx.agentSubscription.updateMany({
+        where: { id: sub.id, currentPeriodEnd: sub.currentPeriodEnd, status: { in: ["active", "past_due"] } },
+        data: { status: "expired" },
+      });
+      if (expired.count !== 1) return { kind: "lost_race" };
+      await tx.agentInstall.updateMany({
+        where: { listingId: sub.listingId, buyerId: sub.subscriberId, status: "active" },
+        data: { status: "suspended" },
+      });
+      return { kind: "expired" };
+    }
+  }
+
   // Claim the period by advancing it; a concurrent tick's CAS then misses.
   const newEnd = new Date(sub.currentPeriodEnd.getTime() + SUBSCRIPTION_PERIOD_DAYS * DAY_MS);
   // The CAS also requires the subscription not to be set to cancel, so a
@@ -404,6 +681,14 @@ export async function renewSubscription(
   // must not be charged for. A claim that misses for that reason charges
   // nothing and reads as a lost race; the next tick loads the marker and
   // the row waits as paused.
+  //
+  // For a plan the claim also requires the plan to be one its creator has
+  // not ended since the row was loaded, and it sets the count, the carried
+  // uses and the warning back to zero in this one statement: the count of a
+  // period is tied to currentPeriodStart (services/planUse.ts), so the two
+  // must move together. Unused uses do not carry over. If the charge below
+  // fails, the transaction rolls this back with it: the buyer keeps what
+  // was left of the old count through the days of grace.
   const claimed = await tx.agentSubscription.updateMany({
     where: {
       id: sub.id,
@@ -411,12 +696,14 @@ export async function renewSubscription(
       status: { in: ["active", "past_due"] },
       cancelAtPeriodEnd: false,
       ...(sub.licenceKind === "use" ? { listing: { pausedSince: null } } : {}),
+      ...(plan && sub.planId != null ? { plan: { status: "active" } } : {}),
     },
     data: {
       currentPeriodStart: sub.currentPeriodEnd,
       currentPeriodEnd: newEnd,
       status: "active",
       lastRenewalAttemptAt: null,
+      ...(plan ? { usedInPeriod: 0, carriedUses: 0, warnedLevel: 0 } : {}),
     },
   });
   if (claimed.count !== 1) return { kind: "lost_race" };

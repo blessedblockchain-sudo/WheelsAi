@@ -1441,6 +1441,8 @@ interface LicenceSubscription {
   currentPeriodEnd: Date;
   cancelAtPeriodEnd: boolean;
   endReason: string | null;
+  /** The marker of a plan (AgentSubscription.includedUses). Null or absent = a month with no count. */
+  includedUses?: number | null;
 }
 
 /**
@@ -1569,6 +1571,10 @@ export async function settleLicenceSubscription(
       currentPeriodEnd: started.subscription.currentPeriodEnd,
     };
   }
+  // A plan is prepaid uses on top of the price per use, not in place of it.
+  // Agreeing to a price per use never closes one: a plan that is running
+  // keeps running, and the price agreed here is what comes after it.
+  if (existingSub && existingSub.includedUses != null) return null;
   if (existingSub && (existingSub.endReason || subscriptionIsOpen(existingSub))) {
     // The buyer accepts the listing's current pricing in place of the
     // subscription: one the publisher's side ended, or one that ran out

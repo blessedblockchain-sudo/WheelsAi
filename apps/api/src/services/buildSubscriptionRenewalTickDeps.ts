@@ -10,7 +10,9 @@
  *                     least recently tried, with the listing's current
  *                     monthly price, pricing model, what it sells and its
  *                     pause marker, and the kind of the subscriber's
- *                     licence (a copy, or use of the creator's agent)
+ *                     licence (a copy, or use of the creator's agent).
+ *                     For a row on a plan: the marker, the plan it names
+ *                     and whether its creator has ended that plan
  *   recordAttempt  -> stamps lastRenewalAttemptAt in its own statement, so
  *                     it survives the renewal transaction's rollback
  *   inTransaction  -> prisma.$transaction; renewSubscription and
@@ -56,6 +58,9 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
               pausedSince: true,
             },
           },
+          // Whether the creator ended the plan a row is on: such a row is
+          // not charged again.
+          plan: { select: { status: true } },
         },
       });
       // The kind of each subscriber's licence. One read for the page; a
@@ -81,6 +86,10 @@ export function buildSubscriptionRenewalTickDeps(prisma: PrismaClient): Subscrip
           priceCents: r.priceCents,
           endReason: r.endReason,
           licenceKind: kindOf.get(`${r.listingId}:${r.subscriberId}`) ?? "copy",
+          // The marker of a plan. Null on every row from before plans.
+          includedUses: r.includedUses,
+          planId: r.planId,
+          planRetired: r.plan?.status === "retired",
         },
         listing: {
           id: r.listing.id,

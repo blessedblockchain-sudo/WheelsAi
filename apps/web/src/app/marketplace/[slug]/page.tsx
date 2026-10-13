@@ -20,6 +20,7 @@ import {
   TrendingDown,
   BarChart3,
   ShieldCheck,
+  Code2,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -45,6 +46,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/hooks/use-session";
+import { API_PAGE_WORDS, apiPageHrefOfListing } from "@/lib/api-page";
 import { listingCountText, listingCta, listingInstallStats } from "@/lib/listing-cta";
 
 function formatUsd(value: number): string {
@@ -448,6 +450,8 @@ export default function ListingDetailPage() {
   // A listing that sells use is used on the agent's own page; the buyer gets no copy.
   const sellsUse = listing?.sells === "use";
   const agentHandle = listing?.agent?.handle ?? null;
+  // The API page of a listing that sells use of an agent that is called; null for every other listing.
+  const apiPageHref = apiPageHrefOfListing(listing);
 
   if (isLoading) {
     return <ListingDetailSkeleton />;
@@ -1098,6 +1102,16 @@ export default function ListingDetailPage() {
                   <Coins className="h-4 w-4" />
                   View Token
                 </button>
+              )}
+
+              {apiPageHref && (
+                <Link
+                  href={apiPageHref}
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted"
+                >
+                  <Code2 className="h-4 w-4" />
+                  {API_PAGE_WORDS.link}
+                </Link>
               )}
 
               {(agentHandle ?? listing.agent?.slug) && listing.agent?.isPublic && (

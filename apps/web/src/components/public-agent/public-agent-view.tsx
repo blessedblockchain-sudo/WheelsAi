@@ -2,13 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Bot, PauseCircle } from "lucide-react";
+import { ArrowLeft, Bot, Code2, PauseCircle } from "lucide-react";
 
 import { AgentKindBadge } from "@/components/dashboard/agent-kind-badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, publicAgentApi, type PublicAgentDetail } from "@/lib/api";
+import { API_PAGE_WORDS, apiPageHrefOfAgent } from "@/lib/api-page";
 import { PUBLIC_USE_MESSAGES } from "@/lib/public-use";
 import { useHydrated } from "./local-time";
 import { PaidGate } from "./paid-gate";
@@ -214,6 +215,8 @@ export function PublicAgentView({ handle, initial }: PublicAgentViewProps) {
   }
 
   const { agent } = detail;
+  // Only an agent whose use is sold, and that is called, has an API page.
+  const apiPageHref = apiPageHrefOfAgent(detail);
 
   return (
     <div className="min-h-screen bg-background">
@@ -237,6 +240,15 @@ export function PublicAgentView({ handle, initial }: PublicAgentViewProps) {
               </div>
               {agent.description && (
                 <p className="mt-2 whitespace-pre-line break-words text-sm text-muted-foreground">{agent.description}</p>
+              )}
+              {apiPageHref && (
+                <Link
+                  href={apiPageHref}
+                  className="mt-3 inline-flex items-center gap-2 rounded text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Code2 className="h-4 w-4" aria-hidden="true" />
+                  {API_PAGE_WORDS.link}
+                </Link>
               )}
             </div>
           </div>

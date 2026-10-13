@@ -19,6 +19,7 @@
  */
 
 import { PAID_USE_MESSAGES, type PaidUseErrorCode } from "./paidUse.js";
+import { trialOfferOf } from "./planOffers.js";
 import { BALANCE_CENTS_HEADER, CHARGED_CENTS_HEADER, PLAN_USAGE_HEADER_NAMES } from "./usageHeaders.js";
 
 /** What this needs of the agent's public page (PublicAgentDetail, routes/publicAgent.ts). */
@@ -41,6 +42,7 @@ export interface AgentApiPageSource {
         includedUses: number;
         extraUsePriceCents: bigint | null;
       }>;
+      trial?: { id: string; includedUses: number } | null;
     } | null;
   };
 }
@@ -98,6 +100,12 @@ export interface AgentApiPage {
     includedUses: number;
     extraUsePriceCents: number | null;
   }>;
+  /**
+   * The free trial on offer beside the plans: some uses for `days` days at no
+   * price, started once by a buyer's organization on the agent's page or
+   * with a key. null when the listing offers none.
+   */
+  trial: { id: string; includedUses: number; days: number } | null;
   /**
    * What one buyer may send. `perDayWithoutPlan` holds a buyer who is on no
    * plan: a plan's holder is held to the plan's count in its place.
@@ -242,6 +250,8 @@ export function agentApiPageOf(
       includedUses: plan.includedUses,
       extraUsePriceCents: plan.extraUsePriceCents === null ? null : Number(plan.extraUsePriceCents),
     })),
+    // Nor a free trial: that is offered beside plans only.
+    trial: monthly ? null : trialOfferOf(paid.trial),
     limits: { perMinute: paid.perMinute, perDayWithoutPlan: paid.perDay },
     usageHeaders: {
       always: [CHARGED_CENTS_HEADER, BALANCE_CENTS_HEADER],

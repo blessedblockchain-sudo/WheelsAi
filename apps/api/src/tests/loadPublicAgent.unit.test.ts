@@ -182,14 +182,14 @@ function makePrismaStub(opts: {
           );
         },
       },
-      // What readPlanOffers reads (services/planOffers.ts). Whole rows come
-      // back here too.
+      // What readOffers reads (services/planOffers.ts): the paid plans and
+      // the free trial in one query. Whole rows come back here too.
       listingPlan: {
         async findMany(args: any) {
           observed.planArgs.push(args);
           const { where } = args;
           return (opts.plans ?? [])
-            .filter((p) => p.listingId === where.listingId && p.status === where.status && p.kind === where.kind)
+            .filter((p) => p.listingId === where.listingId && p.status === where.status && where.kind.in.includes(p.kind))
             .sort((a, b) => (a.position as number) - (b.position as number));
         },
       },
@@ -1246,6 +1246,8 @@ test("a published listing that sells use at a price: the state is paid, with its
       transcriptsStored: true,
       sendsRequests: true,
       plans: [],
+      // No free trial on offer.
+      trial: null,
     },
     chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
   });
@@ -1419,6 +1421,7 @@ test("of a listing only its id, slug, pricing and price cross: never its publish
       "pricingModel",
       "sendsRequests",
       "transcriptsStored",
+      "trial",
       "unit",
     ]);
   }
@@ -1451,9 +1454,9 @@ test("a listing sold per use shows its paid plans on offer, in order, and only e
     plans: [
       planRow({ id: "plan_pro", name: "Pro", priceCents: 2900n, includedUses: 2000, extraUsePriceCents: null, position: 2 }),
       planRow(),
-      // Ended by its creator, a free trial, and a plan of another listing: none is on offer here.
+      // Ended by its creator, a free trial, and a plan of another listing: none is among the plans on offer here.
       planRow({ id: "plan_old", name: "Old", status: "retired", retiredAt: new Date("2026-10-03T00:00:00Z") }),
-      planRow({ id: "plan_trial", name: "Trial", kind: "trial", priceCents: 0n, position: 0 }),
+      planRow({ id: "plan_trial", name: "Free trial", kind: "trial", priceCents: 0n, includedUses: 20, extraUsePriceCents: null, position: 0 }),
       planRow({ id: "plan_other", name: "Other", listingId: "listing_else" }),
     ],
   });
@@ -1464,10 +1467,12 @@ test("a listing sold per use shows its paid plans on offer, in order, and only e
   // The price per use stays the base: the plans are on top of it.
   assert.equal(result?.use.paid?.priceCents, 5n);
   assert.equal(result?.use.state, "paid");
+  // The free trial is told beside the plans, by itself, as its id and its uses, in the same read.
+  assert.deepEqual(result?.use.paid?.trial, { id: "plan_trial", includedUses: 20 });
   assert.deepEqual(stub.observed.planArgs.map((args) => [args.where, args.orderBy]), [
-    [{ listingId: "listing_use", status: "active", kind: "paid" }, { position: "asc" }],
+    [{ listingId: "listing_use", status: "active", kind: { in: ["paid", "trial"] } }, { position: "asc" }],
   ]);
-  for (const forbidden of ["plan_old", "plan_trial", "plan_other", "retiredAt", "position", "updatedAt"]) {
+  for (const forbidden of ["plan_old", "plan_other", "retiredAt", "position", "updatedAt", "Free trial"]) {
     assert.ok(!textOf(result?.use).includes(forbidden), forbidden);
   }
 });
@@ -1487,4 +1492,37 @@ test("a listing sold by the month, a free one and one with no plan show none, an
 
   const none = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listingOf()] });
   assert.deepEqual(none.result?.use.paid?.plans, []);
+});
+
+// ============================================
+// The free trial a listing offers
+// ============================================
+
+test("the free trial is null when the listing offers none, when its creator ended it, and when the listing does not offer plans", async () => {
+  const trial = (over: Record<string, unknown> = {}) =>
+    planRow({ id: "plan_trial", name: "Free trial", kind: "trial", priceCents: 0n, includedUses: 20, extraUsePriceCents: null, position: 0, ...over });
+
+  const none = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listingOf()], plans: [planRow()] });
+  assert.equal(none.result?.use.paid?.trial, null);
+
+  const ended = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", {
+    listings: [listingOf()],
+    plans: [planRow(), trial({ status: "retired", retiredAt: new Date("2026-10-03T00:00:00Z") })],
+  });
+  assert.equal(ended.result?.use.paid?.trial, null);
+  // The paid plans are what they were.
+  assert.deepEqual(ended.result?.use.paid?.plans, none.result?.use.paid?.plans);
+
+  // Sold by the month: nothing of plans is read, and no trial is told.
+  const monthly = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [MONTHLY_LISTING], plans: [trial()] });
+  assert.equal(monthly.result?.use.paid?.trial, null);
+  assert.equal(monthly.stub.observed.planArgs.length, 0);
+
+  // On offer: its id and its uses, and the paid plans beside it are exactly the same list.
+  const offered = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listingOf()], plans: [trial(), planRow()] });
+  assert.deepEqual(offered.result?.use.paid?.trial, { id: "plan_trial", includedUses: 20 });
+  assert.deepEqual(offered.result?.use.paid?.plans, none.result?.use.paid?.plans);
+  // A trial alone, on a listing with no paid plan.
+  const alone = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listingOf()], plans: [trial({ includedUses: 5 })] });
+  assert.deepEqual([alone.result?.use.paid?.plans, alone.result?.use.paid?.trial], [[], { id: "plan_trial", includedUses: 5 }]);
 });

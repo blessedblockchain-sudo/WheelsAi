@@ -45,6 +45,7 @@ import type { TaskInputSchema } from "@wheelsai/shared/agent-kind";
 import type { FastifyPluginAsync } from "fastify";
 
 import { agentApiPageOf } from "../services/agentApiPage.js";
+import { trialOfferOf } from "../services/planOffers.js";
 import { PUBLIC_RESULT_MAX_CHARS, PUBLIC_RESULTS_LIMIT } from "../services/publicPageState.js";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -95,6 +96,12 @@ export interface PublicAgentPaidUse {
     /** What each use past the included ones costs. Null = the plan stops until it renews. */
     extraUsePriceCents: bigint | null;
   }>;
+  /**
+   * The free trial the listing offers beside its plans: some uses for a few
+   * days at no price, started once by a buyer's organization. null when it
+   * offers none. Not "Try it", which needs no account and is not told here.
+   */
+  trial?: { id: string; includedUses: number } | null;
 }
 
 /**
@@ -237,6 +244,8 @@ function serializeUse(use: PublicAgentUse) {
             includedUses: plan.includedUses,
             extraUsePriceCents: plan.extraUsePriceCents === null ? null : Number(plan.extraUsePriceCents),
           })),
+          // Its id, its uses and its days; null when the listing offers none.
+          trial: trialOfferOf(paid.trial),
         }
       : null,
     ...(use.chat && {

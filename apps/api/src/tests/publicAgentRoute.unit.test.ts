@@ -611,6 +611,8 @@ test("GET /a/:handle in the paid state carries the terms, the price as a number 
       transcriptsStored: true,
       sendsRequests: true,
       plans: [],
+      // No free trial on offer.
+      trial: null,
     },
     chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
   });
@@ -692,6 +694,7 @@ test("GET /a/:handle sends nothing of a sale but its terms: no other buyer's pri
     "transcriptsStored",
     "sendsRequests",
     "plans",
+    "trial",
   ]);
 });
 
@@ -777,4 +780,33 @@ test("GET /a/:handle for a sold self-running agent sends result dates without te
     lastResultAt: null,
     schedule: null,
   });
+});
+
+test("GET /a/:handle carries the free trial on offer as its id, its uses and its days, and null when there is none", async () => {
+  const withTrial = await makeApp({
+    loadPublicAgent: async () =>
+      paidPage(
+        {},
+        {
+          plans: [{ id: "plan_starter", name: "Starter", priceCents: 900n, includedUses: 500, extraUsePriceCents: 5n }],
+          // What a loader could carry by mistake: none of it crosses.
+          trial: { id: "plan_trial", includedUses: 20, name: "Free trial", status: "active", position: 0, subscribers: 4_711, priceCents: 0n },
+        },
+      ) as never,
+  });
+  const res = await withTrial.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().use.paid.trial, { id: "plan_trial", includedUses: 20, days: 7 });
+  // The paid plans are what they were, and the trial is not one of them.
+  assert.deepEqual(res.json().use.paid.plans, [
+    { id: "plan_starter", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 },
+  ]);
+  for (const forbidden of ["subscribers", "4711", "position", "Free trial"]) {
+    assert.ok(!res.body.includes(forbidden), forbidden);
+  }
+
+  for (const trial of [null, undefined]) {
+    const without = await makeApp({ loadPublicAgent: async () => paidPage({}, { trial }) as never });
+    assert.equal((await without.inject({ method: "GET", url: "/a/eliza" })).json().use.paid.trial, null);
+  }
 });

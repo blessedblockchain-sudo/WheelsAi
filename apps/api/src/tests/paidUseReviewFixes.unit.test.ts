@@ -161,6 +161,8 @@ test("a paid use reads the count of a plan, and its plan's status and name, with
     usedInPeriod: true,
     carriedUses: true,
     extraUsePriceCents: true,
+    // Whether the buyer started the listing's free trial before.
+    trialUsedAt: true,
     plan: { select: { status: true, name: true } },
   });
   const row = { id: "sub-1", includedUses: 500 };

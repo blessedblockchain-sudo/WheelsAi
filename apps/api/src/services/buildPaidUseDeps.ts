@@ -25,9 +25,10 @@ import { buildAgentChatDeps } from "./buildAgentChatDeps.js";
 import { isEmailConfigured, planWarningEmail, sendEmail } from "./email/emailService.js";
 import { productionPublicChatDeps, publicChatLimiter } from "./buildPublicChatDeps.js";
 import { PAID_USE_LIMITS, type PaidAgent, type PaidUseDeps } from "./paidUse.js";
-import { readPlanOffers } from "./planOffers.js";
+import { readPlanOffers, readTrialOffer } from "./planOffers.js";
 import { planWarningRecipients, sendPlanWarning, type PlanWarningDeps } from "./planWarnings.js";
 import { getDefaultRegistry } from "./skills/production.js";
+import { hasAddedCredits } from "./trialStart.js";
 import { USE_LISTING_COLUMNS } from "./useListing.js";
 import { beginUseMetering } from "./useMeteringProduction.js";
 
@@ -67,6 +68,9 @@ export const USE_SUBSCRIPTION_COLUMNS = {
   usedInPeriod: true,
   carriedUses: true,
   extraUsePriceCents: true,
+  // Whether the buyer started the listing's free trial before: a row read
+  // without it offers no trial (services/trialStart.ts).
+  trialUsedAt: true,
   plan: { select: { status: true, name: true } },
 } as const;
 
@@ -136,6 +140,11 @@ export function buildPaidUseDeps(): PaidUseDeps {
     },
 
     loadPlans: (listingId) => readPlanOffers(prisma, listingId),
+
+    // The listing's free trial, and who may take it: an organization that
+    // has added credits it paid for at least once.
+    loadTrial: (listingId) => readTrialOffer(prisma, listingId),
+    addedCredits: (orgId) => hasAddedCredits(prisma, orgId),
 
     readBalance: async (orgId) =>
       (await prisma.creditBalance.findUnique({ where: { orgId }, select: { balanceCents: true } }))?.balanceCents ?? 0n,

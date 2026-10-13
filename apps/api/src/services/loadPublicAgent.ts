@@ -67,7 +67,13 @@ import {
   PAID_USE_PER_BUYER_PER_MINUTE,
   publicPageStateOf,
 } from "./publicPageState.js";
-import { offersPlans, readPlanOffers, type PlanOfferDb, type PlanOfferRow } from "./planOffers.js";
+import {
+  offersPlans,
+  readOffers,
+  type OffersDb,
+  type PlanOfferRow,
+  type TrialOfferRow,
+} from "./planOffers.js";
 import {
   findUseListing,
   isPaidUse,
@@ -142,7 +148,7 @@ type PublicResult = NonNullable<PublicAgentUse["scheduled"]>["latest"][number];
 
 type PublicSchedule = NonNullable<NonNullable<PublicAgentUse["scheduled"]>["schedule"]>;
 
-interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution">, UseListingDb, PlanOfferDb {
+interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution">, UseListingDb, OffersDb {
   agent: {
     findFirst: (args: {
       where: { publicHandle: string; isPublic: boolean };
@@ -193,7 +199,12 @@ export interface LoadPublicAgentDeps {
  * The terms of paid use, from the listing that sells it. null unless a
  * price is set: a free use listing is the public link as it is.
  */
-function paidOf(agent: AgentRow, listing: UseListingRow | null, plans: PlanOfferRow[]): PublicAgentUse["paid"] {
+function paidOf(
+  agent: AgentRow,
+  listing: UseListingRow | null,
+  plans: PlanOfferRow[],
+  trial: TrialOfferRow | null,
+): PublicAgentUse["paid"] {
   if (!listing || !isPaidUse(listing)) return null;
   const priceCents = usePriceCents(listing);
   if (priceCents === null) return null;
@@ -216,6 +227,8 @@ function paidOf(agent: AgentRow, listing: UseListingRow | null, plans: PlanOffer
       includedUses: plan.includedUses,
       extraUsePriceCents: plan.extraUsePriceCents,
     })),
+    // The free trial it offers, by itself: never one of the plans.
+    trial: trial && { id: trial.id, includedUses: trial.includedUses },
   };
 }
 
@@ -339,13 +352,13 @@ export async function loadPublicAgentByPrisma(
   // Before anything of the page is decided: whether use of it is sold at a
   // price. Not caught: without this answer the key must not be sent.
   const useListing = await findUseListing(deps.prisma, agent.id);
-  // The plans it offers, read only for a listing sold at a price per use:
-  // no other listing has any to show.
-  const plans =
+  // The plans it offers and its free trial, read together and only for a
+  // listing sold at a price per use: no other listing has any to show.
+  const offers =
     useListing && isPaidUse(useListing) && offersPlans(useListing)
-      ? await readPlanOffers(deps.prisma, useListing.id)
-      : [];
-  const paid = paidOf(agent, useListing, plans);
+      ? await readOffers(deps.prisma, useListing.id)
+      : { plans: [], trial: null };
+  const paid = paidOf(agent, useListing, offers.plans, offers.trial);
   const soldSchedule = Boolean(paid) && agent.agentKind === "scheduled";
 
   const treasuryRow = agent.listing?.agentToken?.treasury ?? null;

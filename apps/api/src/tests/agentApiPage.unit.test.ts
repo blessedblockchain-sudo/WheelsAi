@@ -152,6 +152,8 @@ test("a listing with plans: the address, the model id, the price per use, the pl
         { id: "plan_starter", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 4 },
         { id: "plan_team", name: "Team", priceCents: 2900, includedUses: 2000, extraUsePriceCents: null },
       ],
+      // This listing offers no free trial (tests/trialReads.unit.test.ts has one that does).
+      trial: null,
       limits: { perMinute: 10, perDayWithoutPlan: 200 },
       usageHeaders: {
         always: ["x-wheelsai-charged-cents", "x-wheelsai-balance-cents"],
@@ -327,4 +329,25 @@ test("the refusals: the statuses the code answers with, one plain sentence each"
 test("the header names are the ones a paid answer carries", () => {
   const built = agentApiPageOf(page())!;
   assert.deepEqual([...built.usageHeaders.always, ...built.usageHeaders.onPlan], [...USAGE_HEADER_NAMES]);
+});
+
+test("the free trial on offer is told beside the plans, as its id, its uses and its days; null with none, and for a listing sold by the month", async () => {
+  const TRIAL = { id: "plan_trial", includedUses: 20, name: "Free trial", status: "active", position: 0, subscribers: 73737 };
+  const offered = await makeApp(page({ trial: TRIAL }));
+  const res = await offered.app.inject({ method: "GET", url: "/a/eliza/api" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().trial, { id: "plan_trial", includedUses: 20, days: 7 });
+  // The paid plans are exactly what they are without a trial.
+  const plain = await makeApp(page());
+  const plainBody = (await plain.app.inject({ method: "GET", url: "/a/eliza/api" })).json();
+  assert.equal(plainBody.trial, null);
+  assert.deepEqual(res.json().plans, plainBody.plans);
+  assertNothingLeaks(res.body);
+  await offered.app.close();
+  await plain.app.close();
+
+  // A loader that carried a trial beside a monthly price: none is offered.
+  const monthly = await makeApp(page({ pricingModel: "monthly", priceCents: 1_500n, unit: "month", trial: TRIAL }));
+  assert.equal((await monthly.app.inject({ method: "GET", url: "/a/eliza/api" })).json().trial, null);
+  await monthly.app.close();
 });

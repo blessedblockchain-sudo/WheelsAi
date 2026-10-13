@@ -16,6 +16,7 @@ import {
   ShoppingBag,
   Coins,
   BarChart3,
+  KeyRound,
 } from "lucide-react";
 
 const pillars = [
@@ -28,7 +29,7 @@ const pillars = [
         icon: Workflow,
         title: "Build Your Way",
         description:
-          "Visual drag-and-drop builder or bring your own code for agents, and multi-step workflows that chain them. No framework lock-in — ever.",
+          "Visual drag-and-drop builder or bring your own code for agents, and multi-step workflows that chain them. No framework lock-in, ever.",
       },
       {
         icon: Database,
@@ -53,7 +54,7 @@ const pillars = [
         icon: Globe,
         title: "Chat Channels + API",
         description:
-          `${liveChatChannelList(" and ")} chat (Web is a widget you paste into your own site) plus an OpenAI-compatible API — one deploy covers them all.`,
+          `${liveChatChannelList(" and ")} chat (Web is a widget you paste into your own site) plus an OpenAI-compatible API: one deploy covers them all.`,
       },
       {
         icon: Cpu,
@@ -74,23 +75,32 @@ const pillars = [
     icon: Store,
     color: "text-[#a855f7]",
     features: [
+      // Plans and the API come first: they are how a buyer keeps paying. The
+      // marketplace's own card keeps what it has always said, for every kind
+      // of product and every way of pricing one.
+      {
+        icon: Coins,
+        title: "Plans With Uses Included",
+        description:
+          "Add up to four plans to a listing: one price for 30 days, a number of uses included, and then a price for each extra use or a stop until the plan renews. Subscribers keep the terms they agreed to.",
+      },
+      {
+        icon: KeyRound,
+        title: "An API Buyers Pay For",
+        description:
+          "Buyers call your agent from their own code through an OpenAI-compatible API, with one key and one balance for every agent they pay for. Every answer says what it cost and how much of the plan is left.",
+      },
       {
         icon: ShoppingBag,
         title: "Marketplace for Every Product",
         description:
-          "List agents, workflows and models for free. Choose free, per-request or subscription pricing. Community-driven discovery.",
-      },
-      {
-        icon: Coins,
-        title: "Four Pricing Models",
-        description:
-          "Free, per-request, monthly, or tokenized — you set the price, and every sale is backed by on-chain receipts.",
+          "List agents, workflows and models for free. Set the price your way: free, per request, monthly or tokenized. You keep 90% of every sale, and every sale is backed by on-chain receipts.",
       },
       {
         icon: BarChart3,
         title: "Agent Tokens",
         description:
-          "Launch a bonding-curve token for your agent. pump.fun-style graduation to full liquidity on Solana.",
+          "Launch a bonding-curve token for your agent, with graduation to full liquidity on Solana.",
       },
     ],
   },
@@ -131,7 +141,7 @@ export function FeaturesGrid() {
             <span className="gradient-text-navy">No Fragmentation.</span>
           </h2>
           <p className="mt-4 text-lg text-navy-200/60 max-w-2xl mx-auto">
-            Everything you need — frameworks, compute, channels, marketplace — unified.
+            Everything you need, unified: frameworks, compute, channels, marketplace.
           </p>
         </div>
 

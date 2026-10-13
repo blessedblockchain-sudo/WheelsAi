@@ -34,7 +34,7 @@ import { MarketplaceNavLinks } from "@/components/marketplace/public-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { listingCountText, priceTextForUse } from "@/lib/listing-cta";
+import { listingCountText, priceTextForUse, priceWithPlans } from "@/lib/listing-cta";
 
 const SORT_OPTIONS = [
   { value: "popular", label: "Most Popular" },
@@ -123,7 +123,10 @@ function AgentCard({
   // A listing that sells use: the buyer uses the creator's agent and gets no
   // copy, so its card says "using it" and gives the price with its unit.
   const sellsUse = listing.sells === "use";
-  const priceText = sellsUse ? priceTextForUse(listing) : formatPrice(listing, tokenPriceMap);
+  // A listing that offers plans says both ways to pay: "From $0.05 a message", and under it the smallest
+  // plan. Null for every other listing, whose card is what it was (lib/listing-cta.ts).
+  const withPlans = priceWithPlans(listing);
+  const priceText = withPlans ? withPlans.from : sellsUse ? priceTextForUse(listing) : formatPrice(listing, tokenPriceMap);
   // The listing says whether it has a token; the token list, keyed by
   // listing, is the fallback for an answer that does not say.
   const hasToken = listing.hasToken ?? tokenPriceMap.has(listing.id);
@@ -210,6 +213,7 @@ function AgentCard({
           </span>
         )}
       </div>
+      {withPlans && <p className="mt-2 text-right text-xs text-muted-foreground">{withPlans.plans}</p>}
     </Link>
   );
 }

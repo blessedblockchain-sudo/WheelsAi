@@ -45,10 +45,14 @@ import {
   type PaidView,
 } from "@/lib/paid-use";
 import {
+  MOVE_UP_WORDS,
   USE_PLAN_WORDS,
   accessAfterRefusal,
   accessAfterUse,
-  planGateView,
+  planMoveDialog,
+  planMoveNotice,
+  planMoveNow,
+  planPageView,
   planStartDialog,
   planStartNotice,
   planTermsOf,
@@ -82,9 +86,10 @@ interface Shown {
 }
 
 /**
- * The plan a person is looking at when they agree. `card` is the object the
- * dialog's sentence was made from, held from the moment the dialog opened:
- * its terms are what is sent, whatever the page has read since.
+ * The plan a person is looking at when they agree, to start it or to move up
+ * to it. `card` is the object the dialog's sentence was made from, held from
+ * the moment the dialog opened: its terms are what is sent, whatever the page
+ * has read since.
  */
 interface ShownPlan {
   listingId: string;
@@ -128,9 +133,17 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const [shownPlan, setShownPlan] = useState<ShownPlan | null>(null);
   // Whether someone who already pays per use has opened the plans.
   const [plansOpen, setPlansOpen] = useState(false);
+  // The bigger plan whose dialog is open, for someone on a plan.
+  const [shownMove, setShownMove] = useState<ShownPlan | null>(null);
+  // Whether someone on a plan has opened the bigger plans.
+  const [biggerOpen, setBiggerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // True from the press that starts a plan until its answer: a second press starts nothing.
   const startingPlan = useRef(false);
+  // The same for a move to a bigger plan: a second press charges nothing.
+  const movingPlan = useRef(false);
+  // True from the press on a bigger plan's card until its dialog is ready: the access is read first.
+  const openingMove = useRef(false);
   // Why a start, a subscription or accepting a price was refused.
   const [notice, setNotice] = useState<PaidNotice | null>(null);
   const [everUsable, setEverUsable] = useState(false);
@@ -198,9 +211,10 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const ready = authed === false || sessionEnded || (authed === true && access !== null);
   // `view` is paidView with, for someone on a plan, the count of what is left as its sentence. `plans` is what
   // the page draws of plans: the cards and where they go, whether they can be started, the count beside
-  // the sentence. A listing with no plans gives paidView and nothing else.
-  const { view, plans } = useMemo(
-    () => planGateView({ authed: signedIn, access: signedIn ? access : null, page: terms, kind }),
+  // the sentence. `moveUp` is the bigger plans someone on a plan can move to, null for everyone else.
+  // A listing with no plans gives paidView and nothing else.
+  const { view, plans, moveUp } = useMemo(
+    () => planPageView({ authed: signedIn, access: signedIn ? access : null, page: terms, kind }),
     [signedIn, access, terms, kind],
   );
 
@@ -289,6 +303,64 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       setShownPlan({ listingId: access.listingId, card, dialog: planStartDialog(card) });
     },
     [access, plans.canStart],
+  );
+
+  // Only the people who may start a plan may move up.
+  const canMoveUp = moveUp?.canMove === true;
+
+  /**
+   * Moves to the bigger plan of the card that was pressed, with that card's terms, then reads where the
+   * person stands: the count line then shows the new plan with the uses brought along. Never throws. A
+   * refusal ends in its sentence, and nothing was charged or changed: plans that changed are drawn again
+   * from the refusal, and the read that follows makes the page true for every other.
+   */
+  const agreeToMove = useCallback(
+    async (agreed: ShownPlan) => {
+      if (movingPlan.current) return;
+      movingPlan.current = true;
+      setBusy(true);
+      setNotice(null);
+      try {
+        await marketplaceApi.movePlan(agreed.listingId, planTermsOf(agreed.card));
+        setBiggerOpen(false);
+      } catch (error) {
+        const refusal = paidUseRefusalOf(error);
+        setNotice(planMoveNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit }));
+        setAccess((held) => accessAfterRefusal(held, refusal));
+      } finally {
+        await readAccess();
+        movingPlan.current = false;
+        setBusy(false);
+        setResultsRead((n) => n + 1);
+      }
+    },
+    [readAccess, unit],
+  );
+
+  /**
+   * A bigger plan's button, pressed. The access is read again first, as a refusal's action does for a
+   * price: the dialog says how many uses come along, and that number must be the one of this moment, not
+   * of when the page loaded (a teammate's uses, or an answer still arriving, are seen only by a read).
+   * The dialog opens only when the card pressed is still on offer with the terms it showed; otherwise the
+   * read has drawn the page as it is and nothing opens. Nothing is sent or charged here.
+   */
+  const pressMove = useCallback(
+    async (card: PlanOffer) => {
+      if (!canMoveUp || openingMove.current) return;
+      openingMove.current = true;
+      setBusy(true);
+      try {
+        const state = await readAccess();
+        if (!state || accessIsPaused(state)) return;
+        const now = planMoveNow(planPageView({ authed: true, access: state, page: terms, kind }).moveUp, card);
+        if (!now) return;
+        setShownMove({ listingId: state.listingId, card: now.card, dialog: planMoveDialog(now.card, now.carriedUses, now.leftUses) });
+      } finally {
+        openingMove.current = false;
+        setBusy(false);
+      }
+    },
+    [canMoveUp, readAccess, terms, kind],
   );
 
   /**
@@ -437,6 +509,34 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
               {plans.countLine && <p className="break-words text-foreground">{plans.countLine}</p>}
               {view.lowCredits && <p className="text-muted-foreground">{view.lowCredits}</p>}
 
+              {/* On a plan, with a bigger one on offer: the bigger plans are one press away, and a move is still asked first. */}
+              {moveUp && (
+                <div className="space-y-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-expanded={biggerOpen}
+                    onClick={() => setBiggerOpen((open) => !open)}
+                  >
+                    {biggerOpen ? MOVE_UP_WORDS.hideBigger : MOVE_UP_WORDS.seeBigger}
+                  </Button>
+                  {biggerOpen && (
+                    <>
+                      <PlanCards
+                        cards={moveUp.cards}
+                        canStart={moveUp.canMove}
+                        busy={busy}
+                        onStart={(card) => void pressMove(card)}
+                        label={MOVE_UP_WORDS.cardsLabel}
+                        buttonLabel={MOVE_UP_WORDS.button}
+                      />
+                      {moveUp.askAdmin && <p className="text-muted-foreground">{moveUp.askAdmin}</p>}
+                    </>
+                  )}
+                </div>
+              )}
+
               {/* Nothing agreed to yet: the plans first, then the price per use with the action below. */}
               {plans.place === "first" && (
                 <>
@@ -568,6 +668,19 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           description={shownPlan.dialog.body}
           confirmLabel={shownPlan.dialog.confirmLabel}
           onConfirm={() => agreeToPlan(shownPlan)}
+        />
+      )}
+
+      {shownMove && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setShownMove(null);
+          }}
+          title={shownMove.dialog.title}
+          description={shownMove.dialog.body}
+          confirmLabel={shownMove.dialog.confirmLabel}
+          onConfirm={() => agreeToMove(shownMove)}
         />
       )}
     </section>

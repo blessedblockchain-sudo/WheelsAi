@@ -33,6 +33,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TrialSettingsDialog } from "@/components/marketplace/trial-settings-dialog";
 import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
+import { priceWithPlans } from "@/lib/listing-cta";
 
 type RevenueSummary = Pick<
   Awaited<ReturnType<typeof marketplaceApi.getRevenue>>,
@@ -327,7 +328,8 @@ export default function MarketplaceDashboardPage() {
                             </div>
                             <p className="text-sm text-muted-foreground">
                               {listing.category.replace("-", " ")} &middot;{" "}
-                              {formatPrice(listing)}
+                              {/* With plans on offer: both ways to pay, in the marketplace's own words. */}
+                              {priceWithPlans(listing)?.line ?? formatPrice(listing)}
                             </p>
                           </div>
                         </div>

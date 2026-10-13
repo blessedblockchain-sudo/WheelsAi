@@ -13,6 +13,10 @@ export interface PlanCardsProps {
   busy: boolean;
   /** The card that was pressed, the very object drawn here: what the dialog says and what is agreed to. */
   onStart(card: PlanOffer): void;
+  /** What the list is called for someone who cannot see it. "Plans" unless the page says otherwise. */
+  label?: string;
+  /** The words on each card's button. Starting the plan unless the page says otherwise. */
+  buttonLabel?: string;
 }
 
 /**
@@ -20,10 +24,17 @@ export interface PlanCardsProps {
  * happens after them, and the button that starts it. Nothing is charged by a
  * press here: the page asks first, in its dialog.
  */
-export function PlanCards({ cards, canStart, busy, onStart }: PlanCardsProps) {
+export function PlanCards({
+  cards,
+  canStart,
+  busy,
+  onStart,
+  label = "Plans",
+  buttonLabel = USE_PLAN_WORDS.startButton,
+}: PlanCardsProps) {
   if (cards.length === 0) return null;
   return (
-    <ul aria-label="Plans" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+    <ul aria-label={label} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
       {cards.map((card) => {
         const nameId = `plan-${card.id}-name`;
         return (
@@ -45,7 +56,7 @@ export function PlanCards({ cards, canStart, busy, onStart }: PlanCardsProps) {
                 disabled={busy}
                 onClick={() => onStart(card)}
               >
-                {USE_PLAN_WORDS.startButton}
+                {buttonLabel}
               </Button>
             )}
           </li>

@@ -47,9 +47,9 @@ export function priceTextForUse(listing: ListingPricing): string {
 
 /**
  * The smallest price among the plans a listing offers, in cents; null when it
- * offers none or the read did not say. The search says it outright
- * (`plansFromCents`); the reads that carry the plans themselves are measured
- * here.
+ * offers none or the read did not say. The search and the featured row say
+ * it outright (`plansFromCents`), so a card of either reads the same; the
+ * reads that carry the plans themselves are measured here.
  */
 export function plansFromCentsOf(listing: Pick<ListingPricing, "plans" | "plansFromCents">): number | null {
   const isPrice = (cents: unknown): cents is number => typeof cents === "number" && Number.isFinite(cents) && cents > 0;

@@ -16,7 +16,7 @@
  */
 import type { PaidUsePlan, PlanOffer, PlanTerms } from "./api";
 import { formatCents } from "./agent-page";
-import type { InstalledConfirm, InstalledFormat, InstalledLicence, InstalledLine } from "./installed-rows";
+import type { InstalledConfirm, InstalledFormat, InstalledLicence, InstalledLine, InstalledViewer } from "./installed-rows";
 import { shortDay } from "./paid-use";
 import {
   carriedOnMove,
@@ -124,9 +124,14 @@ export function renewalNotThroughLine(priceCents: number | null, before: string)
  * The line under the row: what is left of the plan, in the words of the
  * agent's page. While a renewal is being retried the row says that first,
  * then the count with no day in it (the period's end is behind the buyer).
- * Null when the row is not on a plan.
+ * Someone who may not spend is not told to move up: the row does not offer
+ * it to them. Null when the row is not on a plan.
  */
-export function planLine(install: InstalledLicence, fmt: InstalledFormat = {}): InstalledLine | null {
+export function planLine(
+  install: InstalledLicence,
+  fmt: InstalledFormat = {},
+  viewer: InstalledViewer = {},
+): InstalledLine | null {
   const plan = planOfInstall(install);
   const sub = install.subscription;
   const read = planCountOf(plan);
@@ -136,8 +141,9 @@ export function planLine(install: InstalledLicence, fmt: InstalledFormat = {}): 
   const count = sellsUseNow(install) ? read : { ...read, extraUsePriceCents: null };
   const dates = datesOf(fmt);
   const pastDue = sub.status === "past_due";
-  // The row offers Move up whenever a bigger plan is on offer, so the line may point at it.
-  const moveUp = biggerPlans(install).length > 0;
+  // The row offers Move up whenever a bigger plan is on offer, so the line may point at it. Not to a
+  // member who may not spend, whose row does not offer it.
+  const moveUp = viewer.canSpend !== false && biggerPlans(install).length > 0;
   const text = planCountLine({ plan: count, endsAt: sub.currentPeriodEnd, pastDue, moveUp, dates });
   if (pastDue) {
     const before = shortDay(sub.graceEndsAt ?? sub.currentPeriodEnd, dates);

@@ -12,6 +12,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { INSTALLED_PLAN_WORDS } from "./installed-plans";
+import { INSTALLED_WORDS } from "./installed-rows";
+import { USAGE_WORDS } from "./usage-view";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PAGE = readFileSync(join(here, "..", "app/(dashboard)/dashboard/marketplace/installs/page.tsx"), "utf8");
@@ -83,4 +85,31 @@ test("resuming a renewal that is refused shows the API's sentence and leaves the
   assert.match(renewal, /toast\.error\(getErrorMessage\(error, "Could not update the subscription"\)\);/);
   // Only a 409, or a 404 for use, reads the rows again: a 403 changes nothing on the page.
   assert.match(renewal, /if \(error instanceof ApiError && \(error\.status === 409 \|\| \(using && error\.status === 404\)\)\) loadInstalls\(\);/);
+});
+
+test("who may spend is read beside the rows, and each row is drawn for that person", () => {
+  assert.match(PAGE, /const \{ installs, canSpend \} = await marketplaceApi\.getMyInstalls\(\);/);
+  assert.match(PAGE, /setCanSpend\(canSpend\);/);
+  // Unknown until the API says: only a clear "no" changes a row.
+  assert.match(PAGE, /const \[canSpend, setCanSpend\] = useState<boolean \| undefined>\(undefined\);/);
+  assert.match(PAGE, /const rows = installs\.map\(\(install\) => \(\{ install, row: installedRow\(install, \{\}, \{ canSpend \}\) \}\)\);/);
+  assert.match(PAGE, /\{rows\.map\(\(\{ install, row \}\) => \{/);
+  // The page decides nothing about an action itself: it draws the row's own list.
+  assert.equal(/canSpend (===|!==) (true|false) [&|?]/.test(PAGE), false);
+  assert.match(PAGE, /\{row\.actions\.map\(\(action\) => \{/);
+});
+
+test("a member reads who to ask once, in the pure file's words", () => {
+  assert.match(PAGE, /const askAdmin = askAdminOnce\(rows\.map\(\(\{ row \}\) => row\)\);/);
+  assert.equal(PAGE.split("{askAdmin}").length, 2);
+  assert.match(PAGE, /\{askAdmin && <p [^>]*>\{askAdmin\}<\/p>\}/);
+  assert.equal(PAGE.includes(INSTALLED_WORDS.askAdmin), false);
+  // A list of bigger plans left open closes for someone who may not spend.
+  assert.match(PAGE, /if \(canSpend === false\) setChoosingFor\(null\);/);
+});
+
+test("the page links to the usage page in the design's words", () => {
+  assert.match(PAGE, /<Link href=\{USAGE_HREF\} [^>]*>\s+\{USAGE_WORDS\.linkLabel\}\s+<\/Link>/);
+  assert.equal(PAGE.includes(USAGE_WORDS.linkLabel), false);
+  assert.equal(PAGE.includes('"/dashboard/usage"'), false);
 });

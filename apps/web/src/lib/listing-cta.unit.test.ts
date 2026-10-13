@@ -3,7 +3,10 @@
  *   cd apps/web && npx tsx --test src/lib/listing-cta.unit.test.ts
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   copyPriceText,
@@ -295,6 +298,33 @@ test("the smallest plan price: said by the search, or measured from the plans a 
   assert.equal(plansFromCentsOf({}), null);
   assert.equal(plansFromCentsOf({ plansFromCents: 0 }), null);
   assert.equal(plansFromCentsOf({ plansFromCents: Number.NaN, plans: [STARTER] }), 900);
+});
+
+test("a card of the featured row says its plans as a card of the search does", () => {
+  // The featured row sends what the search sends: the smallest plan price, and no list of plans.
+  const featured = listing({ plansFromCents: 900 });
+  assert.equal(featured.plans, undefined);
+  assert.deepEqual(priceWithPlans(featured), {
+    from: "From $0.05 a message",
+    plans: "Plans from $9.00 for 30 days.",
+    line: "From $0.05 a message. Plans from $9.00 for 30 days.",
+  });
+  // A featured listing with no plans is the card it was.
+  assert.equal(priceWithPlans(listing({ plansFromCents: null })), null);
+  assert.equal(priceWithPlans(listing()), null);
+});
+
+test("the marketplace draws the featured row with the card of the search, plans line included", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const page = readFileSync(join(here, "..", "app/marketplace/page.tsx"), "utf8");
+  // One card for both rows, and it takes the plans line from this file.
+  assert.match(page, /const withPlans = priceWithPlans\(listing\);/);
+  assert.match(page, /\{withPlans && <p [^>]*>\{withPlans\.plans\}<\/p>\}/);
+  const row = page.slice(page.indexOf("{featuredListings.map((listing) => ("), page.indexOf("Trending Tokens Section"));
+  assert.match(row, /<AgentCard\s+key=\{listing\.id\}\s+listing=\{listing\}/);
+  assert.equal(page.split("function AgentCard(").length, 2);
+  // The page writes no sentence about plans of its own.
+  assert.equal(/Plans from|for 30 days/.test(page), false);
 });
 
 test("use with plans: 'From $0.05 a message. Plans from $9.00 for 30 days.'", () => {

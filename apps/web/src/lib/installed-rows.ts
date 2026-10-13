@@ -98,6 +98,23 @@ export interface InstalledRow {
   actions: InstalledAction[];
   /** The listing's pricing as this row shows it: what an acceptance sends as `expected`. */
   terms: MarketplacePricingTerms;
+  /**
+   * Set when the row holds back Move up or Resume renewal because the person
+   * reading it may not spend for the organization. The page says it once for
+   * the whole list (`askAdminOnce`). Absent from every other row, which is
+   * exactly the row it was before this was said.
+   */
+  askAdmin?: string;
+}
+
+/** Who reads the page, as `GET /api/marketplace/my-installs` says it. */
+export interface InstalledViewer {
+  /**
+   * Whether they may start, move up or resume: an owner or admin of the
+   * organization. Only a clear "no" changes a row; true or absent leaves the
+   * page what it has always been.
+   */
+  canSpend?: boolean;
 }
 
 export interface InstalledConfirm {
@@ -124,6 +141,8 @@ export const INSTALLED_WORDS = {
   planEnded: "Your plan ended. Choose a plan or pay per use to keep using it.",
   stopped: "You have stopped using this agent.",
   nowFree: "This agent is now free to use on its page.",
+  /** Said once to a member who may not move up or resume a renewal. */
+  askAdmin: "Ask an owner or admin of your organization to move up a plan or to resume a renewal.",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -448,7 +467,7 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
  * (only when the listing offers a plan that costs more), cancel or resume
  * the renewal, stop.
  */
-function rowForPlan(install: InstalledLicence, fmt: InstalledFormat): InstalledRow {
+function rowForPlan(install: InstalledLicence, fmt: InstalledFormat, viewer: InstalledViewer): InstalledRow {
   const { listing } = install;
   const openHref = install.agent.handle ? `/a/${install.agent.handle}` : null;
   const renewal = planRenewal(install);
@@ -466,7 +485,7 @@ function rowForPlan(install: InstalledLicence, fmt: InstalledFormat): InstalledR
     kind: "use",
     badge: INSTALLED_WORDS.use,
     priceLabel: planBadge(install) ?? priceTextForUse(listing),
-    line: planLine(install, fmt) ?? lineForUse(install, fmt),
+    line: planLine(install, fmt, viewer) ?? lineForUse(install, fmt),
     openHref,
     usage: { count: usesText(install.totalRequests), spent: `${formatCents(install.totalSpentCents)} spent` },
     actions,
@@ -474,8 +493,8 @@ function rowForPlan(install: InstalledLicence, fmt: InstalledFormat): InstalledR
   };
 }
 
-function rowForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledRow {
-  if (planOfInstall(install)) return rowForPlan(install, fmt);
+function rowForUse(install: InstalledLicence, fmt: InstalledFormat, viewer: InstalledViewer): InstalledRow {
+  if (planOfInstall(install)) return rowForPlan(install, fmt, viewer);
   const { listing, subscription: sub, access } = install;
   const openHref = install.agent.handle ? `/a/${install.agent.handle}` : null;
   const offer = offerForUse(install);
@@ -575,9 +594,33 @@ function confirmForUse(install: InstalledLicence, action: InstalledActionId, fmt
 // The row
 // ---------------------------------------------------------------------------
 
-/** One row of Installed. */
-export function installedRow(install: InstalledLicence, fmt: InstalledFormat = {}): InstalledRow {
-  return install.kind === "use" ? rowForUse(install, fmt) : copyRow(install, fmt);
+/** The actions that turn a charge on, which the API refuses to someone who may not spend. */
+const NEEDS_SPEND: ReadonlyArray<InstalledActionId> = ["move_up", "resume"];
+
+/**
+ * One row of Installed. For a member who may not spend (`viewer.canSpend` is
+ * false) the row does not offer Move up or Resume renewal, its line does not
+ * point at moving up, and `askAdmin` says who to ask. For everyone else it
+ * is the row it has always been.
+ */
+export function installedRow(
+  install: InstalledLicence,
+  fmt: InstalledFormat = {},
+  viewer: InstalledViewer = {},
+): InstalledRow {
+  const row = install.kind === "use" ? rowForUse(install, fmt, viewer) : copyRow(install, fmt);
+  if (viewer.canSpend !== false) return row;
+  const actions = row.actions.filter((action) => !NEEDS_SPEND.includes(action.id));
+  if (actions.length === row.actions.length) return row;
+  return { ...row, actions, askAdmin: INSTALLED_WORDS.askAdmin };
+}
+
+/**
+ * "Ask an owner or admin of your organization to move up a plan or to resume a renewal.", once
+ * for the whole list, when any row held something back. Null otherwise.
+ */
+export function askAdminOnce(rows: ReadonlyArray<Pick<InstalledRow, "askAdmin">>): string | null {
+  return rows.find((row) => row.askAdmin !== undefined)?.askAdmin ?? null;
 }
 
 /**

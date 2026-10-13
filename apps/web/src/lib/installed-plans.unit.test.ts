@@ -392,3 +392,14 @@ test("nothing here names a month, a count with no end, a token, or anyone else o
     assert.doesNotMatch(said, /a month|unlimited|token|subscriber|\u2014|undefined|NaN/i);
   }
 });
+
+test("the line points at moving up only for someone who may spend", () => {
+  const usedUp = onPlan({ subscription: sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100 }) }) });
+  const told = "You have used all 500 uses. It starts again on 12 Nov, or move up now.";
+  assert.equal(planLine(usedUp, FMT)?.text, told);
+  assert.equal(planLine(usedUp, FMT, {})?.text, told);
+  assert.equal(planLine(usedUp, FMT, { canSpend: true })?.text, told);
+  assert.equal(planLine(usedUp, FMT, { canSpend: false })?.text, "You have used all 500 uses. It starts again on 12 Nov.");
+  // With uses left the line never spoke of moving, so it is the same for everyone.
+  assert.deepEqual(planLine(onPlan(), FMT, { canSpend: false }), planLine(onPlan(), FMT));
+});

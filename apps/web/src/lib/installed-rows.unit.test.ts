@@ -8,6 +8,7 @@ import { test } from "node:test";
 import type { MarketplaceInstallAccess, MarketplaceListing, MarketplaceSubscription, PaidUsePlan, PlanOffer } from "./api";
 import {
   INSTALLED_WORDS,
+  askAdminOnce,
   installedConfirm,
   installedRow,
   shortDay,
@@ -679,4 +680,85 @@ test("a subscriber with no plan on a listing that offers plans is still today's 
   // And someone who pays per use on that listing reads no plan either.
   const perUse = installedRow(using({ listing: listing({ plans: [STARTER, PRO] }) }), FMT);
   assert.deepEqual(perUse, installedRow(using(), FMT));
+});
+
+// ============================================
+// A member who may not spend
+// ============================================
+
+const MEMBER = { canSpend: false };
+
+test("a member who may not spend is not offered Move up or Resume renewal, and is told who to ask", () => {
+  const moving = installedRow(onPlan(), FMT, MEMBER);
+  assert.deepEqual(labels(moving), ["Open", "View Listing", "Cancel renewal", "Write Review", "Stop using"]);
+  assert.equal(moving.askAdmin, "Ask an owner or admin of your organization to move up a plan or to resume a renewal.");
+
+  const cancelled = onPlan({ subscription: sub({ cancelAtPeriodEnd: true, plan: notRenewing() }) });
+  const resuming = installedRow(cancelled, FMT, MEMBER);
+  assert.deepEqual(labels(resuming), ["Open", "View Listing", "Write Review", "Stop using"]);
+  assert.equal(resuming.askAdmin, INSTALLED_WORDS.askAdmin);
+  // Everything else on the row is what an owner reads.
+  const { actions: _a, askAdmin: _b, ...rest } = resuming;
+  const { actions: _c, askAdmin: _d, ...owners } = installedRow(cancelled, FMT, { canSpend: true });
+  assert.deepEqual(rest, owners);
+});
+
+test("a member is not told to move up by the line of a plan that is used up", () => {
+  const usedUp = onPlan({ subscription: sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100 }) }) });
+  assert.equal(installedRow(usedUp, FMT).line?.text, "You have used all 500 uses. It starts again on 12 Nov, or move up now.");
+  assert.equal(installedRow(usedUp, FMT, MEMBER).line?.text, "You have used all 500 uses. It starts again on 12 Nov.");
+});
+
+test("a month with no count and a copy: Resume renewal is held back the same way", () => {
+  const monthly = listing(MONTHLY);
+  const use = using({ access: "subscribed", listing: monthly, subscription: sub({ cancelAtPeriodEnd: true }) });
+  assert.ok(labels(installedRow(use, FMT)).includes("Resume renewal"));
+  const held = installedRow(use, FMT, MEMBER);
+  assert.equal(labels(held).includes("Resume renewal"), false);
+  assert.equal(held.askAdmin, INSTALLED_WORDS.askAdmin);
+
+  const owned = copy({ access: "subscribed", listing: listing({ sells: "copies", ...MONTHLY, unit: null }), subscription: sub({ cancelAtPeriodEnd: true }) });
+  assert.ok(labels(installedRow(owned, FMT)).includes("Resume renewal"));
+  const heldCopy = installedRow(owned, FMT, MEMBER);
+  assert.equal(labels(heldCopy).includes("Resume renewal"), false);
+  assert.equal(heldCopy.askAdmin, INSTALLED_WORDS.askAdmin);
+});
+
+test("a row with nothing held back says nothing, whoever reads it", () => {
+  // Cancelling a renewal and stopping turn no charge on: a member keeps them.
+  const top = onPlan({ listing: listing({ plans: [STARTER] }) });
+  const row = installedRow(top, FMT, MEMBER);
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Cancel renewal", "Write Review", "Stop using"]);
+  assert.equal(row.askAdmin, undefined);
+  assert.deepEqual(row, installedRow(top, FMT));
+  for (const { name, install } of useCases()) {
+    const mine = installedRow(install, FMT, MEMBER);
+    if (mine.askAdmin === undefined) assert.deepEqual(mine, installedRow(install, FMT), name);
+  }
+});
+
+test("when the person may spend, or the API does not say, the page is what it is today", () => {
+  const shapes = [
+    onPlan(),
+    onPlan({ subscription: sub({ cancelAtPeriodEnd: true, plan: notRenewing() }) }),
+    onPlan({ subscription: sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100 }) }) }),
+    using({ access: "subscribed", listing: listing(MONTHLY), subscription: sub({ cancelAtPeriodEnd: true }) }),
+    copy({ access: "subscribed", listing: listing({ sells: "copies", ...MONTHLY, unit: null }), subscription: sub({ cancelAtPeriodEnd: true }) }),
+  ];
+  for (const install of shapes) {
+    const today = installedRow(install, FMT);
+    assert.equal(today.askAdmin, undefined);
+    assert.deepEqual(installedRow(install, FMT, { canSpend: true }), today);
+    assert.deepEqual(installedRow(install, FMT, {}), today);
+    assert.deepEqual(installedRow(install, FMT, { canSpend: undefined }), today);
+  }
+});
+
+test("the page says who to ask once, however many rows hold something back", () => {
+  const held = installedRow(onPlan(), FMT, MEMBER);
+  const plain = installedRow(using(), FMT, MEMBER);
+  assert.equal(askAdminOnce([]), null);
+  assert.equal(askAdminOnce([plain]), null);
+  assert.equal(askAdminOnce([plain, held, held]), INSTALLED_WORDS.askAdmin);
+  assert.equal(askAdminOnce([installedRow(onPlan(), FMT)]), null);
 });

@@ -42,12 +42,14 @@ import { marketplaceApi, ApiError, getErrorMessage, type PlanOffer } from "@/lib
 import { INSTALLED_PLAN_WORDS, moveUpChoice, moveUpConfirm, moveUpRefusal, movedLine } from "@/lib/installed-plans";
 import {
   INSTALLED_WORDS,
+  askAdminOnce,
   installedConfirm,
   installedRow,
   type InstalledAction,
   type InstalledActionId,
   type InstalledLicence,
 } from "@/lib/installed-rows";
+import { USAGE_HREF, USAGE_WORDS } from "@/lib/usage-view";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
 /** A row of Installed: an agent the organization uses, or a copy it owns. */
@@ -133,6 +135,10 @@ export default function InstalledAgentsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [reviewingListingId, setReviewingListingId] = useState<string | null>(null);
+  // Whether the person may start, move up or resume, as the API says it beside the rows. Only a clear
+  // "no" changes the page: until it is known, and from an API that does not say, the rows are what
+  // they have always been.
+  const [canSpend, setCanSpend] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     loadInstalls();
@@ -140,8 +146,11 @@ export default function InstalledAgentsPage() {
 
   async function loadInstalls() {
     try {
-      const { installs } = await marketplaceApi.getMyInstalls();
+      const { installs, canSpend } = await marketplaceApi.getMyInstalls();
       setInstalls(installs);
+      setCanSpend(canSpend);
+      // Someone who may not spend is offered no bigger plan: a list of them left open closes.
+      if (canSpend === false) setChoosingFor(null);
       setLoadError(null);
     } catch (error) {
       setLoadError(error);
@@ -298,6 +307,11 @@ export default function InstalledAgentsPage() {
     }
   }
 
+  // Each row as it is drawn for this person, and the one sentence for a member whose rows hold
+  // back moving up or resuming a renewal.
+  const rows = installs.map((install) => ({ install, row: installedRow(install, {}, { canSpend }) }));
+  const askAdmin = askAdminOnce(rows.map(({ row }) => row));
+
   const totalSpent = installs.reduce((sum, i) => sum + i.totalSpentCents, 0) / 100;
   const totalRequests = installs.reduce((sum, i) => sum + i.totalRequests, 0);
 
@@ -370,10 +384,15 @@ export default function InstalledAgentsPage() {
 
             {/* Installed Agents List */}
             <Card>
-              <CardHeader>
+              <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
                 <CardTitle>Your agents</CardTitle>
+                <Link href={USAGE_HREF} className="text-sm text-primary underline-offset-4 hover:underline">
+                  {USAGE_WORDS.linkLabel}
+                </Link>
               </CardHeader>
               <CardContent>
+                {/* Said once, to a member whose rows hold back moving up or resuming a renewal */}
+                {askAdmin && <p className="mb-2 text-sm text-muted-foreground">{askAdmin}</p>}
                 {isLoading ? (
                   <InstallRowsSkeleton />
                 ) : installs.length === 0 ? (
@@ -386,8 +405,7 @@ export default function InstalledAgentsPage() {
                   />
                 ) : (
                   <div className="divide-y">
-                    {installs.map((install) => {
-                      const row = installedRow(install);
+                    {rows.map(({ install, row }) => {
                       return (
                         <div key={install.id} className="flex items-center justify-between gap-4 py-4">
                           <div className="flex min-w-0 items-center gap-4">

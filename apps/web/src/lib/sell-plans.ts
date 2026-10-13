@@ -64,7 +64,7 @@ export interface PlanLimits {
  */
 export const DEFAULT_PLAN_LIMITS: PlanLimits = {
   maxPlans: 4,
-  maxIncludedUses: 6_000,
+  maxIncludedUses: 100_000,
   minPlanPriceCents: 100,
   minExtraUsePriceCents: 5,
 };

@@ -40,11 +40,13 @@ export const MIN_PLAN_CENTS_PER_INCLUDED_USE = 1n;
 export const MIN_INCLUDED_USES = 1;
 
 /**
- * The most uses a plan can include. A plan holder is still held to the
- * limit of uses a day, so more than this could not be used in 30 days. The
- * database allows 100,000.
+ * The most uses a plan can include. A buyer on a plan is held to the plan's
+ * count and to the uses a minute, not to a number of uses a day
+ * (services/paidUse.ts), so the count is what a plan sells. This is also the
+ * most the database's check allows. At a cent for each included use such a
+ * plan costs at least $1,000.00.
  */
-export const MAX_INCLUDED_USES = 6_000;
+export const MAX_INCLUDED_USES = 100_000;
 
 /**
  * The smallest price of one use past the included ones. It is the floor of

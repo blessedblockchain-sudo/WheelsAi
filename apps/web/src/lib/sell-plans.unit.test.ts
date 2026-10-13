@@ -91,7 +91,7 @@ test("the words of the block are the design's", () => {
 });
 
 test("the limits come from the capabilities, and are the API's own when they could not be read", () => {
-  assert.deepEqual(DEFAULT_PLAN_LIMITS, { maxPlans: 4, maxIncludedUses: 6000, minPlanPriceCents: 100, minExtraUsePriceCents: 5 });
+  assert.deepEqual(DEFAULT_PLAN_LIMITS, { maxPlans: 4, maxIncludedUses: 100_000, minPlanPriceCents: 100, minExtraUsePriceCents: 5 });
   assert.deepEqual(planLimitsOf(null), DEFAULT_PLAN_LIMITS);
   assert.deepEqual(planLimitsOf({}), DEFAULT_PLAN_LIMITS);
   assert.deepEqual(
@@ -156,10 +156,11 @@ test("a row is checked field by field, with a sentence under each", () => {
   for (const uses of ["1.5", "abc", "-3", "1e3"]) {
     assert.deepEqual(errorsOf({ uses }), { uses: "Enter the uses as a whole number, like 500." }, uses);
   }
-  assert.deepEqual(errorsOf({ uses: "0" }), { uses: "A plan includes between 1 and 6,000 uses." });
-  assert.deepEqual(errorsOf({ uses: "6001" }), { uses: "A plan includes between 1 and 6,000 uses." });
-  assert.deepEqual(errorsOf({ uses: "99999999999999" }), { uses: "A plan includes between 1 and 6,000 uses." });
-  assert.equal(checkPlanRow(row({ price: "60.00", uses: "6000" })).ok, true);
+  assert.deepEqual(errorsOf({ uses: "0" }), { uses: "A plan includes between 1 and 100,000 uses." });
+  assert.deepEqual(errorsOf({ uses: "100001" }), { uses: "A plan includes between 1 and 100,000 uses." });
+  assert.deepEqual(errorsOf({ uses: "99999999999999" }), { uses: "A plan includes between 1 and 100,000 uses." });
+  assert.equal(checkPlanRow(row({ price: "60.00", uses: "6001" })).ok, true);
+  assert.equal(checkPlanRow(row({ price: "1000.00", uses: "100000" })).ok, true);
 
   assert.deepEqual(errorsOf({ ending: "extra", extraPrice: "" }), { extraPrice: "Enter a price for each extra use." });
   assert.deepEqual(errorsOf({ ending: "extra", extraPrice: "0.049" }), {

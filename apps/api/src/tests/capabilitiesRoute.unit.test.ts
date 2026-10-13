@@ -104,7 +104,7 @@ test("with nothing switched on, nothing is available and the shape is still whol
       perBuyerPerDay: 200,
       minPricePerUseCents: 5,
       maxPlans: 4,
-      maxIncludedUses: 6000,
+      maxIncludedUses: 100_000,
       minPlanPriceCents: 100,
       minExtraUsePriceCents: 5,
       freeModelDailyAllowance: null,
@@ -312,7 +312,7 @@ test("paidUse carries the buyer's limits, the smallest price of a use, and the c
   });
   assert.deepEqual(
     [MAX_PAID_PLANS, MAX_INCLUDED_USES, MIN_PLAN_PRICE_CENTS, MIN_EXTRA_USE_PRICE_CENTS],
-    [4, 6_000, 100n, 5n],
+    [4, 100_000, 100n, 5n],
   );
   // The caller's organization, never one named in the request.
   assert.deepEqual(asked, ["org_1"]);
@@ -337,7 +337,7 @@ test("paidUse fails closed on the allowance alone: an unreadable or senseless nu
     perBuyerPerDay: 200,
     minPricePerUseCents: 5,
     maxPlans: 4,
-    maxIncludedUses: 6000,
+    maxIncludedUses: 100_000,
     minPlanPriceCents: 100,
     minExtraUsePriceCents: 5,
   };

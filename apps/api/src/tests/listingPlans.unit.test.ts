@@ -49,7 +49,7 @@ test("the numbers", () => {
   assert.equal(MIN_PLAN_PRICE_CENTS, 100n);
   assert.equal(MIN_PLAN_CENTS_PER_INCLUDED_USE, 1n);
   assert.equal(MIN_INCLUDED_USES, 1);
-  assert.equal(MAX_INCLUDED_USES, 6000);
+  assert.equal(MAX_INCLUDED_USES, 100_000);
   assert.equal(MIN_EXTRA_USE_PRICE_CENTS, 5n);
   // One floor for a use sold by itself, extra or not.
   assert.equal(MIN_EXTRA_USE_PRICE_CENTS, MIN_PRICE_PER_USE_CENTS);
@@ -78,7 +78,7 @@ test("the edges of each number are allowed", () => {
     plan({ name: "x".repeat(MAX_PLAN_NAME_CHARS) }),
     plan({ priceCents: 100n, includedUses: 100 }),
     plan({ priceCents: 100n, includedUses: 1 }),
-    plan({ priceCents: 6000n, includedUses: 6000, extraUsePriceCents: 5n }),
+    plan({ priceCents: 100_000n, includedUses: 100_000, extraUsePriceCents: 5n }),
   ];
   assert.equal(edges.length, MAX_PAID_PLANS);
   assert.equal(checkPlanSet(LISTING, edges).ok, true);
@@ -120,14 +120,26 @@ test("a paid plan costs at least $1.00, and at least 1 cent for each included us
   });
 });
 
-test("included uses are a whole number from 1 to 6,000", () => {
-  for (const includedUses of [0, -1, 1.5, 6001, 100_000, Number.NaN, Number.POSITIVE_INFINITY]) {
+test("included uses are a whole number from 1 to 100,000", () => {
+  for (const includedUses of [0, -1, 1.5, 100_001, 1_000_000, Number.NaN, Number.POSITIVE_INFINITY]) {
     assert.deepEqual(
-      fieldsOf(checkPlanSet(LISTING, [plan({ priceCents: 200_000n, includedUses })])),
-      { "plans[0].includedUses": "A plan includes between 1 and 6,000 uses." },
+      fieldsOf(checkPlanSet(LISTING, [plan({ priceCents: 2_000_000n, includedUses })])),
+      { "plans[0].includedUses": "A plan includes between 1 and 100,000 uses." },
       String(includedUses),
     );
   }
+  // What a buyer on a plan could not use under 200 uses a day is allowed now.
+  for (const includedUses of [6_001, 50_000, 100_000]) {
+    assert.equal(checkPlanSet(LISTING, [plan({ priceCents: 2_000_000n, includedUses })]).ok, true, String(includedUses));
+  }
+});
+
+test("the biggest plan costs at least $1,000.00: a cent for each use it includes", () => {
+  assert.equal(BigInt(MAX_INCLUDED_USES) * MIN_PLAN_CENTS_PER_INCLUDED_USE, 100_000n);
+  assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [plan({ priceCents: 99_999n, includedUses: 100_000 })])), {
+    "plans[0].includedUses": "At $999.99 a plan can include at most 99,999 uses.",
+  });
+  assert.equal(checkPlanSet(LISTING, [plan({ priceCents: 100_000n, includedUses: 100_000 })]).ok, true);
 });
 
 test("the extra price is none, or at least 5 cents", () => {

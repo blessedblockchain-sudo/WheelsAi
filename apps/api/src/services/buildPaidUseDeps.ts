@@ -19,6 +19,7 @@ import { peekApiKeySpend, type ApiKeySpendReadDb } from "./apiKeySpend.js";
 import { buildAgentChatDeps } from "./buildAgentChatDeps.js";
 import { productionPublicChatDeps, publicChatLimiter } from "./buildPublicChatDeps.js";
 import { PAID_USE_LIMITS, type PaidAgent, type PaidUseDeps } from "./paidUse.js";
+import { readPlanOffers } from "./planOffers.js";
 import { getDefaultRegistry } from "./skills/production.js";
 import { USE_LISTING_COLUMNS } from "./useListing.js";
 import { beginUseMetering } from "./useMeteringProduction.js";
@@ -59,16 +60,16 @@ export const USE_SUBSCRIPTION_COLUMNS = {
   usedInPeriod: true,
   carriedUses: true,
   extraUsePriceCents: true,
-  plan: { select: { status: true } },
+  plan: { select: { status: true, name: true } },
 } as const;
 
-/** The row as the paid service reads it: the plan's status becomes `planRetired`. */
-export function useSubscriptionOf<Row extends { plan: { status: string } | null }>(
+/** The row as the paid service reads it: the plan's status becomes `planRetired`, its name `planName`. */
+export function useSubscriptionOf<Row extends { plan: { status: string; name?: string } | null }>(
   sub: Row,
-): Omit<Row, "plan"> & { planRetired: boolean } {
+): Omit<Row, "plan"> & { planRetired: boolean; planName: string | null } {
   const { plan, ...row } = sub;
   // A plan its creator ended is not renewed: no days of grace after the period.
-  return { ...row, planRetired: plan?.status === "retired" };
+  return { ...row, planRetired: plan?.status === "retired", planName: plan?.name ?? null };
 }
 
 let chatDeps: AgentChatDeps | null = null;
@@ -107,6 +108,8 @@ export function buildPaidUseDeps(): PaidUseDeps {
       ]);
       return { licence, sub: sub && useSubscriptionOf(sub) };
     },
+
+    loadPlans: (listingId) => readPlanOffers(prisma, listingId),
 
     readBalance: async (orgId) =>
       (await prisma.creditBalance.findUnique({ where: { orgId }, select: { balanceCents: true } }))?.balanceCents ?? 0n,

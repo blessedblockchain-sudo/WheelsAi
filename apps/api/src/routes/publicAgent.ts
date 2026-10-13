@@ -74,6 +74,20 @@ export interface PublicAgentPaidUse {
   transcriptsStored: boolean;
   /** Whether the agent may send requests to other websites for a buyer. */
   sendsRequests: boolean;
+  /**
+   * The paid plans the listing offers on top of its price per use, in the
+   * order they are shown. Empty for a listing sold by the month and for one
+   * with no plan. Cents are bigint here and numbers in the answer.
+   */
+  plans?: Array<{
+    id: string;
+    name: string;
+    /** What 30 days cost. */
+    priceCents: bigint;
+    includedUses: number;
+    /** What each use past the included ones costs. Null = the plan stops until it renews. */
+    extraUsePriceCents: bigint | null;
+  }>;
 }
 
 /**
@@ -201,6 +215,15 @@ function serializeUse(use: PublicAgentUse) {
           perDay: paid.perDay,
           transcriptsStored: paid.transcriptsStored,
           sendsRequests: paid.sendsRequests,
+          // Field by field, like the terms above: a plan row also holds its
+          // place, its dates and whether it was ended.
+          plans: (paid.plans ?? []).map((plan) => ({
+            id: plan.id,
+            name: plan.name,
+            priceCents: Number(plan.priceCents),
+            includedUses: plan.includedUses,
+            extraUsePriceCents: plan.extraUsePriceCents === null ? null : Number(plan.extraUsePriceCents),
+          })),
         }
       : null,
     ...(use.chat && {

@@ -1051,6 +1051,10 @@ test("getUseAccess: the caller's access, the terms now, what they accepted and w
       access: "listing_pricing",
       listingId: "lst-1",
       terms: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, unit: "message", keepsCopy: false },
+      // No plan on offer, none held, and no free trial yet (tests/planReplies.unit.test.ts has the rest).
+      plans: [],
+      plan: null,
+      trialAvailable: false,
       accepted: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null },
       subscription: null,
       balanceCents: 500,

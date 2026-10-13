@@ -534,3 +534,42 @@ test("the refusal a paused buyer reads says what to do and that nothing is charg
   assert.match(message, /nothing is charged/);
   assert.match(message, /accept the new pricing from Installed Agents/);
 });
+
+// ============================================
+// A plan on the licence of a copy
+// ============================================
+
+test("a plan that is running is never a paid month for a copy left on the licence", async () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const args = { agentId: "agent_clone", orgId: "org_buyer" };
+  // The subscription read returns only the columns asked for, so a read
+  // that leaves the count out sees a month with no count.
+  const resolve = (install: Record<string, unknown>, sub: Record<string, unknown>) =>
+    resolveInstallBilling(
+      {
+        ...makeLookup(install).db,
+        agentSubscription: {
+          findUnique: async ({ select }: { select: Record<string, true> }) =>
+            Object.fromEntries(Object.keys(select).map((column) => [column, sub[column]])),
+        },
+      } as never,
+      args,
+    );
+  const running = { status: "active", currentPeriodEnd: new Date(Date.now() + 20 * DAY), cancelAtPeriodEnd: false, endReason: null };
+  const plan = { ...running, includedUses: 1 };
+
+  // The licence was for a copy and a plan was started over it: the plan
+  // start cleared the agreement to a price per request. The copy does not
+  // run free for the 30 days; it waits for the buyer to agree to a price.
+  assert.deepEqual(
+    await resolve({ ...listingRow(), acceptedPricingModel: null, acceptedPricePerRequestCents: null }, plan),
+    { kind: "revoked", listingTitle: "Support Triage", reason: "pricing_changed" },
+  );
+  // A buyer who agreed to a price per use themselves is charged it for the
+  // copy, as before the plan.
+  const charged = await resolve(listingRow(), plan);
+  assert.equal(charged.kind === "billable" && charged.install.pricePerRequestCents, 250n);
+
+  // A month with no count is what it was: paid up, so the copy is free.
+  assert.deepEqual(await resolve(listingRow(), { ...running, includedUses: null }), { kind: "free" });
+});

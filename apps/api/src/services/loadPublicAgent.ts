@@ -38,7 +38,9 @@
  *     sent, whatever the key row says, and `paid` carries the terms. A free
  *     use listing changes nothing here, and neither does one that sells
  *     copies. A listing read that fails fails the page: a page that cannot
- *     tell whether use is sold must not hand out its key.
+ *     tell whether use is sold must not hand out its key. With the terms go
+ *     the paid plans a listing sold per use offers (services/planOffers.ts):
+ *     each one's id, name and terms, and nothing else of its row.
  *
  *   - a self-running agent that is sold shows when its last results
  *     arrived, never their text, with when the latest arrived and the
@@ -65,6 +67,7 @@ import {
   PAID_USE_PER_BUYER_PER_MINUTE,
   publicPageStateOf,
 } from "./publicPageState.js";
+import { offersPlans, readPlanOffers, type PlanOfferDb, type PlanOfferRow } from "./planOffers.js";
 import {
   findUseListing,
   isPaidUse,
@@ -139,7 +142,7 @@ type PublicResult = NonNullable<PublicAgentUse["scheduled"]>["latest"][number];
 
 type PublicSchedule = NonNullable<NonNullable<PublicAgentUse["scheduled"]>["schedule"]>;
 
-interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution">, UseListingDb {
+interface PrismaStub extends Pick<OwnScheduleDb, "scheduledTask" | "taskExecution">, UseListingDb, PlanOfferDb {
   agent: {
     findFirst: (args: {
       where: { publicHandle: string; isPublic: boolean };
@@ -190,7 +193,7 @@ export interface LoadPublicAgentDeps {
  * The terms of paid use, from the listing that sells it. null unless a
  * price is set: a free use listing is the public link as it is.
  */
-function paidOf(agent: AgentRow, listing: UseListingRow | null): PublicAgentUse["paid"] {
+function paidOf(agent: AgentRow, listing: UseListingRow | null, plans: PlanOfferRow[]): PublicAgentUse["paid"] {
   if (!listing || !isPaidUse(listing)) return null;
   const priceCents = usePriceCents(listing);
   if (priceCents === null) return null;
@@ -205,6 +208,14 @@ function paidOf(agent: AgentRow, listing: UseListingRow | null): PublicAgentUse[
     perDay: PAID_USE_PER_BUYER_PER_DAY,
     transcriptsStored: agent.pageKey && !agent.pageKey.revokedAt ? agent.pageKey.storeTranscripts : false,
     sendsRequests: listing.useAllowedTools.length > 0,
+    // Field by field: a plan row also holds its place and its dates.
+    plans: plans.map((plan) => ({
+      id: plan.id,
+      name: plan.name,
+      priceCents: plan.priceCents,
+      includedUses: plan.includedUses,
+      extraUsePriceCents: plan.extraUsePriceCents,
+    })),
   };
 }
 
@@ -327,7 +338,14 @@ export async function loadPublicAgentByPrisma(
 
   // Before anything of the page is decided: whether use of it is sold at a
   // price. Not caught: without this answer the key must not be sent.
-  const paid = paidOf(agent, await findUseListing(deps.prisma, agent.id));
+  const useListing = await findUseListing(deps.prisma, agent.id);
+  // The plans it offers, read only for a listing sold at a price per use:
+  // no other listing has any to show.
+  const plans =
+    useListing && isPaidUse(useListing) && offersPlans(useListing)
+      ? await readPlanOffers(deps.prisma, useListing.id)
+      : [];
+  const paid = paidOf(agent, useListing, plans);
   const soldSchedule = Boolean(paid) && agent.agentKind === "scheduled";
 
   const treasuryRow = agent.listing?.agentToken?.treasury ?? null;

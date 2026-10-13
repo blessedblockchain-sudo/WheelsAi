@@ -144,9 +144,10 @@ test("the page's two result limits live in the page-state service, and the route
   assert.equal((PAID_AGENT_COLUMNS as Record<string, unknown>).publicResults, true);
 });
 
-test("a paid use reads the count of a plan and its plan's status with the subscription row", () => {
+test("a paid use reads the count of a plan, and its plan's status and name, with the subscription row", () => {
   // Without `includedUses` a plan row reads as a month with no count; without
-  // the plan's status a plan its creator ended gets days of grace.
+  // the plan's status a plan its creator ended gets days of grace. The name
+  // is what the buyer's page calls the plan they are on.
   assert.deepEqual(USE_SUBSCRIPTION_COLUMNS, {
     status: true,
     currentPeriodEnd: true,
@@ -160,15 +161,18 @@ test("a paid use reads the count of a plan and its plan's status with the subscr
     usedInPeriod: true,
     carriedUses: true,
     extraUsePriceCents: true,
-    plan: { select: { status: true } },
+    plan: { select: { status: true, name: true } },
   });
   const row = { id: "sub-1", includedUses: 500 };
   assert.deepEqual(
-    [{ status: "retired" }, { status: "active" }, null].map((plan) => useSubscriptionOf({ ...row, plan })),
+    [{ status: "retired", name: "Starter" }, { status: "active", name: "Pro" }, { status: "active" }, null].map((plan) =>
+      useSubscriptionOf({ ...row, plan }),
+    ),
     [
-      { ...row, planRetired: true },
-      { ...row, planRetired: false },
-      { ...row, planRetired: false },
+      { ...row, planRetired: true, planName: "Starter" },
+      { ...row, planRetired: false, planName: "Pro" },
+      { ...row, planRetired: false, planName: null },
+      { ...row, planRetired: false, planName: null },
     ],
   );
 });

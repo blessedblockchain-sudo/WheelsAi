@@ -422,6 +422,10 @@ export interface PaidUseRefusalLike {
   balanceCents?: number;
   refundedCents?: number;
   caps?: Record<string, number>;
+  /** plan_used_up: when the plan's count starts again. */
+  resetsAt?: string;
+  /** plan_used_up and plan_ended: the plans on offer. */
+  plans?: unknown;
 }
 
 const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
@@ -464,8 +468,9 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
 /**
  * A paid use's refusal in OpenAI's shape. The sentence is the paid
  * service's own, written for the payer; the machine-readable fields it
- * carries (the terms, the price and the balance, what was refunded, a
- * key's cap) ride on the error object. A code this table does not know is
+ * carries (the terms, the plans on offer, the price and the balance, what
+ * was refunded, when a plan's count starts again, a key's cap) ride on the
+ * error object. A code this table does not know is
  * a 500 that says nothing: never a refusal passed through unread.
  */
 export function paidUseOpenAiError(refusal: PaidUseRefusalLike): OpenAiErrorResponse {
@@ -475,9 +480,11 @@ export function paidUseOpenAiError(refusal: PaidUseRefusalLike): OpenAiErrorResp
     ...refusal.caps,
     ...(refusal.access !== undefined && { access: refusal.access }),
     ...(refusal.terms !== undefined && { terms: refusal.terms }),
+    ...(refusal.plans !== undefined && { plans: refusal.plans }),
     ...(refusal.priceCents !== undefined && { priceCents: refusal.priceCents }),
     ...(refusal.balanceCents !== undefined && { balanceCents: refusal.balanceCents }),
     ...(refusal.refundedCents !== undefined && { refundedCents: refusal.refundedCents }),
+    ...(refusal.resetsAt !== undefined && { resetsAt: refusal.resetsAt }),
     // What the paid service called it, when /v1 folds several into one code.
     ...(code !== refusal.code && { reason: refusal.code }),
   };

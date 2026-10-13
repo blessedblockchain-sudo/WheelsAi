@@ -610,6 +610,7 @@ test("GET /a/:handle in the paid state carries the terms, the price as a number 
       perDay: 200,
       transcriptsStored: true,
       sendsRequests: true,
+      plans: [],
     },
     chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
   });
@@ -690,7 +691,43 @@ test("GET /a/:handle sends nothing of a sale but its terms: no other buyer's pri
     "perDay",
     "transcriptsStored",
     "sendsRequests",
+    "plans",
   ]);
+});
+
+test("GET /a/:handle carries the plans on offer field by field, with money as numbers of cents", async () => {
+  const app = await makeApp({
+    loadPublicAgent: async () =>
+      paidPage(
+        {},
+        {
+          plans: [
+            {
+              id: "plan_starter",
+              name: "Starter",
+              priceCents: 900n,
+              includedUses: 500,
+              extraUsePriceCents: 5n,
+              // What a loader could carry by mistake: none of it crosses.
+              status: "active",
+              position: 1,
+              subscribers: 4_711,
+              listingId: "listing_use",
+            },
+            { id: "plan_pro", name: "Pro", priceCents: 2900n, includedUses: 2000, extraUsePriceCents: null },
+          ],
+        },
+      ) as never,
+  });
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json().use.paid.plans, [
+    { id: "plan_starter", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 },
+    { id: "plan_pro", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: null },
+  ]);
+  for (const forbidden of ["subscribers", "4711", "position", "status\":\"active"]) {
+    assert.ok(!res.body.includes(forbidden), forbidden);
+  }
 });
 
 test("GET /a/:handle for a sold self-running agent sends result dates without text, the latest date and the schedule", async () => {

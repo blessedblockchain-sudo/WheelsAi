@@ -36,6 +36,7 @@ import {
   PRICING_MODELS,
 } from "../services/marketplace.js";
 import { InsufficientCreditsError, SubscriptionClaimLostError } from "../services/marketplaceSubscriptions.js";
+import { AlreadyOnPlanError, PLAN_START_MESSAGES, PlanTermsChangedError, startPlan } from "../services/planStart.js";
 import { TokenRequiredError } from "../services/tokenAccess.js";
 
 const logger = createLogger("marketplace-routes");
@@ -109,6 +110,18 @@ const shownPricingSchema = z.object({
   pricingModel: z.enum(["free", "per_request", "monthly", "tokenized"]),
   pricePerRequestCents: z.number().int().nonnegative().nullable().optional(),
   monthlyPriceCents: z.number().int().nonnegative().nullable().optional(),
+});
+
+/**
+ * The plan a person was shown, as they send it back: its id and every one
+ * of its terms, in whole cents. The price for an extra use is always said,
+ * null when the plan stops: left out, it would be guessed.
+ */
+const shownPlanSchema = z.object({
+  id: z.string().uuid(),
+  priceCents: z.number().int().nonnegative().max(10_000_000),
+  includedUses: z.number().int().positive().max(1_000_000),
+  extraUsePriceCents: z.number().int().nonnegative().max(100_000).nullable(),
 });
 
 const updateListingSchema = createListingSchema.omit({ agentId: true }).partial();
@@ -501,6 +514,12 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
    * While the listing is paused (the model its agent runs on is not
    * running) nothing is started and nothing is charged: 409 listing_paused,
    * or 503 service_unavailable when that could not be checked.
+   *
+   * With `plan` in the body ({ id, priceCents, includedUses,
+   * extraUsePriceCents }, the plan the person was shown) it starts that plan
+   * instead and charges its 30 days now: 409 pricing_changed with the plans
+   * as they are when any term differs, 409 already_on_plan while a plan or
+   * a month still runs. Starting a plan agrees to no price per use.
    */
   app.post(
     "/listings/:id/use",
@@ -512,6 +531,66 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
     async (request, reply) => {
       const { orgId } = request.auth!;
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
+      const sent =
+        request.body !== null && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
+      // Moving to another plan before the period ends is not built yet. A
+      // body that asks for it is refused whole, so that it is never read as
+      // an ordinary start.
+      if ("switchNow" in sent) {
+        return reply.status(400).send({ error: "switch_not_available", message: PLAN_START_MESSAGES.switchNow });
+      }
+      if (sent.plan !== undefined) {
+        // The plan's terms as shown are the consent. The listing's price per
+        // use is not agreed to by this, whatever else the body carries.
+        const shown = shownPlanSchema.safeParse(sent.plan);
+        if (!shown.success) {
+          return reply
+            .status(400)
+            .send({ error: "expected_terms_required", message: PLAN_START_MESSAGES.termsRequired });
+        }
+        try {
+          // A plan start that changes nothing is a refusal, so this is always 201.
+          const { created: _created, ...state } = await startPlan(id, orgId, {
+            id: shown.data.id,
+            priceCents: BigInt(shown.data.priceCents),
+            includedUses: shown.data.includedUses,
+            extraUsePriceCents:
+              shown.data.extraUsePriceCents === null ? null : BigInt(shown.data.extraUsePriceCents),
+          });
+          return reply.status(201).send(state);
+        } catch (error: any) {
+          if (error instanceof UseStartError) {
+            return reply.status(error.status).send({
+              error: error.code,
+              message: error.message,
+              ...(error.until && { until: error.until.toISOString() }),
+            });
+          }
+          if (error instanceof InsufficientCreditsError) {
+            return reply.status(402).send({
+              error: error.code,
+              message: PLAN_START_MESSAGES.notEnoughCredits(error.requiredCents),
+              requiredCents: Number(error.requiredCents),
+            });
+          }
+          // The plan is not what the person was shown. Nothing was charged;
+          // the plans as they are now come with the answer.
+          if (error instanceof PlanTermsChangedError) {
+            return reply.status(409).send({
+              error: error.code,
+              message: error.message,
+              pricing: error.pricing,
+              plans: error.plans,
+            });
+          }
+          // A plan or a month still runs, or another request for this buyer
+          // got there first. Nothing was charged by this one.
+          if (error instanceof AlreadyOnPlanError || error instanceof SubscriptionClaimLostError) {
+            return reply.status(409).send({ error: error.code, message: error.message });
+          }
+          throw error;
+        }
+      }
       // expected is the pricing the person was shown, and is their consent:
       // without it nothing is agreed to. acceptNewPricing is sent only by a
       // buyer who was shown that the price went up, or the pricing model

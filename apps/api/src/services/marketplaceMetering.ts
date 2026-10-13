@@ -184,12 +184,14 @@ export interface MeteringLookupPrisma {
   agentSubscription?: {
     findUnique(args: {
       where: { listingId_subscriberId: { listingId: string; subscriberId: string } };
-      select: { status: true; currentPeriodEnd: true; cancelAtPeriodEnd: true; endReason: true };
+      select: { status: true; currentPeriodEnd: true; cancelAtPeriodEnd: true; endReason: true; includedUses: true };
     }): Promise<{
       status: string;
       currentPeriodEnd: Date;
       cancelAtPeriodEnd: boolean;
       endReason?: string | null;
+      /** The marker of a plan. Null or absent = a month with no count. */
+      includedUses?: number | null;
     } | null>;
   };
 }
@@ -267,9 +269,15 @@ export async function resolveInstallBilling(
     db.agentSubscription && (install.status === "suspended" || install.listing.status === "published")
       ? await db.agentSubscription.findUnique({
           where: { listingId_subscriberId: { listingId: install.listingId, subscriberId: install.buyerId } },
-          select: { status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
+          select: { status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true, includedUses: true },
         })
       : null;
+  // A plan is uses of the creator's own agent, counted one by one. It is
+  // never a paid month for a copy: read as one, a copy left on the licence
+  // from before the plan would run for the whole 30 days with no use taken
+  // and nothing charged. So a plan row says nothing here, and the copy
+  // stands on what the licence itself agreed to.
+  const month = sub && sub.includedUses != null ? null : sub;
   const access = installAccess({
     installStatus: install.status,
     listingStatus: install.listing.status,
@@ -279,7 +287,7 @@ export async function resolveInstallBilling(
       pricingModel: install.acceptedPricingModel,
       pricePerRequestCents: install.acceptedPricePerRequestCents,
     },
-    sub,
+    sub: month,
   });
   if (access === "unlisted" || access === "subscribed") return { kind: "free" };
   if (access !== "listing_pricing") {

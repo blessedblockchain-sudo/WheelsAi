@@ -135,10 +135,14 @@ function makePrismaStub(opts: {
   executions?: FakeExecution[];
   listings?: FakeListing[];
   listingReadFails?: boolean;
+  /** listing_plans rows, with more on them than a page may show. */
+  plans?: Array<Record<string, unknown>>;
 }) {
   const observed: {
     /** Every read of the listing that sells use. */
     listingArgs: any[];
+    /** Every read of a listing's plans. */
+    planArgs: any[];
     agentArgs?: any;
     aggArgs?: any;
     manyArgs?: any;
@@ -146,7 +150,7 @@ function makePrismaStub(opts: {
     /** Every read of scheduled tasks and of their runs. */
     taskArgs: any[];
     executionArgs: any[];
-  } = { taskArgs: [], executionArgs: [], listingArgs: [] };
+  } = { taskArgs: [], executionArgs: [], listingArgs: [], planArgs: [] };
   return {
     observed,
     prisma: {
@@ -176,6 +180,17 @@ function makePrismaStub(opts: {
               (l) => l.agentId === where.agentId && l.status === where.status && l.sells === where.sells,
             ) ?? null
           );
+        },
+      },
+      // What readPlanOffers reads (services/planOffers.ts). Whole rows come
+      // back here too.
+      listingPlan: {
+        async findMany(args: any) {
+          observed.planArgs.push(args);
+          const { where } = args;
+          return (opts.plans ?? [])
+            .filter((p) => p.listingId === where.listingId && p.status === where.status && p.kind === where.kind)
+            .sort((a, b) => (a.position as number) - (b.position as number));
         },
       },
       computePayment: {
@@ -824,7 +839,13 @@ const textOf = (value: unknown) =>
 async function pageOf(
   agents: FakeAgent[],
   handle: string,
-  runs: { tasks?: FakeTask[]; executions?: FakeExecution[]; listings?: FakeListing[]; listingReadFails?: boolean } = {},
+  runs: {
+    tasks?: FakeTask[];
+    executions?: FakeExecution[];
+    listings?: FakeListing[];
+    listingReadFails?: boolean;
+    plans?: Array<Record<string, unknown>>;
+  } = {},
 ) {
   const { loadPublicAgentByPrisma } = await import("../services/loadPublicAgent.js");
   const stub = makePrismaStub({ agents, ...runs });
@@ -1224,6 +1245,7 @@ test("a published listing that sells use at a price: the state is paid, with its
       perDay: 200,
       transcriptsStored: true,
       sendsRequests: true,
+      plans: [],
     },
     chat: { maxMessages: 20, maxMessageChars: 4000, maxTotalChars: 16000 },
   });
@@ -1392,6 +1414,7 @@ test("of a listing only its id, slug, pricing and price cross: never its publish
       "listingSlug",
       "perDay",
       "perMinute",
+      "plans",
       "priceCents",
       "pricingModel",
       "sendsRequests",
@@ -1399,4 +1422,69 @@ test("of a listing only its id, slug, pricing and price cross: never its publish
       "unit",
     ]);
   }
+});
+
+// ============================================
+// The plans a listing sold per use offers
+// ============================================
+
+const planRow = (over: Record<string, unknown> = {}) => ({
+  id: "plan_starter",
+  listingId: "listing_use",
+  kind: "paid",
+  name: "Starter",
+  priceCents: 900n,
+  includedUses: 500,
+  extraUsePriceCents: 5n,
+  position: 1,
+  status: "active",
+  // A real row has more; none of it may cross.
+  retiredAt: null,
+  createdAt: new Date("2026-10-01T00:00:00Z"),
+  updatedAt: new Date("2026-10-02T00:00:00Z"),
+  ...over,
+});
+
+test("a listing sold per use shows its paid plans on offer, in order, and only each one's id, name and terms", async () => {
+  const { result, stub } = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", {
+    listings: [listingOf()],
+    plans: [
+      planRow({ id: "plan_pro", name: "Pro", priceCents: 2900n, includedUses: 2000, extraUsePriceCents: null, position: 2 }),
+      planRow(),
+      // Ended by its creator, a free trial, and a plan of another listing: none is on offer here.
+      planRow({ id: "plan_old", name: "Old", status: "retired", retiredAt: new Date("2026-10-03T00:00:00Z") }),
+      planRow({ id: "plan_trial", name: "Trial", kind: "trial", priceCents: 0n, position: 0 }),
+      planRow({ id: "plan_other", name: "Other", listingId: "listing_else" }),
+    ],
+  });
+  assert.deepEqual(result?.use.paid?.plans, [
+    { id: "plan_starter", name: "Starter", priceCents: 900n, includedUses: 500, extraUsePriceCents: 5n },
+    { id: "plan_pro", name: "Pro", priceCents: 2900n, includedUses: 2000, extraUsePriceCents: null },
+  ]);
+  // The price per use stays the base: the plans are on top of it.
+  assert.equal(result?.use.paid?.priceCents, 5n);
+  assert.equal(result?.use.state, "paid");
+  assert.deepEqual(stub.observed.planArgs.map((args) => [args.where, args.orderBy]), [
+    [{ listingId: "listing_use", status: "active", kind: "paid" }, { position: "asc" }],
+  ]);
+  for (const forbidden of ["plan_old", "plan_trial", "plan_other", "retiredAt", "position", "updatedAt"]) {
+    assert.ok(!textOf(result?.use).includes(forbidden), forbidden);
+  }
+});
+
+test("a listing sold by the month, a free one and one with no plan show none, and only a per-use listing's plans are read", async () => {
+  const plans = [planRow()];
+  const monthly = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [MONTHLY_LISTING], plans });
+  assert.deepEqual(monthly.result?.use.paid?.plans, []);
+  assert.equal(monthly.stub.observed.planArgs.length, 0);
+
+  const free = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", {
+    listings: [listingOf({ pricingModel: "free", pricePerRequestCents: null })],
+    plans,
+  });
+  assert.equal(free.result?.use.paid ?? null, null);
+  assert.equal(free.stub.observed.planArgs.length, 0);
+
+  const none = await pageOf([{ ...baseAgent, pageKey: PAGE_KEY }], "eliza", { listings: [listingOf()] });
+  assert.deepEqual(none.result?.use.paid?.plans, []);
 });

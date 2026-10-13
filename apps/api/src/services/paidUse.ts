@@ -111,10 +111,12 @@ import {
   COPY_MONTH_BLOCKS_USE,
   copyMonthBlockingUse,
   copyMonthBlockingUseMessage,
+  onPlan,
   useAccess,
   type UseAccess,
   type UseSubscription,
 } from "./useAccess.js";
+import { offersPlans, planOfferOf, type PlanOffer, type PlanOfferRow } from "./planOffers.js";
 import { warningLevel } from "./planUse.js";
 import { PAST_DUE_GRACE_DAYS } from "./subscriptionAccess.js";
 import type { UseListingRow } from "./useListing.js";
@@ -238,6 +240,8 @@ export interface PaidAgent {
 export interface PaidSubscription extends UseSubscription {
   /** The monthly price the buyer agreed to. */
   priceCents?: bigint | null;
+  /** On a plan: what its creator calls it now. */
+  planName?: string | null;
 }
 
 /**
@@ -273,6 +277,11 @@ export interface PaidUseDeps {
     listingId: string;
     buyerId: string;
   }): Promise<{ licence: UseBillingLicence | null; sub: PaidSubscription | null }>;
+  /**
+   * The listing's paid plans on offer, in the order a buyer sees them
+   * (services/planOffers.ts). When omitted no reply names a plan to choose.
+   */
+  loadPlans?(listingId: string): Promise<PlanOfferRow[]>;
   /** The organization's credits, in cents. Throws when they cannot be read. */
   readBalance(orgId: string): Promise<bigint>;
   /** Whether a use of this price would fit the key's caps right now. A read. */
@@ -378,8 +387,10 @@ export interface PaidUseRefusal {
   details?: TaskInputIssue[];
   /** The buyer's access, where the licence decided. */
   access?: UseAccess;
-  /** use_not_started and pricing_changed: what the listing asks now. */
+  /** use_not_started, pricing_changed and plan_ended: what the listing asks now. */
   terms?: PaidUseTerms;
+  /** plan_used_up and plan_ended: the plans the listing offers now, to choose from. */
+  plans?: PlanOffer[];
   /** insufficient_credits: what one use costs, and what the buyer has. */
   priceCents?: number;
   balanceCents?: number;
@@ -387,7 +398,7 @@ export interface PaidUseRefusal {
   refundedCents?: number;
   /** A key cap: the price and the cap it met. */
   caps?: Record<string, number>;
-  /** plan_used_up: when the plan's count starts again. An ISO time. */
+  /** plan_used_up: when the plan's count starts again. An ISO time. Left out when the plan will not renew. */
   resetsAt?: string;
 }
 
@@ -404,8 +415,8 @@ export interface PaidUsePlanBilling {
   remainingUses: number;
   /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
   extraUsePriceCents: number | null;
-  /** When the count starts again. An ISO time. */
-  resetsAt: string;
+  /** When the count starts again. An ISO time. Left out when the plan will not renew. */
+  resetsAt?: string;
   /** 85 when 85% of the uses are gone, 100 when all are. */
   warning: null | 85 | 100;
 }
@@ -458,11 +469,34 @@ export type PaidResultsResult =
   | { kind: "refused"; refusal: PaidUseRefusal }
   | { kind: "results"; results: Array<{ finishedAt: string; text: string }>; hasMore: boolean };
 
+/** The plan the caller is on, as the page draws it. Uses and cents, and nothing of another buyer. */
+export interface UseAccessPlan {
+  /** The plan the subscription was started on. */
+  id: string | null;
+  /** What its creator calls it now. */
+  name: string;
+  includedUses: number;
+  usedUses: number;
+  remainingUses: number;
+  /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+  /** When the count starts again. An ISO time. Left out when the plan will not renew. */
+  resetsAt?: string;
+  /** 85 when 85% of the uses are gone, 100 when all are. */
+  warning: null | 85 | 100;
+}
+
 export interface UseAccessView {
   access: UseAccess | "own_agent";
   listingId: string;
   /** What the listing asks now; null when use of it is not on sale. */
   terms: PaidUseTerms | null;
+  /** The plans the listing offers now, in the order they are shown. Empty when it offers none. */
+  plans: PlanOffer[];
+  /** The plan the caller is on, while it gives them uses. null otherwise. */
+  plan: UseAccessPlan | null;
+  /** Free trials are not offered yet. */
+  trialAvailable: false;
   /** What the caller agreed to; null when they have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
   /**
@@ -508,6 +542,7 @@ export function paidRefusalBody(refusal: PaidUseRefusal): Record<string, unknown
     ...(refusal.details !== undefined && { details: refusal.details }),
     ...(refusal.access !== undefined && { access: refusal.access }),
     ...(refusal.terms !== undefined && { terms: refusal.terms }),
+    ...(refusal.plans !== undefined && { plans: refusal.plans }),
     ...(refusal.priceCents !== undefined && { priceCents: refusal.priceCents }),
     ...(refusal.balanceCents !== undefined && { balanceCents: refusal.balanceCents }),
     ...(refusal.refundedCents !== undefined && { refundedCents: refusal.refundedCents }),
@@ -805,8 +840,35 @@ export function paidToolAllowlist(
   return names.filter((name) => !outbound.includes(name) || allowed.includes(name));
 }
 
+/**
+ * Whether a plan's row will be charged again when its period ends. The
+ * renewal worker closes it instead when the buyer cancelled the renewal, the
+ * creator ended the plan, or the listing no longer sells use per request
+ * (services/marketplaceSubscriptions.ts). Only words, and whether a time to
+ * start again is told, depend on it.
+ */
+function planWillRenew(listing: UseListingRow, sub: PaidSubscription | null): boolean {
+  return offersPlans(listing) && sub?.cancelAtPeriodEnd !== true && sub?.planRetired !== true;
+}
+
+/**
+ * The listing's plans on offer, as a buyer is told them. Undefined when this
+ * set of deps reads none. A read that fails is answered as no plan: it rides
+ * on a refusal or a view that is already decided, and must not undo it.
+ */
+async function plansOnOffer(deps: PaidUseDeps, listing: UseListingRow): Promise<PlanOffer[] | undefined> {
+  if (!deps.loadPlans) return undefined;
+  if (!offersPlans(listing)) return [];
+  try {
+    return (await deps.loadPlans(listing.id)).map(planOfferOf);
+  } catch (err) {
+    deps.logger?.warn({ err }, "could not read the plans a listing offers; none were told");
+    return [];
+  }
+}
+
 /** The plan after one use on it, as the buyer is told it. */
-async function planBillingOf(planUse: UsePlanUse): Promise<PaidUsePlanBilling> {
+async function planBillingOf(planUse: UsePlanUse, renews: boolean): Promise<PaidUsePlanBilling> {
   const count = await planUse.count();
   const limit = count.includedUses + count.carriedUses;
   const level = warningLevel(count.usedInPeriod, count.includedUses, count.carriedUses);
@@ -818,7 +880,8 @@ async function planBillingOf(planUse: UsePlanUse): Promise<PaidUsePlanBilling> {
     usedUses: count.usedInPeriod,
     remainingUses: Math.max(0, limit - count.usedInPeriod),
     extraUsePriceCents: count.extraUsePriceCents === null ? null : Number(count.extraUsePriceCents),
-    resetsAt: count.periodEnd.toISOString(),
+    // A plan that will not renew has no count that starts again: as on the refusal.
+    ...(renews && { resetsAt: count.periodEnd.toISOString() }),
     warning: level === 0 ? null : level,
   };
 }
@@ -957,13 +1020,17 @@ async function runPaidUse(
   const { licence, sub } = await deps.loadLicence({ listingId: listing.id, buyerId: caller.orgId });
   const billing: UseBilling = resolveUseBilling({ callerOrgId: caller.orgId, listing, licence, sub, unit }, now);
   if (billing.kind === "refused") {
+    // A plan that is over: the buyer chooses again, between the plans on
+    // offer and the price per use, so both come with the refusal.
+    const plans = billing.code === "plan_ended" ? await plansOnOffer(deps, listing) : undefined;
     return refused({
       status: billing.status,
       code: billing.code,
       message: billing.code === "own_agent" ? PAID_USE_MESSAGES.ownAgent : billing.message,
       ...(billing.access !== undefined && { access: billing.access }),
-      ...((billing.code === "use_not_started" || billing.code === "pricing_changed") &&
+      ...((billing.code === "use_not_started" || billing.code === "pricing_changed" || billing.code === "plan_ended") &&
         onSaleForUse && { terms: termsOf(listing, agent) }),
+      ...(plans !== undefined && { plans }),
     });
   }
   if (billing.kind === "free") {
@@ -971,10 +1038,13 @@ async function runPaidUse(
   }
 
   const apiKeyId = caller.type === "api_key" ? (caller.apiKeyId ?? null) : null;
-  // Whether a plan's row will be charged again when its period ends (the
-  // renewal worker closes it instead when the buyer cancelled, the creator
-  // ended the plan, or use is no longer sold). Only words depend on it.
-  const planRenews = onSaleForUse && sub?.cancelAtPeriodEnd !== true && sub?.planRetired !== true;
+  const planRenews = planWillRenew(listing, sub);
+  /** A plan that is used up and stops: told with the plans on offer, a bigger one among them. */
+  const usedUp = async (refusal: PaidUseRefusal): Promise<PaidUseRefusal> => {
+    if (refusal.code !== "plan_used_up") return refusal;
+    const plans = await plansOnOffer(deps, listing);
+    return plans === undefined ? refusal : { ...refusal, plans };
+  };
   // What this use would cost in credits, as far as the rows say: a price per
   // use, or the extra price of a plan whose count is gone. Null inside a
   // paid month and while a plan has a use left.
@@ -985,7 +1055,7 @@ async function runPaidUse(
       // Used up, and the buyer agreed to no extra price (or nothing more is
       // sold on this listing): stopped here, before the creator's allowance
       // and the model. Nothing is charged and no use is taken.
-      if (!billing.extraInstall) return refused(planUsedUpRefusal(plan, now, planRenews));
+      if (!billing.extraInstall) return refused(await usedUp(planUsedUpRefusal(plan, now, planRenews)));
       payable = billing.extraInstall.pricePerRequestCents;
     }
   }
@@ -1115,7 +1185,7 @@ async function runPaidUse(
   }
   if (!prepared.ok) {
     const charge = metering.refusal();
-    if (charge) return refused(chargeRefusal(charge, now, planRenews));
+    if (charge) return refused(await usedUp(chargeRefusal(charge, now, planRenews)));
     return refused(coreRefusal(prepared.refusal, nowSeconds, onSaleForUse));
   }
   const { session } = prepared;
@@ -1177,7 +1247,7 @@ async function runPaidUse(
       .then((cents) => Number(cents))
       .catch(() => null),
     access: billing.access,
-    ...(planUse && { plan: await planBillingOf(planUse) }),
+    ...(planUse && { plan: await planBillingOf(planUse, planRenews) }),
   });
 
   // 9. The run. Always the stream, whatever the caller asked for: the
@@ -1437,6 +1507,24 @@ async function pausedNow(deps: PaidUseDeps, listing: UseListingRow, agent: PaidA
   }
 }
 
+/** The plan a buyer is on, from their own row. Built field by field. */
+function accessPlanOf(sub: PaidSubscription, renews: boolean): UseAccessPlan {
+  const included = sub.includedUses ?? 0;
+  const carried = sub.carriedUses ?? 0;
+  const used = sub.usedInPeriod ?? 0;
+  const level = warningLevel(used, included, carried);
+  return {
+    id: sub.planId ?? null,
+    name: sub.planName ?? "",
+    includedUses: included,
+    usedUses: used,
+    remainingUses: Math.max(0, included + carried - used),
+    extraUsePriceCents: sub.extraUsePriceCents == null ? null : Number(sub.extraUsePriceCents),
+    ...(renews && { resetsAt: sub.currentPeriodEnd.toISOString() }),
+    warning: level === 0 ? null : level,
+  };
+}
+
 /** The caller's access to an agent that is, or was, sold for use. Reads only. */
 export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Promise<UseAccessResult> {
   const now = (deps.now ?? (() => new Date()))();
@@ -1477,6 +1565,9 @@ export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Pro
   // A copy with a month paid for: a start would be refused (startUsing,
   // services/marketplace.ts), so the page is told before it offers one.
   const blockedUntil = copyMonthBlockingUse(mine, mine ? sub : null, now);
+  // On a plan, while it gives uses. One that is over is told by `access`
+  // (plan_ended, or the price per use the buyer agreed to), not here.
+  const held = mine && sub && onPlan(sub) && access === "subscribed" ? sub : null;
 
   return {
     kind: "access",
@@ -1484,6 +1575,9 @@ export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Pro
       access,
       listingId: listing.id,
       terms: onSaleForUse ? termsOf(listing, agent) : null,
+      plans: (await plansOnOffer(deps, listing)) ?? [],
+      plan: held && accessPlanOf(held, planWillRenew(listing, held)),
+      trialAvailable: false,
       accepted:
         mine && mine.kind === "use"
           ? {

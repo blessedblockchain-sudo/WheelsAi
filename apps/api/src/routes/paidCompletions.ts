@@ -105,9 +105,28 @@ export function paidRequestRefusal(chat: ParsedChatRequest): { param: string; me
 
 /** The `wheelsai` object of a paid answer: the handle and the billing, and nothing else. */
 function extensionOf(handle: string, billing: PaidUseBilling): Record<string, unknown> {
+  const { plan } = billing;
   return {
     agent: { handle },
-    billing: { chargedCents: billing.chargedCents, balanceCents: billing.balanceCents, access: billing.access },
+    billing: {
+      chargedCents: billing.chargedCents,
+      balanceCents: billing.balanceCents,
+      access: billing.access,
+      // On a plan: the count after this use, as the page's answer carries it.
+      ...(plan && {
+        plan: {
+          id: plan.id,
+          use: plan.use,
+          includedUses: plan.includedUses,
+          carriedUses: plan.carriedUses,
+          usedUses: plan.usedUses,
+          remainingUses: plan.remainingUses,
+          extraUsePriceCents: plan.extraUsePriceCents,
+          ...(plan.resetsAt !== undefined && { resetsAt: plan.resetsAt }),
+          warning: plan.warning,
+        },
+      }),
+    },
   };
 }
 

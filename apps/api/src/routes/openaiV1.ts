@@ -124,6 +124,14 @@ export interface UsedSubscriptionRow {
   currentPeriodEnd: Date;
   cancelAtPeriodEnd: boolean;
   endReason: string | null;
+  /**
+   * The marker of a plan. A plan row read without it reads as a month with
+   * no count, and one that is over would list an agent its holder cannot
+   * call until they choose again.
+   */
+  includedUses?: number | null;
+  /** Whether the plan's creator ended it: no days of grace after its period. */
+  planRetired?: boolean;
 }
 
 /**
@@ -163,6 +171,29 @@ export function usedAgentsOf(
   return used;
 }
 
+/**
+ * What listing the agents an organization uses reads of its subscriptions.
+ * The count and the plan's status are part of it: without them a plan row
+ * reads as a month with no count.
+ */
+export const USED_SUBSCRIPTION_COLUMNS = {
+  listingId: true,
+  status: true,
+  currentPeriodEnd: true,
+  cancelAtPeriodEnd: true,
+  endReason: true,
+  includedUses: true,
+  plan: { select: { status: true } },
+} as const;
+
+/** A row read with those columns, as usedAgentsOf takes it. */
+export function usedSubscriptionOf(
+  row: Omit<UsedSubscriptionRow, "planRetired"> & { plan: { status: string } | null },
+): UsedSubscriptionRow {
+  const { plan, ...sub } = row;
+  return { ...sub, planRetired: plan?.status === "retired" };
+}
+
 async function usedAgentsFromDb(orgId: string): Promise<Array<{ handle: string; createdAt: Date }>> {
   const licences = await prisma.agentInstall.findMany({
     where: { buyerId: orgId, kind: "use", status: { in: ["active", "suspended"] } },
@@ -189,9 +220,9 @@ async function usedAgentsFromDb(orgId: string): Promise<Array<{ handle: string; 
   if (licences.length === 0) return [];
   const subscriptions = await prisma.agentSubscription.findMany({
     where: { subscriberId: orgId, listingId: { in: licences.map((licence) => licence.listingId) } },
-    select: { listingId: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
+    select: USED_SUBSCRIPTION_COLUMNS,
   });
-  return usedAgentsOf(licences, subscriptions);
+  return usedAgentsOf(licences, subscriptions.map(usedSubscriptionOf));
 }
 
 async function listModelsFromDb(orgId: string): Promise<ListedModels> {

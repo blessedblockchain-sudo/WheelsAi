@@ -1,4 +1,5 @@
 import { seg, type RequestOptions, type WheelsAIClient } from "../client.js";
+import type { UseBilling } from "./use.js";
 
 /** A function call the model asks the CALLER to run (OpenAI "function calling"). */
 export interface ChatToolCall {
@@ -118,8 +119,8 @@ export interface ChatCompletionResponse {
  */
 export interface PaidAgentCompletionExtension {
   agent: { handle: string };
-  /** What the use cost; `chargedCents` is 0 inside a paid month. */
-  billing: { chargedCents: number; balanceCents: number | null; access: "subscribed" | "listing_pricing" };
+  /** What the use cost; `chargedCents` is 0 inside a paid month and for a use a plan includes. On a plan it carries `plan`. */
+  billing: UseBilling;
 }
 
 /** One entry of `GET /v1/models`: a running deployment, an agent, an enabled workflow, or an agent you pay for. */

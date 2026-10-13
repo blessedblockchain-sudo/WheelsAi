@@ -22,6 +22,83 @@ export type ListingSells = "use" | "copies";
 /** What one payment buys: a message, a run or a month. null for a free listing, a copy or a token listing. */
 export type ListingUnit = "message" | "run" | "month";
 
+/**
+ * A plan a listing offers: one price for 30 days with a number of uses included, on top of the listing's
+ * price per use. A listing that sells use per request can offer up to four. Every plan has a count.
+ */
+export interface PlanOffer {
+  id: string;
+  /** What its creator calls it. */
+  name: string;
+  /** What 30 days cost, in cents: charged from the buyer's credits at the start and at each renewal. */
+  priceCents: number;
+  /** The uses the 30 days include. */
+  includedUses: number;
+  /** What each use past the included ones costs, in cents. null: the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+}
+
+/**
+ * The plan a buyer was shown, sent back whole to start it or to move up to it. It is their consent: if any
+ * term differs from the plan as it is now, nothing is charged. `extraUsePriceCents` is always sent, null
+ * when the plan stops. A `PlanOffer` can be passed as it came.
+ */
+export interface PlanTerms {
+  id: string;
+  priceCents: number;
+  includedUses: number;
+  extraUsePriceCents: number | null;
+}
+
+/** A plan as its creator sees it (`myListings`, `setPlans`). No buyer is named. */
+export interface OwnerPlan extends PlanOffer {
+  /** `paid`. */
+  kind: string;
+  status: string;
+  /** How many subscriptions are on this plan. */
+  subscribers: number;
+}
+
+/** One plan of the set `setPlans` sends. */
+export interface PlanInput {
+  /** Set to change a plan in place. Left out for a new plan. */
+  id?: string;
+  /** `paid`. */
+  kind: "paid" | (string & {});
+  /** 1 to 40 characters. */
+  name: string;
+  /** What 30 days cost, in cents: at least 100, and at least 1 cent for each included use. */
+  priceCents: number;
+  /** 1 to 100,000. */
+  includedUses: number;
+  /** What each use past the included ones costs, in cents, at least 5. null: the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+}
+
+/**
+ * The plan a buyer is on, while it gives them uses: on the access answer (`use.access`), on a subscription
+ * (`myInstalls`, `startPlan`, `movePlan`) and in `use.usage`. Uses and cents, and nothing of another buyer.
+ */
+export interface SubscriptionPlan {
+  /** The plan the subscription was started on. */
+  id: string | null;
+  /** What its creator calls it now. */
+  name: string;
+  /** The uses of the 30 days, as agreed. */
+  includedUses: number;
+  /** Uses brought into these 30 days by a move to a bigger plan, on top of the included ones. 0 after a renewal. */
+  carriedUses: number;
+  usedUses: number;
+  /** Included plus carried, less the ones used. Never below 0. */
+  remainingUses: number;
+  /** What each use past the count costs, as agreed. null: the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+  /** When the count starts again (an ISO time). Left out when the plan will not renew. */
+  resetsAt?: string;
+  /** 85 when 85% of the uses are gone, 100 when all are. */
+  warning: null | 85 | 100;
+}
+
 export interface AgentListing {
   id: string;
   agentId: string;
@@ -46,6 +123,17 @@ export interface AgentListing {
   allowedTools?: string[];
   /** `myListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
+  /**
+   * The plans the listing offers, in the order buyers see them; empty when it offers none. Present on a
+   * listing read by slug or id (`get`), on the listing of each of `myInstalls`, and on `myListings`, where
+   * each plan also says its `status` and `subscribers` (`OwnedListing`).
+   */
+  plans?: PlanOffer[];
+  /**
+   * A search, the featured row and a publisher's profile: the smallest price for 30 days among the
+   * listing's plans, in cents. null when it offers none.
+   */
+  plansFromCents?: number | null;
   /**
    * `myListings` only. Set while the listing is paused: it sells use, and the model its agent runs on (one
    * your organization runs itself) is not running, so nobody can start using it and nobody is charged.
@@ -78,6 +166,11 @@ export interface AgentListing {
   };
 }
 
+/** One of your own listings, as `myListings` answers it: its plans carry their status and their subscribers. */
+export interface OwnedListing extends AgentListing {
+  plans?: OwnerPlan[];
+}
+
 /** The agent a licence is for, as its buyer may know it. Never its instructions. */
 export interface LicenceAgent {
   /** The name in `/a/<handle>`; null when the agent has no page. */
@@ -88,8 +181,9 @@ export interface LicenceAgent {
 
 /**
  * Where a licence stands. A copy is `subscribed`, `listing_pricing`, `unlisted`, `subscription_lapsed`,
- * `pricing_changed` or `uninstalled`. Use of the creator's agent can also be `none` (not started) or
- * `not_offered` (the listing no longer sells it).
+ * `pricing_changed` or `uninstalled`. Use of the creator's agent can also be `none` (not started),
+ * `plan_ended` (a plan that is over, with no price per use agreed to) or `not_offered` (the listing no
+ * longer sells it).
  */
 export type InstallAccess =
   | "subscribed"
@@ -99,9 +193,10 @@ export type InstallAccess =
   | "pricing_changed"
   | "uninstalled"
   | "none"
+  | "plan_ended"
   | "not_offered";
 
-/** A buyer's monthly subscription to a listing. */
+/** A buyer's subscription to a listing: a month, or a plan with a count of uses. */
 export interface ListingSubscription {
   id: string;
   listingId: string;
@@ -112,10 +207,15 @@ export interface ListingSubscription {
   cancelledAt: string | null;
   hasAccess: boolean;
   graceEndsAt: string | null;
-  /** The monthly price the subscription was agreed at, which a renewal charges. */
+  /** The price for 30 days the subscription was agreed at, which a renewal charges. */
   priceCents: number | null;
-  /** Set when the publisher's side ended it. `use_ended`: the listing stopped selling use. */
-  endReason: "pricing_changed" | "listing_archived" | "use_ended" | null;
+  /**
+   * Set when the publisher's side ended it. `use_ended`: the listing stopped selling use. `plan_ended`: its
+   * creator ended the plan, and it finished with the 30 days paid for.
+   */
+  endReason: "pricing_changed" | "listing_archived" | "use_ended" | "plan_ended" | null;
+  /** The plan it is on, while that gives uses. null for a month with no count, and for a plan that is over. */
+  plan?: SubscriptionPlan | null;
 }
 
 /** One licence in `myInstalls`: a copy the buyer owns, or the right to use the creator's agent. */
@@ -144,7 +244,7 @@ export interface ExpectedPricing {
   monthlyPriceCents?: number | null;
 }
 
-/** The answer of `startUsing`. */
+/** The answer of `startUsing`, `startPlan` and `movePlan`. */
 export interface StartedUsing {
   access: InstallAccess;
   /** What the buyer agreed to; null for a free listing. */
@@ -304,6 +404,16 @@ export interface CreatorPayout {
   cancellable: boolean;
 }
 
+/** The four terms of a plan and nothing else, so that what is sent is what was shown. */
+function planTermsOf(plan: PlanTerms): PlanTerms {
+  return {
+    id: plan.id,
+    priceCents: plan.priceCents,
+    includedUses: plan.includedUses,
+    extraUsePriceCents: plan.extraUsePriceCents,
+  };
+}
+
 export function marketplaceResource(client: WheelsAIClient) {
   return {
     // ---- public ----
@@ -338,9 +448,9 @@ export function marketplaceResource(client: WheelsAIClient) {
 
     // ---- publishing ----
 
-    /** The caller organization's listings in every status. */
+    /** The caller organization's listings in every status, each with the plans it has on offer. */
     myListings: () =>
-      client.get<{ listings: AgentListing[] }>("/api/marketplace/my-listings"),
+      client.get<{ listings: OwnedListing[] }>("/api/marketplace/my-listings"),
 
     /** Creates a draft. Follow with `publishListing`. */
     createListing: (input: CreateListingInput) =>
@@ -359,6 +469,24 @@ export function marketplaceResource(client: WheelsAIClient) {
       client.post<{ listing: AgentListing; message: string }>(
         `/api/marketplace/listings/${seg(listingId)}/archive`,
       ),
+
+    /**
+     * `PUT /api/marketplace/listings/{id}/plans`: set the plans of a listing that sells use per request.
+     * `plans` is the whole set and replaces what the listing has: a plan sent with its `id` is changed in
+     * place, one sent without is new. A plan that ends is named in `ended`; ending is said, never implied,
+     * so a plan on offer that is in neither list refuses the whole save. At most four plans. People already
+     * on a plan keep the terms they agreed to. Needs an owner or admin, or an API key.
+     *
+     * Answers the plans as they are now. Refusals: 400 `validation_failed` (`message` is the first problem,
+     * `fields` in `error.data` has a sentence for each, keyed as `plans[0].priceCents`); 404
+     * `listing_not_found`; 409 `plans_not_available` (the listing sells copies, is not sold per use, or its
+     * agent runs on its own); 409 `plans_changed` (the plans were changed somewhere else; read them again).
+     */
+    setPlans: (listingId: string, input: { plans: PlanInput[]; ended?: string[] }) =>
+      client.put<{ plans: OwnerPlan[] }>(`/api/marketplace/listings/${seg(listingId)}/plans`, {
+        plans: input.plans,
+        ...(input.ended !== undefined ? { ended: input.ended } : {}),
+      }),
 
     // ---- installing ----
 
@@ -405,6 +533,38 @@ export function marketplaceResource(client: WheelsAIClient) {
       }),
 
     /**
+     * Start a plan on a listing: `POST /api/marketplace/listings/{id}/use` with the plan you were shown, whole
+     * (a `PlanOffer` from `get`, `use.access` or `myInstalls` can be passed as it came). Its 30 days are charged
+     * from your credits now, and the same price every 30 days after that. Starting a plan agrees to no price
+     * per use. Always 201. Needs an owner or admin, or a key granted `marketplace:install` by name.
+     *
+     * Refusals, with nothing charged: 400 `expected_terms_required`; 402 `insufficient_credits`
+     * (`requiredCents` in `error.data`); 409 `pricing_changed` (the plan is not what you were shown;
+     * `pricing` and the `plans` on offer now are in `error.data`), `already_on_plan` (a plan or a month for
+     * this agent still runs), `subscription_claim_lost` (another request won; retry); and the refusals of
+     * `startUsing` about the listing (`listing_not_found`, `own_agent`, `sells_copies`, `not_offered`,
+     * `copy_subscription_active`, `listing_paused`, 503 `service_unavailable`).
+     */
+    startPlan: (listingId: string, plan: PlanTerms) =>
+      client.post<StartedUsing>(`/api/marketplace/listings/${seg(listingId)}/use`, { plan: planTermsOf(plan) }),
+
+    /**
+     * Move up to a bigger plan of the same listing now: the same route with `switchNow: true`. The bigger
+     * plan's full price is charged, a fresh 30 days starts, and the uses you had left are carried into them
+     * once (`carriedUses`). The 30 days that were running are not refunded, so only a plan that costs more
+     * is a move; to move to a smaller one, cancel the renewal and start it when your plan ends. Always 201.
+     *
+     * Refusals, with nothing charged or changed: 400 `invalid_plan_move`; 402 `insufficient_credits`; 409
+     * `not_on_plan`, `same_plan`, `not_a_bigger_plan`, `pricing_changed` (as at a start) and
+     * `subscription_claim_lost` (a renewal, a use or another move changed your subscription first).
+     */
+    movePlan: (listingId: string, plan: PlanTerms) =>
+      client.post<StartedUsing>(`/api/marketplace/listings/${seg(listingId)}/use`, {
+        plan: planTermsOf(plan),
+        switchNow: true,
+      }),
+
+    /**
      * Stop using an agent. This is the uninstall route: a subscription ends now, and the month you paid for
      * is not refunded (cancel the subscription instead to keep access until it ends).
      */
@@ -429,8 +589,13 @@ export function marketplaceResource(client: WheelsAIClient) {
         } | null;
       }>(`/api/marketplace/listings/${seg(listingId)}/install-status`),
 
+    /**
+     * Your installs, lapsed ones included. A use carries the plans its listing offers (`listing.plans`) and
+     * the plan it is on (`subscription.plan`). `canSpend` says whether this caller may start, move up or
+     * resume: an owner or admin, or a key granted `marketplace:install` by name.
+     */
     myInstalls: () =>
-      client.get<{ installs: AgentInstall[] }>("/api/marketplace/my-installs"),
+      client.get<{ installs: AgentInstall[]; canSpend: boolean }>("/api/marketplace/my-installs"),
 
     // ---- reviews ----
 
@@ -440,12 +605,21 @@ export function marketplaceResource(client: WheelsAIClient) {
 
     // ---- subscriptions and revenue ----
 
+    /** Your subscriptions: months and plans alike. */
     subscriptions: () =>
       client.get<{ subscriptions: unknown[] }>("/api/marketplace/subscriptions"),
 
+    /**
+     * Stop the renewal of a month or a plan. Access, and a plan's uses, stay until the 30 days paid for end,
+     * and nothing more is charged. Any member can cancel. 404 `subscription_not_found`.
+     */
     cancelSubscription: (listingId: string) =>
       client.post<{ subscription: unknown }>(`/api/marketplace/subscriptions/${seg(listingId)}/cancel`),
 
+    /**
+     * Keep renewing after all. It turns the charges back on, so it needs an owner or admin, or a key granted
+     * `marketplace:install` by name. 404 `subscription_not_found`.
+     */
     resumeSubscription: (listingId: string) =>
       client.post<{ subscription: unknown }>(`/api/marketplace/subscriptions/${seg(listingId)}/resume`),
 

@@ -226,7 +226,8 @@ if (agentGpu.available) {
               <>
                 <code>search</code>, <code>get</code>, <code>featured</code>, <code>categories</code>, <code>reviews</code>,{" "}
                 <code>addReview</code>, <code>myListings</code>, <code>createListing</code>, <code>updateListing</code>,{" "}
-                <code>publishListing</code>, <code>archiveListing</code>, <code>install</code>, <code>startUsing</code>,{" "}
+                <code>publishListing</code>, <code>archiveListing</code>, <code>setPlans</code>, <code>install</code>,{" "}
+                <code>startUsing</code>, <code>startPlan</code>, <code>movePlan</code>,{" "}
                 <code>stopUsing</code>, <code>uninstall</code>,{" "}
                 <code>installStatus</code>, <code>myInstalls</code>, <code>subscriptions</code>,{" "}
                 <code>cancelSubscription</code>, <code>resumeSubscription</code>, <code>revenue</code>, <code>payouts</code>
@@ -239,10 +240,14 @@ if (agentGpu.available) {
             methods: (
               <>
                 <code>access(handle)</code>, <code>chat(handle, &#123; messages, sessionId? &#125;)</code>,{" "}
-                <code>run(handle, &#123; input &#125;)</code>, <code>results(handle)</code>
+                <code>run(handle, &#123; input &#125;)</code>, <code>results(handle)</code>, <code>usage()</code>
               </>
             ),
-            endpoint: <code>/api/a/&#123;handle&#125;/...</code>,
+            endpoint: (
+              <>
+                <code>/api/a/&#123;handle&#125;/...</code>, <code>GET /api/billing/marketplace-usage</code>
+              </>
+            ),
           },
           {
             resource: <code>inference</code>,
@@ -753,7 +758,7 @@ wheelsai config show                  # effective API URL, web URL and where eac
       </p>
       <CodeBlock
         language="text"
-        code={`✖ Deploying requires a reservation of $0.37 in credits. Add credits and retry.
+        code={`\u2716 Deploying requires a reservation of $0.37 in credits. Add credits and retry.
   HTTP 402 insufficient_credits
   Add credits at https://your-app.example.com/dashboard/billing`}
       />

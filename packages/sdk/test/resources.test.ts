@@ -3,8 +3,11 @@
  * Authorization header. The expected values are a table written by hand from the routes
  * in apps/api (nothing here reads the API's code), so it catches an SDK change made by
  * accident, not an API route that moved: a change to either has to be made here on purpose.
+ * The one exception is the names of the usage headers, which are compared with the API's
+ * own file: a constant that only repeats names has nothing else to hold it to them.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -26,10 +29,16 @@ import {
   type DepositStatus,
   type HostedModelChoice,
   type PreparedDepositAddress,
+  type OwnerPlan,
+  type PlanOffer,
   type SpendLine,
+  type SubscriptionPlan,
   type UsageSummary,
   type UseAccessState,
+  type UseChatResult,
   type UseRefusal,
+  type UseUsage,
+  USAGE_HEADERS,
   type WaitingDeposit,
 } from "../src/index.js";
 import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } from "./helpers.js";
@@ -37,6 +46,7 @@ import { API_KEY, BASE_URL, jsonResponse, recordingFetch, type RecordedCall } fr
 const AGENT = "11111111-1111-4111-8111-111111111111";
 const DEP = "22222222-2222-4222-8222-222222222222";
 const LISTING = "33333333-3333-4333-8333-333333333333";
+const PLAN = "77777777-7777-4777-8777-777777777777";
 const OFFERING = "44444444-4444-4444-8444-444444444444";
 const JOB = "55555555-5555-4555-8555-555555555555";
 const PLACE = "66666666-6666-4666-8666-666666666666";
@@ -172,6 +182,7 @@ const cases: Case[] = [
   { name: "use.chat", run: (w) => w.use.chat("refund-helper", { messages: [{ role: "user", content: "Hi" }], sessionId: "s1" }), method: "POST", path: "/api/a/refund-helper/chat", body: { messages: [{ role: "user", content: "Hi" }], sessionId: "s1", stream: false } },
   { name: "use.run", run: (w) => w.use.run("brief-writer", { input: { topic: "x" } }), method: "POST", path: "/api/a/brief-writer/run", body: { input: { topic: "x" }, stream: false } },
   { name: "use.results", run: (w) => w.use.results("daily-brief"), method: "GET", path: "/api/a/daily-brief/results" },
+  { name: "use.usage", run: (w) => w.use.usage(), method: "GET", path: "/api/billing/marketplace-usage" },
   // ---- marketplace ----
   { name: "marketplace.search", run: (w) => w.marketplace.search({ query: "support", sortBy: "newest", limit: 10 }), method: "GET", path: "/api/marketplace/listings", query: { query: "support", sortBy: "newest", limit: "10" } },
   { name: "marketplace.get", run: (w) => w.marketplace.get("my-bot"), method: "GET", path: "/api/marketplace/listings/my-bot" },
@@ -187,6 +198,9 @@ const cases: Case[] = [
   { name: "marketplace.archiveListing", run: (w) => w.marketplace.archiveListing(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/archive` },
   { name: "marketplace.install", run: (w) => w.marketplace.install(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/install` },
   { name: "marketplace.startUsing", run: (w) => w.marketplace.startUsing(LISTING, { expected: { pricingModel: "per_request", pricePerRequestCents: 5 } }), method: "POST", path: `/api/marketplace/listings/${LISTING}/use`, body: { expected: { pricingModel: "per_request", pricePerRequestCents: 5 } } },
+  { name: "marketplace.setPlans", run: (w) => w.marketplace.setPlans(LISTING, { plans: [{ kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null }], ended: [PLAN] }), method: "PUT", path: `/api/marketplace/listings/${LISTING}/plans`, body: { plans: [{ kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null }], ended: [PLAN] } },
+  { name: "marketplace.startPlan", run: (w) => w.marketplace.startPlan(LISTING, { id: PLAN, priceCents: 900, includedUses: 500, extraUsePriceCents: 5 }), method: "POST", path: `/api/marketplace/listings/${LISTING}/use`, body: { plan: { id: PLAN, priceCents: 900, includedUses: 500, extraUsePriceCents: 5 } } },
+  { name: "marketplace.movePlan", run: (w) => w.marketplace.movePlan(LISTING, { id: PLAN, priceCents: 2900, includedUses: 2000, extraUsePriceCents: null }), method: "POST", path: `/api/marketplace/listings/${LISTING}/use`, body: { plan: { id: PLAN, priceCents: 2900, includedUses: 2000, extraUsePriceCents: null }, switchNow: true } },
   { name: "marketplace.stopUsing", run: (w) => w.marketplace.stopUsing(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/uninstall` },
   { name: "marketplace.uninstall", run: (w) => w.marketplace.uninstall(LISTING), method: "POST", path: `/api/marketplace/listings/${LISTING}/uninstall` },
   { name: "marketplace.installStatus", run: (w) => w.marketplace.installStatus(LISTING), method: "GET", path: `/api/marketplace/listings/${LISTING}/install-status` },
@@ -687,6 +701,9 @@ describe("selling and using an agent", () => {
       terms: null,
       accepted: null,
       subscription: null,
+      plans: [],
+      plan: null,
+      trialAvailable: false,
       balanceCents: 0,
       canAccept: false,
       startBlocked: { code: "copy_subscription_active", message: "A copy is paid for.", until: "2026-11-01T00:00:00.000Z" },
@@ -747,6 +764,9 @@ describe("selling and using an agent", () => {
       terms: null,
       accepted: null,
       subscription: null,
+      plans: [],
+      plan: null,
+      trialAvailable: false,
       balanceCents: 0,
       canAccept: true,
       startBlocked: null,
@@ -802,6 +822,227 @@ describe("selling and using an agent", () => {
     const wheels = new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch });
     await wheels.auth.createApiKey({ name: "buyer", scopes: ["agents:use"], maxUsePriceCents: 50, dailySpendCapCents: 2000 });
     assert.deepEqual(calls[0]!.body, { name: "buyer", scopes: ["agents:use"], maxUsePriceCents: 50, dailySpendCapCents: 2000 });
+  });
+});
+
+describe("plans on an agent", () => {
+  const json = (body: unknown, status = 200) => {
+    const recorded = recordingFetch(() => jsonResponse(body, status));
+    return { wheels: new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recorded.fetch }), calls: recorded.calls };
+  };
+  const starter: PlanOffer = { id: PLAN, name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 };
+  const count: SubscriptionPlan = {
+    id: PLAN,
+    name: "Starter",
+    includedUses: 500,
+    carriedUses: 0,
+    usedUses: 425,
+    remainingUses: 75,
+    extraUsePriceCents: 5,
+    resetsAt: "2026-11-12T09:30:00.000Z",
+    warning: 85,
+  };
+
+  it("a start sends the four terms of the plan and nothing else, whatever the plan it was given carries", async () => {
+    const { wheels, calls } = json({}, 201);
+    // A plan as a listing offers it has a name too, and a creator's own has more: none of it is consent.
+    const shown = { ...starter, kind: "paid", status: "active", subscribers: 3 } as OwnerPlan;
+    await wheels.marketplace.startPlan(LISTING, shown);
+    assert.deepEqual(calls[0]!.body, { plan: { id: PLAN, priceCents: 900, includedUses: 500, extraUsePriceCents: 5 } });
+    assert.equal("expected" in (calls[0]!.body as object), false, "starting a plan agrees to no price per use");
+    assert.equal("switchNow" in (calls[0]!.body as object), false);
+  });
+
+  it("a plan that stops is sent with its extra price as null, never left out", async () => {
+    const { wheels, calls } = json({}, 201);
+    await wheels.marketplace.startPlan(LISTING, { ...starter, extraUsePriceCents: null });
+    assert.equal(calls[0]!.rawBody, JSON.stringify({ plan: { id: PLAN, priceCents: 900, includedUses: 500, extraUsePriceCents: null } }));
+  });
+
+  it("a move is the same call with switchNow true", async () => {
+    const { wheels, calls } = json({}, 201);
+    await wheels.marketplace.movePlan(LISTING, starter);
+    assert.equal(calls[0]!.method, "POST");
+    assert.equal(calls[0]!.url.pathname, `/api/marketplace/listings/${LISTING}/use`);
+    assert.deepEqual(calls[0]!.body, { plan: { id: PLAN, priceCents: 900, includedUses: 500, extraUsePriceCents: 5 }, switchNow: true });
+  });
+
+  it("the refusals of a start and of a move keep their code, their sentence and the plans on offer", async () => {
+    const changed = {
+      error: "pricing_changed",
+      message: 'The plans of "Support Bot" are not what you were shown. Nothing was charged. Look at them again and choose.',
+      pricing: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null },
+      plans: [{ ...starter, priceCents: 1200 }],
+    };
+    await assert.rejects(json(changed, 409).wheels.marketplace.startPlan(LISTING, starter), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, err.message], [409, "pricing_changed", changed.message]);
+      assert.equal((err.data as { plans: PlanOffer[] }).plans[0]!.priceCents, 1200);
+      return true;
+    });
+    const refusals: Array<[string, string, (w: WheelsAI) => Promise<unknown>]> = [
+      ["already_on_plan", "You already have a plan or a subscription for this agent that is still running. Nothing was charged.", (w) => w.marketplace.startPlan(LISTING, starter)],
+      ["not_on_plan", "You are not on a plan. Start one first.", (w) => w.marketplace.movePlan(LISTING, starter)],
+      ["same_plan", "You are already on this plan. Nothing was charged.", (w) => w.marketplace.movePlan(LISTING, starter)],
+      ["not_a_bigger_plan", "To move to a smaller plan, cancel the renewal and choose it when your plan ends.", (w) => w.marketplace.movePlan(LISTING, starter)],
+    ];
+    for (const [error, message, run] of refusals) {
+      await assert.rejects(run(json({ error, message }, 409).wheels), (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.deepEqual([err.status, err.code, err.message], [409, error, message]);
+        return true;
+      });
+    }
+  });
+
+  it("setPlans sends the whole set, and the ended ids only when they are given", async () => {
+    const { wheels, calls } = json({ plans: [] });
+    const plans = [
+      { id: PLAN, kind: "paid" as const, name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 },
+      { kind: "paid" as const, name: "Team", priceCents: 2900, includedUses: 2000, extraUsePriceCents: null },
+    ];
+    await wheels.marketplace.setPlans(LISTING, { plans, ended: ["88888888-8888-4888-8888-888888888888"] });
+    await wheels.marketplace.setPlans(LISTING, { plans: [] });
+    assert.equal(calls[0]!.method, "PUT");
+    assert.equal(calls[0]!.url.pathname, `/api/marketplace/listings/${LISTING}/plans`);
+    assert.deepEqual(calls[0]!.body, { plans, ended: ["88888888-8888-4888-8888-888888888888"] });
+    assert.deepEqual(calls[1]!.body, { plans: [] });
+    assert.throws(() => wheels.marketplace.setPlans("..", { plans: [] }), WheelsAIError);
+  });
+
+  it("setPlans answers the plans with their subscribers, and a save that lost is told to reload", async () => {
+    const owned: OwnerPlan = { ...starter, kind: "paid", status: "active", subscribers: 12 };
+    assert.deepEqual(await json({ plans: [owned] }).wheels.marketplace.setPlans(LISTING, { plans: [] }), { plans: [owned] });
+    const body = {
+      error: "plans_changed",
+      message: "These plans were changed somewhere else since this page was loaded. Reload the page and try again.",
+    };
+    await assert.rejects(json(body, 409).wheels.marketplace.setPlans(LISTING, { plans: [] }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, err.message], [409, "plans_changed", body.message]);
+      return true;
+    });
+  });
+
+  // A check of the types more than of the client: every field read below must exist on the
+  // SDK's type under the name the API sends, or this file stops compiling.
+  it("the plans a listing offers, the plan on the access and the plan on a subscription are typed under the names the API sends", async () => {
+    const { listing } = await json({ listing: { id: LISTING, plans: [starter] } }).wheels.marketplace.get("support-bot");
+    assert.deepEqual(listing.plans, [starter]);
+    const { listings } = await json({ listings: [{ id: LISTING, plansFromCents: 900 }] }).wheels.marketplace.search();
+    assert.equal(listings[0]!.plansFromCents, 900);
+    const mine = await json({ listings: [{ id: LISTING, plans: [{ ...starter, kind: "paid", status: "active", subscribers: 2 }] }] }).wheels.marketplace.myListings();
+    assert.equal(mine.listings[0]!.plans![0]!.subscribers, 2);
+
+    const access: UseAccessState = {
+      access: "subscribed",
+      listingId: LISTING,
+      terms: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, unit: "message", keepsCopy: false },
+      plans: [starter],
+      plan: count,
+      trialAvailable: false,
+      accepted: { pricingModel: null, pricePerRequestCents: null, monthlyPriceCents: 900 },
+      subscription: { status: "active", currentPeriodEnd: "2026-11-12T09:30:00.000Z", cancelAtPeriodEnd: false, graceEndsAt: null },
+      balanceCents: 495,
+      canAccept: true,
+      startBlocked: null,
+      paused: false,
+    };
+    assert.deepEqual(await json(access).wheels.use.access("support-bot"), access);
+
+    const installs = await json({
+      installs: [{ id: "i1", kind: "use", access: "plan_ended", listing: { id: LISTING, plans: [starter] }, subscription: { id: "s1", plan: count, endReason: "plan_ended" } }],
+      canSpend: false,
+    }).wheels.marketplace.myInstalls();
+    assert.equal(installs.canSpend, false);
+    assert.equal(installs.installs[0]!.access, "plan_ended");
+    assert.deepEqual(installs.installs[0]!.subscription!.plan, count);
+    assert.deepEqual(installs.installs[0]!.listing.plans, [starter]);
+  });
+
+  it("a use on a plan carries the count after it, and a used-up plan is refused with the plans on offer", async () => {
+    const answer: UseChatResult = {
+      message: { role: "assistant", content: "Hello." },
+      toolCalls: [],
+      billing: {
+        chargedCents: 0,
+        balanceCents: 495,
+        access: "subscribed",
+        plan: { id: PLAN, use: "included", includedUses: 500, carriedUses: 0, usedUses: 426, remainingUses: 74, extraUsePriceCents: 5, resetsAt: "2026-11-12T09:30:00.000Z", warning: 85 },
+      },
+    };
+    const said = await json(answer).wheels.use.chat("support-bot", { messages: [{ role: "user", content: "Hi" }] });
+    assert.deepEqual(said, answer);
+    assert.equal(said.billing.plan?.remainingUses, 74);
+
+    const usedUp = {
+      error: "plan_used_up",
+      message: "You have used all 500 uses. It starts again on 12 Nov. Nothing was charged.",
+      retryAfterSeconds: 86_400,
+      plans: [starter],
+      resetsAt: "2026-11-12T09:30:00.000Z",
+    };
+    await assert.rejects(json(usedUp, 429).wheels.use.chat("support-bot", { messages: [{ role: "user", content: "Hi" }] }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, err.message], [429, "plan_used_up", usedUp.message]);
+      const data = err.data as UseRefusal;
+      assert.deepEqual([data.resetsAt, data.plans], [usedUp.resetsAt, [starter]]);
+      return true;
+    });
+    const ended = { error: "plan_ended", message: "Your plan ended. Choose a plan or pay per use to keep using it.", access: "plan_ended", plans: [starter] };
+    await assert.rejects(json(ended, 402).wheels.use.run("brief-writer", { input: {} }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, (err.data as UseRefusal).access], [402, "plan_ended", "plan_ended"]);
+      return true;
+    });
+  });
+
+  it("usage reads the one balance and a row for each listing, and a key says what it spent today", async () => {
+    const usage: UseUsage = {
+      balanceCents: 495,
+      listings: [
+        {
+          listingId: LISTING,
+          title: "Support Bot",
+          slug: "support-bot",
+          handle: "support-bot",
+          access: "subscribed",
+          plan: count,
+          periodEndsAt: "2026-11-12T09:30:00.000Z",
+          renewalPastDue: false,
+          extraThisPeriod: { uses: 0, cents: 0 },
+          perUseThisMonth: { uses: 12, cents: 60 },
+        },
+      ],
+    };
+    const { wheels, calls } = json(usage);
+    assert.deepEqual(await wheels.use.usage(), usage);
+    assert.deepEqual([calls[0]!.method, calls[0]!.url.pathname], ["GET", "/api/billing/marketplace-usage"]);
+
+    const keys = await json({ keys: [{ id: "k1", spentTodayCents: 140 }, { id: "k2", spentTodayCents: null }], apiKeys: [] }).wheels.auth.listApiKeys();
+    // null is "could not be read", not "nothing spent".
+    assert.deepEqual(keys.keys.map((key) => key.spentTodayCents), [140, null]);
+  });
+
+  it("the names of the usage headers are the eight the API sets", () => {
+    assert.deepEqual(Object.values(USAGE_HEADERS), [
+      "x-wheelsai-charged-cents",
+      "x-wheelsai-balance-cents",
+      "x-wheelsai-plan",
+      "x-wheelsai-plan-limit",
+      "x-wheelsai-plan-used",
+      "x-wheelsai-plan-remaining",
+      "x-wheelsai-plan-reset",
+      "x-wheelsai-plan-warning",
+    ]);
+  });
+
+  it("and they are the names in the API's own file, no more and no fewer", () => {
+    // From the compiled test (.test-build/test), four levels up is the repository.
+    const api = readFileSync(new URL("../../../../apps/api/src/services/usageHeaders.ts", import.meta.url), "utf8");
+    const names = [...new Set(api.match(/"x-wheelsai-[a-z-]+"/g) ?? [])].map((name) => name.slice(1, -1));
+    assert.equal(names.length, 8);
+    assert.deepEqual(Object.values(USAGE_HEADERS).sort(), names.sort());
   });
 });
 

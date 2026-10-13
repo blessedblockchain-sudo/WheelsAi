@@ -79,6 +79,11 @@ export interface ApiKeyInfo {
   /** The most one use of a paid agent may cost, on a key granted `agents:use`; null on any other key. */
   maxUsePriceCents: number | null;
   dailySpendCapCents: number | null;
+  /**
+   * `listApiKeys`: what the key has spent in the current UTC day, in cents; 0 for a key that has spent
+   * nothing today. null when it could not be read just now, which is not the same as nothing spent.
+   */
+  spentTodayCents?: number | null;
   lastUsedAt: string | null;
   expiresAt: string | null;
   createdAt: string;

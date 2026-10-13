@@ -18,7 +18,17 @@ import type { PaidUsePlan, PlanOffer, PlanTerms } from "./api";
 import { formatCents } from "./agent-page";
 import type { InstalledConfirm, InstalledFormat, InstalledLicence, InstalledLine } from "./installed-rows";
 import { shortDay } from "./paid-use";
-import { planAfterLine, planCountLine, planCountOf, planPriceLine, planTermsOf, planUsesLine, plansOf } from "./use-plans";
+import {
+  carriedOnMove,
+  planAfterLine,
+  planCountLine,
+  planCountOf,
+  planMoveDialog,
+  planPriceLine,
+  planTermsOf,
+  planUsesLine,
+  plansOf,
+} from "./use-plans";
 
 // ---------------------------------------------------------------------------
 // Words
@@ -126,7 +136,9 @@ export function planLine(install: InstalledLicence, fmt: InstalledFormat = {}): 
   const count = sellsUseNow(install) ? read : { ...read, extraUsePriceCents: null };
   const dates = datesOf(fmt);
   const pastDue = sub.status === "past_due";
-  const text = planCountLine({ plan: count, endsAt: sub.currentPeriodEnd, pastDue, dates });
+  // The row offers Move up whenever a bigger plan is on offer, so the line may point at it.
+  const moveUp = biggerPlans(install).length > 0;
+  const text = planCountLine({ plan: count, endsAt: sub.currentPeriodEnd, pastDue, moveUp, dates });
   if (pastDue) {
     const before = shortDay(sub.graceEndsAt ?? sub.currentPeriodEnd, dates);
     return { text: `${renewalNotThroughLine(sub.priceCents, before)} ${text}`, tone: "warn" };
@@ -181,12 +193,11 @@ export function biggerPlans(install: InstalledLicence): PlanOffer[] {
 /**
  * How many uses a move carries into the new 30 days, as the API will count
  * it: the uses that are left, and at most the number the plan being left
- * included (uses carried in by an earlier move are not carried again).
+ * included (uses carried in by an earlier move are not carried again). The
+ * rule is written once, for the agent's page (lib/use-plans.ts).
  */
 export function carriedIntoMove(plan: Pick<PaidUsePlan, "includedUses" | "remainingUses">): number {
-  const left = Number.isFinite(plan.remainingUses) ? Math.floor(plan.remainingUses) : 0;
-  const included = Number.isFinite(plan.includedUses) ? Math.floor(plan.includedUses) : 0;
-  return Math.max(0, Math.min(left, included));
+  return carriedOnMove(plan);
 }
 
 /** One of the bigger plans, as the dialog that lists them draws it. */
@@ -245,18 +256,14 @@ export interface MoveUpConfirm extends InstalledConfirm {
 export function moveUpConfirm(install: InstalledLicence, offer: PlanOffer): MoveUpConfirm | null {
   const plan = planOfInstall(install);
   if (!plan) return null;
-  const carried = carriedIntoMove(plan);
-  const price = formatCents(offer.priceCents);
-  const added =
-    carried === 0
-      ? ""
-      : carried === 1
-        ? " The 1 use you have left is added to it."
-        : ` The ${carried} uses you have left are added to it.`;
+  // The agent's page asks the same thing in the same words: one dialog for both. When a move carries
+  // fewer uses than are left (some were carried in before), it says both numbers.
+  const left = Number.isFinite(plan.remainingUses) ? Math.max(0, Math.floor(plan.remainingUses)) : 0;
+  const dialog = planMoveDialog(offer, carriedIntoMove(plan), left);
   return {
-    title: `Move up to ${theNamedPlan(offer.name)}?`,
-    description: `Starts a new 30 days today and charges ${price} from your credits.${added}`,
-    confirmLabel: `Move up for ${price}`,
+    title: dialog.title,
+    description: dialog.body,
+    confirmLabel: dialog.confirmLabel,
     terms: planTermsOf(offer),
   };
 }

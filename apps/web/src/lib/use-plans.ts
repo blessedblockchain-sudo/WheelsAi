@@ -373,7 +373,7 @@ export function biggerPlans(
  * How many uses a move carries into the new 30 days: the uses that are left,
  * and at most as many as the plan being left included (uses carried by an
  * earlier move are not carried again). The API works out the same number
- * when it moves. The Installed page has its own copy of this rule.
+ * when it moves. The Installed page asks this function too.
  */
 export function carriedOnMove(plan: Pick<PlanCount, "includedUses" | "remainingUses">): number {
   const left = Number.isFinite(plan.remainingUses) ? Math.floor(plan.remainingUses) : 0;

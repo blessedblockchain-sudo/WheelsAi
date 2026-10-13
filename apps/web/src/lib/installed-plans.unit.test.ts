@@ -173,7 +173,8 @@ test("the line is the count of the agent's page, word for word", () => {
     const row = onPlan({ subscription: sub({ plan: shape }) });
     assert.equal(
       planLine(row, FMT)?.text,
-      planCountLine({ plan: shape, endsAt: "2026-11-12T12:00:00.000Z", pastDue: false, dates: { timeZone: "UTC" } }),
+      // The listing of these rows offers a bigger plan, so the line may point at moving up.
+      planCountLine({ plan: shape, endsAt: "2026-11-12T12:00:00.000Z", pastDue: false, moveUp: true, dates: { timeZone: "UTC" } }),
     );
   }
 });
@@ -181,8 +182,13 @@ test("the line is the count of the agent's page, word for word", () => {
 test("the line warns at 85%, when all is used, and when the plan will not renew", () => {
   const at85 = planLine(onPlan({ subscription: sub({ plan: plan({ usedUses: 425, remainingUses: 75, warning: 85 }) }) }), FMT);
   assert.deepEqual(at85, { text: "You have used 85% of your plan. 75 uses left until 12 Nov.", tone: "warn" });
-  const stopped = planLine(onPlan({ subscription: sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100 }) }) }), FMT);
-  assert.deepEqual(stopped, { text: "You have used all 500 uses. It starts again on 12 Nov.", tone: "warn" });
+  const usedAndStops = sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100 }) });
+  // A bigger plan is on offer and the row offers Move up: the line points at it, as the agent's page does.
+  const stopped = planLine(onPlan({ subscription: usedAndStops }), FMT);
+  assert.deepEqual(stopped, { text: "You have used all 500 uses. It starts again on 12 Nov, or move up now.", tone: "warn" });
+  // No bigger plan to move to: the line only says when it starts again.
+  const nowhereToGo = planLine(onPlan({ subscription: usedAndStops, listing: listing({ plans: [STARTER] }) }), FMT);
+  assert.deepEqual(nowhereToGo, { text: "You have used all 500 uses. It starts again on 12 Nov.", tone: "warn" });
   const extra = planLine(
     onPlan({ subscription: sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100, extraUsePriceCents: 4 }) }) }),
     FMT,
@@ -319,9 +325,12 @@ test("the confirm of a move is the design's sentence, with the terms of the plan
     moveUpConfirm(oneLeft, PRO)?.description,
     "Starts a new 30 days today and charges $29.00 from your credits. The 1 use you have left is added to it.",
   );
-  // Carried uses from an earlier move are named only up to what the plan being left included.
+  // Uses carried in by an earlier move stay behind: the sentence says both numbers, in the words of the agent's page.
   const carriedBefore = onPlan({ subscription: sub({ plan: plan({ carriedUses: 300, usedUses: 100, remainingUses: 700 }) }) });
-  assert.match(moveUpConfirm(carriedBefore, PRO)?.description ?? "", /The 500 uses you have left are added to it\.$/);
+  assert.equal(
+    moveUpConfirm(carriedBefore, PRO)?.description,
+    "Starts a new 30 days today and charges $29.00 from your credits. 500 of the 700 uses you have left are added to it.",
+  );
   // The terms are the card's own, a stop sent as null and never left out.
   assert.deepEqual(moveUpConfirm(onPlan(), { ...PRO, extraUsePriceCents: null })?.terms, {
     id: "p-pro",

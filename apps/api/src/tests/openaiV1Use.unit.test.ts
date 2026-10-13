@@ -109,8 +109,8 @@ test("a key pays only when granted agents:use by name: `*` and an unscoped key d
   assert.equal(res.statusCode, 200);
   assert.equal(h.money.balance, 495n);
   assert.equal(h.money.keySpent, 5n, "reserved against the key's day once");
-  // The buyer's plan counts one call on /v1.
-  assert.deepEqual(metered, [KEY.orgId]);
+  // Paid for to the agent's creator: none of the buyer's own API calls.
+  assert.deepEqual(metered, []);
 });
 
 test("a session works, and the answer is the OpenAI shape plus the handle and the billing, and nothing else", async () => {
@@ -148,12 +148,12 @@ test("a session works, and the answer is the OpenAI shape plus the handle and th
   }
   assert.equal(res.headers["cache-control"], "no-store");
 
-  // One charge, one settle; on /v1 a session counts a plan call too.
+  // One charge, one settle, and none of the buyer's own API calls.
   assert.deepEqual(
     h.money.revenue.map((r) => r.status),
     ["settled"],
   );
-  assert.deepEqual(metered, [SESSION.orgId]);
+  assert.deepEqual(metered, []);
 
   // Sampling settings are accepted and not applied: the owner sets the model and its settings.
   const input = h.chatInputs[0]!;

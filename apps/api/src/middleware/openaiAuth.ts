@@ -11,7 +11,8 @@
  *
  * Metering is the SAME rule as middleware/auth.ts (`countsAsApiCall`): a
  * request that is not a read counts once, so a chat completion is one plan
- * API call and listing models is free.
+ * API call and listing models is free. A completion whose `model` is
+ * `a/<handle>` is paid use of someone else's agent and is not counted.
  */
 
 import type { FastifyError, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
@@ -99,7 +100,7 @@ export function createOpenAiAuth(options: OpenAiAuthOptions = {}): preHandlerHoo
         message: `This API key does not have the "${options.scope}" scope.`,
       });
     }
-    if (countsAsApiCall({ authType: auth.type, method: request.method, url: request.url })) {
+    if (countsAsApiCall({ authType: auth.type, method: request.method, url: request.url, body: request.body })) {
       try {
         await meter(auth.orgId);
       } catch (err) {

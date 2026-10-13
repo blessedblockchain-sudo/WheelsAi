@@ -242,11 +242,44 @@ function toLegacyUser(auth: NonNullable<FastifyRequest["auth"]>): LegacyJwtUser 
 // of Starter). The global rate limit still bounds them.
 const UNMETERED_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+// The two requests under /api/a/ that are one paid use of someone else's
+// agent (routes/paidUse.ts): the whole path, one handle, nothing after it.
+const PAID_USE_PATH = /^\/api\/a\/[^/]+\/(?:chat|run)$/;
+const UNIFIED_COMPLETIONS_PATH = "/v1/chat/completions";
+// What `model` starts with on /v1 for an agent the caller pays to use (the
+// PAID_MODEL_PREFIX of routes/paidCompletions.ts, which imports this module).
+const PAID_MODEL_START = "a/";
+
+/**
+ * Whether a request is paid use of someone else's agent: POST
+ * /api/a/:handle/chat, POST /api/a/:handle/run, or POST /v1/chat/completions
+ * whose `model` is `a/<handle>`. A body that is missing, is not an object or
+ * has no string `model` is not one, so it is counted.
+ */
+function isPaidUseOfAnAgent(request: { method: string; url: string; body: unknown }): boolean {
+  if (request.method.toUpperCase() !== "POST") return false;
+  const path = request.url.split("?")[0]!;
+  if (PAID_USE_PATH.test(path)) return true;
+  if (path !== UNIFIED_COMPLETIONS_PATH) return false;
+  const body = request.body;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+  const model = (body as { model?: unknown }).model;
+  return typeof model === "string" && model.startsWith(PAID_MODEL_START);
+}
+
 /**
  * Whether a request counts against the plan's monthly API calls: a request
  * that is not a read, made with an API key or to the OpenAI-compatible /v1
  * API (however that one is authenticated). So a chat completion counts once
  * and `GET /v1/models` is free.
+ *
+ * Paid use of someone else's agent is not counted: the caller pays the
+ * agent's creator for that use, and their own WheelsAI allowance is for what
+ * they run themselves. The paid service refuses the caller's own agent and a
+ * handle it does not know, so nothing that is free reaches an answer this way.
+ *
+ * `body` is the parsed body as the guard sees it. It is asked of every caller
+ * so that none can leave it out.
  *
  * The /v1 guard (middleware/openaiAuth.ts) applies this same rule.
  */
@@ -254,8 +287,10 @@ export function countsAsApiCall(request: {
   authType: "jwt" | "api_key";
   method: string;
   url: string;
+  body: unknown;
 }): boolean {
   if (UNMETERED_METHODS.has(request.method.toUpperCase())) return false;
+  if (isPaidUseOfAnAgent(request)) return false;
   return request.authType === "api_key" || request.url.startsWith("/v1/");
 }
 
@@ -277,6 +312,7 @@ export async function requireAuth(
       authType: request.auth.type,
       method: request.method,
       url: request.url,
+      body: request.body,
     })
   ) {
     await meterApiCall(request.auth.orgId);

@@ -9,6 +9,10 @@ import Fastify from "fastify";
 // counts when it is not a read (GET, HEAD, OPTIONS) and is made with an API
 // key or to /v1, however it is authenticated. So a chat completion counts
 // once, and an OpenAI client listing /v1/models spends nothing.
+//
+// Paid use of someone else's agent is the one write that is not counted: the
+// caller pays the agent's creator for it, and their own allowance is for what
+// they run themselves.
 
 process.env.NODE_ENV ??= "development";
 process.env.LOG_LEVEL ??= "error";
@@ -16,12 +20,14 @@ process.env.DATABASE_URL ??= "postgresql://wheelsai:wheelsai@localhost:5432/whee
 process.env.JWT_SECRET ??= "12345678901234567890123456789012";
 
 const { countsAsApiCall, requireAuth } = await import("../middleware/auth.js");
+const { createOpenAiAuth } = await import("../middleware/openaiAuth.js");
 const { prisma } = await import("@wheelsai/db");
 
 const CASES: Array<{
   authType: "jwt" | "api_key";
   method: string;
   url: string;
+  body?: unknown;
   counts: boolean;
 }> = [
   { authType: "api_key", method: "GET", url: "/api/deployments/d1", counts: false },
@@ -52,9 +58,104 @@ const CASES: Array<{
 
 for (const c of CASES) {
   test(`${c.authType} ${c.method} ${c.url} ${c.counts ? "counts" : "is free"}`, () => {
-    assert.equal(countsAsApiCall(c), c.counts);
+    assert.equal(countsAsApiCall({ ...c, body: c.body }), c.counts);
   });
 }
+
+const PAID_BODY = { model: "a/support-bot", messages: [{ role: "user", content: "Hi" }] };
+
+test("paid use of someone else's agent is not one of the caller's own API calls", () => {
+  for (const authType of ["api_key", "jwt"] as const) {
+    for (const url of [
+      "/api/a/support-bot/chat",
+      "/api/a/support-bot/run",
+      "/api/a/support-bot/chat?stream=1",
+      "/api/a/support-bot/run?x=/y",
+    ]) {
+      assert.equal(countsAsApiCall({ authType, method: "POST", url, body: {} }), false, `${authType} ${url}`);
+      // The path says it: the body is not read for these two.
+      assert.equal(countsAsApiCall({ authType, method: "post", url, body: undefined }), false, `${authType} ${url}`);
+    }
+    for (const url of ["/v1/chat/completions", "/v1/chat/completions?x=1"]) {
+      assert.equal(countsAsApiCall({ authType, method: "POST", url, body: PAID_BODY }), false, `${authType} ${url}`);
+    }
+  }
+});
+
+test("everything else on /v1 is counted as before, whatever it is named", () => {
+  const url = "/v1/chat/completions";
+  for (const model of ["agent/support-bot", "workflow/a", "llama-prod", "a", "A/support-bot", " a/support-bot", "agent/a/x", ""]) {
+    for (const authType of ["api_key", "jwt"] as const) {
+      assert.equal(countsAsApiCall({ authType, method: "POST", url, body: { model } }), true, JSON.stringify(model));
+    }
+  }
+  // The routes that name their target in the path count whatever the body says.
+  for (const other of [
+    "/v1/agents/support-bot/chat/completions",
+    "/v1/workflows/a/chat/completions",
+    "/v1/llama-prod/chat/completions",
+    "/v1/chat/completions/",
+    "/v1/chat/completions/extra",
+    "/v1/chat",
+  ]) {
+    assert.equal(countsAsApiCall({ authType: "api_key", method: "POST", url: other, body: PAID_BODY }), true, other);
+    assert.equal(countsAsApiCall({ authType: "jwt", method: "POST", url: other, body: PAID_BODY }), true, other);
+  }
+});
+
+test("a body that cannot be read as an object with a string model is counted", () => {
+  const url = "/v1/chat/completions";
+  const bodies: unknown[] = [
+    undefined,
+    null,
+    "",
+    '{"model":"a/support-bot"}',
+    Buffer.from('{"model":"a/support-bot"}'),
+    ["a/support-bot"],
+    42,
+    {},
+    { model: null },
+    { model: 7 },
+    { model: ["a/support-bot"] },
+    { model: { toString: () => "a/support-bot", startsWith: () => true } },
+    { Model: "a/support-bot" },
+  ];
+  for (const body of bodies) {
+    assert.equal(countsAsApiCall({ authType: "api_key", method: "POST", url, body }), true, JSON.stringify(body));
+    assert.equal(countsAsApiCall({ authType: "jwt", method: "POST", url, body }), true, JSON.stringify(body));
+  }
+});
+
+test("a path that only looks like paid use is counted", () => {
+  for (const url of [
+    "/api/agents/x/chat",
+    "/api/a/x/chat/extra",
+    "/api/a2/x/chat",
+    "/api/a/x/chat/",
+    "/api/a/x/y/chat",
+    "/api/a//chat",
+    "/api/a/x/chats",
+    "/api/a/x/running",
+    "/api/a/x/access",
+    "/api/a/x/results",
+    "/api/a/chat",
+    "/api/A/x/chat",
+    "/x/api/a/x/chat",
+    "/api/agents/a/x/chat",
+    "/api/other?next=/api/a/x/chat",
+  ]) {
+    assert.equal(countsAsApiCall({ authType: "api_key", method: "POST", url, body: PAID_BODY }), true, url);
+  }
+  // Only the POST is one use: any other write to the same path is counted.
+  for (const method of ["PUT", "PATCH", "DELETE"]) {
+    assert.equal(countsAsApiCall({ authType: "api_key", method, url: "/api/a/x/chat", body: {} }), true, method);
+    assert.equal(
+      countsAsApiCall({ authType: "api_key", method, url: "/v1/chat/completions", body: PAID_BODY }),
+      true,
+      method,
+    );
+  }
+});
 
 // requireAuth -> meterApiCall -> getOrgPlan. An enterprise plan has no call
 // cap, so no Redis is needed; the plan lookup count shows whether the request
@@ -86,6 +187,9 @@ async function meteredApp(principal: unknown) {
     preHandler: requireAuth,
     handler: async () => ({ ok: true }),
   });
+  for (const url of ["/api/a/:handle/chat", "/api/a/:handle/run", "/api/a/:handle/chat/extra", "/api/agents/:id/chat", "/api/a2/:handle/chat"]) {
+    app.post(url, { preHandler: requireAuth }, async () => ({ ok: true }));
+  }
   await app.ready();
   return {
     app,
@@ -155,5 +259,84 @@ test("an unauthenticated request is refused before any metering", async () => {
     assert.equal(state.planLookups, 0);
   } finally {
     await restore();
+  }
+});
+
+test("requireAuth does not meter the two paid-use requests, and meters the ones beside them", async () => {
+  const { app, state, restore } = await meteredApp(KEY);
+  try {
+    for (const url of ["/api/a/support-bot/chat", "/api/a/support-bot/run", "/api/a/support-bot/run?x=1"]) {
+      const res = await app.inject({ method: "POST", url, payload: { messages: [] } });
+      assert.equal(res.statusCode, 200, url);
+    }
+    assert.equal(state.planLookups, 0, "paid use spends none of the caller's own calls");
+    for (const url of ["/api/a/support-bot/chat/extra", "/api/agents/a1/chat", "/api/a2/support-bot/chat", "/api/deployments/d1"]) {
+      const res = await app.inject({ method: "POST", url, payload: { model: "a/support-bot" } });
+      assert.equal(res.statusCode, 200, url);
+    }
+    assert.equal(state.planLookups, 4);
+  } finally {
+    await restore();
+  }
+});
+
+// The /v1 guard on its own meter, behind the three shapes of route /v1 has.
+async function v1App(principal: unknown) {
+  const metered: string[] = [];
+  const guard = createOpenAiAuth({ meter: async (orgId) => void metered.push(orgId) });
+  const app = Fastify();
+  app.decorateRequest("auth", null);
+  app.addHook("onRequest", async (request) => {
+    (request as any).auth = principal;
+  });
+  app.addContentTypeParser("text/plain", { parseAs: "string" }, (_request, body, done) => done(null, body));
+  for (const url of ["/v1/chat/completions", "/v1/agents/:slug/chat/completions", "/v1/:deploymentSlug/chat/completions"]) {
+    app.post(url, { preHandler: [guard] }, async () => ({ ok: true }));
+  }
+  await app.ready();
+  return { app, metered };
+}
+
+test("the /v1 guard does not meter a/<handle>, and meters an agent, a workflow and a deployment", async () => {
+  for (const principal of [KEY, SESSION]) {
+    const { app, metered } = await v1App(principal);
+    try {
+      const post = (url: string, payload: object) => app.inject({ method: "POST", url, payload });
+      assert.equal((await post("/v1/chat/completions", PAID_BODY)).statusCode, 200);
+      assert.equal((await post("/v1/chat/completions?x=1", PAID_BODY)).statusCode, 200);
+      assert.deepEqual(metered, [], "paid use spends none of the caller's own calls");
+
+      await post("/v1/chat/completions", { ...PAID_BODY, model: "agent/support-bot" });
+      await post("/v1/chat/completions", { ...PAID_BODY, model: "workflow/weekly" });
+      await post("/v1/chat/completions", { ...PAID_BODY, model: "llama-prod" });
+      assert.deepEqual(metered, ["org-1", "org-1", "org-1"]);
+
+      // A route that names its own target is never paid use, whatever the body says.
+      await post("/v1/agents/support-bot/chat/completions", PAID_BODY);
+      await post("/v1/llama-prod/chat/completions", PAID_BODY);
+      assert.equal(metered.length, 5);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test("the /v1 guard counts a body it cannot read a model from", async () => {
+  const { app, metered } = await v1App(KEY);
+  try {
+    const url = "/v1/chat/completions";
+    await app.inject({ method: "POST", url });
+    await app.inject({ method: "POST", url, payload: {} });
+    await app.inject({ method: "POST", url, payload: { model: 7 } });
+    await app.inject({ method: "POST", url, payload: ["a/support-bot"] });
+    await app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "text/plain" },
+      payload: JSON.stringify(PAID_BODY),
+    });
+    assert.equal(metered.length, 5);
+  } finally {
+    await app.close();
   }
 });

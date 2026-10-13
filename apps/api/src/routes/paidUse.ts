@@ -49,7 +49,7 @@ export const PAID_CHAT_BODY_LIMIT_BYTES = 64 * 1024;
 const STREAM_HEARTBEAT_MS = 15_000;
 
 export interface PaidUseGuards {
-  /** Who are you. Counts the call against the plan for an API key. */
+  /** Who are you. Paid use is not one of the caller's own API calls (middleware/auth.ts, countsAsApiCall). */
   auth: preHandlerAsyncHookHandler;
   /** An API key must have been granted agents:use by name; a session is not scoped. */
   use: preHandlerAsyncHookHandler;

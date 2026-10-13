@@ -14,7 +14,10 @@ import {
   paidUseApi,
   paidUseRefusalOf,
   type PaidUseAccessState,
+  type PaidUseBilling,
+  type PaidUseRefusal,
   type PaidUseTerms,
+  type PlanOffer,
   type PublicAgentDetail,
   type PublicAgentPaidTerms,
 } from "@/lib/api";
@@ -41,11 +44,21 @@ import {
   type PaidUnit,
   type PaidView,
 } from "@/lib/paid-use";
+import {
+  USE_PLAN_WORDS,
+  accessAfterRefusal,
+  accessAfterUse,
+  planGateView,
+  planStartDialog,
+  planStartNotice,
+  planTermsOf,
+} from "@/lib/use-plans";
 import { cn } from "@/lib/utils";
 import { useHydrated } from "./local-time";
 import { PaidResults } from "./paid-results";
 import { paidChatTransport, paidTaskTransport } from "./paid-transport";
 import { PanelActionLink } from "./panel-notice";
+import { PlanCards } from "./plan-cards";
 import { PublicChatPanel } from "./public-chat-panel";
 import { PublicTaskPanel } from "./public-task-panel";
 import type { PanelNotice } from "./transport";
@@ -68,8 +81,26 @@ interface Shown {
   dialog: PaidDialog | null;
 }
 
+/**
+ * The plan a person is looking at when they agree. `card` is the object the
+ * dialog's sentence was made from, held from the moment the dialog opened:
+ * its terms are what is sent, whatever the page has read since.
+ */
+interface ShownPlan {
+  listingId: string;
+  card: PlanOffer;
+  dialog: PaidDialog;
+}
+
 /** The task form stays on screen in these states, so answers typed early are never lost. */
-const TASK_FORM_STATES: ReadonlyArray<PaidView["kind"]> = ["signed_out", "not_started", "price_changed", "lapsed", "in_use"];
+const TASK_FORM_STATES: ReadonlyArray<PaidView["kind"]> = [
+  "signed_out",
+  "not_started",
+  "price_changed",
+  "lapsed",
+  "plan_ended",
+  "in_use",
+];
 
 /**
  * The door of an agent that is sold: its price, where the person stands
@@ -93,7 +124,13 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   // The session ended while the person was here.
   const [sessionEnded, setSessionEnded] = useState(false);
   const [shown, setShown] = useState<Shown | null>(null);
+  // The plan whose start dialog is open.
+  const [shownPlan, setShownPlan] = useState<ShownPlan | null>(null);
+  // Whether someone who already pays per use has opened the plans.
+  const [plansOpen, setPlansOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // True from the press that starts a plan until its answer: a second press starts nothing.
+  const startingPlan = useRef(false);
   // Why a start, a subscription or accepting a price was refused.
   const [notice, setNotice] = useState<PaidNotice | null>(null);
   const [everUsable, setEverUsable] = useState(false);
@@ -159,8 +196,11 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   }, [paused, handle]);
 
   const ready = authed === false || sessionEnded || (authed === true && access !== null);
-  const view = useMemo(
-    () => paidView({ authed: signedIn, access: signedIn ? access : null, page: terms, kind }),
+  // `view` is paidView with, for someone on a plan, the count of what is left as its sentence. `plans` is what
+  // the page draws of plans: the cards and where they go, whether they can be started, the count beside
+  // the sentence. A listing with no plans gives paidView and nothing else.
+  const { view, plans } = useMemo(
+    () => planGateView({ authed: signedIn, access: signedIn ? access : null, page: terms, kind }),
     [signedIn, access, terms, kind],
   );
 
@@ -212,6 +252,43 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       }
     },
     [agree],
+  );
+
+  /**
+   * Starts the plan of the card that was pressed, with that card's terms, then reads where the person
+   * stands. Never throws. A refusal ends in its sentence, and nothing was charged: plans that changed
+   * are drawn again from the refusal, and the read that follows makes the page true for every other.
+   */
+  const agreeToPlan = useCallback(
+    async (agreed: ShownPlan) => {
+      if (startingPlan.current) return;
+      startingPlan.current = true;
+      setBusy(true);
+      setNotice(null);
+      try {
+        await marketplaceApi.startPlan(agreed.listingId, planTermsOf(agreed.card));
+        setPlansOpen(false);
+      } catch (error) {
+        const refusal = paidUseRefusalOf(error);
+        setNotice(planStartNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit }));
+        setAccess((held) => accessAfterRefusal(held, refusal));
+      } finally {
+        await readAccess();
+        startingPlan.current = false;
+        setBusy(false);
+        setResultsRead((n) => n + 1);
+      }
+    },
+    [readAccess, unit],
+  );
+
+  /** A card's button, pressed: its dialog opens, made from that card. Nothing is sent yet. */
+  const pressPlan = useCallback(
+    (card: PlanOffer) => {
+      if (!access || !plans.canStart) return;
+      setShownPlan({ listingId: access.listingId, card, dialog: planStartDialog(card) });
+    },
+    [access, plans.canStart],
   );
 
   /**
@@ -283,6 +360,10 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       },
       toPanel: (refused: PaidNotice) => live.current.toPanel(refused),
       onUsed: () => void live.current.readAccess(),
+      // On a plan: the count after this answer, and where a refusal leaves the person, are drawn at once
+      // from what the use itself answered. The read that onUsed began replaces both when it arrives.
+      onBilled: (billing: PaidUseBilling) => setAccess((held) => accessAfterUse(held, billing)),
+      onRefused: (refusal: PaidUseRefusal) => setAccess((held) => accessAfterRefusal(held, refusal)),
     };
     return {
       chat: hasChat ? paidChatTransport(hooks) : null,
@@ -300,6 +381,12 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const showPanel =
     everUsable || (ready && (view.usable || (kind === "task" && TASK_FORM_STATES.includes(view.kind))));
   const linkButton = (variant: "default" | "outline") => cn(buttonVariants({ variant }), "w-full sm:w-auto");
+  const planCards = (
+    <>
+      <PlanCards cards={plans.cards} canStart={plans.canStart} busy={busy} onStart={pressPlan} />
+      {plans.askAdmin && <p className="text-muted-foreground">{plans.askAdmin}</p>}
+    </>
+  );
 
   return (
     <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border bg-card">
@@ -346,7 +433,17 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           ) : (
             <>
               <p className="break-words text-foreground">{view.sentence}</p>
+              {/* On a plan whose renewal is being retried: what is left, beside the sentence that asks for credits. */}
+              {plans.countLine && <p className="break-words text-foreground">{plans.countLine}</p>}
               {view.lowCredits && <p className="text-muted-foreground">{view.lowCredits}</p>}
+
+              {/* Nothing agreed to yet: the plans first, then the price per use with the action below. */}
+              {plans.place === "first" && (
+                <>
+                  {planCards}
+                  {plans.payAsYouGo && <p className="text-foreground">{plans.payAsYouGo}</p>}
+                </>
+              )}
 
               {view.action.kind === "signin" && (
                 <div className="space-y-3">
@@ -386,6 +483,22 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
                 <p>
                   <PanelActionLink action={{ label: view.action.label, href: ADD_CREDITS_HREF }} />
                 </p>
+              )}
+
+              {/* Already paying per use: the plans are one press away, and starting one is still asked first. */}
+              {plans.place === "behind" && (
+                <div className="space-y-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-expanded={plansOpen}
+                    onClick={() => setPlansOpen((open) => !open)}
+                  >
+                    {plansOpen ? USE_PLAN_WORDS.hidePlans : USE_PLAN_WORDS.seePlans}
+                  </Button>
+                  {plansOpen && planCards}
+                </div>
               )}
             </>
           )}
@@ -442,6 +555,19 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           description={shown.dialog.body}
           confirmLabel={shown.dialog.confirmLabel}
           onConfirm={() => agree(shown)}
+        />
+      )}
+
+      {shownPlan && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setShownPlan(null);
+          }}
+          title={shownPlan.dialog.title}
+          description={shownPlan.dialog.body}
+          confirmLabel={shownPlan.dialog.confirmLabel}
+          onConfirm={() => agreeToPlan(shownPlan)}
         />
       )}
     </section>

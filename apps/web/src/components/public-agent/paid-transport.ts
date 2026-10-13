@@ -1,4 +1,4 @@
-import { ApiError, paidUseApi, paidUseRefusalOf } from "@/lib/api";
+import { ApiError, paidUseApi, paidUseRefusalOf, type PaidUseBilling, type PaidUseRefusal } from "@/lib/api";
 import {
   PAID_USE_MESSAGES,
   chargeLine,
@@ -32,6 +32,10 @@ export interface PaidTransportHooks {
   toPanel(notice: PaidNotice): PanelNotice;
   /** Called after every use, answered or refused: the page reads the access again. */
   onUsed(): void;
+  /** Called with what an answer cost. On a plan it carries the count after this use, so the page asks for nothing more. */
+  onBilled?(billing: PaidUseBilling): void;
+  /** Called with the body of a refused use: a plan that ended or is used up says where the person now stands. */
+  onRefused?(refusal: PaidUseRefusal): void;
 }
 
 /** A send the page stopped before it went: nothing was asked of the API and nothing charged. */
@@ -46,16 +50,16 @@ function explainAs(hooks: PaidTransportHooks, act: PaidRefusedAct) {
   return (error: unknown): PanelNotice => {
     if (error instanceof HeldBack) return error.notice;
     if (error instanceof ApiError) {
-      return hooks.toPanel(
-        paidRefusalNotice({ status: error.status, refusal: paidUseRefusalOf(error), act, unit: hooks.unit }),
-      );
+      const refusal = paidUseRefusalOf(error);
+      if (refusal) hooks.onRefused?.(refusal);
+      return hooks.toPanel(paidRefusalNotice({ status: error.status, refusal, act, unit: hooks.unit }));
     }
     return hooks.toPanel(paidRefusalNotice({ status: 0, refusal: null, act, unit: hooks.unit }));
   };
 }
 
 /** One paid request: held back by the page, or sent, and either way the access is read again after. */
-async function* paidSend<Result>(
+async function* paidSend<Result extends { billing: PaidUseBilling }>(
   hooks: PaidTransportHooks,
   call: () => Promise<Result>,
   read: (result: Result) => { text: string; line: string },
@@ -68,6 +72,7 @@ async function* paidSend<Result>(
   } finally {
     hooks.onUsed();
   }
+  hooks.onBilled?.(result.billing);
   const { text, line } = read(result);
   yield { type: "delta", content: text };
   yield { type: "charged", line };

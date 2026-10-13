@@ -172,6 +172,7 @@ test("every access the API can answer has a sentence and an action", () => {
     "own_agent",
     "unlisted",
     "uninstalled",
+    "plan_ended",
   ];
   for (const access of all) {
     for (const terms of [PER_USE, MONTHLY, null]) {
@@ -741,6 +742,7 @@ test("a task's answers come back once, only for the form they were typed into", 
 
 const PAID_FILES = [
   "paid-gate.tsx",
+  "plan-cards.tsx",
   "paid-transport.ts",
   "paid-results.tsx",
   "panel-notice.tsx",
@@ -799,4 +801,89 @@ test("the gate agrees to a price only with the terms it showed, and reads the ac
   const agree = gate.slice(gate.indexOf("const agree = useCallback"), gate.indexOf("const press = useCallback"));
   assert.match(agree, /finally \{\s*await readAccess\(\);/);
   assert.match(gate, /onUsed: \(\) => void live\.current\.readAccess\(\)/);
+});
+
+// ============================================
+// Source pins: plans on the page
+// ============================================
+
+const publicAgent = (file: string) => readFileSync(join(here, "..", "components", "public-agent", file), "utf8");
+
+test("the gate draws the page from the view that knows plans, and a plan's words come from lib/use-plans", () => {
+  const gate = publicAgent("paid-gate.tsx");
+  assert.match(
+    gate,
+    /const \{ view, plans \} = useMemo\(\s*\(\) => planGateView\(\{ authed: signedIn, access: signedIn \? access : null, page: terms, kind \}\)/,
+  );
+  // The count beside the sentence, the cards before pay as you go, and the cards behind "See plans".
+  assert.match(gate, /\{plans\.countLine && <p[^>]*>\{plans\.countLine\}<\/p>\}/);
+  assert.match(gate, /plans\.place === "first" && \([\s\S]*?\{planCards\}\s*\{plans\.payAsYouGo && <p[^>]*>\{plans\.payAsYouGo\}<\/p>\}/);
+  assert.match(gate, /plans\.place === "behind" && \([\s\S]*?USE_PLAN_WORDS\.seePlans[\s\S]*?\{plansOpen && planCards\}/);
+  assert.match(gate, /<PlanCards cards=\{plans\.cards\} canStart=\{plans\.canStart\} busy=\{busy\} onStart=\{pressPlan\} \/>/);
+  assert.match(gate, /\{plans\.askAdmin && <p[^>]*>\{plans\.askAdmin\}<\/p>\}/);
+  // The cards come before today's sign-in and start actions, which stay as they were.
+  assert.ok(gate.indexOf('plans.place === "first"') < gate.indexOf('view.action.kind === "signin" && ('));
+  assert.ok(gate.indexOf('plans.place === "first"') > gate.indexOf("{view.sentence}"));
+  // While paused nothing can be started: the cards are inside the branch the pause replaces.
+  assert.ok(gate.indexOf("{PUBLIC_PAUSED_NOTICE}") < gate.indexOf('plans.place === "first"'));
+  // A task's answers stay on screen while the person chooses again after a plan ended.
+  assert.match(gate, /TASK_FORM_STATES[^=]*= \[[^\]]*"plan_ended"/);
+  // No sentence of a plan is written in a screen.
+  for (const file of ["paid-gate.tsx", "plan-cards.tsx"]) {
+    assert.doesNotMatch(publicAgent(file), /for 30 days|uses left|pay as you go|Included in your plan|Your plan ended/i, file);
+  }
+});
+
+test("a card shows its four lines and has a button only for someone who may start it", () => {
+  const cards = publicAgent("plan-cards.tsx");
+  for (const line of ["{card.name}", "{planPriceLine(card)}", "{planUsesLine(card)}", "{planAfterLine(card)}"]) {
+    assert.ok(cards.includes(line), line);
+  }
+  assert.match(cards, /\{canStart && \(\s*<Button[\s\S]*?disabled=\{busy\}[\s\S]*?onClick=\{\(\) => onStart\(card\)\}[\s\S]*?\{USE_PLAN_WORDS\.startButton\}/);
+  assert.equal(cards.split("<Button").length - 1, 1, "one button on a card");
+  // One column on a phone that a long name cannot widen: the name wraps inside its card.
+  assert.match(cards, /className="grid grid-cols-1 gap-3 sm:grid-cols-2"/);
+  assert.match(cards, /<li key=\{card\.id\} className="flex min-w-0 /);
+  // A card starts nothing by itself: the page asks first.
+  assert.doesNotMatch(cards, /marketplaceApi|startPlan|paidUseApi/);
+  // Never on a card: how many people are on the plan, a free trial, moving up.
+  assert.doesNotMatch(cards, /subscribers|trial|move up|switchNow/i);
+});
+
+test("the gate starts a plan only with the terms of the card it showed, once, and reads the access after", () => {
+  const gate = publicAgent("paid-gate.tsx");
+  // The dialog is made from the card that was pressed, and that same card is what is held.
+  assert.match(gate, /setShownPlan\(\{ listingId: access\.listingId, card, dialog: planStartDialog\(card\) \}\)/);
+  assert.match(gate, /if \(!access \|\| !plans\.canStart\) return;/);
+  assert.match(gate, /description=\{shownPlan\.dialog\.body\}/);
+  assert.match(gate, /onConfirm=\{\(\) => agreeToPlan\(shownPlan\)\}/);
+  assert.match(gate, /marketplaceApi\.startPlan\(agreed\.listingId, planTermsOf\(agreed\.card\)\)/);
+  assert.equal(gate.split("marketplaceApi.startPlan(").length - 1, 1, "one place starts a plan");
+  assert.equal(gate.split("planStartDialog(").length - 1, 1, "one place makes its dialog");
+
+  const start = gate.slice(gate.indexOf("const agreeToPlan = useCallback"), gate.indexOf("const pressPlan = useCallback"));
+  // A second press while the call runs starts nothing.
+  assert.match(start, /if \(startingPlan\.current\) return;\s*startingPlan\.current = true;/);
+  // A refusal: its sentence, and the cards drawn again from what it named.
+  assert.match(start, /setNotice\(planStartNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit \}\)\)/);
+  assert.match(start, /setAccess\(\(held\) => accessAfterRefusal\(held, refusal\)\)/);
+  assert.match(start, /finally \{\s*await readAccess\(\);\s*startingPlan\.current = false;/);
+  // Nothing in a start reads the plans again to decide what to send.
+  assert.doesNotMatch(start, /plans\.cards|access\.plans|terms\.plans/);
+  // Starting a plan never agrees to a price per use, and nothing here asks to move up.
+  assert.doesNotMatch(start, /startUsing|expectedTerms|acceptNewPricing/);
+  assert.doesNotMatch(gate, /switchNow/);
+  // Not enough credits: the add-credits action the gate already draws under a refused start.
+  assert.match(gate, /notice\.action\.kind === "add_credits" && notice\.action\.label/);
+});
+
+test("the count and a refusal on a plan are drawn from what the use itself answered", () => {
+  const gate = publicAgent("paid-gate.tsx");
+  assert.match(gate, /onBilled: \(billing: PaidUseBilling\) => setAccess\(\(held\) => accessAfterUse\(held, billing\)\)/);
+  assert.match(gate, /onRefused: \(refusal: PaidUseRefusal\) => setAccess\(\(held\) => accessAfterRefusal\(held, refusal\)\)/);
+  const transport = publicAgent("paid-transport.ts");
+  assert.match(transport, /hooks\.onBilled\?\.\(result\.billing\);/);
+  assert.match(transport, /if \(refusal\) hooks\.onRefused\?\.\(refusal\);/);
+  // The line under an answer is still chargeLine's, which knows a plan.
+  assert.equal(transport.split("chargeLine(result.billing, hooks.unit)").length - 1, 2);
 });

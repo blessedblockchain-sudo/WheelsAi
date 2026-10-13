@@ -105,6 +105,7 @@ export const INSTALLED_WORDS = {
   copy: "Your copy",
   notOffered: "No longer offered. You will not be charged again.",
   lapsed: "Your subscription has ended. Subscribe again to keep using it.",
+  planEnded: "Your plan ended. Choose a plan or pay per use to keep using it.",
   stopped: "You have stopped using this agent.",
   nowFree: "This agent is now free to use on its page.",
 } as const;
@@ -424,6 +425,8 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
   if (access === "subscription_lapsed") {
     return offered ? { text: INSTALLED_WORDS.lapsed, tone: "bad" } : notOffered;
   }
+  // A plan that is over. The plans and the price per use are chosen on the agent's page, where Open goes.
+  if (access === "plan_ended") return offered ? { text: INSTALLED_WORDS.planEnded, tone: "bad" } : notOffered;
   if (access === "not_offered" || access === "unlisted") return notOffered;
   // none, uninstalled: a licence that grants nothing.
   return { text: INSTALLED_WORDS.stopped, tone: "bad" };

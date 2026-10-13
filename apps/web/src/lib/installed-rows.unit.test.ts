@@ -107,6 +107,7 @@ const ACCESSES: MarketplaceInstallAccess[] = [
   "uninstalled",
   "none",
   "not_offered",
+  "plan_ended",
 ];
 
 /** Every shape a use licence can be in, by access. */
@@ -295,6 +296,27 @@ test("use, an ended subscription: subscribe again, at the price on the row", () 
   assert.deepEqual(row.line, { text: "Your subscription has ended. Subscribe again to keep using it.", tone: "bad" });
   assert.deepEqual(labels(row), ["Open", "View Listing", "Subscribe again", "Write Review", "Stop using"]);
   assert.equal(installedConfirm(install, "resubscribe", FMT)?.confirmLabel, "Subscribe for $9.00 a month");
+});
+
+test("use, a plan that ended: its sentence, the way to the agent's page, and nothing to accept here", () => {
+  const install = using({
+    access: "plan_ended",
+    acceptedPricing: { pricingModel: null, pricePerRequestCents: null, acceptedAt: null },
+    subscription: sub({ status: "expired", hasAccess: false }),
+  });
+  const row = installedRow(install, FMT);
+  assert.equal(INSTALLED_WORDS.planEnded, "Your plan ended. Choose a plan or pay per use to keep using it.");
+  assert.deepEqual(row.line, { text: INSTALLED_WORDS.planEnded, tone: "bad" });
+  // Choosing happens on the agent's page: the row links there and offers nothing it could not do.
+  assert.deepEqual(row.actions[0], { id: "open", label: "Open", href: "/a/support-bot" });
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Write Review", "Stop using"]);
+  // The listing's price per use, never the month of the plan that is over.
+  assert.equal(row.priceLabel, installedRow(using(), FMT).priceLabel);
+  assert.doesNotMatch(row.priceLabel, /a month/);
+  assert.equal(installedConfirm(install, "uninstall", FMT)?.description, "It leaves this list. You are not charged again.");
+  // The agent left the market in between: there is nothing to choose.
+  const gone = installedRow({ ...install, listing: listing({ status: "archived" }) }, FMT);
+  assert.deepEqual(gone.line, { text: INSTALLED_WORDS.notOffered, tone: "bad" });
 });
 
 test("use, no longer offered: nothing to accept, nothing charged again", () => {

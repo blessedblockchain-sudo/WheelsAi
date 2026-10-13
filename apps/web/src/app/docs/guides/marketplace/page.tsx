@@ -8,12 +8,13 @@ import { Callout, DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Publish to the marketplace",
   description:
-    "List a WheelsAI agent on the marketplace, sell use of it or copies of it, choose free, per-use, monthly or tokenized pricing, understand the 90/10 revenue split, who uses or installs it and payouts.",
+    "List a WheelsAI agent on the marketplace, sell use of it or copies of it, choose free, per-use, monthly or tokenized pricing, add plans with a number of uses, understand the 90/10 revenue split, who uses or installs it and payouts.",
 };
 
 const toc = [
   { id: "sell", title: "Sell from the agent's page" },
   { id: "who-can-use", title: "Who can use it?", sub: true },
+  { id: "plans", title: "Plans", sub: true },
   { id: "earn", title: "What you earn", sub: true },
   { id: "guaranteed", title: "Guaranteed delivery", sub: true },
   { id: "model-stops", title: "When the model stops", sub: true },
@@ -27,6 +28,7 @@ const toc = [
   { id: "split", title: "Revenue split" },
   { id: "installs", title: "What buyers get" },
   { id: "using", title: "Using an agent", sub: true },
+  { id: "on-a-plan", title: "On a plan", sub: true },
   { id: "owning", title: "Owning a copy", sub: true },
   { id: "use-or-copies", title: "Sell use, or sell copies" },
   { id: "payouts", title: "Getting paid" },
@@ -86,10 +88,59 @@ export default function MarketplaceGuidePage() {
         on the Sell tab.
       </p>
 
+      <h3 id="plans">Plans</h3>
+      <p>
+        An agent sold with <strong>Pay per use</strong> can also offer plans. A plan is one price for 30 days with a
+        number of uses included. Buyers who use your agent often choose a plan; everybody else keeps paying per use.
+        Under <strong>Plans</strong> on the Sell tab, choose <strong>Add a plan</strong> and fill in:
+      </p>
+      <DocTable
+        caption="What a plan is made of"
+        columns={[
+          { key: "field", label: "Field" },
+          { key: "what", label: "What it is" },
+          { key: "rule", label: "Rule" },
+        ]}
+        rows={[
+          { field: "Name", what: "What buyers see on the plan, such as Starter.", rule: "Up to 40 characters." },
+          { field: "Price for 30 days", what: "Charged from the buyer's credits when they start, and every 30 days after that.", rule: "From $1.00." },
+          { field: "Uses included", what: "How many messages or runs the 30 days include.", rule: "1 to 100,000, and at most 100 for each dollar of the price: $9.00 includes up to 900 uses." },
+          { field: "When they run out", what: "Stop until the next 30 days, or charge for each extra use.", rule: "An extra use costs from $0.05." },
+        ]}
+      />
+      <ul>
+        <li>A listing can have up to four plans. Every plan has a count of uses.</li>
+        <li>
+          Buyers see your plans on the agent&apos;s page and on its API page, each as its price, its uses and what
+          happens after them: &quot;$9.00 for 30 days&quot;, &quot;500 uses&quot;, &quot;then $0.05 a use&quot; or
+          &quot;then it stops until it renews&quot;. Its listing and its card in the marketplace say the smallest plan
+          price: &quot;Plans from $9.00 for 30 days.&quot;
+        </li>
+        <li>
+          <strong>Changing a plan</strong> changes it for people who start it from then on. People already on it keep
+          what they agreed to, and renew at the price and with the uses they agreed to.
+        </li>
+        <li>
+          <strong>End plan</strong> takes a plan off offer. People on it finish the 30 days they paid for and are not
+          charged again.
+        </li>
+        <li>
+          Plans go with a listing sold per use. An agent that runs on its own is sold by the month and has no plans,
+          and a listing that sells copies has none.
+        </li>
+        <li>
+          You keep 90% of each plan payment and of each extra use, as for every other sale.
+        </li>
+      </ul>
+      <p>
+        Over the API, send the whole set with{" "}
+        <Link href="/docs/api/marketplace#plans"><code>PUT /api/marketplace/listings/&#123;id&#125;/plans</code></Link>.
+      </p>
+
       <h3 id="earn">What you earn</h3>
       <p>
         You keep 90% of each payment, worked out in whole cents: at $0.05 a message you earn $0.04, and at $9.00 a month
-        you earn $8.10. When your agent runs on WheelsAI&apos;s models, the cost of the model comes out of your share. Each
+        or for a plan&apos;s 30 days you earn $8.10. When your agent runs on WheelsAI&apos;s models, the cost of the model comes out of your share. Each
         sale is a row under <strong>Earnings</strong>: a per-use sale reads <strong>Paid use</strong>, with its model
         cost beside it when there is one.
       </p>
@@ -225,6 +276,11 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         </li>
       </ol>
       <p>
+        If a request is cut off before its answer is delivered, the charge is given back to the buyer:
+        within about 15 minutes for a use of your agent, and within about 75 minutes for a request
+        of a buyer&apos;s own copy, which can run longer. You are credited nothing for it.
+      </p>
+      <p>
         This applies wherever the agent runs: playground chat (streaming or not), scheduled tasks, orchestrations, the test
         runner and visual-builder graph runs. A graph run is billed once per run, not per step. A non-streaming chat response tells
         the buyer what the request cost and how much went to you.
@@ -327,7 +383,7 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         A listing says which of two things it sells. Its page in the <Link href="/marketplace">marketplace</Link> offers{" "}
         <strong>Use this agent</strong> when you use the creator&apos;s agent, and <strong>Install Agent</strong> when you
         get a copy of your own. Both appear under{" "}
-        <strong>Marketplace → Installed</strong>, marked <strong>You use it</strong> or <strong>Your copy</strong>, with
+        <strong>Marketplace</strong>, <strong>Installed</strong>, marked <strong>You use it</strong> or <strong>Your copy</strong>, with
         what each costs and how to stop. Buyers of either can leave a 1 to 5 star review with a title and text.
       </p>
 
@@ -349,13 +405,18 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
           answer arrives whole, not word by word.
         </li>
         <li>
+          <strong>On a plan:</strong> a listing sold per message or per run can offer plans. Starting one charges its
+          30 days from your credits and gives you a number of uses for them; see <a href="#on-a-plan">On a plan</a>.
+        </li>
+        <li>
           <strong>Monthly:</strong> subscribing charges the first 30 days from your credits, and the same price every 30
           days after that. For an agent that runs on its own, a subscription lets you read its results on its page.
         </li>
       </ul>
       <p>
-        An owner or admin of your organization agrees to a price; after that every member can use the agent. An
-        organization can use one agent up to 10 times a minute and 200 times a day.
+        An owner or admin of your organization agrees to a price or starts a plan; after that every member can use the
+        agent. An organization can use one agent up to 10 times a minute. With no plan, and on a monthly subscription,
+        it can use it up to 200 times a day; on a plan, the plan&apos;s count takes the place of the daily limit.
       </p>
       <p>
         If the creator lowers a per-use price, you pay the lower price from then on. If they raise it, or change how the
@@ -363,11 +424,67 @@ curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/publish"
         from Installed. A month you already paid for is honoured whatever the listing says now.
       </p>
       <p>
-        To stop, open <strong>Marketplace → Installed</strong> and choose <strong>Stop using</strong>. With a subscription
+        To stop, open <strong>Marketplace</strong>, <strong>Installed</strong> and choose <strong>Stop using</strong>. With a subscription
         you have two choices: <strong>Cancel renewal</strong> keeps your access until the end of the month you paid for and
         charges nothing more, while <strong>Stop using</strong> ends the subscription at once and the month is not
         refunded. What a paid use costs, and when it is refunded, is in{" "}
         <Link href="/docs/guides/plans-and-billing#paid-use">Plans and billing</Link>.
+      </p>
+
+      <h3 id="on-a-plan">On a plan</h3>
+      <p>
+        The agent&apos;s page shows the plans its creator offers, beside the price per use. Choose{" "}
+        <strong>Start this plan</strong> on one: you are shown what it charges and includes, and confirming charges its
+        30 days from your credits at once, and the same price every 30 days after that. An owner or admin starts a
+        plan.
+      </p>
+      <ul>
+        <li>
+          <strong>The count.</strong> Each message or run takes one of the plan&apos;s uses and costs nothing more. The
+          page, and every answer of the API, says how many are used and how many are left. A use that is not answered
+          is given back to the count.
+        </li>
+        <li>
+          <strong>When the uses run out.</strong> A plan with a price for extra uses keeps answering, and each use past
+          the count is charged that price from your credits. A plan without one stops until it renews, and nothing
+          is charged for a request it refuses.
+        </li>
+        <li>
+          <strong>Moving up.</strong> Choose <strong>See bigger plans</strong>, then <strong>Move up</strong>, at any
+          time. The bigger plan&apos;s full price is charged now, a fresh 30 days starts now, and the uses you had left
+          come with you for those 30 days. The 30 days that were running are not refunded. To move to a smaller plan,
+          cancel the renewal and choose it when your plan ends.
+        </li>
+        <li>
+          <strong>Cancelling the renewal.</strong> <strong>Cancel renewal</strong>, under{" "}
+          <strong>Marketplace</strong>, <strong>Installed</strong>, keeps your plan and its uses until the 30 days you
+          paid for end and charges nothing more. Any member can cancel; <strong>Resume renewal</strong> is for an owner
+          or admin.
+        </li>
+        <li>
+          <strong>What you keep.</strong> You renew at the price and with the uses you agreed to, also when the creator
+          changes the plan later. If the creator ends the plan, you finish the 30 days you paid for and are not charged
+          again. When a plan is over you are charged per use only if you agreed to the listing&apos;s price per use
+          yourself; otherwise the next use is refused and you choose a plan again, or agree to the price per use.
+        </li>
+        <li>
+          <strong>Warnings.</strong> When your plan reaches 85% of its uses, and again when the last one is used, the
+          owners and admins of your organization who have a verified email address get one email, once for each level
+          in those 30 days. It says how many uses are left and until when, and what happens now: each use has a price,
+          or the count starts again on a day.
+        </li>
+        <li>
+          <strong>The Usage page.</strong> <strong>Usage</strong> in the dashboard (<code>/dashboard/usage</code>) shows
+          your one balance, then each agent you pay for: the plan&apos;s uses as a bar marked at 85% and 100%, the extra
+          uses of these 30 days and what they cost, and the uses you paid per use this month. The API keys page shows
+          what each key spent today.
+        </li>
+      </ul>
+      <p>
+        From code, a plan is started and moved with{" "}
+        <Link href="/docs/api/marketplace#use">the start route</Link>, and every paid answer carries{" "}
+        <Link href="/docs/api/agents#paid-headers">usage headers</Link> that say what it cost and how much of the plan
+        is used.
       </p>
 
       <h3 id="owning">Owning a copy</h3>

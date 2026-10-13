@@ -9,7 +9,7 @@ import { DocTable } from "@/components/marketing/prose";
 export const metadata: Metadata = {
   title: "Marketplace API",
   description:
-    "WheelsAI marketplace API: search listings, publish and manage your own, sell use of an agent or copies of it, start using an agent or install a copy, reviews, monthly subscriptions, revenue and payouts.",
+    "WheelsAI marketplace API: search listings, publish and manage your own, sell use of an agent or copies of it, set a listing's plans, start using an agent or a plan, install a copy, reviews, subscriptions, what you use and spend, revenue and payouts.",
 };
 
 const toc = [
@@ -19,11 +19,13 @@ const toc = [
   { id: "publish", title: "Publish" },
   { id: "create-listing", title: "Create a listing", sub: true },
   { id: "manage-listing", title: "Update, publish, archive", sub: true },
+  { id: "plans", title: "Set a listing's plans", sub: true },
   { id: "buy", title: "Install and use" },
   { id: "use", title: "Start using an agent", sub: true },
   { id: "install", title: "Install a copy", sub: true },
   { id: "uninstall", title: "Stop using, or uninstall", sub: true },
-  { id: "subscriptions", title: "Monthly subscriptions", sub: true },
+  { id: "subscriptions", title: "Subscriptions and plans", sub: true },
+  { id: "usage", title: "What you use and spend", sub: true },
   { id: "reviews", title: "Reviews", sub: true },
   { id: "earn", title: "Revenue and payouts" },
   { id: "revenue", title: "Revenue", sub: true },
@@ -67,7 +69,12 @@ export default function MarketplaceApiPage() {
           <code>copies</code> (buyers install their own copy). <code>unit</code> is what one payment buys:{" "}
           <code>message</code>, <code>run</code> or <code>month</code>, and <code>null</code> for a free listing or a copy.{" "}
           <code>agent.handle</code> is the name in the agent&apos;s page address, <code>/a/&#123;handle&#125;</code>, where a
-          listing that sells use is used (<code>null</code> when the agent has no page). Other public reads:
+          listing that sells use is used (<code>null</code> when the agent has no page). A listing read here also carries{" "}
+          <code>plans</code>: the <a href="#plans">plans</a> it offers a buyer, each{" "}
+          <code>&#123; id, name, priceCents, includedUses, extraUsePriceCents &#125;</code>, in the order they are shown,
+          and empty when it offers none. In a search, the featured row and a publisher&apos;s profile each listing carries{" "}
+          <code>plansFromCents</code> instead: the smallest price for 30 days among its plans, or <code>null</code>. Other
+          public reads:
         </p>
         <DocTable
           caption="Other public marketplace endpoints"
@@ -155,8 +162,80 @@ export default function MarketplaceApiPage() {
           or hold a subscription. Each also carries <code>paused</code>: <code>null</code> when the listing is not paused,
           and <code>&#123; since &#125;</code> while the model its agent runs on is not running; <code>since</code> is when
           that was first seen (an ISO date), or <code>null</code> when it has not been noted yet. See{" "}
-          <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>.
+          <Link href="/docs/guides/marketplace#model-stops">When the model stops</Link>. Each also carries{" "}
+          <code>plans</code>, the plans it has on offer as <a href="#plans">the route below</a> answers them.
         </p>
+      </Endpoint>
+
+      <Endpoint id="plans" method="PUT" path="/api/marketplace/listings/{id}/plans" auth="API key, or session (owner or admin)" title="Set a listing's plans">
+        <p>
+          A listing that sells use per request can offer up to four plans: a price for 30 days, a number of uses
+          included, and what happens when they run out. The body is the whole set, and it replaces what the listing
+          has: a plan sent with its <code>id</code> is changed in place, a plan sent without one is new, and a plan
+          that ends is named in <code>ended</code>.
+        </p>
+        <Fields
+          fields={[
+            { name: "plans", type: "array", required: true, description: "The plans the listing offers from now on, in the order buyers see them. At most 4. May be empty." },
+            { name: "ended", type: "uuid[]", description: "The ids of the plans that end. Leave it out when none does. An id that is no longer on offer is no error." },
+          ]}
+        />
+        <Fields
+          title="A plan"
+          fields={[
+            { name: "id", type: "uuid", description: "Set to change a plan in place. Left out for a new plan." },
+            { name: "kind", type: "string", required: true, description: <><code>paid</code>.</> },
+            { name: "name", type: "string", required: true, description: "1 to 40 characters." },
+            { name: "priceCents", type: "integer", required: true, description: "What 30 days cost: at least 100, and at least 1 cent for each included use, so $9.00 includes at most 900 uses." },
+            { name: "includedUses", type: "integer", required: true, description: "1 to 100,000." },
+            { name: "extraUsePriceCents", type: "integer | null", required: true, description: <>What each use past the included ones costs, at least 5. <code>null</code>: the plan stops until it renews. It must be sent, as a number or as <code>null</code>.</> },
+          ]}
+        />
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X PUT "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/plans" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{
+    "plans": [
+      { "kind": "paid", "name": "Starter", "priceCents": 900, "includedUses": 500, "extraUsePriceCents": 5 },
+      { "kind": "paid", "name": "Team", "priceCents": 2900, "includedUses": 2000, "extraUsePriceCents": null }
+    ],
+    "ended": []
+  }'`}
+        />
+        <p>
+          Answers <code>&#123; plans &#125;</code>, the plans as they are now, each{" "}
+          <code>&#123; id, kind, name, priceCents, includedUses, extraUsePriceCents, status, subscribers &#125;</code>;{" "}
+          <code>subscribers</code> is how many subscriptions are on the plan. <code>GET /api/marketplace/my-listings</code>{" "}
+          answers the same under each listing.
+        </p>
+        <ul>
+          <li>
+            Ending a plan is said, never implied. A plan on offer that is neither in <code>plans</code> nor in{" "}
+            <code>ended</code> is one the request did not know of, so the whole save is refused with <code>409</code>{" "}
+            <code>plans_changed</code> and nothing is written. Read the plans again and send them all.
+          </li>
+          <li>
+            People already on a plan keep the terms they agreed to. Changing a plan changes it for new subscribers; the
+            people on it renew at the price and with the uses they agreed to. Ending a plan takes it off offer: the
+            people on it finish the 30 days they paid for and are not charged again.
+          </li>
+        </ul>
+        <DocTable
+          caption="Refusals of setting a listing's plans"
+          columns={[
+            { key: "status", label: "Status" },
+            { key: "error", label: "error" },
+            { key: "when", label: "When" },
+          ]}
+          rows={[
+            { status: "400", error: <code>validation_failed</code>, when: <><code>message</code> is the first problem and <code>fields</code> has a sentence for each field, keyed as <code>plans[0].priceCents</code>: more than 4 plans, a name that is missing or too long, a price under $1.00, uses out of range or too many for the price, an extra price under $0.05, a plan that is in the list twice or in both lists, an <code>id</code> that is no longer on the listing, a <code>kind</code> other than <code>paid</code>.</> },
+            { status: "403", error: "", when: "A member who is not an owner or admin." },
+            { status: "404", error: <code>listing_not_found</code>, when: "No listing with that id in your organization." },
+            { status: "409", error: <code>plans_not_available</code>, when: "The listing cannot have plans: it sells copies, it is not sold per use, or its agent runs on its own. The message says which." },
+            { status: "409", error: <code>plans_changed</code>, when: "The plans were changed somewhere else since they were read, or another save got there first. Nothing was written." },
+          ]}
+        />
       </Endpoint>
 
       <h2 id="buy">Install and use</h2>
@@ -176,11 +255,14 @@ export default function MarketplaceApiPage() {
           <code>/a/&#123;handle&#125;</code>. A price per use charges nothing now; each use is charged when it is sent. A monthly
           price charges the first 30 days from your credits now. An API key needs the <code>marketplace:install</code> scope
           granted by name (<code>403</code> otherwise); see <Link href="/docs/api/jobs#keys">API keys that can spend</Link>.
+          The same route starts a plan, and moves you up to a bigger one.
         </p>
         <Fields
           fields={[
-            { name: "expected", type: "object", required: true, description: <>The pricing you were shown: <code>pricingModel</code> and, as it applies, <code>pricePerRequestCents</code> or <code>monthlyPriceCents</code>. It is your consent: without it nothing is agreed to.</> },
+            { name: "expected", type: "object", description: <>To agree to the listing&apos;s price: the pricing you were shown, <code>pricingModel</code> and, as it applies, <code>pricePerRequestCents</code> or <code>monthlyPriceCents</code>. It is your consent: without it, and without <code>plan</code>, nothing is agreed to.</> },
             { name: "acceptNewPricing", type: "boolean", description: "Send true to continue on new terms after the creator changed the price." },
+            { name: "plan", type: "object", description: <>To start a plan: the plan you were shown, whole, <code>&#123; id, priceCents, includedUses, extraUsePriceCents &#125;</code> (<code>extraUsePriceCents</code> is <code>null</code> when the plan stops). Its 30 days are charged from your credits now. Starting a plan agrees to no price per use.</> },
+            { name: "switchNow", type: "true", description: <>With <code>plan</code>: move up to that bigger plan now. Its full price is charged, a fresh 30 days starts and the uses you had left are carried into them once.</> },
           ]}
         />
         <p>
@@ -188,13 +270,22 @@ export default function MarketplaceApiPage() {
           using the agent or the listing is free, with{" "}
           <code>&#123; access, acceptedPricing, subscription, agent: &#123; handle, name, agentKind &#125; &#125;</code>.{" "}
           <code>acceptedPricing</code> is <code>&#123; pricingModel, pricePerRequestCents, acceptedAt &#125;</code>, or{" "}
-          <code>null</code> when no price was agreed.
+          <code>null</code> when no price was agreed. A plan start and a move always answer <code>201</code>; their{" "}
+          <code>subscription</code> carries <code>plan</code>, the count as{" "}
+          <Link href="/docs/api/agents#paid-plans">the paid-use reference</Link> describes it.
         </p>
         <ul>
-          <li><code>400</code> <code>expected_terms_required</code>: send the price you were shown.</li>
+          <li><code>400</code> <code>expected_terms_required</code>: send the price, or the plan, you were shown.</li>
           <li>
-            <code>402</code> <code>insufficient_credits</code> with <code>requiredCents</code>: a monthly price your balance
-            cannot cover. Nothing is written.
+            With <code>plan</code>: <code>400</code> <code>invalid_plan_move</code>; <code>409</code>{" "}
+            <code>pricing_changed</code> with <code>pricing</code> and the <code>plans</code> on offer now, when the plan
+            is not what you were shown; <code>409</code> <code>already_on_plan</code>, <code>not_on_plan</code>,{" "}
+            <code>same_plan</code> and <code>not_a_bigger_plan</code>. Nothing is charged on any of them; each is
+            explained in <Link href="/docs/api/agents#paid-plans">the paid-use reference</Link>.
+          </li>
+          <li>
+            <code>402</code> <code>insufficient_credits</code> with <code>requiredCents</code>: a monthly price, or a
+            plan&apos;s 30 days, that your balance cannot cover. Nothing is written.
           </li>
           <li><code>404</code> <code>listing_not_found</code>.</li>
           <li><code>409</code> <code>sells_copies</code>: the listing sells copies; install it instead.</li>
@@ -228,6 +319,13 @@ export default function MarketplaceApiPage() {
           code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \
   -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \
   -d '{ "expected": { "pricingModel": "per_request", "pricePerRequestCents": 5 } }'`}
+        />
+        <p>Starting a plan:</p>
+        <CodeBlock
+          language="bash"
+          code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{ "plan": { "id": "'"$PLAN_ID"'", "priceCents": 900, "includedUses": 500, "extraUsePriceCents": 5 } }'`}
         />
       </Endpoint>
 
@@ -292,10 +390,17 @@ export default function MarketplaceApiPage() {
           <code>agent</code> is <code>&#123; handle, name, agentKind &#125;</code>; <code>clonedAgentId</code> is the copy&apos;s id
           for a copy and <code>null</code> for a use, which has no copy. <code>access</code> says where it stands:{" "}
           <code>subscribed</code>, <code>listing_pricing</code>, <code>subscription_lapsed</code> and{" "}
-          <code>pricing_changed</code> for either; <code>none</code> (not started) and <code>not_offered</code> (the listing no
-          longer sells use) for a use. A subscription&apos;s <code>endReason</code> is <code>pricing_changed</code>,{" "}
-          <code>listing_archived</code>, or <code>use_ended</code> when the listing stopped selling use: it then ends at the
-          close of the month already paid for.
+          <code>pricing_changed</code> for either; <code>none</code> (not started), <code>plan_ended</code> (a plan that is
+          over, with no price per use agreed to) and <code>not_offered</code> (the listing no longer sells use) for a use. A
+          subscription&apos;s <code>endReason</code> is <code>pricing_changed</code>, <code>listing_archived</code>,{" "}
+          <code>plan_ended</code> when its creator ended the plan, or <code>use_ended</code> when the listing stopped
+          selling use: it then ends at the close of the 30 days already paid for.
+        </p>
+        <p>
+          In <code>my-installs</code>, a use also carries what a buyer needs to see about plans: its{" "}
+          <code>listing.plans</code> is the plans on offer, and its <code>subscription.plan</code> is the plan it is on
+          while that gives uses (<code>null</code> otherwise). Beside <code>installs</code>, <code>canSpend</code> says
+          whether this caller may start, move up or resume.
         </p>
       </Endpoint>
 
@@ -308,14 +413,84 @@ export default function MarketplaceApiPage() {
         </p>
       </Endpoint>
 
-      <Endpoint id="subscriptions" method="GET" path="/api/marketplace/subscriptions" auth="API key or session" title="Monthly subscriptions">
+      <Endpoint id="subscriptions" method="GET" path="/api/marketplace/subscriptions" auth="API key or session" title="Subscriptions and plans">
         <p>
-          Lists your organization&apos;s monthly subscriptions with their status and current period.{" "}
+          Lists your organization&apos;s subscriptions, monthly ones and plans alike, with their status and current
+          period. A plan&apos;s row carries <code>plan</code>, its count, while it gives uses.{" "}
           <code>POST /api/marketplace/subscriptions/&#123;listingId&#125;/cancel</code> stops renewal at the end of the paid
-          period, and <code>.../resume</code> undoes that. Renewals are charged from credits once per 30-day period; an unpaid
-          renewal is <code>past_due</code> and retried for 3 days before the install is suspended. A subscription for use of
-          an agent is not renewed while its listing is paused, and the month paid for is made longer by the time the
-          listing was paused.
+          period: access, and a plan&apos;s uses, stay until then and nothing more is charged. Any member can cancel.{" "}
+          <code>.../resume</code> undoes that; it turns the charges back on, so it needs an owner or admin, or a key
+          granted <code>marketplace:install</code> by name. Both answer <code>&#123; subscription &#125;</code>, and{" "}
+          <code>404</code> when there is no subscription to change.
+        </p>
+        <p>
+          Renewals are charged from credits once per 30-day period, at the price that was agreed, and a plan&apos;s count
+          starts again with each one. An unpaid renewal is <code>past_due</code> and retried for 3 days before access is
+          suspended. A subscription for use of an agent is not renewed while its listing is paused, and the month paid for
+          is made longer by the time the listing was paused.
+        </p>
+      </Endpoint>
+
+      <Endpoint id="usage" method="GET" path="/api/billing/marketplace-usage" auth="API key or session" title="What you use and spend">
+        <p>
+          One read for everything your organization pays to use: the one balance that pays for all of it, then a row
+          for each listing you have started using. It is what the <strong>Usage</strong> page of the dashboard (
+          <code>/dashboard/usage</code>) shows. It is a read, and does not count as an API call.
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "balanceCents": 495,
+  "listings": [
+    {
+      "listingId": "5d2f9c1e-...",
+      "title": "Support Bot",
+      "slug": "support-bot",
+      "handle": "support-bot",
+      "access": "subscribed",
+      "plan": {
+        "id": "7c1e4b02-...",
+        "name": "Starter",
+        "includedUses": 500,
+        "carriedUses": 0,
+        "usedUses": 425,
+        "remainingUses": 75,
+        "extraUsePriceCents": 5,
+        "resetsAt": "2026-11-12T09:30:00.000Z",
+        "warning": 85
+      },
+      "periodEndsAt": "2026-11-12T09:30:00.000Z",
+      "renewalPastDue": false,
+      "extraThisPeriod": { "uses": 0, "cents": 0 },
+      "perUseThisMonth": { "uses": 12, "cents": 60 }
+    }
+  ]
+}`}
+        />
+        <ul>
+          <li>
+            <code>access</code> and <code>plan</code> are what{" "}
+            <Link href="/docs/api/agents#paid-access">the access read</Link> answers for that agent.{" "}
+            <code>plan</code> is <code>null</code> when you are on none.
+          </li>
+          <li>
+            <code>periodEndsAt</code> is the end of the 30 days paid for, and the day a plan ends when it will not renew
+            (its <code>plan</code> then has no <code>resetsAt</code>). <code>renewalPastDue</code> is <code>true</code>{" "}
+            while a renewal that did not go through is being retried. Both are <code>null</code> and{" "}
+            <code>false</code> with no plan.
+          </li>
+          <li>
+            <code>extraThisPeriod</code> is the uses past the plan&apos;s count in its current 30 days and what they
+            cost; <code>null</code> with no plan. <code>perUseThisMonth</code> is the uses paid per use in the current
+            UTC month and what they cost. Both count only uses that were delivered and paid for: a charge that was
+            given back is not in them.
+          </li>
+          <li>The newest 200 listings are answered.</li>
+        </ul>
+        <p>
+          What each API key spent today is on the key: <code>GET /api/auth/keys</code> answers{" "}
+          <code>spentTodayCents</code> for each key, for the current UTC day (<code>null</code> when it could not be
+          read just now).
         </p>
       </Endpoint>
 

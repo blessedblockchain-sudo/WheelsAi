@@ -47,10 +47,13 @@ const toc = [
   { id: "agent-models", title: "List the agent's model", sub: true },
   { id: "paid-use", title: "Use an agent you pay for" },
   { id: "paid-access", title: "Where you stand", sub: true },
+  { id: "paid-plans", title: "Plans", sub: true },
   { id: "paid-chat", title: "Chat", sub: true },
   { id: "paid-run", title: "Run a task", sub: true },
   { id: "paid-results", title: "Read results", sub: true },
   { id: "paid-v1", title: "Through /v1", sub: true },
+  { id: "paid-headers", title: "Usage headers", sub: true },
+  { id: "paid-limits", title: "Limits", sub: true },
   { id: "paid-errors", title: "Refusals", sub: true },
   { id: "playground", title: "Playground" },
   { id: "playground-chat", title: "Chat with an agent", sub: true },
@@ -709,7 +712,7 @@ export default function AgentsApiPage() {
     "key": null,
     "transcriptsStored": true,
     "paid": {
-      "listingId": "…",
+      "listingId": "...",
       "listingSlug": "support-bot",
       "pricingModel": "per_request",
       "priceCents": 5,
@@ -1336,19 +1339,29 @@ if reply.tool_calls:
 
       <h2 id="paid-use">Use an agent you pay for</h2>
       <p>
-        A listing that sells use lets people use the creator&apos;s own agent, per message or run or per month, from their
-        WheelsAI credits. They never get a copy, and no route returns its instructions, tools or model. Start by agreeing
-        to the price (<Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>),
+        A listing that sells use lets people use the creator&apos;s own agent from their WheelsAI credits: per message or
+        run, on a <a href="#paid-plans">plan</a> with a number of uses for 30 days, or per month. They never get a copy,
+        and no route returns its instructions, tools or model. Start by agreeing to the price or starting a plan (
+        <Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>),
         then use the agent here. All four routes need you signed in, with a session or an API key. A key needs the{" "}
         <code>agents:use</code> scope to chat or run, created with both caps (see{" "}
-        <Link href="/docs/api/jobs#keys">API keys that can spend</Link>).
+        <Link href="/docs/api/jobs#keys">API keys that can spend</Link>). One key and one balance pay for every agent
+        you use. Each listing also has a page for people who call it from code, at{" "}
+        <code>/a/&#123;handle&#125;/api</code>.
       </p>
       <ul>
-        <li>One use is one message or one run. It is charged when it is sent and refunded if no answer is delivered.</li>
+        <li>
+          One use is one message or one run. It is charged when it is sent and refunded if no answer is delivered. A
+          charge whose request was cut off before an answer could be delivered is given back within about 15 minutes.
+        </li>
         <li>The answer arrives whole, not word by word, after the agent&apos;s reply has been checked.</li>
         <li>
-          Limits are 10 uses a minute and 200 a day for your organization and the agent. After 10 answers in a day that
-          could not be delivered, you wait until tomorrow.
+          Every answer says what it cost, in its body (<code>billing</code>) and in its{" "}
+          <a href="#paid-headers">usage headers</a>.
+        </li>
+        <li>
+          Everybody may send 10 uses a minute. A buyer with no plan, and a monthly subscriber, may send 200 a day; a
+          buyer on a plan is held to the plan&apos;s count in place of that. See <a href="#paid-limits">limits</a>.
         </li>
         <li>
           You cannot send tools, a model or a system message. An answer that repeats eight consecutive words of the
@@ -1359,18 +1372,22 @@ if reply.tool_calls:
           passages it needs without the titles of the documents they came from.
         </li>
         <li>
-          Inside a paid month nothing is charged per use. The owner may keep a copy of what you send and what it answers;
-          the agent&apos;s page says so (<code>transcriptsStored</code>).
+          Inside a paid month nothing is charged per use, and a use a plan includes is charged nothing. The owner may
+          keep a copy of what you send and what it answers; the agent&apos;s page says so (
+          <code>transcriptsStored</code>).
         </li>
       </ul>
 
       <Endpoint id="paid-access" method="GET" path="/api/a/{handle}/access" auth="API key or session" title="Where you stand with an agent">
-        <p>Answers what the listing asks, what you agreed to, and your credits.</p>
+        <p>
+          Answers what the listing asks, the plans it offers, what you agreed to, the plan you are on and your credits.
+          It is a read: it costs nothing and takes no use.
+        </p>
         <CodeBlock
           language="json"
           code={`{
-  "access": "listing_pricing",
-  "listingId": "…",
+  "access": "subscribed",
+  "listingId": "5d2f9c1e-...",
   "terms": {
     "pricingModel": "per_request",
     "pricePerRequestCents": 5,
@@ -1378,8 +1395,29 @@ if reply.tool_calls:
     "unit": "message",
     "keepsCopy": true
   },
-  "accepted": { "pricingModel": "per_request", "pricePerRequestCents": 5, "monthlyPriceCents": null },
-  "subscription": null,
+  "plans": [
+    { "id": "7c1e4b02-...", "name": "Starter", "priceCents": 900, "includedUses": 500, "extraUsePriceCents": 5 },
+    { "id": "b93a6f48-...", "name": "Team", "priceCents": 2900, "includedUses": 2000, "extraUsePriceCents": null }
+  ],
+  "plan": {
+    "id": "7c1e4b02-...",
+    "name": "Starter",
+    "includedUses": 500,
+    "carriedUses": 0,
+    "usedUses": 425,
+    "remainingUses": 75,
+    "extraUsePriceCents": 5,
+    "resetsAt": "2026-11-12T09:30:00.000Z",
+    "warning": 85
+  },
+  "trialAvailable": false,
+  "accepted": { "pricingModel": null, "pricePerRequestCents": null, "monthlyPriceCents": 900 },
+  "subscription": {
+    "status": "active",
+    "currentPeriodEnd": "2026-11-12T09:30:00.000Z",
+    "cancelAtPeriodEnd": false,
+    "graceEndsAt": null
+  },
   "balanceCents": 495,
   "canAccept": true,
   "startBlocked": null,
@@ -1388,20 +1426,32 @@ if reply.tool_calls:
         />
         <ul>
           <li>
-            <code>access</code> is <code>none</code> (you have not started), <code>subscribed</code>,{" "}
-            <code>listing_pricing</code> (the listing&apos;s price is what you agreed to, or lower),{" "}
-            <code>pricing_changed</code> (the price went up; accept it to continue), <code>subscription_lapsed</code>,{" "}
-            <code>not_offered</code> or <code>own_agent</code>.
+            <code>access</code> is <code>none</code> (you have not started), <code>subscribed</code> (a plan or a month
+            is running), <code>listing_pricing</code> (the listing&apos;s price per use is what you agreed to, or
+            lower), <code>pricing_changed</code> (the price went up; accept it to continue),{" "}
+            <code>subscription_lapsed</code>, <code>plan_ended</code> (your plan is over and you have not agreed to the
+            price per use: choose a plan or pay per use), <code>not_offered</code> or <code>own_agent</code>.
           </li>
           <li>
             <code>terms</code> is what the listing asks now, or <code>null</code> when use is not on sale.{" "}
             <code>keepsCopy</code> is whether the owner keeps a copy of what is sent and answered.
           </li>
           <li>
+            <code>plans</code> is the plans the listing offers now, in the order they are shown, and empty when it
+            offers none. <code>plan</code> is the plan you are on while it gives you uses, and <code>null</code>{" "}
+            otherwise. Both are described under <a href="#paid-plans">plans</a>. <code>trialAvailable</code> is always{" "}
+            <code>false</code>.
+          </li>
+          <li>
+            <code>accepted</code> is what you agreed to, or <code>null</code> when you have not started. Starting a
+            plan agrees to no price per use, so its <code>pricingModel</code> and <code>pricePerRequestCents</code> stay{" "}
+            <code>null</code> until you agree to that price yourself.
+          </li>
+          <li>
             <code>subscription</code> is <code>&#123; status, currentPeriodEnd, cancelAtPeriodEnd, graceEndsAt &#125;</code> or{" "}
             <code>null</code>; <code>graceEndsAt</code> is set while a renewal that failed is being retried, and is the
             day access ends unless credits are added before it. <code>canAccept</code> is whether you may agree to a
-            price: an owner or admin, or a key granted <code>marketplace:install</code> by name.
+            price or start a plan: an owner or admin, or a key granted <code>marketplace:install</code> by name.
           </li>
           <li>
             <code>startBlocked</code> is <code>null</code>, or <code>&#123; code: &quot;copy_subscription_active&quot;, message, until &#125;</code>{" "}
@@ -1419,6 +1469,113 @@ if reply.tool_calls:
           </li>
         </ul>
       </Endpoint>
+
+      <h3 id="paid-plans">Plans</h3>
+      <p>
+        A listing sold per use can offer up to four plans. A plan is one price for 30 days with a number of uses
+        included, on top of the listing&apos;s price per use. When the included uses run out, a plan either charges a
+        price for each extra use or stops until it renews. A plan always has a count.
+      </p>
+      <Fields
+        title="A plan on offer"
+        fields={[
+          { name: "id", type: "uuid", description: "The plan." },
+          { name: "name", type: "string", description: "What its creator calls it." },
+          { name: "priceCents", type: "integer", description: "What 30 days cost, charged from your credits at the start and at each renewal." },
+          { name: "includedUses", type: "integer", description: "The uses the 30 days include." },
+          { name: "extraUsePriceCents", type: "integer | null", description: <>What each use past the included ones costs. <code>null</code>: the plan stops until it renews.</> },
+        ]}
+      />
+      <p>
+        The same five fields come wherever a plan is offered: in <code>plans</code> of the access answer, of{" "}
+        <a href="#public-page"><code>GET /api/a/&#123;handle&#125;</code></a> (under <code>use.paid</code>) and of{" "}
+        <Link href="/docs/api/marketplace#get-listing">a listing</Link>, and with a refusal that asks you to choose.
+      </p>
+      <p>
+        <strong>Start a plan</strong> by sending the plan you were shown, whole, to{" "}
+        <Link href="/docs/api/marketplace#use"><code>POST /api/marketplace/listings/&#123;id&#125;/use</code></Link>. Its
+        terms are your consent: if any of them differs from the plan as it is now, nothing is charged and the answer
+        carries the plans as they are. The 30 days are charged from your credits at once, and the same price every 30
+        days after that. It needs an owner or admin, or a key granted <code>marketplace:install</code> by name.
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{ "plan": { "id": "'"$PLAN_ID"'", "priceCents": 900, "includedUses": 500, "extraUsePriceCents": 5 } }'`}
+      />
+      <p>
+        <strong>Move up</strong> to a bigger plan of the same listing at any time by sending that plan with{" "}
+        <code>&quot;switchNow&quot;: true</code>. Its full price is charged now, a fresh 30 days starts now, and the uses
+        you had left are carried into them once (<code>carriedUses</code>); the next renewal starts from the plan&apos;s
+        own count. The 30 days that were running are not refunded, so only a plan that costs more is a move. To move to
+        a smaller plan, cancel the renewal and choose it when your plan ends.
+      </p>
+      <CodeBlock
+        language="bash"
+        code={`curl -s -X POST "$WHEELSAI_API_URL/api/marketplace/listings/$LISTING_ID/use" \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" -H "Content-Type: application/json" \\
+  -d '{ "plan": { "id": "'"$BIGGER_PLAN_ID"'", "priceCents": 2900, "includedUses": 2000, "extraUsePriceCents": null }, "switchNow": true }'`}
+      />
+      <p>
+        Both answer <code>201</code> with the state the marketplace reference describes. Nothing is charged on a
+        refusal:
+      </p>
+      <DocTable
+        caption="Refusals of starting a plan and of moving up"
+        columns={[
+          { key: "status", label: "Status" },
+          { key: "code", label: "error" },
+          { key: "when", label: "When" },
+        ]}
+        rows={[
+          { status: <code>400</code>, code: <code>expected_terms_required</code>, when: <>The plan was not sent whole: its <code>id</code>, <code>priceCents</code>, <code>includedUses</code> and <code>extraUsePriceCents</code> (<code>null</code> when it stops).</> },
+          { status: <code>400</code>, code: <code>invalid_plan_move</code>, when: <><code>switchNow</code> without a plan sent whole, or with a value that is not <code>true</code>.</> },
+          { status: <code>402</code>, code: <code>insufficient_credits</code>, when: <>Not enough credits for the 30 days; <code>requiredCents</code> says how much.</> },
+          { status: <code>409</code>, code: <code>pricing_changed</code>, when: <>The plan is not what you were shown: its creator changed or ended it, or the listing is no longer sold per use. <code>pricing</code> is the listing&apos;s pricing and <code>plans</code> the plans on offer now.</> },
+          { status: <code>409</code>, code: <code>already_on_plan</code>, when: "A start while a plan or a month for this agent is still running." },
+          { status: <code>409</code>, code: <code>not_on_plan</code>, when: "A move by a buyer who is not on a plan. Start one first." },
+          { status: <code>409</code>, code: <code>same_plan</code>, when: "A move to the plan you are already on." },
+          { status: <code>409</code>, code: <code>not_a_bigger_plan</code>, when: "A move to a plan that does not cost more than yours." },
+          { status: <code>409</code>, code: <code>subscription_claim_lost</code>, when: "Another request, or a renewal, changed your subscription first. Read where you stand and try again." },
+        ]}
+      />
+      <p>
+        The listing&apos;s own refusals of a start apply too (<code>listing_not_found</code>, <code>own_agent</code>,{" "}
+        <code>sells_copies</code>, <code>not_offered</code>, <code>copy_subscription_active</code>,{" "}
+        <code>listing_paused</code>, <code>service_unavailable</code>); see the{" "}
+        <Link href="/docs/api/marketplace#use">marketplace reference</Link>.
+      </p>
+      <Fields
+        title="The plan you are on (plan, and billing.plan after a use)"
+        fields={[
+          { name: "id", type: "uuid | null", description: "The plan you started." },
+          { name: "name", type: "string", description: <>What its creator calls it now. In the access answer only.</> },
+          { name: "use", type: "enum", description: <>In <code>billing.plan</code> only: <code>included</code> for one of the plan&apos;s uses, <code>extra</code> for a use past the count, charged the extra price you agreed to.</> },
+          { name: "includedUses", type: "integer", description: "The uses of the 30 days, as you agreed to them." },
+          { name: "carriedUses", type: "integer", description: "Uses brought into these 30 days by a move up, on top of the included ones. 0 after a renewal." },
+          { name: "usedUses", type: "integer", description: "Uses taken in these 30 days." },
+          { name: "remainingUses", type: "integer", description: "Included plus carried, less the ones used. Never below 0." },
+          { name: "extraUsePriceCents", type: "integer | null", description: <>What each use past the count costs, as you agreed. <code>null</code>: the plan stops until it renews.</> },
+          { name: "resetsAt", type: "string (ISO time)", description: "When the count starts again. Left out when the plan will not renew: you cancelled the renewal, its creator ended the plan, or the listing is no longer sold per use." },
+          { name: "warning", type: "85 | 100 | null", description: "85 when 85% of the uses are gone, 100 when all are." },
+        ]}
+      />
+      <p>
+        You keep the terms you agreed to: a creator who changes or ends a plan changes nothing for the 30 days you paid
+        for. A plan that was changed renews at the price and with the uses you agreed to; a plan that was ended is not
+        charged again and finishes with its 30 days. When a plan is over, you are charged per use only if you agreed to
+        the listing&apos;s price per use yourself; otherwise the next use answers <code>plan_ended</code> and you
+        choose. Cancelling and resuming the renewal are{" "}
+        <Link href="/docs/api/marketplace#subscriptions">the subscription routes</Link>.
+      </p>
+      <p>
+        When a use takes a plan to 85% of its uses, and when it takes the last one, the owners and admins of your
+        organization who have a verified email address get one email for that level in those 30 days. Everything your
+        organization pays to use is on the <strong>Usage</strong> page of the dashboard (
+        <code>/dashboard/usage</code>) and in{" "}
+        <Link href="/docs/api/marketplace#usage"><code>GET /api/billing/marketplace-usage</code></Link>.
+      </p>
 
       <Endpoint id="paid-chat" method="POST" path="/api/a/{handle}/chat" auth="Session, or an API key with agents:use" title="Chat with an agent you pay for">
         <Fields
@@ -1443,16 +1600,45 @@ if reply.tool_calls:
 }`}
         />
         <p>
-          <code>billing.chargedCents</code> is 0 inside a paid month, and <code>billing.balanceCents</code> is your credits
-          after the use, or <code>null</code> when they could not be read just now. <code>toolCalls</code> lists each tool
-          the agent used and whether it worked (<code>ok</code>, <code>unavailable</code> or <code>error</code>).
+          <code>billing.chargedCents</code> is what this use cost: the price per use, 0 inside a paid month and for a
+          use a plan includes, and the plan&apos;s extra price past its count. <code>billing.balanceCents</code> is your
+          credits after the use, or <code>null</code> when they could not be read just now.{" "}
+          <code>billing.access</code> is <code>listing_pricing</code> or <code>subscribed</code>.{" "}
+          <code>toolCalls</code> lists each tool the agent used and whether it worked (<code>ok</code>,{" "}
+          <code>unavailable</code> or <code>error</code>).
+        </p>
+        <p>
+          On a <a href="#paid-plans">plan</a>, <code>billing</code> also carries <code>plan</code>, the count after this
+          use:
+        </p>
+        <CodeBlock
+          language="json"
+          code={`{
+  "chargedCents": 0,
+  "balanceCents": 495,
+  "access": "subscribed",
+  "plan": {
+    "id": "7c1e4b02-...",
+    "use": "included",
+    "includedUses": 500,
+    "carriedUses": 0,
+    "usedUses": 426,
+    "remainingUses": 74,
+    "extraUsePriceCents": 5,
+    "resetsAt": "2026-11-12T09:30:00.000Z",
+    "warning": 85
+  }
+}`}
+        />
+        <p>
+          The same numbers are in the answer&apos;s <a href="#paid-headers">usage headers</a>.
         </p>
         <p>
           With streaming, the response is <code>text/event-stream</code> and carries the whole checked answer in one go:
-          first <code>data: &#123;&quot;wheelsai&quot;:&#123;&quot;billing&quot;:…&#125;&#125;</code>, then optionally{" "}
-          <code>data: &#123;&quot;wheelsai&quot;:&#123;&quot;toolCalls&quot;:…&#125;&#125;</code>, then OpenAI-style{" "}
-          <code>choices[0].delta.content</code> events, a finish event and <code>data: [DONE]</code>. A refusal is always
-          plain JSON, also when a stream was asked for.
+          first <code>data: &#123;&quot;wheelsai&quot;:&#123;&quot;billing&quot;:...&#125;&#125;</code>, then optionally{" "}
+          <code>data: &#123;&quot;wheelsai&quot;:&#123;&quot;toolCalls&quot;:...&#125;&#125;</code>, then OpenAI-style{" "}
+          <code>choices[0].delta.content</code> events, a finish event and <code>data: [DONE]</code>. The usage headers
+          are sent before the stream starts. A refusal is always plain JSON, also when a stream was asked for.
         </p>
       </Endpoint>
 
@@ -1464,9 +1650,23 @@ if reply.tool_calls:
           ]}
         />
         <CodeBlock
+          language="bash"
+          code={`curl -i $WHEELSAI_API_URL/api/a/brief-writer/run \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "input": {"field_name": "Your answer"},
+    "stream": false
+  }'`}
+        />
+        <p>
+          <code>input</code> holds one answer for each question of the agent&apos;s form, by the question&apos;s name.{" "}
+          <code>-i</code> prints the answer&apos;s headers too, where what the run cost and what is left are told.
+        </p>
+        <CodeBlock
           language="json"
           code={`{
-  "output": { "format": "text", "text": "Brief: …" },
+  "output": { "format": "text", "text": "Brief: ..." },
   "toolCalls": [],
   "billing": { "chargedCents": 10, "balanceCents": 485, "access": "listing_pricing" }
 }`}
@@ -1495,7 +1695,54 @@ if reply.tool_calls:
           and both caps; a session works too. The answer is OpenAI&apos;s shape plus{" "}
           <code>wheelsai: &#123; agent: &#123; handle &#125;, billing &#125;</code> and nothing else, and it has no{" "}
           <code>usage</code>. Every chunk&apos;s <code>model</code> is <code>a/&lt;handle&gt;</code>. Like the other paid routes it
-          is charged when sent and refunded if no answer is delivered.
+          is charged when sent and refunded if no answer is delivered, and <code>billing</code> carries{" "}
+          <code>plan</code> when you are on one. A task agent is run from its form&apos;s answers, at{" "}
+          <a href="#paid-run">its own address</a>.
+        </p>
+        <CodeBlock
+          language="bash"
+          code={`curl -i $WHEELSAI_API_URL/v1/chat/completions \\
+  -H "Authorization: Bearer $WHEELSAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "a/support-bot",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`}
+        />
+        <CodeBlock
+          language="javascript"
+          code={`import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: \`\${process.env.WHEELSAI_API_URL}/v1\`,
+  apiKey: process.env.WHEELSAI_API_KEY,
+});
+
+const reply = await client.chat.completions.create({
+  model: "a/support-bot",
+  messages: [{ role: "user", content: "Hello!" }],
+});
+console.log(reply.choices[0].message.content);`}
+        />
+        <CodeBlock
+          language="python"
+          code={`import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url=os.environ["WHEELSAI_API_URL"] + "/v1",
+    api_key=os.environ["WHEELSAI_API_KEY"],
+)
+
+reply = client.chat.completions.create(
+    model="a/support-bot",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(reply.choices[0].message.content)`}
+        />
+        <p>
+          <code>curl -i</code> prints the answer&apos;s <a href="#paid-headers">usage headers</a> too. The page of a
+          listing&apos;s API, <code>/a/&#123;handle&#125;/api</code>, shows these calls filled in for that agent.
         </p>
         <ul>
           <li>
@@ -1519,9 +1766,19 @@ if reply.tool_calls:
         <p>
           Errors are OpenAI-shaped, <code>&#123; error: &#123; message, type, param, code &#125; &#125;</code>. Show{" "}
           <code>message</code> as it comes. The object may also carry <code>terms</code>, <code>priceCents</code>,{" "}
-          <code>balanceCents</code> and <code>refundedCents</code>, and <code>reason</code>: the more exact code when{" "}
-          <code>/v1</code> folds several into one, for example <code>not_offered</code> or <code>results_only</code> under{" "}
-          <code>not_for_sale</code>. Errors that repeating cannot fix carry <code>x-should-retry: false</code>.
+          <code>balanceCents</code>, <code>refundedCents</code>, <code>plans</code> and <code>resetsAt</code>, and{" "}
+          <code>reason</code>: the paid service&apos;s own code (the one in <a href="#paid-errors">the table below</a>)
+          whenever <code>/v1</code> folds several into one, for example <code>not_offered</code> or{" "}
+          <code>results_only</code> under <code>not_for_sale</code>, and <code>plan_ended</code> under{" "}
+          <code>marketplace_payment_required</code>. A code that is not folded has no <code>reason</code>. Errors that
+          repeating cannot fix carry <code>x-should-retry: false</code>.
+        </p>
+        <p>
+          A plan that is used up has its own code, <code>plan_used_up</code>, with the type{" "}
+          <code>insufficient_quota</code> and <code>x-should-retry: false</code>, so an OpenAI client does not send the
+          request again by itself. Its <code>retry-after</code> says how many seconds are left of the 30 days paid for:
+          when the count starts again for a plan that renews (<code>resetsAt</code> is then set), and when the plan ends
+          for one that will not. While a renewal that is due is being retried it says one hour.
         </p>
         <DocTable
           caption="Errors of a paid agent on /v1"
@@ -1533,7 +1790,7 @@ if reply.tool_calls:
           rows={[
             { status: <code>400</code>, code: <code>validation_failed</code>, when: "The request itself, or past the page's limits." },
             { status: <code>400</code>, code: <code>unsupported_parameter</code>, when: <>Tools, <code>tool_choice</code>, a system message or a tool message. Nothing was charged.</> },
-            { status: <code>402</code>, code: <code>marketplace_payment_required</code>, when: <>Not enough credits for this use; <code>priceCents</code> and <code>balanceCents</code> say how much.</> },
+            { status: <code>402</code>, code: <code>marketplace_payment_required</code>, when: <>Not enough credits for this use (<code>reason</code> <code>insufficient_credits</code>; <code>priceCents</code> and <code>balanceCents</code> say how much), a subscription that ended (<code>subscription_lapsed</code>), or a plan that is over (<code>plan_ended</code>, with <code>terms</code> and <code>plans</code> to choose from).</> },
             { status: <code>403</code>, code: <><code>insufficient_scope</code>, <code>use_not_started</code></>, when: <>A key without <code>agents:use</code>; or you have not started using this agent (<code>terms</code> says what it asks).</> },
             { status: <code>403</code>, code: <><code>api_key_use_price_cap_exceeded</code>, <code>api_key_daily_cap_exceeded</code>, <code>api_key_spend_caps_missing</code></>, when: "The key's own caps." },
             { status: <code>403</code>, code: <code>not_a_member</code>, when: "You are no longer a member of the organization that pays for this agent." },
@@ -1541,6 +1798,7 @@ if reply.tool_calls:
             { status: <code>409</code>, code: <code>pricing_changed</code>, when: <>The price went up or the pricing model changed since you agreed; <code>terms</code> says what it is now.</> },
             { status: <code>409</code>, code: <><code>own_agent</code>, <code>not_for_sale</code></>, when: <>Your own agent; or an agent whose use is free, not offered, or read through results (<code>reason</code> says which).</> },
             { status: <code>429</code>, code: <code>rate_limit_exceeded</code>, when: <>Your limit or the agent&apos;s, with <code>retry-after</code>.</> },
+            { status: <code>429</code>, code: <code>plan_used_up</code>, when: <>Every use of your plan is gone and it stops until it renews. Nothing was charged. Type <code>insufficient_quota</code>, <code>x-should-retry: false</code>, the plan&apos;s usage headers, <code>plans</code>, and <code>resetsAt</code> when the plan will renew.</> },
             { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
             { status: <code>502</code>, code: <code>answer_withheld</code>, when: <>The answer could not be shown. The charge was refunded (<code>refundedCents</code>).</> },
             { status: <code>502</code>, code: <code>upstream_error</code>, when: <>The agent could not answer. The charge was refunded; a retry is a new charge, refunded again if it fails.</> },
@@ -1548,6 +1806,77 @@ if reply.tool_calls:
           ]}
         />
       </Endpoint>
+
+      <h3 id="paid-headers">Usage headers</h3>
+      <p>
+        Every paid answer of chat, run and <code>/v1/chat/completions</code> says in its headers what its{" "}
+        <code>billing</code> says, whole or streamed, before the body. Read them to know where you stand without
+        parsing the answer or asking again.
+      </p>
+      <DocTable
+        caption="The usage headers of a paid answer"
+        columns={[
+          { key: "header", label: "Header" },
+          { key: "says", label: "What it says" },
+          { key: "when", label: "Sent" },
+        ]}
+        rows={[
+          { header: <code>x-wheelsai-charged-cents</code>, says: "What this use cost, in cents: 0 for a use a plan includes and inside a paid month.", when: "On every paid answer." },
+          { header: <code>x-wheelsai-balance-cents</code>, says: "Your credits after the use, in cents.", when: "On every paid answer, unless your credits could not be read just now." },
+          { header: <code>x-wheelsai-plan</code>, says: "The id of the plan you are on.", when: "On a plan." },
+          { header: <code>x-wheelsai-plan-limit</code>, says: "The uses of these 30 days: included plus carried.", when: "On a plan." },
+          { header: <code>x-wheelsai-plan-used</code>, says: "Uses taken in these 30 days, this one among them.", when: "On a plan." },
+          { header: <code>x-wheelsai-plan-remaining</code>, says: "Uses left.", when: "On a plan." },
+          { header: <code>x-wheelsai-plan-reset</code>, says: "When the count starts again, an ISO time.", when: "On a plan that will renew." },
+          { header: <code>x-wheelsai-plan-warning</code>, says: <><code>85</code> or <code>100</code>.</>, when: "On a plan, from 85% of its uses." },
+        ]}
+      />
+      <CodeBlock
+        language="http"
+        code={`HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+x-wheelsai-charged-cents: 0
+x-wheelsai-balance-cents: 495
+x-wheelsai-plan: 7c1e4b02-...
+x-wheelsai-plan-limit: 500
+x-wheelsai-plan-used: 426
+x-wheelsai-plan-remaining: 74
+x-wheelsai-plan-reset: 2026-11-12T09:30:00.000Z
+x-wheelsai-plan-warning: 85`}
+      />
+      <ul>
+        <li>
+          The refusal that a plan is used up (<code>429</code> <code>plan_used_up</code>) carries the plan&apos;s headers
+          too, with <code>x-wheelsai-plan-remaining: 0</code> and <code>x-wheelsai-plan-warning: 100</code> (and{" "}
+          <code>x-wheelsai-plan-reset</code> only when the plan will renew), and no charge or balance header: nothing was charged. No other refusal carries a usage header.
+        </li>
+        <li>A header is left out when its value is not known. The body&apos;s <code>billing</code> is always there.</li>
+        <li>
+          Read the headers from your server or a script. A page in a browser on another website reads the same numbers
+          from <code>billing</code> in the body.
+        </li>
+      </ul>
+
+      <h3 id="paid-limits">Limits</h3>
+      <DocTable
+        caption="What one organization may send to one agent"
+        columns={[
+          { key: "who", label: "How you pay" },
+          { key: "minute", label: "A minute" },
+          { key: "day", label: "A day" },
+        ]}
+        rows={[
+          { who: "Per use, with no plan", minute: "10 uses", day: "200 uses" },
+          { who: "By the month", minute: "10 uses", day: "200 uses" },
+          { who: "On a plan", minute: "10 uses", day: "No daily limit: the plan's count for its 30 days takes its place, for included and extra uses alike." },
+        ]}
+      />
+      <p>
+        Past a limit the answer is <code>429</code> <code>rate_limited</code> with <code>retryAfterSeconds</code> and
+        the <code>retry-after</code> header, and nothing is charged. The agent has a limit of its own across everybody
+        who pays (<code>scope</code> <code>agent</code>). After 10 answers in a day that could not be delivered, you
+        wait until tomorrow (<code>too_many_refunds</code>).
+      </p>
 
       <h3 id="paid-errors">Refusals</h3>
       <p>
@@ -1566,6 +1895,7 @@ if reply.tool_calls:
           { status: <code>401</code>, code: "", when: "Not signed in." },
           { status: <code>402</code>, code: <code>insufficient_credits</code>, when: <>Not enough credits for this use. <code>priceCents</code> and <code>balanceCents</code> say how much. Nothing was charged.</> },
           { status: <code>402</code>, code: <code>subscription_lapsed</code>, when: "The subscription ended or its renewal did not go through." },
+          { status: <code>402</code>, code: <code>plan_ended</code>, when: <>Your plan is over and you have not agreed to the listing&apos;s price per use. <code>terms</code> says what the listing asks and <code>plans</code> the plans on offer: choose a plan or pay per use.</> },
           { status: <code>403</code>, code: <code>missing_scope</code>, when: <>A key without <code>agents:use</code>.</> },
           { status: <code>403</code>, code: <code>use_not_started</code>, when: <>You have not started using this agent. <code>terms</code> and <code>access</code> say what it asks.</> },
           { status: <code>403</code>, code: <><code>api_key_use_price_cap_exceeded</code>, <code>api_key_daily_cap_exceeded</code>, <code>api_key_spend_caps_missing</code></>, when: "The key's own caps: the price of one use is over the most one use may cost, the day's allowance is used, or the key has no caps." },
@@ -1576,6 +1906,7 @@ if reply.tool_calls:
           { status: <code>413</code>, code: <code>input_too_large</code>, when: "Your answers are too long." },
           { status: <code>422</code>, code: <code>input_invalid</code>, when: <>Some answers need another look; <code>details</code> lists them.</> },
           { status: <code>429</code>, code: <code>rate_limited</code>, when: <>Your limit or the agent&apos;s, with <code>scope</code> (<code>org</code> or <code>agent</code>) and <code>retryAfterSeconds</code>.</> },
+          { status: <code>429</code>, code: <code>plan_used_up</code>, when: <>Every use of your plan is gone and it stops until it renews. Nothing was charged and no use was taken. With the plan&apos;s <a href="#paid-headers">usage headers</a>, <code>plans</code> (a bigger one may be among them), <code>retryAfterSeconds</code>, and <code>resetsAt</code> when the plan will renew.</> },
           { status: <code>429</code>, code: <code>too_many_refunds</code>, when: "Several of your answers could not be delivered today. Try again tomorrow." },
           { status: <code>499</code>, code: <code>client_closed_request</code>, when: "You closed the connection before the answer arrived. The charge was refunded." },
           { status: <code>502</code>, code: <><code>model_error</code>, <code>answer_withheld</code></>, when: <>The agent could not answer, or its answer could not be shown. <code>refundedCents</code> says what was given back.</> },

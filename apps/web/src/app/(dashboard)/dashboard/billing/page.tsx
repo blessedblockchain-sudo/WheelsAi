@@ -5,6 +5,7 @@ import { useWallet } from "@solana/wallet-adapter-react";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { VersionedTransaction } from "@solana/web3.js";
 import { Activity, AlertTriangle, CheckCircle2, Wallet } from "lucide-react";
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { Header } from "@/components/dashboard/header";
@@ -57,6 +58,7 @@ import {
   topupsToFollow,
   walletAssetsOffered,
 } from "@/lib/wallet-topup";
+import { USAGE_HREF, USAGE_WORDS } from "@/lib/usage-view";
 import { cn } from "@/lib/utils";
 
 // Fallback only — the real ladder is served by GET /api/billing/packages
@@ -468,6 +470,13 @@ export default function BillingPage() {
 
         {/* Balance overview: the four tiles, and what is held */}
         {dataReady && <BalanceTiles balance={balance} usage={usage} holds={holds} />}
+
+        {/* What the same balance paid for on other people's agents has its own page */}
+        <p className="mb-8 text-sm">
+          <Link href={USAGE_HREF} className="text-primary underline-offset-4 hover:underline">
+            {USAGE_WORDS.linkLabel}
+          </Link>
+        </p>
 
         {/* Purchase credits */}
         {isLoading ? (

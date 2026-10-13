@@ -84,6 +84,9 @@ export const CHANNELS_WEBSITE_CHAT_HREF = "/dashboard/integrations?tab=channels"
 export const LEADERBOARD_PUBLIC_HREF = "/marketplace/leaderboard";
 export const LEADERBOARD_TAB_HREF = "/dashboard/marketplace/leaderboard";
 
+/** What the organization used and spent on the agents it pays for. The plan emails link here. */
+export const USAGE_PAID_HREF = "/dashboard/usage";
+
 function item(id: NavIcon, label: string, href: string, tabs: NavTab[] = []): NavItem {
   return { id, label, href, icon: id, tabs };
 }
@@ -155,7 +158,12 @@ export function buildNav({ tokenUi }: NavOptions): NavGroup[] {
       items: [
         item("billing", "Billing", "/dashboard/billing"),
         item("keys", "API keys", "/dashboard/keys"),
-        item("usage", "Usage", "/dashboard/analytics"),
+        // Two pages of usage: what the organization's own agents and models did, and what it used and
+        // spent on the agents it pays for. The second address is the one the plan emails link to.
+        item("usage", "Usage", "/dashboard/analytics", [
+          { label: "Analytics", href: "/dashboard/analytics" },
+          { label: "What you pay for", href: USAGE_PAID_HREF },
+        ]),
         item("team", "Team", "/dashboard/settings/team"),
         item("settings", "Settings", "/dashboard/settings", [
           { label: "Account", href: "/dashboard/settings" },
@@ -314,7 +322,7 @@ export const FORMER_LINKS: FormerLink[] = [
   { name: "Tokens", href: "/dashboard/marketplace/tokens", to: [{ item: "listings", tab: "Tokens" }] },
   { name: "Billing & Plan", href: "/dashboard/billing", to: [{ item: "billing" }] },
   { name: "API Keys", href: "/dashboard/keys", to: [{ item: "keys" }] },
-  { name: "Usage Analytics", href: "/dashboard/analytics", to: [{ item: "usage" }] },
+  { name: "Usage Analytics", href: "/dashboard/analytics", to: [{ item: "usage", tab: "Analytics" }] },
   { name: "Team", href: "/dashboard/settings/team", to: [{ item: "team" }] },
   { name: "Security", href: "/dashboard/settings/security", to: [{ item: "settings", tab: "Security" }] },
   { name: "Branding", href: "/dashboard/settings/branding", to: [{ item: "settings", tab: "Branding" }] },

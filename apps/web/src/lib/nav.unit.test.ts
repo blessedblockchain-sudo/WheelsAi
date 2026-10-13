@@ -16,6 +16,7 @@ import {
   LEADERBOARD_TAB_HREF,
   LIST_AGENT_BUTTON,
   NEW_AGENT_BUTTON,
+  USAGE_PAID_HREF,
   buildNav,
   hrefPath,
   locate,
@@ -130,6 +131,7 @@ test("each item's tabs are the ones named, and Tokens is a tab only when the fla
     Models: ["Catalog", "Deployments", "Fine-tuning", "Datasets", "Try"],
     Knowledge: ["Knowledge", "Memory"],
     Channels: ["Website chat", "Chat apps", "Webhooks & integrations"],
+    Usage: ["Analytics", "What you pay for"],
     Settings: ["Account", "Security", "Branding"],
   };
   const listings = ["Listings", "Offerings", "Orders", "Insights", "Leaderboard"];
@@ -232,7 +234,8 @@ test("the most specific page wins", () => {
   assert.equal(where("/dashboard/settings/security"), "Settings > Security [tabs]");
   assert.equal(where("/dashboard/playground"), "Models > Try [tabs]");
   assert.equal(where("/dashboard/openclaw"), "Channels > Chat apps [tabs]");
-  assert.equal(where("/dashboard/analytics"), "Usage");
+  assert.equal(where("/dashboard/analytics"), "Usage > Analytics [tabs]");
+  assert.equal(where("/dashboard/usage"), "Usage > What you pay for [tabs]");
   assert.equal(where("/dashboard/marketplace/analytics"), "Listings > Insights [tabs]");
   assert.equal(where("/marketplace"), "Browse");
   assert.equal(where("/dashboard/marketplace/leaderboard"), "Listings > Leaderboard [tabs]");
@@ -287,6 +290,18 @@ test("the Leaderboard tab stays inside the dashboard, and the public page keeps 
   for (const item of navItems(ON)) {
     for (const t of item.tabs) assert.ok(t.href.startsWith("/dashboard/"), `${item.label} > ${t.label} opens ${t.href}`);
   }
+});
+
+test("what the organization pays for is a tab of Usage, at the address the plan emails link to", () => {
+  const usage = navItems(OFF).find((i) => i.id === "usage")!;
+  // The item still opens where it always did, and the new page is beside it.
+  assert.equal(usage.href, "/dashboard/analytics");
+  assert.deepEqual(usage.tabs, [
+    { label: "Analytics", href: "/dashboard/analytics" },
+    { label: "What you pay for", href: "/dashboard/usage" },
+  ]);
+  assert.equal(USAGE_PAID_HREF, "/dashboard/usage");
+  assert.ok(ROUTES.includes(USAGE_PAID_HREF));
 });
 
 test("only jobs and integrations need the query string to draw their tabs", () => {

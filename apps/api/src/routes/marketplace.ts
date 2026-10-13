@@ -36,6 +36,7 @@ import {
   PRICING_MODELS,
 } from "../services/marketplace.js";
 import { InsufficientCreditsError, SubscriptionClaimLostError } from "../services/marketplaceSubscriptions.js";
+import { movePlan, PLAN_MOVE_MESSAGES, PlanMoveError } from "../services/planMove.js";
 import { AlreadyOnPlanError, PLAN_START_MESSAGES, PlanTermsChangedError, startPlan } from "../services/planStart.js";
 import { TokenRequiredError } from "../services/tokenAccess.js";
 
@@ -520,6 +521,13 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
    * instead and charges its 30 days now: 409 pricing_changed with the plans
    * as they are when any term differs, 409 already_on_plan while a plan or
    * a month still runs. Starting a plan agrees to no price per use.
+   *
+   * With `plan` and `switchNow: true` it moves a buyer who is on a plan up
+   * to that bigger plan now: its full price is charged, a fresh 30 days
+   * starts and the uses that were left are carried into it once. 409
+   * not_on_plan, same_plan, not_a_bigger_plan; 409 pricing_changed as at a
+   * start; 409 subscription_claim_lost when the row changed first. Nothing
+   * is charged on any of them.
    */
   app.post(
     "/listings/:id/use",
@@ -533,11 +541,13 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
       const sent =
         request.body !== null && typeof request.body === "object" ? (request.body as Record<string, unknown>) : {};
-      // Moving to another plan before the period ends is not built yet. A
-      // body that asks for it is refused whole, so that it is never read as
-      // an ordinary start.
-      if ("switchNow" in sent) {
-        return reply.status(400).send({ error: "switch_not_available", message: PLAN_START_MESSAGES.switchNow });
+      // A move to another plan is asked for with `switchNow: true` and the
+      // plan, sent whole. A body that names switchNow in any other way is
+      // refused whole, so that it is never read as an ordinary start or as
+      // an agreement to a price per use.
+      const move = "switchNow" in sent;
+      if (move && (sent.switchNow !== true || !shownPlanSchema.safeParse(sent.plan).success)) {
+        return reply.status(400).send({ error: "invalid_plan_move", message: PLAN_MOVE_MESSAGES.body });
       }
       if (sent.plan !== undefined) {
         // The plan's terms as shown are the consent. The listing's price per
@@ -549,8 +559,9 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
             .send({ error: "expected_terms_required", message: PLAN_START_MESSAGES.termsRequired });
         }
         try {
-          // A plan start that changes nothing is a refusal, so this is always 201.
-          const { created: _created, ...state } = await startPlan(id, orgId, {
+          // A plan start, or a move, that changes nothing is a refusal, so
+          // this is always 201.
+          const { created: _created, ...state } = await (move ? movePlan : startPlan)(id, orgId, {
             id: shown.data.id,
             priceCents: BigInt(shown.data.priceCents),
             includedUses: shown.data.includedUses,
@@ -583,9 +594,14 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
               plans: error.plans,
             });
           }
-          // A plan or a month still runs, or another request for this buyer
-          // got there first. Nothing was charged by this one.
-          if (error instanceof AlreadyOnPlanError || error instanceof SubscriptionClaimLostError) {
+          // A plan or a month still runs, the buyer's row does not allow the
+          // move, or another request for this buyer got there first. Nothing
+          // was charged by this one.
+          if (
+            error instanceof AlreadyOnPlanError ||
+            error instanceof PlanMoveError ||
+            error instanceof SubscriptionClaimLostError
+          ) {
             return reply.status(409).send({ error: error.code, message: error.message });
           }
           throw error;

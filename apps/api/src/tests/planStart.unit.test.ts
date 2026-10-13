@@ -679,18 +679,14 @@ test("a plan started over a licence for a copy bought per request: the licence i
 // The body
 // ============================================
 
-test("switchNow is refused in a plain sentence, and a plan that is not sent whole is not guessed", async () => {
+test("a body that names switchNow never starts a plan, and a plan that is not sent whole is not guessed", async () => {
   const world = makeWorld();
-  for (const switchNow of [true, false]) {
-    const res = await use(world, { plan: PRO, switchNow });
-    assert.deepEqual([res.status, res.body], [
-      400,
-      {
-        error: "switch_not_available",
-        message: "Moving to another plan before yours ends is not available yet. Nothing was changed.",
-      },
-    ]);
-  }
+  // A move is for a buyer who is on a plan. This one is not: nothing is
+  // started for them under that word (tests/planMove.unit.test.ts has the move).
+  const move = await use(world, { plan: PRO, switchNow: true });
+  assert.deepEqual([move.status, move.body], [409, { error: "not_on_plan", message: "You are not on a plan. Start one first." }]);
+  const notTrue = await use(world, { plan: PRO, switchNow: false });
+  assert.deepEqual([notTrue.status, notTrue.body.error], [400, "invalid_plan_move"]);
   for (const plan of [
     { id: STARTER_ID, priceCents: 900, includedUses: 500 },
     { ...STARTER, priceCents: 9.5 },

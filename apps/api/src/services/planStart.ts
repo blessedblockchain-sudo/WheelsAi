@@ -27,7 +27,7 @@
  * InsufficientCreditsError, and SubscriptionClaimLostError when another
  * start for this buyer got there first. Nothing was charged on any of them.
  */
-import { prisma } from "@wheelsai/db";
+import { prisma, type Prisma } from "@wheelsai/db";
 
 import { createLogger } from "../utils/logger.js";
 import { listingPausedNow, reconcileListingPauses } from "./listingPause.js";
@@ -70,7 +70,6 @@ export const PLAN_START_MESSAGES = {
   alreadyOnPlan: "You already have a plan or a subscription for this agent that is still running. Nothing was charged.",
   notEnoughCredits: (priceCents: bigint) =>
     `You do not have enough credits for this plan (${dollars(priceCents)} for 30 days). Nothing was charged. Add credits to continue.`,
-  switchNow: "Moving to another plan before yours ends is not available yet. Nothing was changed.",
 } as const;
 
 /**
@@ -106,6 +105,9 @@ function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === "P2002";
 }
 
+/** A listing as a start reads it: with the agent it sells use of. */
+export type PlanListing = Prisma.AgentListingGetPayload<{ include: typeof USE_LISTING_INCLUDE }>;
+
 interface PricedListing {
   title: string;
   status: string;
@@ -116,7 +118,7 @@ interface PricedListing {
 }
 
 /** What a start that found other terms answers with: the listing's pricing and its plans, as they are. */
-async function termsChanged(db: PlanOfferDb, listingId: string, listing: PricedListing): Promise<PlanTermsChangedError> {
+export async function termsChanged(db: PlanOfferDb, listingId: string, listing: PricedListing): Promise<PlanTermsChangedError> {
   const plans = offersPlans(listing) ? (await readPlanOffers(db, listingId)).map(planOfferOf) : [];
   return new PlanTermsChangedError(
     listing.title,
@@ -127,6 +129,89 @@ async function termsChanged(db: PlanOfferDb, listingId: string, listing: PricedL
     },
     plans,
   );
+}
+
+/**
+ * The refusals of an agent that cannot answer a paid use right now. A start
+ * and a move to another plan both charge 30 days, and neither charges them
+ * for something that cannot run. Throws UseStartError; returns when the
+ * agent can answer and no stale pause marker is left on the listing.
+ */
+export async function refuseIfItCannotAnswer(listing: PlanListing, hooks: ListingPauseHooks): Promise<void> {
+  const listingId = listing.id;
+  // An agent that answers through its graph cannot answer a paid use. No
+  // 30 days are charged for something that cannot run.
+  if (listing.agent?.entrypoint === "graph") {
+    throw new UseStartError(409, "not_offered", USE_START_MESSAGES.tokenAccess);
+  }
+  // Paused: the agent cannot answer, so nothing is started on it. Asked of
+  // the model at this moment, never read from the marker. Fail closed: when
+  // the question cannot be answered nobody is charged.
+  let paused: boolean;
+  try {
+    paused = listing.agent
+      ? await (hooks.listingPausedNow ?? listingPausedNow)({ listing, agent: listing.agent })
+      : false;
+  } catch (err) {
+    logger.warn({ err, listingId }, "Could not ask whether a listing is paused; nothing was charged");
+    throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+  }
+  if (paused) {
+    throw new UseStartError(409, "listing_paused", USE_START_MESSAGES.paused);
+  }
+  // A pause that is over but whose marker is still set is cleared BEFORE
+  // this start, so that 30 days that begin now are not made longer by a
+  // pause that ended before them. If that cannot be done nothing is started.
+  if (listing.pausedSince) {
+    let errors: number;
+    try {
+      ({ errors } = await (hooks.reconcileListingPauses ?? reconcileListingPauses)({ listingId }));
+    } catch (err) {
+      logger.warn({ err, listingId }, "Could not clear a listing's pause before charging a plan; nothing was charged");
+      throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+    }
+    if (errors > 0) {
+      throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
+    }
+  }
+}
+
+/**
+ * The plan `shown`, as this listing offers it inside the transaction that
+ * will charge for it. Read again where it is charged: the listing and the
+ * plan as they are here are what the buyer is held to. Throws UseStartError
+ * when the listing is no longer there to start on, and PlanTermsChangedError
+ * when the plan is not what was shown.
+ */
+export async function planAsOffered(tx: Prisma.TransactionClient, listingId: string, shown: PlanTerms) {
+  const fresh = await tx.agentListing.findUnique({
+    where: { id: listingId },
+    select: {
+      title: true,
+      status: true,
+      sells: true,
+      pricingModel: true,
+      pricePerRequestCents: true,
+      monthlyPriceCents: true,
+    },
+  });
+  const plan = await tx.listingPlan.findUnique({ where: { id: shown.id } });
+  if (!fresh || fresh.status !== "published") {
+    throw new UseStartError(404, "listing_not_found", USE_START_MESSAGES.listingNotFound);
+  }
+  if (fresh.sells !== "use") {
+    throw new UseStartError(409, "sells_copies", USE_START_MESSAGES.sellsCopies);
+  }
+  if (
+    fresh.pricingModel !== "per_request" ||
+    plan === null ||
+    plan.listingId !== listingId ||
+    plan.kind !== "paid" ||
+    !samePlanTerms(shown, plan)
+  ) {
+    throw await termsChanged(tx, listingId, fresh);
+  }
+  return plan;
 }
 
 /**
@@ -224,75 +309,13 @@ export async function startPlan(
   );
   if (access === "subscribed") throw new AlreadyOnPlanError();
 
-  // An agent that answers through its graph cannot answer a paid use. No
-  // 30 days are charged for something that cannot run.
-  if (listing.agent?.entrypoint === "graph") {
-    throw new UseStartError(409, "not_offered", USE_START_MESSAGES.tokenAccess);
-  }
-  // Paused: the agent cannot answer, so nothing is started on it. Asked of
-  // the model at this moment, never read from the marker. Fail closed: when
-  // the question cannot be answered nobody is charged.
-  let paused: boolean;
-  try {
-    paused = listing.agent
-      ? await (hooks.listingPausedNow ?? listingPausedNow)({ listing, agent: listing.agent })
-      : false;
-  } catch (err) {
-    logger.warn({ err, listingId }, "Could not ask whether a listing is paused; no plan was started");
-    throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
-  }
-  if (paused) {
-    throw new UseStartError(409, "listing_paused", USE_START_MESSAGES.paused);
-  }
-  // A pause that is over but whose marker is still set is cleared BEFORE
-  // this start, so that 30 days that begin now are not made longer by a
-  // pause that ended before them. If that cannot be done nothing is started.
-  if (listing.pausedSince) {
-    let errors: number;
-    try {
-      ({ errors } = await (hooks.reconcileListingPauses ?? reconcileListingPauses)({ listingId }));
-    } catch (err) {
-      logger.warn({ err, listingId }, "Could not clear a listing's pause before a plan start; nothing was started");
-      throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
-    }
-    if (errors > 0) {
-      throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
-    }
-  }
+  await refuseIfItCannotAnswer(listing, hooks);
 
   // The licence, the subscription with its copy of the terms, the charge
   // for the 30 days and the counters commit together or not at all.
   const subscriptionId = await prisma
     .$transaction(async (tx) => {
-      // Read again where it is charged: the listing and the plan as they are
-      // inside this transaction are what the buyer is held to.
-      const fresh = await tx.agentListing.findUnique({
-        where: { id: listingId },
-        select: {
-          title: true,
-          status: true,
-          sells: true,
-          pricingModel: true,
-          pricePerRequestCents: true,
-          monthlyPriceCents: true,
-        },
-      });
-      const plan = await tx.listingPlan.findUnique({ where: { id: shown.id } });
-      if (!fresh || fresh.status !== "published") {
-        throw new UseStartError(404, "listing_not_found", USE_START_MESSAGES.listingNotFound);
-      }
-      if (fresh.sells !== "use") {
-        throw new UseStartError(409, "sells_copies", USE_START_MESSAGES.sellsCopies);
-      }
-      if (
-        fresh.pricingModel !== "per_request" ||
-        plan === null ||
-        plan.listingId !== listingId ||
-        plan.kind !== "paid" ||
-        !samePlanTerms(shown, plan)
-      ) {
-        throw await termsChanged(tx, listingId, fresh);
-      }
+      const plan = await planAsOffered(tx, listingId, shown);
 
       await claimLicence(tx, existingInstall);
       // The terms written and charged are the row's, which are the ones shown.

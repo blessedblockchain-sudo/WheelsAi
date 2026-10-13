@@ -1727,6 +1727,27 @@ test("a renewal between the read that found the plan used up and the extra charg
     assert.deepEqual(h.log.slice(h.log.indexOf("take:none")), ["take:none", "readPlan", "claimPlan:none"]);
   }
 
+  // A move to a bigger plan in that moment: the price for an extra use of the plan that was left is
+  // never charged on the row of the new one.
+  const moveUp = (row: NonNullable<PaidHarness["sub"]>) => {
+    row.planId = "0f0f0f0f-0000-4000-8000-00000000000f";
+    row.currentPeriodStart = new Date("2026-10-10T12:00:00.000Z");
+    row.currentPeriodEnd = new Date("2026-11-09T12:00:00.000Z");
+    row.includedUses = 2_000;
+    row.carriedUses = 0;
+    row.usedInPeriod = 0;
+    row.extraUsePriceCents = 9n;
+  };
+  const moved = planHarness({ usedInPeriod: 500 }, { beforeCharge: moveUp });
+  assert.deepEqual(refusalIn(await chat(moved)), UNAVAILABLE);
+  assert.deepEqual(movedOf(moved), { ...NOTHING_MOVED, used: 0 });
+
+  // The claim names the terms themselves, not only the period and the count: a row that carries
+  // another price for an extra use than the one the request was decided on is not charged at all.
+  const repriced = planHarness({ usedInPeriod: 500 }, { beforeCharge: (row) => (row.extraUsePriceCents = 9n) });
+  assert.deepEqual(refusalIn(await chat(repriced)), UNAVAILABLE);
+  assert.deepEqual(movedOf(repriced), { ...NOTHING_MOVED, used: 500 });
+
   // A use that another request gave back in that moment: the plan is not used up any more.
   const givenBack = planHarness({ usedInPeriod: 500 }, { beforeCharge: (row) => (row.usedInPeriod = 499) });
   assert.deepEqual(refusalIn(await chat(givenBack)), UNAVAILABLE);

@@ -48,6 +48,12 @@
  *           charged again: the row ends with its paid period, with
  *           endReason 'plan_ended'. A plan row found more than the days of
  *           grace past its end expires, uncharged for time already gone.
+ *   move up a buyer on a plan moves to a bigger one before their period
+ *           ends (movePlanSubscription). One claim of their row, by the
+ *           status, the period start and the count that were read, takes the
+ *           new plan's terms, starts a fresh 30 days, sets the count to zero
+ *           and carries the uses that were left, once. The new plan's full
+ *           price is charged in the same transaction. Nothing is refunded.
  *
  * Access for a monthly install = subscription active or past_due within
  * grace (see subscriptionGrantsAccess), enforced by resolveInstallBilling.
@@ -116,6 +122,10 @@ export interface SubscriptionRow {
    * 'retired'). The row is not charged again: it ends with its paid period.
    */
   planRetired?: boolean;
+  /** Uses taken in the current period (AgentSubscription.usedInPeriod). Read by a move to another plan. */
+  usedInPeriod?: number;
+  /** Uses carried into the current period by an earlier move. Read by a move to another plan. */
+  carriedUses?: number;
 }
 
 /** Whether a row is on a plan: it carries a count of included uses. */
@@ -202,7 +212,7 @@ export interface SubscriptionTx extends EarningsLedgerTx {
   };
   agentInstall: {
     updateMany(args: {
-      where: { listingId: string; buyerId: string; status?: string | { in: string[] } };
+      where: { listingId: string; buyerId: string; status?: string | { in: string[] }; kind?: string };
       data: { status: string };
     }): Promise<{ count: number }>;
   };
@@ -529,6 +539,191 @@ export async function startPlanSubscription(
     now,
   });
   return { subscription, revenueId, licenceId: licence.id };
+}
+
+/** Why a move to another plan is refused. Nothing was claimed or charged. */
+export type PlanMoveRefusal =
+  /** No open subscription with a count of uses: nothing to move from. */
+  | "not_on_plan"
+  /** The plan asked for is the one the row is on. */
+  | "same_plan"
+  /** The plan asked for does not cost more than what the buyer agreed to pay for theirs. */
+  | "not_bigger";
+
+/** A move to another plan was refused by the buyer's own row. Nothing was claimed or charged. */
+export class PlanMoveRefusedError extends Error {
+  constructor(readonly reason: PlanMoveRefusal) {
+    super(`A move to another plan was refused: ${reason}`);
+    this.name = "PlanMoveRefusedError";
+  }
+}
+
+/**
+ * Whether the buyer's row can move to `target`, and what it would carry.
+ * Pure: the same judgement is made on the row as it is shown to the buyer
+ * and, again, on the row as the claiming transaction reads it.
+ *
+ * Who can move: a row that still gives uses (the period paid for, or the
+ * days of grace of a renewal being retried; a plan its creator ended, or
+ * one set not to renew, has no grace, as at a use) and that is on a plan.
+ * A month with no count is not on a plan and cannot move. The plan asked
+ * for must be another one, and must cost more for its 30 days than the
+ * price this buyer agreed to: a move to a smaller plan would be a refund
+ * by another name.
+ *
+ * What is carried: the uses that were left, and at most the number the old
+ * plan included, so uses carried in by an earlier move are not carried a
+ * second time.
+ */
+export function judgePlanMove(
+  current: SubscriptionRow | null,
+  target: PlanTerms,
+  now: Date,
+): { ok: false; refusal: PlanMoveRefusal } | { ok: true; carriedUses: number } {
+  const { includedUses, usedInPeriod, carriedUses } = current ?? {};
+  if (
+    current === null ||
+    typeof includedUses !== "number" ||
+    // A row read without its count cannot be moved: what was left is not known.
+    typeof usedInPeriod !== "number" ||
+    typeof carriedUses !== "number" ||
+    !subscriptionGrantsAccess(
+      { ...current, cancelAtPeriodEnd: current.cancelAtPeriodEnd || current.planRetired === true },
+      now,
+    )
+  ) {
+    return { ok: false, refusal: "not_on_plan" };
+  }
+  if (current.planId === target.planId) return { ok: false, refusal: "same_plan" };
+  if (current.priceCents == null || target.priceCents <= current.priceCents) {
+    return { ok: false, refusal: "not_bigger" };
+  }
+  const left = Math.max(0, includedUses + carriedUses - usedInPeriod);
+  return { ok: true, carriedUses: Math.min(left, includedUses) };
+}
+
+/**
+ * Move a buyer's subscription up to a bigger plan, now. Run inside one
+ * transaction, which rolls back whole when this throws.
+ *
+ * The row is read here, judged (judgePlanMove) and claimed in ONE statement
+ * by the status, the period start and the count that were read, with the
+ * terms they were read on. Whatever else moved the row in between makes the
+ * claim miss: a renewal (it moves the period start), a use that took one of
+ * the uses left (it moves the count), another move, a stop. A miss throws
+ * SubscriptionClaimLostError before anything is charged, so two moves at
+ * once, or a move and a renewal, never both charge.
+ *
+ * The claim writes everything a use and a renewal read afterwards: the new
+ * plan's id and a copy of its terms, a fresh 30 days from now, a count and a
+ * warning level of zero, and the carried uses. A past-due row becomes
+ * active. `cancelAtPeriodEnd` is not written: the buyer's choice about
+ * renewal is theirs and stays as it was. Then the new plan's full price is
+ * charged, on the path a start takes (the same split, the same ledger
+ * rows). The period that was running is not refunded.
+ *
+ * A use decided on the old row cannot charge or count wrongly after the
+ * move: the take of an included use and the claim of an extra-price charge
+ * both name the period start and the terms they were decided on
+ * (services/planUse.ts, services/useMeteringProduction.ts), so after the
+ * move they change nothing and the use is decided again from the new row,
+ * or refused uncharged.
+ *
+ * One gap is left open. A use that was taken BEFORE the move and whose
+ * answer is then not delivered is not given back: giveBackIncludedUse names
+ * the period start the use was taken in, the move has changed it, and the
+ * carried count was worked out with that use taken. The buyer is one use
+ * short for an answer they did not get. No money moves. Closing it belongs
+ * in services/planUse.ts and needs a way to tell a move from a renewal,
+ * which the row does not hold today.
+ *
+ * `plan` is what the buyer was shown and agreed to; the caller has compared
+ * it with the plan as it is now, inside this transaction.
+ *
+ * Throws PlanMoveRefusedError, SubscriptionClaimLostError and
+ * InsufficientCreditsError. Nothing was charged on any of them.
+ */
+export async function movePlanSubscription(
+  tx: SubscriptionTx,
+  args: {
+    listing: Pick<ListingForBilling, "id" | "title" | "publisherId">;
+    plan: PlanTerms;
+    buyerId: string;
+    /** The buyer's licence row for the listing, for the revenue row. */
+    licenceId: string;
+    now?: Date;
+  },
+): Promise<{ subscription: SubscriptionRow; revenueId: string; carriedUses: number }> {
+  const { plan } = args;
+  // Held again where the row is written, as a start holds them.
+  if (plan.priceCents <= 0n) throw new Error("This plan has no price set");
+  if (!Number.isInteger(plan.includedUses) || plan.includedUses < 1) {
+    throw new Error("This plan has no included uses");
+  }
+  if (plan.extraUsePriceCents !== null && plan.extraUsePriceCents <= 0n) {
+    throw new Error("This plan's price for an extra use is not above zero");
+  }
+  const now = args.now ?? new Date();
+
+  // The licence must be one for use that is active now. Written (to the
+  // value it holds) and not only read, so that a stop of this licence at the
+  // same moment waits for this transaction or makes it miss.
+  const licensed = await tx.agentInstall.updateMany({
+    where: { listingId: args.listing.id, buyerId: args.buyerId, status: "active", kind: "use" },
+    data: { status: "active" },
+  });
+  if (licensed.count !== 1) throw new PlanMoveRefusedError("not_on_plan");
+
+  const found = await tx.agentSubscription.findUnique({
+    where: { listingId_subscriberId: { listingId: args.listing.id, subscriberId: args.buyerId } },
+    include: { plan: { select: { status: true } } },
+  });
+  const { plan: itsPlan, ...row } = found ?? { plan: null };
+  const current = found ? ({ ...row, planRetired: itsPlan?.status === "retired" } as SubscriptionRow) : null;
+  const judged = judgePlanMove(current, plan, now);
+  if (!judged.ok || current === null) throw new PlanMoveRefusedError(judged.ok ? "not_on_plan" : judged.refusal);
+
+  const moved = {
+    status: "active",
+    currentPeriodStart: now,
+    currentPeriodEnd: new Date(now.getTime() + SUBSCRIPTION_PERIOD_DAYS * DAY_MS),
+    // The price the buyer agrees to now; renewals charge this.
+    priceCents: plan.priceCents,
+    endReason: null,
+    lastRenewalAttemptAt: null,
+    planId: plan.planId,
+    includedUses: plan.includedUses,
+    extraUsePriceCents: plan.extraUsePriceCents,
+    usedInPeriod: 0,
+    carriedUses: judged.carriedUses,
+    warnedLevel: 0,
+  };
+  const claimed = await tx.agentSubscription.updateMany({
+    where: {
+      id: current.id,
+      status: current.status,
+      currentPeriodStart: current.currentPeriodStart,
+      usedInPeriod: current.usedInPeriod,
+      // The terms the carried uses were worked out from.
+      planId: current.planId ?? null,
+      includedUses: current.includedUses,
+      carriedUses: current.carriedUses,
+    },
+    data: moved,
+  });
+  if (claimed.count !== 1) throw new SubscriptionClaimLostError();
+
+  const { revenueId } = await chargePeriod(tx, {
+    subscriptionId: current.id,
+    listing: args.listing,
+    buyerId: args.buyerId,
+    type: "subscription",
+    installId: args.licenceId,
+    priceCents: plan.priceCents,
+    now,
+  });
+  const { planRetired: _wasRetired, ...kept } = current;
+  return { subscription: { ...kept, ...moved }, revenueId, carriedUses: judged.carriedUses };
 }
 
 export type RenewalOutcome =

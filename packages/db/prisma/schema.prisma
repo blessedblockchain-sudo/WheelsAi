@@ -1417,6 +1417,7 @@ model AgentListing {
   reviews           AgentReview[]
   installs          AgentInstall[]
   subscriptions     AgentSubscription[]
+  plans             ListingPlan[]
   agentToken        AgentToken?
   offerings     Offering[]
   trialDays         TrialDailyUsage[]
@@ -1501,17 +1502,76 @@ model AgentSubscription {
   // rows are loaded least-recently-tried first, so rows that keep failing
   // rotate to the back instead of filling every batch.
   lastRenewalAttemptAt DateTime? @map("last_renewal_attempt_at")
+  // The plan this row is on, and a copy of the terms the buyer agreed to:
+  // renewals and extra uses charge these, never the plan as it is now.
+  planId              String?   @map("plan_id") @db.Uuid
+  // The marker. Null = a month with no count: every row from before plans
+  // existed, and such a row takes the older path untouched. Set = a plan,
+  // and each delivered answer takes one use from it.
+  includedUses        Int?      @map("included_uses")
+  // Uses taken since currentPeriodStart. Raised by compare-and-set on that
+  // period start, lowered when no answer was delivered, set to 0 at renewal.
+  usedInPeriod        Int       @default(0) @map("used_in_period")
+  // Unused uses brought into this period by a move to a bigger plan. They are
+  // carried once: a renewal sets this back to 0.
+  carriedUses         Int       @default(0) @map("carried_uses")
+  // What each use past the count costs, as agreed. Null = the plan stops
+  // until it renews.
+  extraUsePriceCents  BigInt?   @map("extra_use_price_cents")
+  // The highest warning already given this period: 0, 85 or 100. CHECK in
+  // the migration.
+  warnedLevel         Int       @default(0) @map("warned_level") @db.SmallInt
+  // When this buyer's free trial of the listing started. It stays set for
+  // good, so a trial is taken once.
+  trialUsedAt         DateTime? @map("trial_used_at")
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
   listing             AgentListing @relation(fields: [listingId], references: [id])
   subscriber          Organization @relation("AgentSubscriptions", fields: [subscriberId], references: [id])
+  plan                ListingPlan? @relation(fields: [planId], references: [id], onDelete: Restrict)
 
   @@unique([listingId, subscriberId])
   @@index([subscriberId])
   @@index([currentPeriodEnd, status])
   @@index([status, lastRenewalAttemptAt])
+  @@index([planId])
   @@map("agent_subscriptions")
+}
+
+// A plan a creator offers on a listing that sells use per request: a count of
+// uses, paid for 30 days at a time. Pay per request stays the base price of
+// the listing; a plan is prepaid use on top of it. A plan is changed in place
+// and never deleted (it is retired), because a subscription keeps its own copy
+// of the terms the buyer agreed to.
+model ListingPlan {
+  id                 String    @id @default(uuid()) @db.Uuid
+  listingId          String    @map("listing_id") @db.Uuid
+  // 'paid' or 'trial'. CHECK in the migration.
+  kind               String
+  name               String
+  // What 30 days cost: 0 for a trial, at least 100 for a paid plan (CHECK).
+  priceCents         BigInt    @map("price_cents")
+  // How many uses the 30 days include: 1 to 100,000 (CHECK). No plan is
+  // unlimited.
+  includedUses       Int       @map("included_uses")
+  // What each use past the included ones costs. Null = the plan stops until
+  // it renews. Always null for a trial.
+  extraUsePriceCents BigInt?   @map("extra_use_price_cents")
+  // 0 = the trial, 1 to 4 = the paid plans in the order they are shown. One
+  // active plan per place on a listing: a partial unique index in the
+  // migration, which Prisma cannot express.
+  position           Int       @db.SmallInt
+  status             String    @default("active") // 'active', 'retired'
+  retiredAt          DateTime? @map("retired_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  listing            AgentListing @relation(fields: [listingId], references: [id], onDelete: Restrict)
+  subscriptions      AgentSubscription[]
+
+  @@index([listingId, status])
+  @@map("listing_plans")
 }
 
 model PublisherProfile {

@@ -358,6 +358,9 @@ export interface UsePlanCount {
 export interface UsePlanUse {
   /** `included`: one of the plan's uses, nothing charged. `extra`: past the count, at the agreed extra price. */
   use: "included" | "extra";
+  /** The subscription row the use was counted on, and the period it was counted in: what a warning is claimed for (services/planWarnings.ts). */
+  subscriptionId: string;
+  periodStart: Date;
   /** The count as it is now, for the reply. Reads; never throws. */
   count(): Promise<UsePlanCount>;
 }

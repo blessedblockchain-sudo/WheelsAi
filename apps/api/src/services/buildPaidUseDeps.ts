@@ -7,19 +7,26 @@
  * `beginMetering` is the use's own, bound to the buyer's licence, in place
  * of the copy path's lookup. Nothing else about the chat differs.
  *
+ * The warning a plan sends by email (services/planWarnings.ts) is bound here
+ * to the app's own sender, to the members table (verified addresses only)
+ * and to the web address the other emails link to.
+ *
  * Building it connects to nothing; the limiter's Redis opens on the first
  * request.
  */
 
+import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { createLogger } from "../utils/logger.js";
 import { prepareAgentChat, type AgentChatDeps } from "./agentChat.js";
 import { latestOwnResults } from "./agentOwnSchedule.js";
 import { peekApiKeySpend, type ApiKeySpendReadDb } from "./apiKeySpend.js";
 import { buildAgentChatDeps } from "./buildAgentChatDeps.js";
+import { isEmailConfigured, planWarningEmail, sendEmail } from "./email/emailService.js";
 import { productionPublicChatDeps, publicChatLimiter } from "./buildPublicChatDeps.js";
 import { PAID_USE_LIMITS, type PaidAgent, type PaidUseDeps } from "./paidUse.js";
 import { readPlanOffers } from "./planOffers.js";
+import { planWarningRecipients, sendPlanWarning, type PlanWarningDeps } from "./planWarnings.js";
 import { getDefaultRegistry } from "./skills/production.js";
 import { USE_LISTING_COLUMNS } from "./useListing.js";
 import { beginUseMetering } from "./useMeteringProduction.js";
@@ -72,7 +79,26 @@ export function useSubscriptionOf<Row extends { plan: { status: string; name?: s
   return { ...row, planRetired: plan?.status === "retired", planName: plan?.name ?? null };
 }
 
+/**
+ * What a plan's warning by email runs on in production. The web address is
+ * the one the sign-in emails link to (routes/emailAuth.ts).
+ */
+export function buildPlanWarningDeps(): PlanWarningDeps {
+  return {
+    emailConfigured: isEmailConfigured,
+    // The client itself, with no cast: a claim that drifts from the table stops compiling here.
+    db: prisma,
+    // Owners and admins of the buying organization with a verified address, and nobody else's.
+    recipients: (orgId) => planWarningRecipients(prisma, orgId),
+    buildEmail: planWarningEmail,
+    sendEmail,
+    webUrl: (env.PUBLIC_WEB_URL ?? env.CORS_ORIGIN).replace(/\/+$/, ""),
+    logger,
+  };
+}
+
 let chatDeps: AgentChatDeps | null = null;
+let warningDeps: PlanWarningDeps | null = null;
 
 export function buildPaidUseDeps(): PaidUseDeps {
   return {
@@ -142,6 +168,9 @@ export function buildPaidUseDeps(): PaidUseDeps {
     memberRole: async (orgId, userId) =>
       (await prisma.orgMember.findUnique({ where: { orgId_userId: { orgId, userId } }, select: { role: true } }))?.role ??
       null,
+
+    // Never waited for by an answer: paidUse.ts starts it and goes on.
+    warnPlan: (ask) => sendPlanWarning((warningDeps ??= buildPlanWarningDeps()), ask),
 
     logger,
   };

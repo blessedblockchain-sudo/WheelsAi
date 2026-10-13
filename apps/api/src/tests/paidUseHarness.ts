@@ -23,6 +23,7 @@ import {
   type PaidUseDeps,
   type PaidUseLimits,
 } from "../services/paidUse.js";
+import { sendPlanWarning, type PlanWarningAsk, type PlanWarningResult } from "../services/planWarnings.js";
 import type { PublicChatTranscript } from "../services/publicChat.js";
 import type { UseListingRow } from "../services/useListing.js";
 import type { UseBillingLicence, UseMeteringTx } from "../services/useMetering.js";
@@ -217,6 +218,28 @@ export interface PaidHarnessOptions {
    * a renewal did between the read that found the plan used up and the charge.
    */
   beforeCharge?: (row: PaidSubscription) => void;
+  /** The level the subscription row has already been warned at. Default: 0. */
+  warnedLevel?: number;
+  /** Email is not set up (isEmailConfigured is false). */
+  emailOff?: boolean;
+  /** The sender of a plan's warning throws. */
+  emailThrows?: Error;
+  /** The warning itself throws, before it returns a promise (a fault the answer must survive). */
+  warningThrows?: Error;
+}
+
+/** A plan's warnings by email: the REAL sendPlanWarning over a sender that records. */
+export interface PaidHarnessWarnings {
+  /** Each time the paid service asked for a warning, with what it asked. */
+  asked: PlanWarningAsk[];
+  /** How many times the claim on warned_level was asked of the database. */
+  claims: number;
+  /** Every email the sender was handed and did not refuse. */
+  emails: Array<{ to: string; subject: string; text: string }>;
+  /** The row's warned_level as it is now. */
+  level: number;
+  /** Waits for every warning that was started: an answer never does. */
+  settled(): Promise<PlanWarningResult[]>;
 }
 
 export interface PaidHarness {
@@ -241,6 +264,7 @@ export interface PaidHarness {
   allowanceCounted(): number;
   /** The buyer's subscription row as it is now. */
   readonly sub: PaidSubscription | null;
+  warnings: PaidHarnessWarnings;
 }
 
 export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
@@ -257,6 +281,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
   // The row itself: a plan's count moves on it. Each read is given a copy.
   const sub: PaidSubscription | null = options.sub ? { ...options.sub } : null;
   const model = options.model ?? FREE_MODEL;
+  const at = options.now ?? NOW;
 
   // ---- money, in memory, with transactions that roll back ----
   let money: PaidHarness["money"] = {
@@ -416,6 +441,56 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     },
   };
 
+  // ---- a plan's warning by email: the real core, a claim on the same row, a sender that records ----
+  const started: Array<Promise<PlanWarningResult>> = [];
+  const warnings: PaidHarnessWarnings = {
+    asked: [],
+    claims: 0,
+    emails: [],
+    level: options.warnedLevel ?? 0,
+    settled: () => Promise.all(started),
+  };
+  const warnPlan = (ask: PlanWarningAsk): Promise<PlanWarningResult> => {
+    warnings.asked.push(ask);
+    if (options.warningThrows) throw options.warningThrows;
+    const result = sendPlanWarning(
+      {
+        emailConfigured: () => options.emailOff !== true,
+        db: {
+          agentSubscription: {
+            updateMany: async ({ where, data }) => {
+              warnings.claims += 1;
+              const matches =
+                sub !== null &&
+                sub.id === where.id &&
+                sub.currentPeriodStart?.getTime() === where.currentPeriodStart.getTime() &&
+                warnings.level < where.warnedLevel.lt;
+              if (!matches) return { count: 0 };
+              warnings.level = data.warnedLevel;
+              return { count: 1 };
+            },
+          },
+        },
+        recipients: async (orgId) => (orgId === BUYER_ORG ? ["owner@buyer.example"] : []),
+        buildEmail: (to, words) => ({
+          to,
+          subject: words.subject,
+          text: `${words.lines.join("\n")}\n\n${words.link.url}`,
+          html: "",
+        }),
+        sendEmail: async (message) => {
+          if (options.emailThrows) throw options.emailThrows;
+          warnings.emails.push({ to: message.to, subject: message.subject, text: message.text });
+        },
+        webUrl: "https://app.example",
+        now: () => at,
+      },
+      ask,
+    );
+    started.push(result);
+    return result;
+  };
+
   // ---- the chat core's edges ----
   const coreAgent: AgentChatAgent | null = agent && {
     id: agent.id,
@@ -496,7 +571,6 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
   };
 
   // ---- the limiter, logged ----
-  const at = options.now ?? NOW;
   const real = createFailClosedLimiter(options.store ?? createMemoryLimiterStore(() => at.getTime()));
   const limiter: PaidUseDeps["limiter"] = {
     consume: async (rules) => {
@@ -569,6 +643,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       if (options.paused instanceof Error) throw options.paused;
       return options.paused ?? false;
     },
+    warnPlan,
     now: () => at,
   };
 
@@ -586,6 +661,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     get sub() {
       return sub;
     },
+    warnings,
   };
 }
 

@@ -125,6 +125,7 @@ import {
 } from "./useAccess.js";
 import { offersPlans, planOfferOf, type PlanOffer, type PlanOfferRow } from "./planOffers.js";
 import { warningLevel } from "./planUse.js";
+import type { PlanWarningAsk } from "./planWarnings.js";
 import { PAST_DUE_GRACE_DAYS } from "./subscriptionAccess.js";
 import type { UseListingRow } from "./useListing.js";
 import {
@@ -133,6 +134,7 @@ import {
   type UseBillingLicence,
   type UseChargeResult,
   type UsePlan,
+  type UsePlanCount,
   type UsePlanRefusal,
   type UsePlanUse,
   type UseUnit,
@@ -320,6 +322,13 @@ export interface PaidUseDeps {
   }): Promise<Array<{ finishedAt: Date; text: string }>>;
   /** The member's role as it is now; null when they are not a member. */
   memberRole(orgId: string, userId: string): Promise<string | null>;
+  /**
+   * The email a plan sends at 85% and at 100% of its uses, once for each
+   * (services/planWarnings.ts, sendPlanWarning). Asked after an included use
+   * was delivered and never waited for: it cannot delay, fail or change an
+   * answer. When omitted no warning is sent.
+   */
+  warnPlan?(ask: PlanWarningAsk): Promise<unknown>;
   /**
    * Whether the listing is paused at this moment (services/listingPause.ts),
    * for the access view. services/paidUsePause.ts when omitted.
@@ -911,8 +920,7 @@ async function plansOnOffer(deps: PaidUseDeps, listing: UseListingRow): Promise<
 }
 
 /** The plan after one use on it, as the buyer is told it. */
-async function planBillingOf(planUse: UsePlanUse, renews: boolean): Promise<PaidUsePlanBilling> {
-  const count = await planUse.count();
+function planBillingOf(planUse: UsePlanUse, count: UsePlanCount, renews: boolean): PaidUsePlanBilling {
   const limit = count.includedUses + count.carriedUses;
   const level = warningLevel(count.usedInPeriod, count.includedUses, count.carriedUses);
   return {
@@ -1303,15 +1311,54 @@ async function runPaidUse(
       .catch((err) => deps.logger?.warn({ err, agentId: agent.id }, "failed to store a copy of a paid use"));
   };
 
-  const billingNow = async (chargedCents: bigint | null): Promise<PaidUseBilling> => ({
-    chargedCents: Number(chargedCents ?? 0n),
-    balanceCents: await deps
+  // The plan's count as the reply told it: read once, and the warning is asked with the same numbers.
+  let planCount: UsePlanCount | null = null;
+  const billingNow = async (chargedCents: bigint | null): Promise<PaidUseBilling> => {
+    const balanceCents = await deps
       .readBalance(caller.orgId)
       .then((cents) => Number(cents))
-      .catch(() => null),
-    access: billing.access,
-    ...(planUse && { plan: await planBillingOf(planUse, planRenews) }),
-  });
+      .catch(() => null);
+    if (planUse) planCount = await planUse.count();
+    return {
+      chargedCents: Number(chargedCents ?? 0n),
+      balanceCents,
+      access: billing.access,
+      ...(planUse && planCount && { plan: planBillingOf(planUse, planCount, planRenews) }),
+    };
+  };
+
+  /**
+   * The email at 85% and at 100% of a plan. Asked only once an included use
+   * was delivered, with the count that use left, and only at a level: below
+   * 85% nothing is asked. Started and not waited for, after the use is done
+   * and outside any transaction. Whatever it does, the answer is what it was.
+   */
+  const warnOfPlan = (told: PaidUseBilling): void => {
+    if (!deps.warnPlan || billing.kind !== "plan" || !planUse || planUse.use !== "included") return;
+    const count = planCount;
+    if (!count || !told.plan || told.plan.warning === null) return;
+    try {
+      void Promise.resolve(
+        deps.warnPlan({
+          orgId: caller.orgId,
+          subscriptionId: planUse.subscriptionId,
+          periodStart: planUse.periodStart,
+          // The name read with the request is the name of the plan that was read.
+          planName: count.planId === billing.plan.planId ? (sub?.planName ?? null) : null,
+          agentTitle: listing.title,
+          includedUses: count.includedUses,
+          carriedUses: count.carriedUses,
+          usedUses: count.usedInPeriod,
+          // Past the count a use is charged only while the listing still sells use.
+          extraUsePriceCents: billing.extraInstall ? count.extraUsePriceCents : null,
+          periodEnd: count.periodEnd,
+          renews: planRenews,
+        }),
+      ).catch((err) => deps.logger?.warn({ err }, "a plan's warning failed; the answer went out as it was"));
+    } catch (err) {
+      deps.logger?.warn({ err }, "a plan's warning failed; the answer went out as it was");
+    }
+  };
 
   // 9. The run. Always the stream, whatever the caller asked for: the
   // session then leaves the charge open, and it is closed here, after the
@@ -1367,7 +1414,9 @@ async function runPaidUse(
     // 10. Delivered.
     await session.meter?.settle();
     await delivered(held.text);
-    return { kind: "answered", text: held.text, toolCalls, billing: await billingNow(charged) };
+    const answerBilling = await billingNow(charged);
+    warnOfPlan(answerBilling);
+    return { kind: "answered", text: held.text, toolCalls, billing: answerBilling };
   }
 
   const streamBilling = await billingNow(charged);
@@ -1378,8 +1427,10 @@ async function runPaidUse(
     meter: session.meter,
     billing: streamBilling,
     finished: async (outcome) => {
-      if (outcome.ok) await delivered(held.text);
-      else await countUndelivered();
+      if (outcome.ok) {
+        await delivered(held.text);
+        warnOfPlan(streamBilling);
+      } else await countUndelivered();
     },
   };
 }

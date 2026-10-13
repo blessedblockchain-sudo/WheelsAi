@@ -2087,3 +2087,248 @@ test("a store that cannot be read at the day's rule is a 503 with nothing charge
   assert.equal((await chat(onPlan)).kind, "answer");
   assert.deepEqual(movedOf(onPlan), { ...NOTHING_MOVED, used: 13, takes: 1, modelCalls: 1 });
 });
+
+// ============================================
+// The warning a plan sends by email
+// ============================================
+
+/** A stream as a route ends it: `arrived` is whether the answer reached the caller. */
+async function streamTo(h: PaidHarness, arrived: boolean) {
+  const streamed = await chat(h, { messages: CHAT.messages });
+  assert.ok(streamed.kind === "stream");
+  const outcome = await forwardAndSettle({
+    chat: streamed.chat,
+    write: () => {},
+    end: () => {},
+    delivered: () => arrived,
+    meter: streamed.meter,
+  });
+  await streamed.finished(outcome);
+  return streamed;
+}
+
+test("the use that takes a plan to 85% sends one email, and the next use sends none", async () => {
+  const h = planHarness({ usedInPeriod: 423 });
+  // 424 of 500: under 85%, and the warning is not asked at all.
+  assert.equal((await chat(h)).kind, "answer");
+  assert.deepEqual([h.warnings.asked.length, h.warnings.claims], [0, 0]);
+
+  const crossing = await chat(h);
+  assert.deepEqual(crossing.kind === "answer" && [crossing.billing.plan?.usedUses, crossing.billing.plan?.warning], [425, 85]);
+  await h.warnings.settled();
+  assert.deepEqual(h.warnings.emails, [
+    {
+      to: "owner@buyer.example",
+      subject: "You have used 85% of your plan",
+      text: "Support Bot\n425 of 500 uses used. 75 left until 1 Nov.\n\nhttps://app.example/dashboard/usage",
+    },
+  ]);
+  // Asked with the count that use left, for the row and the period it was taken in.
+  assert.deepEqual(h.warnings.asked, [
+    {
+      orgId: BUYER_ORG,
+      subscriptionId: "sub-1",
+      periodStart: PLAN_SUB.currentPeriodStart,
+      planName: null,
+      agentTitle: "Support Bot",
+      includedUses: 500,
+      carriedUses: 0,
+      usedUses: 425,
+      extraUsePriceCents: 50n,
+      periodEnd: PLAN_SUB.currentPeriodEnd,
+      renews: true,
+    },
+  ]);
+  assert.equal(h.warnings.level, 85);
+
+  // 426 of 500: the claim is asked and misses.
+  assert.equal((await chat(h)).kind, "answer");
+  assert.deepEqual((await h.warnings.settled()).map((r) => r.claimed), [true, false]);
+  assert.deepEqual([h.warnings.asked.length, h.warnings.claims, h.warnings.emails.length], [2, 2, 1]);
+  assert.equal(h.sub?.usedInPeriod, 426);
+});
+
+test("the use that takes a plan to 100% sends one email, by its plan's name, and a use past the count asks for none", async () => {
+  const h = planHarness({ usedInPeriod: 499, planName: "Starter" }, { warnedLevel: 85 });
+  const last = await chat(h);
+  assert.deepEqual(last.kind === "answer" && [last.billing.plan?.usedUses, last.billing.plan?.warning], [500, 100]);
+  await h.warnings.settled();
+  assert.deepEqual(h.warnings.emails, [
+    {
+      to: "owner@buyer.example",
+      subject: "You have used all of your Starter plan",
+      text: "Support Bot\n500 of 500 uses used.\nEach use is now $0.50 from your credits.\n\nhttps://app.example/dashboard/usage",
+    },
+  ]);
+  assert.equal(h.warnings.level, 100);
+
+  // The next use is an extra one, charged: it is not an included use, so nothing is asked.
+  const extra = await chat(h);
+  assert.deepEqual(extra.kind === "answer" && [extra.billing.chargedCents, extra.billing.plan?.use], [50, "extra"]);
+  await h.warnings.settled();
+  assert.deepEqual([h.warnings.asked.length, h.warnings.claims, h.warnings.emails.length], [1, 1, 1]);
+
+  // A plan that stops, and one that will not renew, say so.
+  const stops = planHarness({ usedInPeriod: 499, extraUsePriceCents: null });
+  await chat(stops);
+  await stops.warnings.settled();
+  assert.equal(
+    stops.warnings.emails[0]?.text,
+    "Support Bot\n500 of 500 uses used.\nIt starts again on 1 Nov.\n\nhttps://app.example/dashboard/usage",
+  );
+  const ending = planHarness({ usedInPeriod: 499, extraUsePriceCents: null, cancelAtPeriodEnd: true });
+  await chat(ending);
+  await ending.warnings.settled();
+  assert.deepEqual(
+    [ending.warnings.asked[0]?.renews, ending.warnings.emails[0]?.text],
+    [false, "Support Bot\n500 of 500 uses used. Your plan ends on 1 Nov.\n\nhttps://app.example/dashboard/usage"],
+  );
+});
+
+test("the 100% email promises no price on a listing that stopped selling use", async () => {
+  // An extra price was agreed, but the next use will be refused, not charged: the email must not say a price.
+  const archived = planHarness({ usedInPeriod: 499 }, { listing: { ...PLAN_LISTING, status: "archived" } });
+  assert.equal((await chat(archived)).kind, "answer");
+  await archived.warnings.settled();
+  assert.equal(archived.warnings.asked[0]?.extraUsePriceCents, null);
+  assert.equal(
+    archived.warnings.emails[0]?.text,
+    "Support Bot\n500 of 500 uses used. Your plan ends on 1 Nov.\n\nhttps://app.example/dashboard/usage",
+  );
+});
+
+test("a plan the buyer moved to while the request ran is not called by the old plan's name", async () => {
+  // A move between the read and the take: another plan on the same row, in a new period, one use from its end.
+  const MOVED_START = new Date("2026-10-20T00:00:00.000Z");
+  const moved = planHarness(
+    { usedInPeriod: 10, planName: "Starter" },
+    {
+      beforeTake: (row, attempt) => {
+        if (attempt !== 1) return;
+        row.planId = "plan-2";
+        row.currentPeriodStart = MOVED_START;
+        row.includedUses = 20;
+        row.usedInPeriod = 19;
+      },
+    },
+  );
+  const answer = await chat(moved);
+  assert.deepEqual(answer.kind === "answer" && [answer.billing.plan?.id, answer.billing.plan?.warning], ["plan-2", 100]);
+  await moved.warnings.settled();
+  assert.deepEqual(
+    [moved.warnings.asked[0]?.planName, moved.warnings.asked[0]?.periodStart, moved.warnings.asked[0]?.includedUses],
+    [null, MOVED_START, 20],
+  );
+  assert.equal(moved.warnings.emails[0]?.subject, "You have used all of your plan");
+});
+
+test("a plan that goes straight to 100% sends the 100% email only", async () => {
+  const h = planHarness({ includedUses: 1, usedInPeriod: 0, extraUsePriceCents: null });
+  assert.equal((await chat(h)).kind, "answer");
+  await h.warnings.settled();
+  assert.deepEqual(
+    h.warnings.emails.map((m) => m.subject),
+    ["You have used all of your plan"],
+  );
+  assert.equal(h.warnings.level, 100);
+});
+
+test("a streamed answer warns when it arrived, and a paid run warns as a message does", async () => {
+  const arrived = planHarness({ usedInPeriod: 424 });
+  const streamed = await streamTo(arrived, true);
+  assert.equal(streamed.billing.plan?.warning, 85);
+  await arrived.warnings.settled();
+  assert.deepEqual([arrived.warnings.emails.length, arrived.warnings.level, arrived.sub?.usedInPeriod], [1, 85, 425]);
+  // Asked with the numbers the stream's first event told.
+  assert.equal(arrived.warnings.asked[0]?.usedUses, streamed.billing.plan?.usedUses);
+
+  const task = planHarness({ usedInPeriod: 424 }, { agent: TASK_AGENT });
+  assert.equal((await run(task)).kind, "result");
+  await task.warnings.settled();
+  assert.equal(task.warnings.emails.length, 1);
+});
+
+test("an answer that was not delivered gave its use back and sends no warning", async () => {
+  const givenBack = { ...NOTHING_MOVED, used: 424, takes: 1, givenBack: 1, modelCalls: 1 };
+
+  // Withheld, as plain HTTP and as a stream.
+  for (const stream of [false, true]) {
+    const h = planHarness({ usedInPeriod: 424 }, { answer: LEAK });
+    assert.equal(refusalOf(await chat(h, { ...CHAT, stream })).code, "answer_withheld");
+    assert.deepEqual(movedOf(h), givenBack);
+    assert.deepEqual([h.warnings.asked.length, h.warnings.claims, h.warnings.emails.length, h.warnings.level], [0, 0, 0, 0]);
+  }
+
+  // The caller left while the answer was produced.
+  const abort = new AbortController();
+  const gone = planHarness({ usedInPeriod: 424 }, { abortDuringRun: abort });
+  assert.equal(refusalOf(await chat(gone, CHAT, SESSION, abort.signal)).code, "client_closed_request");
+  assert.deepEqual(movedOf(gone), givenBack);
+  assert.deepEqual([gone.warnings.asked.length, gone.warnings.level], [0, 0]);
+
+  // A stream that did not reach the caller, though its first event said 85%.
+  const lost = planHarness({ usedInPeriod: 424 });
+  const streamed = await streamTo(lost, false);
+  assert.equal(streamed.billing.plan?.warning, 85);
+  await lost.warnings.settled();
+  assert.deepEqual(movedOf(lost), givenBack);
+  assert.deepEqual([lost.warnings.asked.length, lost.warnings.claims, lost.warnings.emails.length, lost.warnings.level], [0, 0, 0, 0]);
+});
+
+test("a warning that fails, hangs or cannot be sent changes nothing of the answer, the charge or the count", async () => {
+  const sent = planHarness({ usedInPeriod: 424 });
+  const expected = await chat(sent);
+  await sent.warnings.settled();
+  assert.equal(sent.warnings.emails.length, 1);
+  const moved = movedOf(sent);
+
+  // A sender that throws: the level stays claimed, and no email is tried again.
+  const failing = planHarness({ usedInPeriod: 424 }, { emailThrows: new Error("the provider said 500") });
+  assert.deepEqual(await chat(failing), expected);
+  assert.deepEqual(await failing.warnings.settled(), [{ level: 85, claimed: true, sent: 0 }]);
+  assert.deepEqual(movedOf(failing), moved);
+  assert.deepEqual([failing.warnings.emails.length, failing.warnings.level], [0, 85]);
+  assert.equal((await chat(failing)).kind, "answer");
+  assert.deepEqual((await failing.warnings.settled()).map((r) => r.claimed), [true, false]);
+
+  // The warning itself throws before it starts.
+  const thrown = planHarness({ usedInPeriod: 424 }, { warningThrows: new Error("a fault of ours") });
+  assert.deepEqual(await chat(thrown), expected);
+  assert.deepEqual(movedOf(thrown), moved);
+  assert.equal(thrown.warnings.asked.length, 1);
+
+  // It rejects, or never comes back: the answer does not wait for it.
+  for (const warnPlan of [() => Promise.reject(new Error("rejected")), () => new Promise<never>(() => {})]) {
+    const h = planHarness({ usedInPeriod: 424 });
+    h.deps.warnPlan = warnPlan;
+    assert.deepEqual(await chat(h), expected);
+    assert.deepEqual(movedOf(h), moved);
+  }
+
+  // No warning in the deps at all.
+  const without = planHarness({ usedInPeriod: 424 });
+  delete without.deps.warnPlan;
+  assert.deepEqual(await chat(without), expected);
+
+  // Email is not set up: nothing is claimed, so the level is still there to tell.
+  const off = planHarness({ usedInPeriod: 424 }, { emailOff: true });
+  assert.deepEqual(await chat(off), expected);
+  assert.deepEqual(await off.warnings.settled(), [{ level: 85, claimed: false, sent: 0 }]);
+  assert.deepEqual([off.warnings.claims, off.warnings.emails.length, off.warnings.level], [0, 0, 0]);
+  assert.deepEqual(movedOf(off), moved);
+});
+
+test("today's monthly subscriber and a buyer who pays per use never reach the warning", async () => {
+  const buyers: Array<[string, PaidHarness]> = [
+    ["pays per use", paidHarness()],
+    ["a month with no count", paidHarness({ listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH })],
+    // The same row as a plan's, with no count: read as a month, however many uses it shows.
+    ["a plan's row with no count", planHarness({ includedUses: null, usedInPeriod: 500 }, { licence: LICENCE })],
+  ];
+  for (const [name, h] of buyers) {
+    assert.equal((await chat(h)).kind, "answer", name);
+    await streamTo(h, true);
+    await h.warnings.settled();
+    assert.deepEqual([h.warnings.asked.length, h.warnings.claims, h.warnings.emails.length], [0, 0, 0], name);
+  }
+});

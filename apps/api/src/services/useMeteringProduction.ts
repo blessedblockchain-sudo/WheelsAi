@@ -351,6 +351,8 @@ export function beginUseMetering(
     ): BeginMeteringResult => {
       planUse = {
         use: "included",
+        subscriptionId,
+        periodStart,
         count: planCountFrom(
           {
             planId: terms.planId,
@@ -437,6 +439,8 @@ export function beginUseMetering(
       if (charged?.ok) {
         planUse = {
           use: "extra",
+          subscriptionId,
+          periodStart: fresh.currentPeriodStart,
           count: planCountFrom(
             {
               planId: fresh.planId,

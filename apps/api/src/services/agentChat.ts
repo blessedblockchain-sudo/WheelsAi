@@ -883,11 +883,14 @@ export async function prepareAgentChat(
         refund: (reason) => handle.refund(reason).finally(release),
       })
     : null;
-  const billing: AgentChatBilling | null = handle
+  // A handle with no charge took no money (an included use of a plan): there
+  // is nothing to say was charged.
+  const charged = handle?.charge;
+  const billing: AgentChatBilling | null = charged
     ? {
-        listingTitle: handle.charge.install.listingTitle,
-        chargedCents: Number(handle.charge.grossCents),
-        creatorCents: Number(handle.charge.creatorCents),
+        listingTitle: charged.install.listingTitle,
+        chargedCents: Number(charged.grossCents),
+        creatorCents: Number(charged.creatorCents),
       }
     : null;
 

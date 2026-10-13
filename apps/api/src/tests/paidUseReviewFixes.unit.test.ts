@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { PUBLIC_RESULT_MAX_CHARS, PUBLIC_RESULTS_LIMIT } from "../routes/publicAgent.js";
-import { PAID_AGENT_COLUMNS } from "../services/buildPaidUseDeps.js";
+import { PAID_AGENT_COLUMNS, USE_SUBSCRIPTION_COLUMNS, useSubscriptionOf } from "../services/buildPaidUseDeps.js";
 import { paidUseOpenAiError } from "../services/openaiCompat.js";
 import {
   getUseAccess,
@@ -142,6 +142,35 @@ test("the page's two result limits live in the page-state service, and the route
   assert.equal(PUBLIC_RESULT_MAX_CHARS, publicPageState.PUBLIC_RESULT_MAX_CHARS);
   // The switch is among the columns the paid service reads of the agent.
   assert.equal((PAID_AGENT_COLUMNS as Record<string, unknown>).publicResults, true);
+});
+
+test("a paid use reads the count of a plan and its plan's status with the subscription row", () => {
+  // Without `includedUses` a plan row reads as a month with no count; without
+  // the plan's status a plan its creator ended gets days of grace.
+  assert.deepEqual(USE_SUBSCRIPTION_COLUMNS, {
+    status: true,
+    currentPeriodEnd: true,
+    cancelAtPeriodEnd: true,
+    endReason: true,
+    priceCents: true,
+    id: true,
+    planId: true,
+    currentPeriodStart: true,
+    includedUses: true,
+    usedInPeriod: true,
+    carriedUses: true,
+    extraUsePriceCents: true,
+    plan: { select: { status: true } },
+  });
+  const row = { id: "sub-1", includedUses: 500 };
+  assert.deepEqual(
+    [{ status: "retired" }, { status: "active" }, null].map((plan) => useSubscriptionOf({ ...row, plan })),
+    [
+      { ...row, planRetired: true },
+      { ...row, planRetired: false },
+      { ...row, planRetired: false },
+    ],
+  );
 });
 
 // ============================================

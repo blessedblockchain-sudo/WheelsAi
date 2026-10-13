@@ -327,6 +327,42 @@ function planBilling(
 }
 
 // ============================================
+// A use on a plan
+// ============================================
+
+/** Why a use on a plan ran nothing: no use was taken and nothing was charged. */
+export type UsePlanRefusal =
+  | {
+      ok: false;
+      /** Every use of the period is gone, and the buyer agreed to no extra price. */
+      reason: "plan_used_up";
+      /** When the count starts again. */
+      periodEnd: Date;
+      includedUses: number;
+      carriedUses: number;
+    }
+  /** The row changed while it was being decided and could not be decided again. */
+  | { ok: false; reason: "plan_changed" };
+
+/** The count of a plan, as the buyer is told it. */
+export interface UsePlanCount {
+  planId: string | null;
+  includedUses: number;
+  usedInPeriod: number;
+  carriedUses: number;
+  extraUsePriceCents: bigint | null;
+  periodEnd: Date;
+}
+
+/** How one use on a plan was paid for. */
+export interface UsePlanUse {
+  /** `included`: one of the plan's uses, nothing charged. `extra`: past the count, at the agreed extra price. */
+  use: "included" | "extra";
+  /** The count as it is now, for the reply. Reads; never throws. */
+  count(): Promise<UsePlanCount>;
+}
+
+// ============================================
 // Charge, settle, refund
 // ============================================
 

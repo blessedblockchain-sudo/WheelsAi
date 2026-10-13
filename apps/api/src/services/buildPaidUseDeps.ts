@@ -40,6 +40,37 @@ export const PAID_AGENT_COLUMNS = {
   pageKey: { select: { id: true, storeTranscripts: true } },
 } as const;
 
+/**
+ * What a paid use reads of the buyer's subscription row. The count of a plan
+ * is part of it: a row read without `includedUses` would read as a month
+ * with no count (every answer free), and one read without its plan's status
+ * would give a plan its creator ended days of grace. A test holds the list.
+ */
+export const USE_SUBSCRIPTION_COLUMNS = {
+  status: true,
+  currentPeriodEnd: true,
+  cancelAtPeriodEnd: true,
+  endReason: true,
+  priceCents: true,
+  id: true,
+  planId: true,
+  currentPeriodStart: true,
+  includedUses: true,
+  usedInPeriod: true,
+  carriedUses: true,
+  extraUsePriceCents: true,
+  plan: { select: { status: true } },
+} as const;
+
+/** The row as the paid service reads it: the plan's status becomes `planRetired`. */
+export function useSubscriptionOf<Row extends { plan: { status: string } | null }>(
+  sub: Row,
+): Omit<Row, "plan"> & { planRetired: boolean } {
+  const { plan, ...row } = sub;
+  // A plan its creator ended is not renewed: no days of grace after the period.
+  return { ...row, planRetired: plan?.status === "retired" };
+}
+
 let chatDeps: AgentChatDeps | null = null;
 
 export function buildPaidUseDeps(): PaidUseDeps {
@@ -71,10 +102,10 @@ export function buildPaidUseDeps(): PaidUseDeps {
         }),
         prisma.agentSubscription.findUnique({
           where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
-          select: { status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true, priceCents: true },
+          select: USE_SUBSCRIPTION_COLUMNS,
         }),
       ]);
-      return { licence, sub };
+      return { licence, sub: sub && useSubscriptionOf(sub) };
     },
 
     readBalance: async (orgId) =>

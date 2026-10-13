@@ -26,7 +26,13 @@ import {
 import type { PublicChatTranscript } from "../services/publicChat.js";
 import type { UseListingRow } from "../services/useListing.js";
 import type { UseBillingLicence, UseMeteringTx } from "../services/useMetering.js";
-import { beginUseMetering, type BeginUseMeteringArgs } from "../services/useMeteringProduction.js";
+import {
+  beginUseMetering,
+  type BeginUseMeteringArgs,
+  type PlanCountDb,
+  type PlanCountRow,
+  type PlanExtraClaimTx,
+} from "../services/useMeteringProduction.js";
 import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 export const NOW = new Date("2026-10-10T12:00:00.000Z");
@@ -115,6 +121,28 @@ export const PAID_MONTH: PaidSubscription = {
   priceCents: 900n,
 };
 
+/** A buyer on a plan: 500 uses for 30 days, then $0.04 a use, with 12 used. The listing is sold per use. */
+export const PLAN_SUB: PaidSubscription = {
+  status: "active",
+  currentPeriodEnd: new Date("2026-11-01T00:00:00.000Z"),
+  cancelAtPeriodEnd: false,
+  endReason: null,
+  priceCents: 900n,
+  id: "sub-1",
+  planId: "plan-1",
+  currentPeriodStart: new Date("2026-10-02T00:00:00.000Z"),
+  includedUses: 500,
+  usedInPeriod: 12,
+  carriedUses: 0,
+  extraUsePriceCents: 4n,
+};
+/** The licence of a plan start: it agreed to no price per use. */
+export const PLAN_LICENCE: UseBillingLicence = {
+  ...LICENCE,
+  acceptedPricingModel: null,
+  acceptedPricePerRequestCents: null,
+};
+
 export const SESSION: PaidCaller = { orgId: BUYER_ORG, userId: "user-1", type: "jwt", apiKeyId: null, scopes: [] };
 export const KEY_CALLER: PaidCaller = {
   orgId: BUYER_ORG,
@@ -176,6 +204,17 @@ export interface PaidHarnessOptions {
   hostedModelDown?: boolean;
   /** What "is the listing paused now" answers; an Error is thrown. Default: not paused. */
   paused?: boolean | Error;
+  /**
+   * Runs just before each take of an included use, with the subscription row
+   * to change: what another request, a renewal or a move to another plan did
+   * between this request's read and its take. `attempt` counts from 1.
+   */
+  beforeTake?: (row: PaidSubscription, attempt: number) => void;
+  /**
+   * Runs just before an extra use claims the plan's row and is charged: what
+   * a renewal did between the read that found the plan used up and the charge.
+   */
+  beforeCharge?: (row: PaidSubscription) => void;
 }
 
 export interface PaidHarness {
@@ -198,6 +237,8 @@ export interface PaidHarness {
   };
   /** How many requests the creator's free-model allowance has counted. */
   allowanceCounted(): number;
+  /** The buyer's subscription row as it is now. */
+  readonly sub: PaidSubscription | null;
 }
 
 export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
@@ -211,7 +252,8 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
   const agent: PaidAgent | null = options.agent === null ? null : { ...AGENT, ...options.agent };
   const listing = options.listing === undefined ? LISTING : options.listing;
   const licence = options.licence === undefined ? LICENCE : options.licence;
-  const sub = options.sub ?? null;
+  // The row itself: a plan's count moves on it. Each read is given a copy.
+  const sub: PaidSubscription | null = options.sub ? { ...options.sub } : null;
   const model = options.model ?? FREE_MODEL;
 
   // ---- money, in memory, with transactions that roll back ----
@@ -284,6 +326,25 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       write: (row) => money.earnings.push(row),
     }),
     agentInstall: { update: async () => ({}) },
+    // The claim an extra use makes on the plan's row, first in its charge's
+    // transaction. It changes nothing on the row.
+    agentSubscription: {
+      updateMany: async ({ where }: Parameters<PlanExtraClaimTx["agentSubscription"]["updateMany"]>[0]) => {
+        if (sub) options.beforeCharge?.(sub);
+        const held =
+          sub !== null &&
+          sub.id === where.id &&
+          sub.currentPeriodStart?.getTime() === where.currentPeriodStart.getTime() &&
+          where.status.in.includes(sub.status) &&
+          (sub.planId ?? null) === where.planId &&
+          sub.includedUses === where.includedUses &&
+          (sub.carriedUses ?? 0) === where.carriedUses &&
+          (sub.extraUsePriceCents ?? null) === where.extraUsePriceCents &&
+          (sub.usedInPeriod ?? 0) >= where.usedInPeriod.gte;
+        log.push(held ? "claimPlan" : "claimPlan:none");
+        return { count: held ? 1 : 0 };
+      },
+    },
     agentListing: {
       update: async (args: { data: { useModelCostMicros?: { increment: bigint } } }) => {
         if (args.data.useModelCostMicros) money.useModelCostMicros += args.data.useModelCostMicros.increment;
@@ -309,6 +370,48 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       money = before;
       throw err;
     }
+  };
+
+  // ---- the count of a plan: each statement is its own compare-and-set ----
+  let takes = 0;
+  const planDb: PlanCountDb = {
+    agentSubscription: {
+      updateMany: async ({ where, data }) => {
+        const taking = "increment" in data.usedInPeriod;
+        if (taking && sub) options.beforeTake?.(sub, ++takes);
+        const used = sub?.usedInPeriod ?? 0;
+        const matches =
+          sub !== null &&
+          sub.id === where.id &&
+          sub.currentPeriodStart?.getTime() === where.currentPeriodStart.getTime() &&
+          (where.status === undefined || where.status.in.includes(sub.status)) &&
+          (where.includedUses === undefined || sub.includedUses === where.includedUses) &&
+          (where.carriedUses === undefined || sub.carriedUses === where.carriedUses) &&
+          ("lt" in where.usedInPeriod ? used < where.usedInPeriod.lt : used > where.usedInPeriod.gt);
+        if (!matches) {
+          log.push(taking ? "take:none" : "giveBack:none");
+          return { count: 0 };
+        }
+        sub!.usedInPeriod = used + (taking ? 1 : -1);
+        log.push(taking ? "take" : "giveBack");
+        return { count: 1 };
+      },
+      findUnique: async ({ where }) => {
+        log.push("readPlan");
+        if (!sub || sub.id !== where.id) return null;
+        return {
+          id: sub.id,
+          status: sub.status,
+          planId: sub.planId ?? null,
+          currentPeriodStart: sub.currentPeriodStart!,
+          currentPeriodEnd: sub.currentPeriodEnd,
+          includedUses: sub.includedUses ?? null,
+          usedInPeriod: sub.usedInPeriod ?? 0,
+          carriedUses: sub.carriedUses ?? 0,
+          extraUsePriceCents: sub.extraUsePriceCents ?? null,
+        } satisfies PlanCountRow;
+      },
+    },
   };
 
   // ---- the chat core's edges ----
@@ -416,7 +519,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     },
     loadLicence: async () => {
       log.push("loadLicence");
-      return { licence, sub };
+      return { licence, sub: sub && { ...sub } };
     },
     readBalance: async () => {
       log.push("readBalance");
@@ -430,10 +533,17 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     beginUse: (args: BeginUseMeteringArgs) => {
       const binding = beginUseMetering(args, {
         metering: { transaction, now: () => NOW },
+        plan: planDb,
         rates: { inputCentsPerMTok: 15, outputCentsPerMTok: 60 },
       });
       if (!options.meteringChargesNothing) return binding;
-      return { ...binding, beginMetering: async () => null, charge: () => null, refusal: () => null };
+      return {
+        ...binding,
+        beginMetering: async () => null,
+        charge: () => null,
+        refusal: () => null,
+        planUse: () => null,
+      };
     },
     prepareChat: (input, beginMetering) => {
       chatInputs.push(input);
@@ -470,6 +580,9 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       return money;
     },
     allowanceCounted: () => allowance,
+    get sub() {
+      return sub;
+    },
   };
 }
 

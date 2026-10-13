@@ -439,6 +439,8 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
   insufficient_credits: "marketplace_payment_required",
   subscription_lapsed: "marketplace_payment_required",
   plan_ended: "marketplace_payment_required",
+  // Every use of a plan's period is gone and it stops: a wait, with Retry-After.
+  plan_used_up: "rate_limit_exceeded",
   api_key_use_price_cap_exceeded: "api_key_use_price_cap_exceeded",
   api_key_daily_cap_exceeded: "api_key_daily_cap_exceeded",
   api_key_spend_caps_missing: "api_key_spend_caps_missing",

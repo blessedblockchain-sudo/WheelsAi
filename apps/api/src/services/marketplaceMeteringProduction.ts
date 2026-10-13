@@ -38,7 +38,12 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("marketplace-metering");
 
 export interface MeteringHandle {
-  readonly charge: MarketplaceCharge;
+  /**
+   * The money that was taken. Absent when the use was paid for another way:
+   * an included use of a plan (services/useMeteringProduction.ts), which
+   * takes one from the plan's count and gives it back on `refund`.
+   */
+  readonly charge?: MarketplaceCharge;
   /** Delivered — accrue the creator's share. Never throws. */
   settle(): Promise<void>;
   /** Not delivered — give the buyer their money back. Never throws. */

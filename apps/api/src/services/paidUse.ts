@@ -48,6 +48,12 @@
  * are not used; the buyer's plan counts one call with an API key (the
  * route's auth guard) and none from a session.
  *
+ * A use on a plan (a subscription with a count of uses) takes ONE use from
+ * the count at step 8, where a priced use takes its price, and gives it back
+ * in every ending of step 11. Past the count the plan stops (429
+ * plan_used_up, nothing charged, no model call), or the use is charged the
+ * extra price the buyer agreed to, exactly as a priced use is.
+ *
  * What a buyer is told is this file's own vocabulary. Unlike a public
  * visitor (publicRefusalOf hides balances on purpose) the caller here is
  * the payer, so the price and the balance are told. What a buyer is NEVER
@@ -109,6 +115,7 @@ import {
   type UseAccess,
   type UseSubscription,
 } from "./useAccess.js";
+import { warningLevel } from "./planUse.js";
 import { PAST_DUE_GRACE_DAYS } from "./subscriptionAccess.js";
 import type { UseListingRow } from "./useListing.js";
 import {
@@ -116,6 +123,9 @@ import {
   type UseBilling,
   type UseBillingLicence,
   type UseChargeResult,
+  type UsePlan,
+  type UsePlanRefusal,
+  type UsePlanUse,
   type UseUnit,
 } from "./useMetering.js";
 
@@ -237,10 +247,12 @@ export interface PaidSubscription extends UseSubscription {
 export interface PaidUseMetering {
   /** Handed to the chat core as its `beginMetering`. */
   beginMetering: AgentChatDeps["beginMetering"];
-  /** Why the charge was refused, exactly; null when it was not. */
-  refusal(): Exclude<UseChargeResult, { ok: true }> | null;
+  /** Why the charge, or the use of a plan, was refused, exactly; null when it was not. */
+  refusal(): Exclude<UseChargeResult, { ok: true }> | UsePlanRefusal | null;
   /** The charge that was taken; null when none was. */
   charge(): MarketplaceCharge | null;
+  /** On a plan: whether the use was an included one or an extra one, and the count after it. Null off a plan. */
+  planUse(): UsePlanUse | null;
   /** Notes what the run used, for the model cost a settle repays. */
   noteRun(run: { platformModel: boolean; usage: unknown; content: string; promptChars: number }): void;
 }
@@ -267,10 +279,15 @@ export interface PaidUseDeps {
   peekKeySpend(args: { apiKeyId: string; orgId: string; priceCents: bigint }): Promise<SpendPeek>;
   /** The names of the tools that send a request to an address the model chooses. */
   outboundToolNames(): readonly string[];
-  /** The metering of one use. `install: null` is a subscribed use: nothing is charged. */
+  /**
+   * The metering of one use. `install: null` is a subscribed use: nothing is
+   * charged. `plan` is a use on a plan: the row as it was read, and the
+   * charge target of a use past the count (null = the plan stops).
+   */
   beginUse(args: {
     agentId: string;
     install: MeteredInstall | null;
+    plan?: { read: UsePlan; extraInstall: MeteredInstall | null } | null;
     apiKeyId: string | null;
     unit: UseUnit;
   }): PaidUseMetering;
@@ -318,6 +335,7 @@ export type PaidUseErrorCode =
   | "pricing_changed"
   | "subscription_lapsed"
   | "plan_ended"
+  | "plan_used_up"
   | "insufficient_credits"
   | "api_key_use_price_cap_exceeded"
   | "api_key_daily_cap_exceeded"
@@ -369,14 +387,37 @@ export interface PaidUseRefusal {
   refundedCents?: number;
   /** A key cap: the price and the cap it met. */
   caps?: Record<string, number>;
+  /** plan_used_up: when the plan's count starts again. An ISO time. */
+  resetsAt?: string;
+}
+
+/** The buyer's plan after one use on it. Uses and cents, and nothing of another buyer. */
+export interface PaidUsePlanBilling {
+  /** The plan the subscription was started on. */
+  id: string | null;
+  /** `included`: one of the plan's uses. `extra`: past the count, charged the agreed extra price. */
+  use: "included" | "extra";
+  includedUses: number;
+  /** Uses brought into this period by a move to a bigger plan. */
+  carriedUses: number;
+  usedUses: number;
+  remainingUses: number;
+  /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+  /** When the count starts again. An ISO time. */
+  resetsAt: string;
+  /** 85 when 85% of the uses are gone, 100 when all are. */
+  warning: null | 85 | 100;
 }
 
 export interface PaidUseBilling {
-  /** What this use cost: 0 inside a paid month. */
+  /** What this use cost: 0 inside a paid month and for an included use of a plan, the extra price past its count. */
   chargedCents: number;
   /** The buyer's credits after it; null when they could not be read just now. */
   balanceCents: number | null;
   access: "subscribed" | "listing_pricing";
+  /** Only on a plan. */
+  plan?: PaidUsePlanBilling;
 }
 
 export interface PaidStream {
@@ -470,6 +511,7 @@ export function paidRefusalBody(refusal: PaidUseRefusal): Record<string, unknown
     ...(refusal.priceCents !== undefined && { priceCents: refusal.priceCents }),
     ...(refusal.balanceCents !== undefined && { balanceCents: refusal.balanceCents }),
     ...(refusal.refundedCents !== undefined && { refundedCents: refusal.refundedCents }),
+    ...(refusal.resetsAt !== undefined && { resetsAt: refusal.resetsAt }),
     ...refusal.caps,
   };
 }
@@ -479,6 +521,9 @@ export function paidRefusalBody(refusal: PaidUseRefusal): Record<string, unknown
 // ============================================
 
 const dollars = (cents: bigint | number) => `$${(Number(cents) / 100).toFixed(2)}`;
+
+/** "You have used all 500 uses.", and for a plan of one use, a sentence that reads right. */
+const usedAll = (uses: number) => (uses === 1 ? "You have used the 1 use in your plan." : `You have used all ${uses} uses.`);
 
 /** What a buyer is told. No em dashes, and never "nothing was charged" after a charge. */
 export const PAID_USE_MESSAGES = {
@@ -498,7 +543,15 @@ export const PAID_USE_MESSAGES = {
   agentLimit: "This agent has reached its limit for now. Nothing was charged. Try again later.",
   tooManyRefunds: "Several of your answers could not be delivered today. Try again tomorrow.",
   unavailable: "This agent cannot be used right now. Nothing was charged. Try again later.",
-  planNotReady: "Your plan cannot be used here yet. Nothing was charged and no use was taken from your plan.",
+  planUsedUp: (uses: number, startsAgain: string | null) =>
+    startsAgain === null
+      ? `${usedAll(uses)} It starts again when your plan renews. Nothing was charged.`
+      : `${usedAll(uses)} It starts again on ${startsAgain}. Nothing was charged.`,
+  // The plan will not renew: no count starts again, so none is promised.
+  planUsedUpAndEnding: (uses: number, endsOn: string | null) =>
+    endsOn === null
+      ? `${usedAll(uses)} Nothing was charged.`
+      : `${usedAll(uses)} Your plan ends on ${endsOn}. Nothing was charged.`,
   // AGENT_PAUSED_MESSAGE of services/listingPause.ts, word for word. Said
   // again here because this file imports nothing that reads the environment
   // or the database; a test holds the two together.
@@ -539,11 +592,6 @@ const NOT_FOUND: PaidUseRefusal = { status: 404, code: "agent_not_found", messag
 const NOT_A_MEMBER: PaidUseRefusal = { status: 403, code: "not_a_member", message: PAID_USE_MESSAGES.notAMember };
 const OWN_AGENT: PaidUseRefusal = { status: 409, code: "own_agent", message: PAID_USE_MESSAGES.ownAgent };
 const UNAVAILABLE: PaidUseRefusal = { status: 503, code: "agent_unavailable", message: PAID_USE_MESSAGES.unavailable };
-const PLAN_NOT_READY: PaidUseRefusal = {
-  status: 503,
-  code: "agent_unavailable",
-  message: PAID_USE_MESSAGES.planNotReady,
-};
 const PAUSED: PaidUseRefusal = { status: 503, code: "agent_paused", message: PAID_USE_MESSAGES.paused };
 const CLIENT_GONE_REFUSAL: PaidUseRefusal = {
   status: 499,
@@ -591,8 +639,49 @@ function limitRefusal(
   };
 }
 
-/** A refused charge, exactly as chargeUse worded it. Nothing was written. */
-function chargeRefusal(refusal: Exclude<UseChargeResult, { ok: true }>): PaidUseRefusal {
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** How long a buyer whose renewal is being retried is asked to wait: the renewal worker runs every hour. */
+const RENEWAL_RETRY_SECONDS = 60 * 60;
+
+/**
+ * Every use of the plan's period is gone and the buyer agreed to no extra
+ * price. Nothing was charged, no use was taken, and the model is not called.
+ *
+ * `renews` is whether the row will be charged again at its period's end. It
+ * will not when the buyer cancelled the renewal, the creator ended the plan
+ * or the listing no longer sells use: the row is closed then, no count
+ * starts again, and the buyer is told when the plan ends and given no time
+ * at which it resets.
+ */
+function planUsedUpRefusal(
+  plan: { includedUses: number; carriedUses: number; periodEnd: Date },
+  now: Date,
+  renews: boolean,
+): PaidUseRefusal {
+  const left = Math.ceil((plan.periodEnd.getTime() - now.getTime()) / 1000);
+  // Past its end and still open: the renewal is being retried, and the count
+  // starts again when it is paid.
+  const day = left > 0 ? `${plan.periodEnd.getUTCDate()} ${MONTHS[plan.periodEnd.getUTCMonth()]}` : null;
+  const uses = plan.includedUses + plan.carriedUses;
+  return {
+    status: 429,
+    code: "plan_used_up",
+    message: renews ? PAID_USE_MESSAGES.planUsedUp(uses, day) : PAID_USE_MESSAGES.planUsedUpAndEnding(uses, day),
+    retryAfterSeconds: left > 0 ? left : RENEWAL_RETRY_SECONDS,
+    ...(renews && { resetsAt: plan.periodEnd.toISOString() }),
+  };
+}
+
+/** A refused charge, exactly as chargeUse worded it, or a plan with no use to take. Nothing was written. */
+function chargeRefusal(
+  refusal: Exclude<UseChargeResult, { ok: true }> | UsePlanRefusal,
+  now: Date,
+  planRenews: boolean,
+): PaidUseRefusal {
+  if (refusal.reason === "plan_used_up") return planUsedUpRefusal(refusal, now, planRenews);
+  // The plan's row changed under the request and could not be decided again.
+  if (refusal.reason === "plan_changed") return UNAVAILABLE;
   if (refusal.reason === "insufficient_credits") {
     return {
       status: 402,
@@ -714,6 +803,24 @@ export function paidToolAllowlist(
     .map((tool) => (tool as { name?: unknown } | null)?.name)
     .filter((name): name is string => typeof name === "string" && name.length > 0);
   return names.filter((name) => !outbound.includes(name) || allowed.includes(name));
+}
+
+/** The plan after one use on it, as the buyer is told it. */
+async function planBillingOf(planUse: UsePlanUse): Promise<PaidUsePlanBilling> {
+  const count = await planUse.count();
+  const limit = count.includedUses + count.carriedUses;
+  const level = warningLevel(count.usedInPeriod, count.includedUses, count.carriedUses);
+  return {
+    id: count.planId,
+    use: planUse.use,
+    includedUses: count.includedUses,
+    carriedUses: count.carriedUses,
+    usedUses: count.usedInPeriod,
+    remainingUses: Math.max(0, limit - count.usedInPeriod),
+    extraUsePriceCents: count.extraUsePriceCents === null ? null : Number(count.extraUsePriceCents),
+    resetsAt: count.periodEnd.toISOString(),
+    warning: level === 0 ? null : level,
+  };
 }
 
 const encoder = new TextEncoder();
@@ -862,13 +969,27 @@ async function runPaidUse(
   if (billing.kind === "free") {
     return refused({ status: 409, code: "not_for_sale", message: PAID_USE_MESSAGES.freeOnItsPage });
   }
-  // A use on a plan is counted, and the count is not connected here yet.
-  // Refused before the balance, the model and any charge, so no use runs
-  // uncounted and nothing is taken.
-  if (billing.kind === "plan") return refused(PLAN_NOT_READY);
 
   const apiKeyId = caller.type === "api_key" ? (caller.apiKeyId ?? null) : null;
-  if (billing.kind === "billable") {
+  // Whether a plan's row will be charged again when its period ends (the
+  // renewal worker closes it instead when the buyer cancelled, the creator
+  // ended the plan, or use is no longer sold). Only words depend on it.
+  const planRenews = onSaleForUse && sub?.cancelAtPeriodEnd !== true && sub?.planRetired !== true;
+  // What this use would cost in credits, as far as the rows say: a price per
+  // use, or the extra price of a plan whose count is gone. Null inside a
+  // paid month and while a plan has a use left.
+  let payable: bigint | null = billing.kind === "billable" ? billing.priceCents : null;
+  if (billing.kind === "plan") {
+    const { plan } = billing;
+    if (plan.usedInPeriod >= plan.includedUses + plan.carriedUses) {
+      // Used up, and the buyer agreed to no extra price (or nothing more is
+      // sold on this listing): stopped here, before the creator's allowance
+      // and the model. Nothing is charged and no use is taken.
+      if (!billing.extraInstall) return refused(planUsedUpRefusal(plan, now, planRenews));
+      payable = billing.extraInstall.pricePerRequestCents;
+    }
+  }
+  if (payable !== null) {
     // Read, not taken: the charge itself is step 8 and still decides. A
     // request that cannot be paid for stops here, before the creator's
     // allowance is touched.
@@ -879,18 +1000,18 @@ async function runPaidUse(
       deps.logger?.error({ err }, "paid use refused: the buyer's balance could not be read");
       return refused(UNAVAILABLE);
     }
-    if (balance < billing.priceCents) {
+    if (balance < payable) {
       return refused({
         status: 402,
         code: "insufficient_credits",
-        message: PAID_USE_MESSAGES.notEnoughCredits(unit, billing.priceCents),
-        priceCents: Number(billing.priceCents),
+        message: PAID_USE_MESSAGES.notEnoughCredits(unit, payable),
+        priceCents: Number(payable),
         balanceCents: Number(balance),
       });
     }
     if (caller.type === "api_key") {
       const peek: SpendPeek = apiKeyId
-        ? await deps.peekKeySpend({ apiKeyId, orgId: caller.orgId, priceCents: billing.priceCents })
+        ? await deps.peekKeySpend({ apiKeyId, orgId: caller.orgId, priceCents: payable })
         : {
             ok: false,
             code: "api_key_spend_caps_missing",
@@ -943,6 +1064,14 @@ async function runPaidUse(
   const metering = deps.beginUse({
     agentId: agent.id,
     install: billing.kind === "billable" ? billing.install : null,
+    ...(billing.kind === "plan" && {
+      plan: {
+        read: billing.plan,
+        // A key that cannot be named cannot reserve against its caps, so it
+        // pays for no extra use: past the count its plan stops.
+        extraInstall: caller.type === "api_key" && !apiKeyId ? null : billing.extraInstall,
+      },
+    }),
     apiKeyId,
     unit,
   });
@@ -986,18 +1115,27 @@ async function runPaidUse(
   }
   if (!prepared.ok) {
     const charge = metering.refusal();
-    if (charge) return refused(chargeRefusal(charge));
+    if (charge) return refused(chargeRefusal(charge, now, planRenews));
     return refused(coreRefusal(prepared.refusal, nowSeconds, onSaleForUse));
   }
   const { session } = prepared;
   const charge = metering.charge();
   const charged = charge ? charge.grossCents : null;
+  const planUse = billing.kind === "plan" ? metering.planUse() : null;
 
   // Fail closed: a use that must be paid for and carries no charge does not
-  // reach the model. Nor does a session that is not the agent's own chat.
-  if (session.runtime !== "platform" || (billing.kind === "billable" && (!session.meter || !charge))) {
+  // reach the model. Nor does a use on a plan that took no use from its
+  // count (or, past the count, no charge), nor a session that is not the
+  // agent's own chat.
+  const unpaid = billing.kind === "billable" && (!session.meter || !charge);
+  const uncounted =
+    billing.kind === "plan" && (!session.meter || !planUse || (planUse.use === "extra" && !charge));
+  if (session.runtime !== "platform" || unpaid || uncounted) {
     await session.meter?.refund("the use could not be started");
-    deps.logger?.error({ agentId: agent.id }, "paid use refused: a billable use reached its run without a charge");
+    deps.logger?.error(
+      { agentId: agent.id },
+      "paid use refused: a use reached its run without its charge or its use of a plan",
+    );
     return refused(
       charge
         ? failureRefusal({ code: "upstream_error", message: "", retryAfterSeconds: null }, charge.grossCents)
@@ -1007,7 +1145,9 @@ async function runPaidUse(
 
   /** One more answer that was produced, paid for and not delivered. Best effort. */
   const countUndelivered = async (): Promise<void> => {
-    if (!charge) return;
+    // An included use that is given back is counted as a refund is: an
+    // answer was produced and the buyer paid nothing for it.
+    if (!charge && !planUse) return;
     await deps.limiter
       .consume([{ scope: "org", key: undeliveredKey, limit: COUNT_ONLY, windowSeconds: dayLeft }])
       .catch((err) => deps.logger?.warn({ err }, "failed to count an undelivered paid answer"));
@@ -1037,6 +1177,7 @@ async function runPaidUse(
       .then((cents) => Number(cents))
       .catch(() => null),
     access: billing.access,
+    ...(planUse && { plan: await planBillingOf(planUse) }),
   });
 
   // 9. The run. Always the stream, whatever the caller asked for: the

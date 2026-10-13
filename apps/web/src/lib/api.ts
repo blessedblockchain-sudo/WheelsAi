@@ -534,6 +534,12 @@ export interface ApiKey {
   maxUsePriceCents?: number | null;
   /** The most the key may spend in a UTC day; shared by hiring and paid use. */
   dailySpendCapCents?: number | null;
+  /**
+   * What the key has committed today (the UTC day), in cents: every charge it reserved, a refunded
+   * one included. 0 when it spent nothing. Null when the day's spend could not be read: say nothing
+   * then, never $0.00. Absent from an API that does not say.
+   */
+  spentTodayCents?: number | null;
   status: "active" | "revoked";
   lastUsedAt: string | null;
   expiresAt: string | null;
@@ -880,9 +886,48 @@ export interface PlanInfo {
   proSubscriptionAvailable: boolean;
 }
 
+/** A number of uses and what they cost, in cents. */
+export interface UsesAndCents {
+  uses: number;
+  cents: number;
+}
+
+/** One listing the organization uses, as its usage page draws it. */
+export interface MarketplaceUsageRow {
+  listingId: string;
+  title: string;
+  slug: string;
+  /** The agent's page, /a/<handle>. Null when it has none. */
+  handle: string | null;
+  access: MarketplaceInstallAccess;
+  /** The plan the buyer is on, while it gives uses. Null otherwise. */
+  plan: PaidUsePlan | null;
+  /**
+   * On a plan: the end of the 30 days paid for (an ISO time), said as the day the plan ends when it
+   * will not renew (`plan.resetsAt` is then left out). Null with no plan.
+   */
+  periodEndsAt: string | null;
+  /** On a plan: its renewal did not go through and is being retried. */
+  renewalPastDue: boolean;
+  /** On a plan: the uses past its count in the current period, and what they cost. Null with no plan. */
+  extraThisPeriod: UsesAndCents | null;
+  /** The uses paid per use in the current UTC month, and what they cost. */
+  perUseThisMonth: UsesAndCents;
+}
+
+/** `GET /api/billing/marketplace-usage`: the one balance, and a row for each listing in use. */
+export interface MarketplaceUsage {
+  /** The organization's credits, in cents. One balance pays for every listing. */
+  balanceCents: number;
+  listings: MarketplaceUsageRow[];
+}
+
 export const billingApi = {
   getBalance: () =>
     api<{ balance: CreditBalance }>("/api/billing/balance"),
+
+  /** What the organization has used and spent on each listing it pays to use. */
+  getMarketplaceUsage: () => api<MarketplaceUsage>("/api/billing/marketplace-usage"),
 
   /** Current plan, limits and this month's usage. */
   getPlan: () => api<PlanInfo>("/api/billing/plan"),
@@ -2462,8 +2507,8 @@ export interface MarketplaceListing {
    */
   plans?: PlanOffer[];
   /**
-   * `searchListings` only: the smallest price among the plans the listing offers, in cents; null when
-   * it offers none.
+   * The search, the featured row and a publisher's listings: the smallest price among the plans the
+   * listing offers, in cents; null when it offers none.
    */
   plansFromCents?: number | null;
   /**
@@ -2654,6 +2699,48 @@ function publicFetch(path: string, init: { method?: "GET" | "POST"; body?: unkno
   });
 }
 
+/** One way to reach a paid agent. `path` is under the base address. */
+export interface AgentApiEndpoint {
+  /**
+   * `openai`: OpenAI's chat completions, with the model id. `chat`: the same conversation in
+   * WheelsAI's own shape. `run`: one run of a task, from its form's answers. `access`: where the
+   * caller stands (their plan, their balance), a read that costs nothing.
+   */
+  use: "openai" | "chat" | "run" | "access";
+  method: "GET" | "POST";
+  path: string;
+}
+
+/** `GET /api/a/:handle/api`: what the API page of a listing draws. Open to anyone. */
+export interface AgentApiPage {
+  handle: string;
+  /** The agent's public name. */
+  name: string;
+  agentKind: "conversation" | "task";
+  listingId: string;
+  listingSlug: string;
+  /**
+   * The base address requests are sent to, with no slash at its end. Null when the server was given
+   * no public address: the page then uses the address it reached the API at.
+   */
+  baseUrl: string | null;
+  /** The model id for OpenAI's chat completions. Null for a task, which is run from its form's answers. */
+  model: string | null;
+  endpoints: AgentApiEndpoint[];
+  pricingModel: "per_request" | "monthly" | (string & {});
+  /** What `priceCents` buys: one message or run, or 30 days of access started on the agent's page. */
+  unit: "message" | "run" | "month";
+  priceCents: number;
+  /** The plans on offer, in the order they are shown. Empty when the listing offers none. */
+  plans: PlanOffer[];
+  /** What one buyer may send. `perDayWithoutPlan` holds a buyer on no plan; a plan's holder is held to its count. */
+  limits: { perMinute: number; perDayWithoutPlan: number };
+  /** The names of the usage headers: on every paid answer, and the ones an answer on a plan adds. */
+  usageHeaders: { always: string[]; onPlan: string[] };
+  /** The refusals a caller can meet, each with its status and a plain sentence. */
+  refusals: Array<{ code: string; status: number; message: string }>;
+}
+
 export const publicAgentApi = {
   /** By the agent's public handle, the name in `/a/<handle>`. No cookie goes with it. A refusal throws an ApiError. */
   get: async (handle: string): Promise<PublicAgentDetail> => {
@@ -2661,6 +2748,14 @@ export const publicAgentApi = {
     const data = await readBody(res);
     if (!res.ok) throw new ApiError(res.status, res.statusText, data);
     return data as PublicAgentDetail;
+  },
+
+  /** What the API page of a listing draws, by the agent's handle. No cookie goes with it. 404 throws an ApiError. */
+  getApiPage: async (handle: string): Promise<AgentApiPage> => {
+    const res = await publicFetch(`/api/a/${encodeURIComponent(handle)}/api`);
+    const data = await readBody(res);
+    if (!res.ok) throw new ApiError(res.status, res.statusText, data);
+    return data as AgentApiPage;
   },
 };
 
@@ -3228,6 +3323,11 @@ export const marketplaceApi = {
         listing: MarketplaceListing;
         subscription: MarketplaceSubscription | null;
       }>;
+      /**
+       * Whether the caller may start, move or resume: an owner or admin of the organization. False
+       * for a plain member, who is refused those. Absent from an API that does not say.
+       */
+      canSpend?: boolean;
     }>("/api/marketplace/my-installs"),
 
   // Monthly subscriptions

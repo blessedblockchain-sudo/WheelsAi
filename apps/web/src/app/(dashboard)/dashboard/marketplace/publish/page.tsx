@@ -73,6 +73,19 @@ import {
   type SellErrors,
   type SellForm,
 } from "@/lib/sell-choice";
+import {
+  emptyPlansForm,
+  hasPlanErrors,
+  noPlanErrors,
+  planFieldErrors,
+  planLimitsOf,
+  plansFormOf,
+  plansRefusedLine,
+  plansSaveOf,
+  savedPlansOf,
+  type PlanErrors,
+  type PlansForm,
+} from "@/lib/sell-plans";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
@@ -191,6 +204,10 @@ function PublishWizardContent() {
   const [sell, setSell] = useState<SellForm>(() => emptySellForm());
   const [sellErrors, setSellErrors] = useState<SellErrors>({});
   const [keepCopy, setKeepCopy] = useState(false);
+  // The plans under "Pay per use", as typed, and what the API said of them when it refused.
+  const [plans, setPlans] = useState<PlansForm>(() => emptyPlansForm());
+  const [planErrors, setPlanErrors] = useState<PlanErrors>(noPlanErrors);
+  const [plansProblem, setPlansProblem] = useState<string | null>(null);
 
   // The chosen agent with its tools, which the list of agents does not carry.
   const [agentDetail, setAgentDetail] = useState<AgentDetail | null>(null);
@@ -199,6 +216,8 @@ function PublishWizardContent() {
 
   /** Which listing, or new listing, the form was last filled for. */
   const filledFor = useRef<string | null>(null);
+  /** A new listing that was saved here while its plans were refused: the wizard is turning into an edit of it. */
+  const adopted = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -228,17 +247,28 @@ function PublishWizardContent() {
   useEffect(() => {
     if (!data) return;
     const key = editId ? `edit:${editId}` : "new";
+    if (adopted.current) {
+      // The form is already this listing's, with the plans as they were typed: it is not filled again.
+      if (editId !== adopted.current) return;
+      adopted.current = null;
+      filledFor.current = key;
+      return;
+    }
     if (filledFor.current === key) return;
     if (editId) {
       if (!editing) return;
       const kind = editing.agent?.agentKind ?? data.agents.find((agent) => agent.id === editing.agentId)?.agentKind;
       setDetails(detailsOfListing(editing));
       setSell(formOfListing(editing, kind));
+      setPlans(plansFormOf(editing));
     } else if (filledFor.current !== null) {
       setDetails(emptyDetails());
       setSell(emptySellForm());
+      setPlans(emptyPlansForm());
     }
     setSellErrors({});
+    setPlanErrors(noPlanErrors());
+    setPlansProblem(null);
     setCurrentStep(0);
     filledFor.current = key;
   }, [data, editId, editing]);
@@ -285,6 +315,9 @@ function PublishWizardContent() {
 
   const chosenAgent = agentDetail && agentDetail.id === agentId ? agentDetail : null;
   const limits = sellLimitsOf(data?.capabilities);
+  const planLimits = planLimitsOf(data?.capabilities);
+  // The plans of the listing being edited, as they were read; a new listing has none.
+  const savedPlans = savedPlansOf(editId ? (editing ?? {}) : null);
   const selectedAgent = agents.find((a) => a.id === agentId);
   const agentKind = chosenAgent?.agentKind ?? selectedAgent?.agentKind;
 
@@ -299,7 +332,13 @@ function PublishWizardContent() {
   }
 
   const step = WIZARD_STEPS[currentStep] ?? "agent";
-  const problem = stepProblem(step, { details, sell, agent: chosenAgent, limits });
+  const problem = stepProblem(step, {
+    details,
+    sell,
+    agent: chosenAgent,
+    limits,
+    plans: { form: plans, saved: savedPlans, limits: planLimits },
+  });
 
   const handleNext = () => {
     if (!problem && currentStep < STEPS.length - 1) {
@@ -322,14 +361,22 @@ function PublishWizardContent() {
       setCurrentStep(2);
       return;
     }
+    // The plans are checked before anything is saved, so a row that cannot be sent holds the listing back too.
+    const plansSave = plansSaveOf({ sell, form: plans, saved: savedPlans, limits: planLimits });
+    if (plansSave.kind === "invalid") {
+      setPlanErrors(plansSave.errors);
+      setCurrentStep(2);
+      return;
+    }
+    setPlansProblem(null);
     setIsSaving(button.id);
+    let listingId: string;
     try {
-      if (editId) {
-        await marketplaceApi.updateListing(editId, updateListingBody(details, built.save, button.publish));
-      } else {
-        // What the listing sells is named: use of the agent, unless copies were chosen under More options.
-        await marketplaceApi.createListing(createListingBody(details, built.save, button.publish));
-      }
+      const saved = editId
+        ? await marketplaceApi.updateListing(editId, updateListingBody(details, built.save, button.publish))
+        : // What the listing sells is named: use of the agent, unless copies were chosen under More options.
+          await marketplaceApi.createListing(createListingBody(details, built.save, button.publish));
+      listingId = saved.listing.id;
     } catch (error) {
       const fields = getValidationError(error)?.fields;
       const fieldErrors = fields ? sellFieldErrors(fields) : {};
@@ -340,6 +387,26 @@ function PublishWizardContent() {
       toast.error(getErrorMessage(error, "Failed to save listing"));
       setIsSaving(null);
       return;
+    }
+
+    // The listing is saved. Its plans go second and always as the whole set: a plan left out is ended.
+    if (plansSave.kind === "send") {
+      try {
+        await marketplaceApi.setListingPlans(listingId, plansSave.plans);
+      } catch (error) {
+        const fields = getValidationError(error)?.fields;
+        const fieldErrors = fields ? planFieldErrors(fields) : noPlanErrors();
+        setPlanErrors(fieldErrors);
+        // Each sentence is under its field; a refusal with none is said whole, as the API sent it.
+        setPlansProblem(plansRefusedLine(hasPlanErrors(fieldErrors) ? null : getErrorMessage(error, "Try again.")));
+        // The listing exists now, so the wizard goes on as an edit of it, with the rows as they were typed.
+        if (!editId) adopted.current = listingId;
+        await load();
+        if (!editId) router.replace(editListingHref(listingId));
+        setCurrentStep(2);
+        setIsSaving(null);
+        return;
+      }
     }
 
     toast.success(button.done);
@@ -614,20 +681,39 @@ function PublishWizardContent() {
             {/* Step 3: Who can use it? The same question as on the agent's Sell tab. */}
             {currentStep === 2 &&
               (chosenAgent ? (
-                <WhoCanUse
-                  agent={chosenAgent}
-                  form={sell}
-                  onChange={(next) => {
-                    setSell(next);
-                    setSellErrors({});
-                  }}
-                  errors={sellErrors}
-                  limits={limits}
-                  capacity={data?.capabilities?.paidUse.freeModelDailyAllowance ?? null}
-                  keepCopy={{ checked: keepCopy, onChange: setKeepCopy }}
-                  listing={editing}
-                  disabled={isSaving !== null}
-                />
+                <div className="space-y-5">
+                  {/* The listing was saved and its plans were not: said first, above the rows it is about. */}
+                  {plansProblem && (
+                    <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+                      {plansProblem}
+                    </p>
+                  )}
+                  <WhoCanUse
+                    agent={chosenAgent}
+                    form={sell}
+                    onChange={(next) => {
+                      setSell(next);
+                      setSellErrors({});
+                    }}
+                    errors={sellErrors}
+                    plans={{
+                      form: plans,
+                      onChange: (next) => {
+                        setPlans(next);
+                        setPlanErrors(noPlanErrors());
+                        setPlansProblem(null);
+                      },
+                      errors: planErrors,
+                      limits: planLimits,
+                      saved: savedPlans,
+                    }}
+                    limits={limits}
+                    capacity={data?.capabilities?.paidUse.freeModelDailyAllowance ?? null}
+                    keepCopy={{ checked: keepCopy, onChange: setKeepCopy }}
+                    listing={editing}
+                    disabled={isSaving !== null}
+                  />
+                </div>
               ) : agentDetailError !== null ? (
                 <ErrorState
                   title="Couldn't load this agent"

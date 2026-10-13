@@ -30,7 +30,20 @@ import {
   type SellLimits,
   type SellListing,
 } from "@/lib/sell-choice";
+import { plansKeptLine, sellsWithPlans, type PlanErrors, type PlanLimits, type PlansForm, type SavedPlan } from "@/lib/sell-plans";
 import { cn } from "@/lib/utils";
+
+import { PlansBlock } from "./plans-block";
+
+/** The plans under "Pay per use": the rows as typed, and the plans the listing has now. */
+export interface WhoCanUsePlans {
+  form: PlansForm;
+  onChange: (form: PlansForm) => void;
+  errors: PlanErrors;
+  limits: PlanLimits;
+  /** The listing's plans as they were read, each with its subscribers; null when they were not. */
+  saved: readonly SavedPlan[] | null;
+}
 
 export interface WhoCanUseProps {
   /** The agent the question is about: its kind decides the choices, its tools the switch. */
@@ -46,6 +59,8 @@ export interface WhoCanUseProps {
   keepCopy?: { checked: boolean; onChange: (checked: boolean) => void };
   /** The listing the agent has now, for what a change does to the people who already pay. */
   listing?: SellListing | null;
+  /** Left out, no plans are offered under "Pay per use" and the question is as it was. */
+  plans?: WhoCanUsePlans;
   /** Called after the copies dialog was confirmed, with the form as it then is. */
   onSoldAsCopies?: (form: SellForm) => void;
   /** More to offer under "More options", above "Sell copies instead". */
@@ -72,6 +87,7 @@ export function WhoCanUse({
   capacity,
   keepCopy,
   listing,
+  plans,
   onSoldAsCopies,
   moreOptions,
   disabled = false,
@@ -89,6 +105,10 @@ export function WhoCanUse({
   const capacityText = form.sells === "use" ? capacityLine(capacity) : null;
   const hasOutboundTool = outboundToolsOf(agent.tools).length > 0;
   const copiesKept = form.sells === "use" ? copiesKeptLine(listing) : null;
+  // Plans go with "Pay per use" of the agent itself, and only once the listing's own were read.
+  const plansShown = plans && plans.form.loaded && sellsWithPlans(form) ? plans : null;
+  // The answer is moving away from "Pay per use": what the people on a plan keep.
+  const plansKept = plans ? plansKeptLine(listing ? { ...listing, plans: plans.saved } : null, form) : null;
 
   // What is sold changed: the control that did it is gone, so focus goes to what took its place.
   useEffect(() => {
@@ -250,6 +270,17 @@ export function WhoCanUse({
                   </div>
                 </div>
                 {selected && priceField(choice)}
+                {selected && choice.id === "per_use" && plansShown && (
+                  <PlansBlock
+                    form={plansShown.form}
+                    onChange={plansShown.onChange}
+                    errors={plansShown.errors}
+                    limits={plansShown.limits}
+                    saved={plansShown.saved}
+                    perUsePrice={form.perUsePrice}
+                    disabled={disabled}
+                  />
+                )}
               </div>
             );
           })}
@@ -260,6 +291,12 @@ export function WhoCanUse({
           </p>
         )}
       </fieldset>
+
+      {plansKept && (
+        <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-foreground">
+          {plansKept}
+        </p>
+      )}
 
       {paid && (
         <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">

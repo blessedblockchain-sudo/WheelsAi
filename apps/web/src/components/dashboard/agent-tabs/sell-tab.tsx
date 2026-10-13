@@ -52,6 +52,21 @@ import {
   type SellErrors,
   type SellForm,
 } from "@/lib/sell-choice";
+import {
+  PLAN_WORDS,
+  hasPlanErrors,
+  noPlanErrors,
+  partSavedLine,
+  planFieldErrors,
+  planLimitsOf,
+  planSaleLines,
+  plansFormOf,
+  plansRefusedLine,
+  plansSaveOf,
+  savedPlansOf,
+  type PlanErrors,
+  type PlansForm,
+} from "@/lib/sell-plans";
 import { cn } from "@/lib/utils";
 import { CopyRow } from "./api-tab";
 
@@ -91,6 +106,9 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   const [form, setForm] = useState<SellForm>(() => formOfListing(null));
   const [keepCopy, setKeepCopy] = useState(false);
   const [errors, setErrors] = useState<SellErrors>({});
+  // The plans under "Pay per use", as typed. Not loaded until the listing's own were read.
+  const [plans, setPlans] = useState<PlansForm>({ loaded: false, rows: [] });
+  const [planErrors, setPlanErrors] = useState<PlanErrors>(noPlanErrors);
   const [error, setError] = useState<string | null>(null);
   const [lineDraft, setLineDraft] = useState("");
   const [lineError, setLineError] = useState<string | null>(null);
@@ -115,7 +133,8 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     };
   }, []);
 
-  const load = useCallback(async () => {
+  // `keepPlans`: the listing was saved and its plans were refused, so the rows stay as they were typed.
+  const load = useCallback(async (keepPlans = false) => {
     setLoadError(null);
     try {
       // The listing decides the screen. The rest only adds to it, so a part that cannot be read is left out.
@@ -133,6 +152,10 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       setForm(formOfListing(listing, agent.agentKind));
       setKeepCopy(kept);
       setErrors({});
+      if (!keepPlans) {
+        setPlans(plansFormOf(listing));
+        setPlanErrors(noPlanErrors());
+      }
     } catch (err) {
       if (mounted.current) setLoadError(err);
     }
@@ -181,11 +204,22 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   const onSale = status?.standing === "on_sale";
   const knownLine = sellLineOf([listing?.shortDescription, agent.description]);
   const baseline = formOfListing(listing, agent.agentKind);
-  const unchanged = sameSellForm(form, baseline) && (!asksForPayment(form) || keepCopy === data.keepCopy);
+  const planLimits = planLimitsOf(capabilities);
+  // The listing's plans as they were read, each with its subscribers; null when they came without.
+  const savedPlans = savedPlansOf(listing);
+  const plansUnchanged = plansSaveOf({ sell: form, form: plans, saved: savedPlans, limits: planLimits }).kind === "none";
+  const unchanged =
+    sameSellForm(form, baseline) && (!asksForPayment(form) || keepCopy === data.keepCopy) && plansUnchanged;
 
   function change(next: SellForm) {
     setForm(next);
     setErrors({});
+    setError(null);
+  }
+
+  function changePlans(next: PlansForm) {
+    setPlans(next);
+    setPlanErrors(noPlanErrors());
     setError(null);
   }
 
@@ -197,6 +231,13 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       return;
     }
     setErrors({});
+    // The plans are checked before anything is saved, so a row that cannot be sent holds the listing back too.
+    const plansSave = plansSaveOf({ sell: sent, form: plans, saved: savedPlans, limits: planLimits });
+    if (plansSave.kind === "invalid") {
+      setPlanErrors(plansSave.errors);
+      return;
+    }
+    setPlanErrors(noPlanErrors());
     const line = sellLineOf([knownLine, lineDraft]);
     if (!listing && !line) {
       setLineError(SELL_LINE_TOO_SHORT);
@@ -206,9 +247,12 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     setLineError(null);
 
     setBusy("save");
+    let savedListing: MarketplaceListing;
     try {
-      if (listing) await marketplaceApi.updateListing(listing.id, sellUpdateOf(built.save, listing));
-      else await marketplaceApi.createListing(firstListingOf(agent, line ?? "", built.save));
+      const saved = listing
+        ? await marketplaceApi.updateListing(listing.id, sellUpdateOf(built.save, listing))
+        : await marketplaceApi.createListing(firstListingOf(agent, line ?? "", built.save));
+      savedListing = saved.listing;
     } catch (err) {
       if (!mounted.current) return;
       const fields = getValidationError(err)?.fields;
@@ -236,12 +280,34 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       }
     }
 
-    toast.success(onSale ? "Changes saved" : "Your agent is on sale");
+    // The listing is saved. Its plans go second and always as the whole set: a plan left out is ended.
+    let plansProblem: string | null = null;
+    if (plansSave.kind === "send") {
+      try {
+        const res = await marketplaceApi.setListingPlans(savedListing.id, plansSave.plans);
+        // The answer is kept: the new plans have their ids from here on, even if the reload below fails.
+        // A second save then sends nothing, where rows without ids would make every plan again and end these.
+        if (mounted.current) {
+          setPlans(plansFormOf({ plans: res.plans }));
+          setData((d) => d && { ...d, listing: { ...(d.listing ?? savedListing), plans: res.plans } });
+        }
+      } catch (err) {
+        const fields = getValidationError(err)?.fields;
+        const fieldErrors = fields ? planFieldErrors(fields) : noPlanErrors();
+        if (mounted.current) setPlanErrors(fieldErrors);
+        // Each sentence is under its field; a refusal with none is said whole, as the API sent it.
+        plansProblem = plansRefusedLine(hasPlanErrors(fieldErrors) ? null : getErrorMessage(err, "Try again."));
+      }
+    }
+
+    if (plansProblem === null) toast.success(onSale ? "Changes saved" : "Your agent is on sale");
     focusStatus.current = !onSale;
-    await load();
+    await load(plansProblem !== null);
     if (!mounted.current) return;
     setBusy(null);
-    if (keepProblem) setError(`Your choice was saved. The setting to keep a copy was not: ${keepProblem}`);
+    // Both are said when both failed: neither is taken for saved.
+    const partSaved = partSavedLine(plansProblem, keepProblem);
+    if (partSaved) setError(partSaved);
     onAgentChanged?.();
   }
 
@@ -271,6 +337,8 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
 
   const earned = listing ? earnedOf(revenue?.revenueByListing, listing.id) : null;
   const stats = listing ? buyerStats(listing) : [];
+  // One line for each plan of a listing sold per use. How many people are on each is the creator's to see.
+  const planLines = planSaleLines(listing);
 
   const question = (
     <WhoCanUse
@@ -282,6 +350,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       capacity={capabilities?.paidUse.freeModelDailyAllowance ?? null}
       keepCopy={{ checked: keepCopy, onChange: setKeepCopy }}
       listing={listing}
+      plans={{ form: plans, onChange: changePlans, errors: planErrors, limits: planLimits, saved: savedPlans }}
       // A listing that is on sale changes at once: the dialog said "from now on".
       onSoldAsCopies={onSale ? (next) => void save(next) : undefined}
       disabled={busy !== null}
@@ -376,6 +445,19 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
               <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
                 {PUBLIC_LINK_WORDS.addressUnavailable}
               </p>
+            )}
+
+            {planLines.length > 0 && (
+              <div className="space-y-1">
+                <h3 className="text-xs text-muted-foreground">{PLAN_WORDS.title}</h3>
+                <ul className="space-y-1">
+                  {planLines.map((plan) => (
+                    <li key={plan.id} className="break-words text-sm text-foreground">
+                      {plan.line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
 
             {(earned || stats.length > 0) && (

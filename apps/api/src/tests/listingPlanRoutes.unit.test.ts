@@ -14,7 +14,9 @@ import { PLAN_STORE_MESSAGES } from "../services/listingPlanStore.js";
 // plan is ended only when its creator says so (one that is neither sent nor
 // named refuses the whole save), nothing is written unless the whole set
 // passes, two saves at once give one 409 and never a 500, and no
-// subscription row is ever touched.
+// subscription row is ever touched. And the listing's one free trial: saved
+// at its own place beside the four paid plans, changed in place and ended by
+// its id, with no name but "Free trial".
 
 const LISTING_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_LISTING_ID = "22222222-2222-4222-8222-222222222222";
@@ -394,9 +396,10 @@ test("a set that breaks a rule is refused with a sentence under its field, and n
       "validation_failed",
       "The price for each extra use must be at least $0.05.",
     ]);
+    // A free trial is allowed; one with more than 50 uses is not.
     assert.deepEqual(
-      fieldOf(await put([{ kind: "trial", name: "Try it", priceCents: 0, includedUses: 20, extraUsePriceCents: null }]), "plans[0].kind"),
-      [400, "validation_failed", "Free trials are not available yet."],
+      fieldOf(await put([{ kind: "trial", name: "Try it", priceCents: 0, includedUses: 51, extraUsePriceCents: null }]), "plans[0].includedUses"),
+      [400, "validation_failed", "A free trial includes between 1 and 50 uses."],
     );
 
     // Cents and uses are whole numbers in JSON: anything else stops at the door.
@@ -923,5 +926,232 @@ test("my-listings shows each listing's plans on offer in order, with how many pe
     // A listing with no plan says so with an empty list.
     world.state.plans.length = 0;
     assert.deepEqual((await call("GET", "/my-listings")).body.listings[0].plans, []);
+  });
+});
+
+// ============================================
+// The free trial
+// ============================================
+
+const TRIAL_ID = "99999999-9999-4999-8999-999999999999";
+const freeTrial = (over: Row = {}) => ({ kind: "trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null, ...over });
+const storedTrial = (over: Row = {}) =>
+  stored({ id: TRIAL_ID, kind: "trial", name: "Free trial", priceCents: 0n, includedUses: 20, extraUsePriceCents: null, position: 0, ...over });
+const onOfferOf = (world: World) =>
+  world.state.plans
+    .filter((p) => p.listingId === LISTING_ID && p.status === "active")
+    .sort((a, b) => a.position - b.position)
+    .map((p) => [p.kind, p.name, p.priceCents, p.includedUses, p.extraUsePriceCents, p.position]);
+
+test("one free trial beside four paid plans is saved: at place 0, with no price, and named Free trial whatever was sent", async () => {
+  const world = makeWorld();
+  await withApp(world, async (call) => {
+    const res = await call("PUT", PLANS_URL, {
+      plans: [
+        starter({ name: "One" }),
+        // No name, and a name that is not kept.
+        freeTrial({ name: "Try before you buy" }),
+        starter({ name: "Two" }),
+        starter({ name: "Three" }),
+        starter({ name: "Four" }),
+      ],
+    });
+    assert.equal(res.status, 200);
+    // The creator reads the trial first, with its kind and the trials that run now.
+    assert.deepEqual(
+      res.body.plans.map((plan: Row) => [plan.kind, plan.name, plan.priceCents, plan.includedUses, plan.extraUsePriceCents, plan.status, plan.subscribers]),
+      [
+        ["trial", "Free trial", 0, 20, null, "active", 0],
+        ["paid", "One", 900, 500, 5, "active", 0],
+        ["paid", "Two", 900, 500, 5, "active", 0],
+        ["paid", "Three", 900, 500, 5, "active", 0],
+        ["paid", "Four", 900, 500, 5, "active", 0],
+      ],
+    );
+    // A trial sent with no name at all is saved too.
+    const alone = makeWorld();
+    const bare = await withApp(alone, (c) => c("PUT", PLANS_URL, { plans: [freeTrial()] }));
+    assert.equal(bare.status, 200);
+    assert.deepEqual(onOfferOf(alone), [["trial", "Free trial", 0n, 20, null, 0]]);
+  });
+  assert.deepEqual(onOfferOf(world), [
+    ["trial", "Free trial", 0n, 20, null, 0],
+    ["paid", "One", 900n, 500, 5n, 1],
+    ["paid", "Two", 900n, 500, 5n, 2],
+    ["paid", "Three", 900n, 500, 5n, 3],
+    ["paid", "Four", 900n, 500, 5n, 4],
+  ]);
+});
+
+test("a free trial that breaks a rule is refused on its field, and nothing is saved: not the paid plan sent with it either", async () => {
+  const world = makeWorld();
+  await withApp(world, async (call) => {
+    const put = (trial: Row, more: Row[] = []) => call("PUT", PLANS_URL, { plans: [starter(), trial, ...more] });
+    assert.deepEqual(fieldOf(await put(freeTrial({ priceCents: 100 })), "plans[1].priceCents"), [
+      400,
+      "validation_failed",
+      "A free trial has no price.",
+    ]);
+    assert.deepEqual(fieldOf(await put(freeTrial({ extraUsePriceCents: 5 })), "plans[1].extraUsePriceCents"), [
+      400,
+      "validation_failed",
+      "A free trial has no price for an extra use. It stops when its uses are gone.",
+    ]);
+    for (const includedUses of [0, 51]) {
+      assert.deepEqual(fieldOf(await put(freeTrial({ includedUses })), "plans[1].includedUses"), [
+        400,
+        "validation_failed",
+        "A free trial includes between 1 and 50 uses.",
+      ]);
+    }
+    assert.deepEqual(fieldOf(await put(freeTrial(), [freeTrial({ includedUses: 5 })]), "plans[2].kind"), [
+      400,
+      "validation_failed",
+      "A listing can have one free trial.",
+    ]);
+    // A paid plan still needs its name.
+    const unnamed = await call("PUT", PLANS_URL, { plans: [{ ...starter(), name: undefined }] });
+    assert.deepEqual(fieldOf(unnamed, "plans[0].name"), [400, "validation_failed", "Give the plan a name."]);
+  });
+  assert.equal(world.state.plans.length, 0);
+  assert.equal(world.state.planWrites, 0);
+});
+
+test("a free trial is changed in place by its id: it keeps its id and its place, and the people on it are not touched", async () => {
+  const world = makeWorld({
+    plans: [stored({ id: PLAN_1, position: 1 }), storedTrial()],
+    subs: [{ id: "sub_t", listingId: LISTING_ID, subscriberId: "org_buyer", planId: TRIAL_ID, status: "active", includedUses: 20, usedInPeriod: 3, priceCents: 0n }],
+  });
+  const subs = structuredClone(world.state.subs);
+  await withApp(world, async (call) => {
+    const res = await call("PUT", PLANS_URL, { plans: [SENT_1, freeTrial({ id: TRIAL_ID, includedUses: 35, name: "Renamed" })] });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.plans.map((plan: Row) => [plan.id, plan.kind, plan.name, plan.includedUses, plan.subscribers]), [
+      [TRIAL_ID, "trial", "Free trial", 35, 1],
+      [PLAN_1, "paid", "Starter", 500, 0],
+    ]);
+
+    // Its kind is not something that changes: the trial's id sent as a paid
+    // plan, or a paid plan's id sent as the trial, is refused whole.
+    const sentence = "A plan cannot be turned into a free trial, or a free trial into a plan. End it and add a new one.";
+    const asPaid = await call("PUT", PLANS_URL, { plans: [SENT_1, starter({ id: TRIAL_ID, name: "Was a trial" })] });
+    assert.deepEqual(fieldOf(asPaid, "plans[1].kind"), [400, "validation_failed", sentence]);
+    const asTrial = await call("PUT", PLANS_URL, { plans: [freeTrial({ id: PLAN_1 })], ended: [TRIAL_ID] });
+    assert.deepEqual(fieldOf(asTrial, "plans[0].kind"), [400, "validation_failed", sentence]);
+  });
+  assert.equal(world.state.plans.length, 2, "no row was added");
+  assert.deepEqual(onOfferOf(world), [
+    ["trial", "Free trial", 0n, 35, null, 0],
+    ["paid", "Starter", 900n, 500, 5n, 1],
+  ]);
+  // The running trial keeps the uses it was started with.
+  assert.deepEqual(world.state.subs, subs);
+});
+
+test("ending the free trial leaves the paid plans alone, and ending a paid plan leaves the trial alone", async () => {
+  const world = makeWorld({
+    plans: [stored({ id: PLAN_1, position: 1 }), stored({ id: PLAN_2, name: "Pro", priceCents: 2900n, includedUses: 2000, extraUsePriceCents: null, position: 2 }), storedTrial()],
+    subs: [{ id: "sub_t", listingId: LISTING_ID, subscriberId: "org_buyer", planId: TRIAL_ID, status: "active", includedUses: 20, usedInPeriod: 3, priceCents: 0n }],
+  });
+  const subs = structuredClone(world.state.subs);
+  const byId = (id: string) => world.state.plans.find((p) => p.id === id)!;
+  await withApp(world, async (call) => {
+    // A paid plan is ended: the trial stays on offer as it was.
+    const paidEnded = await call("PUT", PLANS_URL, { plans: [SENT_1, freeTrial({ id: TRIAL_ID })], ended: [PLAN_2] });
+    assert.equal(paidEnded.status, 200);
+    assert.deepEqual([byId(PLAN_2).status, byId(TRIAL_ID).status, byId(TRIAL_ID).includedUses, byId(TRIAL_ID).position], ["retired", "active", 20, 0]);
+
+    // The trial is ended by naming it: the paid plan is as it was.
+    const before = structuredClone(byId(PLAN_1));
+    const trialEnded = await call("PUT", PLANS_URL, { plans: [SENT_1], ended: [TRIAL_ID] });
+    assert.equal(trialEnded.status, 200);
+    assert.deepEqual(trialEnded.body.plans.map((plan: Row) => [plan.id, plan.kind]), [[PLAN_1, "paid"]]);
+    assert.equal(byId(TRIAL_ID).status, "retired");
+    assert.ok(byId(TRIAL_ID).retiredAt instanceof Date);
+    // Retired, never deleted: the trials that are running still hold its id.
+    assert.deepEqual([byId(TRIAL_ID).name, byId(TRIAL_ID).includedUses, byId(TRIAL_ID).position], ["Free trial", 20, 0]);
+    assert.deepEqual(byId(PLAN_1), before);
+
+    // A new trial takes the place the ended one held, and the ended one cannot be brought back by its id.
+    const back = await call("PUT", PLANS_URL, { plans: [SENT_1, freeTrial({ id: TRIAL_ID })] });
+    assert.deepEqual(fieldOf(back, "plans[1].id"), [400, "validation_failed", PLAN_MESSAGES.gone]);
+    const again = await call("PUT", PLANS_URL, { plans: [SENT_1, freeTrial({ includedUses: 5 })] });
+    assert.equal(again.status, 200);
+    assert.deepEqual(onOfferOf(world), [
+      ["trial", "Free trial", 0n, 5, null, 0],
+      ["paid", "Starter", 900n, 500, 5n, 1],
+    ]);
+  });
+  assert.equal(world.state.plans.length, 4);
+  assert.deepEqual(world.state.subs, subs);
+});
+
+test("a free trial on offer that is neither sent nor named refuses the save, as a paid plan does", async () => {
+  const world = makeWorld({ plans: [stored({ id: PLAN_1, position: 1 }), storedTrial()] });
+  const before = structuredClone(world.state.plans);
+  await withApp(world, async (call) => {
+    // A page that does not know of the trial: nothing is ended behind its back.
+    const stale = await call("PUT", PLANS_URL, { plans: [starter({ id: PLAN_1, priceCents: 1200 })] });
+    assert.deepEqual([stale.status, stale.body], [409, PLANS_CHANGED]);
+    // A second trial is not added beside the one on offer.
+    const second = await call("PUT", PLANS_URL, { plans: [SENT_1, freeTrial()] });
+    assert.deepEqual([second.status, second.body], [409, PLANS_CHANGED]);
+  });
+  assert.equal(world.state.planWrites, 0);
+  assert.deepEqual(world.state.plans, before);
+});
+
+test("two saves that each add a free trial at the same moment leave one trial", async () => {
+  const world = makeWorld();
+  const readPlans = world.models.listingPlan.findMany;
+  let readers = 0;
+  let bothRead!: () => void;
+  const bothHaveRead = new Promise<void>((resolve) => (bothRead = resolve));
+  world.models.listingPlan.findMany = async (args: Row) => {
+    const rows = await readPlans(args);
+    if (args.where.kind === "trial") {
+      if (++readers === 2) bothRead();
+      await bothHaveRead;
+    }
+    return rows;
+  };
+  await withApp(world, async (call) => {
+    const results = await Promise.all([
+      call("PUT", PLANS_URL, { plans: [freeTrial()] }),
+      call("PUT", PLANS_URL, { plans: [freeTrial({ includedUses: 10 })] }),
+    ]);
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 409]);
+    assert.equal(results.find((r) => r.status === 409)!.body.error, "plans_changed");
+  });
+  assert.equal(world.state.plans.filter((p) => p.kind === "trial" && p.status === "active").length, 1);
+});
+
+test("a listing that cannot have plans cannot have a free trial", async () => {
+  for (const listing of [{ sells: "copies" }, { pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900n }]) {
+    const world = makeWorld({ listing });
+    const res = await withApp(world, (call) => call("PUT", PLANS_URL, { plans: [freeTrial()] }));
+    assert.deepEqual([res.status, res.body.error], [409, "plans_not_available"]);
+    assert.equal(world.state.planWrites, 0);
+  }
+});
+
+test("my-listings carries the free trial first among a listing's plans, with its kind and the trials running now", async () => {
+  const world = makeWorld({
+    plans: [stored({ id: PLAN_1, position: 1 }), storedTrial(), storedTrial({ id: "trial_old", status: "retired", retiredAt: new Date(0) })],
+    subs: [
+      { id: "t1", subscriberId: "org_buyer_secret", planId: TRIAL_ID, status: "active" },
+      { id: "t2", subscriberId: "org_buyer_2", planId: TRIAL_ID, status: "active" },
+      // Over: stopped, or closed at the end of its 7 days.
+      { id: "t3", subscriberId: "org_buyer_3", planId: TRIAL_ID, status: "cancelled" },
+      { id: "t4", subscriberId: "org_buyer_4", planId: "trial_old", status: "active" },
+    ].map((sub) => ({ listingId: LISTING_ID, currentPeriodEnd: new Date(Date.now() + 86_400_000), cancelAtPeriodEnd: true, ...sub })),
+  });
+  await withApp(world, async (call) => {
+    const res = await call("GET", "/my-listings");
+    assert.deepEqual(res.body.listings[0].plans, [
+      { id: TRIAL_ID, kind: "trial", name: "Free trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null, status: "active", subscribers: 2 },
+      { id: PLAN_1, kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5, status: "active", subscribers: 0 },
+    ]);
+    assert.doesNotMatch(JSON.stringify(res.body), /org_buyer/);
   });
 });

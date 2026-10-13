@@ -15,8 +15,10 @@ import { resolveAgentModelId } from "../services/agentModelResolution.js";
 import {
   MAX_INCLUDED_USES,
   MAX_PAID_PLANS,
+  MAX_TRIAL_USES,
   MIN_EXTRA_USE_PRICE_CENTS,
   MIN_PLAN_PRICE_CENTS,
+  TRIAL_DAYS,
 } from "../services/listingPlans.js";
 import { installTestAuth } from "./jobsApiFakes.js";
 
@@ -107,6 +109,8 @@ test("with nothing switched on, nothing is available and the shape is still whol
       maxIncludedUses: 100_000,
       minPlanPriceCents: 100,
       minExtraUsePriceCents: 5,
+      maxTrialUses: 50,
+      trialDays: 7,
       freeModelDailyAllowance: null,
     },
   });
@@ -237,6 +241,8 @@ test("the body names no key, setting, address or reason, whatever is on or off",
       "maxIncludedUses",
       "minPlanPriceCents",
       "minExtraUsePriceCents",
+      "maxTrialUses",
+      "trialDays",
       "freeModelDailyAllowance",
     ]);
     assert.deepEqual(Object.keys(json.chat), ["models", "defaultModel"]);
@@ -308,11 +314,14 @@ test("paidUse carries the buyer's limits, the smallest price of a use, and the c
     maxIncludedUses: MAX_INCLUDED_USES,
     minPlanPriceCents: Number(MIN_PLAN_PRICE_CENTS),
     minExtraUsePriceCents: Number(MIN_EXTRA_USE_PRICE_CENTS),
+    // The numbers of a free trial, from the same rules.
+    maxTrialUses: MAX_TRIAL_USES,
+    trialDays: TRIAL_DAYS,
     freeModelDailyAllowance: 200,
   });
   assert.deepEqual(
-    [MAX_PAID_PLANS, MAX_INCLUDED_USES, MIN_PLAN_PRICE_CENTS, MIN_EXTRA_USE_PRICE_CENTS],
-    [4, 100_000, 100n, 5n],
+    [MAX_PAID_PLANS, MAX_INCLUDED_USES, MIN_PLAN_PRICE_CENTS, MIN_EXTRA_USE_PRICE_CENTS, MAX_TRIAL_USES, TRIAL_DAYS],
+    [4, 100_000, 100n, 5n, 50, 7],
   );
   // The caller's organization, never one named in the request.
   assert.deepEqual(asked, ["org_1"]);
@@ -340,6 +349,8 @@ test("paidUse fails closed on the allowance alone: an unreadable or senseless nu
     maxIncludedUses: 100_000,
     minPlanPriceCents: 100,
     minExtraUsePriceCents: 5,
+    maxTrialUses: 50,
+    trialDays: 7,
   };
   const boom = async () => {
     throw new Error("down");

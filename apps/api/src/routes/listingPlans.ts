@@ -13,6 +13,11 @@
  * no error. People already on a plan keep the terms they agreed to. The
  * answer is the plans as they are now, as GET /my-listings shows them.
  *
+ * The listing's one free trial is one more entry of `plans`, `{ id?, kind:
+ * "trial", priceCents: 0, includedUses, extraUsePriceCents: null }`, changed
+ * and ended as a paid plan is. It has no name of its own: one that is sent
+ * is not kept.
+ *
  * Who: an owner or admin of the organization the listing belongs to (their
  * role as it is now), or one of its API keys, which act for the organization
  * on the other routes that change a listing too.
@@ -44,7 +49,9 @@ const MAX_PLANS_IN_BODY = 20;
 const planSchema = z.object({
   id: z.string().uuid().optional(),
   kind: z.string().max(20),
-  name: z.string().max(200),
+  // Left out for a free trial, which has no name of its own. A paid plan
+  // without one is told so by the rules.
+  name: z.string().max(200).optional(),
   // The bounds here only keep a number whole and exact. The floors, and how
   // many uses a price allows, are the rules' to say.
   priceCents: z.number().int().min(-10_000_000).max(10_000_000),
@@ -94,7 +101,7 @@ export function createListingPlanRoutes(deps: ListingPlanRouteDeps): FastifyPlug
         const plans: PlanInput[] = body.data.plans.map((plan) => ({
           ...(plan.id !== undefined && { id: plan.id }),
           kind: plan.kind,
-          name: plan.name,
+          name: plan.name ?? "",
           priceCents: BigInt(plan.priceCents),
           includedUses: plan.includedUses,
           extraUsePriceCents: plan.extraUsePriceCents === null ? null : BigInt(plan.extraUsePriceCents),

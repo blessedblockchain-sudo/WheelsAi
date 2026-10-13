@@ -5,12 +5,17 @@ import {
   MAX_INCLUDED_USES,
   MAX_PAID_PLANS,
   MAX_PLAN_NAME_CHARS,
+  MAX_TRIAL_USES,
   MIN_EXTRA_USE_PRICE_CENTS,
   MIN_INCLUDED_USES,
   MIN_PLAN_CENTS_PER_INCLUDED_USE,
   MIN_PLAN_PRICE_CENTS,
   PLAN_MESSAGES,
+  TRIAL_DAYS,
+  TRIAL_PLAN_NAME,
+  TRIAL_PLAN_POSITION,
   checkPlanSet,
+  onTrialPlan,
   samePlanTerms,
   type CurrentPlan,
   type PlanInput,
@@ -22,8 +27,9 @@ import { MIN_PRICE_PER_USE_CENTS } from "../services/useListing.js";
 
 // The rules of a plan. What these pin: the numbers; a set of plans is saved
 // whole or not at all, with a sentence for each field that is wrong; a
-// listing that is not sold per use has no plans; a free trial is refused for
-// now; and a buyer's agreement holds only for the exact terms they were shown.
+// listing that is not sold per use has no plans; a listing can offer one free
+// trial, which has no price, no extra price, a few uses and no name of its
+// own; and a buyer's agreement holds only for the exact terms they were shown.
 
 const LISTING: PlanListing = { sells: "use", pricingModel: "per_request", agentKind: "chat" };
 
@@ -53,6 +59,11 @@ test("the numbers", () => {
   assert.equal(MIN_EXTRA_USE_PRICE_CENTS, 5n);
   // One floor for a use sold by itself, extra or not.
   assert.equal(MIN_EXTRA_USE_PRICE_CENTS, MIN_PRICE_PER_USE_CENTS);
+  // A free trial.
+  assert.equal(MAX_TRIAL_USES, 50);
+  assert.equal(TRIAL_DAYS, 7);
+  assert.equal(TRIAL_PLAN_NAME, "Free trial");
+  assert.equal(TRIAL_PLAN_POSITION, 0);
 });
 
 test("a set of plans that is in order comes back trimmed and in the order sent", () => {
@@ -90,12 +101,147 @@ test("at most four paid plans", () => {
   assert.equal(checkPlanSet(LISTING, five.slice(0, 4)).ok, true);
 });
 
-test("a free trial is refused for now, and so is a kind that is neither", () => {
-  assert.deepEqual(
-    fieldsOf(checkPlanSet(LISTING, [plan({ kind: "trial", priceCents: 0n, includedUses: 20 })]))["plans[0].kind"],
-    "Free trials are not available yet.",
-  );
+const trial = (over: Partial<PlanInput> = {}): PlanInput => ({
+  kind: "trial",
+  name: "",
+  priceCents: 0n,
+  includedUses: 20,
+  extraUsePriceCents: null,
+  ...over,
+});
+
+test("a kind that is neither paid nor a free trial is refused", () => {
   assert.equal(fieldsOf(checkPlanSet(LISTING, [plan({ kind: "gift" })]))["plans[0].kind"], PLAN_MESSAGES.kind);
+});
+
+// ============================================
+// The free trial
+// ============================================
+
+test("one free trial beside four paid plans passes: it is not one of the four, and it does not move their places", () => {
+  const four = [1, 2, 3, 4].map((n) => plan({ name: `Plan ${n}` }));
+  // Sent in the middle: the paid plans keep the order they were sent in.
+  const check = checkPlanSet(LISTING, [four[0]!, four[1]!, trial({ id: "trial_1" }), four[2]!, four[3]!]);
+  assert.equal(check.ok, true);
+  if (!check.ok) throw new Error("unreachable");
+  assert.deepEqual(
+    check.plans.map((p) => [p.kind, p.name, p.position]),
+    [
+      ["paid", "Plan 1", 1],
+      ["paid", "Plan 2", 2],
+      ["trial", "Free trial", 0],
+      ["paid", "Plan 3", 3],
+      ["paid", "Plan 4", 4],
+    ],
+  );
+  assert.deepEqual(check.plans[2], {
+    id: "trial_1",
+    kind: "trial",
+    name: "Free trial",
+    priceCents: 0n,
+    includedUses: 20,
+    extraUsePriceCents: null,
+    position: 0,
+  });
+  // A trial alone is a set too, and five paid plans are still one too many beside it.
+  assert.equal(checkPlanSet(LISTING, [trial()]).ok, true);
+  assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [trial(), ...four, plan({ name: "Plan 5" })])), {
+    plans: "A listing can have at most 4 plans.",
+  });
+});
+
+test("a free trial has no name of its own: whatever is sent is not kept, and none is needed", () => {
+  for (const name of ["", "   ", "Try it", "x".repeat(200)]) {
+    const check = checkPlanSet(LISTING, [trial({ name })]);
+    assert.equal(check.ok, true, JSON.stringify(name));
+    if (check.ok) assert.equal(check.plans[0]!.name, "Free trial");
+  }
+});
+
+test("a free trial includes 1 to 50 uses", () => {
+  for (const includedUses of [1, 20, 50]) {
+    assert.equal(checkPlanSet(LISTING, [trial({ includedUses })]).ok, true, String(includedUses));
+  }
+  for (const includedUses of [0, -1, 51, 500, 1.5, Number.NaN]) {
+    assert.deepEqual(
+      fieldsOf(checkPlanSet(LISTING, [trial({ includedUses })])),
+      { "plans[0].includedUses": "A free trial includes between 1 and 50 uses." },
+      String(includedUses),
+    );
+  }
+});
+
+test("a free trial with a price, or with a price for an extra use, is refused on that field", () => {
+  for (const priceCents of [1n, 100n, 900n, -1n]) {
+    assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [trial({ priceCents })])), {
+      "plans[0].priceCents": "A free trial has no price.",
+    });
+  }
+  for (const extraUsePriceCents of [0n, 5n, 40n]) {
+    assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [trial({ extraUsePriceCents })])), {
+      "plans[0].extraUsePriceCents": "A free trial has no price for an extra use. It stops when its uses are gone.",
+    });
+  }
+  // Each wrong field of a trial is told, under the trial, and the paid plan beside it is not blamed.
+  assert.deepEqual(
+    Object.keys(fieldsOf(checkPlanSet(LISTING, [plan(), trial({ priceCents: 100n, extraUsePriceCents: 5n, includedUses: 51 })]))).sort(),
+    ["plans[1].extraUsePriceCents", "plans[1].includedUses", "plans[1].priceCents"],
+  );
+});
+
+test("two free trials in one set are refused on the second", () => {
+  assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [trial(), plan(), trial({ includedUses: 10 })])), {
+    "plans[2].kind": "A listing can have one free trial.",
+  });
+});
+
+test("a plan on offer keeps its kind: a paid plan's id sent as a trial, or a trial's id sent as a paid plan, is refused", () => {
+  const ids = new Set(["plan_1", "trial_1"]);
+  const kinds = new Map([
+    ["plan_1", "paid"],
+    ["trial_1", "trial"],
+  ]);
+  const sentence = "A plan cannot be turned into a free trial, or a free trial into a plan. End it and add a new one.";
+  assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [trial({ id: "plan_1" })], ids, kinds)), { "plans[0].kind": sentence });
+  assert.deepEqual(fieldsOf(checkPlanSet(LISTING, [plan({ id: "trial_1" })], ids, kinds)), { "plans[0].kind": sentence });
+  assert.equal(checkPlanSet(LISTING, [plan({ id: "plan_1" }), trial({ id: "trial_1" })], ids, kinds).ok, true);
+});
+
+test("a listing that cannot have plans cannot have a free trial", () => {
+  for (const listing of [
+    { ...LISTING, sells: "copies" },
+    { ...LISTING, pricingModel: "monthly" },
+    { ...LISTING, pricingModel: "free" },
+    { ...LISTING, agentKind: "scheduled" },
+  ]) {
+    const check = checkPlanSet(listing, [trial()]);
+    assert.equal(check.ok, false);
+    if (check.ok || check.status !== 409) throw new Error("expected a 409");
+    assert.equal(check.code, "plans_not_available");
+  }
+});
+
+test("a buyer's row is a free trial when it has a count of uses and an agreed price of nothing", () => {
+  assert.equal(onTrialPlan({ includedUses: 20, priceCents: 0n }), true);
+  // A paid plan, a month with no count, and a row from before prices were stored.
+  assert.equal(onTrialPlan({ includedUses: 500, priceCents: 900n }), false);
+  assert.equal(onTrialPlan({ includedUses: null, priceCents: 0n }), false);
+  assert.equal(onTrialPlan({ includedUses: 20, priceCents: null }), false);
+  assert.equal(onTrialPlan({ includedUses: 20 }), false);
+  assert.equal(onTrialPlan(null), false);
+  assert.equal(onTrialPlan(undefined), false);
+});
+
+test("the sentences of a free trial are plain", () => {
+  for (const sentence of [
+    PLAN_MESSAGES.trialTwice,
+    PLAN_MESSAGES.trialPrice,
+    PLAN_MESSAGES.trialExtra,
+    PLAN_MESSAGES.trialUses,
+    PLAN_MESSAGES.kindChanged,
+  ]) {
+    assert.doesNotMatch(sentence, /_|\u2014|unlimited|not available yet/);
+  }
 });
 
 test("a name is 1 to 40 characters after trimming", () => {

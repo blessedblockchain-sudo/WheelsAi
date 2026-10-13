@@ -9,6 +9,12 @@
  *                             hold its id and finish the 30 days they paid for
  *   a plan with no id         is created at a free place from 1 to 4
  *
+ * The listing's one free trial is in the same set, as an entry of kind
+ * "trial": changed in place by its id, ended by naming it, created at place
+ * 0. The four places of the paid plans are not its, and it takes none.
+ * Ending it stops new starts at once; the trials that are running finish
+ * their days, on their own rows.
+ *
  * Ending a plan is said, never implied. A plan on offer that is neither sent
  * nor named is one the sender did not know of (a teammate added it, or the
  * page is an old one), so the whole save is refused and nothing is written.
@@ -27,20 +33,28 @@
 import { prisma } from "@wheelsai/db";
 
 import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
-import { checkPlanSet, MAX_PAID_PLANS, type PlanInput, type PlanSetCheck } from "./listingPlans.js";
+import {
+  checkPlanSet,
+  MAX_PAID_PLANS,
+  TRIAL_PLAN_POSITION,
+  type PlanInput,
+  type PlanSetCheck,
+} from "./listingPlans.js";
 
 /** A plan as its creator sees it. Cents are whole cents. No buyer is named. */
 export interface OwnerPlan {
   id: string;
-  /** "paid". */
+  /** "paid", or "trial" for the listing's free trial, which comes first. */
   kind: string;
+  /** "Free trial" for the trial. */
   name: string;
+  /** 0 for the trial. */
   priceCents: number;
   includedUses: number;
-  /** Null = the plan stops until it renews. */
+  /** Null = the plan stops until it renews. Always null for the trial. */
   extraUsePriceCents: number | null;
   status: string;
-  /** How many open subscriptions are on this plan. */
+  /** How many open subscriptions are on this plan. For the trial: the trials that are running now. */
   subscribers: number;
 }
 
@@ -131,8 +145,9 @@ type PlanReader = Pick<typeof prisma, "listingPlan" | "agentSubscription">;
 
 /**
  * The plans on offer for each of these listings, in the order a buyer sees
- * them, each with the number of open subscriptions on it. A listing with no
- * plan is not in the map.
+ * them, each with the number of open subscriptions on it. The free trial, if
+ * the listing offers one, comes first with its kind. A listing with no plan
+ * is not in the map.
  */
 export async function readOwnerPlans(db: PlanReader, listingIds: string[]): Promise<Map<string, OwnerPlan[]>> {
   const byListing = new Map<string, OwnerPlan[]>();
@@ -209,10 +224,21 @@ export async function replaceListingPlans(args: {
         });
       }
 
-      const onOffer = await tx.listingPlan.findMany({
+      const paidOnOffer = await tx.listingPlan.findMany({
         where: { listingId, status: "active", kind: "paid" },
         select: { id: true, position: true },
       });
+      // The free trial, read by itself: the places of the paid plans are
+      // worked out from the paid rows alone.
+      const trialOnOffer = await tx.listingPlan.findMany({
+        where: { listingId, status: "active", kind: "trial" },
+        select: { id: true, position: true },
+      });
+      const onOffer = [...paidOnOffer, ...trialOnOffer];
+      const kinds = new Map<string, string>([
+        ...paidOnOffer.map((plan): [string, string] => [plan.id, "paid"]),
+        ...trialOnOffer.map((plan): [string, string] => [plan.id, "trial"]),
+      ]);
       // Every plan on offer must be either sent or named as ended. Checked
       // here, on the rows this transaction read, and before the rules of a
       // plan: a sender who did not know of a plan is told to reload, not what
@@ -233,6 +259,7 @@ export async function replaceListingPlans(args: {
               { sells: listing.sells, pricingModel: listing.pricingModel, agentKind: listing.agent?.agentKind },
               args.plans,
               new Set(onOffer.map((plan) => plan.id)),
+              kinds,
             );
       if (!check.ok) {
         throw new PlansRefused(
@@ -255,12 +282,14 @@ export async function replaceListingPlans(args: {
       }
 
       // Sent with its id: changed in place. It keeps its id and its place, so
-      // no two rows ever reach for one place while this runs.
+      // no two rows ever reach for one place while this runs. The row must
+      // still be of the kind it was sent as: a free trial is never written
+      // over a paid plan's row, or the other way round.
       const places = new Set<number>();
       for (const plan of check.plans) {
         if (plan.id === null) continue;
         const changed = await tx.listingPlan.updateMany({
-          where: { id: plan.id, listingId, status: "active" },
+          where: { id: plan.id, listingId, status: "active", kind: plan.kind },
           data: {
             name: plan.name,
             priceCents: plan.priceCents,
@@ -277,9 +306,14 @@ export async function replaceListingPlans(args: {
       // of its transaction.
       for (const plan of check.plans) {
         if (plan.id !== null) continue;
-        let position = 1;
-        while (places.has(position)) position += 1;
-        if (position > MAX_PAID_PLANS) throw new PlansRefused(CHANGED_ELSEWHERE);
+        // The free trial has one place of its own. If a trial is still on
+        // offer there (another save added it a moment ago), the index
+        // refuses this one.
+        let position = plan.kind === "trial" ? TRIAL_PLAN_POSITION : 1;
+        if (plan.kind !== "trial") {
+          while (places.has(position)) position += 1;
+          if (position > MAX_PAID_PLANS) throw new PlansRefused(CHANGED_ELSEWHERE);
+        }
         places.add(position);
         await tx.listingPlan.create({
           data: {

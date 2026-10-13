@@ -8,6 +8,7 @@
  */
 import { env } from "../../config/env.js";
 import { createLogger } from "../../utils/logger.js";
+import type { PlanWarningWords } from "../planWarnings.js";
 
 const logger = createLogger("email");
 
@@ -139,5 +140,18 @@ export function teamInviteEmail(
       `You have been invited to join <strong>${escapeHtml(orgName)}</strong> as ${escapeHtml(role)}. The invite expires in 7 days and only works for ${escapeHtml(to)}.`,
       { label: "Accept invite", url },
     ),
+  };
+}
+
+/**
+ * A plan reached 85% or all of its uses. The words are planWarningWords of
+ * services/planWarnings.ts; this lays them out as the other emails are.
+ */
+export function planWarningEmail(to: string, words: PlanWarningWords): EmailMessage {
+  return {
+    to,
+    subject: words.subject,
+    text: `${words.lines.join("\n")}\n\n${words.link.url}`,
+    html: layout(words.subject, words.lines.map(escapeHtml).join("<br>"), words.link),
   };
 }

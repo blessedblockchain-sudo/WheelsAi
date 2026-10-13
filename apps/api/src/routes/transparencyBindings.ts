@@ -29,6 +29,7 @@
 
 import { prisma } from "@wheelsai/db";
 
+import { env } from "../config/env.js";
 import { checkTokenEligibility } from "../services/agentToken.js";
 import { loadAgentDetailByPrisma } from "../services/loadAgentDetail.js";
 import { loadAgentListByPrisma } from "../services/loadAgentList.js";
@@ -46,6 +47,8 @@ type AgentListPrisma = Parameters<typeof loadAgentListByPrisma>[1]["prisma"];
 
 export function createPublicAgentRoutesProduction() {
   return createPublicAgentRoutes({
+    // Where the API page tells callers to send requests.
+    publicApiUrl: env.PUBLIC_API_URL ?? null,
     loadPublicAgent: (handle) =>
       loadPublicAgentByPrisma(
         { handle, paymentsLimit: PUBLIC_RECENT_PAYMENTS_LIMIT },

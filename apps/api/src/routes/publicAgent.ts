@@ -33,11 +33,18 @@
  *
  * The loader signals "not found OR not public" with a single null return,
  * so the route never reveals the existence of a private agent.
+ *
+ * GET /a/:handle/api is unauthenticated too. It answers what the API page of a listing
+ * draws (services/agentApiPage.ts), built from the same read as the page
+ * above. 404 exactly where that read answers 404, and for an agent that has
+ * no API page: its use is not sold at a price, or it is not one that is
+ * called.
  */
 
 import type { TaskInputSchema } from "@wheelsai/shared/agent-kind";
 import type { FastifyPluginAsync } from "fastify";
 
+import { agentApiPageOf } from "../services/agentApiPage.js";
 import { PUBLIC_RESULT_MAX_CHARS, PUBLIC_RESULTS_LIMIT } from "../services/publicPageState.js";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -176,6 +183,12 @@ export interface PublicAgentDetail {
 export interface PublicAgentDeps {
   /** By public handle. null for an unknown handle and for an agent that is not public. */
   loadPublicAgent: (handle: string) => Promise<PublicAgentDetail | null>;
+  /**
+   * The address this API is reached at from outside (PUBLIC_API_URL), for
+   * the API page. Unset or null: the page uses the address it reached the
+   * API at.
+   */
+  publicApiUrl?: string | null;
 }
 
 // ============================================
@@ -339,6 +352,15 @@ export function createPublicAgentRoutes(deps: PublicAgentDeps): FastifyPluginAsy
         return reply.status(404).send({ error: "agent_not_found" });
       }
       return reply.status(200).send(serialize(detail));
+    });
+
+    // The same read, the same 404, and no sign-in: an API page is for
+    // people who have not started yet.
+    app.get<{ Params: { handle: string } }>("/a/:handle/api", async (request, reply) => {
+      const detail = await deps.loadPublicAgent(request.params.handle);
+      const page = detail && agentApiPageOf(detail, { publicApiUrl: deps.publicApiUrl });
+      if (!page) return reply.status(404).send({ error: "agent_not_found" });
+      return reply.status(200).send(page);
     });
   };
 }

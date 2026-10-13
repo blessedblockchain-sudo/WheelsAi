@@ -54,6 +54,17 @@ export interface PlanOfferDb {
   };
 }
 
+/** The same read for several listings at once: each row says whose it is. */
+export interface PlanOffersDb {
+  listingPlan: {
+    findMany(args: {
+      where: { listingId: { in: string[] }; status: "active"; kind: "paid" };
+      orderBy: { position: "asc" };
+      select: typeof PLAN_OFFER_COLUMNS & { listingId: true };
+    }): Promise<Array<PlanOfferRow & { listingId: string }>>;
+  };
+}
+
 /** Whether a listing offers its plans now: published, selling use, at a price per request. */
 export function offersPlans(listing: { status: string; sells: string; pricingModel: string }): boolean {
   return listing.status === "published" && listing.sells === "use" && listing.pricingModel === "per_request";
@@ -66,6 +77,37 @@ export function readPlanOffers(db: PlanOfferDb, listingId: string): Promise<Plan
     orderBy: { position: "asc" },
     select: PLAN_OFFER_COLUMNS,
   });
+}
+
+/**
+ * The plans on offer of several listings, in ONE query: a page of search
+ * results, or a buyer's installs. Answers a list for each listing that
+ * offers plans now (offersPlans), empty when it has none, each in the order
+ * a buyer sees them. A listing that offers none is not asked about and is
+ * not in the answer. Nothing is read when no listing offers plans.
+ */
+export async function readPlanOffersOf(
+  db: PlanOffersDb,
+  listings: Array<{ id: string; status: string; sells: string; pricingModel: string }>,
+): Promise<Map<string, PlanOfferRow[]>> {
+  const byListing = new Map<string, PlanOfferRow[]>();
+  for (const listing of listings) {
+    if (offersPlans(listing)) byListing.set(listing.id, []);
+  }
+  if (byListing.size === 0) return byListing;
+  const rows = await db.listingPlan.findMany({
+    where: { listingId: { in: [...byListing.keys()] }, status: "active", kind: "paid" },
+    orderBy: { position: "asc" },
+    select: { ...PLAN_OFFER_COLUMNS, listingId: true },
+  });
+  for (const row of rows) byListing.get(row.listingId)?.push(row);
+  return byListing;
+}
+
+/** The smallest price for 30 days among plans on offer, in cents; null when there are none. */
+export function plansFromCentsOf(rows: PlanOfferRow[]): number | null {
+  if (rows.length === 0) return null;
+  return Number(rows.reduce((least, row) => (row.priceCents < least ? row.priceCents : least), rows[0]!.priceCents));
 }
 
 /** Field by field: whatever else a row carries stays where it was read. */

@@ -169,6 +169,7 @@ test("access on a plan: its name, the count, what an extra use costs, when it st
     id: "plan-1",
     name: "Starter",
     includedUses: 500,
+    carriedUses: 0,
     usedUses: 12,
     remainingUses: 488,
     extraUsePriceCents: 50,
@@ -192,14 +193,17 @@ test("access on a plan: its name, the count, what an extra use costs, when it st
     id: "plan-1",
     name: "Starter",
     includedUses: 500,
+    carriedUses: 0,
     usedUses: 500,
     remainingUses: 0,
     extraUsePriceCents: null,
     resetsAt: RESETS_AT,
     warning: 100,
   });
-  // Uses carried in by a move to a bigger plan are part of what is left.
-  assert.equal((await planOf({ usedInPeriod: 510, carriedUses: 20 })).remainingUses, 10);
+  // Uses carried in by a move to a bigger plan are part of what is left, and
+  // are said, so a page can tell what the period holds without working it out.
+  const carried = await planOf({ usedInPeriod: 510, carriedUses: 20 });
+  assert.deepEqual([carried.includedUses, carried.carriedUses, carried.usedUses, carried.remainingUses], [500, 20, 510, 10]);
 });
 
 test("a plan that will not renew has no time at which its count starts again", async () => {

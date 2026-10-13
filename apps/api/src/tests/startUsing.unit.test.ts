@@ -173,6 +173,8 @@ function makeWorld(opts: {
       },
     },
     agentToken: { findUnique: async () => null },
+    // No listing here has a plan on offer (tests/planReads.unit.test.ts has those).
+    listingPlan: { findMany: async () => [] },
     agent: {
       findFirst: async ({ where }: Row) => state.agents.find((a) => matches(a, where)) ?? null,
       create: async ({ data }: Row) => {

@@ -483,7 +483,10 @@ export interface UseAccessPlan {
   /** What its creator calls it now. */
   name: string;
   includedUses: number;
+  /** Uses brought into this period by a move to a bigger plan, on top of the included ones. 0 after a renewal. */
+  carriedUses: number;
   usedUses: number;
+  /** What is left of the period: the included uses and the carried ones, less the ones used. */
   remainingUses: number;
   /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
   extraUsePriceCents: number | null;
@@ -859,7 +862,10 @@ export function paidToolAllowlist(
  * (services/marketplaceSubscriptions.ts). Only words, and whether a time to
  * start again is told, depend on it.
  */
-function planWillRenew(listing: UseListingRow, sub: PaidSubscription | null): boolean {
+export function planWillRenew(
+  listing: Pick<UseListingRow, "status" | "sells" | "pricingModel">,
+  sub: Pick<PaidSubscription, "cancelAtPeriodEnd" | "planRetired"> | null,
+): boolean {
   return offersPlans(listing) && sub?.cancelAtPeriodEnd !== true && sub?.planRetired !== true;
 }
 
@@ -1533,8 +1539,13 @@ async function pausedNow(deps: PaidUseDeps, listing: UseListingRow, agent: PaidA
   }
 }
 
-/** The plan a buyer is on, from their own row. Built field by field. */
-function accessPlanOf(sub: PaidSubscription, renews: boolean): UseAccessPlan {
+/**
+ * The plan a buyer is on, from their own row. Built field by field. The one
+ * place it is built: the agent's page reads it from the access answer and
+ * the buyer's Installed page from their installs (services/marketplace.ts),
+ * and both must say the same count.
+ */
+export function accessPlanOf(sub: PaidSubscription, renews: boolean): UseAccessPlan {
   const included = sub.includedUses ?? 0;
   const carried = sub.carriedUses ?? 0;
   const used = sub.usedInPeriod ?? 0;
@@ -1543,6 +1554,7 @@ function accessPlanOf(sub: PaidSubscription, renews: boolean): UseAccessPlan {
     id: sub.planId ?? null,
     name: sub.planName ?? "",
     includedUses: included,
+    carriedUses: carried,
     usedUses: used,
     remainingUses: Math.max(0, included + carried - used),
     extraUsePriceCents: sub.extraUsePriceCents == null ? null : Number(sub.extraUsePriceCents),

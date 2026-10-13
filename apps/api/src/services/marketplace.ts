@@ -12,6 +12,16 @@ import {
 import { resolveAgentModelId } from "./agentModelResolution.js";
 import { HOSTED_MODEL_PREFIX } from "./hostedModel.js";
 import { readOwnerPlans, replaceListingPlans, type OwnerPlan } from "./listingPlanStore.js";
+import { accessPlanOf, planWillRenew, type UseAccessPlan } from "./paidUse.js";
+import {
+  offersPlans,
+  planOfferOf,
+  plansFromCentsOf,
+  readPlanOffers,
+  readPlanOffersOf,
+  type PlanOffer,
+  type PlanOffersDb,
+} from "./planOffers.js";
 import type { PlanInput } from "./listingPlans.js";
 import { LISTING_PAUSED_START_MESSAGE, listingPausedNow, reconcileListingPauses } from "./listingPause.js";
 import { getOrgPlan } from "./orgPlan.js";
@@ -29,6 +39,8 @@ import {
   COPY_MONTH_BLOCKS_USE,
   copyMonthBlockingUse,
   copyMonthBlockingUseMessage,
+  onPlan,
+  planGrantsAccess,
   useAccess,
   type UseAccess,
 } from "./useAccess.js";
@@ -213,8 +225,14 @@ export async function searchListings(params: ListingSearchParams) {
     prisma.agentListing.count({ where }),
   ]);
 
+  // What the cards say of plans: the smallest price among each listing's
+  // plans on offer. One query for the whole page, never one per listing.
+  const offers = await readPlanOffersOf(prisma as unknown as PlanOffersDb, listings);
+
   return {
-    listings: listings.map(formatListingForPublic),
+    listings: listings.map((listing) =>
+      formatListingForPublic(listing, { plansFromCents: plansFromCentsOf(offers.get(listing.id) ?? []) }),
+    ),
     pagination: {
       page,
       limit,
@@ -249,7 +267,9 @@ export async function getListingBySlug(slug: string) {
     return null;
   }
 
-  return formatListingForPublic(listing);
+  // The plans on offer, read only for a listing that offers them.
+  const plans = offersPlans(listing) ? (await readPlanOffers(prisma, listing.id)).map(planOfferOf) : [];
+  return formatListingForPublic(listing, { plans });
 }
 
 // ============================================
@@ -362,7 +382,7 @@ export async function getFeaturedListings(limit = 6) {
     },
   });
 
-  return listings.map(formatListingForPublic);
+  return listings.map((listing) => formatListingForPublic(listing));
 }
 
 export async function getCategoryStats() {
@@ -565,7 +585,7 @@ export async function getPublisherProfile(slug: string) {
     totalListings: profile.totalListings,
     totalInstalls: profile.totalInstalls,
     createdAt: profile.createdAt,
-    listings: profile.org.publishedListings.map(formatListingForPublic),
+    listings: profile.org.publishedListings.map((listing) => formatListingForPublic(listing)),
   };
 }
 
@@ -1243,7 +1263,13 @@ function formatListingForOwner(listing: any) {
   };
 }
 
-function formatListingForPublic(listing: any) {
+/**
+ * `said` is what only some reads look up, and so only they say: the plans
+ * on offer (the listing's own page, a buyer's installs) and the smallest
+ * plan price (the search that feeds the cards). A read that did not look
+ * leaves the field out; it never answers "none" for a listing it did not ask.
+ */
+function formatListingForPublic(listing: any, said: { plans?: PlanOffer[]; plansFromCents?: number | null } = {}) {
   // What one payment buys, for a listing that sells use at a price. A
   // listing that sells copies, or use for free, has no unit.
   const unit: UseUnit | null =
@@ -1286,6 +1312,8 @@ function formatListingForPublic(listing: any) {
     publishedAt: listing.publishedAt,
     createdAt: listing.createdAt,
     updatedAt: listing.updatedAt,
+    ...(said.plans !== undefined && { plans: said.plans }),
+    ...(said.plansFromCents !== undefined && { plansFromCents: said.plansFromCents }),
     // Try it is on for every published listing; there is no switch to read.
     trial: { enabled: listing.status === "published" },
     agent: listing.agent
@@ -1493,15 +1521,15 @@ const LICENCE_SUBSCRIPTION_COLUMNS = {
   plan: { select: { status: true } },
 } as const;
 
-/** The same of a row read whole. */
-const WITH_PLAN_STATUS = { plan: { select: { status: true } } } as const;
+/** The same of a row read whole, with what its creator calls the plan now. */
+const WITH_PLAN_STATUS = { plan: { select: { status: true, name: true } } } as const;
 
-/** The row with `planRetired` in place of the plan it was read with. */
-function withPlanRetired<Row extends { plan?: { status: string } | null }>(
+/** The row with `planRetired`, and `planName`, in place of the plan it was read with. */
+function withPlanRetired<Row extends { plan?: { status: string; name?: string } | null }>(
   sub: Row,
-): Omit<Row, "plan"> & { planRetired: boolean } {
+): Omit<Row, "plan"> & { planRetired: boolean; planName: string | null } {
   const { plan, ...row } = sub;
-  return { ...row, planRetired: plan?.status === "retired" };
+  return { ...row, planRetired: plan?.status === "retired", planName: plan?.name ?? null };
 }
 
 /**
@@ -2064,7 +2092,7 @@ export async function readUseState(
           acceptedAt: licence.pricingAcceptedAt ?? null,
         }
       : null,
-    subscription: sub ? formatSubscription(sub) : null,
+    subscription: sub ? formatSubscription(sub, listing) : null,
     agent: licenceAgentOf(listing.agent),
   };
 }
@@ -2352,6 +2380,12 @@ export async function getMyInstalls(buyerId: string) {
     include: WITH_PLAN_STATUS,
   });
   const subByListing = new Map(subscriptions.map((sub) => [sub.listingId, withPlanRetired(sub)]));
+  // The plans each listing offers now, for the ones that offer any: what a
+  // buyer on a plan can move up to. One query for all the installs.
+  const offers = await readPlanOffersOf(
+    prisma as unknown as PlanOffersDb,
+    installs.map((install) => install.listing),
+  );
 
   return installs.map((install) => {
     const sub = subByListing.get(install.listingId);
@@ -2385,8 +2419,10 @@ export async function getMyInstalls(buyerId: string) {
           install.acceptedPricePerRequestCents !== null ? Number(install.acceptedPricePerRequestCents) : null,
         acceptedAt: install.pricingAcceptedAt,
       },
-      listing: formatListingForPublic(install.listing),
-      subscription: sub ? formatSubscription(sub) : null,
+      listing: formatListingForPublic(install.listing, {
+        plans: (offers.get(install.listingId) ?? []).map(planOfferOf),
+      }),
+      subscription: sub ? formatSubscription(sub, install.listing) : null,
     };
   });
 }
@@ -2397,17 +2433,40 @@ export async function getMyInstalls(buyerId: string) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function formatSubscription(sub: {
-  id: string;
-  listingId: string;
-  status: string;
-  currentPeriodStart: Date;
-  currentPeriodEnd: Date;
-  cancelAtPeriodEnd: boolean;
-  cancelledAt: Date | null;
-  priceCents: bigint | null;
-  endReason: string | null;
-}) {
+/**
+ * A buyer's subscription as they are told it. `plan` is the plan it is on,
+ * while that plan gives uses: the count, what is left and when it starts
+ * again, built by the function the agent's page is answered with
+ * (accessPlanOf, services/paidUse.ts). Null for a month with no count,
+ * which is otherwise answered exactly as before plans existed, and for a
+ * plan that is over (its `status` and `endReason` say that).
+ *
+ * `listing` is the listing the row is on: whether a plan will renew depends
+ * on whether the listing still offers plans.
+ */
+function formatSubscription(
+  sub: {
+    id: string;
+    listingId: string;
+    status: string;
+    currentPeriodStart: Date;
+    currentPeriodEnd: Date;
+    cancelAtPeriodEnd: boolean;
+    cancelledAt: Date | null;
+    priceCents: bigint | null;
+    endReason: string | null;
+    planId?: string | null;
+    includedUses?: number | null;
+    usedInPeriod?: number;
+    carriedUses?: number;
+    extraUsePriceCents?: bigint | null;
+    planRetired?: boolean;
+    planName?: string | null;
+  },
+  listing: { status: string; sells: string; pricingModel: string },
+) {
+  const plan: UseAccessPlan | null =
+    onPlan(sub) && planGrantsAccess(sub, new Date()) ? accessPlanOf(sub, planWillRenew(listing, sub)) : null;
   return {
     id: sub.id,
     listingId: sub.listingId,
@@ -2425,6 +2484,7 @@ function formatSubscription(sub: {
       sub.status === "past_due"
         ? new Date(sub.currentPeriodEnd.getTime() + PAST_DUE_GRACE_DAYS * DAY_MS)
         : null,
+    plan,
   };
 }
 
@@ -2432,12 +2492,25 @@ export async function getMySubscriptions(orgId: string) {
   const subs = await prisma.agentSubscription.findMany({
     where: { subscriberId: orgId },
     include: {
-      listing: { select: { id: true, title: true, slug: true, iconUrl: true, monthlyPriceCents: true } },
+      listing: {
+        select: {
+          id: true,
+          title: true,
+          slug: true,
+          iconUrl: true,
+          monthlyPriceCents: true,
+          // Whether a plan on it will renew.
+          status: true,
+          sells: true,
+          pricingModel: true,
+        },
+      },
+      ...WITH_PLAN_STATUS,
     },
     orderBy: { currentPeriodEnd: "asc" },
   });
   return subs.map((sub) => ({
-    ...formatSubscription(sub),
+    ...formatSubscription(withPlanRetired(sub), sub.listing),
     listing: {
       id: sub.listing.id,
       title: sub.listing.title,
@@ -2474,9 +2547,10 @@ export async function setSubscriptionCancelAtPeriodEnd(
 
   const sub = await prisma.agentSubscription.findUnique({
     where: { listingId_subscriberId: { listingId, subscriberId: orgId } },
+    include: { listing: { select: { status: true, sells: true, pricingModel: true } }, ...WITH_PLAN_STATUS },
   });
   logger.info({ orgId, listingId, cancelAtPeriodEnd: cancel }, "Subscription renewal setting changed");
-  return formatSubscription(sub!);
+  return formatSubscription(withPlanRetired(sub!), sub!.listing);
 }
 
 /**

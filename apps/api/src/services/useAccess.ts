@@ -110,7 +110,7 @@ export function onPlan(sub: Pick<UseSubscription, "includedUses"> | null | undef
  * the days of grace of a renewal that is being retried. A plan the creator
  * ended is not renewed, so like a cancelled renewal it has no grace.
  */
-function planGrantsAccess(sub: UseSubscription, now: Date): boolean {
+export function planGrantsAccess(sub: UseSubscription, now: Date): boolean {
   return subscriptionGrantsAccess(
     {
       status: sub.status,

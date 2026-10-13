@@ -52,7 +52,12 @@ function makeWorld(sub: Row = {}) {
         Object.assign(row, data);
         return { count: 1 };
       },
-      findUnique: async () => ({ ...row }),
+      // Read back for the answer, with the listing it is on and its plan.
+      findUnique: async (args: Row) => ({
+        ...row,
+        ...(args?.include?.listing && { listing: { status: "published", sells: "use", pricingModel: "per_request" } }),
+        ...(args?.include?.plan && { plan: row.planId ? { status: "active", name: "Starter" } : null }),
+      }),
     },
     // The spend guard reads the member's role as it is now.
     orgMember: {
@@ -165,6 +170,38 @@ test("resume in the days of grace is held to the same right, and a plan's row is
   const yes = await post(allowed, "resume", session("u_owner"));
   assert.equal(yes.status, 200);
   assert.deepEqual([allowed.state.row.cancelAtPeriodEnd, allowed.state.row.status], [false, "past_due"]);
+});
+
+test("cancel and resume answer the plan as the buyer's pages draw it, and a month with no count has none", async () => {
+  const plan = { planId: "plan_1", includedUses: 500, usedInPeriod: 40, carriedUses: 10, extraUsePriceCents: 5n };
+  const world = makeWorld(plan);
+  const count = { id: "plan_1", name: "Starter", includedUses: 500, carriedUses: 10, usedUses: 40, remainingUses: 470, extraUsePriceCents: 5, warning: null };
+  // A renewal that was cancelled has no time at which the count starts again.
+  const cancelled = await post(world, "cancel", session("u_member"));
+  assert.deepEqual([cancelled.status, cancelled.body.subscription.plan], [200, count]);
+  const resumed = await post(world, "resume", session("u_owner"));
+  assert.deepEqual(
+    [resumed.status, resumed.body.subscription.plan],
+    [200, { ...count, resetsAt: world.state.row.currentPeriodEnd.toISOString() }],
+  );
+
+  // Today's monthly subscriber: every field of before, and no plan.
+  const month = await post(makeWorld(), "cancel", session("u_member"));
+  assert.deepEqual(Object.keys(month.body.subscription), [
+    "id",
+    "listingId",
+    "status",
+    "priceCents",
+    "endReason",
+    "currentPeriodStart",
+    "currentPeriodEnd",
+    "cancelAtPeriodEnd",
+    "cancelledAt",
+    "hasAccess",
+    "graceEndsAt",
+    "plan",
+  ]);
+  assert.equal(month.body.subscription.plan, null);
 });
 
 test("nobody signed in is a 401 on both, and a subscription that is not open is a 404 for someone who may spend", async () => {

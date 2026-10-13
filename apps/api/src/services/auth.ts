@@ -13,6 +13,7 @@ import {
 
 import { prisma } from "@wheelsai/db";
 import { createLogger } from "../utils/logger.js";
+import { readSpentToday, type ApiKeySpendDayDb } from "./apiKeySpend.js";
 import { env } from "../config/env.js";
 
 const logger = createLogger("auth-service");
@@ -391,29 +392,83 @@ export async function revokeApiKey(keyId: string, orgId: string) {
   logger.info({ orgId, keyId }, "API key revoked");
 }
 
-export async function listApiKeys(orgId: string) {
-  const keys = await prisma.apiKey.findMany({
+/** The key columns a list is answered from. Never the key or its hash. */
+const API_KEY_LIST_COLUMNS = {
+  id: true,
+  keyPrefix: true,
+  name: true,
+  scopes: true,
+  maxJobPriceCents: true,
+  maxUsePriceCents: true,
+  dailySpendCapCents: true,
+  lastUsedAt: true,
+  expiresAt: true,
+  createdAt: true,
+} as const;
+
+interface ApiKeyListRow {
+  id: string;
+  keyPrefix: string;
+  name: string | null;
+  scopes: string[];
+  maxJobPriceCents: bigint | null;
+  maxUsePriceCents: bigint | null;
+  dailySpendCapCents: bigint | null;
+  lastUsedAt: Date | null;
+  expiresAt: Date | null;
+  createdAt: Date;
+}
+
+/** What listApiKeys reads. Prisma's client satisfies it; a test passes a stand-in. */
+export interface ApiKeyListDb extends ApiKeySpendDayDb {
+  apiKey: {
+    findMany(args: {
+      where: { orgId: string };
+      select: typeof API_KEY_LIST_COLUMNS;
+      orderBy: { createdAt: "desc" };
+    }): Promise<ApiKeyListRow[]>;
+  };
+}
+
+/**
+ * The organization's keys, newest first, each with what it has spent in the
+ * UTC day (`spentTodayCents`; 0 for a key that has spent nothing today, and
+ * for a key with no caps, which cannot spend). Two queries however many keys
+ * there are: the keys, then the day's spend windows of all of them.
+ *
+ * The day's spend is a number beside the keys and never a reason to lose
+ * them: creating a key answers from this list after the key is written, and
+ * its secret is shown that one time only. When the windows cannot be read the
+ * keys are answered with `spentTodayCents` null, which means not known, and
+ * never a 0 that would say nothing was spent.
+ */
+export async function listApiKeys(
+  orgId: string,
+  deps: { db?: ApiKeyListDb; now?: Date } = {},
+) {
+  const db = deps.db ?? (prisma as unknown as ApiKeyListDb);
+  const keys = await db.apiKey.findMany({
     where: { orgId },
-    select: {
-      id: true,
-      keyPrefix: true,
-      name: true,
-      scopes: true,
-      maxJobPriceCents: true,
-      maxUsePriceCents: true,
-      dailySpendCapCents: true,
-      lastUsedAt: true,
-      expiresAt: true,
-      createdAt: true,
-    },
+    select: API_KEY_LIST_COLUMNS,
     orderBy: { createdAt: "desc" },
   });
+  let spentToday: Map<string, bigint> | null = null;
+  try {
+    spentToday = await readSpentToday(
+      db,
+      keys.map((key) => key.id),
+      deps.now ?? new Date(),
+    );
+  } catch (err) {
+    logger.warn({ err, orgId }, "What the keys spent today could not be read; the keys are listed without it");
+  }
   // Cents fit a number (the caps are bounded), and a bigint does not serialize.
   return keys.map((key) => ({
     ...key,
     maxJobPriceCents: key.maxJobPriceCents === null ? null : Number(key.maxJobPriceCents),
     maxUsePriceCents: key.maxUsePriceCents === null ? null : Number(key.maxUsePriceCents),
     dailySpendCapCents: key.dailySpendCapCents === null ? null : Number(key.dailySpendCapCents),
+    spentTodayCents: spentToday === null ? null : Number(spentToday.get(key.id) ?? 0n),
   }));
 }
 

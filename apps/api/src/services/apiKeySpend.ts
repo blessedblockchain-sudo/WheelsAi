@@ -92,6 +92,39 @@ export function spendDay(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
+/** What readSpentToday reads. It writes nothing. */
+export interface ApiKeySpendDayDb {
+  apiKeySpendWindow: {
+    findMany(args: {
+      where: { apiKeyId: { in: string[] }; day: Date };
+      select: { apiKeyId: true; spentCents: true };
+    }): Promise<Array<{ apiKeyId: string; spentCents: bigint }>>;
+  };
+}
+
+/**
+ * What each of these keys has spent in the UTC day `now` falls in, in ONE
+ * query for all of them: the day's window of each, the total its
+ * reservations have raised. A key with no window today has spent nothing
+ * and is not in the answer. A refund does not lower the total (see above),
+ * so this is what the key has committed today, which is what its daily cap
+ * is held against.
+ */
+export async function readSpentToday(
+  db: ApiKeySpendDayDb,
+  apiKeyIds: string[],
+  now: Date,
+): Promise<Map<string, bigint>> {
+  const spent = new Map<string, bigint>();
+  if (apiKeyIds.length === 0) return spent;
+  const windows = await db.apiKeySpendWindow.findMany({
+    where: { apiKeyId: { in: apiKeyIds }, day: spendDay(now) },
+    select: { apiKeyId: true, spentCents: true },
+  });
+  for (const window of windows) spent.set(window.apiKeyId, window.spentCents);
+  return spent;
+}
+
 const dollars = (cents: bigint) => `$${(Number(cents) / 100).toFixed(2)}`;
 
 interface SpendArgs {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { CliError } from "../src/errors.js";
-import { describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../src/lib/pricing.js";
+import { describePlan, describePlans, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../src/lib/pricing.js";
 import { parseWholeNumber } from "../src/lib/numbers.js";
 
 describe("parsePricing", () => {
@@ -69,6 +69,69 @@ describe("describeSells", () => {
     assert.equal(describeSells({ sells: "use", unit: null }), "use");
     assert.equal(describeSells({ sells: "copies", unit: null }), "copies");
     assert.equal(describeSells({}), "unknown");
+  });
+});
+
+describe("a listing's plans, in the words buyers read", () => {
+  const starter = { id: "p1", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 4 };
+  const team = { id: "p2", name: "Team", priceCents: 2900, includedUses: 2000, extraUsePriceCents: null };
+  const listing = { sells: "use", pricingModel: "per_request" };
+
+  it("a plan is its price for 30 days, its uses, and what happens after them", () => {
+    assert.equal(describePlan(starter), "Starter: $9.00 for 30 days, 500 uses, then $0.04 a use");
+    assert.equal(describePlan(team), "Team: $29.00 for 30 days, 2000 uses, then it stops until it renews");
+    assert.equal(describePlan({ ...team, name: "  One  ", priceCents: 100, includedUses: 1 }), "One: $1.00 for 30 days, 1 use, then it stops until it renews");
+  });
+
+  it("one line for each plan on offer, in the order the API sent them", () => {
+    assert.deepEqual(describePlans({ ...listing, plans: [starter, team] }), [
+      "Starter: $9.00 for 30 days, 500 uses, then $0.04 a use",
+      "Team: $29.00 for 30 days, 2000 uses, then it stops until it renews",
+    ]);
+  });
+
+  it("your own listing's plans say their status, and only the ones on offer are printed", () => {
+    const plans = [
+      { ...starter, kind: "paid", status: "active", subscribers: 12 },
+      { ...team, kind: "paid", status: "retired", subscribers: 3 },
+    ];
+    assert.deepEqual(describePlans({ ...listing, plans }), ["Starter: $9.00 for 30 days, 500 uses, then $0.04 a use"]);
+    // How many people are on a plan is not part of the line.
+    assert.doesNotMatch(describePlans({ ...listing, plans }).join(" "), /12|subscriber/);
+  });
+
+  it("a listing that offers no plans has no line", () => {
+    assert.deepEqual(describePlans(listing), []);
+    assert.deepEqual(describePlans({ ...listing, plans: [] }), []);
+    assert.deepEqual(describePlans({ ...listing, plans: null }), []);
+    assert.deepEqual(describePlans({ ...listing, plans: "Starter" }), []);
+    // Only a listing that sells use per request offers plans, whatever it carries.
+    assert.deepEqual(describePlans({ sells: "use", pricingModel: "monthly", plans: [starter] }), []);
+    assert.deepEqual(describePlans({ sells: "copies", pricingModel: "per_request", plans: [starter] }), []);
+    assert.deepEqual(describePlans({ pricingModel: "per_request", plans: [starter] }), []);
+  });
+
+  it("a line is never written from half a plan", () => {
+    const broken = [
+      null,
+      "Starter",
+      { ...starter, name: " " },
+      { ...starter, priceCents: 0 },
+      { ...starter, priceCents: "900" },
+      { ...starter, includedUses: 0 },
+      { ...starter, includedUses: 1.5 },
+      { ...starter, extraUsePriceCents: undefined },
+      { ...starter, extraUsePriceCents: 0 },
+      { name: "Starter" },
+    ];
+    assert.deepEqual(describePlans({ ...listing, plans: [...broken, team] }), [describePlan(team)]);
+  });
+
+  it("no plan is ever described as having no count", () => {
+    for (const line of describePlans({ ...listing, plans: [starter, team] })) {
+      assert.match(line, /\d+ uses?,/);
+      assert.doesNotMatch(line, /unlimited/i);
+    }
   });
 });
 

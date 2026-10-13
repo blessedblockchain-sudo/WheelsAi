@@ -10,6 +10,7 @@ import {
   publishAgent,
   publishCommandLine,
 } from "../src/lib/listing.js";
+import { describePlans } from "../src/lib/pricing.js";
 import { AGENT_ID, agent, fakeApi, status } from "./helpers.js";
 
 const LISTING_ID = "44444444-4444-4444-8444-444444444444";
@@ -169,6 +170,36 @@ describe("publishAgent", () => {
     });
     await publishAgent(plain.wheels, agent(), "http://localhost:3000", { pricing: { pricingModel: "free" } });
     assert.deepEqual(plain.requested("PATCH", `/api/marketplace/listings/${LISTING_ID}`)[0]?.body, { pricingModel: "free" });
+  });
+
+  it("keeps the plans read with the listing when an edit or a publish answers without them", async () => {
+    const plans = [{ id: "p1", kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null, status: "active", subscribers: 2 }];
+    const onSale = { sells: "use", pricingModel: "per_request", pricePerRequestCents: 5 };
+    // An edit: the answer of the update carries no plans, and the edit changed none.
+    const edited = fakeApi({
+      "GET /api/marketplace/my-listings": { listings: [listing({ ...onSale, status: "published", plans })] },
+      [`PATCH /api/marketplace/listings/${LISTING_ID}`]: { listing: listing({ ...onSale, status: "published", title: "Renamed" }) },
+    });
+    const afterEdit = await publishAgent(edited.wheels, agent(), "http://localhost:3000", { pricing: null, title: "Renamed" });
+    assert.equal(afterEdit.listing.title, "Renamed");
+    assert.deepEqual(afterEdit.listing.plans, plans);
+    assert.deepEqual(describePlans(afterEdit.listing), ["Starter: $9.00 for 30 days, 500 uses, then it stops until it renews"]);
+
+    // A draft that is published: the same.
+    const published = fakeApi({
+      "GET /api/marketplace/my-listings": { listings: [listing({ ...onSale, plans })] },
+      [`POST /api/marketplace/listings/${LISTING_ID}/publish`]: { listing: listing({ ...onSale, status: "published" }), message: "ok" },
+    });
+    const afterPublish = await publishAgent(published.wheels, agent(), "http://localhost:3000", { pricing: null });
+    assert.deepEqual([afterPublish.listing.status, afterPublish.listing.plans], ["published", plans]);
+
+    // An answer that does carry plans is believed over the ones read before.
+    const answered = fakeApi({
+      "GET /api/marketplace/my-listings": { listings: [listing({ ...onSale, status: "published", plans })] },
+      [`PATCH /api/marketplace/listings/${LISTING_ID}`]: { listing: listing({ ...onSale, status: "published", plans: [] }) },
+    });
+    const afterAnswer = await publishAgent(answered.wheels, agent(), "http://localhost:3000", { pricing: null, title: "Renamed" });
+    assert.deepEqual(afterAnswer.listing.plans, []);
   });
 
   it("creates a free draft by default, publishes it and builds the URL from the returned slug", async () => {

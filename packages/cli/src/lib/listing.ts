@@ -157,6 +157,8 @@ export async function publishAgent(
     if (Object.keys(edits).length > 0) {
       onStep("Updating marketplace listing");
       ({ listing } = await wheels.marketplace.updateListing(existing.id, edits));
+      // An update answers the listing without its plans, and changes none of them: they are the ones read above.
+      if (listing.plans === undefined && existing.plans !== undefined) listing = { ...listing, plans: existing.plans };
       updated = true;
     }
   }

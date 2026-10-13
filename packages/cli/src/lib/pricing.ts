@@ -106,6 +106,54 @@ export function describePricing(pricing: Pricing | { pricingModel: string; price
   }
 }
 
+/** A plan of a listing as the API sends it: on your own listings, and on a listing read by its slug. */
+export interface ListingPlan {
+  name: string;
+  /** What 30 days cost, in cents. */
+  priceCents: number;
+  includedUses: number;
+  /** What each use past the included ones costs, in cents. null: the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+  /** On your own listings: "active" while the plan is on offer. */
+  status?: string;
+}
+
+const isCents = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+
+/**
+ * One plan in the words buyers read on the agent's page: "$9.00 for 30 days", "500 uses", then either
+ * "then $0.04 a use" or "then it stops until it renews".
+ */
+export function describePlan(plan: ListingPlan): string {
+  const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+  const uses = `${plan.includedUses} ${plan.includedUses === 1 ? "use" : "uses"}`;
+  const after =
+    plan.extraUsePriceCents === null ? "then it stops until it renews" : `then ${dollars(plan.extraUsePriceCents)} a use`;
+  return `${plan.name.trim()}: ${dollars(plan.priceCents)} for 30 days, ${uses}, ${after}`;
+}
+
+/**
+ * The plans a listing offers, one line each, in the order buyers see them. Empty when it offers none.
+ *
+ * Only a listing that sells use per request offers plans, so any other listing has no line whatever it
+ * carries. A plan that is no longer on offer, or that has a term missing, is left out: a line is what a
+ * buyer would agree to, so one is never written from half a plan.
+ */
+export function describePlans(listing: { sells?: string | null; pricingModel?: string | null; plans?: unknown }): string[] {
+  if (listing.sells !== "use" || listing.pricingModel !== "per_request" || !Array.isArray(listing.plans)) return [];
+  const lines: string[] = [];
+  for (const item of listing.plans as unknown[]) {
+    if (typeof item !== "object" || item === null) continue;
+    const { name, priceCents, includedUses, extraUsePriceCents, status } = item as Partial<ListingPlan>;
+    if (status !== undefined && status !== "active") continue;
+    if (typeof name !== "string" || name.trim() === "" || !isCents(priceCents)) continue;
+    if (typeof includedUses !== "number" || !Number.isInteger(includedUses) || includedUses < 1) continue;
+    if (extraUsePriceCents !== null && !isCents(extraUsePriceCents)) continue;
+    lines.push(describePlan({ name, priceCents, includedUses, extraUsePriceCents }));
+  }
+  return lines;
+}
+
 /**
  * What a listing sells, in words: "use, per message", "use, per month", "use" or "copies".
  * `unit` is what one payment buys; the API sends it null for a free listing and for copies.

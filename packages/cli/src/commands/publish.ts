@@ -4,7 +4,7 @@ import chalk from "chalk";
 import { createSession } from "../client.js";
 import { agentReference, resolveAgent } from "../lib/agents.js";
 import { checkListingText, describePublishOutcome, publishAgent } from "../lib/listing.js";
-import { describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
+import { describePlans, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, field, printJson } from "../ui.js";
 
@@ -66,6 +66,8 @@ export const publishCommand = new Command("publish")
     console.log(field("Category", clean(result.listing.category)));
     console.log(field("Sells", clean(describeSells(result.listing))));
     console.log(field("Pricing", clean(describePricing(result.listing))));
+    // One line for each plan the listing offers, the first beside the label.
+    describePlans(result.listing).forEach((plan, index) => console.log(field(index === 0 ? "Plans" : "", clean(plan))));
     const note = pricingNote(result.listing.pricingModel);
     if (note) console.log(chalk.yellow(`\n  ${note}`));
     if (result.created && !pricing) {

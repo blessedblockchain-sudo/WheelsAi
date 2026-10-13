@@ -59,6 +59,8 @@ export const PAID_USE_MESSAGES = {
   runsOnItsOwn: "This agent runs on its own. Subscribers read its results here.",
   notStarted: "You have not started using this agent.",
   includedInSubscription: "Included in your subscription.",
+  includedInPlan: "Included in your plan.",
+  planEnded: "Your plan ended. Choose a plan or pay per use to keep using it.",
   offline: "The agent could not be reached. Check your connection and try again.",
   unknown: "Something went wrong. Please try again.",
 } as const;
@@ -197,6 +199,7 @@ export type PaidViewKind =
   | "start_blocked"
   | "price_changed"
   | "lapsed"
+  | "plan_ended"
   | "not_offered"
   | "in_use";
 
@@ -388,6 +391,15 @@ export function paidView(input: PaidViewInput): PaidView {
       return view("lapsed", PAID_USE_MESSAGES.ended, offer(price, kind, page.perDay));
     }
 
+    // A plan that is over, with no price per use agreed to: nothing is charged until the person chooses.
+    // The plans to choose from are drawn by the page (lib/use-plans.ts); the action here is pay per use.
+    case "plan_ended": {
+      if (state.startBlocked) return view("start_blocked", state.startBlocked.message, { price: price ?? pagePrice });
+      if (!price) return view("not_offered", PAID_USE_MESSAGES.notOffered);
+      if (!state.canAccept) return view("plan_ended", `${PAID_USE_MESSAGES.planEnded} ${PAID_USE_MESSAGES.askAdmin}`, { price });
+      return view("plan_ended", PAID_USE_MESSAGES.planEnded, offer(price, kind, page.perDay));
+    }
+
     case "not_offered":
     case "unlisted":
       return view("not_offered", PAID_USE_MESSAGES.notOffered);
@@ -407,8 +419,14 @@ export function paidView(input: PaidViewInput): PaidView {
 // What a use cost
 // ============================================
 
-/** Under an answer: "This message cost $0.05. Your credits: $4.90." */
+/**
+ * Under an answer: "This message cost $0.05. Your credits: $4.90." On a plan:
+ * "Included in your plan.", or "Charged $0.04." for a use past its count.
+ */
 export function chargeLine(billing: PaidUseBilling, unit: PaidUnit): string {
+  const planUse = billing.plan?.use;
+  if (planUse === "included") return PAID_USE_MESSAGES.includedInPlan;
+  if (planUse === "extra" && billing.chargedCents > 0) return `Charged ${dollars(billing.chargedCents)}.`;
   if (billing.access === "subscribed") return PAID_USE_MESSAGES.includedInSubscription;
   const word = unit === "run" ? "run" : "message";
   const credits = typeof billing.balanceCents === "number" ? ` Your credits: ${dollars(billing.balanceCents)}.` : "";
@@ -465,6 +483,10 @@ export const PAID_REFUSAL_RULES: Record<string, CodeRule> = {
   },
   insufficient_credits: { action: "add_credits", fallback: "You do not have enough credits for this. Nothing was charged. Add credits to continue." },
   subscription_lapsed: { action: "subscribe", fallback: PAID_USE_MESSAGES.ended },
+  // On a plan. Used up: every included use is gone and the plan has no price for an extra one.
+  // Ended: the page goes back to choosing, so the sentence has no button of its own.
+  plan_used_up: { action: "wait", fallback: "You have used all the uses in your plan. Nothing was charged." },
+  plan_ended: { action: "none", fallback: PAID_USE_MESSAGES.planEnded },
   agent_not_found: { action: "none", fallback: "This agent was not found." },
   own_agent: { action: "none", fallback: PAID_USE_MESSAGES.ownAgent },
   not_for_sale: { action: "none", fallback: "Use of this agent is not for sale." },
@@ -491,6 +513,11 @@ export const PAID_REFUSAL_RULES: Record<string, CodeRule> = {
   sells_copies: { action: "none", fallback: "This agent is now sold as a copy. Get it from its listing." },
   subscription_claim_lost: { action: "none", fallback: "Another request for your organization got there first. Reload the page." },
   copy_subscription_active: { action: "none", fallback: "You hold a copy of this agent that is paid for. Remove your copy first." },
+  // Starting a plan while a plan or a paid month still runs.
+  already_on_plan: {
+    action: "none",
+    fallback: "You already have a plan or a subscription for this agent that is still running. Nothing was charged.",
+  },
 };
 
 /** The sentences for a charge that was taken and given back. They never say nothing was charged. */

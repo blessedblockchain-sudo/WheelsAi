@@ -3040,16 +3040,18 @@ export const marketplaceApi = {
 
   /**
    * Set the plans of a listing that sells use per request. `plans` is the whole set and replaces
-   * what the listing has: a plan sent with its id is changed in place, one left out is ended, one
-   * with no id is new. People already on a plan keep the terms they agreed to. A refusal throws an
+   * what the listing has: a plan sent with its id is changed in place, one with no id is new.
+   * `ended` names the plans their creator ended on this screen, and only those: it is always sent,
+   * empty when none is ended. A plan the screen never showed is in neither list, and is never ended
+   * by this call. People already on a plan keep the terms they agreed to. A refusal throws an
    * ApiError: 400 `validation_failed` with a sentence for each field (`fields["plans[0].priceCents"]`),
-   * 409 `plans_not_available` for a listing that cannot have plans, 409 `plans_changed` when another
-   * save got there first.
+   * 409 `plans_not_available` for a listing that cannot have plans, 409 `plans_changed` when the
+   * plans were changed somewhere else since they were read.
    */
-  setListingPlans: (listingId: string, plans: ListingPlanInput[]) =>
+  setListingPlans: (listingId: string, plans: ListingPlanInput[], ended: string[]) =>
     api<{ plans: ListingPlan[] }>(`/api/marketplace/listings/${listingId}/plans`, {
       method: "PUT",
-      body: { plans },
+      body: { plans, ended },
     }),
 
   createReview: (listingId: string, data: { rating: number; title?: string; content?: string }) =>

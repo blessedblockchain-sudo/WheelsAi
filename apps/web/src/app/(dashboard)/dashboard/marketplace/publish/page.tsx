@@ -85,6 +85,7 @@ import {
   savedPlansOf,
   type PlanErrors,
   type PlansForm,
+  type SavedPlan,
 } from "@/lib/sell-plans";
 import { cn } from "@/lib/utils";
 
@@ -206,6 +207,9 @@ function PublishWizardContent() {
   const [keepCopy, setKeepCopy] = useState(false);
   // The plans under "Pay per use", as typed, and what the API said of them when it refused.
   const [plans, setPlans] = useState<PlansForm>(() => emptyPlansForm());
+  // The plans those rows were made from; a new listing has none. A save ends only a plan that is among them,
+  // so a plan that a later read brought, and that has no row here, is never named as ended.
+  const [plansRead, setPlansRead] = useState<SavedPlan[] | null>([]);
   const [planErrors, setPlanErrors] = useState<PlanErrors>(noPlanErrors);
   const [plansProblem, setPlansProblem] = useState<string | null>(null);
 
@@ -261,10 +265,12 @@ function PublishWizardContent() {
       setDetails(detailsOfListing(editing));
       setSell(formOfListing(editing, kind));
       setPlans(plansFormOf(editing));
+      setPlansRead(savedPlansOf(editing));
     } else if (filledFor.current !== null) {
       setDetails(emptyDetails());
       setSell(emptySellForm());
       setPlans(emptyPlansForm());
+      setPlansRead([]);
     }
     setSellErrors({});
     setPlanErrors(noPlanErrors());
@@ -316,7 +322,8 @@ function PublishWizardContent() {
   const chosenAgent = agentDetail && agentDetail.id === agentId ? agentDetail : null;
   const limits = sellLimitsOf(data?.capabilities);
   const planLimits = planLimitsOf(data?.capabilities);
-  // The plans of the listing being edited, as they were read; a new listing has none.
+  // The plans of the listing being edited, as they were last read; a new listing has none. The block shows
+  // these. What a save is measured against is `plansRead`, the plans the rows were made from.
   const savedPlans = savedPlansOf(editId ? (editing ?? {}) : null);
   const selectedAgent = agents.find((a) => a.id === agentId);
   const agentKind = chosenAgent?.agentKind ?? selectedAgent?.agentKind;
@@ -337,7 +344,7 @@ function PublishWizardContent() {
     sell,
     agent: chosenAgent,
     limits,
-    plans: { form: plans, saved: savedPlans, limits: planLimits },
+    plans: { form: plans, saved: plansRead, limits: planLimits },
   });
 
   const handleNext = () => {
@@ -362,7 +369,7 @@ function PublishWizardContent() {
       return;
     }
     // The plans are checked before anything is saved, so a row that cannot be sent holds the listing back too.
-    const plansSave = plansSaveOf({ sell, form: plans, saved: savedPlans, limits: planLimits });
+    const plansSave = plansSaveOf({ sell, form: plans, saved: plansRead, limits: planLimits });
     if (plansSave.kind === "invalid") {
       setPlanErrors(plansSave.errors);
       setCurrentStep(2);
@@ -389,10 +396,10 @@ function PublishWizardContent() {
       return;
     }
 
-    // The listing is saved. Its plans go second and always as the whole set: a plan left out is ended.
+    // The listing is saved. Its plans go second and always as the whole set, with the ids of the plans that were ended here.
     if (plansSave.kind === "send") {
       try {
-        await marketplaceApi.setListingPlans(listingId, plansSave.plans);
+        await marketplaceApi.setListingPlans(listingId, plansSave.plans, plansSave.ended);
       } catch (error) {
         const fields = getValidationError(error)?.fields;
         const fieldErrors = fields ? planFieldErrors(fields) : noPlanErrors();

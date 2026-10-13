@@ -214,7 +214,7 @@ export function addPlanRow(form: PlansForm, limits: PlanLimits = DEFAULT_PLAN_LI
   return { ...form, rows: [...form.rows, { key, id: null, name: "", price: "", uses: "", ending: "stop", extraPrice: "" }] };
 }
 
-/** The form without a row. A plan the listing has is then left out of the save, which ends it. */
+/** The form without a row. A plan the listing has is then absent from the save and named in its ended list, which ends it. */
 export function removePlanRow(form: PlansForm, key: string): PlansForm {
   return { ...form, rows: form.rows.filter((row) => row.key !== key) };
 }
@@ -326,8 +326,11 @@ export function checkPlans(form: Pick<PlansForm, "rows">, limits: PlanLimits = D
 export type PlansSave =
   /** No call is made: nothing about the plans changed, they were never read, or the listing is not sold per use. */
   | { kind: "none" }
-  /** The whole set, to `marketplaceApi.setListingPlans`. A plan left out of it is ended. */
-  | { kind: "send"; plans: ListingPlanInput[] }
+  /**
+   * The whole set and the ids of the plans that end, to `marketplaceApi.setListingPlans`.
+   * `ended` is always there, empty when no plan is ended.
+   */
+  | { kind: "send"; plans: ListingPlanInput[]; ended: string[] }
   /** A row cannot be sent yet. */
   | { kind: "invalid"; errors: PlanErrors };
 
@@ -362,10 +365,20 @@ function sameAsSaved(plans: readonly ListingPlanInput[], saved: readonly SavedPl
 }
 
 /**
+ * The ids of the plans this screen showed whose rows were taken away: the
+ * plans their creator ended here. A plan the screen never showed is never
+ * among them, so a plan someone else added is never ended by this save.
+ */
+function endedPlanIds(form: Pick<PlansForm, "rows">, saved: readonly SavedPlan[]): string[] {
+  const kept = new Set(form.rows.map((row) => row.id));
+  return saved.filter((plan) => !kept.has(plan.id)).map((plan) => plan.id);
+}
+
+/**
  * The one place the body of a save of plans is made. Always the whole set:
  * a plan from the server keeps its id and is changed in place, a new one has
- * none, a row that was removed is absent (which ends that plan), and every
- * plan says `extraUsePriceCents`, null for one that stops.
+ * none, a row that was removed is absent and its plan is named in `ended`,
+ * and every plan says `extraUsePriceCents`, null for one that stops.
  *
  * Nothing is sent when the listing is not sold per use, when nothing about
  * the plans changed, and when the listing's plans were never read.
@@ -383,7 +396,7 @@ export function plansSaveOf(input: PlansSaveInput): PlansSave {
     return untouched ? { kind: "none" } : { kind: "invalid", errors: check.errors };
   }
   if (sameAsSaved(check.plans, saved)) return { kind: "none" };
-  return { kind: "send", plans: check.plans };
+  return { kind: "send", plans: check.plans, ended: endedPlanIds(form, saved) };
 }
 
 const FIELD_ORDER: readonly PlanField[] = ["name", "price", "uses", "extraPrice", "row"];

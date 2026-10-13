@@ -262,7 +262,7 @@ test("the rows of a listing are its paid plans on offer, and a listing without i
   );
 });
 
-test("a save sends the whole set: ids kept, the extra price always said, a removed row absent", () => {
+test("a save sends the whole set: ids kept, the extra price always said, a removed row absent and named as ended", () => {
   const form = plansFormOf({ plans: [STARTER, PRO] });
   const edited = addPlanRow(withPlanRow(removePlanRow(form, "p1"), "p2", { price: "39.00" }));
   const filled = withPlanRow(edited, "new-1", { name: "Team", price: "99", uses: "5000", ending: "extra", extraPrice: "0.05" });
@@ -273,9 +273,10 @@ test("a save sends the whole set: ids kept, the extra price always said, a remov
       { id: "p2", kind: "paid", name: "Pro", priceCents: 3900, includedUses: 2000, extraUsePriceCents: 7 },
       { kind: "paid", name: "Team", priceCents: 9900, includedUses: 5000, extraUsePriceCents: 5 },
     ],
+    ended: ["p1"],
   });
   assert.ok(save.kind === "send");
-  // The removed plan is absent, which ends it; a new plan carries no id.
+  // The removed plan is absent and named as ended; a new plan carries no id.
   assert.equal(save.plans.some((plan) => plan.id === "p1"), false);
   assert.equal("id" in save.plans[1]!, false);
 
@@ -285,6 +286,7 @@ test("a save sends the whole set: ids kept, the extra price always said, a remov
   for (const plan of stop.plans) assert.equal(Object.prototype.hasOwnProperty.call(plan, "extraUsePriceCents"), true);
   assert.deepEqual(stop.plans.map((plan) => plan.extraUsePriceCents), [null, null]);
   assert.deepEqual(stop.plans.map((plan) => plan.id), ["p1", "p2"]);
+  assert.deepEqual(stop.ended, []);
   assert.deepEqual(JSON.parse(JSON.stringify(stop.plans[0])), {
     id: "p1",
     kind: "paid",
@@ -294,11 +296,54 @@ test("a save sends the whole set: ids kept, the extra price always said, a remov
     extraUsePriceCents: null,
   });
 
-  // Every plan removed: the empty set is sent, and it ends them all.
+  // Every plan removed: the empty set is sent, and each plan is named as ended.
   assert.deepEqual(plansSaveOf({ sell: PER_USE, form: { loaded: true, rows: [] }, saved: [STARTER, PRO] }), {
     kind: "send",
     plans: [],
+    ended: ["p1", "p2"],
   });
+});
+
+test("ended holds exactly the plans whose rows were taken away on this screen, and nothing else", () => {
+  const listed = [STARTER, PRO];
+  const form = plansFormOf({ plans: listed });
+  const endedOf = (rows: typeof form) => {
+    const save = plansSaveOf({ sell: PER_USE, form: rows, saved: listed });
+    assert.ok(save.kind === "send");
+    return save;
+  };
+
+  // Only a row changed: nothing is ended, and the list is still there, empty.
+  const changed = endedOf(withPlanRow(form, "p1", { price: "19.00" }));
+  assert.deepEqual(changed.ended, []);
+  assert.equal(Object.prototype.hasOwnProperty.call(changed, "ended"), true);
+  // A plan added and none taken away.
+  const added = endedOf(withPlanRow(addPlanRow(form), "new-1", { name: "Team", price: "99", uses: "5000" }));
+  assert.deepEqual(added.ended, []);
+  assert.equal(added.plans.length, 3);
+
+  // One taken away: its id and no other, however the rest was edited.
+  assert.deepEqual(endedOf(removePlanRow(form, "p2")).ended, ["p2"]);
+  const both = endedOf(withPlanRow(removePlanRow(form, "p1"), "p2", { name: "Pro Plus" }));
+  assert.deepEqual(both.ended, ["p1"]);
+  assert.deepEqual(both.plans.map((plan) => plan.id), ["p2"]);
+
+  // A saved plan whose row is still there is never in it, and no id is in both lists.
+  for (const save of [changed, added, both, endedOf(removePlanRow(form, "p2"))]) {
+    const sent = new Set(save.plans.map((plan) => plan.id));
+    assert.equal(save.ended.some((id) => sent.has(id)), false);
+    assert.equal(save.ended.every((id) => listed.some((plan) => plan.id === id)), true);
+  }
+
+  // A new row that was added and taken away again was never a plan: it is not named.
+  const undone = removePlanRow(addPlanRow(removePlanRow(form, "p1")), "new-1");
+  assert.deepEqual(endedOf(undone).ended, ["p1"]);
+
+  // A plan this screen never showed (one a teammate added, an ended one, a trial) is never named:
+  // only the plans that were read here can be.
+  const shown = savedPlansOf({ plans: [STARTER, saved({ id: "gone", status: "retired" }), saved({ id: "t", kind: "trial" })] })!;
+  const onlyStarter = plansSaveOf({ sell: PER_USE, form: { loaded: true, rows: [] }, saved: shown });
+  assert.deepEqual(onlyStarter, { kind: "send", plans: [], ended: ["p1"] });
 });
 
 test("nothing is sent when nothing changed, when the plans were never read, or off Pay per use", () => {

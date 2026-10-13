@@ -53,8 +53,8 @@ test("the block's words are the pure file's, and it offers no free trial", () =>
 test("both screens check the plans first, save the listing, then send the whole set once", () => {
   // The save's own check, with the answer that is being saved: on the Sell tab that is `sent`, the form
   // after the dialog about copies, not the one on screen.
-  assert.match(SELL_TAB, /const plansSave = plansSaveOf\(\{ sell: sent, form: plans, saved: savedPlans, limits: planLimits \}\);/);
-  assert.match(WIZARD, /const plansSave = plansSaveOf\(\{ sell, form: plans, saved: savedPlans, limits: planLimits \}\);/);
+  assert.match(SELL_TAB, /const plansSave = plansSaveOf\(\{ sell: sent, form: plans, saved: plansRead, limits: planLimits \}\);/);
+  assert.match(WIZARD, /const plansSave = plansSaveOf\(\{ sell, form: plans, saved: plansRead, limits: planLimits \}\);/);
   for (const screen of [SELL_TAB, WIZARD]) {
     assert.equal(screen.split("const plansSave = plansSaveOf(").length, 2);
     const check = screen.indexOf("const plansSave = plansSaveOf(");
@@ -68,12 +68,39 @@ test("both screens check the plans first, save the listing, then send the whole 
     assert.equal(screen.split("marketplaceApi.setListingPlans(").length, 2);
     assert.match(
       screen,
-      /if \(plansSave\.kind === "send"\) \{\s+try \{\s+(?:const res = )?await marketplaceApi\.setListingPlans\([\w.]+, plansSave\.plans\);/,
+      /if \(plansSave\.kind === "send"\) \{\s+try \{\s+(?:const res = )?await marketplaceApi\.setListingPlans\([\w.]+, plansSave\.plans, plansSave\.ended\);/,
     );
+    // The plans that end are the ones the pure function named, never a list made on the screen.
+    assert.equal(screen.split("plansSave.ended").length, 2);
     // A refusal is read from the error's own body and said through the pure file.
     assert.match(screen, /planFieldErrors\(fields\)/);
     assert.match(screen, /plansRefusedLine\(/);
   }
+});
+
+test("a save ends only a plan the rows were made from, never one that a later read brought", () => {
+  // After a refused save both screens read the listing again and keep the rows as they were typed. A plan
+  // that someone else added is then in the new read and has no row: measured against the new read, a second
+  // press of Save would name it as ended. So the save is measured against the read the rows came from.
+  for (const screen of [SELL_TAB, WIZARD]) {
+    const calls = screen.match(/plans(?:Save|Problem)Of\(\{[^}]*\}\)/g) ?? [];
+    assert.ok(calls.length > 0);
+    for (const call of calls) assert.match(call, /saved: plansRead,/, call);
+    // That read changes only where the rows are filled from the server, on the line after them.
+    const sets = screen.split("setPlansRead(").length - 1;
+    const besideRows =
+      (screen.match(/setPlans\(plansFormOf\((\{ plans: res\.plans \}|\w+)\)\);\s+setPlansRead\(savedPlansOf\(\1\)\);/g) ?? []).length +
+      (screen.match(/setPlans\(emptyPlansForm\(\)\);\s+setPlansRead\(\[\]\);/g) ?? []).length;
+    assert.equal(besideRows, sets);
+    assert.equal(screen.split("setPlans(plansFormOf(").length - 1 + (screen.split("setPlans(emptyPlansForm())").length - 1), sets);
+  }
+  // The Sell tab: not when the rows are kept after a refusal.
+  assert.match(SELL_TAB, /if \(!keepPlans\) \{\s+setPlans\(plansFormOf\(listing\)\);\s+setPlansRead\(savedPlansOf\(listing\)\);/);
+  // The wizard: the step's own check is measured the same way, and a listing adopted after a refusal is not filled again.
+  assert.match(WIZARD, /plans: \{ form: plans, saved: plansRead, limits: planLimits \},/);
+  const adoptedBranch = WIZARD.slice(WIZARD.indexOf("if (adopted.current) {"), WIZARD.indexOf("if (filledFor.current === key) return;"));
+  assert.ok(adoptedBranch.length > 0);
+  assert.equal(adoptedBranch.includes("setPlans"), false);
 });
 
 test("the Sell tab shows a line for each plan of a listing on sale, from the creator's own listing", () => {
@@ -85,12 +112,12 @@ test("the Sell tab shows a line for each plan of a listing on sale, from the cre
 
 test("the Sell tab keeps the answer of a save of plans, and a change of plans alone enables Save changes", () => {
   // The ids of new plans come from the answer, not from a reload that can fail.
-  assert.match(SELL_TAB, /const res = await marketplaceApi\.setListingPlans\(savedListing\.id, plansSave\.plans\);/);
+  assert.match(SELL_TAB, /const res = await marketplaceApi\.setListingPlans\(savedListing\.id, plansSave\.plans, plansSave\.ended\);/);
   assert.match(SELL_TAB, /setPlans\(plansFormOf\(\{ plans: res\.plans \}\)\);/);
   assert.match(SELL_TAB, /listing: \{ \.\.\.\(d\.listing \?\? savedListing\), plans: res\.plans \}/);
   const kept = SELL_TAB.indexOf("setPlans(plansFormOf({ plans: res.plans }))");
   assert.ok(kept > 0 && kept < SELL_TAB.indexOf("await load(plansProblem !== null)"));
-  assert.match(SELL_TAB, /const plansUnchanged = plansSaveOf\(\{ sell: form, form: plans, saved: savedPlans, limits: planLimits \}\)\.kind === "none";/);
+  assert.match(SELL_TAB, /const plansUnchanged = plansSaveOf\(\{ sell: form, form: plans, saved: plansRead, limits: planLimits \}\)\.kind === "none";/);
   assert.match(SELL_TAB, /keepCopy === data\.keepCopy\) && plansUnchanged;/);
   // A failed keep-a-copy setting and refused plans are both said.
   assert.match(SELL_TAB, /partSavedLine\(plansProblem, keepProblem\)/);

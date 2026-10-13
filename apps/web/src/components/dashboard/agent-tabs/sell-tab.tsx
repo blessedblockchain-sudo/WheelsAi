@@ -66,6 +66,7 @@ import {
   savedPlansOf,
   type PlanErrors,
   type PlansForm,
+  type SavedPlan,
 } from "@/lib/sell-plans";
 import { cn } from "@/lib/utils";
 import { CopyRow } from "./api-tab";
@@ -108,6 +109,9 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   const [errors, setErrors] = useState<SellErrors>({});
   // The plans under "Pay per use", as typed. Not loaded until the listing's own were read.
   const [plans, setPlans] = useState<PlansForm>({ loaded: false, rows: [] });
+  // The plans those rows were made from. A save ends only a plan that is among them, so a plan that a later
+  // read brought, and that has no row here, is never named as ended.
+  const [plansRead, setPlansRead] = useState<SavedPlan[] | null>(null);
   const [planErrors, setPlanErrors] = useState<PlanErrors>(noPlanErrors);
   const [error, setError] = useState<string | null>(null);
   const [lineDraft, setLineDraft] = useState("");
@@ -154,6 +158,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       setErrors({});
       if (!keepPlans) {
         setPlans(plansFormOf(listing));
+        setPlansRead(savedPlansOf(listing));
         setPlanErrors(noPlanErrors());
       }
     } catch (err) {
@@ -205,9 +210,10 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   const knownLine = sellLineOf([listing?.shortDescription, agent.description]);
   const baseline = formOfListing(listing, agent.agentKind);
   const planLimits = planLimitsOf(capabilities);
-  // The listing's plans as they were read, each with its subscribers; null when they came without.
+  // The listing's plans as they were last read, each with its subscribers; null when they came without.
+  // The block shows these. What a save is measured against is `plansRead`, the plans the rows were made from.
   const savedPlans = savedPlansOf(listing);
-  const plansUnchanged = plansSaveOf({ sell: form, form: plans, saved: savedPlans, limits: planLimits }).kind === "none";
+  const plansUnchanged = plansSaveOf({ sell: form, form: plans, saved: plansRead, limits: planLimits }).kind === "none";
   const unchanged =
     sameSellForm(form, baseline) && (!asksForPayment(form) || keepCopy === data.keepCopy) && plansUnchanged;
 
@@ -232,7 +238,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     }
     setErrors({});
     // The plans are checked before anything is saved, so a row that cannot be sent holds the listing back too.
-    const plansSave = plansSaveOf({ sell: sent, form: plans, saved: savedPlans, limits: planLimits });
+    const plansSave = plansSaveOf({ sell: sent, form: plans, saved: plansRead, limits: planLimits });
     if (plansSave.kind === "invalid") {
       setPlanErrors(plansSave.errors);
       return;
@@ -280,15 +286,16 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
       }
     }
 
-    // The listing is saved. Its plans go second and always as the whole set: a plan left out is ended.
+    // The listing is saved. Its plans go second and always as the whole set, with the ids of the plans that were ended here.
     let plansProblem: string | null = null;
     if (plansSave.kind === "send") {
       try {
-        const res = await marketplaceApi.setListingPlans(savedListing.id, plansSave.plans);
+        const res = await marketplaceApi.setListingPlans(savedListing.id, plansSave.plans, plansSave.ended);
         // The answer is kept: the new plans have their ids from here on, even if the reload below fails.
         // A second save then sends nothing, where rows without ids would make every plan again and end these.
         if (mounted.current) {
           setPlans(plansFormOf({ plans: res.plans }));
+          setPlansRead(savedPlansOf({ plans: res.plans }));
           setData((d) => d && { ...d, listing: { ...(d.listing ?? savedListing), plans: res.plans } });
         }
       } catch (err) {

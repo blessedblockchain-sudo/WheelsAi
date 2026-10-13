@@ -724,11 +724,15 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
   /**
    * POST /subscriptions/:listingId/cancel - Stop renewing at period end
    * POST /subscriptions/:listingId/resume - Keep renewing
+   *
+   * Resuming turns the charges back on, so it needs the right a start needs:
+   * an owner or admin, or an API key granted marketplace:install by name.
+   * Cancelling only ever stops a charge, and stays open to every member.
    */
   for (const action of ["cancel", "resume"] as const) {
     app.post(
       `/subscriptions/:listingId/${action}`,
-      { preHandler: [requireAuth] },
+      { preHandler: action === "resume" ? [requireAuth, requireSpend("marketplace:install")] : [requireAuth] },
       async (request, reply) => {
         const { orgId } = request.auth!;
         const { listingId } = z.object({ listingId: z.string().uuid() }).parse(request.params);

@@ -407,6 +407,21 @@ export interface PaidUseRefusal {
   caps?: Record<string, number>;
   /** plan_used_up: when the plan's count starts again. An ISO time. Left out when the plan will not renew. */
   resetsAt?: string;
+  /**
+   * plan_used_up: the count the refusal was decided on, for the usage headers
+   * (services/usageHeaders.ts). Not part of the body: paidRefusalBody and the
+   * OpenAI shape name their fields one by one and leave it out.
+   */
+  planCount?: PaidUsePlanCount;
+}
+
+/** A plan's count as it stood when a use was refused. Uses, and nothing of another buyer. */
+export interface PaidUsePlanCount {
+  /** The plan the subscription was started on. */
+  id: string | null;
+  includedUses: number;
+  carriedUses: number;
+  usedUses: number;
 }
 
 /** The buyer's plan after one use on it. Uses and cents, and nothing of another buyer. */
@@ -705,7 +720,7 @@ const RENEWAL_RETRY_SECONDS = 60 * 60;
  * at which it resets.
  */
 function planUsedUpRefusal(
-  plan: { includedUses: number; carriedUses: number; periodEnd: Date },
+  plan: { planId: string | null; includedUses: number; carriedUses: number; usedInPeriod?: number; periodEnd: Date },
   now: Date,
   renews: boolean,
 ): PaidUseRefusal {
@@ -720,6 +735,14 @@ function planUsedUpRefusal(
     message: renews ? PAID_USE_MESSAGES.planUsedUp(uses, day) : PAID_USE_MESSAGES.planUsedUpAndEnding(uses, day),
     retryAfterSeconds: left > 0 ? left : RENEWAL_RETRY_SECONDS,
     ...(renews && { resetsAt: plan.periodEnd.toISOString() }),
+    // The count as the request read it. Where only "used up" is known (the
+    // metering found it so on a fresh row), every use of the period is gone.
+    planCount: {
+      id: plan.planId,
+      includedUses: plan.includedUses,
+      carriedUses: plan.carriedUses,
+      usedUses: plan.usedInPeriod ?? uses,
+    },
   };
 }
 
@@ -728,8 +751,10 @@ function chargeRefusal(
   refusal: Exclude<UseChargeResult, { ok: true }> | UsePlanRefusal,
   now: Date,
   planRenews: boolean,
+  planId: string | null,
 ): PaidUseRefusal {
-  if (refusal.reason === "plan_used_up") return planUsedUpRefusal(refusal, now, planRenews);
+  // The metering refuses this only on the row the request read, so the plan is the one that was read.
+  if (refusal.reason === "plan_used_up") return planUsedUpRefusal({ ...refusal, planId }, now, planRenews);
   // The plan's row changed under the request and could not be decided again.
   if (refusal.reason === "plan_changed") return UNAVAILABLE;
   if (refusal.reason === "insufficient_credits") {
@@ -1220,7 +1245,10 @@ async function runPaidUse(
   }
   if (!prepared.ok) {
     const charge = metering.refusal();
-    if (charge) return refused(await usedUp(chargeRefusal(charge, now, planRenews)));
+    if (charge) {
+      const planId = billing.kind === "plan" ? billing.plan.planId : null;
+      return refused(await usedUp(chargeRefusal(charge, now, planRenews, planId)));
+    }
     return refused(coreRefusal(prepared.refusal, nowSeconds, onSaleForUse));
   }
   const { session } = prepared;

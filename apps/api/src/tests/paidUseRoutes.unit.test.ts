@@ -57,6 +57,10 @@ const CHAT = { messages: [{ role: "user", content: "Hi, I am Ada." }], stream: f
 const RUN = { input: { topic: "Launch plan" }, stream: false };
 const TASK_AGENT = { agentKind: "task", kindConfig: TASK_FORM, name: "Brief Writer" };
 
+/** The usage headers of a reply, and no other header. */
+const usageOf = (res: { headers: Record<string, unknown> }): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(res.headers).filter(([name]) => name.startsWith("x-wheelsai")));
+
 test("all four routes need a caller: 401 without one, and nothing is looked up", async () => {
   const { app, h } = await server();
   for (const [method, path] of [
@@ -106,6 +110,8 @@ test("POST /a/:handle/chat answers { message, toolCalls, billing } and nothing e
     toolCalls: [{ name: "web_search", status: "unavailable" }],
     billing: { chargedCents: 5, balanceCents: 495, access: "listing_pricing" },
   });
+  // The headers say what the billing says. No plan: no plan header.
+  assert.deepEqual(usageOf(res), { "x-wheelsai-charged-cents": "5", "x-wheelsai-balance-cents": "495" });
   for (const secret of [INSTRUCTIONS, FREE_MODEL, CREATOR_ORG, "TAVILY"]) assert.ok(!res.body.includes(secret), secret);
   assert.deepEqual(
     h.money.revenue.map((r) => r.status),
@@ -137,6 +143,9 @@ test("a stream is the whole answer in the public encoding, after its billing eve
   });
   assert.equal(res.statusCode, 200);
   assert.match(String(res.headers["content-type"]), /text\/event-stream/);
+  // In the head of the stream, with what a stream needs still there.
+  assert.deepEqual(usageOf(res), { "x-wheelsai-charged-cents": "5", "x-wheelsai-balance-cents": "495" });
+  assert.equal(res.headers["cache-control"], "no-cache");
   const events = res.body.split("\n\n").filter((event) => event.startsWith("data:"));
   assert.deepEqual(JSON.parse(events[0]!.slice(5)), {
     wheelsai: { billing: { chargedCents: 5, balanceCents: 495, access: "listing_pricing" } },
@@ -361,6 +370,8 @@ for (const c of REFUSALS) {
     if (typeof c.message === "string") assert.equal(body.message, c.message);
     else assert.match(body.message, c.message);
     assert.equal(res.headers["cache-control"], "no-store");
+    // Only a plan that is used up has usage headers: no other refusal carries one.
+    assert.deepEqual(usageOf(res), {});
     if (c.retryAfter) {
       assert.ok(Number(res.headers["retry-after"]) >= 1);
       assert.equal(body.retryAfterSeconds, Number(res.headers["retry-after"]));
@@ -371,6 +382,36 @@ for (const c of REFUSALS) {
     for (const secret of [INSTRUCTIONS, FREE_MODEL, CREATOR_ORG, "provider said no"]) assert.ok(!res.body.includes(secret), secret);
   });
 }
+
+test("a header never costs the answer: no plan and no balance to tell, and the answer goes out as it would have", async () => {
+  for (const [path, options, payload] of [
+    ["chat", {}, CHAT],
+    ["chat", {}, { messages: CHAT.messages }],
+    ["run", { agent: TASK_AGENT }, RUN],
+  ] as const) {
+    const { app, h } = await server(options);
+    // The read before the charge decides whether the use can be paid for; the one after it only tells.
+    const readBalance = h.deps.readBalance;
+    h.deps.readBalance = async (orgId) => {
+      if (h.money.ledger.length > 0) throw new Error("the balance cannot be read");
+      return readBalance(orgId);
+    };
+    const res = await app.inject({ method: "POST", url: `/api/a/${HANDLE}/${path}`, headers: as(SESSION), payload });
+    assert.equal(res.statusCode, 200, res.body);
+    // What it cost is known and told; the balance is left out, in the header as in the body.
+    assert.deepEqual(usageOf(res), { "x-wheelsai-charged-cents": "5" });
+    assert.ok(res.body.includes('"billing":{"chargedCents":5,"balanceCents":null,"access":"listing_pricing"}'), res.body);
+    await chargeClosed(h);
+    assert.deepEqual(h.money.revenue.map((r) => r.status), ["settled"]);
+    assert.equal(h.money.balance, 495n);
+  }
+
+  // A paid month: nothing charged, and still no plan header.
+  const monthly = await server({ listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH });
+  const res = await monthly.app.inject({ method: "POST", url: `/api/a/${HANDLE}/chat`, headers: as(SESSION), payload: CHAT });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(usageOf(res), { "x-wheelsai-charged-cents": "0", "x-wheelsai-balance-cents": "500" });
+});
 
 test("refusals carry what the payer needs: the terms, the price and the balance, the refund", async () => {
   const none = await (await server({ licence: null })).app.inject({

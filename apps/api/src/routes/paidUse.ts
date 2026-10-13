@@ -22,6 +22,11 @@
  * when the answer reached the caller and refunds it otherwise. The answer
  * was complete and checked before the first byte: a "stream" here is the
  * whole answer in the public encoding, not word by word.
+ *
+ * Every paid answer says in its headers what its body's `billing` says
+ * (services/usageHeaders.ts), set before the body for the whole answer and
+ * the stream alike. They are written from that one object: nothing is read
+ * or counted for a header.
  */
 
 import type { FastifyError, FastifyPluginAsync, FastifyReply, FastifyRequest, preHandlerAsyncHookHandler } from "fastify";
@@ -41,6 +46,7 @@ import {
   type PaidUseRefusal,
 } from "../services/paidUse.js";
 import { streamToReply } from "../services/sseReply.js";
+import { clearUsageHeaders, refusalUsageHeadersOf, setUsageHeaders, usageHeadersOf } from "../services/usageHeaders.js";
 
 /** A chat request is text: 20 messages of 4,000 characters fit several times over. */
 export const PAID_CHAT_BODY_LIMIT_BYTES = 64 * 1024;
@@ -68,6 +74,8 @@ const CLIENT_GONE: PaidUseRefusal = {
 };
 
 export function sendPaidRefusal(reply: FastifyReply, refusal: PaidUseRefusal): FastifyReply {
+  // Only a plan that is used up has any: the plan's count, with nothing remaining.
+  setUsageHeaders(reply, refusalUsageHeadersOf(refusal));
   if (refusal.retryAfterSeconds !== undefined) reply.header("retry-after", String(refusal.retryAfterSeconds));
   // A refusal is about this request, now: nothing may replay it later.
   reply.header("cache-control", "no-store");
@@ -94,6 +102,8 @@ async function sendPaidStream(reply: FastifyReply, result: PaidStream, abort: Ab
   if (!sent.started) {
     // The caller was gone before the first byte; streamToReply refunded.
     await result.finished({ ok: false, error: "client disconnected", toolCalls: [], code: "client_gone" });
+    // No answer went out, so nothing says what one cost.
+    clearUsageHeaders(reply);
     return sendPaidRefusal(reply, CLIENT_GONE);
   }
   await result.finished(sent.outcome);
@@ -147,6 +157,7 @@ export function createPaidUseRoutes(deps: PaidUseRouteDeps): FastifyPluginAsync 
         );
         if (result.kind === "refused") return sendPaidRefusal(reply, result.refusal);
         reply.header("cache-control", "no-store");
+        setUsageHeaders(reply, usageHeadersOf(result.billing));
         if (result.kind === "stream") return sendPaidStream(reply, result, abort);
         return reply
           .status(200)
@@ -169,6 +180,7 @@ export function createPaidUseRoutes(deps: PaidUseRouteDeps): FastifyPluginAsync 
         );
         if (result.kind === "refused") return sendPaidRefusal(reply, result.refusal);
         reply.header("cache-control", "no-store");
+        setUsageHeaders(reply, usageHeadersOf(result.billing));
         if (result.kind === "stream") return sendPaidStream(reply, result, abort);
         return reply.status(200).send({ output: result.output, toolCalls: result.toolCalls, billing: result.billing });
       },

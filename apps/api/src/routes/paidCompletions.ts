@@ -22,6 +22,9 @@
  * answer is delivered, refunded in every other ending. A streamed answer is
  * the checked answer released whole, and settles on delivery (streamToReply),
  * exactly as on the page.
+ *
+ * The usage headers are the page's (services/usageHeaders.ts), written from
+ * the billing object the `wheelsai` extension carries, before the body.
  */
 
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -42,6 +45,7 @@ import {
 } from "../services/openaiCompat.js";
 import { runPaidChat, type PaidUseBilling, type PaidUseDeps } from "../services/paidUse.js";
 import { streamToReply } from "../services/sseReply.js";
+import { clearUsageHeaders, refusalUsageHeadersOf, setUsageHeaders, usageHeadersOf } from "../services/usageHeaders.js";
 
 export const PAID_MODEL_PREFIX = "a/";
 
@@ -217,7 +221,12 @@ export function createPaidCompletionHandler(deps: PaidCompletionDeps = {}): Paid
     );
 
     reply.header("cache-control", "no-store");
-    if (result.kind === "refused") return sendOpenAiError(reply, paidUseOpenAiError(result.refusal));
+    if (result.kind === "refused") {
+      // Only a plan that is used up has any: the plan's count, with nothing remaining.
+      setUsageHeaders(reply, refusalUsageHeadersOf(result.refusal));
+      return sendOpenAiError(reply, paidUseOpenAiError(result.refusal));
+    }
+    setUsageHeaders(reply, usageHeadersOf(result.billing));
 
     const shownHandle = handle.toLowerCase();
     const meta: CompletionMeta = {
@@ -237,6 +246,8 @@ export function createPaidCompletionHandler(deps: PaidCompletionDeps = {}): Paid
       if (!sent.started) {
         // Gone before the first byte; streamToReply refunded.
         await result.finished({ ok: false, error: "client disconnected", toolCalls: [], code: "client_gone" });
+        // No answer went out, so nothing says what one cost.
+        clearUsageHeaders(reply);
         return replyOpenAiError(reply, "client_closed_request");
       }
       await result.finished(sent.outcome);

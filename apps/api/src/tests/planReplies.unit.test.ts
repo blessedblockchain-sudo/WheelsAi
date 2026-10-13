@@ -17,16 +17,19 @@ import {
   type UsedSubscriptionRow,
 } from "../routes/openaiV1.js";
 import { createPaidUseRoutes } from "../routes/paidUse.js";
-import { paidUseOpenAiError } from "../services/openaiCompat.js";
+import { paidUseOpenAiError, toChatCompletion } from "../services/openaiCompat.js";
 import type { PaidCaller, PaidSubscription } from "../services/paidUse.js";
 import type { PlanOfferRow } from "../services/planOffers.js";
+import { usageHeadersOf } from "../services/usageHeaders.js";
 import {
   CREATOR_ORG,
   HANDLE,
   KEY_CALLER,
   LICENCE,
   LISTING,
+  MONTHLY_LICENCE,
   MONTHLY_LISTING,
+  PAID_MONTH,
   PLAN_LICENCE,
   PLAN_SUB,
   paidHarness,
@@ -251,6 +254,19 @@ test("a plan that is over is not the plan the buyer is on: the access says to ch
 // The answers
 // ============================================
 
+/** The usage headers of a reply, and no other header. */
+const usageOf = (res: { headers: Record<string, unknown> }): Record<string, unknown> =>
+  Object.fromEntries(Object.entries(res.headers).filter(([name]) => name.startsWith("x-wheelsai")));
+
+/** What the headers say of the plan after the 13th of 500 uses. */
+const PLAN_HEADERS = {
+  "x-wheelsai-plan": "plan-1",
+  "x-wheelsai-plan-limit": "500",
+  "x-wheelsai-plan-used": "13",
+  "x-wheelsai-plan-remaining": "487",
+  "x-wheelsai-plan-reset": RESETS_AT,
+};
+
 const INCLUDED = {
   id: "plan-1",
   use: "included",
@@ -291,8 +307,8 @@ test("an included use: chat, run and /v1 answer with nothing charged and the cou
   });
   assert.deepEqual(api.h.money.ledger, []);
   assert.equal(api.h.sub?.usedInPeriod, 13);
-  // No usage headers in this slice.
-  assert.deepEqual(Object.keys(completed.headers).filter((name) => name.startsWith("x-wheelsai")), []);
+  // The usage headers say the same count.
+  assert.deepEqual(usageOf(completed), { ...PLAN_HEADERS, "x-wheelsai-charged-cents": "0", "x-wheelsai-balance-cents": "0" });
 
   // Streamed: the same billing rides on the first chunk.
   const streamed = await servers(planOptions());
@@ -344,6 +360,173 @@ test("an answer on a plan that will not renew carries no time at which the count
 });
 
 // ============================================
+// The usage headers
+// ============================================
+
+const ANSWER = "Hello, Ada. How can I help?";
+const TOOL_CALLS = [{ name: "web_search", status: "unavailable" }];
+const TASK_AGENT = { agentKind: "task", kindConfig: TASK_FORM, name: "Brief Writer" } as const;
+
+interface UsageCase {
+  name: string;
+  options: PaidHarnessOptions;
+  /** The billing object of the answer, in the order its body writes it. */
+  billing: Record<string, unknown>;
+  headers: Record<string, string>;
+}
+
+const USAGE_CASES: UsageCase[] = [
+  {
+    name: "an included use",
+    options: planOptions(),
+    billing: { chargedCents: 0, balanceCents: 500, access: "subscribed", plan: INCLUDED },
+    headers: { "x-wheelsai-charged-cents": "0", "x-wheelsai-balance-cents": "500", ...PLAN_HEADERS },
+  },
+  {
+    name: "an extra use",
+    options: planOptions({ usedInPeriod: 500 }),
+    billing: { chargedCents: 50, balanceCents: 450, access: "subscribed", plan: EXTRA },
+    headers: {
+      "x-wheelsai-charged-cents": "50",
+      "x-wheelsai-balance-cents": "450",
+      ...PLAN_HEADERS,
+      "x-wheelsai-plan-used": "500",
+      "x-wheelsai-plan-remaining": "0",
+      "x-wheelsai-plan-warning": "100",
+    },
+  },
+  {
+    name: "a monthly subscriber",
+    options: { listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH, balance: 500n },
+    billing: { chargedCents: 0, balanceCents: 500, access: "subscribed" },
+    headers: { "x-wheelsai-charged-cents": "0", "x-wheelsai-balance-cents": "500" },
+  },
+  {
+    name: "a buyer who pays per use",
+    options: { balance: 500n },
+    billing: { chargedCents: 5, balanceCents: 495, access: "listing_pricing" },
+    headers: { "x-wheelsai-charged-cents": "5", "x-wheelsai-balance-cents": "495" },
+  },
+];
+
+for (const c of USAGE_CASES) {
+  test(`usage headers: ${c.name}, on chat, run and /v1, whole and streamed, with the body as it was`, async () => {
+    // What the headers say is what the body's billing says, written out.
+    assert.deepEqual(usageHeadersOf(c.billing as never), c.headers);
+    const task: PaidHarnessOptions = { ...c.options, agent: TASK_AGENT };
+    const post = (app: FastifyInstance, path: string, payload: object) =>
+      app.inject({ method: "POST", url: `/api/a/${HANDLE}/${path}`, headers: as(SESSION), payload });
+    const billingEvent = `data: ${JSON.stringify({ wheelsai: { billing: c.billing } })}`;
+
+    // Chat, whole.
+    const chatted = await chatOn((await servers(c.options)).page);
+    assert.equal(chatted.statusCode, 200);
+    assert.deepEqual(usageOf(chatted), c.headers);
+    assert.equal(
+      chatted.body,
+      JSON.stringify({ message: { role: "assistant", content: ANSWER }, toolCalls: TOOL_CALLS, billing: c.billing }),
+    );
+
+    // Chat, streamed: the headers are in the head, before the billing event.
+    const chatStream = await post((await servers(c.options)).page, "chat", { messages: CHAT.messages, stream: true });
+    assert.equal(chatStream.statusCode, 200);
+    assert.match(String(chatStream.headers["content-type"]), /text\/event-stream/);
+    assert.deepEqual(usageOf(chatStream), c.headers);
+    assert.equal(chatStream.body.split("\n\n")[0], billingEvent);
+
+    // Run, whole.
+    const ran = await post((await servers(task)).page, "run", { input: { topic: "Launch plan" }, stream: false });
+    assert.equal(ran.statusCode, 200);
+    assert.deepEqual(usageOf(ran), c.headers);
+    assert.equal(
+      ran.body,
+      JSON.stringify({ output: { format: "text", text: ANSWER }, toolCalls: TOOL_CALLS, billing: c.billing }),
+    );
+
+    // Run, streamed.
+    const runStream = await post((await servers(task)).page, "run", { input: { topic: "Launch plan" }, stream: true });
+    assert.equal(runStream.statusCode, 200);
+    assert.match(String(runStream.headers["content-type"]), /text\/event-stream/);
+    assert.deepEqual(usageOf(runStream), c.headers);
+    assert.equal(runStream.body.split("\n\n")[0], billingEvent);
+
+    // /v1, whole: OpenAI's completion with the `wheelsai` object, and nothing added to it.
+    const completed = await completeOn((await servers(c.options)).v1);
+    assert.equal(completed.statusCode, 200);
+    assert.deepEqual(usageOf(completed), c.headers);
+    const extension = { agent: { handle: HANDLE }, billing: c.billing };
+    assert.equal(
+      completed.body,
+      JSON.stringify(
+        toChatCompletion({
+          id: completed.json().id,
+          created: 1_760_000_000,
+          model: `a/${HANDLE}`,
+          content: ANSWER,
+          finishReason: "stop",
+          extension,
+        }),
+      ),
+    );
+
+    // /v1, streamed: the same extension on the first chunk.
+    const stream = await completeOn((await servers(c.options)).v1, SESSION, { stream: true });
+    assert.equal(stream.statusCode, 200);
+    assert.match(String(stream.headers["content-type"]), /text\/event-stream/);
+    assert.deepEqual(usageOf(stream), c.headers);
+    const first = JSON.parse(stream.body.split("\n\n")[0]!.slice(5));
+    assert.equal(JSON.stringify(first.wheelsai), JSON.stringify(extension));
+
+    // Never in a header: the model, tokens, or the creator's organization.
+    for (const res of [chatted, chatStream, ran, runStream, completed, stream]) {
+      const told = JSON.stringify(usageOf(res));
+      for (const secret of [CREATOR_ORG, "token", "model", "org"]) assert.ok(!told.includes(secret), secret);
+    }
+  });
+}
+
+test("usage headers: the warning is told from 85% of a plan's uses, and a plan that will not renew has no reset", async () => {
+  const below = await chatOn((await servers(planOptions({ usedInPeriod: 423 }))).page);
+  assert.deepEqual([below.json().billing.plan.warning, "x-wheelsai-plan-warning" in below.headers], [null, false]);
+  const at = await chatOn((await servers(planOptions({ usedInPeriod: 424 }))).page);
+  assert.deepEqual([at.json().billing.plan.warning, at.headers["x-wheelsai-plan-warning"]], [85, "85"]);
+  assert.deepEqual([at.headers["x-wheelsai-plan-used"], at.headers["x-wheelsai-plan-remaining"]], ["425", "75"]);
+
+  // Uses carried into the period are part of the limit.
+  const carried = await completeOn((await servers(planOptions({ carriedUses: 20 }))).v1);
+  assert.deepEqual(
+    [carried.headers["x-wheelsai-plan-limit"], carried.headers["x-wheelsai-plan-remaining"]],
+    ["520", "507"],
+  );
+
+  const { "x-wheelsai-plan-reset": _reset, ...ending } = PLAN_HEADERS;
+  const cancelled = await chatOn((await servers(planOptions({ cancelAtPeriodEnd: true }))).page);
+  assert.deepEqual(usageOf(cancelled), { "x-wheelsai-charged-cents": "0", "x-wheelsai-balance-cents": "500", ...ending });
+  const retired = await completeOn((await servers(planOptions({ planRetired: true }))).v1, SESSION, { stream: true });
+  assert.deepEqual(usageOf(retired), { "x-wheelsai-charged-cents": "0", "x-wheelsai-balance-cents": "500", ...ending });
+});
+
+test("usage headers: a balance that cannot be read leaves its header out, and the answer on a plan goes out as it would have", async () => {
+  for (const streamed of [false, true]) {
+    const { h, page, v1 } = await servers(planOptions());
+    h.deps.readBalance = async () => {
+      throw new Error("the balance cannot be read");
+    };
+    const { "x-wheelsai-balance-cents": _balance, ...rest } = USAGE_CASES[0]!.headers;
+    const chatted = await chatOn(page, SESSION, { messages: CHAT.messages, stream: streamed });
+    assert.equal(chatted.statusCode, 200);
+    assert.deepEqual(usageOf(chatted), rest);
+    const completed = await completeOn(v1, SESSION, { stream: streamed });
+    assert.equal(completed.statusCode, 200);
+    assert.deepEqual(usageOf(completed), { ...rest, "x-wheelsai-plan-used": "14", "x-wheelsai-plan-remaining": "486" });
+    if (!streamed) {
+      assert.equal(chatted.json().billing.balanceCents, null);
+      assert.equal(completed.json().wheelsai.billing.balanceCents, null);
+    }
+  }
+});
+
+// ============================================
 // The two refusals
 // ============================================
 
@@ -380,12 +563,54 @@ test("plan_used_up: 429 with when it starts again, Retry-After and the plans on 
   assert.deepEqual([h.money.balance, h.money.ledger.length, h.sub?.usedInPeriod], [500n, 0, 500]);
   assert.ok(!h.log.includes("model") && !h.log.includes("take"));
 
+  // Both carry the plan's headers with nothing remaining, and say no charge and no balance.
+  const usedUpHeaders = {
+    "x-wheelsai-plan": "plan-1",
+    "x-wheelsai-plan-limit": "500",
+    "x-wheelsai-plan-used": "500",
+    "x-wheelsai-plan-remaining": "0",
+    "x-wheelsai-plan-reset": RESETS_AT,
+    "x-wheelsai-plan-warning": "100",
+  };
+  assert.deepEqual(usageOf(refused), usedUpHeaders);
+  assert.deepEqual(usageOf(openAi), usedUpHeaders);
+  // The bodies are what they were, byte for byte: the count the headers are written from is not in them.
+  const sentence = "You have used all 500 uses. It starts again on 1 Nov. Nothing was charged.";
+  assert.equal(
+    refused.body,
+    JSON.stringify({
+      error: "plan_used_up",
+      message: sentence,
+      retryAfterSeconds: SECONDS_TO_RESET,
+      plans: OFFERS,
+      resetsAt: RESETS_AT,
+    }),
+  );
+  assert.equal(
+    openAi.body,
+    JSON.stringify({
+      error: { plans: OFFERS, resetsAt: RESETS_AT, message: sentence, type: "insufficient_quota", param: null, code: "plan_used_up" },
+    }),
+  );
+
+  // Found used up only at the take (the last use went to another request): the same headers.
+  const raced = await servers(
+    planOptions({ usedInPeriod: 499, extraUsePriceCents: null }, { beforeTake: (row) => void (row.usedInPeriod = 500) }),
+  );
+  const late = await chatOn(raced.page);
+  assert.deepEqual([late.statusCode, late.json().error, usageOf(late)], [429, "plan_used_up", usedUpHeaders]);
+
   // A plan that will not renew: when it ends is in the sentence, and no reset time is told.
   const ending = await servers(planOptions({ ...stopped, cancelAtPeriodEnd: true }));
   const ended = (await chatOn(ending.page)).json();
   assert.equal(ended.message, "You have used all 500 uses. Your plan ends on 1 Nov. Nothing was charged.");
   assert.deepEqual([ended.plans, "resetsAt" in ended], [OFFERS, false]);
-  assert.equal("resetsAt" in (await completeOn(ending.v1)).json().error, false);
+  const endedOpenAi = await completeOn(ending.v1);
+  assert.equal("resetsAt" in endedOpenAi.json().error, false);
+  // And no reset header: no count starts again.
+  const { "x-wheelsai-plan-reset": _reset, ...noReset } = usedUpHeaders;
+  assert.deepEqual(usageOf(endedOpenAi), noReset);
+  assert.deepEqual(usageOf(await chatOn(ending.page)), noReset);
 });
 
 test("plan_ended: 402 with the plans and the price per use to choose from, in the page's shape and in OpenAI's", async () => {
@@ -414,9 +639,26 @@ test("plan_ended: 402 with the plans and the price per use to choose from, in th
     param: null,
     code: "marketplace_payment_required",
   });
+  // Only a plan that is used up has usage headers: this refusal has none.
+  assert.deepEqual([usageOf(refused), usageOf(openAi)], [{}, {}]);
   // Starting a plan was not an agreement to the price per use: nothing is charged.
   assert.deepEqual([h.money.balance, h.money.ledger.length], [500n, 0]);
   assert.ok(!h.log.includes("model"));
+});
+
+test("usage headers: on /v1 no refusal but a used-up plan carries any, with or without a plan behind it", async () => {
+  // /v1 sets its headers itself and not through the page's refusal, so the rule is held here too.
+  for (const [name, options, status] of [
+    ["too few credits to pay per use", { balance: 0n }, 402],
+    ["no licence", { licence: null }, 403],
+    ["an extra use of a plan with too few credits", planOptions({ usedInPeriod: 500 }, { balance: 0n }), 402],
+  ] as const) {
+    const { h, v1 } = await servers(options);
+    const res = await completeOn(v1);
+    assert.equal(res.statusCode, status, `${name}: ${res.body}`);
+    assert.deepEqual(usageOf(res), {}, name);
+    assert.equal(h.money.ledger.length, 0, name);
+  }
 });
 
 test("the OpenAI shape carries a refusal's reset time and plans only when it has them", () => {

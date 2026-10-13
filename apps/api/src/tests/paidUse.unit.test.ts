@@ -1181,12 +1181,15 @@ const NOTHING_MOVED = {
   charges: 0,
   modelCalls: 0,
 };
+/** The count a used-up refusal was decided on. It rides on the refusal for the usage headers and is not in its body. */
+const USED_UP_COUNT = { id: "plan-1", includedUses: 500, carriedUses: 0, usedUses: 500 };
 const USED_UP_AND_STOPPED = {
   status: 429,
   code: "plan_used_up",
   message: "You have used all 500 uses. It starts again on 1 Nov. Nothing was charged.",
   retryAfterSeconds: SECONDS_TO_RESET,
   resetsAt: RESETS_AT,
+  planCount: USED_UP_COUNT,
 };
 /** Used up on a plan that will not renew: when it ends, and no time at which a count starts again. */
 const USED_UP_AND_ENDING = {
@@ -1194,6 +1197,7 @@ const USED_UP_AND_ENDING = {
   code: "plan_used_up",
   message: "You have used all 500 uses. Your plan ends on 1 Nov. Nothing was charged.",
   retryAfterSeconds: SECONDS_TO_RESET,
+  planCount: USED_UP_COUNT,
 };
 const refusalIn = (result: PaidChatResult | PaidTaskResult) => (result.kind === "refused" ? result.refusal : result.kind);
 
@@ -1455,6 +1459,7 @@ test("a plan that is used up and stops is a 429 with the day it starts again: no
   assert.deepEqual(refusalIn(await chat(carried)), {
     ...USED_UP_AND_STOPPED,
     message: "You have used all 520 uses. It starts again on 1 Nov. Nothing was charged.",
+    planCount: { ...USED_UP_COUNT, carriedUses: 20, usedUses: 520 },
   });
 
   // An extra price was agreed, but the listing no longer sells use: nothing more is sold on it.
@@ -1497,6 +1502,7 @@ test("a plan that is used up and stops is a 429 with the day it starts again: no
     message: "You have used all 500 uses. It starts again when your plan renews. Nothing was charged.",
     retryAfterSeconds: 3600,
     resetsAt: "2026-10-09T12:00:00.000Z",
+    planCount: USED_UP_COUNT,
   });
 });
 

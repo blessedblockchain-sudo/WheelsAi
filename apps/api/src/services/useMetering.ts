@@ -7,6 +7,10 @@
  *
  *   free        a free use listing. Anyone may use it; no licence is needed
  *   subscribed  inside a paid month: it runs and nothing is charged
+ *   plan        inside a paid plan: the terms the buyer agreed to, as the
+ *               subscription row holds them. Whether this use is one of the
+ *               included ones is decided where one is taken
+ *               (services/planUse.ts), not here
  *   refused     with the reason, the status and what the caller is told
  *   billable    per use, at the listing's price, which is never above the
  *               price the buyer accepted
@@ -40,7 +44,7 @@ import {
   type RefundResult,
   type SettleResult,
 } from "./marketplaceMetering.js";
-import { useAccess, useDecision, type UseAccess, type UseSubscription } from "./useAccess.js";
+import { onPlan, useAccess, useDecision, type UseAccess, type UseSubscription } from "./useAccess.js";
 
 /** What one use is called where the buyer reads it: a chat message, or a task run. */
 export type UseUnit = "message" | "run";
@@ -91,11 +95,45 @@ export type UseRefusalReason =
   | "use_not_started"
   | "pricing_changed"
   | "subscription_lapsed"
+  | "plan_ended"
   | "not_offered";
+
+/**
+ * The plan a buyer is on, as their subscription row holds it: the terms they
+ * agreed to and the count of this period. Never the plan as the creator has
+ * it now.
+ */
+export interface UsePlan {
+  /** The subscription row the count is on. */
+  subscriptionId: string;
+  /** The plan the row was started on. Null on a row that names none. */
+  planId: string | null;
+  includedUses: number;
+  /** Uses taken since `periodStart`, as read. The take decides again. */
+  usedInPeriod: number;
+  /** Unused uses brought into this period by a move to a bigger plan. */
+  carriedUses: number;
+  /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
+  extraUsePriceCents: bigint | null;
+  /** The period a use is taken from: a use taken in one is never given back into another. */
+  periodStart: Date;
+  periodEnd: Date;
+}
 
 export type UseBilling =
   | { kind: "free" }
   | { kind: "subscribed"; access: "subscribed" }
+  | {
+      kind: "plan";
+      access: "subscribed";
+      plan: UsePlan;
+      /**
+       * The charge target of one use past the count, at the extra price the
+       * buyer agreed to, with kind "use". Null when the plan stops, and when
+       * the listing no longer sells use: nothing more is sold on it then.
+       */
+      extraInstall: MeteredInstall | null;
+    }
   | {
       kind: "refused";
       reason: UseRefusalReason;
@@ -139,6 +177,7 @@ const REFUSAL_MESSAGE: Record<Exclude<UseRefusalReason, "pricing_changed">, stri
   use_not_started:
     "You have not started using this agent. Start on its page, or ask an owner or admin of your organization to start.",
   subscription_lapsed: "Your subscription has ended. Subscribe again to keep using it.",
+  plan_ended: "Your plan ended. Choose a plan or pay per use to keep using it.",
   not_offered: "This agent is no longer offered. You will not be charged again.",
 };
 
@@ -195,7 +234,11 @@ export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()
       access,
     };
   }
-  if (access === "subscribed") return { kind: "subscribed", access };
+  if (access === "subscribed") {
+    // A month with no count: exactly what it was before plans existed.
+    if (!licence || !input.sub || !onPlan(input.sub)) return { kind: "subscribed", access };
+    return planBilling(listing, licence, input.sub, onSaleForUse);
+  }
   // listing_pricing from here, and so a licence.
   if (!decision.charged || !licence) return { kind: "free" };
 
@@ -227,6 +270,59 @@ export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()
       pricePerRequestCents: priceCents,
       kind: "use",
     },
+  };
+}
+
+/**
+ * A use inside a paid plan. Every term comes from the subscription row,
+ * which copied them when the buyer agreed: a creator who has changed or
+ * ended the plan since changes nothing for this buyer.
+ */
+function planBilling(
+  listing: UseBillingListing,
+  licence: UseBillingLicence,
+  sub: UseSubscription,
+  onSaleForUse: boolean,
+): UseBilling {
+  const { id, currentPeriodStart, includedUses, usedInPeriod, carriedUses } = sub;
+  // A use can only be counted on a row that was read with its count. A row
+  // read without it would run uncounted, so it does not run at all.
+  if (
+    id === undefined ||
+    currentPeriodStart === undefined ||
+    includedUses === null ||
+    includedUses === undefined ||
+    usedInPeriod === undefined ||
+    carriedUses === undefined
+  ) {
+    throw new Error("resolveUseBilling was given a plan subscription without its id, period start or counts");
+  }
+  const extraUsePriceCents = sub.extraUsePriceCents ?? null;
+  return {
+    kind: "plan",
+    access: "subscribed",
+    plan: {
+      subscriptionId: id,
+      planId: sub.planId ?? null,
+      includedUses,
+      usedInPeriod,
+      carriedUses,
+      extraUsePriceCents,
+      periodStart: currentPeriodStart,
+      periodEnd: sub.currentPeriodEnd,
+    },
+    extraInstall:
+      extraUsePriceCents !== null && extraUsePriceCents > 0n && onSaleForUse
+        ? {
+            installId: licence.id,
+            listingId: listing.id,
+            listingTitle: listing.title,
+            publisherId: listing.publisherId,
+            buyerId: licence.buyerId,
+            pricePerRequestCents: extraUsePriceCents,
+            kind: "use",
+          }
+        : null,
   };
 }
 

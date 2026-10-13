@@ -438,6 +438,7 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
   pricing_changed: "pricing_changed",
   insufficient_credits: "marketplace_payment_required",
   subscription_lapsed: "marketplace_payment_required",
+  plan_ended: "marketplace_payment_required",
   api_key_use_price_cap_exceeded: "api_key_use_price_cap_exceeded",
   api_key_daily_cap_exceeded: "api_key_daily_cap_exceeded",
   api_key_spend_caps_missing: "api_key_spend_caps_missing",

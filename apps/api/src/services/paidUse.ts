@@ -317,6 +317,7 @@ export type PaidUseErrorCode =
   | "use_not_started"
   | "pricing_changed"
   | "subscription_lapsed"
+  | "plan_ended"
   | "insufficient_credits"
   | "api_key_use_price_cap_exceeded"
   | "api_key_daily_cap_exceeded"
@@ -497,6 +498,7 @@ export const PAID_USE_MESSAGES = {
   agentLimit: "This agent has reached its limit for now. Nothing was charged. Try again later.",
   tooManyRefunds: "Several of your answers could not be delivered today. Try again tomorrow.",
   unavailable: "This agent cannot be used right now. Nothing was charged. Try again later.",
+  planNotReady: "Your plan cannot be used here yet. Nothing was charged and no use was taken from your plan.",
   // AGENT_PAUSED_MESSAGE of services/listingPause.ts, word for word. Said
   // again here because this file imports nothing that reads the environment
   // or the database; a test holds the two together.
@@ -537,6 +539,11 @@ const NOT_FOUND: PaidUseRefusal = { status: 404, code: "agent_not_found", messag
 const NOT_A_MEMBER: PaidUseRefusal = { status: 403, code: "not_a_member", message: PAID_USE_MESSAGES.notAMember };
 const OWN_AGENT: PaidUseRefusal = { status: 409, code: "own_agent", message: PAID_USE_MESSAGES.ownAgent };
 const UNAVAILABLE: PaidUseRefusal = { status: 503, code: "agent_unavailable", message: PAID_USE_MESSAGES.unavailable };
+const PLAN_NOT_READY: PaidUseRefusal = {
+  status: 503,
+  code: "agent_unavailable",
+  message: PAID_USE_MESSAGES.planNotReady,
+};
 const PAUSED: PaidUseRefusal = { status: 503, code: "agent_paused", message: PAID_USE_MESSAGES.paused };
 const CLIENT_GONE_REFUSAL: PaidUseRefusal = {
   status: 499,
@@ -855,6 +862,10 @@ async function runPaidUse(
   if (billing.kind === "free") {
     return refused({ status: 409, code: "not_for_sale", message: PAID_USE_MESSAGES.freeOnItsPage });
   }
+  // A use on a plan is counted, and the count is not connected here yet.
+  // Refused before the balance, the model and any charge, so no use runs
+  // uncounted and nothing is taken.
+  if (billing.kind === "plan") return refused(PLAN_NOT_READY);
 
   const apiKeyId = caller.type === "api_key" ? (caller.apiKeyId ?? null) : null;
   if (billing.kind === "billable") {
@@ -1217,7 +1228,8 @@ export async function listPaidResults(input: PaidReadInput, deps: PaidUseDeps): 
     }
     // Results are sold by the month. A price per use on a self-running
     // agent is refused where it is set; it buys nothing here.
-    if (billing.kind === "billable") {
+    // A plan is uses of an agent that answers, never results: refused the same way.
+    if (billing.kind === "billable" || billing.kind === "plan") {
       return refused({
         status: 409,
         code: "not_offered",

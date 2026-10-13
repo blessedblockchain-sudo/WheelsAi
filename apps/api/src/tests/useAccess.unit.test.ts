@@ -225,7 +225,15 @@ test("a per-use licence on an archived listing is not offered", () => {
 });
 
 test("no refusal runs or charges, and only per use is ever charged", () => {
-  const all: UseAccess[] = ["none", "subscribed", "listing_pricing", "pricing_changed", "subscription_lapsed", "not_offered"];
+  const all: UseAccess[] = [
+    "none",
+    "subscribed",
+    "listing_pricing",
+    "pricing_changed",
+    "subscription_lapsed",
+    "plan_ended",
+    "not_offered",
+  ];
   for (const result of all) {
     for (const listing of [PER_USE, MONTHLY, FREE]) {
       const decision = useDecision(result, listing);
@@ -233,6 +241,134 @@ test("no refusal runs or charges, and only per use is ever charged", () => {
       if (decision.charged) {
         assert.equal(result, "listing_pricing");
         assert.equal(listing.pricingModel, "per_request");
+      }
+    }
+  }
+});
+
+// ============================================
+// Plans: a subscription row with a count of included uses
+// ============================================
+
+// What these pin: a plan gives access for the period that was paid for, like
+// a month; when it is over the buyer chooses, and is charged per use only
+// under a per-use price they accepted themselves; and a row with no count is
+// read exactly as it was before plans existed.
+
+/** A licence started on a plan: no per-use price was ever agreed to. */
+const planLicence = (over: Partial<UseLicence> = {}): UseLicence => ({
+  kind: "use",
+  status: "active",
+  accepted: { pricingModel: null, pricePerRequestCents: null },
+  ...over,
+});
+const planMonth = (over: Partial<UseSubscription> = {}): UseSubscription => ({
+  id: "sub_1",
+  planId: "plan_1",
+  status: "active",
+  currentPeriodStart: inDays(-20),
+  currentPeriodEnd: inDays(10),
+  cancelAtPeriodEnd: false,
+  endReason: null,
+  includedUses: 500,
+  usedInPeriod: 12,
+  carriedUses: 0,
+  extraUsePriceCents: 4n,
+  ...over,
+});
+
+test("a plan gives access for the period paid for, whatever the listing says now", () => {
+  for (const listing of [PER_USE, { ...PER_USE, pricePerRequestCents: 50n }, { ...PER_USE, status: "archived" }, MONTHLY]) {
+    assert.equal(access({ licence: planLicence(), listing, sub: planMonth() }), "subscribed");
+  }
+  // Used up is still inside the plan: what happens to the next use is the count's to decide.
+  assert.equal(access({ licence: planLicence(), listing: PER_USE, sub: planMonth({ usedInPeriod: 500 }) }), "subscribed");
+  // A renewal that is being retried keeps the days of grace a month has.
+  assert.equal(
+    access({ licence: planLicence(), listing: PER_USE, sub: planMonth({ status: "past_due", currentPeriodEnd: inDays(-2) }) }),
+    "subscribed",
+  );
+});
+
+test("plan_ended: a plan that is over and will not renew is a choice, never a charge per use", () => {
+  const ended: Array<[string, UseSubscription, Partial<UseLicence>?]> = [
+    ["renewal cancelled, period over", planMonth({ cancelAtPeriodEnd: true, currentPeriodEnd: inDays(-1) })],
+    ["the renewal worker has not closed it yet", planMonth({ currentPeriodEnd: inDays(-4) })],
+    ["expired unpaid", planMonth({ status: "expired", currentPeriodEnd: inDays(-4) }), { status: "suspended" }],
+    ["the creator ended the plan", planMonth({ status: "cancelled", endReason: "plan_ended", currentPeriodEnd: inDays(-1) })],
+    ["cancelled by the buyer", planMonth({ status: "cancelled", currentPeriodEnd: inDays(5) })],
+  ];
+  for (const [what, sub, licence] of ended) {
+    assert.equal(access({ licence: planLicence(licence), listing: PER_USE, sub }), "plan_ended", what);
+  }
+  assert.deepEqual(useDecision("plan_ended", PER_USE), { runs: false, charged: false, status: 402, code: "plan_ended" });
+});
+
+test("a plan the creator ended has no days of grace after the period it paid for", () => {
+  const retired = (over: Partial<UseSubscription>) => planMonth({ planRetired: true, ...over });
+  // The 30 days that were paid for are finished.
+  assert.equal(access({ licence: planLicence(), listing: PER_USE, sub: retired({ currentPeriodEnd: inDays(1) }) }), "subscribed");
+  // One day later the row is still open (the worker runs hourly, or not at all): it is over all the same.
+  assert.equal(access({ licence: planLicence(), listing: PER_USE, sub: retired({ currentPeriodEnd: inDays(-1) }) }), "plan_ended");
+  // The same row on a plan that is still offered is inside its grace.
+  assert.equal(
+    access({ licence: planLicence(), listing: PER_USE, sub: planMonth({ currentPeriodEnd: inDays(-1) }) }),
+    "subscribed",
+  );
+});
+
+test("after a plan, a per-use price is charged only if the buyer accepted it themselves", () => {
+  const over = planMonth({ status: "cancelled", currentPeriodEnd: inDays(-1) });
+  // Agreed to 5 cents a use, at some point, in their own name.
+  assert.equal(access({ licence: perUseLicence(5n), listing: PER_USE, sub: over }), "listing_pricing");
+  // Also for a row the worker has not closed yet: the agreement is the buyer's own.
+  assert.equal(
+    access({ licence: perUseLicence(5n), listing: PER_USE, sub: planMonth({ currentPeriodEnd: inDays(-4) }) }),
+    "listing_pricing",
+  );
+  // A price above the one they agreed to is not theirs.
+  assert.equal(
+    access({ licence: perUseLicence(5n), listing: { ...PER_USE, pricePerRequestCents: 6n }, sub: over }),
+    "plan_ended",
+  );
+  // Starting the plan was no agreement to a price per use, and neither is a monthly one.
+  assert.equal(access({ licence: planLicence(), listing: PER_USE, sub: over }), "plan_ended");
+  assert.equal(access({ licence: monthlyLicence(), listing: PER_USE, sub: over }), "plan_ended");
+  // A licence that non-payment suspended is not charged per use on an old agreement.
+  assert.equal(access({ licence: perUseLicence(5n, { status: "suspended" }), listing: PER_USE, sub: over }), "plan_ended");
+});
+
+test("a plan that is over on a listing that is not sold per use is not a choice of plans", () => {
+  const over = planMonth({ status: "cancelled", currentPeriodEnd: inDays(-1) });
+  assert.equal(access({ licence: planLicence(), listing: { ...PER_USE, status: "archived" }, sub: over }), "not_offered");
+  assert.equal(access({ licence: planLicence(), listing: { ...PER_USE, sells: "copies" }, sub: over }), "not_offered");
+  // Plans sit on a per-use listing only. On any other the older rules answer.
+  assert.equal(access({ licence: planLicence(), listing: MONTHLY, sub: over }), "subscription_lapsed");
+  // Somebody who stopped has no licence, plan or not.
+  assert.equal(access({ licence: planLicence({ status: "uninstalled" }), listing: PER_USE, sub: planMonth() }), "none");
+});
+
+test("a row with no count is read exactly as before plans existed", () => {
+  const listings = [PER_USE, { ...PER_USE, pricePerRequestCents: 6n }, MONTHLY, FREE, { ...MONTHLY, status: "archived" }];
+  const licences = [perUseLicence(), monthlyLicence(), monthlyLicence({ status: "suspended" })];
+  const subs: UseSubscription[] = [
+    paidMonth(),
+    paidMonth({ currentPeriodEnd: inDays(-1) }),
+    paidMonth({ currentPeriodEnd: inDays(-4) }),
+    paidMonth({ cancelAtPeriodEnd: true, currentPeriodEnd: inDays(-1) }),
+    paidMonth({ status: "past_due", currentPeriodEnd: inDays(-2) }),
+    paidMonth({ status: "expired", currentPeriodEnd: inDays(-4) }),
+    paidMonth({ status: "cancelled", endReason: "pricing_changed" }),
+  ];
+  for (const listing of listings) {
+    for (const licence of licences) {
+      for (const sub of subs) {
+        const before = access({ licence, listing, sub });
+        assert.notEqual(before, "plan_ended");
+        // The fields a plan adds change nothing while the marker is null, and
+        // a row cannot be marked "plan ended by its creator" without a plan.
+        const withNulls = { ...sub, includedUses: null, planId: null, usedInPeriod: 0, carriedUses: 0, planRetired: true };
+        assert.equal(access({ licence, listing, sub: withNulls }), before);
       }
     }
   }

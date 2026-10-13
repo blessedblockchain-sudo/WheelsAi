@@ -121,6 +121,109 @@ test("a subscriber is never charged, whatever the listing says now", () => {
   }
 });
 
+// A plan: the subscription row carries a count of included uses, and a copy
+// of the terms the buyer agreed to.
+const planLicence = (over: Partial<UseBillingLicence> = {}) =>
+  licence({ acceptedPricingModel: null, acceptedPricePerRequestCents: null, ...over });
+const planMonth = {
+  ...paidMonth,
+  id: "sub_1",
+  planId: "plan_1",
+  currentPeriodStart: new Date(NOW.getTime() - 20 * DAY),
+  includedUses: 500,
+  usedInPeriod: 12,
+  carriedUses: 30,
+  extraUsePriceCents: 4n as bigint | null,
+};
+
+test("a subscriber on a plan gets the plan, with the terms on their row and never the listing's", () => {
+  const expected = {
+    subscriptionId: "sub_1",
+    planId: "plan_1",
+    includedUses: 500,
+    usedInPeriod: 12,
+    carriedUses: 30,
+    extraUsePriceCents: 4n,
+    periodStart: planMonth.currentPeriodStart,
+    periodEnd: planMonth.currentPeriodEnd,
+  };
+  // The listing's price per use is 5 cents, then 50: the extra price agreed is 4, and stays 4.
+  for (const listing of [LISTING, { ...LISTING, pricePerRequestCents: 50n }]) {
+    const billing = resolve({ listing, licence: planLicence(), sub: planMonth });
+    assert.deepEqual(billing, {
+      kind: "plan",
+      access: "subscribed",
+      plan: expected,
+      extraInstall: { ...INSTALL, pricePerRequestCents: 4n },
+    });
+  }
+  // Used up is still the plan: the count decides, where a use is taken.
+  const usedUp = resolve({ licence: planLicence(), sub: { ...planMonth, usedInPeriod: 530 } });
+  assert.equal(usedUp.kind, "plan");
+  if (usedUp.kind === "plan") assert.equal(usedUp.plan.usedInPeriod, 530);
+});
+
+test("a plan that stops has nothing to charge past the count, and neither has one on a listing no longer sold", () => {
+  const stops = resolve({ licence: planLicence(), sub: { ...planMonth, extraUsePriceCents: null } });
+  assert.equal(stops.kind, "plan");
+  if (stops.kind === "plan") {
+    assert.equal(stops.plan.extraUsePriceCents, null);
+    assert.equal(stops.extraInstall, null);
+  }
+  for (const listing of [{ ...LISTING, status: "archived" }, { ...LISTING, sells: "copies" }]) {
+    const billing = resolve({ listing, licence: planLicence(), sub: planMonth });
+    // The period that was paid for is honoured.
+    assert.equal(billing.kind, "plan");
+    if (billing.kind !== "plan") throw new Error("unreachable");
+    // What was agreed is still told as it was agreed, and nothing more is sold.
+    assert.equal(billing.plan.extraUsePriceCents, 4n);
+    assert.equal(billing.extraInstall, null);
+  }
+});
+
+test("a plan row read without its id, its period start or its counts does not run", () => {
+  for (const missing of ["id", "currentPeriodStart", "usedInPeriod", "carriedUses"] as const) {
+    const sub = { ...planMonth, [missing]: undefined };
+    assert.throws(() => resolve({ licence: planLicence(), sub }), /without its id, period start or counts/, missing);
+  }
+});
+
+test("a plan that ended is refused with the choice, and charged per use only on the buyer's own agreement", () => {
+  const over = { ...planMonth, status: "cancelled", currentPeriodEnd: new Date(NOW.getTime() - DAY) };
+  const billing = resolve({ licence: planLicence(), sub: over });
+  assert.deepEqual(billing, {
+    kind: "refused",
+    reason: "plan_ended",
+    status: 402,
+    code: "plan_ended",
+    message: "Your plan ended. Choose a plan or pay per use to keep using it.",
+    access: "plan_ended",
+  });
+  // The extra price of the plan that ended is not a price per use the buyer agreed to.
+  const stillOpen = resolve({ licence: planLicence(), sub: { ...planMonth, currentPeriodEnd: new Date(NOW.getTime() - 4 * DAY) } });
+  assert.equal(stillOpen.kind, "refused");
+  // A buyer who accepted 5 cents a use themselves pays that, at the listing's price.
+  const agreed = resolve({ licence: licence(), sub: over });
+  assert.equal(agreed.kind, "billable");
+  if (agreed.kind === "billable") assert.equal(agreed.priceCents, 5n);
+});
+
+test("a subscriber whose row has no count gets exactly what they got before plans", () => {
+  const noCount = { ...paidMonth, includedUses: null, planId: null, usedInPeriod: 0, carriedUses: 0, extraUsePriceCents: null };
+  for (const listing of [MONTHLY, LISTING, { ...MONTHLY, status: "archived" }]) {
+    for (const sub of [paidMonth, noCount]) {
+      assert.deepEqual(resolve({ listing, licence: monthlyLicence(), sub }), { kind: "subscribed", access: "subscribed" });
+    }
+  }
+  // Ended, it is a lapsed month or a changed price, as before: never "your plan ended".
+  for (const sub of [overMonth, { ...overMonth, includedUses: null }]) {
+    const lapsed = resolve({ listing: MONTHLY, licence: monthlyLicence(), sub });
+    assert.equal(lapsed.kind === "refused" && lapsed.reason, "subscription_lapsed");
+    const changed = resolve({ listing: LISTING, licence: monthlyLicence(), sub });
+    assert.equal(changed.kind === "refused" && changed.reason, "pricing_changed");
+  }
+});
+
 test("the caller's own listing is never billable", () => {
   for (const listing of [LISTING, MONTHLY, FREE, { ...LISTING, status: "archived" }]) {
     for (const lic of [null, licence({ buyerId: "org_pub" }), monthlyLicence({ buyerId: "org_pub" })]) {

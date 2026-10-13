@@ -15,6 +15,10 @@
  *   pricing_changed      a higher per-use price, or another pricing model.
  *                        Nothing runs or is charged until the buyer accepts
  *   subscription_lapsed  monthly and not paid up
+ *   plan_ended           the buyer was on a plan and it is over: it was not
+ *                        renewed, could not be paid for, or the creator
+ *                        ended it. Nothing runs or is charged until the
+ *                        buyer chooses a plan or agrees to pay per use
  *   not_offered          not published, or no longer sells use, and no paid
  *                        month left
  *
@@ -28,7 +32,12 @@
  *
  * Pure: no IO.
  */
-import { installAccess, subscriptionGrantsAccess, type AcceptedPricing } from "./subscriptionAccess.js";
+import {
+  acceptedPricingCovers,
+  installAccess,
+  subscriptionGrantsAccess,
+  type AcceptedPricing,
+} from "./subscriptionAccess.js";
 
 export type UseAccess =
   | "none"
@@ -36,6 +45,7 @@ export type UseAccess =
   | "listing_pricing"
   | "pricing_changed"
   | "subscription_lapsed"
+  | "plan_ended"
   | "not_offered";
 
 /** The buyer's licence row for this listing. */
@@ -64,6 +74,51 @@ export interface UseSubscription {
   currentPeriodEnd: Date;
   cancelAtPeriodEnd?: boolean;
   endReason?: string | null;
+  /**
+   * The marker of a plan (AgentSubscription.includedUses). Null or absent =
+   * a month with no count, which is read exactly as before plans existed.
+   * Set = the buyer is on a plan and the row carries the terms they agreed
+   * to: resolveUseBilling (services/useMetering.ts) needs `id`,
+   * `currentPeriodStart` and the counts below with it.
+   */
+  includedUses?: number | null;
+  id?: string;
+  planId?: string | null;
+  currentPeriodStart?: Date;
+  /** Uses taken since currentPeriodStart. */
+  usedInPeriod?: number;
+  /** Unused uses brought into this period by a move to a bigger plan. */
+  carriedUses?: number;
+  /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
+  extraUsePriceCents?: bigint | null;
+  /**
+   * True when the creator has ended the plan this row is on. Such a row is
+   * never renewed, so it gets no days of grace after the period it paid for.
+   * A reader that does not know leaves it out, and the renewal worker closes
+   * the row.
+   */
+  planRetired?: boolean;
+}
+
+/** Whether a subscription row is a plan: it carries a count of included uses. */
+export function onPlan(sub: Pick<UseSubscription, "includedUses"> | null | undefined): boolean {
+  return sub?.includedUses !== null && sub?.includedUses !== undefined;
+}
+
+/**
+ * Whether a plan row still gives its holder uses: the period paid for, with
+ * the days of grace of a renewal that is being retried. A plan the creator
+ * ended is not renewed, so like a cancelled renewal it has no grace.
+ */
+function planGrantsAccess(sub: UseSubscription, now: Date): boolean {
+  return subscriptionGrantsAccess(
+    {
+      status: sub.status,
+      currentPeriodEnd: sub.currentPeriodEnd,
+      cancelAtPeriodEnd: sub.cancelAtPeriodEnd === true || sub.planRetired === true,
+    },
+    now,
+  );
 }
 
 export interface UseAccessInput {
@@ -86,9 +141,25 @@ export function useAccess(input: UseAccessInput, now: Date = new Date()): UseAcc
   // of the month.
   if (licence.status !== "active" && licence.status !== "suspended") return "none";
   // Before the listing's status, on purpose: the month was paid for.
-  if (subscriptionGrantsAccess(sub, now)) return "subscribed";
+  const plan = sub !== null && onPlan(sub);
+  if (plan ? planGrantsAccess(sub, now) : subscriptionGrantsAccess(sub, now)) return "subscribed";
   if (listing.status !== "published" || listing.sells !== "use") return "not_offered";
   if (!USE_PRICING_MODELS.includes(listing.pricingModel)) return "not_offered";
+
+  // A plan that is over, on a listing still sold per use. Starting a plan
+  // was not an agreement to the listing's price per use, so its end never
+  // becomes a charge per use by itself: the buyer is charged per use only
+  // under a per-use price they accepted themselves, and only on a licence
+  // that non-payment has not suspended. Everybody else chooses first.
+  // A plan start must therefore never write acceptedPricingModel or
+  // acceptedPricePerRequestCents (agreeToTerms does for every other start).
+  if (plan && listing.pricingModel === "per_request") {
+    const agreedPerUse =
+      licence.status === "active" &&
+      licence.accepted.pricingModel === "per_request" &&
+      acceptedPricingCovers(listing, licence.accepted);
+    return agreedPerUse ? "listing_pricing" : "plan_ended";
+  }
 
   const access = installAccess(
     {
@@ -163,7 +234,7 @@ export type UseDecision =
       runs: false;
       charged: false;
       status: 402 | 403 | 409;
-      code: "use_not_started" | "pricing_changed" | "subscription_lapsed" | "not_offered";
+      code: "use_not_started" | "pricing_changed" | "subscription_lapsed" | "plan_ended" | "not_offered";
     };
 
 /**
@@ -188,6 +259,9 @@ export function useDecision(
       return { runs: false, charged: false, status: 409, code: "pricing_changed" };
     case "subscription_lapsed":
       return { runs: false, charged: false, status: 402, code: "subscription_lapsed" };
+    // Like a lapsed month, it is a payment that is missing: 402.
+    case "plan_ended":
+      return { runs: false, charged: false, status: 402, code: "plan_ended" };
     case "not_offered":
       return { runs: false, charged: false, status: 409, code: "not_offered" };
   }

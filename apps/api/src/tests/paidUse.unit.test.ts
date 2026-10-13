@@ -1122,3 +1122,63 @@ test("getUseAccess: the caller's access, the terms now, what they accepted and w
     assert.equal(missing.refusal.status, 404);
   }
 });
+
+// ============================================
+// A use on a plan, before the count is connected
+// ============================================
+
+test("a use on a plan is refused until its count is connected: nothing charged, no model call", async () => {
+  const onPlan = {
+    ...PAID_MONTH,
+    id: "sub-1",
+    planId: "plan-1",
+    currentPeriodStart: new Date("2026-10-02T00:00:00.000Z"),
+    includedUses: 500,
+    usedInPeriod: 12,
+    carriedUses: 0,
+    extraUsePriceCents: 5n,
+  };
+  for (const caller of [SESSION, KEY_CALLER]) {
+    const h = paidHarness({ sub: onPlan, balance: 500n });
+    const refusal = refusalOf(await chat(h, CHAT, caller));
+    assert.equal(refusal.status, 503);
+    assert.equal(refusal.code, "agent_unavailable");
+    assert.equal(refusal.message, "Your plan cannot be used here yet. Nothing was charged and no use was taken from your plan.");
+    assert.equal(h.money.balance, 500n);
+    assert.deepEqual(h.money.ledger, []);
+    assert.deepEqual(h.money.revenue, []);
+    assert.equal(h.money.keySpent, 0n);
+    for (const effect of ["charge", "peekKey", "model"]) assert.ok(!h.log.includes(effect), effect);
+    assert.equal(h.allowanceCounted(), 0);
+  }
+  // The same row with no count is today's monthly subscriber, and runs.
+  const monthly = paidHarness({ sub: { ...onPlan, includedUses: null }, balance: 500n });
+  assert.equal((await chat(monthly)).kind, "answer");
+});
+
+test("a plan does not read a self-running agent's results: refused before any is read", async () => {
+  // A plan is uses of an agent that answers. One bought before the agent was
+  // turned into a self-running one buys no results, as a price per use does not.
+  const onPlan = {
+    ...PAID_MONTH,
+    id: "sub-1",
+    planId: "plan-1",
+    currentPeriodStart: new Date("2026-10-02T00:00:00.000Z"),
+    includedUses: 500,
+    usedInPeriod: 12,
+    carriedUses: 0,
+    extraUsePriceCents: 5n,
+  };
+  const h = paidHarness({ agent: { agentKind: "scheduled" }, sub: onPlan, balance: 500n });
+  const result = await results(h);
+  assert.deepEqual(result, {
+    kind: "refused",
+    refusal: { status: 409, code: "not_offered", message: "This agent's results are read with a subscription. Nothing was charged." },
+  });
+  assert.deepEqual(h.log.filter((entry) => entry.startsWith("results:")), []);
+  assert.equal(h.money.balance, 500n);
+  assert.deepEqual(h.money.ledger, []);
+  // The same row with no count is today's monthly subscriber, and reads them.
+  const monthly = await results(paidHarness({ agent: { agentKind: "scheduled" }, sub: { ...onPlan, includedUses: null } }));
+  assert.equal(monthly.kind, "results");
+});

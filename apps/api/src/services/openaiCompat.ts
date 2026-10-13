@@ -153,6 +153,7 @@ export type OpenAiErrorCode =
   | "unsupported_media_type"
   | "rate_limit_exceeded"
   | "plan_limit_reached"
+  | "plan_used_up"
   | "provider_rate_limited"
   | "client_closed_request"
   | "internal_error"
@@ -307,6 +308,16 @@ const ERROR_RULES: Record<OpenAiErrorCode, ErrorRule> = {
     retry: false,
     message: "The plan's API call limit for this period has been reached.",
   },
+  // A buyer's plan on an agent (services/paidUse.ts): every use of its
+  // period is gone and it stops until it renews. A quota that ran out, not a
+  // pace that was too fast: sending the request again cannot be answered, so
+  // an SDK is told not to.
+  plan_used_up: {
+    status: 429,
+    type: "insufficient_quota",
+    retry: false,
+    message: "Every use of the plan for this period has been used.",
+  },
   provider_rate_limited: {
     status: 429,
     type: "requests",
@@ -443,8 +454,11 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
   insufficient_credits: "marketplace_payment_required",
   subscription_lapsed: "marketplace_payment_required",
   plan_ended: "marketplace_payment_required",
-  // Every use of a plan's period is gone and it stops: a wait, with Retry-After.
-  plan_used_up: "rate_limit_exceeded",
+  // Every use of a plan's period is gone and it stops. Its own code, so a
+  // caller can tell it from a pace that was too fast, and a quota in its
+  // type, so an SDK does not send the request again. Retry-After still says
+  // when the count starts again.
+  plan_used_up: "plan_used_up",
   api_key_use_price_cap_exceeded: "api_key_use_price_cap_exceeded",
   api_key_daily_cap_exceeded: "api_key_daily_cap_exceeded",
   api_key_spend_caps_missing: "api_key_spend_caps_missing",

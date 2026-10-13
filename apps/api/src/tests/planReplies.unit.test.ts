@@ -361,14 +361,16 @@ test("plan_used_up: 429 with when it starts again, Retry-After and the plans on 
   const openAi = await completeOn(v1);
   assert.equal(openAi.statusCode, 429);
   assert.equal(openAi.headers["retry-after"], String(SECONDS_TO_RESET));
+  // A quota that ran out, under its own code: an OpenAI SDK sends a rate
+  // limit again by itself, and no second send of this can be answered.
+  assert.equal(openAi.headers["x-should-retry"], "false");
   assert.deepEqual(openAi.json().error, {
     plans: OFFERS,
     resetsAt: RESETS_AT,
-    reason: "plan_used_up",
     message: "You have used all 500 uses. It starts again on 1 Nov. Nothing was charged.",
-    type: "requests",
+    type: "insufficient_quota",
     param: null,
-    code: "rate_limit_exceeded",
+    code: "plan_used_up",
   });
   // Nothing was charged, no use was taken and the model was not called, either time.
   assert.deepEqual([h.money.balance, h.money.ledger.length, h.sub?.usedInPeriod], [500n, 0, 500]);
@@ -415,7 +417,11 @@ test("plan_ended: 402 with the plans and the price per use to choose from, in th
 
 test("the OpenAI shape carries a refusal's reset time and plans only when it has them", () => {
   const plain = paidUseOpenAiError({ code: "plan_used_up", message: "Used up.", retryAfterSeconds: 30 });
-  assert.deepEqual(Object.keys(plain.body.error).sort(), ["code", "message", "param", "reason", "type"]);
+  assert.deepEqual(Object.keys(plain.body.error).sort(), ["code", "message", "param", "type"]);
+  assert.deepEqual([plain.body.error.code, plain.headers["x-should-retry"], plain.headers["retry-after"]], ["plan_used_up", "false", "30"]);
+  // A pace that was too fast stays a rate limit, which an SDK may send again.
+  const paced = paidUseOpenAiError({ code: "rate_limited", message: "Too fast.", retryAfterSeconds: 30 });
+  assert.deepEqual([paced.body.error.code, paced.body.error.reason, paced.headers["x-should-retry"]], ["rate_limit_exceeded", "rate_limited", undefined]);
   const full = paidUseOpenAiError({
     code: "plan_used_up",
     message: "Used up.",

@@ -428,7 +428,7 @@ test("every refusal the paid service can give has an OpenAI-shaped answer, and a
     pricing_changed: [409, "pricing_changed"],
     subscription_lapsed: [402, "marketplace_payment_required"],
     plan_ended: [402, "marketplace_payment_required"],
-    plan_used_up: [429, "rate_limit_exceeded"],
+    plan_used_up: [429, "plan_used_up"],
     insufficient_credits: [402, "marketplace_payment_required"],
     api_key_use_price_cap_exceeded: [403, "api_key_use_price_cap_exceeded"],
     api_key_daily_cap_exceeded: [403, "api_key_daily_cap_exceeded"],

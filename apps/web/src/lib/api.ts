@@ -2342,7 +2342,10 @@ export type MarketplaceInstallAccess =
   | "uninstalled"
   // Use of the creator's agent (kind "use"): no licence yet, or the listing no longer offers it.
   | "none"
-  | "not_offered";
+  | "not_offered"
+  // Use of the creator's agent: the buyer was on a plan and it is over. Nothing runs or is charged
+  // until they choose a plan or agree to pay per use.
+  | "plan_ended";
 
 /** What a listing sells: use of the creator's own agent, or a copy the buyer owns. */
 export type MarketplaceSells = "use" | "copies";
@@ -2372,6 +2375,47 @@ export interface MarketplacePricingTerms {
   monthlyPriceCents: number | null;
 }
 
+/**
+ * A plan a listing offers on top of its price per use, as a buyer is shown it: 30 days of use for
+ * one price, with a number of uses included. Cents are whole cents.
+ */
+export interface PlanOffer {
+  id: string;
+  name: string;
+  /** What 30 days cost. */
+  priceCents: number;
+  includedUses: number;
+  /** What each use past the included ones costs. Null = the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+}
+
+/**
+ * The terms of a plan as the buyer was shown them. Sent back when they start it, they are the
+ * buyer's consent. `extraUsePriceCents` is always sent, null for a plan that stops.
+ */
+export type PlanTerms = Pick<PlanOffer, "id" | "priceCents" | "includedUses" | "extraUsePriceCents">;
+
+/** A plan as its creator sees it (`getMyListings` and `setListingPlans`). No buyer is named. */
+export interface ListingPlan extends PlanOffer {
+  kind: "paid" | (string & {});
+  status: "active" | (string & {});
+  /** How many people are on this plan now. */
+  subscribers: number;
+}
+
+/**
+ * One plan of the set a creator saves. With `id` the plan is changed in place; without one it is
+ * new. `extraUsePriceCents` is always sent: null says the plan stops until it renews.
+ */
+export interface ListingPlanInput {
+  id?: string;
+  kind: "paid";
+  name: string;
+  priceCents: number;
+  includedUses: number;
+  extraUsePriceCents: number | null;
+}
+
 export interface MarketplaceListing {
   id: string;
   agentId: string;
@@ -2396,6 +2440,8 @@ export interface MarketplaceListing {
   allowedTools?: string[];
   /** `getMyListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
+  /** `getMyListings` only: the plans on offer, in the order a buyer sees them, each with its subscribers. */
+  plans?: ListingPlan[];
   /**
    * `getMyListings` only: set while the model the agent runs on is not running, so nobody can start
    * using it and nobody is charged. `since` is when that was first seen, or null when not yet noted.
@@ -2500,6 +2546,11 @@ export interface PublicAgentPaidTerms {
   transcriptsStored: boolean;
   /** Whether the agent may send requests to other websites as part of its answers. */
   sendsRequests: boolean;
+  /**
+   * The plans the listing offers on top of its price per use, in the order they are shown. Empty for
+   * a listing sold by the month and for one with no plan. Absent from an API that does not say.
+   */
+  plans?: PlanOffer[];
 }
 
 /** Exactly one of `chat`, `task` and `scheduled` is present, the one of the agent's kind. */
@@ -2651,12 +2702,35 @@ export interface PaidUseTerms {
   keepsCopy: boolean;
 }
 
+/** The plan a buyer is on, as their page draws it. Uses and cents. */
+export interface PaidUsePlan {
+  /** The plan the subscription was started on. */
+  id: string | null;
+  /** What its creator calls it now. */
+  name: string;
+  includedUses: number;
+  usedUses: number;
+  remainingUses: number;
+  /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+  /** When the count starts again (an ISO time). Left out when the plan will not renew. */
+  resetsAt?: string;
+  /** 85 when 85% of the uses are gone, 100 when all are. */
+  warning: null | 85 | 100;
+}
+
 /** `GET /api/a/:handle/access`. */
 export interface PaidUseAccessState {
   access: PaidUseAccess;
   listingId: string;
   /** What the listing asks now; null when use of it is not on sale. */
   terms: PaidUseTerms | null;
+  /** The plans the listing offers now, in the order they are shown. Absent from an API that does not say. */
+  plans?: PlanOffer[];
+  /** The plan the caller is on, while it gives them uses. Null, or absent, otherwise. */
+  plan?: PaidUsePlan | null;
+  /** Whether the caller can start a free trial. Free trials are not offered yet, so this is false. */
+  trialAvailable?: boolean;
   /** What the caller agreed to; null when they have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
   /**
@@ -2685,13 +2759,34 @@ export interface PaidUseAccessState {
   paused?: boolean;
 }
 
+/** The buyer's plan after one use on it. */
+export interface PaidUsePlanBilling {
+  /** The plan the subscription was started on. */
+  id: string | null;
+  /** `included`: one of the plan's uses. `extra`: past the count, charged the agreed extra price. */
+  use: "included" | "extra";
+  includedUses: number;
+  /** Uses brought into this period by a move to a bigger plan. */
+  carriedUses: number;
+  usedUses: number;
+  remainingUses: number;
+  /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
+  extraUsePriceCents: number | null;
+  /** When the count starts again (an ISO time). Left out when the plan will not renew. */
+  resetsAt?: string;
+  /** 85 when 85% of the uses are gone, 100 when all are. */
+  warning: null | 85 | 100;
+}
+
 /** What a use cost. */
 export interface PaidUseBilling {
-  /** 0 inside a paid month. */
+  /** 0 inside a paid month and for an included use of a plan; the agreed extra price past its count. */
   chargedCents: number;
   /** The buyer's credits after it; null when they could not be read just now. */
   balanceCents: number | null;
   access: "subscribed" | "listing_pricing";
+  /** Only on a plan. */
+  plan?: PaidUsePlanBilling;
 }
 
 export interface PaidUseToolCall {
@@ -2729,8 +2824,20 @@ export interface PaidUseRefusal {
    * paying organization; `copy_subscription_active` (409, on starting to use), the caller holds a
    * copy with a month paid for. While the agent's model is not running: `agent_paused` (503, on a
    * use) and `listing_paused` (409, on starting to use). Nothing is charged for either.
+   * On a plan: `plan_used_up` (429, on a use), every included use is gone and the plan has no price
+   * for an extra one; `plan_ended` (402, on a use), the plan is over and the buyer chooses again;
+   * `already_on_plan` (409, on starting a plan), a plan or a paid month still runs. Nothing is
+   * charged for any of them.
    */
-  error: "copy_subscription_active" | "not_a_member" | "agent_paused" | "listing_paused" | (string & {});
+  error:
+    | "copy_subscription_active"
+    | "not_a_member"
+    | "agent_paused"
+    | "listing_paused"
+    | "plan_used_up"
+    | "plan_ended"
+    | "already_on_plan"
+    | (string & {});
   message: string;
   /** copy_subscription_active: when the copy's paid month ends (an ISO date). */
   until?: string;
@@ -2741,8 +2848,15 @@ export interface PaidUseRefusal {
   details?: TaskInputIssue[];
   /** The buyer's access, where the licence decided. */
   access?: PaidUseAccess;
-  /** use_not_started and pricing_changed: what the listing asks now. */
+  /** use_not_started, pricing_changed and plan_ended: what the listing asks now. */
   terms?: PaidUseTerms;
+  /**
+   * plan_used_up and plan_ended, and pricing_changed on starting a plan: the plans the listing
+   * offers now, to choose from.
+   */
+  plans?: PlanOffer[];
+  /** plan_used_up: when the plan's count starts again (an ISO time). Left out when the plan will not renew. */
+  resetsAt?: string;
   /** insufficient_credits: the price of this use and the buyer's credits. */
   priceCents?: number;
   balanceCents?: number;
@@ -2924,6 +3038,20 @@ export const marketplaceApi = {
   getMyListings: () =>
     api<{ listings: MarketplaceListing[] }>("/api/marketplace/my-listings"),
 
+  /**
+   * Set the plans of a listing that sells use per request. `plans` is the whole set and replaces
+   * what the listing has: a plan sent with its id is changed in place, one left out is ended, one
+   * with no id is new. People already on a plan keep the terms they agreed to. A refusal throws an
+   * ApiError: 400 `validation_failed` with a sentence for each field (`fields["plans[0].priceCents"]`),
+   * 409 `plans_not_available` for a listing that cannot have plans, 409 `plans_changed` when another
+   * save got there first.
+   */
+  setListingPlans: (listingId: string, plans: ListingPlanInput[]) =>
+    api<{ plans: ListingPlan[] }>(`/api/marketplace/listings/${listingId}/plans`, {
+      method: "PUT",
+      body: { plans },
+    }),
+
   createReview: (listingId: string, data: { rating: number; title?: string; content?: string }) =>
     api<{ review: MarketplaceReview }>(`/api/marketplace/listings/${listingId}/reviews`, {
       method: "POST",
@@ -2980,6 +3108,27 @@ export const marketplaceApi = {
     api<MarketplaceUseState>(`/api/marketplace/listings/${listingId}/use`, {
       method: "POST",
       body,
+    }),
+
+  /**
+   * Start a plan on a listing that sells use. `plan` is the plan the buyer was shown, term by term:
+   * it is their consent, and the first 30 days are charged now. A plan that has changed answers 409
+   * `pricing_changed` with the plans as they are (`plans`) and nothing charged; 409 `already_on_plan`
+   * while a plan or a paid month still runs; 402 `insufficient_credits` with `requiredCents`.
+   * Starting a plan agrees to no price per use.
+   */
+  startPlan: (listingId: string, plan: PlanTerms) =>
+    api<MarketplaceUseState>(`/api/marketplace/listings/${listingId}/use`, {
+      method: "POST",
+      // Field by field: a card carries its name too, and only the terms are the consent.
+      body: {
+        plan: {
+          id: plan.id,
+          priceCents: plan.priceCents,
+          includedUses: plan.includedUses,
+          extraUsePriceCents: plan.extraUsePriceCents,
+        },
+      },
     }),
 
   /** Stop using an agent, or remove a copy. A subscription ends now and is not refunded. */
@@ -6202,6 +6351,14 @@ export interface Capabilities {
     perBuyerPerDay: number;
     /** The smallest price of one use, in cents. */
     minPricePerUseCents: number;
+    /** How many paid plans one listing can offer. */
+    maxPlans: number;
+    /** The most uses one plan can include. */
+    maxIncludedUses: number;
+    /** The smallest price of a plan for its 30 days, in cents. */
+    minPlanPriceCents: number;
+    /** The smallest price of one use past the included ones, in cents. */
+    minExtraUsePriceCents: number;
     /** Answers a day on the platform's models for the caller's organization; null when it cannot be read. */
     freeModelDailyAllowance: number | null;
   };

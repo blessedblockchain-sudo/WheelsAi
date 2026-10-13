@@ -26,6 +26,7 @@ import {
   type AgentDetail,
   type Capabilities,
   type MarketplaceListing,
+  type OwnedMarketplaceListing,
   type PublicLink,
 } from "@/lib/api";
 import { codeOf, listingForAgent } from "@/lib/agent-page";
@@ -80,7 +81,7 @@ export interface SellTabProps {
 type Revenue = Awaited<ReturnType<typeof marketplaceApi.getRevenue>>;
 
 interface SellData {
-  listing: MarketplaceListing | null;
+  listing: OwnedMarketplaceListing | null;
   /** null when it could not be read: the screen then names no limit it does not know. */
   capabilities: Capabilities | null;
   link: PublicLink | null;

@@ -2319,8 +2319,17 @@ export interface MarketplaceSubscription {
    * when no price was ever agreed (it is confirmed before any renewal).
    */
   priceCents: number | null;
-  /** Set when the publisher's side ended it; the buyer must accept the new pricing. */
-  endReason: "pricing_changed" | "listing_archived" | "use_ended" | null;
+  /**
+   * Set when the publisher's side ended it. `plan_ended`: the creator ended the plan it was on; the
+   * buyer finished the 30 days they paid for and chooses again. The others: the buyer must accept the
+   * new pricing.
+   */
+  endReason: "pricing_changed" | "listing_archived" | "use_ended" | "plan_ended" | null;
+  /**
+   * The plan this subscription is on, with its count, while it gives uses. Null for a month with no
+   * count and for a plan that is over. Absent from an API that does not say.
+   */
+  plan?: PaidUsePlan | null;
 }
 
 /**
@@ -2403,6 +2412,12 @@ export interface ListingPlan extends PlanOffer {
   subscribers: number;
 }
 
+/** A listing as its owner reads it (`getMyListings`). */
+export interface OwnedMarketplaceListing extends MarketplaceListing {
+  /** The plans on offer, in the order a buyer sees them, each with its kind, status and subscribers. */
+  plans?: ListingPlan[];
+}
+
 /**
  * One plan of the set a creator saves. With `id` the plan is changed in place; without one it is
  * new. `extraUsePriceCents` is always sent: null says the plan stops until it renews.
@@ -2440,8 +2455,17 @@ export interface MarketplaceListing {
   allowedTools?: string[];
   /** `getMyListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
-  /** `getMyListings` only: the plans on offer, in the order a buyer sees them, each with its subscribers. */
-  plans?: ListingPlan[];
+  /**
+   * The plans the listing offers, as a buyer is shown them: on the read of one listing (`getListing`)
+   * and on the listing of an install (`getMyInstalls`), empty when it offers none. `getMyListings`
+   * gives the owner's view of them (`OwnedMarketplaceListing`). Absent from the other reads.
+   */
+  plans?: PlanOffer[];
+  /**
+   * `searchListings` only: the smallest price among the plans the listing offers, in cents; null when
+   * it offers none.
+   */
+  plansFromCents?: number | null;
   /**
    * `getMyListings` only: set while the model the agent runs on is not running, so nobody can start
    * using it and nobody is charged. `since` is when that was first seen, or null when not yet noted.
@@ -2709,6 +2733,11 @@ export interface PaidUsePlan {
   /** What its creator calls it now. */
   name: string;
   includedUses: number;
+  /**
+   * Uses brought into this period by a move to a bigger plan: the period holds `includedUses` plus
+   * these, and `remainingUses` counts both. Absent from an API that does not say.
+   */
+  carriedUses?: number;
   usedUses: number;
   remainingUses: number;
   /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
@@ -2826,8 +2855,9 @@ export interface PaidUseRefusal {
    * use) and `listing_paused` (409, on starting to use). Nothing is charged for either.
    * On a plan: `plan_used_up` (429, on a use), every included use is gone and the plan has no price
    * for an extra one; `plan_ended` (402, on a use), the plan is over and the buyer chooses again;
-   * `already_on_plan` (409, on starting a plan), a plan or a paid month still runs. Nothing is
-   * charged for any of them.
+   * `already_on_plan` (409, on starting a plan), a plan or a paid month still runs. On moving to
+   * another plan (409): `not_on_plan`, `same_plan`, and `not_a_bigger_plan` for one that costs the same
+   * or less. Nothing is charged for any of them.
    */
   error:
     | "copy_subscription_active"
@@ -2837,6 +2867,9 @@ export interface PaidUseRefusal {
     | "plan_used_up"
     | "plan_ended"
     | "already_on_plan"
+    | "not_on_plan"
+    | "same_plan"
+    | "not_a_bigger_plan"
     | (string & {});
   message: string;
   /** copy_subscription_active: when the copy's paid month ends (an ISO date). */
@@ -3036,7 +3069,7 @@ export const marketplaceApi = {
     }),
 
   getMyListings: () =>
-    api<{ listings: MarketplaceListing[] }>("/api/marketplace/my-listings"),
+    api<{ listings: OwnedMarketplaceListing[] }>("/api/marketplace/my-listings"),
 
   /**
    * Set the plans of a listing that sells use per request. `plans` is the whole set and replaces
@@ -3130,6 +3163,29 @@ export const marketplaceApi = {
           includedUses: plan.includedUses,
           extraUsePriceCents: plan.extraUsePriceCents,
         },
+      },
+    }),
+
+  /**
+   * Move a buyer who is on a plan to a bigger one of the same listing, now. `plan` is the plan they
+   * were shown, term by term, and is their consent: its full price is charged now, a fresh 30 days
+   * starts, and the uses that were left are carried into it once (at most as many as the plan they
+   * leave included). Nothing is refunded. A plan that has changed answers 409 `pricing_changed` with
+   * the plans as they are; one that costs the same or less 409 `not_a_bigger_plan`; 402
+   * `insufficient_credits` with `requiredCents`. Nothing is charged on a refusal.
+   */
+  movePlan: (listingId: string, plan: PlanTerms) =>
+    api<MarketplaceUseState>(`/api/marketplace/listings/${listingId}/use`, {
+      method: "POST",
+      // Field by field, as a start sends them: only the terms are the consent.
+      body: {
+        plan: {
+          id: plan.id,
+          priceCents: plan.priceCents,
+          includedUses: plan.includedUses,
+          extraUsePriceCents: plan.extraUsePriceCents,
+        },
+        switchNow: true,
       },
     }),
 

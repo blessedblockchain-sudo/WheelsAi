@@ -36,7 +36,7 @@ import {
   type Agent,
   type AgentDetail,
   type Capabilities,
-  type MarketplaceListing,
+  type OwnedMarketplaceListing,
   getErrorMessage,
   getValidationError,
 } from "@/lib/api";
@@ -183,7 +183,7 @@ export default function PublishWizardPage() {
 interface WizardData {
   agents: Agent[];
   /** The organization's own listings, with who holds what: they mark the agents that are listed. */
-  listings: MarketplaceListing[];
+  listings: OwnedMarketplaceListing[];
   /** null when it could not be read: the step then names no limit it does not know. */
   capabilities: Capabilities | null;
 }

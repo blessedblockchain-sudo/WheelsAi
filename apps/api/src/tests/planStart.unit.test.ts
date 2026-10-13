@@ -3,6 +3,7 @@ import test from "node:test";
 
 import "./unitEnv.js";
 
+import { resolveUseBilling } from "../services/useMetering.js";
 import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
 // Starting a plan on a creator's agent: POST /api/marketplace/listings/:id/use
@@ -411,6 +412,80 @@ test("a buyer who already agreed to a price per use keeps that agreement when th
   assert.equal(world.state.balance, 9_100n);
   // Already counted as a buyer: not counted twice.
   assert.deepEqual([world.state.listing.totalInstalls, world.state.listing.activeInstalls], [1, 1]);
+  // The plan ends: this buyer chose the price per use themselves, and goes on at it.
+  const after = afterThePlan(world);
+  assert.deepEqual(after.kind === "billable" && [after.access, after.priceCents], ["listing_pricing", 5n]);
+});
+
+/** What the buyer's next use is once the plan they started has ended, from the rows as the start left them. */
+function afterThePlan(world: World) {
+  const licence = world.state.installs[0]!;
+  const sub = world.state.subs[0]!;
+  return resolveUseBilling(
+    {
+      callerOrgId: BUYER,
+      listing: world.state.listing as never,
+      licence: licence as never,
+      sub: { ...sub, status: "cancelled", endReason: "plan_ended", cancelledAt: sub.currentPeriodEnd } as never,
+    },
+    new Date(sub.currentPeriodEnd.getTime() + DAY),
+  );
+}
+
+test("a paid plan started over a licence that was stopped or suspended does not bring an old price per use back", async () => {
+  const agreedAt = new Date("2026-10-01T00:00:00Z");
+  const agreed = { acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 5n, pricingAcceptedAt: agreedAt };
+  const notActive: Array<[string, Row, Row | undefined]> = [
+    // Agreed to pay per use, then stopped using the agent.
+    ["stopped", { status: "uninstalled", uninstalledAt: new Date(0) }, undefined],
+    // Stopped while a plan was running: its row was closed with the stop.
+    [
+      "stopped on a plan",
+      { status: "uninstalled", uninstalledAt: new Date(0) },
+      { status: "cancelled", currentPeriodEnd: new Date(Date.now() + 10 * DAY), priceCents: 900n, planId: STARTER_ID, includedUses: 500, usedInPeriod: 400, carriedUses: 0, extraUsePriceCents: 5n },
+    ],
+    // Suspended by a month that was not paid.
+    [
+      "suspended",
+      { status: "suspended" },
+      { status: "expired", currentPeriodEnd: new Date(Date.now() - 10 * DAY), priceCents: 900n },
+    ],
+  ];
+  for (const [what, install, sub] of notActive) {
+    const world = makeWorld({ install: { ...agreed, ...install }, ...(sub && { sub }) });
+    const res = await use(world, { plan: STARTER });
+    assert.equal(res.status, 201, what);
+    const licence = world.state.installs[0]!;
+    assert.deepEqual(
+      [licence.kind, licence.status, licence.acceptedPricingModel, licence.acceptedPricePerRequestCents, licence.pricingAcceptedAt],
+      ["use", "active", null, null, null],
+      what,
+    );
+    // The plan itself is the plan: charged once, with its own terms.
+    assert.equal(world.state.balance, 9_100n, what);
+    assert.deepEqual([world.state.subs[0]!.planId, world.state.subs[0]!.status, world.state.subs[0]!.usedInPeriod], [STARTER_ID, "active", 0], what);
+
+    // When that plan ends the buyer is asked to choose, and is not charged per use.
+    const after = afterThePlan(world);
+    assert.deepEqual(after.kind === "refused" && [after.status, after.code, after.access], [402, "plan_ended", "plan_ended"], what);
+  }
+
+  // The same rows with the licence active are a buyer who keeps what they agreed to.
+  const active = makeWorld({ install: agreed });
+  assert.equal((await use(active, { plan: STARTER })).status, 201);
+  assert.deepEqual(
+    [active.state.installs[0]!.acceptedPricingModel, active.state.installs[0]!.acceptedPricePerRequestCents, active.state.installs[0]!.pricingAcceptedAt],
+    ["per_request", 5n, agreedAt],
+  );
+  assert.equal(afterThePlan(active).kind, "billable");
+
+  // A plan that cannot be paid for clears nothing: the start rolled back whole.
+  const broke = makeWorld({ install: { ...agreed, status: "uninstalled", uninstalledAt: new Date(0) }, balance: 100n });
+  assert.equal((await use(broke, { plan: STARTER })).status, 402);
+  assert.deepEqual(
+    [broke.state.installs[0]!.status, broke.state.installs[0]!.acceptedPricingModel, broke.state.installs[0]!.acceptedPricePerRequestCents],
+    ["uninstalled", "per_request", 5n],
+  );
 });
 
 test("a licence that was stopped, and one whose plan lapsed, start again on the same rows", async () => {
@@ -664,6 +739,8 @@ test("a plan started over a licence for a copy bought per request: the licence i
     [licence.kind, licence.status, licence.acceptedPricingModel, licence.acceptedPricePerRequestCents, licence.pricingAcceptedAt],
     ["use", "active", null, null, null],
   );
+  const after = afterThePlan(world);
+  assert.equal(after.kind === "refused" && after.code, "plan_ended");
   // The copy is still named on the row. What it may do while the plan runs
   // is the metering's to say (tests/marketplaceMetering.unit.test.ts).
   assert.equal(licence.clonedAgentId, "agent_copy");

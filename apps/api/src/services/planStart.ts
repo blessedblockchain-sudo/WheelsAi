@@ -395,9 +395,13 @@ export async function startPlan(
           extraUsePriceCents: plan.extraUsePriceCents,
         },
         buyerId,
-        // As it was read before the start: a licence that was for a copy
-        // has its agreement cleared there, and one for use keeps its own.
-        licence: existingInstall ? { id: existingInstall.id, kind: existingInstall.kind } : null,
+        // As it was read before the claim made it active: a licence that
+        // was for a copy, or that was stopped or suspended, has its
+        // agreement to a price per use cleared there. Only a licence for
+        // use that was active keeps its own.
+        licence: existingInstall
+          ? { id: existingInstall.id, kind: existingInstall.kind, status: existingInstall.status }
+          : null,
         now,
       });
       await countLicence(tx, { listingId, previousStatus: existingInstall?.status });

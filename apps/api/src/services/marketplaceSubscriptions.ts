@@ -461,7 +461,8 @@ export interface PlanStartTx extends SubscriptionTx {
       where: { id: string };
       data:
         | { kind: "use" }
-        // A licence that was for a copy: what it agreed to was for the copy.
+        // A licence that was for a copy (what it agreed to was for the
+        // copy), or one for use that was not active when the start read it.
         | { kind: "use"; acceptedPricingModel: null; acceptedPricePerRequestCents: null; pricingAcceptedAt: null };
     }): Promise<{ id: string; status: string }>;
   };
@@ -486,9 +487,9 @@ export interface PlanStartTx extends SubscriptionTx {
  * starting a plan is not an agreement to the listing's price per use
  * (services/useAccess.ts). So this never writes acceptedPricingModel or
  * acceptedPricePerRequestCents: a new licence has neither, and a licence
- * for use that already agreed to a price per use keeps that agreement as it
- * is. A plan start must not go through agreeToTerms and writeLicence, which
- * write both.
+ * for use that is active and already agreed to a price per use keeps that
+ * agreement as it is. A plan start must not go through agreeToTerms and
+ * writeLicence, which write both.
  *
  * A licence that was for a COPY is different: whatever it agreed to, it
  * agreed to for the copy, and holding a copy is not an agreement to pay for
@@ -496,6 +497,8 @@ export interface PlanStartTx extends SubscriptionTx {
  * and when the plan ended the buyer would be charged per use at a price
  * they never accepted for use. So its agreement is cleared here (the only
  * values the type allows are null), and after the plan the buyer chooses.
+ * So is the agreement of a licence for use that was not active when it was
+ * read (stopped by the buyer, or suspended): see writePlanLicence.
  *
  * The licence must be active once it is written. A licence the caller did
  * not claim (still removed, or stopped) would be charged a full 30 days and
@@ -508,8 +511,12 @@ export async function startPlanSubscription(
     listing: Pick<ListingForBilling, "id" | "title" | "publisherId">;
     plan: PlanTerms;
     buyerId: string;
-    /** The buyer's licence row for the listing, already claimed, with its kind as read; null when they have none yet. */
-    licence: { id: string; kind: string } | null;
+    /**
+     * The buyer's licence row for the listing, already claimed, with its
+     * kind and its status as read BEFORE the claim; null when they have none
+     * yet. A status that is not passed is read as not active.
+     */
+    licence: { id: string; kind: string; status?: string } | null;
     now?: Date;
   },
 ): Promise<{ subscription: SubscriptionRow; revenueId: string; licenceId: string }> {
@@ -572,13 +579,14 @@ export async function startPlanSubscription(
  * why, and for what happens to a licence that was for a copy). Throws when
  * the licence is not active once written: nothing has been claimed then.
  *
- * `onlyARunningAgreement` is a free trial's: a licence for use keeps its
- * agreement to a price per use only if it was active when it was read. A
- * buyer who stopped using the agent, or whose licence was stopped, is paying
- * for nothing, and a trial that charges nothing must not bring their old
- * price back to life: when it ends they would be charged per use without
- * having chosen anything. Their agreement is cleared, and after the trial
- * they choose. A status that was not passed is read as not active.
+ * A licence for use keeps its agreement to a price per use only if it was
+ * active when it was read, before the start claimed it. A buyer who stopped
+ * using the agent, or whose licence was suspended, is paying for nothing,
+ * and starting a plan or a trial is not agreeing to a price per use: it
+ * must not bring their old price back to life, or when the plan or the
+ * trial ended they would be charged per use without having chosen that.
+ * Their agreement is cleared, and afterwards they choose. A status that was
+ * not passed is read as not active.
  */
 async function writePlanLicence(
   tx: PlanStartTx,
@@ -587,15 +595,13 @@ async function writePlanLicence(
     buyerId: string;
     licence: { id: string; kind: string; status?: string } | null;
   },
-  onlyARunningAgreement = false,
 ): Promise<{ id: string }> {
   if (!args.licence) {
     return tx.agentInstall.create({
       data: { listingId: args.listing.id, buyerId: args.buyerId, clonedAgentId: null, kind: "use", status: "active" },
     });
   }
-  const keepsAgreement =
-    args.licence.kind === "use" && (!onlyARunningAgreement || args.licence.status === "active");
+  const keepsAgreement = args.licence.kind === "use" && args.licence.status === "active";
   const written = await tx.agentInstall.update({
     where: { id: args.licence.id },
     data: keepsAgreement
@@ -655,7 +661,7 @@ export async function startTrialSubscription(
   const now = args.now ?? new Date();
   const key = { listingId: args.listing.id, subscriberId: args.buyerId };
 
-  const licence = await writePlanLicence(tx, args, true);
+  const licence = await writePlanLicence(tx, args);
 
   const found = await tx.agentSubscription.findUnique({
     where: { listingId_subscriberId: key },

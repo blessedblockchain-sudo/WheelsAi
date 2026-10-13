@@ -1545,7 +1545,8 @@ test("a plan start leaves a per-request agreement the licence already held exact
       listing: PLAN_LISTING,
       plan: STARTER,
       buyerId: "org_buyer",
-      licence: { id: "ins_9", kind: "use" },
+      // As the start read it before its claim: for use, and active.
+      licence: { id: "ins_9", kind: "use", status: "active" },
       now: T0,
     }),
   );

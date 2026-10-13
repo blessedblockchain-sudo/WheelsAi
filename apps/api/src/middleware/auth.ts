@@ -455,6 +455,45 @@ export function createRequireSpend(deps: { getMemberRole: MemberRoleLookup }) {
 }
 
 /**
+ * Whether a caller would pass the spend guard for `scope`, as a yes or a no:
+ * for a read that tells a page which actions to offer, so nobody is shown a
+ * button that then answers 403. The rule is not written a second time. The
+ * guard itself is run, on a copy of the caller and a reply that only notes
+ * whether it was refused. Anything but a pass is a no: no caller, a role
+ * that could not be read, a member who was removed.
+ */
+export function createCanSpend(deps: { getMemberRole: MemberRoleLookup }) {
+  const guardFor = createRequireSpend(deps);
+  return async function canSpend(
+    auth: FastifyRequest["auth"] | null | undefined,
+    scope: string,
+  ): Promise<boolean> {
+    if (!auth) return false;
+    let refused = false;
+    const reply = {
+      status() {
+        refused = true;
+        return reply;
+      },
+      send() {
+        refused = true;
+        return reply;
+      },
+    };
+    try {
+      await guardFor(scope)(
+        { auth: { ...auth } } as unknown as FastifyRequest,
+        reply as unknown as FastifyReply,
+      );
+    } catch (error) {
+      logger.warn({ error, orgId: auth.orgId }, "Could not decide whether a caller may spend; answered no");
+      return false;
+    }
+    return !refused;
+  };
+}
+
+/**
  * Require one of the given organization roles (remediation F4).
  *
  * The role is read from the caller's current OrgMember row on every request,
@@ -474,6 +513,8 @@ export const requireRole = createRequireRole({
 });
 
 export const requireSpend = createRequireSpend({ getMemberRole: lookupMemberRole });
+
+export const canSpend = createCanSpend({ getMemberRole: lookupMemberRole });
 
 // ============================================
 // Token Generation

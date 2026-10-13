@@ -104,10 +104,19 @@ const subRow = (listingId: string, over: Row = {}): Row => ({
   ...over,
 });
 
-function makeWorld(opts: { listings: Row[]; plans?: Row[]; installs?: Row[]; subs?: Row[] }) {
+function makeWorld(opts: {
+  listings: Row[];
+  plans?: Row[];
+  installs?: Row[];
+  subs?: Row[];
+  /** Roles by user id, for the spend guard's lookup. "throws" = the lookup fails. */
+  roles?: Record<string, string | null> | "throws";
+}) {
   const plans = opts.plans ?? [];
   /** Every read of listing_plans, as it was asked. */
   const planReads: Row[] = [];
+  /** Every read of a member's role. */
+  const roleReads: Row[] = [];
   const listingOf = (id: string) => opts.listings.find((l) => l.id === id)!;
   const models: Row = {
     agentListing: {
@@ -147,8 +156,33 @@ function makeWorld(opts: { listings: Row[]; plans?: Row[]; installs?: Row[]; sub
             };
           }),
     },
+    // A publisher's profile, with every listing of the world as theirs.
+    publisherProfile: {
+      findUnique: async ({ where }: Row) => ({
+        displayName: "Pub",
+        slug: where.slug,
+        bio: null,
+        avatarUrl: null,
+        website: null,
+        twitter: null,
+        github: null,
+        isVerified: false,
+        totalListings: opts.listings.length,
+        totalInstalls: 0,
+        createdAt: new Date(0),
+        org: { publishedListings: opts.listings.filter((l) => l.status === "published").map((l) => ({ ...l })) },
+      }),
+    },
+    orgMember: {
+      findUnique: async ({ where }: Row) => {
+        roleReads.push(where.orgId_userId);
+        if (opts.roles === "throws") throw new Error("db down");
+        const role = opts.roles?.[where.orgId_userId.userId] ?? null;
+        return role ? { role } : null;
+      },
+    },
   };
-  return { models, planReads };
+  return { models, planReads, roleReads };
 }
 
 type World = ReturnType<typeof makeWorld>;
@@ -425,4 +459,168 @@ test("the plans of several listings are one read, grouped by listing in the orde
   // No listing: nothing to ask.
   assert.equal((await readPlanOffersOf(world.models as never, [])).size, 0);
   assert.equal(world.planReads.length, 1);
+});
+
+// ============================================
+// The featured row and a publisher's listings
+// ============================================
+
+test("the featured row says the smallest plan price of each listing, as the search does, in one query for the row", async () => {
+  const world = makeWorld({ listings: LISTINGS, plans: PLANS });
+  const featured = await withWorld(world, ({ getFeaturedListings }) => getFeaturedListings());
+  const { listings: searched } = await withWorld(world, ({ searchListings }) => searchListings({}));
+  assert.deepEqual(
+    featured.map((l: Row) => [l.slug, l.plansFromCents]),
+    [
+      ["alpha", 900],
+      ["beta", 700],
+      // Sold by the month: it offers no plan, whatever rows it has left.
+      ["gamma", null],
+    ],
+  );
+  // The same listing reads the same in both.
+  assert.deepEqual(
+    featured.map((l: Row) => l.plansFromCents),
+    searched.map((l: Row) => l.plansFromCents),
+  );
+  // One read each: the featured row, then the search.
+  assert.equal(world.planReads.length, 2);
+  assert.deepEqual(world.planReads[0]!.where, { listingId: { in: ["alpha", "beta"] }, status: "active", kind: "paid" });
+  // A card carries the price and not the plans.
+  assert.equal("plans" in featured[0]!, false);
+});
+
+test("a featured row with no plan on offer says null for each, and reads no plan when no listing offers any", async () => {
+  const none = makeWorld({
+    listings: [listingRow("alpha"), listingRow("beta")],
+    plans: [planRow("gone", "beta", 1, 900n, { status: "retired" })],
+  });
+  const featured = await withWorld(none, ({ getFeaturedListings }) => getFeaturedListings());
+  assert.deepEqual(featured.map((l: Row) => l.plansFromCents), [null, null]);
+
+  const notOffering = makeWorld({
+    listings: [listingRow("copies", { sells: "copies" }), LISTINGS[2]!],
+    plans: [planRow("x", "copies", 1, 900n)],
+  });
+  const rows = await withWorld(notOffering, ({ getFeaturedListings }) => getFeaturedListings());
+  assert.deepEqual(rows.map((l: Row) => l.plansFromCents), [null, null]);
+  assert.equal(notOffering.planReads.length, 0);
+});
+
+test("a publisher's listings carry the smallest plan price too, in one query for all of them", async () => {
+  const world = makeWorld({ listings: LISTINGS, plans: PLANS });
+  const profile = await withWorld(world, ({ getPublisherProfile }) => getPublisherProfile("pub"));
+  assert.deepEqual(
+    profile!.listings.map((l: Row) => [l.slug, l.plansFromCents]),
+    [
+      ["alpha", 900],
+      ["beta", 700],
+      ["gamma", null],
+    ],
+  );
+  assert.equal(world.planReads.length, 1);
+  assert.equal("plans" in profile!.listings[0]!, false);
+  // Never how many people are on a plan, or a plan that was ended.
+  const text = JSON.stringify(profile, (_key, value) => (typeof value === "bigint" ? Number(value) : value));
+  assert.equal(text.includes("retiredAt"), false);
+  assert.equal(text.includes('"old"'), false);
+});
+
+// ============================================
+// Whether the caller may start, move up or resume
+// ============================================
+
+const ROLES = { u_owner: "owner", u_admin: "admin", u_member: "member" };
+const session = (userId: string | null): Row => ({ userId, orgId: BUYER, type: "jwt", role: "owner" });
+const apiKey = (scopes: string[]): Row => ({ userId: null, orgId: BUYER, type: "api_key", scopes });
+
+/** GET /my-installs over the world, as `principal`. */
+async function myInstalls(world: World, principal: Row) {
+  return withWorld(world, async () => {
+    const Fastify = (await import("fastify")).default;
+    const { marketplaceRoutes } = await import("../routes/marketplace.js");
+    const app = Fastify();
+    app.decorateRequest("auth", null);
+    app.addHook("onRequest", async (request) => {
+      (request as unknown as { auth: unknown }).auth = principal;
+    });
+    await app.register(marketplaceRoutes);
+    try {
+      const res = await app.inject({ method: "GET", url: "/my-installs" });
+      return { status: res.statusCode, body: res.json() as Row };
+    } finally {
+      await app.close();
+    }
+  });
+}
+
+test("my installs say whether the caller may start, move up or resume: an owner and an admin may, a plain member may not", async () => {
+  const world = makeWorld({ listings: LISTINGS, plans: PLANS, installs: [installRow("alpha")], roles: ROLES });
+  for (const [userId, expected] of [
+    ["u_owner", true],
+    ["u_admin", true],
+    ["u_member", false],
+    // No longer a member, whatever the token still claims.
+    ["u_gone", false],
+  ] as const) {
+    const { status, body } = await myInstalls(world, session(userId));
+    assert.equal(status, 200, userId);
+    assert.equal(body.canSpend, expected, userId);
+    // Beside the installs, which are what they were.
+    assert.deepEqual(Object.keys(body), ["installs", "canSpend"]);
+    assert.equal(body.installs.length, 1);
+    assert.equal(body.installs[0].listingId, "alpha");
+  }
+  // The role is the membership's as it is now, read for this organization.
+  assert.deepEqual(world.roleReads[0], { orgId: BUYER, userId: "u_owner" });
+  // A session with nobody behind it.
+  assert.equal((await myInstalls(world, session(null))).body.canSpend, false);
+});
+
+test("my installs for a key: it may only with the scope by name, never with * alone", async () => {
+  const world = makeWorld({ listings: LISTINGS, plans: PLANS, installs: [installRow("alpha")], roles: ROLES });
+  assert.equal((await myInstalls(world, apiKey(["marketplace:install"]))).body.canSpend, true);
+  assert.equal((await myInstalls(world, apiKey(["*", "marketplace:install"]))).body.canSpend, true);
+  assert.equal((await myInstalls(world, apiKey(["*"]))).body.canSpend, false);
+  assert.equal((await myInstalls(world, apiKey([]))).body.canSpend, false);
+  assert.equal((await myInstalls(world, apiKey(["agents:use", "jobs:hire"]))).body.canSpend, false);
+  // A key has no member behind it: no role is read for one.
+  assert.equal(world.roleReads.length, 0);
+});
+
+test("a role that cannot be read answers no, and the installs still come", async () => {
+  const world = makeWorld({ listings: LISTINGS, plans: PLANS, installs: [installRow("alpha")], roles: "throws" });
+  const { status, body } = await myInstalls(world, session("u_owner"));
+  assert.equal(status, 200);
+  assert.equal(body.canSpend, false);
+  assert.equal(body.installs.length, 1);
+});
+
+test("canSpend is the guard's own answer: it says yes exactly when the guard lets the request through", async () => {
+  const { createCanSpend, createRequireSpend } = await import("../middleware/auth.js");
+  const deps = { getMemberRole: async (_orgId: string, userId: string) => (ROLES as Row)[userId] ?? null };
+  const canSpend = createCanSpend(deps);
+  const guard = createRequireSpend(deps)("marketplace:install");
+  const callers = [
+    session("u_owner"),
+    session("u_admin"),
+    session("u_member"),
+    session("u_gone"),
+    session(null),
+    apiKey(["marketplace:install"]),
+    apiKey(["*"]),
+    apiKey([]),
+  ];
+  for (const caller of callers) {
+    let refused = false;
+    const reply: Row = { status: () => ((refused = true), reply), send: () => ((refused = true), reply) };
+    await guard({ auth: { ...caller } } as never, reply as never);
+    assert.equal(await canSpend(caller as never, "marketplace:install"), !refused, JSON.stringify(caller));
+    // Asking changes nothing of the caller.
+    assert.equal(caller.role, caller.type === "jwt" ? "owner" : undefined);
+  }
+  assert.equal(await canSpend(null, "marketplace:install"), false);
+  assert.equal(await canSpend(undefined, "marketplace:install"), false);
+  // Another spend scope does not stand in for this one.
+  assert.equal(await canSpend(apiKey(["agents:use"]) as never, "marketplace:install"), false);
 });

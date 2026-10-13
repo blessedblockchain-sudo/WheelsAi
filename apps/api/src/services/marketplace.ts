@@ -382,7 +382,14 @@ export async function getFeaturedListings(limit = 6) {
     },
   });
 
-  return listings.map((listing) => formatListingForPublic(listing));
+  // The smallest plan price of each, as the search says it, so a listing
+  // reads the same in the featured row as in the results under it. One
+  // query for the whole row.
+  const offers = await readPlanOffersOf(prisma as unknown as PlanOffersDb, listings);
+
+  return listings.map((listing) =>
+    formatListingForPublic(listing, { plansFromCents: plansFromCentsOf(offers.get(listing.id) ?? []) }),
+  );
 }
 
 export async function getCategoryStats() {
@@ -573,6 +580,10 @@ export async function getPublisherProfile(slug: string) {
     return null;
   }
 
+  // The smallest plan price of each listing, as the search says it. One
+  // query for all the publisher's listings.
+  const offers = await readPlanOffersOf(prisma as unknown as PlanOffersDb, profile.org.publishedListings);
+
   return {
     displayName: profile.displayName,
     slug: profile.slug,
@@ -585,7 +596,9 @@ export async function getPublisherProfile(slug: string) {
     totalListings: profile.totalListings,
     totalInstalls: profile.totalInstalls,
     createdAt: profile.createdAt,
-    listings: profile.org.publishedListings.map((listing) => formatListingForPublic(listing)),
+    listings: profile.org.publishedListings.map((listing) =>
+      formatListingForPublic(listing, { plansFromCents: plansFromCentsOf(offers.get(listing.id) ?? []) }),
+    ),
   };
 }
 

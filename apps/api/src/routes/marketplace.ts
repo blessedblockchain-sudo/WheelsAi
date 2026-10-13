@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { requireAuth, requireScope, requireSpend } from "../middleware/auth.js";
+import { canSpend as callerCanSpend, requireAuth, requireScope, requireSpend } from "../middleware/auth.js";
 import { createLogger } from "../utils/logger.js";
 import { prisma } from "@wheelsai/db";
 import {
@@ -136,6 +136,13 @@ const createReviewSchema = z.object({
 // ============================================
 // Routes
 // ============================================
+
+/** The scope a key needs, by name, to start using a listing, move to another plan or resume a renewal. */
+const SPEND_ON_LISTINGS_SCOPE = "marketplace:install";
+
+/** What the guard on those three decides for this caller, as a yes or a no. */
+const mayStartMoveOrResume = (auth: Parameters<typeof callerCanSpend>[0]) =>
+  callerCanSpend(auth, SPEND_ON_LISTINGS_SCOPE);
 
 export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
   // ==========================================
@@ -535,7 +542,7 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
     // member must be an owner or admin (their role as it is now), and an
     // API key must have been granted the spend scope by name; "*" and an
     // unscoped key do not carry it (config/apiKeyScopes.ts).
-    { preHandler: [requireAuth, requireSpend("marketplace:install")] },
+    { preHandler: [requireAuth, requireSpend(SPEND_ON_LISTINGS_SCOPE)] },
     async (request, reply) => {
       const { orgId } = request.auth!;
       const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
@@ -716,8 +723,14 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: [requireAuth] },
     async (request) => {
       const { orgId } = request.auth!;
-      const installs = await getMyInstalls(orgId);
-      return { installs };
+      // `canSpend`: whether this caller may start, move up or resume, which
+      // is what the guard on those routes decides. The page offers them only
+      // then. Asked beside the installs, and a "no" when it cannot be asked.
+      const [installs, canSpend] = await Promise.all([
+        getMyInstalls(orgId),
+        mayStartMoveOrResume(request.auth),
+      ]);
+      return { installs, canSpend };
     }
   );
 
@@ -748,7 +761,7 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
   for (const action of ["cancel", "resume"] as const) {
     app.post(
       `/subscriptions/:listingId/${action}`,
-      { preHandler: action === "resume" ? [requireAuth, requireSpend("marketplace:install")] : [requireAuth] },
+      { preHandler: action === "resume" ? [requireAuth, requireSpend(SPEND_ON_LISTINGS_SCOPE)] : [requireAuth] },
       async (request, reply) => {
         const { orgId } = request.auth!;
         const { listingId } = z.object({ listingId: z.string().uuid() }).parse(request.params);

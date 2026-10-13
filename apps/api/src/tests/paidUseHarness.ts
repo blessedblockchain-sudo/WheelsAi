@@ -195,6 +195,8 @@ export interface PaidHarnessOptions {
   meteringChargesNothing?: boolean;
   limits?: Partial<PaidUseLimits>;
   store?: LimiterStore;
+  /** The moment of the use. Default: NOW, noon UTC. A store given with it must tell the same time. */
+  now?: Date;
   /** The caller's role in the buying organization as it is now; null = no longer a member. Default: owner. */
   role?: string | null;
   /** The membership cannot be read. */
@@ -494,7 +496,8 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
   };
 
   // ---- the limiter, logged ----
-  const real = createFailClosedLimiter(options.store ?? createMemoryLimiterStore(() => NOW.getTime()));
+  const at = options.now ?? NOW;
+  const real = createFailClosedLimiter(options.store ?? createMemoryLimiterStore(() => at.getTime()));
   const limiter: PaidUseDeps["limiter"] = {
     consume: async (rules) => {
       log.push(`limit:${rules.map((rule) => rule.key.split(":").slice(0, 3).join(":")).join(",")}`);
@@ -527,12 +530,12 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     },
     peekKeySpend: async (args) => {
       log.push("peekKey");
-      return peekApiKeySpend(tx as unknown as ApiKeySpendReadDb, { ...args, cap: "use", now: NOW });
+      return peekApiKeySpend(tx as unknown as ApiKeySpendReadDb, { ...args, cap: "use", now: at });
     },
     outboundToolNames: () => ["http_request"],
     beginUse: (args: BeginUseMeteringArgs) => {
       const binding = beginUseMetering(args, {
-        metering: { transaction, now: () => NOW },
+        metering: { transaction, now: () => at },
         plan: planDb,
         rates: { inputCentsPerMTok: 15, outputCentsPerMTok: 60 },
       });
@@ -566,7 +569,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       if (options.paused instanceof Error) throw options.paused;
       return options.paused ?? false;
     },
-    now: () => NOW,
+    now: () => at,
   };
 
   return {

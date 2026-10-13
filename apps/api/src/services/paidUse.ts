@@ -18,8 +18,10 @@
  *                route's guards; `caller` is what they found). A session's
  *                membership of the organization that pays is read again
  *                here, failing closed: a token outlives a removal.
- *    2. limits   the buyer's own, counted on the handle in the address on a
- *                limiter that fails closed, before anything is looked up.
+ *    2. limits   the buyer's own for the minute, counted on the handle in
+ *                the address on a limiter that fails closed, before
+ *                anything is looked up. Everybody meets it, a buyer on a
+ *                plan included.
  *    3. body     the free page's body for the kind, and nothing else.
  *    4. agent    by handle, and its listing: published, sells use. The
  *                caller's own agent is 409 own_agent; free use is 409
@@ -30,6 +32,11 @@
  *                reaches the creator's allowance.
  *    6. answers  task only: against the form (checkTaskInput). A wrong
  *                input spends nothing.
+ *   6b. the day  the buyer's own limit for the day, for a buyer who pays
+ *                per use and for a month with no count; never for a buyer
+ *                on a plan, whose count is what holds them. Taken after
+ *                every refusal above, so none of them spends one of the
+ *                day's uses, and before anything below takes something.
  *    7. core     the model, the agent's per-minute limit (`admit`), the
  *                creator's free-model allowance (one per use, failing
  *                closed), and only then
@@ -644,13 +651,19 @@ function termsOf(listing: UseListingRow, agent: PaidAgent): PaidUseTerms {
   };
 }
 
+/** Which of the buyer's own two rules a call to the limiter asked. */
+type BuyerRule = "minute" | "day";
+
 /**
  * A limiter refusal in a buyer's words. The buyer's own limits are told as
  * what they are; the status, the code and the wait are the limiter's.
+ * `rule` is the buyer's rule the call asked: each is asked in a call of its
+ * own, so the one that refused is known and is not guessed from the wait.
  */
 function limitRefusal(
   told: { status: number; code: string; scope?: string; retryAfterSeconds?: number },
   limits: PaidUseLimits,
+  rule: BuyerRule,
 ): PaidUseRefusal {
   if (told.code !== "rate_limited") {
     return {
@@ -667,8 +680,7 @@ function limitRefusal(
   return {
     status: 429,
     code: "rate_limited",
-    // A per-minute counter never asks for a longer wait than a minute.
-    message: wait > MINUTE ? PAID_USE_MESSAGES.buyerDay(limits.perBuyerPerDay) : PAID_USE_MESSAGES.buyerMinute,
+    message: rule === "day" ? PAID_USE_MESSAGES.buyerDay(limits.perBuyerPerDay) : PAID_USE_MESSAGES.buyerMinute,
     scope: "org",
     retryAfterSeconds: wait,
   };
@@ -927,9 +939,9 @@ async function runPaidUse(
   const { limits } = deps;
   const unit: UseUnit = kind === "task" ? "run" : "message";
 
-  const consume = async (rules: LimitRule[]): Promise<PaidUseRefusal | null> => {
+  const consume = async (rules: LimitRule[], rule: BuyerRule = "minute"): Promise<PaidUseRefusal | null> => {
     const told = await consumePublicLimit(deps.limiter, rules, "paid", deps.logger);
-    return told ? limitRefusal(told, limits) : null;
+    return told ? limitRefusal(told, limits, rule) : null;
   };
 
   // 1. Still a member. The session's token says which organization pays; it
@@ -948,8 +960,10 @@ async function runPaidUse(
     if (role === null) return refused(NOT_A_MEMBER);
   }
 
-  // 2. The buyer's limits, on the handle in the address. Nothing has been
-  // looked up: a handle that cannot exist is not counted and not looked up.
+  // 2. The buyer's limit for the minute, on the handle in the address.
+  // Nothing has been looked up: a handle that cannot exist is not counted
+  // and not looked up. The limit for the day is not taken here: who it is
+  // for is not known before the licence is read (step 6b).
   const handle = handleOf(input.handle);
   if (!handle) return refused(NOT_FOUND);
 
@@ -957,7 +971,7 @@ async function runPaidUse(
   const undelivered = await deps.limiter.peek(undeliveredKey);
   if (undelivered === null) {
     deps.logger?.error({ surface: "paid" }, "paid use refused: the rate limiter is unavailable");
-    return refused(limitRefusal({ status: 503, code: "rate_limiter_unavailable" }, limits));
+    return refused(limitRefusal({ status: 503, code: "rate_limiter_unavailable" }, limits, "minute"));
   }
   if (undelivered >= limits.undeliveredRefundsPerDay) {
     return refused({
@@ -973,12 +987,6 @@ async function runPaidUse(
       key: paidUseKeys.buyerMinute(caller.orgId, handle),
       limit: limits.perBuyerPerMinute,
       windowSeconds: MINUTE,
-    },
-    {
-      scope: "org",
-      key: paidUseKeys.buyerDay(caller.orgId, handle, day),
-      limit: limits.perBuyerPerDay,
-      windowSeconds: dayLeft,
     },
   ]);
   if (buyerLimit) return refused(buyerLimit);
@@ -1128,6 +1136,27 @@ async function runPaidUse(
     (agent.systemPrompt?.length ?? 0) +
     systemAddendum.length +
     messages.reduce((sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0), 0);
+
+  // 6b. The buyer's limit for the day, for a buyer who pays per use and for
+  // a month with no count. A buyer on a plan is held by the plan's count,
+  // for an included use and an extra one alike, so the day is never asked
+  // for them. It is taken here, after every refusal that only reads and
+  // before the first step that takes something, so a request that was
+  // refused above did not spend one of the day's uses.
+  if (billing.kind !== "plan") {
+    const dayLimit = await consume(
+      [
+        {
+          scope: "org",
+          key: paidUseKeys.buyerDay(caller.orgId, handle, day),
+          limit: limits.perBuyerPerDay,
+          windowSeconds: dayLeft,
+        },
+      ],
+      "day",
+    );
+    if (dayLimit) return refused(dayLimit);
+  }
 
   // 7-8. In the chat core: the model, the agent's per-minute limit, the
   // creator's free-model allowance, then the charge.
@@ -1403,10 +1432,7 @@ export async function listPaidResults(input: PaidReadInput, deps: PaidUseDeps): 
     "paid",
     deps.logger,
   );
-  if (told) {
-    const refusal = limitRefusal(told, deps.limits);
-    return refused(refusal.code === "rate_limited" ? { ...refusal, message: PAID_USE_MESSAGES.buyerMinute } : refusal);
-  }
+  if (told) return refused(limitRefusal(told, deps.limits, "minute"));
 
   const agent = await deps.loadAgentByHandle(handle);
   if (!agent) return refused(NOT_FOUND);

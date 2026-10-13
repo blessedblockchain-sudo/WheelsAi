@@ -4,11 +4,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { forwardAndSettle } from "../services/chatStreamSettlement.js";
+import { createMemoryLimiterStore, type LimiterStore } from "../services/failClosedLimiter.js";
 import {
   getUseAccess,
   listPaidResults,
+  PAID_USE_LIMITS,
   paidRefusalBody,
   paidToolAllowlist,
+  paidUseKeys,
   runPaidChat,
   runPaidTask,
   type PaidCaller,
@@ -20,6 +23,7 @@ import {
   brokenStore,
   BUYER_ORG,
   CREATOR_ORG,
+  DAY,
   FREE_MODEL,
   HANDLE,
   INSTRUCTIONS,
@@ -30,6 +34,7 @@ import {
   LISTING,
   MONTHLY_LICENCE,
   MONTHLY_LISTING,
+  NOW,
   OWN_KEY_MODEL,
   PAID_MONTH,
   paidHarness,
@@ -101,15 +106,17 @@ test("a delivered answer is one charge and one settle, in the order of the eleve
   assert.deepEqual(h.log, [
     // 1. a session: still a member of the organization that pays
     "memberRole",
-    // 2. the buyer's limits, before anything is looked up
+    // 2. the buyer's limit for the minute, before anything is looked up
     "peek:pu:r:d",
-    "limit:pu:b:m,pu:b:d",
+    "limit:pu:b:m",
     // 4. the agent and its listing
     "loadAgent",
     "loadListing",
     // 5. the licence; the balance is read here
     "loadLicence",
     "readBalance",
+    // 6b. the buyer's limit for the day, once nothing above refused
+    "limit:pu:b:d",
     // 7. in the core: the model, the agent's limit, the creator's allowance
     "core:loadAgent",
     "core:model",
@@ -207,7 +214,9 @@ interface Case {
   balance?: bigint;
 }
 
-const LIMITED = ["peek:pu:r:d", "limit:pu:b:m,pu:b:d"];
+const LIMITED = ["peek:pu:r:d", "limit:pu:b:m"];
+/** The buyer's limit for the day: asked once every read-only refusal is past, for a buyer it is for. */
+const DAY_RULE = "limit:pu:b:d";
 const LISTED = [...LIMITED, "loadAgent", "loadListing"];
 
 const ORDER: Case[] = [
@@ -359,7 +368,7 @@ const ORDER: Case[] = [
     options: { limits: { perAgentPerMinute: 0 } },
     status: 429,
     code: "rate_limited",
-    log: [...LISTED, "loadLicence", "readBalance", "core:loadAgent", "core:model", "limit:pu:a:m"],
+    log: [...LISTED, "loadLicence", "readBalance", DAY_RULE, "core:loadAgent", "core:model", "limit:pu:a:m"],
   },
   {
     name: "7. the creator's allowance, before the charge",
@@ -370,6 +379,7 @@ const ORDER: Case[] = [
       ...LISTED,
       "loadLicence",
       "readBalance",
+      DAY_RULE,
       "core:loadAgent",
       "core:model",
       "limit:pu:a:m",
@@ -1785,4 +1795,268 @@ test("a plan does not read a self-running agent's results: refused before any is
   // The same row with no count is today's monthly subscriber, and reads them.
   const monthly = await results(paidHarness({ agent: { agentKind: "scheduled" }, sub: { ...onPlan, includedUses: null } }));
   assert.equal(monthly.kind, "results");
+});
+
+// ============================================
+// The buyer's limit for the day: for a buyer with no plan, after every read-only refusal
+// ============================================
+
+const DAY_KEY = paidUseKeys.buyerDay(BUYER_ORG, HANDLE, DAY);
+/** From the harness's now (noon) to the end of the UTC day. */
+const SECONDS_LEFT_TODAY = 12 * 60 * 60;
+const USED_TODAY = {
+  status: 429,
+  code: "rate_limited",
+  message: "You have used this agent 200 times today. Try again tomorrow.",
+  scope: "org",
+  retryAfterSeconds: SECONDS_LEFT_TODAY,
+};
+/** The minute's rules set wide, so that a day of uses fits in one test; the day's 200 is the real one. */
+const WIDE_MINUTE = { perBuyerPerMinute: 1_000, perAgentPerMinute: 1_000 };
+
+/** A store in which the buyer has already used the agent `uses` times today. */
+async function storeWithUsesToday(uses: number): Promise<LimiterStore> {
+  const store = createMemoryLimiterStore(() => NOW.getTime());
+  for (let i = 0; i < uses; i++) {
+    await store.consume([{ key: DAY_KEY, limit: 1_000_000, windowMs: SECONDS_LEFT_TODAY * 1000 }]);
+  }
+  return store;
+}
+
+/** A store that counts everything but the buyer's day, which it cannot read. */
+function storeWithoutTheDay(): LimiterStore {
+  const store = createMemoryLimiterStore(() => NOW.getTime());
+  return {
+    consume: async (rules) => {
+      if (rules.some((rule) => rule.key === DAY_KEY)) throw new Error("redis is down");
+      return store.consume(rules);
+    },
+    peek: (key) => store.peek(key),
+  };
+}
+
+test("a buyer on a plan is answered at use 201 of a day, and the day is never asked for them", async () => {
+  assert.equal(PAID_USE_LIMITS.perBuyerPerDay, 200);
+  const store = createMemoryLimiterStore(() => NOW.getTime());
+  const h = planHarness({ usedInPeriod: 0 }, { store, limits: WIDE_MINUTE });
+  for (let use = 1; use <= 201; use++) {
+    const result = await chat(h);
+    assert.equal(result.kind, "answer", `use ${use}`);
+  }
+  assert.deepEqual(movedOf(h), { ...NOTHING_MOVED, used: 201, takes: 201, modelCalls: 201 });
+  assert.equal(countOf(h, DAY_RULE), 0);
+  assert.equal(await store.peek(DAY_KEY), 0);
+  // The minute is still asked for each of them.
+  assert.equal(countOf(h, "limit:pu:b:m"), 201);
+
+  // An extra use, past the plan's count, is not held to the day either: a
+  // day that reads as full for this buyer refuses nothing.
+  const full = await storeWithUsesToday(200);
+  const extra = planHarness({ usedInPeriod: 500 }, { store: full });
+  const paid = await chat(extra);
+  assert.deepEqual(paid.kind === "answer" && [paid.billing.chargedCents, paid.billing.plan?.use], [50, "extra"]);
+  assert.equal(countOf(extra, DAY_RULE), 0);
+  assert.equal(await full.peek(DAY_KEY), 200);
+  // And an included use on that same full day.
+  const included = planHarness({}, { store: full });
+  assert.equal((await chat(included)).kind, "answer");
+  assert.equal(countOf(included, DAY_RULE), 0);
+  assert.equal(await full.peek(DAY_KEY), 200);
+});
+
+test("a buyer who pays per use is refused at use 201 of a day in today's words, with nothing charged", async () => {
+  const store = createMemoryLimiterStore(() => NOW.getTime());
+  const h = paidHarness({ store, balance: 2_000n, limits: WIDE_MINUTE });
+  for (let use = 1; use <= 200; use++) {
+    const result = await chat(h);
+    assert.equal(result.kind, "answer", `use ${use}`);
+  }
+  assert.equal(await store.peek(DAY_KEY), 200);
+  const before = h.log.length;
+  assert.deepEqual(refusalOf(await chat(h)), USED_TODAY);
+  // Asked last of the reads, and nothing after it: no core, no charge, no model.
+  assert.deepEqual(h.log.slice(before), [
+    "memberRole",
+    "peek:pu:r:d",
+    "limit:pu:b:m",
+    "loadAgent",
+    "loadListing",
+    "loadLicence",
+    "readBalance",
+    DAY_RULE,
+  ]);
+  assert.equal(h.money.balance, 1_000n);
+  assert.equal(h.money.ledger.length, 200);
+  assert.equal(countOf(h, "charge"), 200);
+  assert.equal(countOf(h, "model"), 200);
+  assert.equal(h.allowanceCounted(), 200);
+  // A refusal is not counted.
+  assert.equal(await store.peek(DAY_KEY), 200);
+
+  // A paid run is held the same.
+  const task = paidHarness({ store: await storeWithUsesToday(200), agent: TASK_AGENT });
+  assert.deepEqual(refusalOf(await run(task)), USED_TODAY);
+  assertNothingSpent(task);
+});
+
+test("the day's refusal is told in the day's words to its last second, and is not guessed from the wait", async () => {
+  // Half a minute before the UTC day ends the wait is shorter than a minute, and it is still the day's limit.
+  const late = new Date("2026-10-10T23:59:30.000Z");
+  const store = createMemoryLimiterStore(() => late.getTime());
+  for (let i = 0; i < 200; i++) {
+    await store.consume([{ key: DAY_KEY, limit: 1_000_000, windowMs: 30_000 }]);
+  }
+  const h = paidHarness({ store, now: late, balance: 2_000n, limits: WIDE_MINUTE });
+  assert.deepEqual(refusalOf(await chat(h)), { ...USED_TODAY, retryAfterSeconds: 30 });
+  assert.deepEqual([h.money.balance, h.money.ledger.length, countOf(h, "model")], [2_000n, 0, 0]);
+});
+
+test("a monthly subscriber is refused at use 201 of a day in the same words", async () => {
+  const monthly = { listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH };
+  const store = await storeWithUsesToday(199);
+  const h = paidHarness({ ...monthly, store });
+  // Use 200 is answered and counted.
+  assert.equal((await chat(h)).kind, "answer");
+  assert.equal(await store.peek(DAY_KEY), 200);
+  assert.deepEqual(refusalOf(await chat(h)), USED_TODAY);
+  assert.equal(countOf(h, "model"), 1);
+  assert.equal(countOf(h, DAY_RULE), 2);
+  assert.equal(h.allowanceCounted(), 1);
+  assert.equal(h.money.balance, 500n);
+  assert.deepEqual(h.money.ledger, []);
+  assert.equal(await store.peek(DAY_KEY), 200);
+});
+
+test("a request that is refused before anything is taken does not spend one of the day's uses", async () => {
+  const cases: Array<{
+    name: string;
+    options?: PaidHarnessOptions;
+    body?: unknown;
+    task?: boolean;
+    caller?: PaidCaller;
+    told: [number, string];
+  }> = [
+    { name: "a bad body", body: { message: "hi" }, told: [400, "invalid_request"] },
+    { name: "an unknown handle", options: { agent: null }, told: [404, "agent_not_found"] },
+    { name: "the caller's own agent", caller: { ...SESSION, orgId: CREATOR_ORG }, told: [409, "own_agent"] },
+    { name: "not started", options: { licence: null }, told: [403, "use_not_started"] },
+    { name: "a price that changed", options: { listing: { ...LISTING, pricePerRequestCents: 8n } }, told: [409, "pricing_changed"] },
+    {
+      name: "a plan that ended",
+      options: {
+        listing: PLAN_LISTING,
+        licence: PLAN_LICENCE,
+        sub: { ...PLAN_SUB, status: "expired", currentPeriodEnd: new Date("2026-10-05T00:00:00.000Z") },
+      },
+      told: [402, "plan_ended"],
+    },
+    {
+      name: "a plan that is used up and stops",
+      options: { listing: PLAN_LISTING, licence: PLAN_LICENCE, sub: { ...PLAN_SUB, usedInPeriod: 500, extraUsePriceCents: null } },
+      told: [429, "plan_used_up"],
+    },
+    {
+      name: "a month that lapsed",
+      options: {
+        listing: MONTHLY_LISTING,
+        licence: MONTHLY_LICENCE,
+        sub: { ...PAID_MONTH, status: "expired", currentPeriodEnd: new Date("2026-10-01T00:00:00Z") },
+      },
+      told: [402, "subscription_lapsed"],
+    },
+    { name: "too few credits", options: { balance: 4n }, told: [402, "insufficient_credits"] },
+    {
+      name: "a key over its cap for one use",
+      options: { keyCaps: { maxUse: 4n, daily: 1_000n } },
+      caller: KEY_CALLER,
+      told: [403, "api_key_use_price_cap_exceeded"],
+    },
+    {
+      name: "a key over its day",
+      options: { keyCaps: { maxUse: 50n, daily: 100n, spent: 98n } },
+      caller: KEY_CALLER,
+      told: [403, "api_key_daily_cap_exceeded"],
+    },
+    {
+      name: "a task's input that does not fit the form",
+      options: { agent: TASK_AGENT },
+      body: { input: { notes: "no topic" }, stream: false },
+      task: true,
+      told: [422, "input_invalid"],
+    },
+    { name: "a run of an agent that is not a task agent", task: true, told: [409, "not_a_task_agent"] },
+  ];
+  for (const c of cases) {
+    const store = await storeWithUsesToday(7);
+    const h = paidHarness({ ...c.options, store });
+    const caller = c.caller ?? SESSION;
+    const result = c.task ? await run(h, c.body ?? RUN, caller) : await chat(h, c.body ?? CHAT, caller);
+    const refusal = refusalOf(result);
+    assert.deepEqual([refusal.status, refusal.code], c.told, c.name);
+    assert.equal(countOf(h, DAY_RULE), 0, c.name);
+    assert.equal(await store.peek(DAY_KEY), 7, c.name);
+    assert.ok(!h.log.includes("charge") && !h.log.includes("take") && !h.log.includes("model"), c.name);
+  }
+
+  // The control: the same buyer, with nothing to refuse, spends one.
+  const store = await storeWithUsesToday(7);
+  assert.equal((await chat(paidHarness({ store }))).kind, "answer");
+  assert.equal(await store.peek(DAY_KEY), 8);
+});
+
+test("the minute's rule is asked first for everybody, and its refusal asks nothing else", async () => {
+  const buyers: Array<{ name: string; options: PaidHarnessOptions }> = [
+    { name: "pays per use", options: {} },
+    { name: "a monthly subscriber", options: { listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH } },
+    { name: "on a plan", options: { listing: PLAN_LISTING, licence: PLAN_LICENCE, sub: PLAN_SUB } },
+    { name: "on a plan, past its count", options: { listing: PLAN_LISTING, licence: PLAN_LICENCE, sub: { ...PLAN_SUB, usedInPeriod: 500 } } },
+  ];
+  for (const buyer of buyers) {
+    const store = createMemoryLimiterStore(() => NOW.getTime());
+    const h = paidHarness({ ...buyer.options, store, limits: { perBuyerPerMinute: 2 } });
+    assert.equal((await chat(h)).kind, "answer", buyer.name);
+    assert.equal((await chat(h)).kind, "answer", buyer.name);
+    assert.deepEqual(h.log.slice(0, 3), ["memberRole", "peek:pu:r:d", "limit:pu:b:m"], buyer.name);
+    const dayBefore = await store.peek(DAY_KEY);
+    const usedBefore = h.sub?.usedInPeriod;
+    const before = h.log.length;
+    // The third in the minute: told as the minute's, with the minute's wait.
+    assert.deepEqual(
+      refusalOf(await chat(h)),
+      {
+        status: 429,
+        code: "rate_limited",
+        message: "You are sending requests faster than this agent allows. Try again in a minute.",
+        scope: "org",
+        retryAfterSeconds: 60,
+      },
+      buyer.name,
+    );
+    assert.deepEqual(h.log.slice(before), ["memberRole", "peek:pu:r:d", "limit:pu:b:m"], buyer.name);
+    assert.equal(await store.peek(DAY_KEY), dayBefore, buyer.name);
+    assert.equal(h.sub?.usedInPeriod, usedBefore, buyer.name);
+    assert.equal(countOf(h, "model"), 2, buyer.name);
+  }
+});
+
+test("a store that cannot be read at the day's rule is a 503 with nothing charged and no use taken", async () => {
+  const unavailable = {
+    status: 503,
+    code: "rate_limiter_unavailable",
+    message: "This agent is temporarily unavailable. Nothing was charged. Try again shortly.",
+    retryAfterSeconds: 30,
+  };
+  for (const options of [{}, { listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH }] as PaidHarnessOptions[]) {
+    const h = paidHarness({ ...options, store: storeWithoutTheDay() });
+    assert.deepEqual(refusalOf(await chat(h)), unavailable);
+    // The minute was counted, the day could not be: nothing after it.
+    assert.equal(h.log.at(-1), DAY_RULE);
+    assert.ok(h.log.includes("limit:pu:b:m"));
+    assert.ok(!h.log.includes("core:loadAgent") && !h.log.includes("take"));
+    assertNothingSpent(h);
+  }
+  // A buyer on a plan does not meet the day's rule, so its store is not theirs to wait for.
+  const onPlan = planHarness({}, { store: storeWithoutTheDay() });
+  assert.equal((await chat(onPlan)).kind, "answer");
+  assert.deepEqual(movedOf(onPlan), { ...NOTHING_MOVED, used: 13, takes: 1, modelCalls: 1 });
 });

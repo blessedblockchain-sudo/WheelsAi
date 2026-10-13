@@ -233,7 +233,7 @@ test("every member may use what an owner or admin started, and the membership is
     const h = paidHarness({ role });
     const result = await chat(h);
     assert.equal(result.kind, "answer", role);
-    assert.deepEqual(h.log.slice(0, 3), ["memberRole", "peek:pu:r:d", "limit:pu:b:m,pu:b:d"], role);
+    assert.deepEqual(h.log.slice(0, 3), ["memberRole", "peek:pu:r:d", "limit:pu:b:m"], role);
     assert.equal(h.log.filter((entry) => entry === "memberRole").length, 1, role);
     assert.equal(h.money.balance, 495n, role);
   }

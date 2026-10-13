@@ -1455,3 +1455,143 @@ test("a listing whose agent is on a free model or its own key is never asked abo
     assert.equal(world.state.balance, 9_100n);
   }
 });
+
+// ============================================
+// A buyer on a plan (a subscription with a count of uses)
+// ============================================
+
+const PLAN_ROW = { priceCents: 900n, planId: "plan_1", includedUses: 500, usedInPeriod: 12, carriedUses: 0, extraUsePriceCents: 5n };
+
+/**
+ * The subscription read gives only the columns it was asked for, as the
+ * database does: a read that leaves out the count sees a month with no count.
+ */
+function selecting(world: World): World {
+  world.models.agentSubscription.findUnique = async (args: Row) => {
+    const row = world.state.subs[0];
+    if (!row) return null;
+    if (!args?.select) return { ...row };
+    return Object.fromEntries(Object.keys(args.select).map((column) => [column, column === "plan" ? { status: "active" } : row[column]]));
+  };
+  return world;
+}
+
+test("a plan holder who agrees to the price per use changes nothing: the plan keeps running", async () => {
+  const world = selecting(makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    // A plan start agreed to no price per use.
+    install: { status: "active", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+    sub: { ...PLAN_ROW, status: "active", currentPeriodEnd: new Date(Date.now() + 10 * DAY) },
+  }));
+  const before = structuredClone(world.state.subs[0]);
+  const result = await withWorld(world, ({ startUsing }) => startUsing(LISTING_ID, BUYER, { expected: perUse(5) }));
+  assert.equal(result.created, false);
+  assert.equal(result.access, "subscribed");
+  assert.deepEqual(world.state.subs[0], before);
+  assert.equal(world.state.installs[0]!.acceptedPricingModel, null);
+  assert.equal(world.state.balance, 10_000n);
+});
+
+test("a buyer whose plan ended agrees to pay per use: the agreement is recorded and the plan's row is left as it ended", async () => {
+  const world = selecting(makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "active", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+    // Past its end with its renewal cancelled, and the renewal worker has not
+    // closed it yet. Read as a month with no count, this open row would be
+    // closed here by the acceptance; a plan's row is the worker's to close.
+    sub: { ...PLAN_ROW, status: "active", cancelAtPeriodEnd: true, currentPeriodEnd: new Date(Date.now() - 5 * DAY) },
+  }));
+  world.state.listing.activeInstalls = 1;
+  const before = structuredClone(world.state.subs[0]);
+  await withWorld(world, async ({ startUsing, getMyInstalls }) => {
+    // Until they choose, nothing runs and nothing is charged.
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "plan_ended");
+    const result = await startUsing(LISTING_ID, BUYER, { expected: perUse(5) });
+    assert.equal(result.created, true);
+    assert.equal(result.access, "listing_pricing");
+  });
+  assert.equal(world.state.installs[0]!.acceptedPricingModel, "per_request");
+  assert.equal(world.state.installs[0]!.acceptedPricePerRequestCents, 5n);
+  // Read with its count, the row is known for a plan and is not closed over.
+  assert.deepEqual(world.state.subs[0], before);
+  assert.equal(world.state.balance, 10_000n);
+  assert.equal(world.state.listing.activeInstalls, 1, "not counted twice");
+});
+
+test("a plan its creator ended gets no days of grace after its period, wherever the buyer's access is read", async () => {
+  const world = makeWorld({
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "active", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+    // A day past its end and not yet closed by the renewal worker.
+    sub: { ...PLAN_ROW, status: "active", currentPeriodEnd: new Date(Date.now() - DAY) },
+  });
+  // The row is read with its plan's status, as the reads ask for it.
+  const asked: Row[] = [];
+  const withPlan = (plan: Row) => {
+    world.models.agentSubscription.findUnique = async (args: Row) => {
+      asked.push(args);
+      return { ...world.state.subs[0], plan };
+    };
+    world.models.agentSubscription.findMany = async (args: Row) => {
+      asked.push(args);
+      return [{ ...world.state.subs[0], plan }];
+    };
+  };
+  await withWorld(world, async ({ getMyInstalls, checkInstallStatus }) => {
+    withPlan({ status: "retired" });
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "plan_ended");
+    assert.equal((await checkInstallStatus(LISTING_ID, BUYER)).install!.access, "plan_ended");
+    assert.ok(asked.length >= 2 && asked.every((args) => (args.include ?? args.select).plan.select.status === true));
+    // A plan still on offer, being renewed: it keeps its days of grace.
+    world.state.subs[0]!.status = "past_due";
+    withPlan({ status: "active" });
+    assert.equal((await getMyInstalls(BUYER))[0]!.access, "subscribed");
+  });
+});
+
+test("a plan holder cannot take a copy over the plan, and once the plan was closed and they stopped, a copy they install runs", async () => {
+  // The listing sells copies now; this buyer's plan still runs. One licence
+  // for a listing and a buyer: it is not turned into a copy under the plan.
+  const holder = selecting(makeWorld({
+    sells: "copies",
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "active", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+    sub: { ...PLAN_ROW, status: "active", currentPeriodEnd: new Date(Date.now() + 10 * DAY) },
+  }));
+  const running = structuredClone(holder.state.subs[0]);
+  await withWorld(holder, async ({ installAgent, InstallRefusedError }) => {
+    await assert.rejects(installAgent(LISTING_ID, BUYER, { expectedPricing: perUse(5) }), (err: unknown) => {
+      assert.ok(err instanceof InstallRefusedError);
+      assert.equal(err.code, "already_using");
+      return true;
+    });
+  });
+  assert.deepEqual(holder.state.subs[0], running);
+  assert.equal(holder.state.agents.length, 0);
+  assert.equal(holder.state.balance, 10_000n);
+
+  // The renewal closed the plan because the listing stopped selling use, and
+  // the buyer stopped using. Installing a copy at the price per request is
+  // their agreement to it, and it clears the reason the plan's row was
+  // closed with, as it does for any row. Left there, the copy would read as
+  // changed pricing for good and could never run.
+  const stopped = selecting(makeWorld({
+    sells: "copies",
+    pricingModel: "per_request",
+    pricePerRequestCents: 5n,
+    install: { status: "uninstalled", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
+    sub: { ...PLAN_ROW, status: "cancelled", endReason: "use_ended", currentPeriodEnd: new Date(Date.now() - 2 * DAY) },
+  }));
+  await withWorld(stopped, async ({ installAgent, checkInstallStatus }) => {
+    await installAgent(LISTING_ID, BUYER, { expectedPricing: perUse(5) });
+    assert.equal((await checkInstallStatus(LISTING_ID, BUYER)).install!.access, "listing_pricing");
+  });
+  assert.deepEqual([stopped.state.installs[0]!.kind, stopped.state.installs[0]!.status], ["copy", "active"]);
+  assert.deepEqual([stopped.state.subs[0]!.status, stopped.state.subs[0]!.endReason], ["cancelled", null]);
+  // Nothing is charged for installing a copy sold per request.
+  assert.equal(stopped.state.balance, 10_000n);
+});

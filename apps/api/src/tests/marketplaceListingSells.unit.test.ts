@@ -133,6 +133,8 @@ function makeWorld(opts: {
       findMany: async () => (opts.licences ?? []).map((l) => ({ ...l })),
     },
     agentSubscription: { findMany: async () => (opts.subs ?? []).map((s) => ({ ...s })) },
+    // No listing here has a plan (tests/listingPlanRoutes.unit.test.ts has those).
+    listingPlan: { findMany: async () => [] },
     agentListing: {
       findUnique: async (args: Row) => {
         const row = state.listings.find((l) => matches(l, args.where));

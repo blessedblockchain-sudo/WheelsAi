@@ -15,9 +15,12 @@
  *   paidTasks      a paid task can be run
  *   paidUse        what a Sell screen and a buyer's page say of paid use:
  *                  how often one buyer may use an agent (a minute, a day),
- *                  the smallest price of one use, and how many answers a
- *                  day the caller's own organization gets on the platform's
- *                  models (null when that cannot be read)
+ *                  the smallest price of one use, the numbers of a plan (how
+ *                  many a listing can have, the most uses one can include,
+ *                  its smallest price and the smallest price of an extra
+ *                  use), and how many answers a day the caller's own
+ *                  organization gets on the platform's models (null when
+ *                  that cannot be read)
  *
  * It says WHAT is available and never why: no key names, setting names,
  * addresses or reasons. The body is built field by field from the answers
@@ -31,6 +34,12 @@
 
 import type { FastifyPluginAsync, preHandlerAsyncHookHandler } from "fastify";
 
+import {
+  MAX_INCLUDED_USES,
+  MAX_PAID_PLANS,
+  MIN_EXTRA_USE_PRICE_CENTS,
+  MIN_PLAN_PRICE_CENTS,
+} from "../services/listingPlans.js";
 import { PAID_USE_PER_BUYER_PER_DAY, PAID_USE_PER_BUYER_PER_MINUTE } from "../services/publicPageState.js";
 import { MIN_PRICE_PER_USE_CENTS } from "../services/useListing.js";
 
@@ -60,12 +69,20 @@ export interface Capabilities {
   paidTasks: Availability;
 }
 
-/** The numbers of paid use. The first three are the same for everyone. */
+/** The numbers of paid use. All but the last are the same for everyone. */
 export interface PaidUseCapability {
   perBuyerPerMinute: number;
   perBuyerPerDay: number;
   /** Cents. */
   minPricePerUseCents: number;
+  /** How many paid plans one listing can offer (services/listingPlans.ts). */
+  maxPlans: number;
+  /** The most uses one plan can include. */
+  maxIncludedUses: number;
+  /** The smallest price of a plan for its 30 days. Cents. */
+  minPlanPriceCents: number;
+  /** The smallest price of one use past the included ones. Cents. */
+  minExtraUsePriceCents: number;
   /** The caller's organization, on its plan; null when it cannot be read. */
   freeModelDailyAllowance: number | null;
 }
@@ -157,6 +174,10 @@ export async function readPaidUse(reads: PaidUseReads, orgId: string): Promise<P
     perBuyerPerMinute: PAID_USE_PER_BUYER_PER_MINUTE,
     perBuyerPerDay: PAID_USE_PER_BUYER_PER_DAY,
     minPricePerUseCents: Number(MIN_PRICE_PER_USE_CENTS),
+    maxPlans: MAX_PAID_PLANS,
+    maxIncludedUses: MAX_INCLUDED_USES,
+    minPlanPriceCents: Number(MIN_PLAN_PRICE_CENTS),
+    minExtraUsePriceCents: Number(MIN_EXTRA_USE_PRICE_CENTS),
     freeModelDailyAllowance: allowance,
   };
 }

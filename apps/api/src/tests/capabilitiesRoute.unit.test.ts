@@ -12,6 +12,12 @@ import {
 } from "../routes/capabilities.js";
 import { buildCapabilitiesDeps, type CapabilitiesEnv } from "../routes/capabilitiesBindings.js";
 import { resolveAgentModelId } from "../services/agentModelResolution.js";
+import {
+  MAX_INCLUDED_USES,
+  MAX_PAID_PLANS,
+  MIN_EXTRA_USE_PRICE_CENTS,
+  MIN_PLAN_PRICE_CENTS,
+} from "../services/listingPlans.js";
 import { installTestAuth } from "./jobsApiFakes.js";
 
 // GET /api/capabilities: each answer follows the thing that decides it, a
@@ -93,7 +99,16 @@ test("with nothing switched on, nothing is available and the shape is still whol
     agentGpu: { available: false },
     paidTasks: { available: false },
     // Numbers, not switches: they hold whatever is on. ALL_OFF names no daily limit.
-    paidUse: { perBuyerPerMinute: 10, perBuyerPerDay: 200, minPricePerUseCents: 5, freeModelDailyAllowance: null },
+    paidUse: {
+      perBuyerPerMinute: 10,
+      perBuyerPerDay: 200,
+      minPricePerUseCents: 5,
+      maxPlans: 4,
+      maxIncludedUses: 6000,
+      minPlanPriceCents: 100,
+      minExtraUsePriceCents: 5,
+      freeModelDailyAllowance: null,
+    },
   });
   await app.close();
 });
@@ -218,6 +233,10 @@ test("the body names no key, setting, address or reason, whatever is on or off",
       "perBuyerPerMinute",
       "perBuyerPerDay",
       "minPricePerUseCents",
+      "maxPlans",
+      "maxIncludedUses",
+      "minPlanPriceCents",
+      "minExtraUsePriceCents",
       "freeModelDailyAllowance",
     ]);
     assert.deepEqual(Object.keys(json.chat), ["models", "defaultModel"]);
@@ -284,8 +303,17 @@ test("paidUse carries the buyer's limits, the smallest price of a use, and the c
     perBuyerPerMinute: 10,
     perBuyerPerDay: 200,
     minPricePerUseCents: 5,
+    // The numbers of a plan, from the rules that check one (services/listingPlans.ts).
+    maxPlans: MAX_PAID_PLANS,
+    maxIncludedUses: MAX_INCLUDED_USES,
+    minPlanPriceCents: Number(MIN_PLAN_PRICE_CENTS),
+    minExtraUsePriceCents: Number(MIN_EXTRA_USE_PRICE_CENTS),
     freeModelDailyAllowance: 200,
   });
+  assert.deepEqual(
+    [MAX_PAID_PLANS, MAX_INCLUDED_USES, MIN_PLAN_PRICE_CENTS, MIN_EXTRA_USE_PRICE_CENTS],
+    [4, 6_000, 100n, 5n],
+  );
   // The caller's organization, never one named in the request.
   assert.deepEqual(asked, ["org_1"]);
 
@@ -304,7 +332,15 @@ test("paidUse carries the buyer's limits, the smallest price of a use, and the c
 });
 
 test("paidUse fails closed on the allowance alone: an unreadable or senseless number is null, the limits stay", async () => {
-  const fixed = { perBuyerPerMinute: 10, perBuyerPerDay: 200, minPricePerUseCents: 5 };
+  const fixed = {
+    perBuyerPerMinute: 10,
+    perBuyerPerDay: 200,
+    minPricePerUseCents: 5,
+    maxPlans: 4,
+    maxIncludedUses: 6000,
+    minPlanPriceCents: 100,
+    minExtraUsePriceCents: 5,
+  };
   const boom = async () => {
     throw new Error("down");
   };

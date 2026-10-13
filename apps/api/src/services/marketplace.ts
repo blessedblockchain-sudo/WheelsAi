@@ -11,6 +11,8 @@ import {
 } from "./agentPublicLink.js";
 import { resolveAgentModelId } from "./agentModelResolution.js";
 import { HOSTED_MODEL_PREFIX } from "./hostedModel.js";
+import { readOwnerPlans, replaceListingPlans, type OwnerPlan } from "./listingPlanStore.js";
+import type { PlanInput } from "./listingPlans.js";
 import { LISTING_PAUSED_START_MESSAGE, listingPausedNow, reconcileListingPauses } from "./listingPause.js";
 import { getOrgPlan } from "./orgPlan.js";
 import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
@@ -1186,6 +1188,8 @@ export async function getMyListings(orgId: string, hooks: ListingPauseHooks = {}
           }),
         ])
       : [[], []];
+  // The plans on offer on each listing, with how many people are on each.
+  const plans = await readOwnerPlans(prisma, listingIds);
   const now = new Date();
   const buyersOf = (listingId: string) => ({
     copies: licences.filter((l) => l.listingId === listingId && l.kind !== "use").length,
@@ -1196,9 +1200,28 @@ export async function getMyListings(orgId: string, hooks: ListingPauseHooks = {}
   return listings.map((listing, index) => ({
     ...formatListingForOwner(listing),
     buyers: buyersOf(listing.id),
+    // In the order a buyer sees them. No buyer is named.
+    plans: plans.get(listing.id) ?? [],
     // null when the listing is not paused at this moment.
     paused: paused[index]!,
   }));
+}
+
+/**
+ * Replace the plans of a listing with the set its creator sends
+ * (services/listingPlanStore.ts): a plan sent with its id is changed in
+ * place, one left out is retired, one with no id is new. People already on a
+ * plan keep the terms they agreed to. Answers the plans as they are now.
+ *
+ * Throws ListingError: 400 validation_failed with a sentence for each field,
+ * 404 listing_not_found, 409 plans_not_available for a listing that cannot
+ * have plans, and 409 plans_changed when another save got there first.
+ */
+export async function setListingPlans(listingId: string, orgId: string, plans: PlanInput[]): Promise<OwnerPlan[]> {
+  const result = await replaceListingPlans({ listingId, orgId, plans });
+  if (!result.ok) throw new ListingError(result.status, result.code, result.message, result.body);
+  logger.info({ listingId, orgId, plans: result.plans.length }, "The plans of a listing were set");
+  return result.plans;
 }
 
 // ============================================
@@ -1446,6 +1469,35 @@ interface LicenceSubscription {
 }
 
 /**
+ * What deciding a buyer's access reads of their subscription row besides its
+ * dates. The count is the marker of a plan: a row read without it reads as a
+ * month with no count, and agreeing to a price per use would then close a
+ * plan that is running. The plan's status says whether its creator ended it:
+ * such a plan is not renewed, so it gets no days of grace
+ * (services/useAccess.ts).
+ */
+const LICENCE_SUBSCRIPTION_COLUMNS = {
+  id: true,
+  status: true,
+  currentPeriodEnd: true,
+  cancelAtPeriodEnd: true,
+  endReason: true,
+  includedUses: true,
+  plan: { select: { status: true } },
+} as const;
+
+/** The same of a row read whole. */
+const WITH_PLAN_STATUS = { plan: { select: { status: true } } } as const;
+
+/** The row with `planRetired` in place of the plan it was read with. */
+function withPlanRetired<Row extends { plan?: { status: string } | null }>(
+  sub: Row,
+): Omit<Row, "plan"> & { planRetired: boolean } {
+  const { plan, ...row } = sub;
+  return { ...row, planRetired: plan?.status === "retired" };
+}
+
+/**
  * Step 1, the terms check. Answers what the licence will record, or throws
  * PricingChangedError carrying the pricing as it stands.
  *
@@ -1623,7 +1675,7 @@ export async function countLicence(
 }
 
 /** After a licence is written: the publisher's totals, and the reputation legs they feed. */
-async function afterLicenceStarted(listingId: string, publisherId: string, what: string): Promise<void> {
+export async function afterLicenceStarted(listingId: string, publisherId: string, what: string): Promise<void> {
   // Update publisher stats
   await updatePublisherStats(publisherId);
 
@@ -1714,6 +1766,12 @@ export async function installAgent(
   const existingSub = existingInstall
     ? await prisma.agentSubscription.findUnique({
         where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
+        // Without the count, on purpose. A copy install never meets a plan
+        // that is running: a licence for use that is active or suspended was
+        // refused above, and stopping use cancels the plan. What it can meet
+        // is a plan row that was closed with a reason, and the buyer's
+        // acceptance here must clear that reason as it does for any other
+        // row, or the copy could never run.
         select: { id: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
       })
     : null;
@@ -1938,7 +1996,7 @@ export interface UseState {
 }
 
 // orgId and modelConfig are read to ask whether the listing is paused.
-const USE_LISTING_INCLUDE = {
+export const USE_LISTING_INCLUDE = {
   agent: {
     select: {
       id: true,
@@ -1953,7 +2011,7 @@ const USE_LISTING_INCLUDE = {
 } as const;
 
 /** The buyer's state for a listing, from the rows as they are now. */
-async function readUseState(
+export async function readUseState(
   listing: {
     id: string;
     status: string;
@@ -1967,11 +2025,13 @@ async function readUseState(
   const licence = await prisma.agentInstall.findUnique({
     where: { listingId_buyerId: { listingId: listing.id, buyerId } },
   });
-  const sub = licence
+  const subRow = licence
     ? await prisma.agentSubscription.findUnique({
         where: { listingId_subscriberId: { listingId: listing.id, subscriberId: buyerId } },
+        include: WITH_PLAN_STATUS,
       })
     : null;
+  const sub = subRow && withPlanRetired(subRow);
   return {
     access: useAccess({
       licence: licence
@@ -2078,12 +2138,13 @@ export async function startUsing(
       listingId_buyerId: { listingId, buyerId },
     },
   });
-  const existingSub = existingInstall
+  const existingSubRow = existingInstall
     ? await prisma.agentSubscription.findUnique({
         where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
-        select: { id: true, status: true, currentPeriodEnd: true, cancelAtPeriodEnd: true, endReason: true },
+        select: LICENCE_SUBSCRIPTION_COLUMNS,
       })
     : null;
+  const existingSub = existingSubRow && withPlanRetired(existingSubRow);
 
   const now = new Date();
   const access = useAccess(
@@ -2281,8 +2342,9 @@ export async function getMyInstalls(buyerId: string) {
 
   const subscriptions = await prisma.agentSubscription.findMany({
     where: { subscriberId: buyerId, listingId: { in: installs.map((i) => i.listingId) } },
+    include: WITH_PLAN_STATUS,
   });
-  const subByListing = new Map(subscriptions.map((sub) => [sub.listingId, sub]));
+  const subByListing = new Map(subscriptions.map((sub) => [sub.listingId, withPlanRetired(sub)]));
 
   return installs.map((install) => {
     const sub = subByListing.get(install.listingId);
@@ -2420,7 +2482,15 @@ function licenceAccess(
   status: string,
   accepted: { pricingModel: string | null; pricePerRequestCents: bigint | null },
   listing: { status: string; sells: string; pricingModel: string; pricePerRequestCents: bigint | null },
-  sub: { status: string; currentPeriodEnd: Date; cancelAtPeriodEnd?: boolean; endReason?: string | null } | null,
+  sub: {
+    status: string;
+    currentPeriodEnd: Date;
+    cancelAtPeriodEnd?: boolean;
+    endReason?: string | null;
+    /** The marker of a plan, and whether its creator ended it (services/useAccess.ts). */
+    includedUses?: number | null;
+    planRetired?: boolean;
+  } | null,
 ): InstallAccess | UseAccess {
   if (kind === "use") {
     return useAccess({ licence: { kind, status, accepted }, listing, sub });
@@ -2442,11 +2512,13 @@ export async function checkInstallStatus(listingId: string, buyerId: string) {
     },
     include: { listing: { include: { agent: { select: LICENCE_AGENT_COLUMNS } } } },
   });
-  const sub = install
+  const subRow = install
     ? await prisma.agentSubscription.findUnique({
         where: { listingId_subscriberId: { listingId, subscriberId: buyerId } },
+        include: WITH_PLAN_STATUS,
       })
     : null;
+  const sub = subRow && withPlanRetired(subRow);
   const kind = install?.kind === "use" ? ("use" as const) : ("copy" as const);
 
   return {

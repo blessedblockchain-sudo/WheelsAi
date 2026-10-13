@@ -55,6 +55,7 @@ import { createStorageTransferRoutesProduction } from "./routes/storageTransfer.
 import { createFineTunedModelRoutesProduction } from "./routes/fineTunedModels.js";
 import { FINE_TUNED_MODELS_PREFIX } from "./services/fineTunedModels.js";
 import { STORAGE_TRANSFER_PREFIX } from "./services/objectStore.js";
+import { listingPlanRoutes } from "./routes/listingPlans.js";
 import { marketplaceRoutes } from "./routes/marketplace.js";
 import { createPayoutRoutesProduction } from "./routes/payoutBindings.js";
 import {
@@ -433,6 +434,8 @@ async function main() {
   });
   await app.register(settingsRoutes, { prefix: "/api/settings" });
   await app.register(marketplaceRoutes, { prefix: "/api/marketplace" });
+  // A creator's plans on a listing: PUT /api/marketplace/listings/:id/plans.
+  await app.register(listingPlanRoutes, { prefix: "/api/marketplace" });
   // A creator's payouts: /api/marketplace/payouts and /payouts/:id/cancel.
   await app.register(createPayoutRoutesProduction(), { prefix: "/api/marketplace" });
   // Try it: /api/marketplace/listings/:slug/try (public, within limits that

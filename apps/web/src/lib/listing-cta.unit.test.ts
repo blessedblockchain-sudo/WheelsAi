@@ -10,7 +10,10 @@ import {
   listingCountText,
   listingCta,
   listingInstallStats,
+  plansFromCentsOf,
+  plansFromLine,
   priceTextForUse,
+  priceWithPlans,
   usesAgent,
   type ListingCtaInput,
   type ListingCtaInstall,
@@ -272,4 +275,69 @@ test("the count: installs for copies, the people using it now for use", () => {
   assert.deepEqual(listingInstallStats({ sells: "use", ...counts }, "en-US"), [
     { key: "using", label: "People using it", value: "37" },
   ]);
+});
+
+// ============================================
+// A listing that offers plans
+// ============================================
+
+const STARTER = { id: "p1", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 4 };
+const PRO = { id: "p3", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: null };
+
+test("the smallest plan price: said by the search, or measured from the plans a read carries", () => {
+  assert.equal(plansFromCentsOf({ plansFromCents: 900 }), 900);
+  assert.equal(plansFromCentsOf({ plans: [PRO, STARTER] }), 900);
+  // What the search said wins over a list beside it.
+  assert.equal(plansFromCentsOf({ plansFromCents: 500, plans: [PRO] }), 500);
+  // No plans, and a read that did not say.
+  assert.equal(plansFromCentsOf({ plansFromCents: null }), null);
+  assert.equal(plansFromCentsOf({ plans: [] }), null);
+  assert.equal(plansFromCentsOf({}), null);
+  assert.equal(plansFromCentsOf({ plansFromCents: 0 }), null);
+  assert.equal(plansFromCentsOf({ plansFromCents: Number.NaN, plans: [STARTER] }), 900);
+});
+
+test("use with plans: 'From $0.05 a message. Plans from $9.00 for 30 days.'", () => {
+  assert.equal(plansFromLine(900), "Plans from $9.00 for 30 days.");
+  assert.deepEqual(priceWithPlans(listing({ plans: [STARTER, PRO] })), {
+    from: "From $0.05 a message",
+    plans: "Plans from $9.00 for 30 days.",
+    line: "From $0.05 a message. Plans from $9.00 for 30 days.",
+  });
+  // A card reads it from the search.
+  assert.equal(priceWithPlans(listing({ plansFromCents: 900, unit: "run" }))?.line, "From $0.05 a run. Plans from $9.00 for 30 days.");
+
+  const cta = listingCta({ listing: listing({ plans: [STARTER, PRO] }), authed: false, install: null });
+  assert.equal(cta.price, "$0.05");
+  assert.equal(cta.priceNote, "From $0.05 a message. Plans from $9.00 for 30 days.");
+  // Nothing else on the card changes: it still opens the agent's page, where a plan is chosen.
+  const plain = listingCta({ listing: listing(), authed: false, install: null });
+  assert.deepEqual({ ...cta, priceNote: null }, { ...plain, priceNote: null });
+});
+
+test("a listing with no plans reads exactly as before plans existed", () => {
+  const before = listingCta({ listing: listing(), authed: false, install: null });
+  assert.equal(before.priceNote, "$0.05 per message, charged as you go.");
+  for (const none of [{ plans: [] }, { plansFromCents: null }, { plans: undefined }]) {
+    assert.equal(priceWithPlans(listing(none)), null);
+    assert.deepEqual(listingCta({ listing: listing(none), authed: false, install: null }), before);
+  }
+});
+
+test("plans are said only for use sold per request", () => {
+  // Copies have no plans, and neither has a month or a free listing, whatever an answer carries.
+  for (const model of MODELS) {
+    assert.equal(priceWithPlans({ ...priced(model, "copies"), plansFromCents: 900 }), null, model);
+    if (model !== "per_request") assert.equal(priceWithPlans({ ...priced(model, "use"), plansFromCents: 900 }), null, model);
+  }
+  const copies = { listing: priced("per_request", "copies"), authed: false, install: null };
+  assert.deepEqual(listingCta({ ...copies, listing: { ...copies.listing, plansFromCents: 900 } }), listingCta(copies));
+});
+
+test("the words of plans on the marketplace never say what a buyer is not told", () => {
+  const said = priceWithPlans(listing({ plans: [STARTER, PRO] }))!;
+  for (const sentence of [said.from, said.plans, said.line]) {
+    assert.equal(/[\u2013\u2014]/.test(sentence), false, sentence);
+    assert.doesNotMatch(sentence, /unlimited|trial|subscriber|people|token|organization/i, sentence);
+  }
 });

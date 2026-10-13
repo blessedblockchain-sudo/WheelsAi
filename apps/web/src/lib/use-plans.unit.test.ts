@@ -17,14 +17,21 @@ import type {
 } from "./api";
 import { PAID_REFUSAL_RULES, PAID_USE_MESSAGES, chargeLine, noticeOfView, paidRefusalNotice, paidView } from "./paid-use";
 import {
+  MOVE_UP_WORDS,
   USE_PLAN_WORDS,
   accessAfterRefusal,
   accessAfterUse,
+  biggerPlans,
+  carriedOnMove,
   payAsYouGoLine,
   planAfterLine,
   planCountLine,
   planCountOf,
   planGateView,
+  planMoveDialog,
+  planMoveNow,
+  planMoveNotice,
+  planPageView,
   planPriceLine,
   planStartDialog,
   planStartNotice,
@@ -816,6 +823,243 @@ test("no sentence of a plan has an em dash, a raw code, or a word about what the
     assert.equal(/[\u2013\u2014]/.test(sentence), false, sentence);
     assert.doesNotMatch(sentence, /plan_ended|plan_used_up|already_on_plan|pricing_changed/, sentence);
     assert.doesNotMatch(sentence, /token|model|organization|unlimited|subscriber|trial|move up/i, sentence);
+    assert.doesNotMatch(sentence, /undefined|null|NaN/, sentence);
+  }
+});
+
+// ============================================
+// Moving up to a bigger plan
+// ============================================
+
+const PRO: PlanOffer = { id: "p3", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: 3 };
+const OFFERED = [STOPS, STARTER, PRO];
+/** What the access says of someone on Starter: the price they agreed to is the subscription's own. */
+const AGREED_STARTER = { pricingModel: null, pricePerRequestCents: null, monthlyPriceCents: 900 };
+
+const onStarter = (extra: Partial<PaidUseAccessState> = {}, plan: Partial<PaidUsePlan> = {}) =>
+  state("subscribed", { plans: OFFERED, plan: onPlan(plan), accepted: AGREED_STARTER, subscription: SUB, ...extra });
+const page = (access: PaidUseAccessState | null) =>
+  planPageView({ authed: access !== null, access, page: PAGE_WITH_PLANS, kind: "chat", dates: UTC });
+
+test("the words of moving up", () => {
+  assert.equal(MOVE_UP_WORDS.seeBigger, "See bigger plans");
+  assert.equal(MOVE_UP_WORDS.hideBigger, "Hide bigger plans");
+  assert.equal(MOVE_UP_WORDS.button, "Move up");
+  // The API's own sentences (PLAN_MOVE_MESSAGES in apps/api/src/services/planMove.ts).
+  assert.equal(MOVE_UP_WORDS.notOnPlan, "You are not on a plan. Start one first.");
+  assert.equal(MOVE_UP_WORDS.samePlan, "You are already on this plan. Nothing was charged.");
+  assert.equal(MOVE_UP_WORDS.notBigger, "To move to a smaller plan, cancel the renewal and choose it when your plan ends.");
+});
+
+test("a bigger plan costs more than the price agreed to, and is never the plan the person is on", () => {
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p1", agreedCents: 900 }), [PRO]);
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p2", agreedCents: 500 }), [STARTER, PRO]);
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p3", agreedCents: 2900 }), []);
+  // The price agreed to decides, not the plan's price now: Starter was $12.00 when this person started it.
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p1", agreedCents: 1200 }), [PRO]);
+  // Their own plan at a higher price now is not a move.
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p1", agreedCents: 700 }), [PRO]);
+  // A plan at the same price is not bigger.
+  assert.deepEqual(biggerPlans([{ ...PRO, priceCents: 900 }], { id: "p1", agreedCents: 900 }), []);
+  // A plan that was ended since is no longer in the list, and the others still count.
+  assert.deepEqual(biggerPlans([STOPS, PRO], { id: "p1", agreedCents: 900 }), [PRO]);
+  // With no agreed price known nothing is offered.
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p1", agreedCents: null }), []);
+  assert.deepEqual(biggerPlans(OFFERED, { id: "p1", agreedCents: undefined }), []);
+  assert.deepEqual(biggerPlans([], { id: "p1", agreedCents: 900 }), []);
+});
+
+test("a move carries the uses that are left, and at most what the plan being left included", () => {
+  assert.equal(carriedOnMove({ includedUses: 500, remainingUses: 188 }), 188);
+  assert.equal(carriedOnMove({ includedUses: 500, remainingUses: 500 }), 500);
+  // Uses carried by an earlier move are not carried again: 500 included, 120 brought in, 30 used.
+  assert.equal(carriedOnMove({ includedUses: 500, remainingUses: 590 }), 500);
+  assert.equal(carriedOnMove({ includedUses: 500, remainingUses: 0 }), 0);
+  assert.equal(carriedOnMove({ includedUses: 500, remainingUses: -3 }), 0);
+  assert.equal(carriedOnMove({ includedUses: 500, remainingUses: Number.NaN }), 0);
+});
+
+test("the dialog of a move says the new 30 days, the charge, and the uses that come along", () => {
+  assert.deepEqual(planMoveDialog(PRO, 188), {
+    title: "Move up to the Pro plan?",
+    body: "Starts a new 30 days today and charges $29.00 from your credits. The 188 uses you have left are added to it.",
+    confirmLabel: "Move up for $29.00",
+  });
+  // Nothing left: the second sentence is left out.
+  assert.equal(planMoveDialog(PRO, 0).body, "Starts a new 30 days today and charges $29.00 from your credits.");
+  assert.equal(
+    planMoveDialog(PRO, 1).body,
+    "Starts a new 30 days today and charges $29.00 from your credits. The 1 use you have left is added to it.",
+  );
+  assert.equal(planMoveDialog({ ...PRO, name: "Pro plan" }, 0).title, "Move up to the Pro plan?");
+});
+
+test("the dialog of a move says both numbers when fewer uses come along than are left", () => {
+  const start = "Starts a new 30 days today and charges $29.00 from your credits.";
+  // After an earlier move: the count line reads 590 left, and only the 500 the plan included are carried.
+  assert.equal(planMoveDialog(PRO, 500, 590).body, `${start} 500 of the 590 uses you have left are added to it.`);
+  assert.equal(planMoveDialog(PRO, 1, 5).body, `${start} 1 of the 5 uses you have left is added to it.`);
+  // All that is left comes along: the design's sentence, word for word.
+  assert.equal(planMoveDialog(PRO, 188, 188).body, `${start} The 188 uses you have left are added to it.`);
+  assert.equal(planMoveDialog(PRO, 188).body, planMoveDialog(PRO, 188, 188).body);
+  assert.equal(planMoveDialog(PRO, 1, 1).body, `${start} The 1 use you have left is added to it.`);
+  assert.equal(planMoveDialog(PRO, 0, 0).body, start);
+  // The page hands the dialog both numbers.
+  const after = page(onStarter({}, { carriedUses: 120, usedUses: 30, remainingUses: 590 }));
+  assert.equal(after.view.sentence, "590 of 620 uses left. Renews 12 Nov.");
+  assert.equal(after.moveUp?.carriedUses, 500);
+  assert.equal(after.moveUp?.leftUses, 590);
+});
+
+test("a press on a bigger plan is measured against the page as it was read again at that press", () => {
+  // A teammate used 12 since the page loaded: the dialog is made from the 300 of the new read.
+  const fresh = page(onStarter({}, { usedUses: 200, remainingUses: 300 })).moveUp;
+  assert.deepEqual(planMoveNow(fresh, PRO), { card: PRO, carriedUses: 300, leftUses: 300 });
+  assert.equal(
+    planMoveDialog(PRO, 300, 300).body,
+    "Starts a new 30 days today and charges $29.00 from your credits. The 300 uses you have left are added to it.",
+  );
+  // The card held is the one of the new read, not the object that was pressed.
+  assert.equal(planMoveNow(fresh, { ...PRO })?.card, fresh?.cards[0]);
+  // Any term that is no longer what was shown opens nothing.
+  for (const changed of [
+    { ...PRO, priceCents: PRO.priceCents + 100 },
+    { ...PRO, includedUses: PRO.includedUses + 1 },
+    { ...PRO, extraUsePriceCents: PRO.extraUsePriceCents === null ? 4 : null },
+    { ...PRO, id: "another" },
+  ]) {
+    assert.equal(planMoveNow(fresh, changed), null);
+  }
+  // Nobody who can no longer move, and nobody the new read offers nothing bigger.
+  assert.equal(planMoveNow(page(onStarter({ canAccept: false })).moveUp, PRO), null);
+  assert.equal(planMoveNow(page(onStarter({ plans: [STARTER] })).moveUp, PRO), null);
+  assert.equal(planMoveNow(null, PRO), null);
+});
+
+test("a plan that is used up and stops says 'or move up now' only when asked to", () => {
+  const gone = onPlan({ usedUses: 500, remainingUses: 0, warning: 100, extraUsePriceCents: null });
+  assert.equal(
+    planCountLine({ plan: gone, moveUp: true, dates: UTC }),
+    "You have used all 500 uses. It starts again on 12 Nov, or move up now.",
+  );
+  assert.equal(planCountLine({ plan: gone, dates: UTC }), "You have used all 500 uses. It starts again on 12 Nov.");
+  assert.equal(
+    planCountLine({ plan: gone, moveUp: true, pastDue: true, dates: UTC }),
+    "You have used all 500 uses. It starts again when your plan renews, or move up now.",
+  );
+  // Every other line is what it is without it: uses are left, an extra use has a price, or the plan will not renew.
+  const { resetsAt: _renews, ...ending } = gone;
+  const others = [
+    { plan: onPlan() },
+    { plan: onPlan({ usedUses: 425, remainingUses: 75, warning: 85 as const }) },
+    { plan: onPlan({ usedUses: 500, remainingUses: 0, warning: 100 as const }) },
+    { plan: ending, endsAt: NOV_12 },
+  ];
+  for (const input of others) {
+    assert.equal(planCountLine({ ...input, moveUp: true, dates: UTC }), planCountLine({ ...input, dates: UTC }));
+  }
+});
+
+test("someone on a plan is offered the bigger plans, with what a move would carry", () => {
+  const { view, plans, moveUp } = page(onStarter());
+  assert.deepEqual(moveUp, { cards: [PRO], canMove: true, askAdmin: null, carriedUses: 312, leftUses: 312 });
+  // The rest of the page is planGateView's: the count as its sentence, and no card to start.
+  assert.equal(view.sentence, "312 of 500 uses left. Renews 12 Nov.");
+  assert.deepEqual({ view, plans }, gate(onStarter()));
+  assert.equal(plans.place, "none");
+  // After an earlier move: 500 included, 120 brought in, 30 used. At most the 500 are carried.
+  assert.equal(page(onStarter({}, { carriedUses: 120, usedUses: 30, remainingUses: 590 })).moveUp?.carriedUses, 500);
+});
+
+test("the used-up line of a plan that stops ends with 'or move up now' when a bigger plan is on offer", () => {
+  const gone = { usedUses: 500, remainingUses: 0, warning: 100 as const, extraUsePriceCents: null };
+  const drawn = page(onStarter({}, gone));
+  assert.equal(drawn.view.sentence, "You have used all 500 uses. It starts again on 12 Nov, or move up now.");
+  assert.equal(drawn.moveUp?.carriedUses, 0);
+  // No bigger plan on offer: the line is what it is today.
+  const top = page(onStarter({ plans: [STOPS, STARTER] }, gone));
+  assert.equal(top.moveUp, null);
+  assert.equal(top.view.sentence, "You have used all 500 uses. It starts again on 12 Nov.");
+  // While a renewal is retried the page's sentence stays, and the line beside it says it.
+  const pastDue = page(onStarter({ subscription: { ...SUB, status: "past_due", graceEndsAt: "2026-11-15T09:00:00.000Z" } }, gone));
+  assert.equal(pastDue.view.sentence, "Your renewal of $9.00 did not go through. Add credits before 15 Nov to keep access.");
+  assert.equal(pastDue.plans.countLine, "You have used all 500 uses. It starts again when your plan renews, or move up now.");
+  assert.deepEqual(pastDue.moveUp?.cards, [PRO]);
+});
+
+test("someone who may not start a plan reads the bigger plans, is told to ask once, and is not told to move up", () => {
+  const gone = { usedUses: 500, remainingUses: 0, warning: 100 as const, extraUsePriceCents: null };
+  const member = page(onStarter({ canAccept: false }, gone));
+  assert.deepEqual(member.moveUp, { cards: [PRO], canMove: false, askAdmin: PAID_USE_MESSAGES.askAdmin, carriedUses: 0, leftUses: 0 });
+  assert.equal(member.view.sentence, "You have used all 500 uses. It starts again on 12 Nov.");
+  assert.equal(member.plans.askAdmin, null, "said once, with the bigger plans");
+});
+
+test("nobody else is offered a move, and their page is planGateView's", () => {
+  const others: Array<PaidUseAccessState | null> = [
+    null,
+    state("none"),
+    state("listing_pricing"),
+    state("plan_ended"),
+    state("pricing_changed"),
+    state("own_agent"),
+    // A paid month with no count: the listing of such a subscriber has no plans, and no plan is held.
+    state("subscribed", { plans: OFFERED, accepted: AGREED_STARTER, subscription: SUB }),
+    // On the biggest plan.
+    onStarter({ plan: onPlan({ id: "p3", name: "Pro" }), accepted: { ...AGREED_STARTER, monthlyPriceCents: 2900 } }),
+    // The listing no longer offers plans.
+    onStarter({ plans: [] }),
+    // The price agreed to is not known.
+    onStarter({ accepted: null }),
+  ];
+  for (const access of others) {
+    const drawn = page(access);
+    assert.equal(drawn.moveUp, null, access?.access);
+    const { moveUp: _none, ...rest } = drawn;
+    assert.deepEqual(rest, gate(access), access?.access);
+  }
+});
+
+test("a refused move reads as a refused start, and its own refusals say the API's sentence", () => {
+  const changed = refusal("pricing_changed", { message: "The plans were changed. Nothing was charged.", plans: [PRO] });
+  assert.deepEqual(
+    planMoveNotice({ status: 409, refusal: changed, unit: "message" }),
+    planStartNotice({ status: 409, refusal: changed, unit: "message" }),
+  );
+  const short = refusal("insufficient_credits", { message: "You need $29.00 in credits. Nothing was charged.", requiredCents: 2900 });
+  const noCredits = planMoveNotice({ status: 402, refusal: short, unit: "message" });
+  assert.equal(noCredits.message, "You need $29.00 in credits. Nothing was charged.");
+  assert.deepEqual(noCredits.action, { kind: "add_credits", label: "Add credits" });
+
+  const own: Array<[string, string]> = [
+    ["not_on_plan", MOVE_UP_WORDS.notOnPlan],
+    ["same_plan", MOVE_UP_WORDS.samePlan],
+    ["not_a_bigger_plan", MOVE_UP_WORDS.notBigger],
+  ];
+  for (const [code, words] of own) {
+    const bare = planMoveNotice({ status: 409, refusal: refusal(code), unit: "message" });
+    assert.equal(bare.message, words, code);
+    assert.deepEqual(bare.action, { kind: "none", label: null }, code);
+    assert.equal(planMoveNotice({ status: 409, refusal: refusal(code, { message: "As the API said it." }), unit: "message" }).message, "As the API said it.");
+  }
+  // A move that lost its claim to a renewal, a use or another move.
+  const lost = planMoveNotice({ status: 409, refusal: refusal("subscription_claim_lost"), unit: "message" });
+  assert.equal(lost.message, PAID_REFUSAL_RULES.subscription_claim_lost!.fallback);
+  assert.equal(planMoveNotice({ status: 0, refusal: null, unit: "message" }).message, PAID_USE_MESSAGES.offline);
+});
+
+test("no sentence of moving up has an em dash, a raw code, or a word about what the buyer is never told", () => {
+  const gone = onPlan({ usedUses: 500, remainingUses: 0, warning: 100, extraUsePriceCents: null });
+  const said = [
+    ...Object.values(MOVE_UP_WORDS),
+    ...Object.values(planMoveDialog(PRO, 188)),
+    ...Object.values(planMoveDialog(PRO, 0)),
+    planCountLine({ plan: gone, moveUp: true, dates: UTC }),
+  ];
+  for (const sentence of said) {
+    assert.equal(/[\u2013\u2014]/.test(sentence), false, sentence);
+    assert.doesNotMatch(sentence, /not_on_plan|same_plan|not_a_bigger_plan|pricing_changed|switchNow/, sentence);
+    assert.doesNotMatch(sentence, /token|model|organization|unlimited|subscriber|trial|refund/i, sentence);
     assert.doesNotMatch(sentence, /undefined|null|NaN/, sentence);
   }
 });

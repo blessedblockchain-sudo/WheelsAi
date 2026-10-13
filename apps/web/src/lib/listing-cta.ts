@@ -14,7 +14,7 @@ import { formatCents } from "./agent-page";
 
 type ListingPricing = Pick<
   MarketplaceListing,
-  "sells" | "pricingModel" | "pricePerRequestCents" | "monthlyPriceCents" | "unit"
+  "sells" | "pricingModel" | "pricePerRequestCents" | "monthlyPriceCents" | "unit" | "plans" | "plansFromCents"
 >;
 
 /** The words of the listing page for a listing that sells use. */
@@ -43,6 +43,49 @@ export function priceTextForUse(listing: ListingPricing): string {
   }
   if (listing.pricingModel === "tokenized") return "Token Gated";
   return "Free";
+}
+
+/**
+ * The smallest price among the plans a listing offers, in cents; null when it
+ * offers none or the read did not say. The search says it outright
+ * (`plansFromCents`); the reads that carry the plans themselves are measured
+ * here.
+ */
+export function plansFromCentsOf(listing: Pick<ListingPricing, "plans" | "plansFromCents">): number | null {
+  const isPrice = (cents: unknown): cents is number => typeof cents === "number" && Number.isFinite(cents) && cents > 0;
+  if (isPrice(listing.plansFromCents)) return listing.plansFromCents;
+  if (!Array.isArray(listing.plans)) return null;
+  const prices = listing.plans.map((plan) => plan?.priceCents).filter(isPrice);
+  return prices.length > 0 ? Math.min(...prices) : null;
+}
+
+/** "Plans from $9.00 for 30 days." */
+export function plansFromLine(cents: number): string {
+  return `Plans from ${formatCents(cents)} for 30 days.`;
+}
+
+/** The price of a listing that offers plans, in the two parts a card draws apart. */
+export interface PriceWithPlans {
+  /** "From $0.05 a message": the price per use, which stays the base. */
+  from: string;
+  /** "Plans from $9.00 for 30 days." */
+  plans: string;
+  /** Both, as the listing page says them: "From $0.05 a message. Plans from $9.00 for 30 days." */
+  line: string;
+}
+
+/**
+ * What a listing that sells use per request and offers plans says of its
+ * price. Null for every other listing, which reads exactly as it did before
+ * plans existed. Never said: how many people are on a plan.
+ */
+export function priceWithPlans(listing: ListingPricing): PriceWithPlans | null {
+  if (listing.sells !== "use" || listing.pricingModel !== "per_request" || !listing.pricePerRequestCents) return null;
+  const cents = plansFromCentsOf(listing);
+  if (cents === null) return null;
+  const from = `From ${formatCents(listing.pricePerRequestCents)} a ${unitWordOfUse(listing.unit)}`;
+  const plans = plansFromLine(cents);
+  return { from, plans, line: `${from}. ${plans}` };
 }
 
 /** A copies listing's price, as the listing page has always written it. */
@@ -120,7 +163,8 @@ function ctaForUse(input: ListingCtaInput): ListingCta {
   if (free) {
     priceNote = LISTING_USE_WORDS.free;
   } else if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
-    priceNote = `${price}, charged as you go.`;
+    // With plans on offer the line names both ways to pay; without, it is what it has always been.
+    priceNote = priceWithPlans(listing)?.line ?? `${price}, charged as you go.`;
     price = formatCents(listing.pricePerRequestCents);
   } else if (listing.pricingModel === "monthly" && listing.monthlyPriceCents) {
     priceNote = `${price} from your credits. Cancel at any time.`;

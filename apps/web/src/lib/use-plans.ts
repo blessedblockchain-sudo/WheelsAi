@@ -42,6 +42,26 @@ export const USE_PLAN_WORDS = {
   termsChanged: "The plans are not what you were shown. Nothing was charged. Look at them again and choose.",
 } as const;
 
+/**
+ * The words of moving up to a bigger plan before the 30 days end. Kept apart
+ * from the words of starting one: a card that starts a plan never speaks of
+ * moving.
+ */
+export const MOVE_UP_WORDS = {
+  /** Opens the bigger plans, under the count of what is left. */
+  seeBigger: "See bigger plans",
+  hideBigger: "Hide bigger plans",
+  /** The button on a bigger plan's card. The card's name says which plan. */
+  button: "Move up",
+  /** What the list of bigger plans is called for someone who cannot see it. */
+  cardsLabel: "Bigger plans",
+  // What a refused move says when the API sent no sentence. The API's own words (PLAN_MOVE_MESSAGES in
+  // apps/api/src/services/planMove.ts).
+  notOnPlan: "You are not on a plan. Start one first.",
+  samePlan: "You are already on this plan. Nothing was charged.",
+  notBigger: "To move to a smaller plan, cancel the renewal and choose it when your plan ends.",
+} as const;
+
 /** "500 uses", "1 use". */
 function usesWord(count: number): string {
   return `${count} ${count === 1 ? "use" : "uses"}`;
@@ -177,6 +197,11 @@ export interface PlanCountLineInput {
    * sentence says by when to add credits.
    */
   pastDue?: boolean;
+  /**
+   * The person can move up to a bigger plan now. Said only where the line
+   * tells them to wait: a plan that is used up and stops until it renews.
+   */
+  moveUp?: boolean;
   dates?: DateWords;
 }
 
@@ -184,6 +209,7 @@ export interface PlanCountLineInput {
  * The one line above the chat or the task form while on a plan:
  * "312 of 500 uses left. Renews 12 Nov.", the two warnings, and "Your plan
  * ends on 12 Nov." in place of the renewal when the plan will not renew.
+ * With `moveUp`, a plan that is used up and stops ends "..., or move up now."
  */
 export function planCountLine(input: PlanCountLineInput): string {
   const { plan } = input;
@@ -201,7 +227,10 @@ export function planCountLine(input: PlanCountLineInput): string {
       return `${usedAll(total)} Each use is now ${dollars(plan.extraUsePriceCents)} from your credits.${ends}`;
     }
     if (!renews) return `${usedAll(total)}${ends}`;
-    return renewsOn ? `${usedAll(total)} It starts again on ${renewsOn}.` : `${usedAll(total)} It starts again when your plan renews.`;
+    const or = input.moveUp ? ", or move up now" : "";
+    return renewsOn
+      ? `${usedAll(total)} It starts again on ${renewsOn}${or}.`
+      : `${usedAll(total)} It starts again when your plan renews${or}.`;
   }
   if (plan.warning === 85) {
     const until = renewsOn ? ` until ${renewsOn}` : "";
@@ -254,6 +283,32 @@ const FIRST: ReadonlyArray<PaidView["kind"]> = ["signed_out", "not_started", "as
 /** These see the cards and can never start one: nobody is signed in, the agent is their own, or a start is held back. */
 const NEVER_START: ReadonlyArray<PaidView["kind"]> = ["signed_out", "own_agent", "start_blocked"];
 
+/** The plans on offer, as the page reads them. The ones the access names are fresher than the page's and win, an empty list included. */
+function cardsOnOffer(input: PaidViewInput): PlanOffer[] {
+  const state = input.authed ? input.access : null;
+  return plansOf(state && Array.isArray(state.plans) ? state.plans : input.page.plans);
+}
+
+/**
+ * What the count line of the plan the person is on is written from; null for
+ * anyone who is not on a plan that gives them uses now.
+ */
+function heldPlanLine(input: PaidViewInput, kind: PaidView["kind"]): PlanCountLineInput | null {
+  const state = input.authed ? input.access : null;
+  const read = state?.access === "subscribed" && kind === "in_use" ? planCountOf(state.plan) : null;
+  if (!read) return null;
+  return {
+    // The access names no price per use when the listing no longer sells use. No extra use is sold then,
+    // whatever the plan agreed: past its count the plan stops, and the line must not name a charge.
+    plan: state?.terms == null ? { ...read, extraUsePriceCents: null } : read,
+    endsAt: state?.subscription?.currentPeriodEnd,
+    pastDue: state?.subscription?.status === "past_due",
+    // The API writes the day in its used-up sentence in UTC, and that sentence is shown on this page beside
+    // the line. The line's days are written in UTC too, so the two never name different days.
+    dates: { ...input.dates, timeZone: PLAN_DAY_ZONE },
+  };
+}
+
 /**
  * An agent's page for someone who pays, plans included. With no plans in the
  * answer and none held it is `paidView` and nothing more: the page of a
@@ -262,24 +317,11 @@ const NEVER_START: ReadonlyArray<PaidView["kind"]> = ["signed_out", "own_agent",
 export function planGateView(input: PaidViewInput): PlanGateView {
   const base = paidView(input);
   const state = input.authed ? input.access : null;
-  // The plans the access names are fresher than the page's and win, an empty list included.
-  const cards = plansOf(state && Array.isArray(state.plans) ? state.plans : input.page.plans);
+  const cards = cardsOnOffer(input);
 
-  const read = state?.access === "subscribed" && base.kind === "in_use" ? planCountOf(state.plan) : null;
-  // The access names no price per use when the listing no longer sells use. No extra use is sold then,
-  // whatever the plan agreed: past its count the plan stops, and the line must not name a charge.
-  const count = read && state?.terms == null ? { ...read, extraUsePriceCents: null } : read;
-  const pastDue = state?.subscription?.status === "past_due";
-  // The API writes the day in its used-up sentence in UTC, and that sentence is shown on this page beside
-  // the line. The line's days are written in UTC too, so the two never name different days.
-  const line = count
-    ? planCountLine({
-        plan: count,
-        endsAt: state?.subscription?.currentPeriodEnd,
-        pastDue,
-        dates: { ...input.dates, timeZone: PLAN_DAY_ZONE },
-      })
-    : null;
+  const held = heldPlanLine(input, base.kind);
+  const pastDue = held?.pastDue === true;
+  const line = held ? planCountLine(held) : null;
   // The sentence of a monthly subscriber speaks of a month and of a renewal a plan may not have. A plan
   // holder reads the count. While a renewal is retried the page's sentence stays, with its add-credits action.
   const view = line !== null && !pastDue ? { ...base, sentence: line } : base;
@@ -307,6 +349,157 @@ export function planGateView(input: PaidViewInput): PlanGateView {
     },
   };
 }
+
+// ============================================
+// Moving up to a bigger plan
+// ============================================
+
+/**
+ * The plans a person on a plan can move up to: the ones on offer that cost
+ * more for their 30 days than the price they agreed to for the plan they are
+ * on, their own plan left out. The API moves to no other. Nobody whose agreed
+ * price is not known is offered one.
+ */
+export function biggerPlans(
+  cards: PlanOffer[],
+  held: { id: string | null | undefined; agreedCents: number | null | undefined },
+): PlanOffer[] {
+  const agreed = held.agreedCents;
+  if (typeof agreed !== "number" || !Number.isFinite(agreed)) return [];
+  return cards.filter((card) => card.id !== held.id && card.priceCents > agreed);
+}
+
+/**
+ * How many uses a move carries into the new 30 days: the uses that are left,
+ * and at most as many as the plan being left included (uses carried by an
+ * earlier move are not carried again). The API works out the same number
+ * when it moves. The Installed page has its own copy of this rule.
+ */
+export function carriedOnMove(plan: Pick<PlanCount, "includedUses" | "remainingUses">): number {
+  const left = Number.isFinite(plan.remainingUses) ? Math.floor(plan.remainingUses) : 0;
+  const included = Number.isFinite(plan.includedUses) ? Math.floor(plan.includedUses) : 0;
+  return Math.max(0, Math.min(left, included));
+}
+
+/** The uses left in the period, as a whole number that is never below 0. */
+function usesLeft(plan: Pick<PlanCount, "remainingUses">): number {
+  return Number.isFinite(plan.remainingUses) ? Math.max(0, Math.floor(plan.remainingUses)) : 0;
+}
+
+/**
+ * The dialog that moves up: "Starts a new 30 days today and charges $29.00
+ * from your credits. The 188 uses you have left are added to it." With no
+ * use left the second sentence is left out.
+ *
+ * `leftUses` is what the count line shows as left. When a move carries fewer
+ * (uses brought in by an earlier move stay behind) the sentence says both
+ * numbers, "500 of the 590 uses you have left are added to it.", so nobody
+ * pays for a move that drops uses without having read it.
+ */
+export function planMoveDialog(card: PlanOffer, carriedUses: number, leftUses: number = carriedUses): PaidDialog {
+  const name = card.name.trim();
+  const is = carriedUses === 1 ? "is" : "are";
+  const carried =
+    carriedUses <= 0
+      ? ""
+      : leftUses > carriedUses
+        ? ` ${carriedUses} of the ${leftUses} uses you have left ${is} added to it.`
+        : carriedUses === 1
+          ? " The 1 use you have left is added to it."
+          : ` The ${carriedUses} uses you have left are added to it.`;
+  return {
+    title: /\bplan$/i.test(name) ? `Move up to the ${name}?` : `Move up to the ${name} plan?`,
+    body: `Starts a new 30 days today and charges ${dollars(card.priceCents)} from your credits.${carried}`,
+    confirmLabel: `${MOVE_UP_WORDS.button} for ${dollars(card.priceCents)}`,
+  };
+}
+
+/** What the page draws of moving up, for someone on a plan when the listing offers a bigger one. */
+export interface PlanMoveUp {
+  /** The bigger plans, in the order they are on offer. Never empty. */
+  cards: PlanOffer[];
+  /** Whether each card has its button: the same people who may start a plan. */
+  canMove: boolean;
+  /** Said once with the cards to someone who may not move up. */
+  askAdmin: string | null;
+  /** The uses a move would carry now, for the dialog's sentence. */
+  carriedUses: number;
+  /** The uses the count line shows as left. More than `carriedUses` after an earlier move. */
+  leftUses: number;
+}
+
+export interface PlanPageView extends PlanGateView {
+  /** Null for anyone who is not on a plan, and when no bigger plan is on offer. */
+  moveUp: PlanMoveUp | null;
+}
+
+/**
+ * `planGateView`, with moving up for someone on a plan. When they can move
+ * up, the count line of a plan that is used up and stops says so. For
+ * everyone else it is `planGateView` and `moveUp: null`.
+ */
+export function planPageView(input: PaidViewInput): PlanPageView {
+  const gate = planGateView(input);
+  const state = input.authed ? input.access : null;
+  const held = heldPlanLine(input, gate.view.kind);
+  if (!state || !held) return { ...gate, moveUp: null };
+
+  const cards = biggerPlans(cardsOnOffer(input), { id: state.plan?.id, agreedCents: state.accepted?.monthlyPriceCents });
+  if (cards.length === 0) return { ...gate, moveUp: null };
+
+  const canMove = state.canAccept === true && !state.startBlocked;
+  const moveUp: PlanMoveUp = {
+    cards,
+    canMove,
+    askAdmin: canMove ? null : PAID_USE_MESSAGES.askAdmin,
+    carriedUses: carriedOnMove(held.plan),
+    leftUses: usesLeft(held.plan),
+  };
+  // Someone who cannot move up is not told to: their line is the one everybody reads.
+  if (!canMove) return { ...gate, moveUp };
+  const line = planCountLine({ ...held, moveUp: true });
+  // The line is the page's sentence, or stands beside it while a renewal is retried, as in planGateView.
+  return held.pastDue
+    ? { view: gate.view, plans: { ...gate.plans, countLine: line }, moveUp }
+    : { view: { ...gate.view, sentence: line }, plans: gate.plans, moveUp };
+}
+
+/** What a press on a bigger plan's card opens its dialog with. */
+export interface PlanMoveNow {
+  /** The card as the page has just read it: its terms are the ones sent. */
+  card: PlanOffer;
+  carriedUses: number;
+  leftUses: number;
+}
+
+/**
+ * A press on a bigger plan's card, measured against the page as it was read
+ * again at that press. The count the dialog promises to carry is then the
+ * count of that moment, not of when the page loaded: a subscription belongs
+ * to an organization, and a teammate's uses are not seen until the next read.
+ *
+ * Null when the person can no longer move, or when the card they pressed is
+ * no longer on offer with every term they were shown: no dialog opens for
+ * terms that are not on the page, and the cards are drawn again from the read.
+ */
+export function planMoveNow(fresh: PlanMoveUp | null, pressed: PlanOffer): PlanMoveNow | null {
+  if (!fresh?.canMove) return null;
+  const card = fresh.cards.find(
+    (offer) =>
+      offer.id === pressed.id &&
+      offer.priceCents === pressed.priceCents &&
+      offer.includedUses === pressed.includedUses &&
+      offer.extraUsePriceCents === pressed.extraUsePriceCents,
+  );
+  return card ? { card, carriedUses: fresh.carriedUses, leftUses: fresh.leftUses } : null;
+}
+
+/** What a refused move says when the API sent no sentence, by its code. */
+const MOVE_REFUSALS: Record<string, string> = {
+  not_on_plan: MOVE_UP_WORDS.notOnPlan,
+  same_plan: MOVE_UP_WORDS.samePlan,
+  not_a_bigger_plan: MOVE_UP_WORDS.notBigger,
+};
 
 // ============================================
 // What the page holds after a use, and after a refusal
@@ -401,4 +594,19 @@ export function planStartNotice(input: PlanStartRefusalInput): PaidNotice {
   // A start per use names the new price per use here. A plan's terms are on its card, drawn again.
   const said = typeof input.refusal?.message === "string" ? input.refusal.message.trim() : "";
   return { ...notice, message: said || USE_PLAN_WORDS.termsChanged, action: { kind: "none", label: null }, price: null };
+}
+
+/**
+ * The sentence and the one action for a move up that was refused. Nothing
+ * was charged and nothing changed on any of them. It reads as a refused
+ * start does (plans that changed are drawn again, too few credits come with
+ * the way to add them), and the refusals only a move has say the API's
+ * sentence.
+ */
+export function planMoveNotice(input: PlanStartRefusalInput): PaidNotice {
+  const notice = planStartNotice(input);
+  const own = MOVE_REFUSALS[notice.code];
+  if (!own) return notice;
+  const said = typeof input.refusal?.message === "string" ? input.refusal.message.trim() : "";
+  return { ...notice, message: said || own, action: { kind: "none", label: null } };
 }

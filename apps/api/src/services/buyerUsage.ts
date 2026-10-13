@@ -105,6 +105,14 @@ export interface BuyerUsageRow {
   access: UseAccess;
   /** The plan the buyer is on, while it gives uses. null otherwise. */
   plan: UseAccessPlan | null;
+  /**
+   * On a plan: the end of the 30 days paid for, an ISO time. A page says it
+   * as the day the plan ends when the plan will not renew (its `plan` then
+   * has no `resetsAt`). null with no plan.
+   */
+  periodEndsAt: string | null;
+  /** On a plan: its renewal did not go through and is being retried, so the period's end is behind the buyer. */
+  renewalPastDue: boolean;
   /** On a plan: the uses past its count in the current period, and what they cost. null with no plan. */
   extraThisPeriod: UsesAndCents | null;
   /** The uses paid per use in the current UTC month, and what they cost. */
@@ -189,6 +197,8 @@ export async function readBuyerUsage(deps: BuyerUsageDeps, orgId: string): Promi
       handle: listing.handle,
       access,
       plan: held && accessPlanOf(held, planWillRenew(listing, held)),
+      periodEndsAt: held ? held.currentPeriodEnd.toISOString() : null,
+      renewalPastDue: held ? held.status === "past_due" : false,
       extraThisPeriod: held ? told(sums, extraKey) : null,
       perUseThisMonth: told(sums, perUseKey),
     })),

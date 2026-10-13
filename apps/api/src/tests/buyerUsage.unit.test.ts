@@ -306,6 +306,9 @@ test("a buyer on a plan: the plan as the agent's page builds it, the extra uses 
       // From the count: the stored level is 0.
       warning: 100,
     },
+    // The end of the 30 days paid for, whether or not the plan renews.
+    periodEndsAt: "2026-11-04T00:00:00.000Z",
+    renewalPastDue: false,
     extraThisPeriod: { uses: 2, cents: 8 },
     perUseThisMonth: { uses: 1, cents: 5 },
   });
@@ -346,6 +349,8 @@ test("a monthly subscriber: subscribed, no plan, nothing extra and nothing per u
     handle: "agent-03",
     access: "subscribed",
     plan: null,
+    periodEndsAt: null,
+    renewalPastDue: false,
     extraThisPeriod: null,
     perUseThisMonth: { uses: 0, cents: 0 },
   });
@@ -369,6 +374,25 @@ test("a plan that will not renew tells no reset", async () => {
   assert.ok(row.plan);
   assert.equal("resetsAt" in row.plan, false);
   assert.equal(row.plan.warning, null);
+  // It still says when the 30 days paid for end, so a page can say "Your plan ends on 4 Nov."
+  assert.equal(row.periodEndsAt, "2026-11-04T00:00:00.000Z");
+  assert.equal(row.renewalPastDue, false);
+});
+
+test("a plan whose renewal is being retried says so, and its period's end is behind the buyer", async () => {
+  const tables = seed();
+  // The period ended yesterday and the renewal could not be paid: three days of grace run.
+  tables.agentSubscription[0] = planSub(PLAN_LISTING, {
+    status: "past_due",
+    currentPeriodEnd: new Date("2026-10-12T12:00:00.000Z"),
+    usedInPeriod: 10,
+  });
+  const { deps } = depsOver(tables);
+  const row = (await readBuyerUsage(deps, ORG)).listings.find((l) => l.listingId === PLAN_LISTING)!;
+  assert.equal(row.access, "subscribed");
+  assert.ok(row.plan);
+  assert.equal(row.renewalPastDue, true);
+  assert.equal(row.periodEndsAt, "2026-10-12T12:00:00.000Z");
 });
 
 test("the listings come newest licence first, and only licences for use that the buyer still holds", async () => {
@@ -621,6 +645,8 @@ test("GET /marketplace-usage: the balance and a row per listing, for the caller'
       "handle",
       "access",
       "plan",
+      "periodEndsAt",
+      "renewalPastDue",
       "extraThisPeriod",
       "perUseThisMonth",
     ]);

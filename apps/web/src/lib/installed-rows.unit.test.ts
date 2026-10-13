@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { MarketplaceInstallAccess, MarketplaceListing, MarketplaceSubscription } from "./api";
+import type { MarketplaceInstallAccess, MarketplaceListing, MarketplaceSubscription, PaidUsePlan, PlanOffer } from "./api";
 import {
   INSTALLED_WORDS,
   installedConfirm,
@@ -540,4 +540,143 @@ test("a copy whose agent is gone has no Open, and the words are the plan's", () 
   assert.equal(INSTALLED_WORDS.header, "Agents you use, and copies you own.");
   assert.equal(INSTALLED_WORDS.use, "You use it");
   assert.equal(INSTALLED_WORDS.copy, "Your copy");
+});
+
+// ---------------------------------------------------------------------------
+// A buyer on a plan
+// ---------------------------------------------------------------------------
+
+const STARTER: PlanOffer = { id: "p-starter", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: null };
+const PRO: PlanOffer = { id: "p-pro", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: 4 };
+
+function plan(over: Partial<PaidUsePlan> = {}): PaidUsePlan {
+  return {
+    id: "p-starter",
+    name: "Starter",
+    includedUses: 500,
+    carriedUses: 0,
+    usedUses: 312,
+    remainingUses: 188,
+    extraUsePriceCents: null,
+    resetsAt: "2026-11-12T12:00:00.000Z",
+    warning: null,
+    ...over,
+  };
+}
+
+/** A plan that will not renew: the API leaves out when the count starts again. */
+function notRenewing(): PaidUsePlan {
+  const { resetsAt: _dropped, ...rest } = plan();
+  return rest;
+}
+
+function onPlan(over: Partial<InstalledLicence> = {}): InstalledLicence {
+  return using({
+    access: "subscribed",
+    acceptedPricing: { pricingModel: null, pricePerRequestCents: null, acceptedAt: null },
+    listing: listing({ plans: [STARTER, PRO] }),
+    subscription: sub({ plan: plan() }),
+    ...over,
+  });
+}
+
+test("use, on a plan: the plan and its price in the badge, the count in the line, and what a plan can do", () => {
+  const row = installedRow(onPlan(), FMT);
+  assert.equal(row.badge, "You use it");
+  assert.equal(row.priceLabel, "Starter, $9.00 for 30 days");
+  assert.deepEqual(row.line, { text: "188 of 500 uses left. Renews 12 Nov.", tone: "ok" });
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Move up", "Cancel renewal", "Write Review", "Stop using"]);
+  assert.deepEqual(row.actions.find((a) => a.id === "move_up"), { id: "move_up", label: "Move up" });
+  assert.equal(row.openHref, "/a/support-bot");
+  // What an acceptance would send is still the listing's own pricing.
+  assert.deepEqual(row.terms, { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null });
+});
+
+test("use, on a plan: never the words of a month or of a changed price", () => {
+  const shapes = [
+    onPlan(),
+    onPlan({ subscription: sub({ cancelAtPeriodEnd: true, plan: notRenewing() }) }),
+    onPlan({ subscription: sub({ status: "past_due", graceEndsAt: "2026-11-15T12:00:00.000Z", plan: plan() }) }),
+    onPlan({ subscription: sub({ plan: plan({ usedUses: 500, remainingUses: 0, warning: 100 }) }) }),
+    onPlan({ listing: listing({ plans: [PRO] }), subscription: sub({ plan: notRenewing() }) }),
+    onPlan({ listing: listing({ status: "archived" }), subscription: sub({ plan: notRenewing() }) }),
+  ];
+  for (const install of shapes) {
+    const said = JSON.stringify([installedRow(install, FMT), installedConfirm(install, "uninstall", FMT)]);
+    assert.doesNotMatch(said, /The owner changed|a month|month you paid|accept the new price|subscription|unlimited|undefined|NaN/, said);
+  }
+});
+
+test("use, on a plan: Move up only when the listing offers a plan that costs more than was agreed", () => {
+  const top = onPlan({ subscription: sub({ priceCents: 2900, plan: plan({ id: "p-pro", name: "Pro", includedUses: 2000 }) }) });
+  assert.deepEqual(labels(installedRow(top, FMT)), ["Open", "View Listing", "Cancel renewal", "Write Review", "Stop using"]);
+  const alone = onPlan({ listing: listing({ plans: [STARTER] }) });
+  assert.equal(installedRow(alone, FMT).actions.some((a) => a.id === "move_up"), false);
+  // Choosing the plan comes first, so the action itself has no dialog of its own.
+  assert.equal(installedConfirm(onPlan(), "move_up", FMT), null);
+});
+
+test("use, on a plan with its renewal cancelled: the day it ends, and the renewal can be turned back on", () => {
+  const install = onPlan({ subscription: sub({ cancelAtPeriodEnd: true, plan: notRenewing() }) });
+  const row = installedRow(install, FMT);
+  assert.deepEqual(row.line, { text: "188 of 500 uses left. Your plan ends on 12 Nov.", tone: "warn" });
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Move up", "Resume renewal", "Write Review", "Stop using"]);
+});
+
+test("use, on a plan its creator ended: it runs to its end and offers no renewal to cancel or resume", () => {
+  const install = onPlan({ listing: listing({ plans: [PRO] }), subscription: sub({ plan: notRenewing() }) });
+  const row = installedRow(install, FMT);
+  assert.deepEqual(row.line, { text: "188 of 500 uses left. Your plan ends on 12 Nov.", tone: "warn" });
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Move up", "Write Review", "Stop using"]);
+});
+
+test("use, on a plan whose renewal did not go through: how much, by when, and what is left", () => {
+  const install = onPlan({
+    subscription: sub({
+      status: "past_due",
+      currentPeriodEnd: "2026-10-12T12:00:00.000Z",
+      graceEndsAt: "2026-10-15T12:00:00.000Z",
+      plan: plan({ resetsAt: "2026-10-12T12:00:00.000Z" }),
+    }),
+  });
+  assert.deepEqual(installedRow(install, FMT).line, {
+    text: "Your renewal of $9.00 did not go through. Add credits before 15 Oct to keep access. 188 of 500 uses left.",
+    tone: "warn",
+  });
+  assert.equal(
+    installedConfirm(install, "uninstall", FMT)?.description,
+    "This ends your plan and your access now. You are not charged again.",
+  );
+});
+
+test("stopping a plan says it ends now with no refund, in the words stopping a month uses", () => {
+  const dialog = installedConfirm(onPlan(), "uninstall", FMT);
+  assert.deepEqual(dialog, {
+    title: "Stop using Support Bot?",
+    description:
+      "This ends your plan now. The 30 days you paid for (until 12 Nov) are not refunded. To keep access until then, cancel renewal instead.",
+    confirmLabel: "Stop using",
+    destructive: true,
+  });
+  // The month's own sentence is untouched, and differs only in what is named.
+  const month = installedConfirm(using({ access: "subscribed", listing: listing(MONTHLY), subscription: sub() }), "uninstall", FMT);
+  assert.equal(
+    month?.description,
+    "This ends your subscription now. The month you paid for (until 12 Nov) is not refunded. To keep access until then, cancel renewal instead.",
+  );
+});
+
+test("a subscriber with no plan on a listing that offers plans is still today's row", () => {
+  // `plan: null` is a month with no count: the API says so, and the row is the one before plans existed.
+  const install = using({ access: "subscribed", listing: listing({ plans: [STARTER, PRO] }), subscription: sub({ plan: null }) });
+  const row = installedRow(install, FMT);
+  assert.equal(row.priceLabel, "$9.00 a month");
+  assert.equal(
+    row.line?.text,
+    "The owner changed how this agent is sold. You keep access until 12 Nov. After that, nothing is charged until you accept the new price.",
+  );
+  assert.deepEqual(labels(row), ["Open", "View Listing", "Write Review", "Stop using"]);
+  // And someone who pays per use on that listing reads no plan either.
+  const perUse = installedRow(using({ listing: listing({ plans: [STARTER, PRO] }) }), FMT);
+  assert.deepEqual(perUse, installedRow(using(), FMT));
 });

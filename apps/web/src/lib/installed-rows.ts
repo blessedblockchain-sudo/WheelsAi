@@ -11,6 +11,10 @@
  *
  * Pure: no IO, no React. The page draws what this returns and sends the
  * `terms` of the row (the pricing the person was shown) with an acceptance.
+ *
+ * A use row whose buyer is on a plan is worded by lib/installed-plans.ts:
+ * its badge, the count of what is left, moving up, and what stopping gives
+ * up. Every other row is what it was before plans existed.
  */
 import type {
   MarketplaceAcceptedPricing,
@@ -22,6 +26,16 @@ import type {
   MarketplaceSubscription,
 } from "./api";
 import { formatCents } from "./agent-page";
+import {
+  INSTALLED_PLAN_WORDS,
+  biggerPlans,
+  planBadge,
+  planLine,
+  planOfInstall,
+  planRenewal,
+  planStopSentence,
+  renewalNotThroughLine,
+} from "./installed-plans";
 import { priceTextForUse, unitWordOfUse } from "./listing-cta";
 
 /** A row of `GET /api/marketplace/my-installs`. */
@@ -54,6 +68,8 @@ export type InstalledActionId =
   | "view_listing"
   | "accept_pricing"
   | "resubscribe"
+  // On a plan: choose a bigger one. The page lists them, then asks before it charges.
+  | "move_up"
   | "resume"
   | "cancel"
   | "review"
@@ -366,13 +382,7 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
     }
     if (sub.status === "past_due") {
       const before = shortDay(sub.graceEndsAt ?? sub.currentPeriodEnd, fmt);
-      return {
-        text:
-          sub.priceCents !== null
-            ? `Your renewal of ${formatCents(sub.priceCents)} did not go through. Add credits before ${before} to keep access.`
-            : `Your renewal did not go through. Add credits before ${before} to keep access.`,
-        tone: "warn",
-      };
+      return { text: renewalNotThroughLine(sub.priceCents, before), tone: "warn" };
     }
     if (sub.priceCents === null) return { text: `Paid until ${until}.`, tone: "ok" };
     return { text: `Renews ${until} at ${formatCents(sub.priceCents)} a month.`, tone: "ok" };
@@ -432,7 +442,40 @@ function lineForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledL
   return { text: INSTALLED_WORDS.stopped, tone: "bad" };
 }
 
+/**
+ * A buyer on a plan. The badge is the plan and the price they agreed to, the
+ * line counts what is left, and the row offers what a plan can do: move up
+ * (only when the listing offers a plan that costs more), cancel or resume
+ * the renewal, stop.
+ */
+function rowForPlan(install: InstalledLicence, fmt: InstalledFormat): InstalledRow {
+  const { listing } = install;
+  const openHref = install.agent.handle ? `/a/${install.agent.handle}` : null;
+  const renewal = planRenewal(install);
+
+  const actions: InstalledAction[] = [];
+  if (openHref) actions.push({ id: "open", label: "Open", href: openHref });
+  actions.push({ id: "view_listing", label: "View Listing", href: `/marketplace/${listing.slug}`, newTab: true });
+  if (biggerPlans(install).length > 0) actions.push({ id: "move_up", label: INSTALLED_PLAN_WORDS.moveUp });
+  if (renewal === "cancel") actions.push({ id: "cancel", label: "Cancel renewal" });
+  if (renewal === "resume") actions.push({ id: "resume", label: "Resume renewal" });
+  actions.push({ id: "review", label: "Write Review" });
+  actions.push({ id: "uninstall", label: "Stop using", destructive: true });
+
+  return {
+    kind: "use",
+    badge: INSTALLED_WORDS.use,
+    priceLabel: planBadge(install) ?? priceTextForUse(listing),
+    line: planLine(install, fmt) ?? lineForUse(install, fmt),
+    openHref,
+    usage: { count: usesText(install.totalRequests), spent: `${formatCents(install.totalSpentCents)} spent` },
+    actions,
+    terms: termsOf(listing),
+  };
+}
+
 function rowForUse(install: InstalledLicence, fmt: InstalledFormat): InstalledRow {
+  if (planOfInstall(install)) return rowForPlan(install, fmt);
   const { listing, subscription: sub, access } = install;
   const openHref = install.agent.handle ? `/a/${install.agent.handle}` : null;
   const offer = offerForUse(install);
@@ -487,6 +530,9 @@ function confirmForUse(install: InstalledLicence, action: InstalledActionId, fmt
   if (action === "uninstall") {
     const title = `Stop using ${listing.title}?`;
     const confirmLabel = "Stop using";
+    // A plan ends now too, and the 30 days paid for are not refunded: said in a plan's own words.
+    const plan = planStopSentence(install, fmt);
+    if (plan !== null) return { title, description: plan, confirmLabel, destructive: true };
     // A renewal that did not go through: the month paid for is already
     // over, so there is no date to keep access until and nothing to refund.
     if (paidUp(install) && sub && sub.status === "past_due") {

@@ -141,6 +141,138 @@ print(reply.choices[0].message.content)`,
   };
 }
 
+/** The environment variable every snippet of a listing's API page reads the key from. A key is never written into a snippet. */
+export const API_KEY_ENV = "WHEELSAI_API_KEY";
+
+/** The three snippets of a listing's API page, and the address they post to. */
+export interface PaidAgentSnippets {
+  /** The full address a request is posted to. */
+  endpointUrl: string;
+  curl: string;
+  javascript: string;
+  python: string;
+}
+
+export interface PaidAgentChatSnippetInput {
+  /** The base address of the API, as the API page's data gave it or as this app reaches it. */
+  baseUrl: string;
+  /** The model id the API page's data gave: `a/<handle>`. */
+  model: string;
+}
+
+/**
+ * Copy-paste examples for a paid agent that answers messages: OpenAI's chat
+ * completions on the unified /v1 base, with the listing's own model id. Built
+ * from the API page's data and nothing else: the owner's own card names the
+ * agent another way, which a buyer's key cannot call.
+ *
+ * curl prints the answer's headers too (-i), where what the use cost and
+ * what is left are told.
+ */
+export function paidAgentChatSnippets(input: PaidAgentChatSnippetInput): PaidAgentSnippets {
+  const baseUrl = unifiedOpenAiBase(input.baseUrl);
+  const endpointUrl = `${baseUrl}/chat/completions`;
+
+  const curl = `curl -i ${endpointUrl} \\
+  -H "Authorization: Bearer $${API_KEY_ENV}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "${input.model}",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`;
+
+  const javascript = `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "${baseUrl}",
+  apiKey: process.env.${API_KEY_ENV},
+});
+
+const reply = await client.chat.completions.create({
+  model: "${input.model}",
+  messages: [{ role: "user", content: "Hello!" }],
+});
+console.log(reply.choices[0].message.content);`;
+
+  const python = `import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="${baseUrl}",
+    api_key=os.environ["${API_KEY_ENV}"],
+)
+
+reply = client.chat.completions.create(
+    model="${input.model}",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(reply.choices[0].message.content)`;
+
+  return { endpointUrl, curl, javascript, python };
+}
+
+export interface PaidAgentRunSnippetInput {
+  /** The base address of the API, as the API page's data gave it or as this app reaches it. */
+  baseUrl: string;
+  /** The run address under the base, as the API page's data gave it: `/api/a/<handle>/run`. */
+  path: string;
+}
+
+/**
+ * Copy-paste examples for a paid agent that does one task from a form: its
+ * own run address, sent the form's answers as `input`. The API page's data
+ * does not carry the form, so the answers are a placeholder the caller fills
+ * in from the agent's page.
+ *
+ * A run streams its answer unless it is told not to, so every snippet sends
+ * `stream: false` and reads one JSON answer.
+ */
+export function paidAgentRunSnippets(input: PaidAgentRunSnippetInput): PaidAgentSnippets {
+  const endpointUrl = resolveAgainst(input.baseUrl, input.path);
+
+  const curl = `curl -i ${endpointUrl} \\
+  -H "Authorization: Bearer $${API_KEY_ENV}" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "input": {"field_name": "Your answer"},
+    "stream": false
+  }'`;
+
+  const javascript = `const response = await fetch("${endpointUrl}", {
+  method: "POST",
+  headers: {
+    Authorization: "Bearer " + process.env.${API_KEY_ENV},
+    "Content-Type": "application/json",
+  },
+  // One answer for each question of the agent's form, by the question's name.
+  body: JSON.stringify({ input: { field_name: "Your answer" }, stream: false }),
+});
+
+const result = await response.json();
+console.log(result.output);`;
+
+  const python = `import json
+import os
+import urllib.request
+
+request = urllib.request.Request(
+    "${endpointUrl}",
+    method="POST",
+    headers={
+        "Authorization": "Bearer " + os.environ["${API_KEY_ENV}"],
+        "Content-Type": "application/json",
+    },
+    # One answer for each question of the agent's form, by the question's name.
+    data=json.dumps({"input": {"field_name": "Your answer"}, "stream": False}).encode(),
+)
+
+with urllib.request.urlopen(request) as response:
+    result = json.load(response)
+print(result["output"])`;
+
+  return { endpointUrl, curl, javascript, python };
+}
+
 export interface WorkflowSnippetInput {
   /** `Orchestration.apiEndpoint` as the API returned it; null when PUBLIC_API_URL is unset. */
   apiEndpoint: string | null;

@@ -16,6 +16,9 @@ import {
   unifiedApiSnippets,
   unifiedOpenAiBase,
   workflowSnippets,
+  API_KEY_ENV,
+  paidAgentChatSnippets,
+  paidAgentRunSnippets,
   landingAgentEndpoint,
   landingMarketplaceUrl,
   siteMetadataBase,
@@ -226,4 +229,101 @@ test("the agent playground and the agent API tab print only what the API returne
   const apiTab = source("components/dashboard/agent-tabs/api-tab.tsx");
   assert.ok(apiTab.includes("const { apiEndpoint, openaiBaseUrl, openaiModel } = agent;"));
   assert.ok(!apiTab.includes("API_BASE_URL"));
+});
+
+// ============================================
+// A listing's API page
+// ============================================
+
+const paidChat = () => paidAgentChatSnippets({ baseUrl: "https://api.example.com", model: "a/translator" });
+const paidRun = () => paidAgentRunSnippets({ baseUrl: "https://api.example.com", path: "/api/a/form-filler/run" });
+const all = (s: { curl: string; javascript: string; python: string }) => [s.curl, s.javascript, s.python];
+
+test("a paid agent's snippets post a chat completion with the listing's own model id", () => {
+  const s = paidChat();
+  assert.equal(s.endpointUrl, "https://api.example.com/v1/chat/completions");
+  assert.match(s.curl, /^curl -i https:\/\/api\.example\.com\/v1\/chat\/completions \\\n/);
+  assert.ok(s.curl.includes('"model": "a/translator"'));
+  // An OpenAI client appends /chat/completions itself, so it gets the /v1 base.
+  assert.ok(s.javascript.includes('baseURL: "https://api.example.com/v1"'));
+  assert.ok(s.javascript.includes('model: "a/translator"'));
+  assert.ok(s.python.includes('base_url="https://api.example.com/v1"'));
+  assert.ok(s.python.includes('model="a/translator"'));
+  for (const text of all(s)) assert.ok(!text.includes("chat/completions/chat/completions"), text);
+});
+
+test("no snippet of the API page names the owner's own model id", () => {
+  // agent/<slug> is the owner's card: a buyer's key cannot call it.
+  for (const text of [...all(paidChat()), ...all(paidRun())]) {
+    assert.ok(!text.includes("agent/"), text);
+    assert.ok(!text.includes("/v1/agents/"), text);
+  }
+});
+
+test("every snippet of the API page reads the key from the environment, and none carries one", () => {
+  assert.equal(API_KEY_ENV, "WHEELSAI_API_KEY");
+  for (const s of [paidChat(), paidRun()]) {
+    assert.ok(s.curl.includes('-H "Authorization: Bearer $WHEELSAI_API_KEY"'));
+    assert.ok(s.javascript.includes("process.env.WHEELSAI_API_KEY"));
+    assert.ok(s.python.includes('os.environ["WHEELSAI_API_KEY"]'));
+    for (const text of all(s)) {
+      assert.ok(!/YOUR_API_KEY|wheels_live_|sk-/.test(text), text);
+      assert.ok(!text.includes("undefined") && !text.includes("null"), text);
+    }
+  }
+});
+
+test("a task's snippets post the form's answers to its run address, never a chat completion", () => {
+  const s = paidRun();
+  assert.equal(s.endpointUrl, "https://api.example.com/api/a/form-filler/run");
+  assert.match(s.curl, /^curl -i https:\/\/api\.example\.com\/api\/a\/form-filler\/run \\\n/);
+  for (const text of all(s)) {
+    assert.ok(text.includes("https://api.example.com/api/a/form-filler/run"), text);
+    assert.ok(text.includes("input"), text);
+    assert.ok(!text.includes("chat/completions") && !text.includes("messages") && !text.includes("model"), text);
+  }
+  assert.ok(s.javascript.includes('method: "POST"'));
+  assert.ok(s.python.includes('method="POST"'));
+});
+
+/** The JSON a curl snippet sends: what stands between -d ' and the closing '. */
+function curlBody(curl: string): Record<string, unknown> {
+  const found = /-d '([\s\S]*)'$/.exec(curl);
+  assert.ok(found, curl);
+  return JSON.parse(found[1] ?? "") as Record<string, unknown>;
+}
+
+test("a task's snippets ask for one whole answer, which is what they read", () => {
+  // A run streams unless it is told not to, and a stream is not the JSON these snippets read.
+  const s = paidRun();
+  for (const text of all(s)) {
+    assert.match(text, /"stream": false|stream: false|"stream": False/, text);
+  }
+  assert.ok(s.javascript.includes("await response.json()"));
+  assert.ok(s.python.includes("json.load(response)"));
+});
+
+test("the body a curl snippet sends is JSON with the keys its address takes, and no other", () => {
+  // The run address refuses a key it does not know.
+  const run = curlBody(paidRun().curl);
+  assert.deepEqual(Object.keys(run).sort(), ["input", "stream"]);
+  assert.equal(run.stream, false);
+  assert.ok(typeof run.input === "object" && run.input !== null && !Array.isArray(run.input));
+
+  const chat = curlBody(paidChat().curl);
+  assert.deepEqual(Object.keys(chat).sort(), ["messages", "model"]);
+  assert.equal(chat.model, "a/translator");
+  assert.ok(Array.isArray(chat.messages) && chat.messages.length === 1);
+});
+
+test("the API page's snippets take the base address with or without a slash at its end", () => {
+  assert.equal(paidAgentChatSnippets({ baseUrl: "http://localhost:4000/", model: "a/x" }).endpointUrl, "http://localhost:4000/v1/chat/completions");
+  assert.equal(paidAgentRunSnippets({ baseUrl: "http://localhost:4000/", path: "/api/a/x/run" }).endpointUrl, "http://localhost:4000/api/a/x/run");
+});
+
+test("the API page's snippets are plain text a terminal takes", () => {
+  for (const text of [...all(paidChat()), ...all(paidRun())]) {
+    assert.ok(/^[\x20-\x7e\n]*$/.test(text), text);
+    assert.ok(!/[ \t]+\n/.test(text), "no space at a line's end, which breaks a curl continuation");
+  }
 });

@@ -1,0 +1,414 @@
+/**
+ * The API page of a listing: its words and its model. Run with:
+ *   cd apps/web && npx tsx --test src/lib/api-page.unit.test.ts
+ */
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import type { AgentApiPage, MarketplaceListing, PublicAgentDetail } from "./api";
+import {
+  API_PAGE_HEADINGS,
+  API_PAGE_WORDS,
+  apiPageHrefOfAgent,
+  apiPageHrefOfListing,
+  apiPagePath,
+  apiPageSummary,
+  apiPageTitle,
+  apiPageView,
+  createKeyHref,
+  isAgentApiPage,
+  limitLines,
+} from "./api-page";
+import { SPEND_SCOPES } from "./jobs";
+import { PAID_USE_MESSAGES } from "./paid-use";
+import { planAfterLine, planPriceLine, planUsesLine } from "./use-plans";
+
+const STARTER = { id: "p1", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 4 };
+const PRO = { id: "p2", name: "Pro", priceCents: 2900, includedUses: 2000, extraUsePriceCents: null };
+
+// The names the API sends (apps/api/src/services/usageHeaders.ts).
+const ALWAYS = ["x-wheelsai-charged-cents", "x-wheelsai-balance-cents"];
+const ON_PLAN = [
+  "x-wheelsai-plan",
+  "x-wheelsai-plan-limit",
+  "x-wheelsai-plan-used",
+  "x-wheelsai-plan-remaining",
+  "x-wheelsai-plan-reset",
+  "x-wheelsai-plan-warning",
+];
+
+// The refusals as the API sends them (apps/api/src/services/agentApiPage.ts).
+const USED_UP = {
+  code: "plan_used_up",
+  status: 429,
+  message:
+    "You have used all the uses in your plan, and it stops until it renews. Nothing was charged. The answer carries the plan's usage headers.",
+};
+const NO_CREDITS = {
+  code: "insufficient_credits",
+  status: 402,
+  message: "You do not have enough credits for this use. Nothing was charged. Add credits to continue.",
+};
+const LAPSED = { code: "subscription_lapsed", status: 402, message: "Your subscription has ended. Subscribe again to keep using it." };
+
+/** A conversation sold per message with two plans, as GET /api/a/:handle/api answers. */
+function chatPage(over: Partial<AgentApiPage> = {}): AgentApiPage {
+  return {
+    handle: "translator",
+    name: "Translator",
+    agentKind: "conversation",
+    listingId: "l1",
+    listingSlug: "translator",
+    baseUrl: "https://api.example.com",
+    model: "a/translator",
+    endpoints: [
+      { use: "openai", method: "POST", path: "/v1/chat/completions" },
+      { use: "chat", method: "POST", path: "/api/a/translator/chat" },
+      { use: "access", method: "GET", path: "/api/a/translator/access" },
+    ],
+    pricingModel: "per_request",
+    unit: "message",
+    priceCents: 5,
+    plans: [STARTER, PRO],
+    limits: { perMinute: 10, perDayWithoutPlan: 200 },
+    usageHeaders: { always: ALWAYS, onPlan: ON_PLAN },
+    refusals: [USED_UP, NO_CREDITS],
+    ...over,
+  };
+}
+
+/** A task sold per run with no plans. */
+function taskPage(over: Partial<AgentApiPage> = {}): AgentApiPage {
+  return chatPage({
+    handle: "form-filler",
+    name: "Form Filler",
+    agentKind: "task",
+    model: null,
+    endpoints: [
+      { use: "run", method: "POST", path: "/api/a/form-filler/run" },
+      { use: "access", method: "GET", path: "/api/a/form-filler/access" },
+    ],
+    unit: "run",
+    priceCents: 10,
+    plans: [],
+    ...over,
+  });
+}
+
+/** A conversation sold by the month. */
+function monthlyPage(over: Partial<AgentApiPage> = {}): AgentApiPage {
+  return chatPage({
+    pricingModel: "monthly",
+    unit: "month",
+    priceCents: 900,
+    plans: [],
+    usageHeaders: { always: ALWAYS, onPlan: [] },
+    refusals: [LAPSED],
+    ...over,
+  });
+}
+
+const LOCAL = "http://localhost:4000";
+
+function view(page: AgentApiPage, apiBase = LOCAL) {
+  const built = apiPageView(page, apiBase);
+  assert.ok(built);
+  return built;
+}
+
+/** Every sentence a page shows, snippets and addresses left out. */
+function sentencesOf(page: AgentApiPage): string[] {
+  const v = view(page);
+  return [
+    v.title,
+    v.intro,
+    ...v.callNotes,
+    v.keyNote,
+    ...v.otherEndpoints.map((endpoint) => endpoint.says),
+    v.priceLine ?? "",
+    v.priceNote,
+    ...v.plans.flatMap((plan) => [plan.price, plan.uses, plan.after]),
+    v.payAsYouGo ?? "",
+    ...v.limits,
+    ...[...v.headers.always, ...v.headers.onPlan].map((header) => header.says ?? ""),
+    v.oneKey,
+    v.keyScope,
+    v.startFirst,
+    v.createKeyLabel,
+  ];
+}
+
+test("the words of the page are the design's", () => {
+  assert.equal(API_PAGE_WORDS.oneKey, "One key and one balance work for every listing you use.");
+  assert.equal(API_PAGE_WORDS.createKey, "Create a key");
+  assert.equal(API_PAGE_WORDS.link, "Use it from code");
+  assert.equal(apiPageTitle("Translator"), "Translator API");
+  assert.equal(apiPageTitle("  Translator "), "Translator API");
+  assert.equal(apiPageSummary("Translator"), "Call Translator from your own code: the address, the price, the plans and the limits.");
+});
+
+test("a conversation: the address, the model line and three snippets that call it by a chat completion", () => {
+  const v = view(chatPage());
+  assert.equal(v.title, "Translator API");
+  assert.equal(v.kind, "chat");
+  assert.equal(v.address, "https://api.example.com");
+  assert.equal(v.modelLine, "model: a/translator");
+  assert.equal(v.callLine, "POST https://api.example.com/v1/chat/completions");
+  assert.deepEqual(v.callNotes, []);
+  assert.deepEqual(v.snippets.map((snippet) => [snippet.id, snippet.label]), [
+    ["curl", "curl"],
+    ["javascript", "JavaScript"],
+    ["python", "Python"],
+  ]);
+  for (const snippet of v.snippets) {
+    assert.ok(snippet.code.includes("a/translator"), snippet.id);
+    assert.ok(snippet.code.includes("https://api.example.com/v1"), snippet.id);
+    assert.ok(snippet.code.includes("WHEELSAI_API_KEY"), snippet.id);
+  }
+  assert.equal(v.agentHref, "/a/translator");
+});
+
+test("no snippet and no address of the page names the owner's own model id", () => {
+  for (const page of [chatPage(), taskPage(), monthlyPage()]) {
+    const v = view(page);
+    for (const text of [...v.snippets.map((snippet) => snippet.code), v.callLine, v.modelLine ?? "", ...v.otherEndpoints.map((e) => e.line)]) {
+      assert.ok(!text.includes("agent/"), text);
+    }
+  }
+});
+
+test("the other addresses of a conversation are its own chat and where the caller stands", () => {
+  assert.deepEqual(view(chatPage()).otherEndpoints, [
+    { id: "chat", line: "POST https://api.example.com/api/a/translator/chat", says: "The same conversation in WheelsAI's own shape." },
+    {
+      id: "access",
+      line: "GET https://api.example.com/api/a/translator/access",
+      says: "Where you stand: your plan and your credits. Reading it costs nothing.",
+    },
+  ]);
+});
+
+test("with no public address in the answer, the address is the one this app reached the API at", () => {
+  const v = view(chatPage({ baseUrl: null }), "http://localhost:4000/");
+  assert.equal(v.address, "http://localhost:4000");
+  assert.equal(v.callLine, "POST http://localhost:4000/v1/chat/completions");
+  assert.ok(v.snippets.every((snippet) => snippet.code.includes("http://localhost:4000/v1")));
+});
+
+test("a task is called at its run address with its form's answers, and the page says so", () => {
+  const v = view(taskPage());
+  assert.equal(v.title, "Form Filler API");
+  assert.equal(v.kind, "task");
+  assert.equal(v.modelLine, null);
+  assert.equal(v.callLine, "POST https://api.example.com/api/a/form-filler/run");
+  assert.deepEqual(v.callNotes, [
+    "This agent does one task from a form. It is called at its own run address with the answers to its form, not by a chat completion.",
+    "Send one answer for each question of its form, by the question's name. The questions are on the agent's page.",
+  ]);
+  for (const snippet of v.snippets) {
+    // One whole answer, which is what each snippet reads: a run streams unless told not to.
+    assert.match(snippet.code, /"stream": false|stream: false|"stream": False/, snippet.id);
+    assert.ok(snippet.code.includes("https://api.example.com/api/a/form-filler/run"), snippet.id);
+    assert.ok(!snippet.code.includes("chat/completions"), snippet.id);
+  }
+  assert.deepEqual(v.otherEndpoints.map((endpoint) => endpoint.id), ["access"]);
+  assert.match(v.intro, /^Call Form Filler from your own code\./);
+});
+
+test("the plans are worded by the agent's page, then the price per use", () => {
+  const v = view(chatPage());
+  assert.deepEqual(v.plans, [
+    { id: "p1", name: "Starter", price: "$9.00 for 30 days", uses: "500 uses", after: "then $0.04 a use" },
+    { id: "p2", name: "Pro", price: "$29.00 for 30 days", uses: "2000 uses", after: "then it stops until it renews" },
+  ]);
+  assert.equal(v.plans[0]!.price, planPriceLine(STARTER));
+  assert.equal(v.plans[0]!.uses, planUsesLine(STARTER));
+  assert.equal(v.plans[1]!.after, planAfterLine(PRO));
+  assert.equal(v.payAsYouGo, "Or pay as you go: $0.05 a message");
+  // Said once: after the plans, not also above them.
+  assert.equal(v.priceLine, null);
+  assert.equal(v.priceNote, "Paid from your WheelsAI credits. You are charged only for an answer that was delivered.");
+  // The first sentence is the gate's own, not a second copy of it.
+  assert.ok(v.priceNote.startsWith(PAID_USE_MESSAGES.paidFromCredits));
+});
+
+test("with no plans the price per use stands alone", () => {
+  const v = view(taskPage());
+  assert.deepEqual(v.plans, []);
+  assert.equal(v.payAsYouGo, null);
+  assert.equal(v.priceLine, "$0.10 per run");
+});
+
+test("a plan with a term missing is not drawn", () => {
+  const broken = { id: "p3", name: "Broken", priceCents: 0, includedUses: 10, extraUsePriceCents: null };
+  assert.deepEqual(view(chatPage({ plans: [broken, STARTER] })).plans.map((plan) => plan.id), ["p1"]);
+});
+
+test("a listing sold by the month says its price and no more", () => {
+  const v = view(monthlyPage({ plans: [STARTER] }));
+  assert.equal(v.priceLine, "$9.00 a month");
+  assert.equal(v.priceNote, "Subscribe on the agent's page. Calls inside a month you paid for cost nothing more.");
+  // No plan, no price per use and no header of a plan, whatever came with the answer.
+  assert.deepEqual(v.plans, []);
+  assert.equal(v.payAsYouGo, null);
+  assert.deepEqual(view(monthlyPage({ usageHeaders: { always: ALWAYS, onPlan: ON_PLAN } })).headers.onPlan, []);
+  assert.deepEqual(v.limits, ["One buyer can send up to 10 requests a minute.", "One buyer can send up to 200 requests a day."]);
+  assert.deepEqual(v.refusals, [{ status: 402, code: "subscription_lapsed", message: LAPSED.message }]);
+  // It is still called by a chat completion.
+  assert.equal(v.modelLine, "model: a/translator");
+});
+
+test("the limits for one buyer, a sentence each, with the numbers the API sent", () => {
+  assert.deepEqual(limitLines({ perMinute: 10, perDayWithoutPlan: 200 }, true), [
+    "One buyer can send up to 10 requests a minute.",
+    "A buyer on no plan can send up to 200 requests a day. On a plan, the plan's count of uses takes the place of the daily limit.",
+  ]);
+  assert.deepEqual(limitLines({ perMinute: 10, perDayWithoutPlan: 200 }, false), [
+    "One buyer can send up to 10 requests a minute.",
+    "One buyer can send up to 200 requests a day.",
+  ]);
+  // A limit that was not sent is not said, and no number is made up for it.
+  assert.deepEqual(limitLines({ perMinute: 10 }, true), ["One buyer can send up to 10 requests a minute."]);
+  assert.deepEqual(limitLines({ perMinute: 0, perDayWithoutPlan: Number.NaN }, true), []);
+  assert.deepEqual(limitLines(null, true), []);
+});
+
+test("every usage header the API names has one sentence", () => {
+  const v = view(chatPage());
+  assert.deepEqual(v.headers.always.map((header) => header.name), ALWAYS);
+  assert.deepEqual(v.headers.onPlan.map((header) => header.name), ON_PLAN);
+  for (const header of [...v.headers.always, ...v.headers.onPlan]) {
+    assert.ok(header.says && /^[A-Z0-9].*\.$/.test(header.says), header.name);
+  }
+  assert.equal(v.headers.always[0]!.says, "What this use cost, in cents. 0 for a use your plan or your subscription includes.");
+  assert.equal(v.headers.onPlan[4]!.says, "When the count starts again, as an ISO time. Left out when the plan will not renew.");
+});
+
+test("a header this page has no sentence for is shown by its name alone", () => {
+  const v = view(chatPage({ usageHeaders: { always: [...ALWAYS, "x-wheelsai-new"], onPlan: [] } }));
+  assert.deepEqual(v.headers.always[2], { name: "x-wheelsai-new", says: null });
+});
+
+test("each refusal says its status and the API's own sentence", () => {
+  const v = view(chatPage());
+  assert.deepEqual(v.refusals, [
+    { status: 429, code: "plan_used_up", message: USED_UP.message },
+    { status: 402, code: "insufficient_credits", message: NO_CREDITS.message },
+  ]);
+  // The code stands beside the sentence, never inside it.
+  for (const refusal of v.refusals) assert.ok(!refusal.message.includes(refusal.code), refusal.code);
+});
+
+test("a refusal that is not whole is left out", () => {
+  const raw = [USED_UP, { code: "x", status: 400 }, { code: "", status: 400, message: "No." }, null, { code: "y", status: "402", message: "No." }];
+  const v = view(chatPage({ refusals: raw as AgentApiPage["refusals"] }));
+  assert.deepEqual(v.refusals.map((refusal) => refusal.code), ["plan_used_up"]);
+});
+
+test("an answer that names nothing to call draws no page", () => {
+  assert.equal(apiPageView(chatPage({ model: null }), LOCAL), null);
+  assert.equal(apiPageView(chatPage({ endpoints: [] }), LOCAL), null);
+  assert.equal(apiPageView(taskPage({ endpoints: [{ use: "access", method: "GET", path: "/api/a/form-filler/access" }] }), LOCAL), null);
+});
+
+test("nothing on the page speaks of tokens, a count with no end, or how many people use it", () => {
+  const dash = String.fromCharCode(0x2014);
+  for (const page of [chatPage(), taskPage(), monthlyPage()]) {
+    for (const sentence of sentencesOf(page)) {
+      assert.ok(!/unlimited|token|\busers?\b|people|customers|organi[sz]ation/i.test(sentence), sentence);
+      assert.ok(!sentence.includes(dash), sentence);
+      assert.ok(/^[\x20-\x7e]*$/.test(sentence), sentence);
+    }
+  }
+  for (const word of [...Object.values(API_PAGE_WORDS), ...Object.values(API_PAGE_HEADINGS)]) {
+    assert.ok(!/unlimited|token/i.test(word) && !word.includes(dash), word);
+  }
+  // The only model the page names is the id to call.
+  for (const sentence of sentencesOf(chatPage())) {
+    assert.ok(!/\bmodel\b/i.test(sentence) || sentence.includes("model id"), sentence);
+  }
+});
+
+test("the body of the read is the page's own shape, or it is not drawn", () => {
+  assert.equal(isAgentApiPage(chatPage()), true);
+  assert.equal(isAgentApiPage(taskPage()), true);
+  assert.equal(isAgentApiPage(null), false);
+  assert.equal(isAgentApiPage([]), false);
+  assert.equal(isAgentApiPage({ error: "not_found" }), false);
+  assert.equal(isAgentApiPage({ ...chatPage(), agentKind: "scheduled" }), false);
+  assert.equal(isAgentApiPage({ ...chatPage(), name: "" }), false);
+  assert.equal(isAgentApiPage({ ...chatPage(), endpoints: null }), false);
+  assert.equal(isAgentApiPage({ ...chatPage(), usageHeaders: { always: ALWAYS } }), false);
+});
+
+test("the page says what a key needs before it can pay, in the keys page's own name for it", () => {
+  const choice = SPEND_SCOPES.find((option) => option.scope === "agents:use");
+  assert.ok(choice, "the keys page offers the choice that pays for a paid agent");
+  for (const page of [chatPage(), taskPage(), monthlyPage()]) {
+    const v = view(page);
+    assert.equal(
+      v.keyScope,
+      `When you create the key, turn on "${choice.label}" and set its two spending caps. A key without it cannot pay for a use.`,
+    );
+    assert.equal(v.startFirst, "Start using the agent on its page before your first call.");
+  }
+  assert.equal(choice.label, "Use paid agents");
+  // The scope's own name is for code, not for a sentence.
+  assert.ok(!API_PAGE_WORDS.keyScope.includes("agents:use"));
+});
+
+test("Create a key goes to the keys page, through sign-in for someone signed out", () => {
+  assert.equal(createKeyHref(true), "/dashboard/keys");
+  assert.equal(createKeyHref(false), "/login?next=%2Fdashboard%2Fkeys");
+  // Not known yet: the keys page, which asks a signed-out visitor to sign in itself.
+  assert.equal(createKeyHref(null), "/dashboard/keys");
+});
+
+test("the page's address is beside the agent's page", () => {
+  assert.equal(apiPagePath("translator"), "/a/translator/api");
+  assert.equal(apiPagePath("my agent"), "/a/my%20agent/api");
+});
+
+type Detail = Pick<PublicAgentDetail, "agent" | "use">;
+
+function detail(kind: string, state: string, paid: unknown = {}): Detail {
+  return { agent: { name: "Translator", handle: "translator", agentKind: kind }, use: { state, paid } } as unknown as Detail;
+}
+
+test("the agent's page links here only when its use is sold and it is an agent that is called", () => {
+  assert.equal(apiPageHrefOfAgent(detail("conversation", "paid")), "/a/translator/api");
+  assert.equal(apiPageHrefOfAgent(detail("task", "paid")), "/a/translator/api");
+  // A self-running agent answers no call.
+  assert.equal(apiPageHrefOfAgent(detail("scheduled", "paid")), null);
+  for (const state of ["on", "paused", "view_only"]) assert.equal(apiPageHrefOfAgent(detail("conversation", state, null)), null, state);
+  assert.equal(apiPageHrefOfAgent(detail("conversation", "paid", null)), null);
+  assert.equal(apiPageHrefOfAgent(null), null);
+});
+
+type Listing = Pick<MarketplaceListing, "sells" | "pricingModel" | "agent">;
+
+function listing(over: Record<string, unknown> = {}, agent: Record<string, unknown> | null = {}): Listing {
+  return {
+    sells: "use",
+    pricingModel: "per_request",
+    agent: agent && { id: "a1", framework: "x", tags: [], agentKind: "conversation", isPublic: true, handle: "translator", ...agent },
+    ...over,
+  } as unknown as Listing;
+}
+
+test("the listing's page links here only for a listing that sells use of an agent that is called", () => {
+  assert.equal(apiPageHrefOfListing(listing()), "/a/translator/api");
+  assert.equal(apiPageHrefOfListing(listing({ pricingModel: "monthly" })), "/a/translator/api");
+  assert.equal(apiPageHrefOfListing(listing({}, { agentKind: "task" })), "/a/translator/api");
+  // Copies are installed, not called at this address.
+  assert.equal(apiPageHrefOfListing(listing({ sells: "copies" })), null);
+  assert.equal(apiPageHrefOfListing(listing({ pricingModel: "free" })), null);
+  assert.equal(apiPageHrefOfListing(listing({ pricingModel: "tokenized" })), null);
+  assert.equal(apiPageHrefOfListing(listing({}, { agentKind: "scheduled" })), null);
+  assert.equal(apiPageHrefOfListing(listing({}, { handle: null })), null);
+  assert.equal(apiPageHrefOfListing(listing({}, { isPublic: false })), null);
+  // A row that does not say the agent is public is not linked either.
+  assert.equal(apiPageHrefOfListing(listing({}, { isPublic: undefined })), null);
+  assert.equal(apiPageHrefOfListing(listing({}, null)), null);
+  assert.equal(apiPageHrefOfListing(null), null);
+});

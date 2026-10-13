@@ -479,7 +479,11 @@ test("GET /a/:handle/access answers the caller's access and nothing of the creat
     terms: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, unit: "message", keepsCopy: false },
     plans: [],
     plan: null,
+    // No free trial on offer here (tests/trialUse.unit.test.ts and tests/trialReads.unit.test.ts have the rest).
+    trial: null,
     trialAvailable: false,
+    trialNeedsCredits: false,
+    trialEnded: false,
     accepted: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null },
     subscription: null,
     balanceCents: 500,

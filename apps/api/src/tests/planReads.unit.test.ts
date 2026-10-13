@@ -132,7 +132,13 @@ function makeWorld(opts: {
         planReads.push(args);
         const ids: string[] = typeof args.where.listingId === "string" ? [args.where.listingId] : args.where.listingId.in;
         return plans
-          .filter((p) => ids.includes(p.listingId) && p.status === args.where.status && p.kind === args.where.kind)
+          .filter(
+            (p) =>
+              ids.includes(p.listingId) &&
+              p.status === args.where.status &&
+              // One listing's read asks for the paid plans and the free trial together.
+              (typeof args.where.kind === "string" ? p.kind === args.where.kind : args.where.kind.in.includes(p.kind)),
+          )
           .sort((a, b) => a.position - b.position)
           .map((p) => ({ ...p }));
       },
@@ -302,7 +308,9 @@ test("the public read of a listing carries its plans on offer, field by field, a
     assert.deepEqual(alpha.plans, ALPHA_OFFERS);
     assert.equal("plansFromCents" in alpha, false);
     assert.equal(world.planReads.length, 1);
-    assert.deepEqual(world.planReads[0]!.where, { listingId: "alpha", status: "active", kind: "paid" });
+    // One read, for the paid plans and the free trial together.
+    assert.deepEqual(world.planReads[0]!.where, { listingId: "alpha", status: "active", kind: { in: ["paid", "trial"] } });
+    assert.equal(alpha.freeTrial, null);
 
     // Sold by the month: not asked about, and none.
     const gamma = (await getListingBySlug("gamma"))!;
@@ -335,6 +343,7 @@ test("an install on a plan carries the plan the access answer builds, and its li
   const expected = {
     id: "starter",
     name: "starter",
+    trial: false,
     includedUses: 500,
     carriedUses: 20,
     usedUses: 430,
@@ -421,6 +430,7 @@ test("a buyer's subscriptions carry the same plan, and a month has none", async 
   assert.deepEqual(subs[0]!.plan, {
     id: "pro",
     name: "pro",
+    trial: false,
     includedUses: 2000,
     carriedUses: 188,
     usedUses: 100,
@@ -623,4 +633,39 @@ test("canSpend is the guard's own answer: it says yes exactly when the guard let
   assert.equal(await canSpend(undefined, "marketplace:install"), false);
   // Another spend scope does not stand in for this one.
   assert.equal(await canSpend(apiKey(["agents:use"]) as never, "marketplace:install"), false);
+});
+
+// ============================================
+// The free trial on the page of one listing
+// ============================================
+
+test("the read of one listing carries its free trial beside the plans, and null when it has none, it was ended, or the listing offers no plans", async () => {
+  const trial = (listingId: string, over: Row = {}) =>
+    planRow(`trial_${listingId}`, listingId, 0, 0n, { kind: "trial", name: "Free trial", includedUses: 20, ...over });
+  const world = makeWorld({
+    listings: LISTINGS,
+    plans: [...PLANS, trial("alpha"), trial("beta", { status: "retired" }), trial("gamma")],
+  });
+  await withWorld(world, async ({ getListingBySlug, searchListings }) => {
+    const alpha = (await getListingBySlug("alpha"))!;
+    // `freeTrial`: on a listing, `trial` is already "Try it".
+    assert.deepEqual(alpha.freeTrial, { id: "trial_alpha", includedUses: 20, days: 7 });
+    assert.deepEqual(alpha.trial, { enabled: true });
+    // The paid plans are exactly what they were, and the trial is not among them.
+    assert.deepEqual(alpha.plans, ALPHA_OFFERS);
+    assert.doesNotMatch(JSON.stringify(alpha.plans), /trial/i);
+
+    // Ended by its creator.
+    assert.equal((await getListingBySlug("beta"))!.freeTrial, null);
+    // Sold by the month: not asked about, and none.
+    const reads = world.planReads.length;
+    assert.equal((await getListingBySlug("gamma"))!.freeTrial, null);
+    assert.equal(world.planReads.length, reads);
+
+    // A card does not say: only the page of one listing looked.
+    const { listings } = await searchListings({});
+    assert.equal(listings.some((l: Row) => "freeTrial" in l), false);
+    // And a trial is never the smallest plan price of a card.
+    assert.ok(listings.every((l: Row) => l.plansFromCents === null || l.plansFromCents > 0));
+  });
 });

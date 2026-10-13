@@ -175,7 +175,7 @@ test("resume in the days of grace is held to the same right, and a plan's row is
 test("cancel and resume answer the plan as the buyer's pages draw it, and a month with no count has none", async () => {
   const plan = { planId: "plan_1", includedUses: 500, usedInPeriod: 40, carriedUses: 10, extraUsePriceCents: 5n };
   const world = makeWorld(plan);
-  const count = { id: "plan_1", name: "Starter", includedUses: 500, carriedUses: 10, usedUses: 40, remainingUses: 470, extraUsePriceCents: 5, warning: null };
+  const count = { id: "plan_1", name: "Starter", trial: false, includedUses: 500, carriedUses: 10, usedUses: 40, remainingUses: 470, extraUsePriceCents: 5, warning: null };
   // A renewal that was cancelled has no time at which the count starts again.
   const cancelled = await post(world, "cancel", session("u_member"));
   assert.deepEqual([cancelled.status, cancelled.body.subscription.plan], [200, count]);

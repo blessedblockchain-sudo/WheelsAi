@@ -123,10 +123,20 @@ import {
   type UseAccess,
   type UseSubscription,
 } from "./useAccess.js";
-import { offersPlans, planOfferOf, type PlanOffer, type PlanOfferRow } from "./planOffers.js";
+import { onTrialPlan, TRIAL_PLAN_NAME } from "./listingPlans.js";
+import {
+  offersPlans,
+  planOfferOf,
+  trialOfferOf,
+  type PlanOffer,
+  type PlanOfferRow,
+  type TrialOffer,
+  type TrialOfferRow,
+} from "./planOffers.js";
 import { warningLevel } from "./planUse.js";
 import type { PlanWarningAsk } from "./planWarnings.js";
 import { PAST_DUE_GRACE_DAYS } from "./subscriptionAccess.js";
+import { judgeTrial, trialUsed } from "./trialStart.js";
 import type { UseListingRow } from "./useListing.js";
 import {
   resolveUseBilling,
@@ -251,6 +261,11 @@ export interface PaidSubscription extends UseSubscription {
   priceCents?: bigint | null;
   /** On a plan: what its creator calls it now. */
   planName?: string | null;
+  /**
+   * When this buyer started the listing's free trial; null = never. A row
+   * read without it offers no trial (services/trialStart.ts, trialUsed).
+   */
+  trialUsedAt?: Date | null;
 }
 
 /**
@@ -291,6 +306,17 @@ export interface PaidUseDeps {
    * (services/planOffers.ts). When omitted no reply names a plan to choose.
    */
   loadPlans?(listingId: string): Promise<PlanOfferRow[]>;
+  /**
+   * The listing's free trial on offer, or null (services/planOffers.ts).
+   * When omitted no reply names a trial and none is available.
+   */
+  loadTrial?(listingId: string): Promise<TrialOfferRow | null>;
+  /**
+   * Whether the organization has added credits it paid for at least once
+   * (services/trialStart.ts, hasAddedCredits): who may take a free trial.
+   * Throws when it cannot be read. When omitted the answer is no.
+   */
+  addedCredits?(orgId: string): Promise<boolean>;
   /** The organization's credits, in cents. Throws when they cannot be read. */
   readBalance(orgId: string): Promise<bigint>;
   /** Whether a use of this price would fit the key's caps right now. A read. */
@@ -414,7 +440,7 @@ export interface PaidUseRefusal {
   refundedCents?: number;
   /** A key cap: the price and the cap it met. */
   caps?: Record<string, number>;
-  /** plan_used_up: when the plan's count starts again. An ISO time. Left out when the plan will not renew. */
+  /** plan_used_up: when the plan's count starts again. An ISO time. Left out when the plan will not renew, and for a free trial. */
   resetsAt?: string;
   /**
    * plan_used_up: the count the refusal was decided on, for the usage headers
@@ -439,6 +465,8 @@ export interface PaidUsePlanBilling {
   id: string | null;
   /** `included`: one of the plan's uses. `extra`: past the count, charged the agreed extra price. */
   use: "included" | "extra";
+  /** True on the listing's free trial: every use is an included one and nothing is ever charged. False on a paid plan. */
+  trial: boolean;
   includedUses: number;
   /** Uses brought into this period by a move to a bigger plan. */
   carriedUses: number;
@@ -446,7 +474,7 @@ export interface PaidUsePlanBilling {
   remainingUses: number;
   /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
   extraUsePriceCents: number | null;
-  /** When the count starts again. An ISO time. Left out when the plan will not renew. */
+  /** When the count starts again. An ISO time. Left out when the plan will not renew, and always for a free trial. */
   resetsAt?: string;
   /** 85 when 85% of the uses are gone, 100 when all are. */
   warning: null | 85 | 100;
@@ -504,8 +532,10 @@ export type PaidResultsResult =
 export interface UseAccessPlan {
   /** The plan the subscription was started on. */
   id: string | null;
-  /** What its creator calls it now. */
+  /** What its creator calls it now. "Free trial" for the listing's free trial. */
   name: string;
+  /** True on the listing's free trial, which costs nothing, never renews and always stops when its uses are gone. False on a paid plan. */
+  trial: boolean;
   includedUses: number;
   /** Uses brought into this period by a move to a bigger plan, on top of the included ones. 0 after a renewal. */
   carriedUses: number;
@@ -514,7 +544,7 @@ export interface UseAccessPlan {
   remainingUses: number;
   /** What each use past the count costs, as agreed. Null = the plan stops until it renews. */
   extraUsePriceCents: number | null;
-  /** When the count starts again. An ISO time. Left out when the plan will not renew. */
+  /** When the count starts again. An ISO time. Left out when the plan will not renew, and always for a free trial. */
   resetsAt?: string;
   /** 85 when 85% of the uses are gone, 100 when all are. */
   warning: null | 85 | 100;
@@ -529,8 +559,20 @@ export interface UseAccessView {
   plans: PlanOffer[];
   /** The plan the caller is on, while it gives them uses. null otherwise. */
   plan: UseAccessPlan | null;
-  /** Free trials are not offered yet. */
-  trialAvailable: false;
+  /** The free trial the listing offers now, beside its plans: its id, its uses and its days. null when it offers none. */
+  trial: TrialOffer | null;
+  /**
+   * Whether the caller's organization could start that trial now: the
+   * listing offers one, the organization never started one on this listing,
+   * it has no plan or paid month running on it, and it has added credits at
+   * least once (services/trialStart.ts, judgeTrial). `canAccept` says
+   * whether this caller is one who may start.
+   */
+  trialAvailable: boolean;
+  /** True when the one thing missing for the trial is that the organization never added credits. */
+  trialNeedsCredits: boolean;
+  /** True when what ended (`access` is plan_ended) was the caller's free trial, not a paid plan. */
+  trialEnded: boolean;
   /** What the caller agreed to; null when they have not started. */
   accepted: { pricingModel: string | null; pricePerRequestCents: number | null; monthlyPriceCents: number | null } | null;
   /**
@@ -621,6 +663,10 @@ export const PAID_USE_MESSAGES = {
     endsOn === null
       ? `${usedAll(uses)} Nothing was charged.`
       : `${usedAll(uses)} Your plan ends on ${endsOn}. Nothing was charged.`,
+  // A free trial always stops, and its count never starts again.
+  trialUsedUp: (uses: number) =>
+    `${uses === 1 ? "You have used the 1 use of your free trial." : `You have used all ${uses} uses of your free trial.`} Choose a plan or pay per use to keep using it. Nothing was charged.`,
+  trialEnded: "Your free trial ended. Choose a plan or pay per use to keep using it.",
   // AGENT_PAUSED_MESSAGE of services/listingPause.ts, word for word. Said
   // again here because this file imports nothing that reads the environment
   // or the database; a test holds the two together.
@@ -727,12 +773,31 @@ const RENEWAL_RETRY_SECONDS = 60 * 60;
  * or the listing no longer sells use: the row is closed then, no count
  * starts again, and the buyer is told when the plan ends and given no time
  * at which it resets.
+ *
+ * `trial` is whether the row is the listing's free trial. A trial always
+ * stops and never starts again: its own sentence asks the buyer to choose,
+ * and no time is told, in the body or as a wait.
  */
 function planUsedUpRefusal(
   plan: { planId: string | null; includedUses: number; carriedUses: number; usedInPeriod?: number; periodEnd: Date },
   now: Date,
   renews: boolean,
+  trial: boolean,
 ): PaidUseRefusal {
+  if (trial) {
+    const uses = plan.includedUses + plan.carriedUses;
+    return {
+      status: 429,
+      code: "plan_used_up",
+      message: PAID_USE_MESSAGES.trialUsedUp(uses),
+      planCount: {
+        id: plan.planId,
+        includedUses: plan.includedUses,
+        carriedUses: plan.carriedUses,
+        usedUses: plan.usedInPeriod ?? uses,
+      },
+    };
+  }
   const left = Math.ceil((plan.periodEnd.getTime() - now.getTime()) / 1000);
   // Past its end and still open: the renewal is being retried, and the count
   // starts again when it is paid.
@@ -761,9 +826,10 @@ function chargeRefusal(
   now: Date,
   planRenews: boolean,
   planId: string | null,
+  trial: boolean,
 ): PaidUseRefusal {
   // The metering refuses this only on the row the request read, so the plan is the one that was read.
-  if (refusal.reason === "plan_used_up") return planUsedUpRefusal({ ...refusal, planId }, now, planRenews);
+  if (refusal.reason === "plan_used_up") return planUsedUpRefusal({ ...refusal, planId }, now, planRenews, trial);
   // The plan's row changed under the request and could not be decided again.
   if (refusal.reason === "plan_changed") return UNAVAILABLE;
   if (refusal.reason === "insufficient_credits") {
@@ -893,13 +959,15 @@ export function paidToolAllowlist(
  * Whether a plan's row will be charged again when its period ends. The
  * renewal worker closes it instead when the buyer cancelled the renewal, the
  * creator ended the plan, or the listing no longer sells use per request
- * (services/marketplaceSubscriptions.ts). Only words, and whether a time to
- * start again is told, depend on it.
+ * (services/marketplaceSubscriptions.ts). A free trial is never renewed,
+ * whatever its row says. Only words, and whether a time to start again is
+ * told, depend on it.
  */
 export function planWillRenew(
   listing: Pick<UseListingRow, "status" | "sells" | "pricingModel">,
-  sub: Pick<PaidSubscription, "cancelAtPeriodEnd" | "planRetired"> | null,
+  sub: Pick<PaidSubscription, "cancelAtPeriodEnd" | "planRetired" | "includedUses" | "priceCents"> | null,
 ): boolean {
+  if (onTrialPlan(sub)) return false;
   return offersPlans(listing) && sub?.cancelAtPeriodEnd !== true && sub?.planRetired !== true;
 }
 
@@ -919,13 +987,29 @@ async function plansOnOffer(deps: PaidUseDeps, listing: UseListingRow): Promise<
   }
 }
 
-/** The plan after one use on it, as the buyer is told it. */
-function planBillingOf(planUse: UsePlanUse, count: UsePlanCount, renews: boolean): PaidUsePlanBilling {
+/**
+ * The listing's free trial on offer, as a buyer is told it; null when it
+ * offers none, when this set of deps reads none, and when the read fails:
+ * like the plans, it rides on an answer that is already decided.
+ */
+async function trialOnOffer(deps: PaidUseDeps, listing: UseListingRow): Promise<TrialOffer | null> {
+  if (!deps.loadTrial || !offersPlans(listing)) return null;
+  try {
+    return trialOfferOf(await deps.loadTrial(listing.id));
+  } catch (err) {
+    deps.logger?.warn({ err }, "could not read the free trial a listing offers; none was told");
+    return null;
+  }
+}
+
+/** The plan after one use on it, as the buyer is told it. `trial`: the row the use was counted on is a free trial. */
+function planBillingOf(planUse: UsePlanUse, count: UsePlanCount, renews: boolean, trial: boolean): PaidUsePlanBilling {
   const limit = count.includedUses + count.carriedUses;
   const level = warningLevel(count.usedInPeriod, count.includedUses, count.carriedUses);
   return {
     id: count.planId,
     use: planUse.use,
+    trial,
     includedUses: count.includedUses,
     carriedUses: count.carriedUses,
     usedUses: count.usedInPeriod,
@@ -1070,10 +1154,17 @@ async function runPaidUse(
     // A plan that is over: the buyer chooses again, between the plans on
     // offer and the price per use, so both come with the refusal.
     const plans = billing.code === "plan_ended" ? await plansOnOffer(deps, listing) : undefined;
+    // What ended was the buyer's free trial: said as that, not as a plan.
+    const trialEnded = billing.code === "plan_ended" && licence?.buyerId === caller.orgId && onTrialPlan(sub);
     return refused({
       status: billing.status,
       code: billing.code,
-      message: billing.code === "own_agent" ? PAID_USE_MESSAGES.ownAgent : billing.message,
+      message:
+        billing.code === "own_agent"
+          ? PAID_USE_MESSAGES.ownAgent
+          : trialEnded
+            ? PAID_USE_MESSAGES.trialEnded
+            : billing.message,
       ...(billing.access !== undefined && { access: billing.access }),
       ...((billing.code === "use_not_started" || billing.code === "pricing_changed" || billing.code === "plan_ended") &&
         onSaleForUse && { terms: termsOf(listing, agent) }),
@@ -1086,6 +1177,13 @@ async function runPaidUse(
 
   const apiKeyId = caller.type === "api_key" ? (caller.apiKeyId ?? null) : null;
   const planRenews = planWillRenew(listing, sub);
+  // The row this request read is the listing's free trial: its uses are
+  // included uses of a plan on the same path, with its own words past them
+  // and no warning by email.
+  const onTrial = billing.kind === "plan" && onTrialPlan(sub);
+  // What a use past the count is charged on. Never anything on a trial,
+  // whatever its row says: past its uses a trial always stops.
+  const extraInstall = billing.kind === "plan" && !onTrial ? billing.extraInstall : null;
   /** A plan that is used up and stops: told with the plans on offer, a bigger one among them. */
   const usedUp = async (refusal: PaidUseRefusal): Promise<PaidUseRefusal> => {
     if (refusal.code !== "plan_used_up") return refusal;
@@ -1102,8 +1200,8 @@ async function runPaidUse(
       // Used up, and the buyer agreed to no extra price (or nothing more is
       // sold on this listing): stopped here, before the creator's allowance
       // and the model. Nothing is charged and no use is taken.
-      if (!billing.extraInstall) return refused(await usedUp(planUsedUpRefusal(plan, now, planRenews)));
-      payable = billing.extraInstall.pricePerRequestCents;
+      if (!extraInstall) return refused(await usedUp(planUsedUpRefusal(plan, now, planRenews, onTrial)));
+      payable = extraInstall.pricePerRequestCents;
     }
   }
   if (payable !== null) {
@@ -1207,7 +1305,7 @@ async function runPaidUse(
         read: billing.plan,
         // A key that cannot be named cannot reserve against its caps, so it
         // pays for no extra use: past the count its plan stops.
-        extraInstall: caller.type === "api_key" && !apiKeyId ? null : billing.extraInstall,
+        extraInstall: caller.type === "api_key" && !apiKeyId ? null : extraInstall,
       },
     }),
     apiKeyId,
@@ -1255,7 +1353,7 @@ async function runPaidUse(
     const charge = metering.refusal();
     if (charge) {
       const planId = billing.kind === "plan" ? billing.plan.planId : null;
-      return refused(await usedUp(chargeRefusal(charge, now, planRenews, planId)));
+      return refused(await usedUp(chargeRefusal(charge, now, planRenews, planId, onTrial)));
     }
     return refused(coreRefusal(prepared.refusal, nowSeconds, onSaleForUse));
   }
@@ -1323,7 +1421,17 @@ async function runPaidUse(
       chargedCents: Number(chargedCents ?? 0n),
       balanceCents,
       access: billing.access,
-      ...(planUse && planCount && { plan: planBillingOf(planUse, planCount, planRenews) }),
+      ...(planUse &&
+        planCount && {
+          // A trial only while the count is still the row that was read: a
+          // paid plan started over it in between is told as what it is.
+          plan: planBillingOf(
+            planUse,
+            planCount,
+            planRenews,
+            onTrial && billing.kind === "plan" && planCount.planId === billing.plan.planId,
+          ),
+        }),
     };
   };
 
@@ -1332,9 +1440,13 @@ async function runPaidUse(
    * was delivered, with the count that use left, and only at a level: below
    * 85% nothing is asked. Started and not waited for, after the use is done
    * and outside any transaction. Whatever it does, the answer is what it was.
+   *
+   * A free trial sends none: nothing is asked for it, so no level is claimed
+   * or written on its row.
    */
   const warnOfPlan = (told: PaidUseBilling): void => {
     if (!deps.warnPlan || billing.kind !== "plan" || !planUse || planUse.use !== "included") return;
+    if (onTrial || told.plan?.trial === true) return;
     const count = planCount;
     if (!count || !told.plan || told.plan.warning === null) return;
     try {
@@ -1350,7 +1462,7 @@ async function runPaidUse(
           carriedUses: count.carriedUses,
           usedUses: count.usedInPeriod,
           // Past the count a use is charged only while the listing still sells use.
-          extraUsePriceCents: billing.extraInstall ? count.extraUsePriceCents : null,
+          extraUsePriceCents: extraInstall ? count.extraUsePriceCents : null,
           periodEnd: count.periodEnd,
           renews: planRenews,
         }),
@@ -1629,9 +1741,12 @@ export function accessPlanOf(sub: PaidSubscription, renews: boolean): UseAccessP
   const carried = sub.carriedUses ?? 0;
   const used = sub.usedInPeriod ?? 0;
   const level = warningLevel(used, included, carried);
+  const trial = onTrialPlan(sub);
   return {
     id: sub.planId ?? null,
-    name: sub.planName ?? "",
+    // A free trial has one name everywhere, whatever its row was read with.
+    name: trial ? TRIAL_PLAN_NAME : (sub.planName ?? ""),
+    trial,
     includedUses: included,
     carriedUses: carried,
     usedUses: used,
@@ -1686,6 +1801,30 @@ export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Pro
   // (plan_ended, or the price per use the buyer agreed to), not here.
   const held = mine && sub && onPlan(sub) && access === "subscribed" ? sub : null;
 
+  // The listing's free trial, and whether this organization could start it
+  // now, by the judgement the start itself makes. Whether credits were ever
+  // added is read only when it decides, and a read that fails answers no
+  // without saying that credits are what is missing.
+  const trial = await trialOnOffer(deps, listing);
+  let trialAvailable = false;
+  let trialNeedsCredits = false;
+  if (trial && !own && !blockedUntil) {
+    const used = trialUsed(sub);
+    const running = access === "subscribed";
+    let addedCredits: boolean | null = false;
+    if (!used && !running) {
+      try {
+        addedCredits = deps.addedCredits ? await deps.addedCredits(caller.orgId) : null;
+      } catch (err) {
+        deps.logger?.warn({ err }, "could not read whether credits were added; no free trial is offered");
+        addedCredits = null;
+      }
+    }
+    const standing = judgeTrial({ offered: true, used, running, addedCredits: addedCredits === true });
+    trialAvailable = standing.available;
+    trialNeedsCredits = !standing.available && standing.reason === "trial_needs_credits" && addedCredits === false;
+  }
+
   return {
     kind: "access",
     view: {
@@ -1694,7 +1833,10 @@ export async function getUseAccess(input: PaidReadInput, deps: PaidUseDeps): Pro
       terms: onSaleForUse ? termsOf(listing, agent) : null,
       plans: (await plansOnOffer(deps, listing)) ?? [],
       plan: held && accessPlanOf(held, planWillRenew(listing, held)),
-      trialAvailable: false,
+      trial,
+      trialAvailable,
+      trialNeedsCredits,
+      trialEnded: access === "plan_ended" && mine !== null && onTrialPlan(sub),
       accepted:
         mine && mine.kind === "use"
           ? {

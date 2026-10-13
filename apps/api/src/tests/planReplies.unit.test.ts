@@ -171,6 +171,7 @@ test("access on a plan: its name, the count, what an extra use costs, when it st
   assert.deepEqual(view.plan, {
     id: "plan-1",
     name: "Starter",
+    trial: false,
     includedUses: 500,
     carriedUses: 0,
     usedUses: 12,
@@ -195,6 +196,7 @@ test("access on a plan: its name, the count, what an extra use costs, when it st
   assert.deepEqual(await planOf({ usedInPeriod: 500, extraUsePriceCents: null }), {
     id: "plan-1",
     name: "Starter",
+    trial: false,
     includedUses: 500,
     carriedUses: 0,
     usedUses: 500,
@@ -270,6 +272,7 @@ const PLAN_HEADERS = {
 const INCLUDED = {
   id: "plan-1",
   use: "included",
+  trial: false,
   includedUses: 500,
   carriedUses: 0,
   usedUses: 13,

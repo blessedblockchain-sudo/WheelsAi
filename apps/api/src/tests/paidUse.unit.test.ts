@@ -1061,10 +1061,14 @@ test("getUseAccess: the caller's access, the terms now, what they accepted and w
       access: "listing_pricing",
       listingId: "lst-1",
       terms: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, unit: "message", keepsCopy: false },
-      // No plan on offer, none held, and no free trial yet (tests/planReplies.unit.test.ts has the rest).
+      // No plan on offer, none held, and no free trial on offer (tests/planReplies.unit.test.ts and
+      // tests/trialReads.unit.test.ts have the rest).
       plans: [],
       plan: null,
+      trial: null,
       trialAvailable: false,
+      trialNeedsCredits: false,
+      trialEnded: false,
       accepted: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null },
       subscription: null,
       balanceCents: 500,
@@ -1216,6 +1220,7 @@ test("an included use charges nothing, takes one use just before the model, and 
         plan: {
           id: "plan-1",
           use: "included",
+          trial: false,
           includedUses: 500,
           carriedUses: 0,
           usedUses: 13,
@@ -1250,6 +1255,7 @@ test("an included use charges nothing, takes one use just before the model, and 
   assert.deepEqual(last.kind === "answer" && last.billing.plan, {
     id: "plan-1",
     use: "included",
+    trial: false,
     includedUses: 500,
     carriedUses: 20,
     usedUses: 520,
@@ -1520,6 +1526,7 @@ test("past the count a use is charged the extra price the buyer agreed to, split
       plan: {
         id: "plan-1",
         use: "extra",
+        trial: false,
         includedUses: 500,
         carriedUses: 0,
         usedUses: 500,
@@ -1649,6 +1656,7 @@ test("a take that took nothing is not proof the plan is used up: the row is read
     plan: {
       id: "plan-1",
       use: "included",
+      trial: false,
       includedUses: 500,
       carriedUses: 0,
       usedUses: 1,

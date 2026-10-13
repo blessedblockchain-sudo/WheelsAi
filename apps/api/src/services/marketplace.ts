@@ -17,10 +17,12 @@ import {
   offersPlans,
   planOfferOf,
   plansFromCentsOf,
-  readPlanOffers,
+  readOffers,
   readPlanOffersOf,
+  trialOfferOf,
   type PlanOffer,
   type PlanOffersDb,
+  type TrialOffer,
 } from "./planOffers.js";
 import type { PlanInput } from "./listingPlans.js";
 import { LISTING_PAUSED_START_MESSAGE, listingPausedNow, reconcileListingPauses } from "./listingPause.js";
@@ -267,9 +269,13 @@ export async function getListingBySlug(slug: string) {
     return null;
   }
 
-  // The plans on offer, read only for a listing that offers them.
-  const plans = offersPlans(listing) ? (await readPlanOffers(prisma, listing.id)).map(planOfferOf) : [];
-  return formatListingForPublic(listing, { plans });
+  // The plans on offer and the free trial beside them, read together and
+  // only for a listing that offers them.
+  const offers = offersPlans(listing) ? await readOffers(prisma, listing.id) : { plans: [], trial: null };
+  return formatListingForPublic(listing, {
+    plans: offers.plans.map(planOfferOf),
+    freeTrial: trialOfferOf(offers.trial),
+  });
 }
 
 // ============================================
@@ -1278,11 +1284,19 @@ function formatListingForOwner(listing: any) {
 
 /**
  * `said` is what only some reads look up, and so only they say: the plans
- * on offer (the listing's own page, a buyer's installs) and the smallest
- * plan price (the search that feeds the cards). A read that did not look
- * leaves the field out; it never answers "none" for a listing it did not ask.
+ * on offer (the listing's own page, a buyer's installs), the free trial
+ * beside them (the listing's own page) and the smallest plan price (the
+ * search that feeds the cards). A read that did not look leaves the field
+ * out; it never answers "none" for a listing it did not ask.
+ *
+ * The free trial is `freeTrial` here, not `trial`: on a listing `trial` is
+ * already "Try it", the few free messages a day anyone gets on its page,
+ * which is another thing.
  */
-function formatListingForPublic(listing: any, said: { plans?: PlanOffer[]; plansFromCents?: number | null } = {}) {
+function formatListingForPublic(
+  listing: any,
+  said: { plans?: PlanOffer[]; plansFromCents?: number | null; freeTrial?: TrialOffer | null } = {},
+) {
   // What one payment buys, for a listing that sells use at a price. A
   // listing that sells copies, or use for free, has no unit.
   const unit: UseUnit | null =
@@ -1327,6 +1341,8 @@ function formatListingForPublic(listing: any, said: { plans?: PlanOffer[]; plans
     updatedAt: listing.updatedAt,
     ...(said.plans !== undefined && { plans: said.plans }),
     ...(said.plansFromCents !== undefined && { plansFromCents: said.plansFromCents }),
+    // The free trial a buyer's organization can start once: its id, its uses, its days.
+    ...(said.freeTrial !== undefined && { freeTrial: said.freeTrial }),
     // Try it is on for every published listing; there is no switch to read.
     trial: { enabled: listing.status === "published" },
     agent: listing.agent
@@ -2546,6 +2562,10 @@ export class SubscriptionNotFoundError extends Error {
  * Cancel at period end (cancel = true) or undo that (cancel = false).
  * Access continues until the paid period ends; the renewal worker then
  * closes the subscription instead of charging it.
+ *
+ * A free trial has no renewal to turn back on: resuming one changes nothing
+ * and is answered as no subscription to resume. Its row is a plan row whose
+ * agreed price is nothing (services/listingPlans.ts, onTrialPlan).
  */
 export async function setSubscriptionCancelAtPeriodEnd(
   orgId: string,
@@ -2553,7 +2573,14 @@ export async function setSubscriptionCancelAtPeriodEnd(
   cancel: boolean
 ) {
   const updated = await prisma.agentSubscription.updateMany({
-    where: { listingId, subscriberId: orgId, status: { in: ["active", "past_due"] } },
+    where: {
+      listingId,
+      subscriberId: orgId,
+      status: { in: ["active", "past_due"] },
+      // Resume only: never a free trial. A month with no count, or a plan
+      // with a price, is what can renew.
+      ...(cancel ? {} : { OR: [{ includedUses: null }, { priceCents: { gt: 0n } }] }),
+    },
     data: { cancelAtPeriodEnd: cancel },
   });
   if (updated.count !== 1) throw new SubscriptionNotFoundError();

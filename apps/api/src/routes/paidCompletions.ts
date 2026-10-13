@@ -121,6 +121,8 @@ function extensionOf(handle: string, billing: PaidUseBilling): Record<string, un
         plan: {
           id: plan.id,
           use: plan.use,
+          // True on the listing's free trial.
+          trial: plan.trial,
           includedUses: plan.includedUses,
           carriedUses: plan.carriedUses,
           usedUses: plan.usedUses,

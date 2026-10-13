@@ -31,6 +31,7 @@ const RESETS_AT = "2026-11-01T00:00:00.000Z";
 const PLAN: PaidUsePlanBilling = {
   id: "plan-1",
   use: "included",
+  trial: false,
   includedUses: 500,
   carriedUses: 0,
   usedUses: 13,

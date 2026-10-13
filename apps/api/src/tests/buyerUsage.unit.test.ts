@@ -297,6 +297,7 @@ test("a buyer on a plan: the plan as the agent's page builds it, the extra uses 
     plan: {
       id: STARTER,
       name: "Starter",
+      trial: false,
       includedUses: 500,
       carriedUses: 0,
       usedUses: 500,
@@ -377,6 +378,36 @@ test("a plan that will not renew tells no reset", async () => {
   // It still says when the 30 days paid for end, so a page can say "Your plan ends on 4 Nov."
   assert.equal(row.periodEndsAt, "2026-11-04T00:00:00.000Z");
   assert.equal(row.renewalPastDue, false);
+});
+
+test("a buyer on a free trial: the plan is marked as a trial and named Free trial, with no time at which it starts again", async () => {
+  const tables = seed();
+  // The trial's row as its start writes it: a price of nothing, set to end, no extra price.
+  tables.agentSubscription[0] = planSub(PLAN_LISTING, {
+    priceCents: 0n,
+    includedUses: 20,
+    usedInPeriod: 17,
+    extraUsePriceCents: null,
+    cancelAtPeriodEnd: true,
+    currentPeriodStart: at("2026-10-10T00:00:00Z"),
+    currentPeriodEnd: at("2026-10-17T00:00:00Z"),
+    plan: { status: "active", name: "Renamed by hand" },
+  });
+  const { deps } = depsOver(tables);
+  const row = (await readBuyerUsage(deps, ORG)).listings.find((l) => l.listingId === PLAN_LISTING)!;
+  assert.equal(row.access, "subscribed");
+  assert.deepEqual(row.plan, {
+    id: STARTER,
+    name: "Free trial",
+    trial: true,
+    includedUses: 20,
+    carriedUses: 0,
+    usedUses: 17,
+    remainingUses: 3,
+    extraUsePriceCents: null,
+    warning: 85,
+  });
+  assert.equal(row.periodEndsAt, "2026-10-17T00:00:00.000Z");
 });
 
 test("a plan whose renewal is being retried says so, and its period's end is behind the buyer", async () => {

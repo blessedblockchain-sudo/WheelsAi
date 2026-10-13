@@ -7,6 +7,7 @@ import type { AgentKind } from "@wheelsai/shared/agent-kind";
 
 import { LIST_AGENT_PARAM, listingForAgent } from "./agent-page";
 import { DEFAULT_SELL_LIMITS, sellProblem, type SellForm, type SellLimits, type SellSave } from "./sell-choice";
+import { plansProblem, type PlanLimits, type PlansForm, type SavedPlan } from "./sell-plans";
 
 export type ListingCategory = "customer-support" | "coding" | "research" | "automation" | "creative" | "other";
 
@@ -108,6 +109,8 @@ export interface WizardState {
   /** The chosen agent with its tools; null until it has been read. */
   agent: { agentKind?: AgentKind | null; tools?: unknown } | null;
   limits?: SellLimits;
+  /** The plans typed under "Pay per use", with the plans the listing has now; left out, no plan is checked. */
+  plans?: { form: PlansForm; saved: readonly SavedPlan[] | null; limits?: PlanLimits };
 }
 
 /** Why the wizard cannot go on from a step, in one sentence; null when it can. */
@@ -121,7 +124,9 @@ export function stepProblem(step: WizardStep, state: WizardState): string | null
   }
   if (step === "pricing") {
     if (!state.agent) return "This agent is still loading.";
-    return sellProblem(state.sell, state.agent, state.limits ?? DEFAULT_SELL_LIMITS);
+    const problem = sellProblem(state.sell, state.agent, state.limits ?? DEFAULT_SELL_LIMITS);
+    if (problem !== null || !state.plans) return problem;
+    return plansProblem({ sell: state.sell, ...state.plans });
   }
   return null;
 }

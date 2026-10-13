@@ -22,6 +22,7 @@ import {
   type WizardState,
 } from "./listing-draft";
 import { buildSellSave, emptySellForm, withCopies, type SellSave } from "./sell-choice";
+import { addPlanRow, emptyPlansForm, withPlanRow } from "./sell-plans";
 
 const LISTINGS = [
   { id: "l1", agentId: "a1", status: "published" },
@@ -161,4 +162,25 @@ test("an edit's button reads Save changes", () => {
 test("the preview says what a buyer gets", () => {
   assert.equal(previewSellsLine({ sells: "use" }), "People use your agent on its page or through the API. They do not get a copy.");
   assert.equal(previewSellsLine({ sells: "copies" }), "Buyers get their own copy, including its instructions.");
+});
+
+test("Next waits for the plans under Pay per use, and only there", () => {
+  const perUse = { ...emptySellForm(), choice: "per_use" as const, perUsePrice: "0.05" };
+  const oneEmptyRow = addPlanRow(emptyPlansForm());
+  // No plans carried: the step is checked as before.
+  assert.equal(stepProblem("pricing", state({ sell: perUse })), null);
+  assert.equal(stepProblem("pricing", state({ sell: perUse, plans: { form: emptyPlansForm(), saved: [] } })), null);
+  assert.equal(
+    stepProblem("pricing", state({ sell: perUse, plans: { form: oneEmptyRow, saved: [] } })),
+    "Plan 1: Give the plan a name.",
+  );
+  const filled = withPlanRow(oneEmptyRow, "new-1", { name: "Starter", price: "9.00", uses: "500" });
+  assert.equal(stepProblem("pricing", state({ sell: perUse, plans: { form: filled, saved: [] } })), null);
+  // The price of the listing is told first.
+  assert.equal(
+    stepProblem("pricing", state({ sell: { ...perUse, perUsePrice: "" }, plans: { form: oneEmptyRow, saved: [] } })),
+    "Enter a price per message.",
+  );
+  // Under another choice the rows are not sent, so they hold nothing up.
+  assert.equal(stepProblem("pricing", state({ plans: { form: oneEmptyRow, saved: [] } })), null);
 });

@@ -24,6 +24,8 @@ import {
   describeKeyCaps,
   formatCents,
   keyGrantProblem,
+  keySpendDayNote,
+  keySpentTodayLine,
   type ScopeOption,
 } from "@/lib/jobs";
 import { unifiedApiSnippets } from "@/lib/public-urls";
@@ -286,8 +288,14 @@ export default function ApiKeysPage() {
       header: "Spend caps",
       render: (apiKey) => {
         const caps = describeKeyCaps(apiKey);
+        // What the key spent today against its daily cap. Nothing for a key that cannot pay, and
+        // nothing when the day's spend could not be read.
+        const spentToday = keySpentTodayLine(apiKey);
         return caps ? (
-          <span className="whitespace-nowrap text-sm text-foreground">{caps}</span>
+          <div className="whitespace-nowrap text-sm">
+            <p className="text-foreground">{caps}</p>
+            {spentToday && <p className="text-xs text-muted-foreground">{spentToday}</p>}
+          </div>
         ) : (
           <span className="text-sm text-muted-foreground">Cannot hire</span>
         );
@@ -344,6 +352,9 @@ export default function ApiKeysPage() {
         ) : null,
     },
   ];
+
+  // Which day "today" is, said once under the list and only when a key shows what it spent.
+  const spendDayNote = keySpendDayNote(apiKeys);
 
   return (
     <div className="flex flex-col">
@@ -589,12 +600,15 @@ export default function ApiKeysPage() {
                 onAction={showCreateForm ? undefined : () => setShowCreateForm(true)}
               />
             ) : (
-              <DataTable
-                data={apiKeys}
-                columns={keyColumns}
-                pageSize={10}
-                keyExtractor={(apiKey) => apiKey.id}
-              />
+              <>
+                <DataTable
+                  data={apiKeys}
+                  columns={keyColumns}
+                  pageSize={10}
+                  keyExtractor={(apiKey) => apiKey.id}
+                />
+                {spendDayNote && <p className="mt-3 text-xs text-muted-foreground">{spendDayNote}</p>}
+              </>
             )}
           </CardContent>
         </Card>

@@ -279,6 +279,41 @@ export function describeKeyCaps(key: {
   return parts.join(" · ");
 }
 
+/** The words of what a key spent today, on the keys page. */
+export const KEY_SPEND_WORDS = {
+  /**
+   * Said once under the list, when any key shows what it spent: which day "today" is, and that a
+   * refund does not lower the figure (the API counts every charge the key reserved).
+   */
+  dayNote: "Spent today means today (UTC). A refund does not give the day's allowance back.",
+} as const;
+
+/**
+ * "Spent today: $1.20 of $5.00": what a key that can pay has committed in
+ * the UTC day, against its daily cap. null for a key that shows nothing new:
+ * one with no caps (it cannot pay), one that is revoked, and one whose spend
+ * the API did not say or could not read, which is never drawn as $0.00.
+ */
+export function keySpentTodayLine(key: {
+  maxJobPriceCents?: number | null;
+  maxUsePriceCents?: number | null;
+  dailySpendCapCents?: number | null;
+  spentTodayCents?: number | null;
+  status?: string;
+}): string | null {
+  if (key.status === "revoked") return null;
+  // The same keys that say their caps: a daily cap and at least one price.
+  if (describeKeyCaps(key) === null || key.dailySpendCapCents == null) return null;
+  const spent = key.spentTodayCents;
+  if (typeof spent !== "number" || !Number.isFinite(spent) || spent < 0) return null;
+  return `Spent today: ${formatCents(spent)} of ${formatCents(key.dailySpendCapCents)}`;
+}
+
+/** The note about the day, when at least one of the keys shows what it spent. null otherwise. */
+export function keySpendDayNote(keys: ReadonlyArray<Parameters<typeof keySpentTodayLine>[0]>): string | null {
+  return keys.some((key) => keySpentTodayLine(key) !== null) ? KEY_SPEND_WORDS.dayNote : null;
+}
+
 // ---- Deliverable checks ----
 
 /** One check, as a sentence a buyer can read. A check's own label wins. */

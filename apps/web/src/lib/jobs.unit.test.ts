@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   JOB_STATUS,
+  KEY_SPEND_WORDS,
   ORDINARY_SCOPES,
   SPEND_SCOPES,
   describeKeyAccess,
@@ -20,6 +21,8 @@ import {
   isFinished,
   jobTimeline,
   keyGrantProblem,
+  keySpendDayNote,
+  keySpentTodayLine,
   newIdempotencyKey,
   termsChangedMessage,
   termsOf,
@@ -160,6 +163,37 @@ test("a listed key says what its caps are", () => {
     describeKeyCaps({ maxJobPriceCents: 500, maxUsePriceCents: 50, dailySpendCapCents: 2000 }),
     "$5.00 a job · $0.50 a use · $20.00 a day",
   );
+});
+
+test("a key that can pay says what it spent today against its daily cap", () => {
+  const key = { maxUsePriceCents: 50, dailySpendCapCents: 500, spentTodayCents: 120, status: "active" };
+  assert.equal(keySpentTodayLine(key), "Spent today: $1.20 of $5.00");
+  assert.equal(keySpentTodayLine({ ...key, spentTodayCents: 0 }), "Spent today: $0.00 of $5.00");
+  assert.equal(keySpentTodayLine({ maxJobPriceCents: 500, dailySpendCapCents: 2000, spentTodayCents: 2000 }), "Spent today: $20.00 of $20.00");
+});
+
+test("a key with no cap shows nothing new, and a spend that could not be read is never $0.00", () => {
+  // No caps: the key cannot pay.
+  assert.equal(keySpentTodayLine({ spentTodayCents: 0 }), null);
+  assert.equal(keySpentTodayLine({ dailySpendCapCents: null, maxUsePriceCents: null, spentTodayCents: 120 }), null);
+  assert.equal(keySpentTodayLine({ dailySpendCapCents: 500, spentTodayCents: 120 }), null);
+  // The day's spend could not be read (null), or the API does not say (absent).
+  const capped = { maxUsePriceCents: 50, dailySpendCapCents: 500 };
+  assert.equal(keySpentTodayLine({ ...capped, spentTodayCents: null }), null);
+  assert.equal(keySpentTodayLine(capped), null);
+  assert.equal(keySpentTodayLine({ ...capped, spentTodayCents: Number.NaN }), null);
+  assert.equal(keySpentTodayLine({ ...capped, spentTodayCents: -1 }), null);
+  // A revoked key pays for nothing.
+  assert.equal(keySpentTodayLine({ ...capped, spentTodayCents: 120, status: "revoked" }), null);
+});
+
+test("the day is said once, as today (UTC), and only when a key shows what it spent", () => {
+  const capped = { maxUsePriceCents: 50, dailySpendCapCents: 500, spentTodayCents: 120 };
+  assert.equal(keySpendDayNote([]), null);
+  assert.equal(keySpendDayNote([{}, { ...capped, spentTodayCents: null }]), null);
+  assert.equal(keySpendDayNote([{}, capped, capped]), KEY_SPEND_WORDS.dayNote);
+  assert.equal(KEY_SPEND_WORDS.dayNote.split("today (UTC)").length, 2);
+  assert.equal(/unlimited|token|\bmodel\b/i.test(KEY_SPEND_WORDS.dayNote), false);
 });
 
 test("using paid agents is a spend scope with the words on screen", () => {

@@ -1478,21 +1478,250 @@ function selecting(world: World): World {
   return world;
 }
 
-test("a plan holder who agrees to the price per use changes nothing: the plan keeps running", async () => {
-  const world = selecting(makeWorld({
+/** A buyer on a running plan, started with no agreement to a price per use, on a listing sold at $0.05 a use. */
+const onRunningPlan = (install: Row = {}, sub: Row = {}) =>
+  selecting(makeWorld({
     pricingModel: "per_request",
     pricePerRequestCents: 5n,
     // A plan start agreed to no price per use.
-    install: { status: "active", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null },
-    sub: { ...PLAN_ROW, status: "active", currentPeriodEnd: new Date(Date.now() + 10 * DAY) },
+    install: { status: "active", acceptedPricingModel: null, acceptedPricePerRequestCents: null, pricingAcceptedAt: null, ...install },
+    sub: { ...PLAN_ROW, status: "active", currentPeriodEnd: new Date(Date.now() + 10 * DAY), ...sub },
   }));
-  const before = structuredClone(world.state.subs[0]);
+const agreementOf = (world: World) => {
+  const licence = world.state.installs[0]!;
+  return [licence.acceptedPricingModel, licence.acceptedPricePerRequestCents, licence.pricingAcceptedAt];
+};
+
+test("a plan holder who agrees to the price per use has it written on the licence, and nothing of the plan changes", async () => {
+  const world = onRunningPlan();
+  world.state.listing.totalInstalls = 1;
+  world.state.listing.activeInstalls = 1;
+  const before = moneyOf(world);
+  const writes = watchWrites(world);
+  const started = Date.now();
   const result = await withWorld(world, ({ startUsing }) => startUsing(LISTING_ID, BUYER, { expected: perUse(5) }));
-  assert.equal(result.created, false);
+  // Written by this request: the route answers 201.
+  assert.equal(result.created, true);
+  // The plan is what runs; the price agreed is what comes after it.
   assert.equal(result.access, "subscribed");
-  assert.deepEqual(world.state.subs[0], before);
-  assert.equal(world.state.installs[0]!.acceptedPricingModel, null);
-  assert.equal(world.state.balance, 10_000n);
+  assert.deepEqual(result.acceptedPricing && [result.acceptedPricing.pricingModel, result.acceptedPricing.pricePerRequestCents], ["per_request", 5]);
+  const [model, price, at] = agreementOf(world);
+  assert.deepEqual([model, price], ["per_request", 5n]);
+  assert.ok(at instanceof Date && at.getTime() >= started);
+  // One statement, on the licence: no subscription, no counter, no money.
+  assert.deepEqual(writes, ["agentInstall.updateMany"]);
+  const licence = world.state.installs[0]!;
+  assert.deepEqual([licence.kind, licence.status, licence.clonedAgentId, licence.uninstalledAt], ["use", "active", null, null]);
+  assert.deepEqual({ ...moneyOf(world), installs: null }, { ...before, installs: null });
+
+  // Said again, the licence already carries it: answered as it stands, and nothing is written.
+  const again = await withWorld(world, ({ startUsing }) => startUsing(LISTING_ID, BUYER, { expected: perUse(5) }));
+  assert.deepEqual([again.created, again.access], [false, "subscribed"]);
+  assert.deepEqual(agreementOf(world), [model, price, at]);
+  assert.deepEqual(writes, ["agentInstall.updateMany"]);
+
+  // Through the route: 201 for the request that wrote it, 200 after.
+  const routed = onRunningPlan();
+  const first = await post(routed, OWNER, USE_URL, { expected: perUse(5) });
+  assert.deepEqual([first.status, first.body.access, first.body.acceptedPricing.pricePerRequestCents], [201, "subscribed", 5]);
+  const second = await post(routed, OWNER, USE_URL, { expected: perUse(5) });
+  assert.equal(second.status, 200);
+  assert.equal(routed.state.balance, 10_000n);
+});
+
+test("agreeing beside a plan is one compare-and-set on the agreement as it was read: whoever got there first is not written over", async () => {
+  // Each of these happens between this request's read of the licence and its write.
+  const inBetween: Array<[string, Row]> = [
+    ["another request wrote the agreement", { acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 5n, pricingAcceptedAt: new Date(5) }],
+    ["the buyer stopped using the agent", { status: "uninstalled", uninstalledAt: new Date(5) }],
+  ];
+  for (const [what, change] of inBetween) {
+    const world = onRunningPlan();
+    const read = world.models.agentInstall.findUnique;
+    let reads = 0;
+    world.models.agentInstall.findUnique = async (args: Row) => {
+      const row = await read(args);
+      if (++reads === 1) Object.assign(world.state.installs[0]!, change);
+      return row;
+    };
+    const result = await withWorld(world, ({ startUsing }) => startUsing(LISTING_ID, BUYER, { expected: perUse(5) }));
+    // Not written by this request: answered with the state as it stands.
+    assert.equal(result.created, false, what);
+    const licence = world.state.installs[0]!;
+    for (const [column, value] of Object.entries(change)) assert.deepEqual(licence[column], value, `${what}: ${column}`);
+    // A licence that was stopped is not given an agreement after the fact.
+    if (change.status) assert.deepEqual(agreementOf(world), [null, null, null], what);
+    assert.equal(world.state.balance, 10_000n, what);
+  }
+
+  // Two requests at the same moment write once.
+  const world = onRunningPlan();
+  const writes = watchWrites(world);
+  const results = await withWorld(world, ({ startUsing }) =>
+    Promise.all([
+      startUsing(LISTING_ID, BUYER, { expected: perUse(5) }),
+      startUsing(LISTING_ID, BUYER, { expected: perUse(5) }),
+    ]),
+  );
+  assert.deepEqual(results.map((r) => r.created).sort(), [false, true]);
+  assert.deepEqual(results.map((r) => r.access), ["subscribed", "subscribed"]);
+  assert.equal(writes.includes("$transaction"), false);
+  assert.deepEqual(agreementOf(world).slice(0, 2), ["per_request", 5n]);
+});
+
+test("agreeing beside a plan keeps every refusal of a start, and each one writes nothing", async () => {
+  // The price that was shown is not the listing's.
+  const moved = onRunningPlan();
+  let writes = watchWrites(moved);
+  await withWorld(moved, async ({ startUsing, PricingChangedError }) => {
+    for (const expected of [perUse(4), perUse(6), monthly(900)]) {
+      await assert.rejects(startUsing(LISTING_ID, BUYER, { expected }), (err: unknown) => {
+        assert.ok(err instanceof PricingChangedError);
+        assert.equal(err.pricing.pricePerRequestCents, 5);
+        return true;
+      });
+    }
+    // Saying "accept the new price" does not stand in for the price that was shown.
+    await assert.rejects(startUsing(LISTING_ID, BUYER, { expected: perUse(4), acceptNewPricing: true }), PricingChangedError);
+  });
+  assert.deepEqual(writes, []);
+  assert.deepEqual(agreementOf(moved), [null, null, null]);
+
+  // A paused listing, and one whose pause cannot be asked about.
+  for (const [hooks, refusal] of [
+    [pausedHooks, { status: 409, code: "listing_paused", message: PAUSED_SENTENCE }],
+    [
+      {
+        listingPausedNow: async () => {
+          throw new Error("database is down");
+        },
+      },
+      { status: 503, code: "service_unavailable", message: CANNOT_START_SENTENCE },
+    ],
+  ] as Array<[Row, Row]>) {
+    const paused = onRunningPlan();
+    writes = watchWrites(paused);
+    assert.deepEqual(await refusedStart(paused, { expected: perUse(5) }, hooks), refusal);
+    assert.deepEqual(writes, []);
+    assert.deepEqual(agreementOf(paused), [null, null, null]);
+  }
+
+  // The creator's own listing, and a listing that was taken down.
+  const own = onRunningPlan();
+  own.state.listing.publisherId = BUYER;
+  assert.equal((await refusedStart(own, { expected: perUse(5) }, {}))?.code, "own_agent");
+  const down = onRunningPlan();
+  down.state.listing.status = "archived";
+  assert.equal((await refusedStart(down, { expected: perUse(5) }, {}))?.code, "listing_not_found");
+  for (const world of [own, down]) assert.deepEqual(agreementOf(world), [null, null, null]);
+
+  // A member who may not spend is stopped at the door.
+  const member = onRunningPlan();
+  member.models.orgMember.findUnique = async () => ({ role: "member" });
+  const res = await post(member, { userId: "u2", orgId: BUYER, type: "jwt", role: "member" }, USE_URL, { expected: perUse(5) });
+  assert.deepEqual([res.status, res.body.error], [403, "insufficient_role"]);
+  assert.deepEqual(agreementOf(member), [null, null, null]);
+});
+
+test("only a plan holder with no agreement is written to: everybody else who is already using is answered as before", async () => {
+  const unchanged: Array<[string, World]> = [
+    // Agreed before the plan, at the listing's price.
+    ["agreed already", onRunningPlan({ acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 5n, pricingAcceptedAt: new Date(0) })],
+    // Agreed before the plan to less than the listing asks now, and did not say they accept the new price.
+    ["agreed to less", onRunningPlan({ acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 3n, pricingAcceptedAt: new Date(0) })],
+    // A month with no count, on a listing that is sold per use now.
+    [
+      "a month with no count",
+      onRunningPlan(
+        { acceptedPricingModel: "monthly", pricingAcceptedAt: new Date(0) },
+        { priceCents: 900n, planId: null, includedUses: null, usedInPeriod: 0, extraUsePriceCents: null },
+      ),
+    ],
+    // A licence that non-payment suspended, with the plan's days of grace still running.
+    ["a suspended licence", onRunningPlan({ status: "suspended" }, { status: "past_due" })],
+  ];
+  for (const [what, world] of unchanged) {
+    const before = moneyOf(world);
+    const writes = watchWrites(world);
+    const result = await withWorld(world, ({ startUsing }) => startUsing(LISTING_ID, BUYER, { expected: perUse(5) }));
+    assert.deepEqual([result.created, result.access], [false, "subscribed"], what);
+    assert.deepEqual(writes, [], what);
+    assert.deepEqual(moneyOf(world), before, what);
+  }
+});
+
+test("a plan holder who agreed to less than the listing asks now moves onto the new price only by accepting it, once", async () => {
+  const agreedToLess = (install: Row = {}, sub: Row = {}) =>
+    onRunningPlan({ acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 3n, pricingAcceptedAt: new Date(0), ...install }, sub);
+
+  // Accepted in so many words, at the price as it is: written once, on the licence only.
+  const world = agreedToLess();
+  const before = moneyOf(world);
+  const writes = watchWrites(world);
+  const result = await withWorld(world, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: perUse(5), acceptNewPricing: true }),
+  );
+  assert.deepEqual([result.created, result.access], [true, "subscribed"]);
+  const [model, price, at] = agreementOf(world);
+  assert.deepEqual([model, price], ["per_request", 5n]);
+  assert.ok(at instanceof Date && at.getTime() > 0);
+  assert.deepEqual(writes, ["agentInstall.updateMany"]);
+  assert.deepEqual({ ...moneyOf(world), installs: null }, { ...before, installs: null });
+  // Said again, the agreement covers the listing: nothing more is written.
+  const again = await withWorld(world, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: perUse(5), acceptNewPricing: true }),
+  );
+  assert.equal(again.created, false);
+  assert.deepEqual(writes, ["agentInstall.updateMany"]);
+
+  // Accepting a price that is not the listing's any more is refused, and the old agreement stays.
+  const moved = agreedToLess();
+  const movedWrites = watchWrites(moved);
+  await withWorld(moved, async ({ startUsing, PricingChangedError }) => {
+    for (const expected of [perUse(3), perUse(4), perUse(6)]) {
+      await assert.rejects(startUsing(LISTING_ID, BUYER, { expected, acceptNewPricing: true }), PricingChangedError);
+    }
+  });
+  assert.deepEqual(movedWrites, []);
+  assert.deepEqual(agreementOf(moved), ["per_request", 3n, new Date(0)]);
+
+  // Nothing is raised without those words, on an agreement that covers the price, on a suspended
+  // licence or on a month with no count.
+  const untouched: Array<[string, World, Row]> = [
+    ["no acceptance", agreedToLess(), {}],
+    ["acceptance said as something else", agreedToLess(), { acceptNewPricing: "true" }],
+    ["agreed to more", agreedToLess({ acceptedPricePerRequestCents: 8n }), { acceptNewPricing: true }],
+    ["a suspended licence", agreedToLess({ status: "suspended" }, { status: "past_due" }), { acceptNewPricing: true }],
+    ["a month with no count", agreedToLess({}, { planId: null, includedUses: null, usedInPeriod: 0, extraUsePriceCents: null }), { acceptNewPricing: true }],
+  ];
+  for (const [what, same, said] of untouched) {
+    const was = agreementOf(same);
+    const sameWrites = watchWrites(same);
+    const answer = await withWorld(same, ({ startUsing }) => startUsing(LISTING_ID, BUYER, { expected: perUse(5), ...said }));
+    assert.equal(answer.created, false, what);
+    assert.deepEqual(sameWrites, [], what);
+    assert.deepEqual(agreementOf(same), was, what);
+  }
+
+  // Another request raised it first: this one writes nothing over it.
+  const raced = agreedToLess();
+  const read = raced.models.agentInstall.findUnique;
+  let reads = 0;
+  raced.models.agentInstall.findUnique = async (args: Row) => {
+    const row = await read(args);
+    if (++reads === 1) Object.assign(raced.state.installs[0]!, { acceptedPricePerRequestCents: 5n, pricingAcceptedAt: new Date(5) });
+    return row;
+  };
+  const lost = await withWorld(raced, ({ startUsing }) =>
+    startUsing(LISTING_ID, BUYER, { expected: perUse(5), acceptNewPricing: true }),
+  );
+  assert.equal(lost.created, false);
+  assert.deepEqual(agreementOf(raced), ["per_request", 5n, new Date(5)]);
+
+  // A paused listing refuses it as it refuses any start.
+  const paused = agreedToLess();
+  assert.equal((await refusedStart(paused, { expected: perUse(5), acceptNewPricing: true }, pausedHooks))?.code, "listing_paused");
+  assert.deepEqual(agreementOf(paused), ["per_request", 3n, new Date(0)]);
 });
 
 test("a buyer whose plan ended agrees to pay per use: the agreement is recorded and the plan's row is left as it ended", async () => {

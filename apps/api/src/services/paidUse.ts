@@ -465,7 +465,11 @@ export interface PaidUsePlanBilling {
   id: string | null;
   /** `included`: one of the plan's uses. `extra`: past the count, charged the agreed extra price. */
   use: "included" | "extra";
-  /** True on the listing's free trial: every use is an included one and nothing is ever charged. False on a paid plan. */
+  /**
+   * True on the listing's free trial: its own uses are included ones and are
+   * never charged. A use past them is `extra` only for a buyer who agreed to
+   * the price per use themselves, and is charged that price. False on a paid plan.
+   */
   trial: boolean;
   includedUses: number;
   /** Uses brought into this period by a move to a bigger plan. */
@@ -534,7 +538,7 @@ export interface UseAccessPlan {
   id: string | null;
   /** What its creator calls it now. "Free trial" for the listing's free trial. */
   name: string;
-  /** True on the listing's free trial, which costs nothing, never renews and always stops when its uses are gone. False on a paid plan. */
+  /** True on the listing's free trial, which costs nothing and never renews. When its uses are gone it stops, unless the buyer agreed to the price per use. False on a paid plan. */
   trial: boolean;
   includedUses: number;
   /** Uses brought into this period by a move to a bigger plan, on top of the included ones. 0 after a renewal. */
@@ -663,7 +667,7 @@ export const PAID_USE_MESSAGES = {
     endsOn === null
       ? `${usedAll(uses)} Nothing was charged.`
       : `${usedAll(uses)} Your plan ends on ${endsOn}. Nothing was charged.`,
-  // A free trial always stops, and its count never starts again.
+  // A free trial that stops: its count never starts again.
   trialUsedUp: (uses: number) =>
     `${uses === 1 ? "You have used the 1 use of your free trial." : `You have used all ${uses} uses of your free trial.`} Choose a plan or pay per use to keep using it. Nothing was charged.`,
   trialEnded: "Your free trial ended. Choose a plan or pay per use to keep using it.",
@@ -774,9 +778,9 @@ const RENEWAL_RETRY_SECONDS = 60 * 60;
  * starts again, and the buyer is told when the plan ends and given no time
  * at which it resets.
  *
- * `trial` is whether the row is the listing's free trial. A trial always
- * stops and never starts again: its own sentence asks the buyer to choose,
- * and no time is told, in the body or as a wait.
+ * `trial` is whether the row is the listing's free trial. A trial never
+ * starts again: its own sentence asks the buyer to choose, and no time is
+ * told, in the body or as a wait.
  */
 function planUsedUpRefusal(
   plan: { planId: string | null; includedUses: number; carriedUses: number; usedInPeriod?: number; periodEnd: Date },
@@ -1181,9 +1185,12 @@ async function runPaidUse(
   // included uses of a plan on the same path, with its own words past them
   // and no warning by email.
   const onTrial = billing.kind === "plan" && onTrialPlan(sub);
-  // What a use past the count is charged on. Never anything on a trial,
-  // whatever its row says: past its uses a trial always stops.
-  const extraInstall = billing.kind === "plan" && !onTrial ? billing.extraInstall : null;
+  // What a use past the count is charged on, as resolveUseBilling decided
+  // it. On a paid plan that is the extra price on the buyer's row. On a
+  // trial the row's extra price is never read there: it is the listing's
+  // price per use, and only for a buyer who agreed to a price per use that
+  // covers it. For everybody else it is null, and past its uses the trial stops.
+  const extraInstall = billing.kind === "plan" ? billing.extraInstall : null;
   /** A plan that is used up and stops: told with the plans on offer, a bigger one among them. */
   const usedUp = async (refusal: PaidUseRefusal): Promise<PaidUseRefusal> => {
     if (refusal.code !== "plan_used_up") return refusal;
@@ -1277,10 +1284,12 @@ async function runPaidUse(
   // 6b. The buyer's limit for the day, for a buyer who pays per use and for
   // a month with no count. A buyer on a plan is held by the plan's count,
   // for an included use and an extra one alike, so the day is never asked
-  // for them. It is taken here, after every refusal that only reads and
-  // before the first step that takes something, so a request that was
-  // refused above did not spend one of the day's uses.
-  if (billing.kind !== "plan") {
+  // for them. A trial's count holds its own uses only: past them the buyer
+  // pays per use and is held to the day as any buyer who pays per use is.
+  // It is taken here, after every refusal that only reads and before the
+  // first step that takes something, so a request that was refused above
+  // did not spend one of the day's uses.
+  if (billing.kind !== "plan" || (onTrial && payable !== null)) {
     const dayLimit = await consume(
       [
         {

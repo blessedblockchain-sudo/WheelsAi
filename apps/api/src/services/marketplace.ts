@@ -30,6 +30,7 @@ import { getOrgPlan } from "./orgPlan.js";
 import { cloneAgentBehaviour, cloneAgentKind } from "./marketplaceClone.js";
 import { startMonthlySubscription, SubscriptionClaimLostError, type SubscriptionTx } from "./marketplaceSubscriptions.js";
 import {
+  acceptedPricingCovers,
   installAccess,
   type InstallAccess,
   PAST_DUE_GRACE_DAYS,
@@ -2145,6 +2146,15 @@ export async function readUseState(
  * `created: false` means nothing was written: the buyer already uses the
  * agent on terms that cover it, or use is free and needs no licence.
  *
+ * A buyer on a plan or a free trial started with no agreement to a price
+ * per use. When they send the price per use they were shown, that agreement
+ * is written on their licence, once, and takes effect: it is what they pay
+ * per use when the plan is over, and past the uses of a free trial. Nothing
+ * is charged for it and nothing of the plan or the trial changes. Every
+ * refusal of a start applies to it. A buyer who had agreed to less than the
+ * listing asks now moves onto the new price the same way, and only with
+ * `acceptNewPricing`.
+ *
  * A listing that is paused (services/listingPause.ts: the model its agent
  * runs on is not running) starts nothing: no first start, no new month and
  * no accepting of a new price. That is asked at this moment, before
@@ -2228,9 +2238,36 @@ export async function startUsing(
     },
     now,
   );
+  // A plan or a free trial is running on an active licence for use that
+  // carries no agreement to a price per use: a plan start and a trial start
+  // write none. Sending the price per use is then the buyer's agreement to
+  // it, and it is written below, after every refusal of a start. A month
+  // with no count, and a licence that already agreed, are answered as before.
+  const besidePlan =
+    access === "subscribed" &&
+    listing.pricingModel === "per_request" &&
+    existingInstall !== null &&
+    existingInstall.kind === "use" &&
+    existingInstall.status === "active" &&
+    existingSub !== null &&
+    existingSub.includedUses != null;
+  const agreedPerUse = existingInstall?.acceptedPricingModel === "per_request";
+  // The licence agreed to a price per use that the listing has moved above:
+  // past a free trial's uses that buyer is told to accept the new price.
+  // Accepting it, in so many words, is written the same way. Without those
+  // words nothing is raised.
+  const acceptsNewPriceBesidePlan =
+    besidePlan &&
+    agreedPerUse &&
+    opts.acceptNewPricing === true &&
+    !acceptedPricingCovers(listing, {
+      pricingModel: existingInstall?.acceptedPricingModel ?? null,
+      pricePerRequestCents: existingInstall?.acceptedPricePerRequestCents ?? null,
+    });
+  const agreesBesidePlan = (besidePlan && !agreedPerUse) || acceptsNewPriceBesidePlan;
   // Already using it on terms that cover the listing: nothing to agree to
   // and nothing to charge. Answered as it stands.
-  if (access === "subscribed" || access === "listing_pricing") {
+  if ((access === "subscribed" || access === "listing_pricing") && !agreesBesidePlan) {
     return { ...(await readUseState(listing, buyerId)), created: false };
   }
   // An agent that answers through its graph cannot answer a paid use (the
@@ -2282,6 +2319,35 @@ export async function startUsing(
     if (errors > 0) {
       throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
     }
+  }
+
+  if (agreesBesidePlan && existingInstall) {
+    // Terms that are not the listing's are refused here, with nothing written.
+    const agreed = agreeToTerms(listing, {
+      changed: acceptsNewPriceBesidePlan,
+      acceptNewPricing: opts.acceptNewPricing,
+      expectedPricing: opts.expected,
+    });
+    // Compare-and-set on the agreement as it was read: of two requests at
+    // once one writes it, and a licence that was stopped in between is not
+    // written to. No licence is claimed, no subscription is touched and
+    // nothing is charged or counted.
+    const written = await prisma.agentInstall.updateMany({
+      where: {
+        id: existingInstall.id,
+        kind: "use",
+        status: "active",
+        acceptedPricingModel: existingInstall.acceptedPricingModel,
+        acceptedPricePerRequestCents: existingInstall.acceptedPricePerRequestCents,
+        pricingAcceptedAt: existingInstall.pricingAcceptedAt,
+      },
+      data: agreed,
+    });
+    if (written.count === 1) {
+      logger.info({ listingId, buyerId }, "Agreed to a price per use beside a running plan");
+    }
+    // The one that did not write answers the state as it stands.
+    return { ...(await readUseState(listing, buyerId)), created: written.count === 1 };
   }
 
   const terms = agreeToTerms(listing, {

@@ -208,6 +208,101 @@ test("a plan that ended is refused with the choice, and charged per use only on 
   if (agreed.kind === "billable") assert.equal(agreed.priceCents, 5n);
 });
 
+// A free trial: a plan row agreed at a price of nothing. 20 uses, 3 of them used.
+const trialDays = {
+  ...planMonth,
+  planId: "plan_trial",
+  priceCents: 0n,
+  cancelAtPeriodEnd: true,
+  includedUses: 20,
+  usedInPeriod: 3,
+  carriedUses: 0,
+  extraUsePriceCents: null as bigint | null,
+};
+const extraOf = (billing: UseBilling) => {
+  assert.equal(billing.kind, "plan");
+  if (billing.kind !== "plan") throw new Error("unreachable");
+  return billing.extraInstall;
+};
+
+test("past a free trial's uses nothing is charged to a buyer who agreed to no price per use, whatever the trial's row says", () => {
+  for (const usedInPeriod of [3, 20, 25]) {
+    for (const extraUsePriceCents of [null, 4n]) {
+      const billing = resolve({ licence: planLicence(), sub: { ...trialDays, usedInPeriod, extraUsePriceCents } });
+      assert.equal(extraOf(billing), null);
+      // The row is told as it was read: the take compares it again.
+      if (billing.kind === "plan") assert.equal(billing.plan.extraUsePriceCents, extraUsePriceCents);
+    }
+  }
+  // An agreement to something else is not an agreement to a price per use.
+  for (const lic of [
+    monthlyLicence(),
+    licence({ acceptedPricingModel: "free", acceptedPricePerRequestCents: null }),
+    // A price with no pricing model beside it was never agreed to as a price per use.
+    licence({ acceptedPricingModel: null, acceptedPricePerRequestCents: 5n }),
+    // Agreed, on a licence that non-payment has suspended.
+    licence({ status: "suspended" }),
+  ]) {
+    assert.equal(extraOf(resolve({ licence: lic, sub: { ...trialDays, usedInPeriod: 20 } })), null);
+  }
+});
+
+test("past a free trial's uses a buyer who agreed per use is charged what the same licence would be with no subscription at all", () => {
+  // The listing's price is what they accepted, and then lower: the listing's price, never the trial row's.
+  for (const listing of [LISTING, { ...LISTING, pricePerRequestCents: 3n }]) {
+    const alone = resolve({ listing, licence: licence(), sub: null });
+    assert.equal(alone.kind, "billable");
+    if (alone.kind !== "billable") throw new Error("unreachable");
+    for (const usedInPeriod of [3, 20]) {
+      for (const extraUsePriceCents of [null, 4n, 99n]) {
+        const billing = resolve({ listing, licence: licence(), sub: { ...trialDays, usedInPeriod, extraUsePriceCents } });
+        // Still the trial: its own uses come first, and are taken where a use is taken.
+        assert.equal(billing.kind === "plan" && billing.access, "subscribed");
+        assert.deepEqual(extraOf(billing), alone.install);
+        assert.deepEqual(extraOf(billing), { ...INSTALL, pricePerRequestCents: listing.pricePerRequestCents });
+      }
+    }
+  }
+});
+
+test("a price that went up past what the buyer agreed to is not charged past a trial: the trial's uses run, then the price is put to them", () => {
+  const raised = { ...LISTING, pricePerRequestCents: 50n };
+  // While a use of the trial is left it runs, and nothing can be charged after it.
+  const running = resolve({ listing: raised, licence: licence(), sub: trialDays });
+  assert.equal(extraOf(running), null);
+  // Gone: the refusal the same licence gets with no subscription at all.
+  const alone = resolve({ listing: raised, licence: licence(), sub: null });
+  for (const usedInPeriod of [20, 21]) {
+    const gone = resolve({ listing: raised, licence: licence(), sub: { ...trialDays, usedInPeriod } });
+    assert.deepEqual(gone, alone);
+    assert.deepEqual(gone, {
+      kind: "refused",
+      reason: "pricing_changed",
+      status: 409,
+      code: "pricing_changed",
+      message: "The owner changed the price to $0.50 per message. You agreed to $0.05. Nothing is charged until you accept the new price.",
+      access: "pricing_changed",
+    });
+  }
+  // A listing that is no longer sold: the trial's days are honoured and nothing more is sold on it.
+  for (const listing of [{ ...LISTING, status: "archived" }, { ...LISTING, sells: "copies" }]) {
+    for (const usedInPeriod of [3, 20]) {
+      assert.equal(extraOf(resolve({ listing, licence: licence(), sub: { ...trialDays, usedInPeriod } })), null);
+    }
+  }
+});
+
+test("a paid plan is what it was for a buyer who agreed per use: the extra price on its row, or it stops", () => {
+  const paid = { ...planMonth, priceCents: 900n };
+  // The listing's price per use is 5 cents: the extra price agreed with the plan is 4.
+  assert.deepEqual(extraOf(resolve({ licence: licence(), sub: paid })), { ...INSTALL, pricePerRequestCents: 4n });
+  for (const usedInPeriod of [12, 530, 600]) {
+    assert.equal(extraOf(resolve({ licence: licence(), sub: { ...paid, usedInPeriod, extraUsePriceCents: null } })), null);
+  }
+  // A row read without its price is a paid plan, not a trial.
+  assert.equal(extraOf(resolve({ licence: licence(), sub: { ...trialDays, priceCents: undefined, usedInPeriod: 20 } })), null);
+});
+
 test("a subscriber whose row has no count gets exactly what they got before plans", () => {
   const noCount = { ...paidMonth, includedUses: null, planId: null, usedInPeriod: 0, carriedUses: 0, extraUsePriceCents: null };
   for (const listing of [MONTHLY, LISTING, { ...MONTHLY, status: "archived" }]) {

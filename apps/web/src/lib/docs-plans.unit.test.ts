@@ -83,7 +83,8 @@ test("the limits are the API's: 10 a minute, 200 a day with no plan, the plan's 
   assert.match(limits, /PAID_USE_PER_BUYER_PER_MINUTE = 10\b/);
   assert.match(limits, /PAID_USE_PER_BUYER_PER_DAY = 200\b/);
   // A buyer on a plan is not asked the day's limit.
-  assert.match(apiSource("services/paidUse.ts"), /if \(billing\.kind !== "plan"\) \{\s+const dayLimit = await consume\(/);
+  // (The one use on a plan's row that is asked: a use past a free trial's count that is paid per use.)
+  assert.match(apiSource("services/paidUse.ts"), /if \(billing\.kind !== "plan"[^\n]*\) \{\s+const dayLimit = await consume\(/);
   assert.match(paidPart, /\{ who: "Per use, with no plan", minute: "10 uses", day: "200 uses" \}/);
   assert.match(paidPart, /\{ who: "By the month", minute: "10 uses", day: "200 uses" \}/);
   assert.match(paidPart, /\{ who: "On a plan", minute: "10 uses", day: "No daily limit: the plan's count/);

@@ -22,7 +22,10 @@ import {
   LEAK,
   LICENCE,
   LISTING,
+  MONTHLY_LICENCE,
+  MONTHLY_LISTING,
   NOW,
+  PAID_MONTH,
   paidHarness,
   PLAN_LICENCE,
   PLAN_SUB,
@@ -58,7 +61,10 @@ import {
 // paid plan is started over it at any time and charged once, whatever
 // happens at the same moment; it cannot be moved from; and when its 7 days
 // are over it is closed, uncharged, and the buyer is asked to choose unless
-// they agreed to a price per use themselves.
+// they agreed to a price per use themselves. Agreeing to the price per use
+// takes effect whenever it is said: it is written on the licence while the
+// trial runs, and past the trial's uses that buyer, and nobody else, goes on
+// at that price.
 
 const CHAT = { messages: [{ role: "user", content: "Hi, I am Ada." }], stream: false };
 const TRIAL_ENDS = new Date("2026-10-15T00:00:00.000Z");
@@ -272,7 +278,7 @@ test("the last use of a trial taken by another request at the same moment: this 
   assert.deepEqual(movedOf(h), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
 });
 
-test("a trial of one use reads right, and a trial never bills an extra use whatever its row says", async () => {
+test("a trial of one use reads right, and the extra price on a trial's row is never billed to anybody", async () => {
   const one = trialHarness({ includedUses: 1, usedInPeriod: 1 });
   assert.equal(
     (refusalIn(await chat(one)) as Row).message,
@@ -284,32 +290,229 @@ test("a trial of one use reads right, and a trial never bills an extra use whate
   assert.deepEqual(answered.kind === "answer" && [answered.billing.chargedCents, answered.billing.plan?.trial], [0, true]);
   assert.deepEqual(movedOf(agreed), { ...NO_MONEY, used: 6, takes: 1, givenBack: 0, modelCalls: 1 });
 
-  // Past the count that buyer is stopped like anybody on a trial: the price they agreed to is not charged.
-  const stopped = withOffers(trialHarness({ usedInPeriod: 20 }, { licence: LICENCE }));
-  assert.deepEqual(refusalIn(await chat(stopped)), TRIAL_USED_UP);
-  assert.deepEqual(movedOf(stopped), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
+  // A trial row that carried a price for an extra use (a start never writes one) bills nothing to a buyer
+  // who agreed to no price per use: read used up, and with its last use taken by another request at the same moment.
+  const priced = withOffers(trialHarness({ usedInPeriod: 20, extraUsePriceCents: 3n }));
+  assert.equal((refusalIn(await chat(priced)) as Row).message, TRIAL_USED_UP.message);
+  assert.deepEqual(movedOf(priced), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
 
-  // A trial row that carried a price for an extra use (a start never writes one) would still bill nothing:
-  // read used up, and with its last use taken by another request at the same moment.
-  for (const licence of [PLAN_LICENCE, LICENCE]) {
-    const priced = withOffers(trialHarness({ usedInPeriod: 20, extraUsePriceCents: 5n }, { licence }));
-    assert.equal((refusalIn(await chat(priced)) as Row).code, "plan_used_up");
-    assert.deepEqual(movedOf(priced), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
-
-    const raced = withOffers(
-      trialHarness(
-        { usedInPeriod: 19, extraUsePriceCents: 5n },
-        {
-          licence,
-          beforeTake: (row) => {
-            row.usedInPeriod = 20;
-          },
+  const raced = withOffers(
+    trialHarness(
+      { usedInPeriod: 19, extraUsePriceCents: 3n },
+      {
+        beforeTake: (row) => {
+          row.usedInPeriod = 20;
         },
-      ),
-    );
-    assert.equal((refusalIn(await chat(raced)) as Row).code, "plan_used_up");
-    assert.deepEqual(movedOf(raced), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
+      },
+    ),
+  );
+  assert.equal((refusalIn(await chat(raced)) as Row).message, TRIAL_USED_UP.message);
+  assert.deepEqual(movedOf(raced), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
+
+  // And to a buyer who agreed to the listing's $0.05 a use it is that price that is charged, never the row's $0.03.
+  const perUse = trialHarness({ usedInPeriod: 20, extraUsePriceCents: 3n }, { licence: LICENCE });
+  const paid = await chat(perUse);
+  assert.equal(paid.kind === "answer" && paid.billing.chargedCents, 5);
+  assert.deepEqual(perUse.money.revenue.map((r) => r.gross), [5n]);
+});
+
+// ============================================
+// Past its uses, for a buyer who agreed to pay per use
+// ============================================
+
+/** At 20 of 20, on a licence that agreed to the listing's $0.05 a use. */
+const agreedAtCount = (sub: Partial<PaidSubscription> = {}, options: PaidHarnessOptions = {}) =>
+  trialHarness({ usedInPeriod: 20, ...sub }, { licence: LICENCE, ...options });
+
+test("past a trial's uses a buyer who agreed to pay per use is answered and charged that price once, split 90 and 10, and the trial's count does not move", async () => {
+  // The agreement this rests on is the buyer's own, to exactly the price that is charged.
+  assert.deepEqual(
+    [LICENCE.acceptedPricingModel, LICENCE.acceptedPricePerRequestCents, LISTING.pricePerRequestCents],
+    ["per_request", 5n, 5n],
+  );
+  for (const caller of [SESSION, KEY_CALLER]) {
+    const h = agreedAtCount({}, { keyCaps: { maxUse: 50n, daily: 100n } });
+    const result = await chat(h, CHAT, caller);
+    assert.equal(result.kind, "answer");
+    assert.deepEqual(result.kind === "answer" && result.billing, {
+      chargedCents: 5,
+      balanceCents: 495,
+      access: "subscribed",
+      plan: {
+        id: "plan-trial",
+        use: "extra",
+        trial: true,
+        includedUses: 20,
+        carriedUses: 0,
+        usedUses: 20,
+        remainingUses: 0,
+        // The trial's own row has no extra price: what was charged is the price per use, told as charged.
+        extraUsePriceCents: null,
+        warning: 100,
+      },
+    });
+    assert.equal(h.money.balance, 495n);
+    assert.deepEqual(h.money.revenue.map((r) => [r.type, r.status, r.gross, r.creator, r.platformFee]), [["per_request", "settled", 5n, 4n, 1n]]);
+    assert.deepEqual(h.money.ledger.map((l) => [l.type, l.amountCents]), [["marketplace_usage", -5n]]);
+    assert.equal(h.money.publisherPending, 4n);
+    assert.equal(h.money.keySpent, caller === KEY_CALLER ? 5n : 0n);
+    // One debit, held before the model ran; no use of the trial was taken or given back.
+    assert.deepEqual([countOf(h, "charge"), countOf(h, "settle"), countOf(h, "model")], [1, 1, 1]);
+    assert.ok(h.log.indexOf("charge") < h.log.indexOf("model"));
+    assert.deepEqual([h.sub?.usedInPeriod, countOf(h, "take"), countOf(h, "giveBack")], [20, 0, 0]);
+    // Held to the day as a buyer who pays per use is, and sent no warning as on any use of a trial.
+    assert.ok(h.log.some((entry) => entry.startsWith("limit:pu:b:d")), h.log.join(","));
+    await h.warnings.settled();
+    assert.deepEqual([h.warnings.asked.length, h.warnings.claims, h.warnings.emails.length], [0, 0, 0]);
   }
+
+  // The last use of the trial went to another request at the same moment: this one is the first paid one.
+  const raced = trialHarness(
+    { usedInPeriod: 19 },
+    {
+      licence: LICENCE,
+      beforeTake: (row) => {
+        row.usedInPeriod = 20;
+      },
+    },
+  );
+  const result = await chat(raced);
+  assert.deepEqual(result.kind === "answer" && [result.billing.chargedCents, result.billing.plan?.use], [5, "extra"]);
+  assert.deepEqual([raced.money.balance, raced.money.revenue.length, raced.sub?.usedInPeriod, countOf(raced, "take")], [495n, 1, 20, 0]);
+
+  // A price the creator lowered is the price charged: never more than was agreed.
+  const lowered = agreedAtCount({}, { listing: { ...LISTING, pricePerRequestCents: 2n } });
+  const cheaper = await chat(lowered);
+  assert.equal(cheaper.kind === "answer" && cheaper.billing.chargedCents, 2);
+  assert.equal(lowered.money.balance, 498n);
+});
+
+test("that use is given back in full when no answer is delivered, and the trial's count is left alone", async () => {
+  const back = { ...NO_MONEY, charges: 1, revenue: 1, ledger: 2, used: 20, takes: 0, givenBack: 0, modelCalls: 1 };
+
+  const withheld = agreedAtCount({}, { answer: LEAK });
+  assert.deepEqual(refusalIn(await chat(withheld)), {
+    status: 502,
+    code: "answer_withheld",
+    message: "This answer could not be shown. Your $0.05 was refunded.",
+    refundedCents: 5,
+  });
+  assert.deepEqual(movedOf(withheld), back);
+  assert.deepEqual(withheld.money.revenue.map((r) => r.status), ["refunded"]);
+
+  const failed = agreedAtCount({}, { outcome: { ok: false, error: "quota exceeded", toolCalls: [], code: "provider_error" } });
+  assert.equal((refusalIn(await chat(failed)) as Row).refundedCents, 5);
+  assert.deepEqual(movedOf(failed), back);
+  assert.deepEqual(failed.money.revenue.map((r) => r.status), ["refunded"]);
+});
+
+test("that use is refused, with nothing charged, by a key's cap per use, by too few credits and when the trial's row moved", async () => {
+  const nothing = { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 };
+
+  // A key that may pay at most $0.04 a use.
+  const capped = agreedAtCount({}, { keyCaps: { maxUse: 4n, daily: 1_000n } });
+  const cap = refusalIn(await chat(capped, CHAT, KEY_CALLER)) as Row;
+  assert.deepEqual([cap.status, cap.code], [403, "api_key_use_price_cap_exceeded"]);
+  assert.deepEqual(movedOf(capped), nothing);
+  // The key's day is full.
+  const spent = agreedAtCount({}, { keyCaps: { maxUse: 50n, daily: 100n, spent: 98n } });
+  assert.equal((refusalIn(await chat(spent, CHAT, KEY_CALLER)) as Row).status, 403);
+  assert.deepEqual(movedOf(spent), { ...nothing, keySpent: 98n });
+
+  // Too few credits for the price per use.
+  const broke = agreedAtCount({}, { balance: 4n });
+  const short = refusalIn(await chat(broke)) as Row;
+  assert.deepEqual([short.status, short.code, short.priceCents, short.balanceCents], [402, "insufficient_credits", 5, 4]);
+  assert.deepEqual(movedOf(broke), { ...nothing, balance: 4n });
+
+  // A paid plan took the row over between the read and the charge: the claim misses and nothing is debited.
+  const moved = agreedAtCount(
+    {},
+    {
+      beforeCharge: (row) => {
+        Object.assign(row, { planId: "plan-1", priceCents: 900n, includedUses: 500, usedInPeriod: 0, extraUsePriceCents: 4n });
+      },
+    },
+  );
+  assert.equal((refusalIn(await chat(moved)) as Row).status, 503);
+  assert.deepEqual([moved.money.balance, moved.money.revenue.length, moved.money.ledger.length, countOf(moved, "model")], [500n, 0, 0, 0]);
+});
+
+test("nobody who did not agree to that price is charged it past a trial: they are stopped with the trial's sentence", async () => {
+  const notAgreed: Array<[string, typeof LICENCE]> = [
+    ["no agreement at all", PLAN_LICENCE],
+    ["an agreement to a month", { ...LICENCE, acceptedPricingModel: "monthly", acceptedPricePerRequestCents: null }],
+    ["a price with no pricing model agreed", { ...LICENCE, acceptedPricingModel: null }],
+    ["an agreement on a suspended licence", { ...LICENCE, status: "suspended" }],
+  ];
+  for (const [what, licence] of notAgreed) {
+    for (const caller of [SESSION, KEY_CALLER]) {
+      const h = withOffers(trialHarness({ usedInPeriod: 20 }, { licence, keyCaps: { maxUse: 50n, daily: 100n } }));
+      assert.deepEqual(refusalIn(await chat(h, CHAT, caller)), TRIAL_USED_UP, what);
+      assert.deepEqual(movedOf(h), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 }, what);
+    }
+  }
+});
+
+test("a buyer whose agreed price no longer covers the listing's is refused as a price that changed, and nothing is charged", async () => {
+  // Agreed to $0.05; the listing asks $0.09 now.
+  const raised = { ...LISTING, pricePerRequestCents: 9n };
+  const h = withOffers(agreedAtCount({}, { listing: raised }));
+  assert.deepEqual(refusalIn(await chat(h)), {
+    status: 409,
+    code: "pricing_changed",
+    message: "The owner changed the price to $0.09 per message. You agreed to $0.05. Nothing is charged until you accept the new price.",
+    access: "pricing_changed",
+    terms: { pricingModel: "per_request", pricePerRequestCents: 9, monthlyPriceCents: null, unit: "message", keepsCopy: false },
+  });
+  assert.deepEqual(movedOf(h), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
+
+  // While a use of the trial is left it still runs, free.
+  const running = trialHarness({ usedInPeriod: 19 }, { licence: LICENCE, listing: raised });
+  const last = await chat(running);
+  assert.deepEqual(last.kind === "answer" && [last.billing.chargedCents, last.billing.plan?.use], [0, "included"]);
+  assert.deepEqual(movedOf(running), { ...NO_MONEY, used: 20, takes: 1, givenBack: 0, modelCalls: 1 });
+
+  // Read with one use left and beaten to it: stopped, uncharged. The higher price is never taken.
+  const raced = withOffers(
+    trialHarness(
+      { usedInPeriod: 19 },
+      {
+        licence: LICENCE,
+        listing: raised,
+        beforeTake: (row) => {
+          row.usedInPeriod = 20;
+        },
+      },
+    ),
+  );
+  assert.equal((refusalIn(await chat(raced)) as Row).code, "plan_used_up");
+  assert.deepEqual(movedOf(raced), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
+});
+
+test("a paid plan that stops still stops for a buyer who agreed per use, and a month and a buyer with no subscription are what they were", async () => {
+  // The plan's terms say it stops: the price per use the buyer agreed to is not charged in its place.
+  const stops = paidHarness({ licence: LICENCE, sub: { ...PLAN_SUB, usedInPeriod: 500, extraUsePriceCents: null } });
+  const refusal = refusalIn(await chat(stops)) as Row;
+  assert.deepEqual([refusal.status, refusal.code], [429, "plan_used_up"]);
+  assert.equal(refusal.message, "You have used all 500 uses. It starts again on 1 Nov. Nothing was charged.");
+  assert.deepEqual([stops.money.balance, stops.money.revenue.length, countOf(stops, "charge"), countOf(stops, "model")], [500n, 0, 0, 0]);
+  // A plan with an extra price charges that price, $0.04, not the listing's $0.05.
+  const extra = paidHarness({ licence: LICENCE, sub: { ...PLAN_SUB, usedInPeriod: 500 } });
+  const charged = await chat(extra);
+  assert.deepEqual(charged.kind === "answer" && [charged.billing.chargedCents, charged.billing.plan?.trial], [4, false]);
+
+  // A month with no count: nothing is charged and no plan is named.
+  const month = paidHarness({ listing: MONTHLY_LISTING, licence: MONTHLY_LICENCE, sub: PAID_MONTH });
+  const inMonth = await chat(month);
+  assert.deepEqual(inMonth.kind === "answer" && inMonth.billing, { chargedCents: 0, balanceCents: 500, access: "subscribed" });
+  assert.equal(month.money.revenue.length, 0);
+
+  // No subscription at all: one use at the price agreed.
+  const perUse = paidHarness();
+  const used = await chat(perUse);
+  assert.deepEqual(used.kind === "answer" && used.billing, { chargedCents: 5, balanceCents: 495, access: "listing_pricing" });
+  assert.deepEqual(perUse.money.revenue.map((r) => [r.type, r.status, r.gross, r.creator, r.platformFee]), [["per_request", "settled", 5n, 4n, 1n]]);
 });
 
 // ============================================
@@ -717,22 +920,144 @@ test("a buyer who agreed to a price per use goes on at that price when the trial
   assert.equal(LISTING.pricePerRequestCents, 5n);
 });
 
-test("agreeing to pay per use while a trial runs changes nothing: the trial is what it was, no money moves, and no price is recorded", async () => {
+const agreementOf = (world: World) => {
+  const licence = world.state.installs[0]!;
+  return [licence.acceptedPricingModel, licence.acceptedPricePerRequestCents, licence.pricingAcceptedAt];
+};
+
+test("agreeing to pay per use while a trial runs is written on the licence once, answers 201, and the trial is what it was with no money moved", async () => {
   const { world } = onTrial();
   const before = structuredClone(world.state.subs);
-  const res = await withApp(world, (send) => send({ expected: PER_USE }));
-  assert.equal(res.status, 200);
-  assert.equal(res.body.access, "subscribed");
+  const started = Date.now();
+  await withApp(world, async (send) => {
+    const res = await send({ expected: PER_USE });
+    assert.equal(res.status, 201);
+    // The trial is what runs; the price agreed is what comes after its uses.
+    assert.equal(res.body.access, "subscribed");
+    assert.deepEqual([res.body.acceptedPricing.pricingModel, res.body.acceptedPricing.pricePerRequestCents], ["per_request", 5]);
+    const [model, price, at] = agreementOf(world);
+    assert.deepEqual([model, price], ["per_request", 5n]);
+    assert.ok(at instanceof Date && at.getTime() >= started);
+
+    // Said again: the licence already carries it. 200, and the day it was agreed is not moved.
+    const again = await send({ expected: PER_USE });
+    assert.equal(again.status, 200);
+    assert.deepEqual(agreementOf(world), [model, price, at]);
+  });
+  // Nothing of the trial changed: not its count, its days, its flag or the day it was started.
   assert.deepEqual(world.state.subs, before);
   noMoney(world, 10_000n);
-  // As the request already behaves over a running paid plan (startUsing,
-  // services/marketplace.ts): while anything runs it answers what the buyer
-  // has and writes nothing. So the agreement is NOT on the licence, and when
-  // the trial is over this buyer is asked to choose. A page must not offer
-  // pay per use as something that takes effect during a trial.
   const licence = world.state.installs[0]!;
-  assert.deepEqual([licence.acceptedPricingModel, licence.acceptedPricePerRequestCents, licence.pricingAcceptedAt], [null, null, null]);
+  assert.deepEqual([licence.kind, licence.status, licence.clonedAgentId], ["use", "active", null]);
   assert.deepEqual([world.state.listing.totalInstalls, world.state.listing.activeInstalls], [1, 1]);
+});
+
+test("two requests to pay per use during a trial at the same moment write the agreement once", async () => {
+  const { world } = onTrial();
+  const before = structuredClone(world.state.subs);
+  // Both requests read the licence, with no agreement on it, before either writes.
+  const findUnique = world.models.agentInstall.findUnique;
+  let waiting = 0;
+  let release = () => {};
+  const bothRead = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  world.models.agentInstall.findUnique = async (args: Row) => {
+    const row = await findUnique(args);
+    if (++waiting <= 2) {
+      if (waiting === 2) release();
+      await bothRead;
+    }
+    return row;
+  };
+  let writes = 0;
+  const updateMany = world.models.agentInstall.updateMany;
+  world.models.agentInstall.updateMany = async (args: Row) => {
+    const result = await updateMany(args);
+    writes += result.count;
+    return result;
+  };
+  await withApp(world, async (send) => {
+    const results = await Promise.all([send({ expected: PER_USE }), send({ expected: PER_USE })]);
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 201]);
+    // Both are told the state as it stands.
+    for (const res of results) {
+      assert.deepEqual([res.body.access, res.body.acceptedPricing.pricePerRequestCents], ["subscribed", 5]);
+    }
+  });
+  assert.equal(writes, 1);
+  assert.deepEqual(world.state.subs, before);
+  noMoney(world, 10_000n);
+});
+
+test("during a trial, terms that are not the listing's are refused and nothing is agreed to; so is a member who may not spend", async () => {
+  const { world } = onTrial();
+  const before = structuredClone(world.state.subs);
+  await withApp(world, async (send) => {
+    // Shown $0.04 or $0.06 where the listing asks $0.05, or a month.
+    for (const expected of [
+      { ...PER_USE, pricePerRequestCents: 4 },
+      { ...PER_USE, pricePerRequestCents: 6 },
+      { pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900 },
+    ]) {
+      const res = await send({ expected });
+      assert.deepEqual([res.status, res.body.error], [409, "pricing_changed"]);
+      // The price as it is now comes with the refusal.
+      assert.equal(JSON.stringify(res.body).includes('"pricePerRequestCents":5'), true);
+    }
+    const none = await send({});
+    assert.deepEqual([none.status, none.body.error], [400, "expected_terms_required"]);
+    const member = await send({ expected: PER_USE }, { userId: "u_member", orgId: BUYER, type: "jwt" });
+    assert.deepEqual([member.status, member.body.error], [403, "insufficient_role"]);
+  });
+  assert.deepEqual(agreementOf(world), [null, null, null]);
+  assert.deepEqual(world.state.subs, before);
+  noMoney(world, 10_000n);
+});
+
+test("a buyer told at the trial's count that the price changed accepts the new price, and the next use is charged it once", async () => {
+  // Agreed to $0.05 themselves; the listing asks $0.09 now. At 20 of 20 they are told to accept it.
+  const raised = { ...LISTING, pricePerRequestCents: 9n };
+  const told = withOffers(agreedAtCount({}, { listing: raised }));
+  assert.equal((refusalIn(await chat(told)) as Row).code, "pricing_changed");
+  assert.deepEqual(movedOf(told), { ...NO_MONEY, used: 20, takes: 0, givenBack: 0, modelCalls: 0 });
+
+  // Accepting it while the trial still runs is written on the licence, and nothing else moves.
+  const { world } = onTrial({ usedInPeriod: 20 });
+  world.state.listing.pricePerRequestCents = 9n;
+  const agreedAt = new Date(0);
+  Object.assign(world.state.installs[0]!, { acceptedPricingModel: "per_request", acceptedPricePerRequestCents: 5n, pricingAcceptedAt: agreedAt });
+  const before = structuredClone(world.state.subs);
+  const NEW_PRICE = { ...PER_USE, pricePerRequestCents: 9 };
+  await withApp(world, async (send) => {
+    // Sending the price without saying it is accepted raises nothing.
+    const silent = await send({ expected: NEW_PRICE });
+    assert.equal(silent.status, 200);
+    assert.deepEqual(agreementOf(world), ["per_request", 5n, agreedAt]);
+    // Accepting the price they agreed to before, not the listing's, is refused.
+    const old = await send({ expected: PER_USE, acceptNewPricing: true });
+    assert.deepEqual([old.status, old.body.error], [409, "pricing_changed"]);
+    assert.deepEqual(agreementOf(world), ["per_request", 5n, agreedAt]);
+
+    const res = await send({ expected: NEW_PRICE, acceptNewPricing: true });
+    assert.equal(res.status, 201);
+    assert.deepEqual([res.body.access, res.body.acceptedPricing.pricePerRequestCents], ["subscribed", 9]);
+    const [model, price, at] = agreementOf(world);
+    assert.deepEqual([model, price], ["per_request", 9n]);
+    assert.ok(at instanceof Date && at.getTime() > agreedAt.getTime());
+    assert.equal((await send({ expected: NEW_PRICE, acceptNewPricing: true })).status, 200);
+    assert.deepEqual(agreementOf(world), [model, price, at]);
+  });
+  assert.deepEqual(world.state.subs, before);
+  noMoney(world, 10_000n);
+
+  // On the licence as that left it, the use at 20 of 20 is answered and charged $0.09, once.
+  const h = agreedAtCount({}, { listing: raised, licence: { ...LICENCE, acceptedPricePerRequestCents: 9n } });
+  const result = await chat(h);
+  assert.deepEqual(result.kind === "answer" && [result.billing.chargedCents, result.billing.plan?.use, result.billing.plan?.trial], [9, "extra", true]);
+  assert.equal(h.money.balance, 491n);
+  assert.deepEqual(h.money.revenue.map((r) => [r.type, r.status, r.gross]), [["per_request", "settled", 9n]]);
+  assert.deepEqual([countOf(h, "charge"), h.sub?.usedInPeriod, countOf(h, "take")], [1, 20, 0]);
 });
 
 test("the offers in a trial's refusals are the paid plans as they are: the trial is not among them", async () => {

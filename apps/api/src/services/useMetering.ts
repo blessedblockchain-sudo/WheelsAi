@@ -10,7 +10,10 @@
  *   plan        inside a paid plan: the terms the buyer agreed to, as the
  *               subscription row holds them. Whether this use is one of the
  *               included ones is decided where one is taken
- *               (services/planUse.ts), not here
+ *               (services/planUse.ts), not here. A free trial is a plan
+ *               too: its own uses cost nothing, and a use past them is
+ *               charged only to a buyer who agreed to the price per use
+ *               themselves, at the price and by the rule of `billable`
  *   refused     with the reason, the status and what the caller is told
  *   billable    per use, at the listing's price, which is never above the
  *               price the buyer accepted
@@ -44,6 +47,7 @@ import {
   type RefundResult,
   type SettleResult,
 } from "./marketplaceMetering.js";
+import { onTrialPlan } from "./listingPlans.js";
 import { onPlan, useAccess, useDecision, type UseAccess, type UseSubscription } from "./useAccess.js";
 
 /** What one use is called where the buyer reads it: a chat message, or a task run. */
@@ -77,6 +81,14 @@ export interface UseBillingLicence {
   acceptedPricePerRequestCents?: bigint | null;
 }
 
+/**
+ * The subscription as a use reads it. `priceCents` is what the row was
+ * agreed at: with the count it tells a free trial from a paid plan
+ * (services/listingPlans.ts, onTrialPlan). A row read without it is a paid
+ * plan, which is charged nothing it did not agree to.
+ */
+export type UseBillingSubscription = UseSubscription & { priceCents?: bigint | null };
+
 export interface UseBillingInput {
   /** The organization that is asking, and that would pay. */
   callerOrgId: string;
@@ -84,7 +96,7 @@ export interface UseBillingInput {
   /** The caller's licence row for this listing, or null. */
   licence: UseBillingLicence | null;
   /** The caller's subscription to this listing, or null. */
-  sub: UseSubscription | null;
+  sub: UseBillingSubscription | null;
   /** Words the refusals: "per message" or "per run". Default "message". */
   unit?: UseUnit;
 }
@@ -131,6 +143,10 @@ export type UseBilling =
        * The charge target of one use past the count, at the extra price the
        * buyer agreed to, with kind "use". Null when the plan stops, and when
        * the listing no longer sells use: nothing more is sold on it then.
+       *
+       * On a free trial it is never the row's extra price: it is the
+       * listing's price per use, and only for a buyer whose licence agreed
+       * to a price per use that covers it. Null for everybody else.
        */
       extraInstall: MeteredInstall | null;
     }
@@ -237,7 +253,8 @@ export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()
   if (access === "subscribed") {
     // A month with no count: exactly what it was before plans existed.
     if (!licence || !input.sub || !onPlan(input.sub)) return { kind: "subscribed", access };
-    return planBilling(listing, licence, input.sub, onSaleForUse);
+    if (onTrialPlan(input.sub)) return trialBilling(input, licence, input.sub, now);
+    return planBilling(input.sub, paidPlanExtraInstall(listing, licence, input.sub, onSaleForUse));
   }
   // listing_pricing from here, and so a licence.
   if (!decision.charged || !licence) return { kind: "free" };
@@ -274,16 +291,12 @@ export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()
 }
 
 /**
- * A use inside a paid plan. Every term comes from the subscription row,
- * which copied them when the buyer agreed: a creator who has changed or
- * ended the plan since changes nothing for this buyer.
+ * A use inside a plan. Every term of the plan comes from the subscription
+ * row, which copied them when the buyer agreed: a creator who has changed or
+ * ended the plan since changes nothing for this buyer. `extraInstall` is
+ * what a use past the count is charged on, decided by the caller.
  */
-function planBilling(
-  listing: UseBillingListing,
-  licence: UseBillingLicence,
-  sub: UseSubscription,
-  onSaleForUse: boolean,
-): UseBilling {
+function planBilling(sub: UseSubscription, extraInstall: MeteredInstall | null): UseBilling {
   const { id, currentPeriodStart, includedUses, usedInPeriod, carriedUses } = sub;
   // A use can only be counted on a row that was read with its count. A row
   // read without it would run uncounted, so it does not run at all.
@@ -297,7 +310,6 @@ function planBilling(
   ) {
     throw new Error("resolveUseBilling was given a plan subscription without its id, period start or counts");
   }
-  const extraUsePriceCents = sub.extraUsePriceCents ?? null;
   return {
     kind: "plan",
     access: "subscribed",
@@ -307,23 +319,62 @@ function planBilling(
       includedUses,
       usedInPeriod,
       carriedUses,
-      extraUsePriceCents,
+      extraUsePriceCents: sub.extraUsePriceCents ?? null,
       periodStart: currentPeriodStart,
       periodEnd: sub.currentPeriodEnd,
     },
-    extraInstall:
-      extraUsePriceCents !== null && extraUsePriceCents > 0n && onSaleForUse
-        ? {
-            installId: licence.id,
-            listingId: listing.id,
-            listingTitle: listing.title,
-            publisherId: listing.publisherId,
-            buyerId: licence.buyerId,
-            pricePerRequestCents: extraUsePriceCents,
-            kind: "use",
-          }
-        : null,
+    extraInstall,
   };
+}
+
+/** A paid plan past its count: the extra price on the buyer's row, while the listing still sells use. */
+function paidPlanExtraInstall(
+  listing: UseBillingListing,
+  licence: UseBillingLicence,
+  sub: UseSubscription,
+  onSaleForUse: boolean,
+): MeteredInstall | null {
+  const extraUsePriceCents = sub.extraUsePriceCents ?? null;
+  return extraUsePriceCents !== null && extraUsePriceCents > 0n && onSaleForUse
+    ? {
+        installId: licence.id,
+        listingId: listing.id,
+        listingTitle: listing.title,
+        publisherId: listing.publisherId,
+        buyerId: licence.buyerId,
+        pricePerRequestCents: extraUsePriceCents,
+        kind: "use",
+      }
+    : null;
+}
+
+/**
+ * A use inside a free trial. Its own uses cost nothing, and the row's extra
+ * price, if a row ever carried one, is never read.
+ *
+ * Past them the trial stops, for everybody but a buyer who agreed to a price
+ * per use themselves, on a licence that is active. That buyer goes on per
+ * use, and what they are charged is not decided here a second time: it is
+ * what this same licence and listing resolve to with no subscription at
+ * all. Billable there is the charge target here, at the listing's price,
+ * which is never above the price they accepted. A price that changed there
+ * is the refusal here once the trial's uses are gone as read; while one is
+ * left it only means the trial stops after it. Anything else (the listing
+ * is no longer sold, a price of nothing) leaves the trial to stop, uncharged.
+ */
+function trialBilling(
+  input: UseBillingInput,
+  licence: UseBillingLicence,
+  sub: UseSubscription,
+  now: Date,
+): UseBilling {
+  const agreedPerUse = licence.status === "active" && licence.acceptedPricingModel === "per_request";
+  if (!agreedPerUse) return planBilling(sub, null);
+  const perUse = resolveUseBilling({ ...input, sub: null }, now);
+  if (perUse.kind === "billable") return planBilling(sub, perUse.install);
+  const trial = planBilling(sub, null);
+  const usedUp = trial.kind === "plan" && trial.plan.usedInPeriod >= trial.plan.includedUses + trial.plan.carriedUses;
+  return usedUp && perUse.kind === "refused" && perUse.reason === "pricing_changed" ? perUse : trial;
 }
 
 // ============================================
@@ -356,7 +407,7 @@ export interface UsePlanCount {
 
 /** How one use on a plan was paid for. */
 export interface UsePlanUse {
-  /** `included`: one of the plan's uses, nothing charged. `extra`: past the count, at the agreed extra price. */
+  /** `included`: one of the plan's uses, nothing charged. `extra`: past the count, at the agreed extra price (past a free trial, the price per use the buyer agreed to). */
   use: "included" | "extra";
   /** The subscription row the use was counted on, and the period it was counted in: what a warning is claimed for (services/planWarnings.ts). */
   subscriptionId: string;

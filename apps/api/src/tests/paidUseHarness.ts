@@ -253,7 +253,7 @@ export interface PaidHarness {
   money: {
     balance: bigint;
     ledger: Array<{ type: string; amountCents: bigint; description: string }>;
-    revenue: Array<{ id: string; status: string; gross: bigint; creator: bigint; platformFee: bigint }>;
+    revenue: Array<{ id: string; type: string; status: string; gross: bigint; creator: bigint; platformFee: bigint }>;
     publisherPending: bigint;
     /** The creator's ledger: one row for every change to what they are owed. */
     earnings: EarningsRow[];
@@ -319,10 +319,11 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
       },
     },
     marketplaceRevenue: {
-      create: async (args: { data: { status: string; grossAmountCents: bigint; creatorAmountCents: bigint; platformFeeCents: bigint } }) => {
+      create: async (args: { data: { type: string; status: string; grossAmountCents: bigint; creatorAmountCents: bigint; platformFeeCents: bigint } }) => {
         const id = `rev-${++seq}`;
         money.revenue.push({
           id,
+          type: args.data.type,
           status: args.data.status,
           gross: args.data.grossAmountCents,
           creator: args.data.creatorAmountCents,

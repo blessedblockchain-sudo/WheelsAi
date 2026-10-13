@@ -41,7 +41,7 @@ import {
   getValidationError,
 } from "@/lib/api";
 import { LIST_AGENT_BUTTON, NEW_AGENT_BUTTON } from "@/lib/nav";
-import { LIST_AGENT_PARAM, agentToListFirst, listingStatus } from "@/lib/agent-page";
+import { LIST_AGENT_PARAM, agentToListFirst, codeOf, listingStatus } from "@/lib/agent-page";
 import {
   LISTED_AGENT_BADGE,
   LISTED_AGENT_NOTE,
@@ -74,6 +74,7 @@ import {
   type SellForm,
 } from "@/lib/sell-choice";
 import {
+  PLANS_RELOAD_WORDS,
   emptyPlansForm,
   hasPlanErrors,
   noPlanErrors,
@@ -81,6 +82,7 @@ import {
   planLimitsOf,
   plansFormOf,
   plansRefusedLine,
+  plansReloadOffered,
   plansSaveOf,
   savedPlansOf,
   type PlanErrors,
@@ -212,6 +214,9 @@ function PublishWizardContent() {
   const [plansRead, setPlansRead] = useState<SavedPlan[] | null>([]);
   const [planErrors, setPlanErrors] = useState<PlanErrors>(noPlanErrors);
   const [plansProblem, setPlansProblem] = useState<string | null>(null);
+  // The listing whose plans were refused because they changed somewhere else: a way to read them again is offered beside the sentence.
+  const [plansStaleFor, setPlansStaleFor] = useState<string | null>(null);
+  const [isReloadingPlans, setIsReloadingPlans] = useState(false);
 
   // The chosen agent with its tools, which the list of agents does not carry.
   const [agentDetail, setAgentDetail] = useState<AgentDetail | null>(null);
@@ -275,6 +280,7 @@ function PublishWizardContent() {
     setSellErrors({});
     setPlanErrors(noPlanErrors());
     setPlansProblem(null);
+    setPlansStaleFor(null);
     setCurrentStep(0);
     filledFor.current = key;
   }, [data, editId, editing]);
@@ -376,6 +382,7 @@ function PublishWizardContent() {
       return;
     }
     setPlansProblem(null);
+    setPlansStaleFor(null);
     setIsSaving(button.id);
     let listingId: string;
     try {
@@ -406,6 +413,7 @@ function PublishWizardContent() {
         setPlanErrors(fieldErrors);
         // Each sentence is under its field; a refusal with none is said whole, as the API sent it.
         setPlansProblem(plansRefusedLine(hasPlanErrors(fieldErrors) ? null : getErrorMessage(error, "Try again.")));
+        setPlansStaleFor(plansReloadOffered(codeOf(error)) ? listingId : null);
         // The listing exists now, so the wizard goes on as an edit of it, with the rows as they were typed.
         if (!editId) adopted.current = listingId;
         await load();
@@ -429,6 +437,28 @@ function PublishWizardContent() {
       }
     }
     router.push("/dashboard/marketplace");
+  };
+
+  // After a save refused because the plans changed somewhere else: the listing is read again and the rows
+  // are filled from it, so the next save is measured against the plans as they are.
+  const reloadPlans = async () => {
+    if (!plansStaleFor || isReloadingPlans) return;
+    setIsReloadingPlans(true);
+    try {
+      const { listings: read } = await marketplaceApi.getMyListings();
+      const fresh = read.find((listing) => listing.id === plansStaleFor) ?? null;
+      setData((prev) => prev && { ...prev, listings: read });
+      setPlans(plansFormOf(fresh));
+      setPlansRead(savedPlansOf(fresh));
+      setPlanErrors(noPlanErrors());
+      setPlansProblem(null);
+      setPlansStaleFor(null);
+    } catch {
+      // Nothing was read: the rows are as they were, and the button stays to try again.
+      setPlansProblem(PLANS_RELOAD_WORDS.failed);
+    } finally {
+      setIsReloadingPlans(false);
+    }
   };
 
   const header = (
@@ -691,9 +721,23 @@ function PublishWizardContent() {
                 <div className="space-y-5">
                   {/* The listing was saved and its plans were not: said first, above the rows it is about. */}
                   {plansProblem && (
-                    <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-                      {plansProblem}
-                    </p>
+                    <div className="space-y-2">
+                      <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+                        {plansProblem}
+                      </p>
+                      {plansStaleFor && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void reloadPlans()}
+                          isLoading={isReloadingPlans}
+                          disabled={isSaving !== null}
+                        >
+                          {PLANS_RELOAD_WORDS.button}
+                        </Button>
+                      )}
+                    </div>
                   )}
                   <WhoCanUse
                     agent={chosenAgent}

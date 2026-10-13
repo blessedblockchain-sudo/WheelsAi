@@ -464,6 +464,26 @@ export function plansRefusedLine(message?: string | null): string {
   return reason ? `${PLAN_WORDS.notSaved} ${reason}` : PLAN_WORDS.notSaved;
 }
 
+/** The words of reading the plans again, after a save refused because they changed somewhere else. */
+export const PLANS_RELOAD_WORDS = {
+  /** The button beside the API's sentence: reads the listing again and fills the rows from it. */
+  button: "Reload",
+  /** That read did not go through: the rows and the button stay. */
+  failed: "The plans could not be read again. Try again.",
+} as const;
+
+/**
+ * Whether a refused save of plans can be put right by reading them again:
+ * the API answers `plans_changed` when a plan on offer was in neither list
+ * of the save, which means the rows on screen were made from an older read.
+ * `code` is the refusal's own code. The screen then offers "Reload" beside
+ * the API's sentence. Every other refusal is about what was typed, and
+ * reading again would throw that away.
+ */
+export function plansReloadOffered(code: string | null | undefined): boolean {
+  return code === "plans_changed";
+}
+
 /**
  * The one line after a save on the Sell tab that went through in part. The
  * listing is saved by then; its plans and the setting to keep a copy are

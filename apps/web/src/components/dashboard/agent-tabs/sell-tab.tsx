@@ -54,6 +54,7 @@ import {
   type SellForm,
 } from "@/lib/sell-choice";
 import {
+  PLANS_RELOAD_WORDS,
   PLAN_WORDS,
   hasPlanErrors,
   noPlanErrors,
@@ -63,6 +64,7 @@ import {
   planSaleLines,
   plansFormOf,
   plansRefusedLine,
+  plansReloadOffered,
   plansSaveOf,
   savedPlansOf,
   type PlanErrors,
@@ -114,10 +116,13 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   // read brought, and that has no row here, is never named as ended.
   const [plansRead, setPlansRead] = useState<SavedPlan[] | null>(null);
   const [planErrors, setPlanErrors] = useState<PlanErrors>(noPlanErrors);
+  // The last save of plans was refused because they changed somewhere else: a way to read them again is offered beside its sentence.
+  // It is cleared wherever that sentence is, so the button is never drawn under another one.
+  const [plansStale, setPlansStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lineDraft, setLineDraft] = useState("");
   const [lineError, setLineError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<"save" | "stop" | null>(null);
+  const [busy, setBusy] = useState<"save" | "stop" | "reload" | null>(null);
   const statusRef = useRef<HTMLDivElement>(null);
   const lineRef = useRef<HTMLInputElement>(null);
   const focusStatus = useRef(false);
@@ -139,7 +144,8 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   }, []);
 
   // `keepPlans`: the listing was saved and its plans were refused, so the rows stay as they were typed.
-  const load = useCallback(async (keepPlans = false) => {
+  // Answers whether the listing was read.
+  const load = useCallback(async (keepPlans = false): Promise<boolean> => {
     setLoadError(null);
     try {
       // The listing decides the screen. The rest only adds to it, so a part that cannot be read is left out.
@@ -150,7 +156,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
         readPageKey(agent.id).catch(() => null),
         marketplaceApi.getRevenue().catch(() => null),
       ]);
-      if (!mounted.current) return;
+      if (!mounted.current) return false;
       const listing = listingForAgent(listings, agent.id);
       const kept = pageKey?.storeTranscripts ?? false;
       setData({ listing, capabilities, link, revenue, keepCopy: kept });
@@ -162,8 +168,10 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
         setPlansRead(savedPlansOf(listing));
         setPlanErrors(noPlanErrors());
       }
+      return true;
     } catch (err) {
       if (mounted.current) setLoadError(err);
+      return false;
     }
   }, [agent.id, agent.agentKind]);
 
@@ -222,16 +230,35 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     setForm(next);
     setErrors({});
     setError(null);
+    setPlansStale(false);
   }
 
   function changePlans(next: PlansForm) {
     setPlans(next);
     setPlanErrors(noPlanErrors());
     setError(null);
+    setPlansStale(false);
+  }
+
+  // After a save refused because the plans changed somewhere else: the listing is read again and the rows
+  // are filled from it, so the next save is measured against the plans as they are.
+  async function reloadPlans() {
+    setBusy("reload");
+    const read = await load();
+    if (!mounted.current) return;
+    setBusy(null);
+    if (read) {
+      setError(null);
+      setPlansStale(false);
+    } else {
+      // Nothing was read: the rows are as they were, and the button stays to try again.
+      setError(PLANS_RELOAD_WORDS.failed);
+    }
   }
 
   async function save(sent: SellForm = form) {
     setError(null);
+    setPlansStale(false);
     const built = buildSellSave(sent, agent, limits);
     if (!built.ok) {
       setErrors(built.errors);
@@ -305,6 +332,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
         if (mounted.current) setPlanErrors(fieldErrors);
         // Each sentence is under its field; a refusal with none is said whole, as the API sent it.
         plansProblem = plansRefusedLine(hasPlanErrors(fieldErrors) ? null : getErrorMessage(err, "Try again."));
+        if (mounted.current) setPlansStale(plansReloadOffered(codeOf(err)));
       }
     }
 
@@ -330,6 +358,7 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
     if (!ok) return;
     setBusy("stop");
     setError(null);
+    setPlansStale(false);
     try {
       await marketplaceApi.archiveListing(listing.id);
       toast.success("This agent is no longer on sale");
@@ -375,9 +404,16 @@ export function SellTab({ agent, onAgentChanged }: SellTabProps) {
   );
 
   const problem = error && (
-    <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-      {error}
-    </p>
+    <div className="space-y-2">
+      <p role="alert" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+        {error}
+      </p>
+      {plansStale && (
+        <Button type="button" variant="outline" size="sm" onClick={() => void reloadPlans()} isLoading={busy === "reload"} disabled={busy !== null}>
+          {PLANS_RELOAD_WORDS.button}
+        </Button>
+      )}
+    </div>
   );
 
   // The model this agent runs on is not running: said first, before anything else on the tab.

@@ -128,3 +128,40 @@ test("after a row is taken away, focus goes to the button that adds one", () => 
   assert.match(BLOCK, /addRef\.current\?\.focus\(\);/);
   assert.match(BLOCK, /<Button ref=\{addRef\}/);
 });
+
+test("a save refused because the plans changed elsewhere offers Reload beside its sentence, on both screens", () => {
+  for (const screen of [SELL_TAB, WIZARD]) {
+    // Whether it is offered is the pure file's to say, from the refusal's own code, where the refusal is caught.
+    assert.equal(screen.split("plansReloadOffered(codeOf(").length, 2);
+    const refused = screen.indexOf("plansRefusedLine(");
+    const offered = screen.indexOf("plansReloadOffered(codeOf(");
+    assert.ok(refused > 0 && offered > refused && offered - refused < 400);
+    // One button, with the pure file's word, that waits while a save is in flight.
+    assert.equal(screen.split("{PLANS_RELOAD_WORDS.button}").length, 2);
+    assert.match(screen, /onClick=\{\(\) => void reloadPlans\(\)\}/);
+    assert.equal(screen.includes('"Reload"'), false);
+    // A read that fails keeps the button and says so in the pure file's words.
+    assert.ok(screen.includes("PLANS_RELOAD_WORDS.failed"));
+    // The next save starts with nothing offered.
+    assert.ok(screen.includes("plans_changed") === false);
+  }
+  // The Sell tab: the button sits under the sentence, only after such a refusal, and the reload is the tab's
+  // own load, which fills the rows and the read they are measured against from the listing.
+  assert.match(SELL_TAB, /\{error\}\s+<\/p>\s+\{plansStale && \(\s+<Button/);
+  assert.match(SELL_TAB, /async function reloadPlans\(\) \{\s+setBusy\("reload"\);\s+const read = await load\(\);/);
+  assert.match(SELL_TAB, /setPlansStale\(plansReloadOffered\(codeOf\(err\)\)\);/);
+  assert.match(SELL_TAB, /async function save\(sent: SellForm = form\) \{\s+setError\(null\);\s+setPlansStale\(false\);/);
+  // The offer goes with its sentence: an edit or a stop that clears the sentence clears the offer too, so the
+  // button is never under a sentence about something else. The one place that keeps it is a reload that failed.
+  assert.match(SELL_TAB, /function change\(next: SellForm\) \{\s+setForm\(next\);\s+setErrors\(\{\}\);\s+setError\(null\);\s+setPlansStale\(false\);/);
+  assert.match(SELL_TAB, /function changePlans\(next: PlansForm\) \{\s+setPlans\(next\);\s+setPlanErrors\(noPlanErrors\(\)\);\s+setError\(null\);\s+setPlansStale\(false\);/);
+  assert.match(SELL_TAB, /setBusy\("stop"\);\s+setError\(null\);\s+setPlansStale\(false\);/);
+  assert.equal(SELL_TAB.split("setError(null);").length, SELL_TAB.split("setPlansStale(false);").length);
+  // The wizard: under the sentence of step 3, for the listing that was refused, read again by its id.
+  assert.match(WIZARD, /\{plansProblem\}\s+<\/p>\s+\{plansStaleFor && \(\s+<Button/);
+  assert.match(WIZARD, /setPlansStaleFor\(plansReloadOffered\(codeOf\(error\)\) \? listingId : null\);/);
+  assert.match(
+    WIZARD,
+    /const fresh = read\.find\(\(listing\) => listing\.id === plansStaleFor\) \?\? null;\s+setData\([^\n]+\);\s+setPlans\(plansFormOf\(fresh\)\);\s+setPlansRead\(savedPlansOf\(fresh\)\);/,
+  );
+});

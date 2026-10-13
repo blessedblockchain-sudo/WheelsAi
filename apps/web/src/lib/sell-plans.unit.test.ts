@@ -13,6 +13,7 @@ import { emptySellForm, type SellForm } from "./sell-choice";
 import {
   DEFAULT_PLAN_LIMITS,
   PLAN_NAME_MAX,
+  PLANS_RELOAD_WORDS,
   PLAN_WORDS,
   addPlanRow,
   canAddPlan,
@@ -36,6 +37,7 @@ import {
   plansProblem,
   partSavedLine,
   plansRefusedLine,
+  plansReloadOffered,
   plansSaveOf,
   removePlanLabel,
   removePlanRow,
@@ -597,4 +599,14 @@ test("no sentence here has an em dash, a raw error code, or the word unlimited o
     assert.equal(/token|model|organization/i.test(sentence), false, sentence);
     if (sentence !== PLAN_WORDS.noUnlimited) assert.equal(/unlimited/i.test(sentence), false, sentence);
   }
+});
+
+test("Reload is offered only for a save refused because the plans changed somewhere else", () => {
+  assert.equal(plansReloadOffered("plans_changed"), true);
+  // A refusal about what was typed, or about the listing: reading again would throw the rows away for nothing.
+  for (const code of ["validation_failed", "plans_not_available", "forbidden", "", null, undefined]) {
+    assert.equal(plansReloadOffered(code), false, String(code));
+  }
+  assert.equal(PLANS_RELOAD_WORDS.button, "Reload");
+  assert.equal(PLANS_RELOAD_WORDS.failed, "The plans could not be read again. Try again.");
 });

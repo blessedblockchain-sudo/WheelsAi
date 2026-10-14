@@ -2,7 +2,16 @@ import type { Agent, AgentListing, WheelsAI } from "@wheelsai/sdk";
 
 import { CliError } from "../errors.js";
 import { listingUrl } from "./urls.js";
-import { parseCategory, LISTING_CATEGORIES, type ListingCategory, type Pricing } from "./pricing.js";
+import {
+  describeOffers,
+  describePlans,
+  describePricing,
+  describeSells,
+  parseCategory,
+  LISTING_CATEGORIES,
+  type ListingCategory,
+  type Pricing,
+} from "./pricing.js";
 
 export interface PublishOptions {
   /** Pricing from flags; null means "not specified". */
@@ -177,6 +186,41 @@ export async function publishAgent(
   }
 
   return { listing, url: listingUrl(webUrl, listing.slug), created, updated, alreadyPublished };
+}
+
+/** What a listing is for, as the API says it: an agent, unless it says a workflow. */
+export function listingKindOf(listing: { productKind?: string | null }): "agent" | "workflow" {
+  return listing.productKind === "workflow" ? "workflow" : "agent";
+}
+
+/** A listing as `listingTermRows` reads it: what it sells, what it costs, and what it offers on top. */
+export type ListingTerms = Pick<AgentListing, "sells" | "unit" | "pricingModel" | "pricePerRequestCents" | "monthlyPriceCents"> &
+  Partial<Pick<AgentListing, "productKind" | "plans" | "freeTrial">>;
+
+/**
+ * What a printed listing says it sells and what it costs, one row each, as label and value, in the order
+ * they are printed. An agent's rows are what they always were: Sells, Pricing, then its free trial and its
+ * plans under Plans. A workflow's listing says it is a workflow first, and its price per run: a workflow is
+ * sold per run, and its plans are a number of runs for 30 days, in the words its page uses. It has no free
+ * trial, so none is ever printed for it, whatever the listing carries.
+ */
+export function listingTermRows(listing: ListingTerms): Array<[label: string, value: string]> {
+  const offers = (lines: string[]): Array<[string, string]> =>
+    lines.map((line, index) => [index === 0 ? "Plans" : "", line]);
+  if (listingKindOf(listing) === "workflow") {
+    const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
+    return [
+      ["Kind", "workflow"],
+      ["Sells", describeSells({ sells: listing.sells, unit: "run" })],
+      ["Pricing", listing.pricePerRequestCents ? `${dollars(listing.pricePerRequestCents)} per run` : "per run"],
+      ...offers(describePlans(listing)),
+    ];
+  }
+  return [
+    ["Sells", describeSells(listing)],
+    ["Pricing", describePricing(listing)],
+    ...offers(describeOffers(listing)),
+  ];
 }
 
 /** One line saying what `publishAgent` did. */

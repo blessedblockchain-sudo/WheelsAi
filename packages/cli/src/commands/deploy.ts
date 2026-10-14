@@ -8,9 +8,9 @@ import { agentReference } from "../lib/agents.js";
 import { channelLabel, type ChannelReport } from "../lib/channels.js";
 import { DeployFailure, runDeploy } from "../lib/deploy.js";
 import { formatLatencyValue, loadPlatformLatency, type PublicLatencyFigure } from "../lib/latency.js";
-import { checkListingText } from "../lib/listing.js";
+import { checkListingText, listingTermRows } from "../lib/listing.js";
 import { parseWholeNumber } from "../lib/numbers.js";
-import { describeOffers, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
+import { parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, field, printJson } from "../ui.js";
 
@@ -177,9 +177,7 @@ function printListing(listing: AgentListing, url: string): void {
   console.log(chalk.bold("  Listed on the marketplace"));
   console.log(field("URL", clean(url)));
   console.log(field("Status", clean(listing.status)));
-  console.log(field("Sells", clean(describeSells(listing))));
-  console.log(field("Pricing", clean(describePricing(listing))));
-  describeOffers(listing).forEach((offer, index) => console.log(field(index === 0 ? "Plans" : "", clean(offer))));
+  for (const [label, value] of listingTermRows(listing)) console.log(field(label, clean(value)));
   const note = pricingNote(listing.pricingModel);
   if (note) console.log(chalk.yellow(`  ${note}`));
   console.log();

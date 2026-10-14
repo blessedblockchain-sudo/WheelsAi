@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { CliError } from "../src/errors.js";
+import { readFileSync } from "node:fs";
+
 import {
   checkListingText,
   defaultListingFields,
   describePublishOutcome,
+  listingKindOf,
+  listingTermRows,
   preflightListing,
   publishAgent,
   publishCommandLine,
+  type ListingTerms,
 } from "../src/lib/listing.js";
-import { describePlans } from "../src/lib/pricing.js";
+import { describeOffers, describePlans, describePricing, describeSells } from "../src/lib/pricing.js";
 import { AGENT_ID, agent, fakeApi, status } from "./helpers.js";
 
 const LISTING_ID = "44444444-4444-4444-8444-444444444444";
@@ -297,6 +302,19 @@ describe("publishAgent", () => {
     assert.equal(result.created, true);
   });
 
+  it("never takes a workflow's listing for the agent's own", async () => {
+    const api = fakeApi({
+      "GET /api/marketplace/my-listings": {
+        listings: [listing({ id: "55555555-5555-4555-8555-555555555555", productKind: "workflow", agentId: null, status: "published" })],
+      },
+      "POST /api/marketplace/listings": status(201, { listing: listing() }),
+      [`POST /api/marketplace/listings/${LISTING_ID}/publish`]: { listing: listing({ status: "published" }), message: "ok" },
+    });
+    const result = await publishAgent(api.wheels, agent(), "http://localhost:3000", { pricing: null });
+    assert.equal(result.created, true);
+    assert.equal((api.requested("POST", "/api/marketplace/listings")[0]?.body as { agentId: string }).agentId, AGENT_ID);
+  });
+
   it("passes the API's error through", async () => {
     const api = fakeApi({
       "GET /api/marketplace/my-listings": { listings: [] },
@@ -306,5 +324,79 @@ describe("publishAgent", () => {
       status: 400,
       message: "validation_failed: title: String must contain at least 3 character(s)",
     });
+  });
+});
+
+describe("a printed listing", () => {
+  const team = { id: "p1", name: "Team", priceCents: 2900, includedUses: 200, extraUsePriceCents: null };
+  const starter = { id: "p2", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 };
+  const workflow: ListingTerms = {
+    productKind: "workflow",
+    sells: "use",
+    unit: "run",
+    pricingModel: "per_request",
+    pricePerRequestCents: 25,
+    monthlyPriceCents: null,
+    plans: [team],
+  };
+
+  it("says a workflow is a workflow, sold per run, with its plans in the words of its page", () => {
+    assert.deepEqual(listingTermRows(workflow), [
+      ["Kind", "workflow"],
+      ["Sells", "use, per run"],
+      ["Pricing", "$0.25 per run"],
+      ["Plans", "Team: $29.00 for 30 days, 200 uses, then it stops until it renews"],
+    ]);
+    assert.deepEqual(listingTermRows({ ...workflow, plans: [team, starter] }).slice(3), [
+      ["Plans", "Team: $29.00 for 30 days, 200 uses, then it stops until it renews"],
+      ["", "Starter: $9.00 for 30 days, 500 uses, then $0.05 a use"],
+    ]);
+    // With no plan there is no Plans row; with no price the unit is still said.
+    assert.deepEqual(listingTermRows({ ...workflow, plans: [] }).map(([label]) => label), ["Kind", "Sells", "Pricing"]);
+    assert.deepEqual(listingTermRows({ ...workflow, pricePerRequestCents: null })[2], ["Pricing", "per run"]);
+  });
+
+  it("never prints a free trial or another unit for a workflow, whatever the listing carries", () => {
+    const rows = listingTermRows({ ...workflow, unit: "message", freeTrial: { id: "t1", includedUses: 20, days: 7 }, plans: [team] });
+    assert.ok(rows.some(([label, value]) => label === "Sells" && value === "use, per run"));
+    assert.equal(rows.some(([, value]) => /free trial|per request|per message/i.test(value)), false);
+    assert.equal(rows.length, 4);
+  });
+
+  it("prints an agent's listing exactly as before", () => {
+    const agents: ListingTerms[] = [
+      { sells: "use", unit: "message", pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, plans: [starter], freeTrial: { id: "t1", includedUses: 20, days: 7 } },
+      { productKind: "agent", sells: "use", unit: "month", pricingModel: "monthly", pricePerRequestCents: null, monthlyPriceCents: 900 },
+      { productKind: "agent", sells: "copies", unit: null, pricingModel: "tokenized", pricePerRequestCents: null, monthlyPriceCents: null },
+      { productKind: "agent", sells: "use", unit: "run", pricingModel: "free", pricePerRequestCents: null, monthlyPriceCents: null, plans: [] },
+    ];
+    for (const terms of agents) {
+      const before: Array<[string, string]> = [
+        ["Sells", describeSells(terms)],
+        ["Pricing", describePricing(terms)],
+        ...describeOffers(terms).map((offer, index): [string, string] => [index === 0 ? "Plans" : "", offer]),
+      ];
+      assert.deepEqual(listingTermRows(terms), before);
+    }
+    assert.deepEqual(listingTermRows(agents[0]!)[2], ["Plans", "Free trial: 20 uses for 7 days"]);
+  });
+
+  it("reads what a listing is for as the API says it", () => {
+    assert.equal(listingKindOf({ productKind: "workflow" }), "workflow");
+    assert.equal(listingKindOf({ productKind: "agent" }), "agent");
+    // A listing read from an API that does not say is an agent's, as every listing was before.
+    assert.equal(listingKindOf({}), "agent");
+    // The API says it on every listing, and a workflow's is sold by the run.
+    const marketplace = readFileSync(new URL("../../../../apps/api/src/services/marketplace.ts", import.meta.url), "utf8");
+    assert.match(marketplace, /productKind,\s+agentId: productKind === "workflow" \? null : listing\.agentId,/);
+    assert.match(marketplace, /productKind === "workflow"\s+\? "run"/);
+  });
+
+  it("both commands that print a listing print these rows", () => {
+    for (const command of ["publish", "deploy"]) {
+      const text = readFileSync(new URL(`../../src/commands/${command}.ts`, import.meta.url), "utf8");
+      assert.match(text, /for \(const \[label, value\] of listingTermRows\(/, command);
+      assert.doesNotMatch(text, /field\("Pricing"/, command);
+    }
   });
 });

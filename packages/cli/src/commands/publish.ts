@@ -3,8 +3,8 @@ import chalk from "chalk";
 
 import { createSession } from "../client.js";
 import { agentReference, resolveAgent } from "../lib/agents.js";
-import { checkListingText, describePublishOutcome, publishAgent } from "../lib/listing.js";
-import { describeOffers, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
+import { checkListingText, describePublishOutcome, listingTermRows, publishAgent } from "../lib/listing.js";
+import { parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, field, printJson } from "../ui.js";
 
@@ -64,10 +64,9 @@ export const publishCommand = new Command("publish")
     console.log(field("Title", clean(result.listing.title)));
     console.log(field("Status", clean(result.listing.status)));
     console.log(field("Category", clean(result.listing.category)));
-    console.log(field("Sells", clean(describeSells(result.listing))));
-    console.log(field("Pricing", clean(describePricing(result.listing))));
-    // One line for the free trial, when the listing offers one, and one for each plan: the first beside the label.
-    describeOffers(result.listing).forEach((offer, index) => console.log(field(index === 0 ? "Plans" : "", clean(offer))));
+    // What it sells and costs; then one line for the free trial, when the listing offers one, and one for
+    // each plan: the first beside the label.
+    for (const [label, value] of listingTermRows(result.listing)) console.log(field(label, clean(value)));
     const note = pricingNote(result.listing.pricingModel);
     if (note) console.log(chalk.yellow(`\n  ${note}`));
     if (result.created && !pricing) {

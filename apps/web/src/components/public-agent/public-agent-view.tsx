@@ -13,6 +13,7 @@ import { API_PAGE_WORDS, apiPageHrefOfAgent } from "@/lib/api-page";
 import { PUBLIC_USE_MESSAGES } from "@/lib/public-use";
 import { useHydrated } from "./local-time";
 import { PaidGate } from "./paid-gate";
+import { agentDoor } from "./paid-transport";
 import { PublicChatPanel } from "./public-chat-panel";
 import { PublicReceipts, PublicReceiptsSkeleton } from "./public-receipts";
 import { PublicResultsPanel } from "./public-results-panel";
@@ -71,6 +72,8 @@ function UsePanel({ detail }: { detail: PublicAgentDetail }) {
   const key = use.state === "on" ? use.key : null;
   const chatTransport = useMemo(() => (key && use.chat ? freeChatTransport(key) : null), [key, use.chat]);
   const taskTransport = useMemo(() => (key && use.task ? freeTaskTransport(key) : null), [key, use.task]);
+  // How the gate reaches this agent when it is sold: today's calls by its handle, and an agent's words.
+  const door = useMemo(() => agentDoor(agent.handle, agent.name), [agent.handle, agent.name]);
 
   // The page is shown and nobody can use the agent from it yet: receipts only.
   if (use.state === "view_only") return null;
@@ -78,7 +81,7 @@ function UsePanel({ detail }: { detail: PublicAgentDetail }) {
   const kind = use.chat ? "chat" : use.task ? "task" : "scheduled";
   // Sold: people sign in and pay to use it. The price, the sign-in and the panel are the gate's.
   if (use.state === "paid" && use.paid) {
-    return <PaidGate detail={detail} terms={use.paid} title={PANEL_TITLES[kind](agent.name)} />;
+    return <PaidGate door={door} use={use} terms={use.paid} title={PANEL_TITLES[kind](agent.name)} />;
   }
   const usable = use.state === "on" && !stopped && (kind === "scheduled" || key !== null);
   const titleId = "public-use-title";

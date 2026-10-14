@@ -18,17 +18,20 @@ import {
   type PaidUseRefusal,
   type PaidUseTerms,
   type PlanOffer,
-  type PublicAgentDetail,
   type PublicAgentPaidTerms,
+  type PublicAgentUse,
   type TrialOffer,
 } from "@/lib/api";
 import { AGENT_PAUSED_MESSAGE, PAUSED_RECHECK_MS, PUBLIC_PAUSED_NOTICE, accessIsPaused } from "@/lib/listing-pause";
 import {
   ADD_CREDITS_HREF,
   PAID_USE_MESSAGES,
+  PAID_WORKFLOW_MESSAGES,
+  STOPPED_REREADS_MS,
   expectedTerms,
   lastResultLine,
   noticeOfView,
+  pageTermsFor,
   paidRefusalNotice,
   priceLine,
   priceOfPage,
@@ -36,7 +39,6 @@ import {
   registerHref,
   scheduleLines,
   signInHref,
-  taskDraftKey,
   tryFreeHref,
   type PaidAgentKind,
   type PaidDialog,
@@ -63,19 +65,32 @@ import {
 import { cn } from "@/lib/utils";
 import { useHydrated } from "./local-time";
 import { PaidResults } from "./paid-results";
-import { paidChatTransport, paidTaskTransport } from "./paid-transport";
+import { paidChatTransport, type PaidDoor } from "./paid-transport";
 import { PanelActionLink } from "./panel-notice";
 import { PlanCards } from "./plan-cards";
 import { PublicChatPanel } from "./public-chat-panel";
 import { PublicTaskPanel } from "./public-task-panel";
 import type { PanelNotice } from "./transport";
 
+/**
+ * What the panel under the gate needs: exactly one of an agent's chat, a
+ * form (an agent's task, or a workflow's input), or a self-running agent's
+ * results.
+ */
+export interface PaidGateUse {
+  chat?: PublicAgentUse["chat"];
+  task?: { inputSchema: unknown; maxInputChars: number };
+  scheduled?: PublicAgentUse["scheduled"];
+}
+
 export interface PaidGateProps {
-  /** The page as the API described it; its `use.state` is "paid". */
-  detail: PublicAgentDetail;
-  /** The terms on the page, `detail.use.paid`. */
+  /** How the gate reaches what is sold: an agent by its handle, or a workflow on sale by its listing's slug. */
+  door: PaidDoor;
+  /** What the panel needs: an agent's page passes its `use`. */
+  use: PaidGateUse;
+  /** The terms on the page: an agent's `detail.use.paid`, or a workflow's as its public read gives them. */
   terms: PublicAgentPaidTerms;
-  /** The panel's heading: "Chat with Support Bot", "Give it a task", "Latest results". */
+  /** The panel's heading: "Chat with Support Bot", "Give it a task", "Latest results", "Run it". */
   title: string;
 }
 
@@ -122,16 +137,21 @@ const TASK_FORM_STATES: ReadonlyArray<PaidView["kind"]> = [
 ];
 
 /**
- * The door of an agent that is sold: its price, where the person stands
- * (signed out, not started, a changed price, in use ...), the one thing they
- * can do about it, and the panel of the agent's kind once they may use it.
+ * The door of an agent or a workflow that is sold: its price, where the
+ * person stands (signed out, not started, a changed price, in use ...), the
+ * one thing they can do about it, and the panel of its kind once they may
+ * use it. A workflow is drawn as an agent that does a task from a form, in
+ * its own words: no chat, no results, no free try, no pause.
  *
  * The access is read after sign-in, after every use and after every start,
  * and everything here is drawn from that read.
  */
-export function PaidGate({ detail, terms, title }: PaidGateProps) {
-  const { agent, use } = detail;
-  const handle = agent.handle;
+export function PaidGate({ door, use, terms: pageTerms, title }: PaidGateProps) {
+  // An agent's handle: its chat, its results and the recheck of a pause go by it. Null on a workflow's page.
+  const handle = door.agent?.handle ?? null;
+  const subject = door.subject;
+  // The view's sentences are worded for what the door sells. An agent's terms are passed on as they are.
+  const terms = useMemo(() => pageTermsFor(pageTerms, subject), [pageTerms, subject]);
   const kind: PaidAgentKind = use.chat ? "chat" : use.task ? "task" : "scheduled";
   const unit: PaidUnit = kind === "task" ? "run" : "message";
   const titleId = "public-use-title";
@@ -167,6 +187,10 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const [everUsable, setEverUsable] = useState(false);
   // Bumped when the results should be read again.
   const [resultsRead, setResultsRead] = useState(0);
+  // A run of a workflow that the person stopped, or that the page cancelled, before its answer came.
+  const [runStopped, setRunStopped] = useState(false);
+  // The later reads of the access after a stopped run: the API gives back what it took once the run has ended.
+  const stoppedReads = useRef<number[]>([]);
   const reads = useRef(0);
 
   const signedIn = authed === true && !sessionEnded;
@@ -177,7 +201,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const readAccess = useCallback(async (): Promise<PaidUseAccessState | null> => {
     const read = ++reads.current;
     try {
-      const next = await paidUseApi.access(handle);
+      const next = await door.readAccess();
       if (read === reads.current) {
         setAccess(next);
         setAccessError(null);
@@ -193,7 +217,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       }
       return null;
     }
-  }, [handle]);
+  }, [door]);
 
   useEffect(() => {
     if (authed === true) void readAccess();
@@ -204,6 +228,8 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   // A read that fails changes nothing: the page stays paused and asks again.
   useEffect(() => {
     if (!paused) return;
+    // Only an agent's page pauses: a workflow's access always says it is not paused.
+    if (handle === null) return;
     let gone = false;
     const recheck = async () => {
       if (document.visibilityState !== "visible") return;
@@ -263,6 +289,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
             refusal: paidUseRefusalOf(error),
             act: "start",
             unit,
+            subject,
           }),
         );
       } finally {
@@ -271,7 +298,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         setResultsRead((n) => n + 1);
       }
     },
-    [readAccess, unit],
+    [readAccess, unit, subject],
   );
 
   /** The action of a view, pressed: a price named on the button is accepted, any other opens its dialog. */
@@ -303,7 +330,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         setPlansOpen(false);
       } catch (error) {
         const refusal = paidUseRefusalOf(error);
-        setNotice(planStartNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit }));
+        setNotice(planStartNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit, subject }));
         setAccess((held) => accessAfterRefusal(held, refusal));
       } finally {
         await readAccess();
@@ -312,7 +339,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         setResultsRead((n) => n + 1);
       }
     },
-    [readAccess, unit],
+    [readAccess, unit, subject],
   );
 
   /** A card's button, pressed: its dialog opens, made from that card. Nothing is sent yet. */
@@ -340,7 +367,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         await marketplaceApi.startPlan(agreed.listingId, trialTermsOf(agreed.trial));
       } catch (error) {
         const refusal = paidUseRefusalOf(error);
-        setNotice(planStartNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit }));
+        setNotice(planStartNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit, subject }));
         setAccess((held) => accessAfterRefusal(held, refusal));
       } finally {
         await readAccess();
@@ -349,7 +376,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         setResultsRead((n) => n + 1);
       }
     },
-    [readAccess, unit],
+    [readAccess, unit, subject],
   );
 
   /** "Start the free trial", pressed: its dialog opens, made from the trial on the page. Nothing is sent yet. */
@@ -379,7 +406,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         setBiggerOpen(false);
       } catch (error) {
         const refusal = paidUseRefusalOf(error);
-        setNotice(planMoveNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit }));
+        setNotice(planMoveNotice({ status: error instanceof ApiError ? error.status : 0, refusal, unit, subject }));
         setAccess((held) => accessAfterRefusal(held, refusal));
       } finally {
         await readAccess();
@@ -388,7 +415,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
         setResultsRead((n) => n + 1);
       }
     },
-    [readAccess, unit],
+    [readAccess, unit, subject],
   );
 
   /**
@@ -452,7 +479,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       if (!label) return base;
       switch (refused.action.kind) {
         case "signin":
-          return { ...base, action: { label, href: signInHref(handle) } };
+          return { ...base, action: { label, href: signInHref({ path: door.path }) } };
         case "add_credits":
           return { ...base, action: { label, href: ADD_CREDITS_HREF } };
         case "start":
@@ -463,7 +490,7 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           return base;
       }
     },
-    [handle, followUp],
+    [door, followUp],
   );
 
   // The transports live as long as the page, so a chat keeps its session; they read what is current through this.
@@ -471,12 +498,14 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   useEffect(() => {
     live.current = { view, toPanel, readAccess, paused };
   });
+  // Nothing is read for a page that has closed.
+  useEffect(() => () => stoppedReads.current.forEach((timer) => window.clearTimeout(timer)), []);
   const hasChat = Boolean(use.chat);
   const hasTask = Boolean(use.task);
   const transports = useMemo(() => {
     const hooks = {
-      handle,
       unit,
+      subject,
       heldBack: () => {
         // Paused: nothing is sent, so nothing is charged.
         if (live.current.paused) {
@@ -491,12 +520,21 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
       // from what the use itself answered. The read that onUsed began replaces both when it arrives.
       onBilled: (billing: PaidUseBilling) => setAccess((held) => accessAfterUse(held, billing)),
       onRefused: (refusal: PaidUseRefusal) => setAccess((held) => accessAfterRefusal(held, refusal)),
+      // A workflow's run that was stopped: said under the form until the next run is sent. The read made at
+      // the moment of Stop comes before the refund, so the access is read again a little later.
+      onStopped: (stopped: boolean) => {
+        setRunStopped(stopped);
+        stoppedReads.current.forEach((timer) => window.clearTimeout(timer));
+        stoppedReads.current = stopped
+          ? STOPPED_REREADS_MS.map((ms) => window.setTimeout(() => void live.current.readAccess(), ms))
+          : [];
+      },
     };
     return {
-      chat: hasChat ? paidChatTransport(hooks) : null,
-      task: hasTask ? paidTaskTransport(hooks) : null,
+      chat: hasChat && handle !== null ? paidChatTransport({ ...hooks, handle }) : null,
+      task: hasTask ? door.taskTransport(hooks) : null,
     };
-  }, [handle, unit, hasChat, hasTask]);
+  }, [door, handle, subject, unit, hasChat, hasTask]);
 
   const price = view.price ?? priceOfPage(terms);
   const keepsCopy = (signedIn ? access?.terms?.keepsCopy : undefined) ?? terms.transcriptsStored;
@@ -508,6 +546,15 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
   const showPanel =
     everUsable || (ready && (view.usable || (kind === "task" && TASK_FORM_STATES.includes(view.kind))));
   const linkButton = (variant: "default" | "outline") => cn(buttonVariants({ variant }), "w-full sm:w-auto");
+  // The privacy sentence, and on a workflow's page how long a run may take: above for an agent, under the form for a workflow.
+  const notesUnderForm = door.runNote !== null;
+  const notes = (
+    <div className="space-y-1 text-xs text-muted-foreground">
+      <p>{privacyLine(keepsCopy, subject)}</p>
+      {terms.sendsRequests && <p>{PAID_USE_MESSAGES.sendsRequests}</p>}
+      {door.runNote && <p>{door.runNote}</p>}
+    </div>
+  );
   const planCards = (
     <>
       <PlanCards cards={plans.cards} canStart={plans.canStart} busy={busy} onStart={pressPlan} />
@@ -631,21 +678,24 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
               {view.action.kind === "signin" && (
                 <div className="space-y-3">
                   <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                    <Link href={signInHref(handle)} className={linkButton("default")}>
+                    <Link href={signInHref({ path: door.path })} className={linkButton("default")}>
                       {PAID_USE_MESSAGES.signInButton}
                     </Link>
-                    <Link href={registerHref(handle)} className={linkButton("outline")}>
+                    <Link href={registerHref({ path: door.path })} className={linkButton("outline")}>
                       {PAID_USE_MESSAGES.createAccount}
                     </Link>
                   </div>
-                  <p>
-                    <Link
-                      href={tryFreeHref(terms.listingSlug)}
-                      className="rounded text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      {PAID_USE_MESSAGES.tryFree}
-                    </Link>
-                  </p>
+                  {/* An agent's listing can be tried free on its page; a workflow's cannot. */}
+                  {door.agent && (
+                    <p>
+                      <Link
+                        href={tryFreeHref(terms.listingSlug)}
+                        className="rounded text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {PAID_USE_MESSAGES.tryFree}
+                      </Link>
+                    </p>
+                  )}
                   {kind === "task" && <p className="text-xs text-muted-foreground">{PAID_USE_MESSAGES.draftKept}</p>}
                 </div>
               )}
@@ -699,15 +749,12 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           </p>
         )}
 
-        <div className="space-y-1 text-xs text-muted-foreground">
-          <p>{privacyLine(keepsCopy)}</p>
-          {terms.sendsRequests && <p>{PAID_USE_MESSAGES.sendsRequests}</p>}
-        </div>
+        {!notesUnderForm && notes}
       </div>
 
-      {showPanel && use.chat && transports.chat && (
+      {showPanel && use.chat && transports.chat && door.agent && (
         <PublicChatPanel
-          agentName={agent.name}
+          agentName={door.agent.name}
           limits={use.chat}
           transport={transports.chat}
           noticeKey={noticeKey}
@@ -721,11 +768,21 @@ export function PaidGate({ detail, terms, title }: PaidGateProps) {
           transport={transports.task}
           noticeKey={noticeKey}
           sendDisabled={paused}
-          draft={{ key: taskDraftKey(handle), keep: view.kind === "signed_out" }}
+          draft={{ key: door.draftKey, keep: view.kind === "signed_out" }}
         />
       )}
-      {kind === "scheduled" && ready && view.usable && (
+      {kind === "scheduled" && ready && view.usable && handle !== null && (
         <PaidResults handle={handle} read={resultsRead} onRefused={() => void readAccess()} />
+      )}
+      {notesUnderForm && (
+        <div className="space-y-2 border-t px-4 py-4 sm:px-5">
+          {runStopped && (
+            <p role="status" className="text-sm text-foreground">
+              {PAID_WORKFLOW_MESSAGES.stopped}
+            </p>
+          )}
+          {notes}
+        </div>
       )}
 
       {shown?.dialog && (

@@ -888,7 +888,7 @@ test("the gate starts a plan only with the terms of the card it showed, once, an
   // A second press while the call runs starts nothing.
   assert.match(start, /if \(startingPlan\.current\) return;\s*startingPlan\.current = true;/);
   // A refusal: its sentence, and the cards drawn again from what it named.
-  assert.match(start, /setNotice\(planStartNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit \}\)\)/);
+  assert.match(start, /setNotice\(planStartNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit, subject \}\)\)/);
   assert.match(start, /setAccess\(\(held\) => accessAfterRefusal\(held, refusal\)\)/);
   assert.match(start, /finally \{\s*await readAccess\(\);\s*startingPlan\.current = false;/);
   // Nothing in a start reads the plans again to decide what to send.
@@ -968,7 +968,7 @@ test("the gate moves up only with the terms of the card it showed, once, and rea
   // A second press while the call runs charges nothing.
   assert.match(move, /if \(movingPlan\.current\) return;\s*movingPlan\.current = true;/);
   // A refusal: its sentence, and the cards drawn again from what it named.
-  assert.match(move, /setNotice\(planMoveNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit \}\)\)/);
+  assert.match(move, /setNotice\(planMoveNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit, subject \}\)\)/);
   assert.match(move, /setAccess\(\(held\) => accessAfterRefusal\(held, refusal\)\)/);
   // Moved or refused, the access is read again: the count line is drawn from that read.
   assert.match(move, /finally \{\s*await readAccess\(\);\s*movingPlan\.current = false;/);
@@ -1088,7 +1088,7 @@ test("the gate starts the free trial only with the terms of the trial it showed,
   // A second press while the call runs starts nothing.
   assert.match(start, /if \(startingTrial\.current\) return;\s*startingTrial\.current = true;/);
   // A refusal: the API's sentence (with Add credits where the notice says so), and the page made true from it.
-  assert.match(start, /setNotice\(planStartNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit \}\)\)/);
+  assert.match(start, /setNotice\(planStartNotice\(\{ status: error instanceof ApiError \? error\.status : 0, refusal, unit, subject \}\)\)/);
   assert.match(start, /setAccess\(\(held\) => accessAfterRefusal\(held, refusal\)\)/);
   // Started or refused, the access is read again.
   assert.match(start, /finally \{\s*await readAccess\(\);\s*startingTrial\.current = false;/);

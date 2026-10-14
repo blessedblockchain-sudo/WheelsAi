@@ -32,6 +32,8 @@ interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   headers?: Record<string, string>;
+  /** Aborting it cancels the request: for a paid run of a workflow, closing the page or Stop cancels the run. */
+  signal?: AbortSignal;
 }
 
 class ApiError extends Error {
@@ -160,7 +162,7 @@ async function readBody(res: Response): Promise<unknown> {
 }
 
 async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
-  const { method = "GET", body, headers = {} } = options;
+  const { method = "GET", body, headers = {}, signal } = options;
   const hasBody = Boolean(body);
 
   const res = await fetch(`${API_URL}${endpoint}`, {
@@ -174,6 +176,7 @@ async function api<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
     },
     body: hasBody ? JSON.stringify(body) : undefined,
     credentials: "include",
+    ...(signal && { signal }),
   });
 
   // Status first: an error response must surface its real status even when
@@ -458,6 +461,22 @@ export interface DeploymentDependents {
     onSale: boolean;
     listing: { id: string; title: string; pricingModel: string; subscribers: number } | null;
   }>;
+  /**
+   * Workflows of this organization that are on sale (their listing is published, or somebody's plan on
+   * it still runs) and could not run if this deployment were stopped now, by the workflow's own name.
+   * While one cannot run, a plan on it that comes due is not charged; it is charged once if the workflow
+   * runs again within `renewalGraceDays` days after the plan's period ended, and ends uncharged after
+   * that. The days already paid for keep counting. Absent from an API that does not say: read as none.
+   */
+  workflows?: Array<{
+    id: string;
+    name: string;
+    /** Its listing is published. False: it was taken off sale and somebody's plan on it still runs. */
+    onSale: boolean;
+    listing: { id: string; title: string; subscribers: number };
+    /** How many days after a plan's period ends its renewal waits for the workflow to run again. */
+    renewalGraceDays: number;
+  }>;
 }
 
 export const deploymentsApi = {
@@ -491,7 +510,7 @@ export const deploymentsApi = {
       method: "POST",
     }),
 
-  /** The agents that will stop answering if this deployment is stopped now. Read before a stop. */
+  /** The agents that will stop answering, and the workflows on sale that cannot run, if this deployment is stopped now. Read before a stop. */
   dependents: (id: string) =>
     api<DeploymentDependents>(`/api/deployments/${id}/dependents`),
 
@@ -897,7 +916,12 @@ export interface MarketplaceUsageRow {
   listingId: string;
   title: string;
   slug: string;
-  /** The agent's page, /a/<handle>. Null when it has none. */
+  /**
+   * What the listing sells. A workflow is used at /w/<slug> (the listing's slug) and has no handle.
+   * Absent from an API that does not say, which sold agents only: read it with `productKindOf`.
+   */
+  productKind?: MarketplaceProductKind;
+  /** The agent's page, /a/<handle>. Null when it has none, and always for a workflow. */
   handle: string | null;
   access: MarketplaceInstallAccess;
   /** True only when `access` is plan_ended and what ended was the buyer's own free trial. Absent from an API that does not say. */
@@ -2412,6 +2436,36 @@ export type MarketplaceInstallAccess =
 /** What a listing sells: use of the creator's own agent, or a copy the buyer owns. */
 export type MarketplaceSells = "use" | "copies";
 
+/**
+ * Which of the creator's things a listing sells: an agent, or a workflow. A workflow's listing has no
+ * agent (`agentId` null, no `agent` block), sells use only, by the run, and is used at /w/<slug>, the
+ * listing's own slug.
+ */
+export type MarketplaceProductKind = "agent" | "workflow";
+
+/**
+ * What a listing, a licence or a usage row is for. `productKind` is read when the API says it; an API
+ * that does not say sold agents only, so its rows are agents' unless a listing's `agentId` is null.
+ * Anything that is not plainly an agent is a workflow, so it is never drawn as a nameless agent.
+ */
+export function productKindOf(thing: {
+  productKind?: MarketplaceProductKind;
+  agentId?: string | null;
+}): MarketplaceProductKind {
+  if (thing.agentId === null) return "workflow";
+  return thing.productKind === undefined || thing.productKind === "agent" ? "agent" : "workflow";
+}
+
+/** A listing that sells an agent, and so names it. */
+export type AgentListingOf<L extends { agentId: string | null }> = L & { agentId: string };
+
+/** Whether a listing sells an agent. A workflow's listing is not one, so a screen made for agents leaves it out. */
+export function isAgentListing<L extends { productKind?: MarketplaceProductKind; agentId: string | null }>(
+  listing: L,
+): listing is AgentListingOf<L> {
+  return productKindOf(listing) === "agent" && listing.agentId !== null;
+}
+
 /** The agent a licence is for, as its buyer may know it. Never its instructions. */
 export interface MarketplaceLicenceAgent {
   /** The name in `/a/<handle>`; null when the agent has no page. */
@@ -2422,6 +2476,32 @@ export interface MarketplaceLicenceAgent {
 
 /** The buyer's licence: their own copy, or the right to use the creator's agent. */
 export type MarketplaceInstallKind = "copy" | "use";
+
+/**
+ * What a licence is for, as the answer of a start, a row of my-installs and the install status say it.
+ * A workflow has no agent: its `agent` is null, and it is used at /w/<slug>.
+ */
+export interface MarketplaceLicenceProduct {
+  /**
+   * What the listing sells. Absent from an API that does not say, which sold agents only: read it with
+   * `productKindOf`.
+   */
+  productKind?: MarketplaceProductKind;
+  /** The listing's slug: a workflow's address is /w/<slug>. Absent from an API that does not say. */
+  slug?: string;
+  /** The agent the licence is for; null for a workflow (and for an agent that can no longer be read). */
+  agent: MarketplaceLicenceAgent | null;
+}
+
+/**
+ * Whether a licence is for an agent that it names. A workflow's licence is not, so a screen made for
+ * agents leaves it out rather than draw a nameless agent.
+ */
+export function isAgentLicence<T extends MarketplaceLicenceProduct>(
+  licence: T,
+): licence is T & { agent: MarketplaceLicenceAgent } {
+  return productKindOf(licence) === "agent" && licence.agent !== null;
+}
 
 /** The pricing a buyer agreed to when they installed or last accepted a change. */
 export interface MarketplaceAcceptedPricing {
@@ -2484,6 +2564,11 @@ export interface ListingPlan extends PlanOffer {
 export interface OwnedMarketplaceListing extends MarketplaceListing {
   /** The plans on offer, in the order a buyer sees them, each with its kind, status and subscribers. */
   plans?: ListingPlan[];
+  /**
+   * The workflow the listing sells, for its owner only; null on an agent's listing. Absent from an API
+   * that does not say.
+   */
+  orchestrationId?: string | null;
 }
 
 /**
@@ -2503,7 +2588,13 @@ export interface ListingPlanInput {
 
 export interface MarketplaceListing {
   id: string;
-  agentId: string;
+  /**
+   * What the listing sells. Absent from an API that does not say, which sold agents only: read it with
+   * `productKindOf`.
+   */
+  productKind?: MarketplaceProductKind;
+  /** The agent the listing sells; null on a workflow's listing. */
+  agentId: string | null;
   title: string;
   slug: string;
   shortDescription: string;
@@ -2519,7 +2610,7 @@ export interface MarketplaceListing {
   hasToken?: boolean;
   /** What the listing sells. */
   sells: MarketplaceSells;
-  /** What one payment buys; null for a free listing, a copy or a token listing. */
+  /** What one payment buys; null for a free listing, a copy or a token listing. Always "run" for a workflow. */
   unit: "message" | "run" | "month" | null;
   /** Owner's views only (create, update, my-listings): the tools the agent may use for people who pay. */
   allowedTools?: string[];
@@ -2556,8 +2647,9 @@ export interface MarketplaceListing {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
-  /** Whether the listing has a Try it tab (every published listing does). */
+  /** Whether the listing has a Try it tab (every published listing of an agent does; a workflow's never). */
   trial?: { enabled: boolean };
+  /** The agent the listing sells. Absent on a workflow's listing. */
   agent?: {
     id: string;
     framework: string;
@@ -2824,11 +2916,10 @@ export const publicUseApi = {
 };
 
 /** `POST /api/marketplace/listings/:id/use`: where the buyer stands after starting. */
-export interface MarketplaceUseState {
+export interface MarketplaceUseState extends MarketplaceLicenceProduct {
   access: MarketplaceInstallAccess;
   acceptedPricing: MarketplaceAcceptedPricing | null;
   subscription: MarketplaceSubscription | null;
-  agent: MarketplaceLicenceAgent;
 }
 
 // ============================================
@@ -3005,6 +3096,12 @@ export interface PaidUseRefusal {
    * or less, and `trial_cannot_move` from a free trial (a plan is started over a trial in the usual
    * way). On starting a free trial (409): `trial_already_used`, and `trial_needs_credits` for an
    * organization that never added credits. Nothing is charged for any of them.
+   * A paid run of a workflow (`paidWorkflowApi.run`) can also meet: `workflow_not_found` (404),
+   * `own_workflow` (409, the caller's own workflow), `workflow_unavailable` (503, it cannot run now),
+   * `workflow_busy` (429, as many paid runs at once as it takes, with `retryAfterSeconds`), `run_failed`
+   * (502) and `run_timed_out` (504), and `input_too_large` (413), the input longer than a run takes. A
+   * run that was charged and then failed, took too long or found no room says the refund in its
+   * `message` and gives `refundedCents`; on a plan the use was given back.
    */
   error:
     | "copy_subscription_active"
@@ -3020,6 +3117,13 @@ export interface PaidUseRefusal {
     | "trial_cannot_move"
     | "trial_already_used"
     | "trial_needs_credits"
+    | "input_too_large"
+    | "workflow_not_found"
+    | "own_workflow"
+    | "workflow_unavailable"
+    | "workflow_busy"
+    | "run_failed"
+    | "run_timed_out"
     | (string & {});
   message: string;
   /** copy_subscription_active: when the copy's paid month ends (an ISO date). */
@@ -3027,7 +3131,10 @@ export interface PaidUseRefusal {
   /** rate_limited: `org` is the buyer's own limit, `agent` the agent's. */
   scope?: "org" | "agent";
   retryAfterSeconds?: number;
-  /** 422 input_invalid: each answer that needs another look. */
+  /**
+   * input_invalid (422 from an agent's run, 400 from a workflow's run): each answer that needs another
+   * look. A workflow's are about the input as a whole: `path` "", `field` and `label` null.
+   */
   details?: TaskInputIssue[];
   /** The buyer's access, where the licence decided. */
   access?: PaidUseAccess;
@@ -3045,7 +3152,10 @@ export interface PaidUseRefusal {
   /** insufficient_credits: the price of this use and the buyer's credits. */
   priceCents?: number;
   balanceCents?: number;
-  /** model_error and answer_withheld: what was charged and given back. */
+  /**
+   * What was charged and given back: model_error and answer_withheld, and on a workflow's run
+   * run_failed, run_timed_out, workflow_busy and workflow_unavailable when a charge had been taken.
+   */
   refundedCents?: number;
   /** pricing_changed on starting to use: what the listing asks now. */
   pricing?: MarketplacePricingTerms;
@@ -3053,7 +3163,7 @@ export interface PaidUseRefusal {
   requiredCents?: number;
 }
 
-/** The refusal body of an error thrown by `paidUseApi`, or null when it is not one. */
+/** The refusal body of an error thrown by `paidUseApi` or `paidWorkflowApi`, or null when it is not one. */
 export function paidUseRefusalOf(error: unknown): PaidUseRefusal | null {
   if (!(error instanceof ApiError)) return null;
   const data = error.data as Partial<PaidUseRefusal> | null;
@@ -3085,6 +3195,158 @@ export const paidUseApi = {
   /** A self-running agent's latest results, for a subscriber. */
   results: (handle: string) =>
     api<PaidResults>(`/api/a/${encodeURIComponent(handle)}/results`),
+};
+
+// ============================================
+// A workflow on sale (/api/w/:slug/...)
+// ============================================
+// A buyer's name for a workflow is the LISTING's slug: its page /w/<slug>, these addresses, and model
+// w/<slug> on /v1. The two reads open to anyone send no cookie (`publicFetch`); the access and the run
+// are the signed-in buyer's, through `api()`, and a refusal throws an ApiError whose `data` is a
+// PaidUseRefusal (`paidUseRefusalOf`), as the paid use of an agent does. No answer names the workflow's
+// own name, a step, an agent or a model inside it, or the creator's organization.
+
+/** `GET /api/w/:slug`: what the page of a workflow on sale draws before anyone pays. Open to anyone. */
+export interface PublicWorkflowRead {
+  kind: "workflow";
+  /** The listing: the gate starts, starts a plan and moves by it. */
+  listingId: string;
+  /** The listing's slug: the page /w/<slug> and model w/<slug>. */
+  slug: string;
+  /** The listing's title and its one line: what the page is headed by. */
+  title: string;
+  description: string;
+  pricingModel: "per_request";
+  /** What `priceCents` buys: one run. */
+  unit: "run";
+  priceCents: number;
+  /** The plans on offer, in the order they are shown. Empty when there are none. */
+  plans: PlanOffer[];
+  /** A workflow's listing offers no free trial. */
+  trial: null;
+  /** The owner of a workflow always keeps a copy of what is sent and what it answers. */
+  keepsCopy: true;
+  /** The longest a run may take, in minutes. */
+  maxRunMinutes: number;
+  input: {
+    /**
+     * The form, as a JSON Schema whose `properties` are the fields in order. A workflow whose own form
+     * has no fields gets one text box, the key `prompt`.
+     */
+    schema: Record<string, unknown>;
+    /** The longest input a run takes: the whole input as JSON, in bytes. */
+    maxInputBytes: number;
+    /** The longest `prompt` a run takes, in characters. */
+    maxPromptChars: number;
+  };
+}
+
+/**
+ * A refusal the API page of a workflow tells: what POST /api/w/:slug/run answers (`code`, `status`), what
+ * model w/<slug> on /v1 answers for it (`openai`), and what it means in plain words.
+ */
+export interface WorkflowApiRefusal {
+  code: string;
+  status: number;
+  message: string;
+  openai: { code: string; status: number };
+}
+
+/** `GET /api/w/:slug/api`: what the API page of a workflow on sale draws. Open to anyone. */
+export interface WorkflowApiPage {
+  kind: "workflow";
+  /** The listing's title: what the page is headed by. */
+  name: string;
+  listingId: string;
+  listingSlug: string;
+  /** As an agent's: no slash at its end; null when the server was given no public address. */
+  baseUrl: string | null;
+  /** The model id on OpenAI's chat completions: w/<listing slug>. */
+  model: string;
+  /** The run address first, then OpenAI's chat completions, then the free read of where the caller stands. */
+  endpoints: AgentApiEndpoint[];
+  pricingModel: "per_request";
+  unit: "run";
+  priceCents: number;
+  plans: PlanOffer[];
+  trial: null;
+  /** A buyer's own limits, as an agent's page tells them, and how many paid runs may go at once across everyone. */
+  limits: { perMinute: number; perDayWithoutPlan: number; maxActiveRuns: number };
+  /** The longest a run may take, in minutes. */
+  maxRunMinutes: number;
+  /** The longest input a run takes: the whole input as JSON in bytes, and a `prompt` in characters. */
+  input: { maxInputBytes: number; maxPromptChars: number };
+  usageHeaders: { always: string[]; onPlan: string[] };
+  refusals: WorkflowApiRefusal[];
+}
+
+/** Where a buyer stands with a workflow: as with an agent, and `own_workflow` for its owner. */
+export type PaidWorkflowAccess = MarketplaceInstallAccess | "own_workflow";
+
+/**
+ * `GET /api/w/:slug/access`: the access an agent's page reads, for a workflow. A workflow's listing has
+ * no free trial, no copy that could hold a start back, and no pause.
+ */
+export interface PaidWorkflowAccessState
+  extends Omit<
+    PaidUseAccessState,
+    "access" | "plans" | "plan" | "trial" | "trialAvailable" | "trialNeedsCredits" | "trialEnded" | "startBlocked" | "paused"
+  > {
+  access: PaidWorkflowAccess;
+  /** The plans the listing offers now, in the order they are shown. Empty when it offers none. */
+  plans: PlanOffer[];
+  /** The plan the caller is on, while it gives them uses. Null otherwise. */
+  plan: PaidUsePlan | null;
+  trial: null;
+  trialAvailable: false;
+  trialNeedsCredits: false;
+  trialEnded: false;
+  startBlocked: null;
+  paused: false;
+}
+
+/** `POST /api/w/:slug/run`: the answer of one paid run, and what it cost. Nothing else of the run. */
+export interface PaidWorkflowRunResult {
+  output: { format: "text"; text: string };
+  billing: PaidUseBilling;
+}
+
+/**
+ * A workflow on sale, by its listing's slug. The reads open to anyone send no cookie; a refusal of
+ * any call throws an ApiError (404 for a slug with no page).
+ */
+export const paidWorkflowApi = {
+  /** What its page draws before anyone pays. No cookie goes with it. */
+  get: async (slug: string): Promise<PublicWorkflowRead> => {
+    const res = await publicFetch(`/api/w/${encodeURIComponent(slug)}`);
+    const data = await readBody(res);
+    if (!res.ok) throw new ApiError(res.status, res.statusText, data);
+    return data as PublicWorkflowRead;
+  },
+
+  /** What its API page draws. No cookie goes with it. */
+  getApiPage: async (slug: string): Promise<WorkflowApiPage> => {
+    const res = await publicFetch(`/api/w/${encodeURIComponent(slug)}/api`);
+    const data = await readBody(res);
+    if (!res.ok) throw new ApiError(res.status, res.statusText, data);
+    return data as WorkflowApiPage;
+  },
+
+  /** Where the signed-in caller stands with it. Costs nothing. */
+  access: (slug: string) =>
+    api<PaidWorkflowAccessState>(`/api/w/${encodeURIComponent(slug)}/access`),
+
+  /**
+   * One paid run on the filled-in form. The body is `{ input }` and nothing else: the API refuses any
+   * other field. Charged (or a use of the plan taken) when it starts, and given back unless the answer is
+   * delivered. Aborting `signal` (Stop, or the page closing) cancels the run.
+   */
+  run: (slug: string, body: { input: Record<string, unknown> }, signal?: AbortSignal) =>
+    api<PaidWorkflowRunResult>(`/api/w/${encodeURIComponent(slug)}/run`, {
+      method: "POST",
+      body: { input: body.input },
+      ...(signal && { signal }),
+    }),
 };
 
 export interface MarketplaceCategory {
@@ -3129,8 +3391,20 @@ export interface PaginatedResponse<T> {
   };
 }
 
-export interface CreateListingInput {
-  agentId: string;
+/** What a new listing sells: an agent or a workflow of the organization, exactly one of the two. */
+export type CreateListingProduct =
+  | { agentId: string; orchestrationId?: never }
+  | {
+      /**
+       * A workflow: sold by use, per request (one run), at least the smallest price per use, with no
+       * allowed tools. Its listing makes no agent page.
+       */
+      orchestrationId: string;
+      agentId?: never;
+    };
+
+/** The fields of a listing, whatever it sells. A change (`updateListing`) sends some of these. */
+export interface CreateListingFields {
   title: string;
   shortDescription: string;
   longDescription?: string;
@@ -3148,6 +3422,12 @@ export interface CreateListingInput {
   /** Publish in the same request. */
   publish?: boolean;
 }
+
+/**
+ * A new listing: its fields and the agent (`agentId`) or the workflow (`orchestrationId`) it sells.
+ * Sending both, or neither, is refused with 400.
+ */
+export type CreateListingInput = CreateListingFields & CreateListingProduct;
 
 export interface SearchListingsParams {
   query?: string;
@@ -3204,7 +3484,8 @@ export const marketplaceApi = {
       body: input,
     }),
 
-  updateListing: (id: string, updates: Partial<Omit<CreateListingInput, "agentId">>) =>
+  // What a listing sells is fixed: a change names neither the agent nor the workflow.
+  updateListing: (id: string, updates: Partial<Omit<CreateListingInput, "agentId" | "orchestrationId">>) =>
     api<{ listing: MarketplaceListing }>(`/api/marketplace/listings/${id}`, {
       method: "PATCH",
       body: updates,
@@ -3342,7 +3623,11 @@ export const marketplaceApi = {
       },
     }),
 
-  /** Stop using an agent, or remove a copy. A subscription ends now and is not refunded. */
+  /**
+   * Stop using an agent or a workflow, or remove a copy. A subscription ends now and is not refunded.
+   * `message` is said in the words of what the listing sells. A refusal (nothing to stop) throws an
+   * ApiError: 400, with the sentence as its `message`.
+   */
   uninstallAgent: (listingId: string) =>
     api<{ message: string }>(`/api/marketplace/listings/${listingId}/uninstall`, {
       method: "POST",
@@ -3351,27 +3636,25 @@ export const marketplaceApi = {
   checkInstallStatus: (listingId: string) =>
     api<{
       isInstalled: boolean;
-      install: {
+      install: (MarketplaceLicenceProduct & {
         id: string;
         status: string;
         kind: MarketplaceInstallKind;
-        /** null for a licence to use the creator's agent: there is no copy. */
+        /** null for a licence to use the creator's agent or workflow: there is no copy. */
         clonedAgentId: string | null;
-        agent: MarketplaceLicenceAgent;
         access: MarketplaceInstallAccess;
         installedAt: string;
-      } | null;
+      }) | null;
     }>(`/api/marketplace/listings/${listingId}/install-status`),
 
   getMyInstalls: () =>
     api<{
-      installs: Array<{
+      installs: Array<MarketplaceLicenceProduct & {
         id: string;
         listingId: string;
         kind: MarketplaceInstallKind;
-        /** null when `kind` is "use": the buyer uses the creator's agent and has no copy. */
+        /** null when `kind` is "use": the buyer uses the creator's agent or workflow and has no copy. */
         clonedAgentId: string | null;
-        agent: MarketplaceLicenceAgent;
         status: string;
         totalRequests: number;
         totalSpentCents: number;
@@ -6581,6 +6864,11 @@ export interface Capabilities {
     maxTrialUses?: number;
     /** How many days a free trial lasts. Absent from an API that does not say. */
     trialDays?: number;
+    /**
+     * The longest a paid run of a workflow on sale may take, in milliseconds: it is stopped after this.
+     * Absent from an API that does not say.
+     */
+    paidWorkflowMaxRunMs?: number;
     /** Answers a day on the platform's models for the caller's organization; null when it cannot be read. */
     freeModelDailyAllowance: number | null;
   };

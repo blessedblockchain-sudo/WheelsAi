@@ -36,8 +36,10 @@ import {
   type Agent,
   type AgentDetail,
   type Capabilities,
+  type AgentListingOf,
   type OwnedMarketplaceListing,
   getErrorMessage,
+  isAgentListing,
   getValidationError,
 } from "@/lib/api";
 import { LIST_AGENT_BUTTON, NEW_AGENT_BUTTON } from "@/lib/nav";
@@ -184,8 +186,11 @@ export default function PublishWizardPage() {
 
 interface WizardData {
   agents: Agent[];
-  /** The organization's own listings, with who holds what: they mark the agents that are listed. */
-  listings: OwnedMarketplaceListing[];
+  /**
+   * The organization's own listings of an agent, with who holds what: they mark the agents that are
+   * listed. A workflow's listing is not one of them: this wizard lists agents.
+   */
+  listings: AgentListingOf<OwnedMarketplaceListing>[];
   /** null when it could not be read: the step then names no limit it does not know. */
   capabilities: Capabilities | null;
 }
@@ -236,7 +241,7 @@ function PublishWizardContent() {
         marketplaceApi.getMyListings(),
         capabilitiesApi.get().catch(() => null),
       ]);
-      setData({ agents, listings, capabilities });
+      setData({ agents, listings: listings.filter(isAgentListing), capabilities });
     } catch (error) {
       setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load agents"));
@@ -445,7 +450,7 @@ function PublishWizardContent() {
     if (!plansStaleFor || isReloadingPlans) return;
     setIsReloadingPlans(true);
     try {
-      const { listings: read } = await marketplaceApi.getMyListings();
+      const read = (await marketplaceApi.getMyListings()).listings.filter(isAgentListing);
       const fresh = read.find((listing) => listing.id === plansStaleFor) ?? null;
       setData((prev) => prev && { ...prev, listings: read });
       setPlans(plansFormOf(fresh));

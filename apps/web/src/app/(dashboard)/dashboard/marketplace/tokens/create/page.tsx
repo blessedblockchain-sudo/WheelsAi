@@ -19,9 +19,11 @@ import { cn } from "@/lib/utils";
 import {
   marketplaceApi,
   tokenApi,
+  type AgentListingOf,
   type LaunchpadInfo,
   type MarketplaceListing,
   getErrorMessage,
+  isAgentListing,
 } from "@/lib/api";
 import { CurvePresetCard } from "@/components/dashboard/curve-preset-card";
 import { signPreparedTransaction } from "@/components/dashboard/token-curve-sign";
@@ -81,7 +83,7 @@ export default function CreateTokenPage() {
   const { setVisible } = useWalletModal();
 
   const [step, setStep] = useState<Step>(1);
-  const [listings, setListings] = useState<MarketplaceListing[]>([]);
+  const [listings, setListings] = useState<AgentListingOf<MarketplaceListing>[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [eligibility, setEligibility] = useState<Record<string, EligibilityResult>>({});
@@ -182,9 +184,10 @@ export default function CreateTokenPage() {
   const loadListings = useCallback(async () => {
     try {
       const data = await marketplaceApi.getMyListings();
+      // A token is launched for an agent's listing only: a workflow's is not offered.
       const published = (data.listings || []).filter(
         (l) => l.status === "published"
-      );
+      ).filter(isAgentListing);
       setListings(published);
       setLoadError(null);
     } catch (err) {

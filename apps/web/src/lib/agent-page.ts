@@ -422,7 +422,8 @@ export function agentHasToken(runway: { treasuryAddress?: string | null } | null
 }
 
 interface ListingLike {
-  agentId: string;
+  /** null on a workflow's listing, which is never an agent's. */
+  agentId: string | null;
   status: string;
 }
 

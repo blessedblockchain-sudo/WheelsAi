@@ -38,7 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ReviewForm } from "@/components/marketplace/review-form";
-import { marketplaceApi, ApiError, getErrorMessage, type PlanOffer } from "@/lib/api";
+import { marketplaceApi, ApiError, getErrorMessage, isAgentLicence, type PlanOffer } from "@/lib/api";
 import { INSTALLED_PLAN_WORDS, moveUpChoice, moveUpConfirm, moveUpRefusal, movedLine } from "@/lib/installed-plans";
 import {
   INSTALLED_WORDS,
@@ -147,7 +147,8 @@ export default function InstalledAgentsPage() {
   async function loadInstalls() {
     try {
       const { installs, canSpend } = await marketplaceApi.getMyInstalls();
-      setInstalls(installs);
+      // The rows of agents: a workflow's licence has no agent, and this page draws agents.
+      setInstalls(installs.filter(isAgentLicence));
       setCanSpend(canSpend);
       // Someone who may not spend is offered no bigger plan: a list of them left open closes.
       if (canSpend === false) setChoosingFor(null);

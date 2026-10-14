@@ -32,6 +32,7 @@
 import { AGENT_API_REFUSALS, baseUrlOf, type AgentApiEndpoint, type AgentApiRefusal } from "./agentApiPage.js";
 import { paidUseOpenAiError } from "./openaiCompat.js";
 import { PAID_USE_LIMITS, PAID_USE_MESSAGES, plansOnOffer, type PaidUseDeps, type PaidUseErrorCode } from "./paidUse.js";
+import { KEY_WITHOUT_CAPS } from "./paidWorkflow.js";
 import type { PlanOffer } from "./planOffers.js";
 import { BALANCE_CENTS_HEADER, CHARGED_CENTS_HEADER, PLAN_USAGE_HEADER_NAMES } from "./usageHeaders.js";
 import { MAX_WORKFLOW_INPUT_BYTES, MAX_WORKFLOW_PROMPT_CHARS } from "./workflowChat.js";
@@ -40,7 +41,6 @@ import {
   PAID_WORKFLOW_MAX_ACTIVE_RUNS,
   PAID_WORKFLOW_MAX_RUN_MS,
   WORKFLOW_LISTING_SLUG,
-  WORKFLOW_START_MESSAGES,
 } from "./workflowListing.js";
 
 /** The longest a paid run may take, in minutes, as the pages say it. */
@@ -359,7 +359,8 @@ const RUN_BACK_IF_TAKEN = "If a charge or a use of your plan was taken, it was g
  * What a caller of a workflow on sale can meet, in the order a run meets
  * them. Each status is what POST /api/w/:slug/run answers
  * (services/paidWorkflow.ts); what /v1 answers is read from the code that
- * answers it, below.
+ * answers it, below. Where the run says a refusal in a constant of its own,
+ * the page takes that constant, so the two can never say different words.
  */
 const RUN_REFUSALS: AgentApiRefusal[] = [
   {
@@ -368,7 +369,7 @@ const RUN_REFUSALS: AgentApiRefusal[] = [
     message:
       "More requests were sent than this workflow allows for now. Nothing was charged. The retry-after header says how many seconds to wait.",
   },
-  { code: "own_workflow", status: 409, message: WORKFLOW_START_MESSAGES.own },
+  { code: "own_workflow", status: 409, message: PAID_USE_MESSAGES.workflow.ownWorkflow },
   {
     code: "workflow_unavailable",
     status: 503,
@@ -394,11 +395,7 @@ const RUN_REFUSALS: AgentApiRefusal[] = [
     status: 402,
     message: "You do not have enough credits for this run. Nothing was charged. Add credits to continue.",
   },
-  {
-    code: "api_key_spend_caps_missing",
-    status: 403,
-    message: "This API key has no spend caps, so it cannot pay for a run. Nothing was charged.",
-  },
+  { code: "api_key_spend_caps_missing", status: 403, message: KEY_WITHOUT_CAPS },
   sharedRefusal("api_key_use_price_cap_exceeded"),
   sharedRefusal("api_key_daily_cap_exceeded"),
   {

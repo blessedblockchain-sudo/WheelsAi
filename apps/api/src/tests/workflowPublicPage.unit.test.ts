@@ -570,6 +570,7 @@ test("each refusal the API page tells has the status and the code POST /run answ
     }),
     await refusalOf({ licence: PLAN_LICENCE, sub: { ...PLAN_SUB, usedInPeriod: 500, extraUsePriceCents: null } }),
     await refusalOf({}, RUN_BODY, { ...KEY_CALLER, apiKeyId: null }),
+    await refusalOf({ keyCaps: { maxUse: null, daily: null } }, RUN_BODY, KEY_CALLER),
     await refusalOf({ keyCaps: { maxUse: 4n, daily: 1_000n } }, RUN_BODY, KEY_CALLER),
     await refusalOf({ keyCaps: { maxUse: 50n, daily: 100n, spent: 98n } }, RUN_BODY, KEY_CALLER),
   ];
@@ -591,6 +592,7 @@ test("each refusal the API page tells has the status and the code POST /run answ
     "plan_ended",
     "plan_used_up",
     "api_key_spend_caps_missing",
+    "api_key_spend_caps_missing",
     "api_key_use_price_cap_exceeded",
     "api_key_daily_cap_exceeded",
   ]);
@@ -603,6 +605,18 @@ test("each refusal the API page tells has the status and the code POST /run answ
     const v1 = paidUseOpenAiError(refusal);
     assert.deepEqual(page.openai, { code: v1.body.error.code, status: v1.status }, refusal.code);
   }
+  // Where the run says a refusal in words of its own, the page says those words,
+  // by every way the run reaches it: a key that cannot be named and a key with no caps.
+  for (const code of ["own_workflow", "api_key_spend_caps_missing"] as const) {
+    for (const door of real.filter((refusal) => refusal.code === code)) {
+      assert.equal(told.get(code)!.message, door.message, code);
+    }
+  }
+  assert.equal(told.get("own_workflow")!.message, "This is your workflow. This is the page people who pay see.");
+  assert.equal(
+    told.get("api_key_spend_caps_missing")!.message,
+    "This API key has no spend caps, so it cannot pay for a run of a workflow. Create a key with agents:use and both caps.",
+  );
   // The input that is too long: 413 on the run address, 400 on /v1.
   assert.deepEqual(
     [told.get("input_too_large")!.status, told.get("input_too_large")!.openai],

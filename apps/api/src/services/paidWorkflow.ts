@@ -300,8 +300,12 @@ const BUSY: PaidUseRefusal = {
   retryAfterSeconds: BUSY_RETRY_SECONDS,
 };
 
-/** What a key that cannot be named is told: it has no caps to pay within. */
-const KEY_WITHOUT_CAPS =
+/**
+ * What a key with no caps to pay within is told, whether it cannot be named
+ * or was created without caps. The API page of a workflow tells it in these
+ * words too.
+ */
+export const KEY_WITHOUT_CAPS =
   "This API key has no spend caps, so it cannot pay for a run of a workflow. Create a key with agents:use and both caps.";
 
 const back = (refunded: bigint | null) => (refunded === null ? {} : { refundedCents: Number(refunded) });
@@ -583,7 +587,10 @@ export async function runPaidWorkflow(input: PaidWorkflowInput, deps: PaidWorkfl
         ? await deps.peekKeySpend({ apiKeyId, orgId: caller.orgId, priceCents: payable })
         : { ok: false, code: "api_key_spend_caps_missing", message: KEY_WITHOUT_CAPS, extra: {} };
       if (!peek.ok) {
-        return refused({ status: 403, code: peek.code as PaidUseErrorCode, message: peek.message, caps: peek.extra });
+        // A key with no caps is told the workflow's sentence, named or not:
+        // the shared read words it for an agent.
+        const message = peek.code === "api_key_spend_caps_missing" ? KEY_WITHOUT_CAPS : peek.message;
+        return refused({ status: 403, code: peek.code as PaidUseErrorCode, message, caps: peek.extra });
       }
     }
   }

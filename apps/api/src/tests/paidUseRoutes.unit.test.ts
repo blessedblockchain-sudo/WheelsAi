@@ -3,6 +3,7 @@ import "./unitEnv.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import cookie from "@fastify/cookie";
 import Fastify, { type FastifyInstance, type preHandlerAsyncHookHandler } from "fastify";
 
 import { requireScope } from "../middleware/auth.js";
@@ -623,4 +624,82 @@ test("GET /a/:handle/access sends startBlocked as the service gives it, and canA
       "You hold a copy of this agent that is paid for until 1 Nov. To use the agent on its page instead, remove your copy (the month you paid for is not refunded), or cancel its renewal and start after that date.",
     until: "2026-11-01T00:00:00.000Z",
   });
+});
+
+// ============================================
+// The x402 door's opening in the guards (its own tests: paidUseX402Routes)
+// ============================================
+
+async function serverWithDoor(
+  anonymousDoor: () => boolean,
+  x402?: () => never,
+): Promise<{ app: FastifyInstance; h: PaidHarness; doorAsked: string[] }> {
+  const h = paidHarness();
+  const doorAsked: string[] = [];
+  const app = Fastify();
+  // The app reads its session cookie with this plugin; the door reads the same.
+  await app.register(cookie);
+  await app.register(
+    createPaidUseRoutes({
+      guards: { auth, use: requireScope("agents:use") as preHandlerAsyncHookHandler, anonymousDoor },
+      paidUse: () => h.deps,
+      ...(x402 && {
+        x402: () => {
+          doorAsked.push("x402");
+          return x402();
+        },
+      }),
+    }),
+    { prefix: "/api" },
+  );
+  return { app, h, doorAsked };
+}
+
+test("guards whose door says no run as they always did: the same 401 for all four routes, and the same answer for a caller", async () => {
+  const { app, h } = await serverWithDoor(() => false);
+  const { app: plain } = await server();
+  for (const [method, path] of [
+    ["GET", "access"],
+    ["POST", "chat"],
+    ["POST", "run"],
+    ["GET", "results"],
+  ] as const) {
+    const ask = { method, url: `/api/a/${HANDLE}/${path}`, ...(method === "POST" && { payload: CHAT }) };
+    const [res, before] = [await app.inject(ask), await plain.inject(ask)];
+    assert.equal(res.statusCode, 401, path);
+    assert.equal(res.body, before.body, path);
+  }
+  assert.deepEqual(h.log, []);
+  const paid = await app.inject({ method: "POST", url: `/api/a/${HANDLE}/chat`, headers: as(SESSION), payload: CHAT });
+  assert.equal(paid.statusCode, 200);
+});
+
+test("a request the door lets through with no door to answer it gets the 401 of no credential, and nothing is looked up", async () => {
+  const { app, h } = await serverWithDoor(() => true);
+  for (const path of ["chat", "run"]) {
+    const res = await app.inject({ method: "POST", url: `/api/a/${HANDLE}/${path}`, payload: CHAT });
+    assert.equal(res.statusCode, 401, path);
+    assert.deepEqual(res.json(), { error: "Unauthorized", message: "Authentication required" });
+    assert.equal(res.headers["cache-control"], undefined);
+  }
+  assert.deepEqual(h.log, []);
+  // The reads keep their guard: the door never opens them.
+  const access = await app.inject({ method: "GET", url: `/api/a/${HANDLE}/access` });
+  assert.equal(access.statusCode, 401);
+});
+
+test("a request that carries a credential is never the door's, even past a door that lets it through", async () => {
+  const { app, h, doorAsked } = await serverWithDoor(
+    () => true,
+    () => {
+      throw new Error("the door is never built for a request with a credential");
+    },
+  );
+  for (const headers of [{ authorization: "Bearer wheels_bad" }, { authorization: "" }, { cookie: "wheelsai_token=expired" }]) {
+    const res = await app.inject({ method: "POST", url: `/api/a/${HANDLE}/chat`, headers, payload: CHAT });
+    assert.equal(res.statusCode, 401, JSON.stringify(headers));
+    assert.deepEqual(res.json(), { error: "Unauthorized", message: "Authentication required" });
+  }
+  assert.deepEqual(doorAsked, []);
+  assert.deepEqual(h.log, []);
 });

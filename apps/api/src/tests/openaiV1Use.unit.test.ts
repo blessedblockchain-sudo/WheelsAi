@@ -648,3 +648,58 @@ test("the agents an organization uses: a licence that still gives access, or a p
     ["per-use", "cheaper-now", "subscribed", "paid-month-archived"],
   );
 });
+
+// ============================================
+// No credential (the x402 door's own tests: paidUseX402Routes)
+// ============================================
+
+test("with no credential, only a/<handle> is handed to the door; every other model, and the models list, is the 401 of a missing key", async () => {
+  const h = paidHarness();
+  const listed: string[] = [];
+  const doorAsked: string[] = [];
+  const app = Fastify();
+  await app.register(sensible);
+  app.decorateRequest("auth", null);
+  // A guard that lets every request with no credential through: the handler alone must hold the line.
+  const guard = createOpenAiAuth({ meter: async () => undefined, admitWithoutCredential: () => true });
+  await app.register(
+    createOpenAiV1Routes({
+      unifiedAuth: guard,
+      auth: guard,
+      workflowAuth: guard,
+      paidUse: () => h.deps,
+      x402: () => {
+        doorAsked.push("x402");
+        return null;
+      },
+      deploymentCompletion: async () => {
+        throw new Error("never reached with no credential");
+      },
+      listModels: async (orgId) => {
+        listed.push(orgId);
+        return { deployments: [], agents: [], workflows: [] };
+      },
+    }),
+    { prefix: "/v1" },
+  );
+  await app.ready();
+
+  const missingKey = await app.inject({ method: "GET", url: "/v1/models" });
+  assert.equal(missingKey.statusCode, 401);
+  assert.equal(missingKey.json().error.code, "invalid_api_key");
+  assert.deepEqual(listed, []);
+
+  for (const model of ["agent/my-bot", "workflow/launch", "w/launch-brief", "llama-prod", ""]) {
+    const res = await app.inject({ method: "POST", url: "/v1/chat/completions", payload: { model, messages: MESSAGES } });
+    assert.equal(res.statusCode, 401, model);
+    assert.deepEqual(res.json(), missingKey.json(), model);
+  }
+  assert.deepEqual(doorAsked, [], "no model but an agent's use reaches the door");
+
+  // a/<handle> reaches it; with no door there, the answer is the same 401.
+  const paid = await app.inject({ method: "POST", url: "/v1/chat/completions", payload: { model: MODEL, messages: MESSAGES } });
+  assert.equal(paid.statusCode, 401);
+  assert.deepEqual(paid.json(), missingKey.json());
+  assert.deepEqual(doorAsked, ["x402"]);
+  assert.deepEqual(h.log, []);
+});

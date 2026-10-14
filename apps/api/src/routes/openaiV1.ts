@@ -28,21 +28,31 @@
  * The per-deployment route (POST /v1/:deploymentSlug/chat/completions) is
  * registered by routes/inference.ts and runs the same handler as the
  * deployment branch here, so both speak the same wire format.
+ *
+ * The x402 door: while it is open, POST /v1/chat/completions whose `model`
+ * is `a/<handle>` and that carries NO credential at all is let past the key
+ * guard (middleware/auth.ts, x402DoorApplies) and answered by the agent's
+ * door (routes/paidCompletions.ts, createPaidX402CompletionHandler). Any
+ * other request with no valid key, to any target, gets the 401 it always
+ * got.
  */
 
-import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest, preHandlerHookHandler } from "fastify";
 
 import { prisma } from "../lib/prisma.js";
+import { x402DoorApplies } from "../middleware/auth.js";
 import {
   AGENTS_INVOKE_SCOPE,
   createOpenAiAuth,
   openAiErrorHandler,
   openAiNotFoundHandler,
   principalHasScope,
+  replyMissingApiKey,
   replyOpenAiError,
   sendOpenAiError,
   WORKFLOWS_INVOKE_SCOPE,
 } from "../middleware/openaiAuth.js";
+import { x402DoorOpenNow } from "../services/x402DoorSettings.js";
 import { parseChatCompletionRequest } from "../services/openaiCompat.js";
 import { useAccess } from "../services/useAccess.js";
 import {
@@ -59,6 +69,7 @@ import {
 import {
   AGENTS_USE_SCOPE,
   createPaidCompletionHandler,
+  createPaidX402CompletionHandler,
   PAID_MODEL_PREFIX,
   paidModelEntry,
   type PaidCompletionDeps,
@@ -111,6 +122,12 @@ export interface OpenAiV1Deps
    * a request needs depends on what its `model` names.
    */
   unifiedAuth?: preHandlerHookHandler;
+  /**
+   * Whether a request with no credential is the x402 door's: passed to the
+   * default unified guard as its admitWithoutCredential. Default: the
+   * door's settings on and middleware/auth.ts x402DoorApplies.
+   */
+  anonymousDoor?: (request: FastifyRequest) => boolean;
   deploymentCompletion?: DeploymentCompletionHandler;
   /** Running deployments, agents and enabled workflows of ONE organization. */
   listModels?: (orgId: string) => Promise<ListedModels>;
@@ -353,11 +370,18 @@ export function routeModel(model: string): ModelTarget {
   return { kind: "deployment", slug: model };
 }
 
+/** The door's test of a request with no credential, read per request. */
+function productionAnonymousDoor(request: FastifyRequest): boolean {
+  return x402DoorApplies(request, x402DoorOpenNow());
+}
+
 export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsync {
-  const unifiedAuth = deps.unifiedAuth ?? createOpenAiAuth();
+  const unifiedAuth =
+    deps.unifiedAuth ?? createOpenAiAuth({ admitWithoutCredential: deps.anonymousDoor ?? productionAnonymousDoor });
   const completeAgent = createAgentCompletionHandler(deps);
   const completeWorkflow = createWorkflowCompletionHandler(deps);
   const completePaid = createPaidCompletionHandler(deps);
+  const completeAtDoor = createPaidX402CompletionHandler(deps);
   const completePaidWorkflow = createPaidWorkflowCompletionHandler(deps);
   const listModels = deps.listModels ?? listModelsFromDb;
   let completeDeployment = deps.deploymentCompletion ?? null;
@@ -384,6 +408,13 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
       async (request, reply) => {
         const body = request.body as { model?: unknown } | null | undefined;
         const model = typeof body?.model === "string" ? body.model.trim() : "";
+        if (!request.auth) {
+          // Only the x402 door lets a request with no credential this far, and
+          // only for an agent's use. Anything else is the 401 it always was.
+          const named = model.length > 0 ? routeModel(model) : null;
+          if (named?.kind === "paid") return completeAtDoor(request, reply, { handle: named.handle });
+          return replyMissingApiKey(reply);
+        }
         if (model.length === 0) {
           return replyOpenAiError(reply, "validation_failed", {
             param: "model",
@@ -456,8 +487,11 @@ export function createOpenAiV1Routes(deps: OpenAiV1Deps = {}): FastifyPluginAsyn
           security: [{ bearerAuth: [] }],
         },
       },
-      async (request) => {
-        const listed = await listModels(request.auth!.orgId);
+      async (request, reply) => {
+        // The guard lets no request without a key read the models: asked
+        // again here, so a guard that got it wrong lists nothing.
+        if (!request.auth) return replyMissingApiKey(reply);
+        const listed = await listModels(request.auth.orgId);
         // ?deployment=<slug> narrows the list to that one deployment. A custom
         // domain that points at a deployment lists its models this way, so its
         // base URL names the one model it serves.

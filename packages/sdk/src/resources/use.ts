@@ -1,12 +1,13 @@
 import { seg, type RequestOptions, type WheelsAIClient } from "../client.js";
 import type { TaskInputIssue } from "./agents.js";
-import type { PlanOffer, PricingModel, SubscriptionPlan } from "./marketplace.js";
+import type { PlanOffer, PricingModel, SubscriptionPlan, TrialOffer } from "./marketplace.js";
 
 /**
  * Use of an agent you pay for: `/api/a/{handle}/...`. You use a creator's own agent, per use, on a plan
  * with a number of uses, or per month, and never get a copy of it or see its instructions. Start with
  * `marketplace.startUsing` or `marketplace.startPlan` (or on the agent's page), then call `chat` or `run`
- * here. `usage` reads what you have used and spent on everything you pay for.
+ * here. `usage` reads what you have used and spent on everything you pay for. A listing can also offer a
+ * free trial (`TrialOffer`), started with `marketplace.startPlan` and used here like a plan.
  *
  * Every call needs sign-in: a session token, or an API key. `chat` and `run` need an API key granted
  * `agents:use`, created with `maxUsePriceCents` and `dailySpendCapCents`.
@@ -24,20 +25,21 @@ import type { PlanOffer, PricingModel, SubscriptionPlan } from "./marketplace.js
  * The usage headers of a paid answer of `/api/a/{handle}/chat`, `/api/a/{handle}/run` and
  * `/v1/chat/completions` with `model: "a/<handle>"`, for a caller that reads the raw response. The first
  * two are on every paid answer (the balance is left out when it could not be read); the rest only on a
- * plan. The refusal `plan_used_up` carries the plan's headers too, with 0 remaining.
+ * plan. The refusal `plan_used_up` carries the plan's headers too, with 0 remaining. A free trial is a plan
+ * here: its answers carry the plan's headers, without `planReset`.
  */
 export const USAGE_HEADERS = {
-  /** What this use cost, in cents: 0 for a use a plan includes and inside a paid month. */
+  /** What this use cost, in cents: 0 for a use a plan or a free trial includes and inside a paid month. */
   chargedCents: "x-wheelsai-charged-cents",
   /** Your credits after the use, in cents. */
   balanceCents: "x-wheelsai-balance-cents",
-  /** The id of the plan you are on. */
+  /** The id of the plan you are on, or of your free trial. */
   plan: "x-wheelsai-plan",
   /** The uses of these 30 days: included plus carried. */
   planLimit: "x-wheelsai-plan-limit",
   planUsed: "x-wheelsai-plan-used",
   planRemaining: "x-wheelsai-plan-remaining",
-  /** When the count starts again, an ISO time. Left out when the plan will not renew. */
+  /** When the count starts again, an ISO time. Left out when the plan will not renew, and always on a free trial. */
   planReset: "x-wheelsai-plan-reset",
   /** 85 or 100. Left out below 85. */
   planWarning: "x-wheelsai-plan-warning",
@@ -78,8 +80,18 @@ export interface UseAccessState {
   plans: PlanOffer[];
   /** The plan you are on, while it gives you uses. null otherwise. */
   plan: SubscriptionPlan | null;
-  /** Free trials are not offered. */
-  trialAvailable: false;
+  /** The free trial the listing offers now, beside its plans. null when it offers none. */
+  trial: TrialOffer | null;
+  /**
+   * Whether your organization could start that trial now: the listing offers one, your organization has
+   * never started one on this listing, no plan, paid month or trial of yours is running on it, and your
+   * organization has added credits at least once. `canAccept` says whether this caller may start it.
+   */
+  trialAvailable: boolean;
+  /** True when the one thing missing for the trial is that your organization has never added credits. */
+  trialNeedsCredits: boolean;
+  /** True when `access` is `plan_ended` and what ended was your free trial, not a paid plan. */
+  trialEnded: boolean;
   /**
    * What you agreed to; null when you have not started. Starting a plan agrees to no price per use, so
    * `pricingModel` and `pricePerRequestCents` stay null until you agree to that price yourself.
@@ -114,13 +126,17 @@ export interface UseAccessState {
 
 /** Your plan after one use on it. The same count as `SubscriptionPlan`, without the plan's name. */
 export interface UseBillingPlan extends Omit<SubscriptionPlan, "name"> {
-  /** `included`: one of the plan's uses. `extra`: past the count, charged the extra price you agreed to. */
+  /**
+   * `included`: one of the plan's uses. `extra`: past the count, charged the extra price you agreed to.
+   * On a free trial, `extra` is a use past the free ones, charged the listing's price per use to a buyer
+   * who agreed to it.
+   */
   use: "included" | "extra";
 }
 
 /** What one use cost. */
 export interface UseBilling {
-  /** The price per use; 0 inside a paid month and for a use a plan includes; a plan's extra price past its count. */
+  /** The price per use; 0 inside a paid month and for a use a plan or a free trial includes; a plan's extra price past its count. */
   chargedCents: number;
   /** Your credits after it; null when they could not be read just now. */
   balanceCents: number | null;
@@ -144,11 +160,21 @@ export interface UseUsageRow {
   handle: string | null;
   /** Where you stand with it, as `access` answers it. */
   access: Exclude<UseAccessKind, "own_agent">;
+  /** True only when `access` is `plan_ended` and what ended was your organization's own free trial. */
+  trialEnded: boolean;
   /** The plan you are on, while it gives you uses. null otherwise. */
   plan: SubscriptionPlan | null;
   /**
+   * On a running free trial, with free uses left or not: what one use is charged once the free uses are
+   * gone, when you are charged per use then without being asked again. `priceCents` is the listing's price
+   * per use now, never the price you agreed to. null when such a use is not charged (you agreed to no
+   * price per use, or the listing asks more than you agreed to) and on every row that is not on a free
+   * trial. It says what a use is charged, not that the agent answers.
+   */
+  perUseAfterTrial: { priceCents: number; unit: "message" | "run" } | null;
+  /**
    * On a plan: the end of the 30 days paid for (an ISO time), and the day the plan ends when it will not
-   * renew (its `plan` then has no `resetsAt`). null with no plan.
+   * renew (its `plan` then has no `resetsAt`). On a free trial: the day the trial ends. null with no plan.
    */
   periodEndsAt: string | null;
   /** On a plan: its renewal did not go through and is being retried. */
@@ -198,11 +224,12 @@ export interface UseResults {
  * `error` is one of: `invalid_request` (400), `missing_scope`, `use_not_started`,
  * `api_key_use_price_cap_exceeded`, `api_key_daily_cap_exceeded`, `api_key_spend_caps_missing`,
  * `not_a_member` (403: you are no longer a member of the paying organization),
- * `insufficient_credits`, `subscription_lapsed`, `plan_ended` (402: your plan is over and you have not
- * agreed to the price per use; choose a plan or pay per use), `agent_not_found` (404), `own_agent`,
+ * `insufficient_credits`, `subscription_lapsed`, `plan_ended` (402: your plan or your free trial is over
+ * and you have not agreed to the price per use; choose a plan or pay per use), `agent_not_found` (404), `own_agent`,
  * `not_for_sale`, `not_offered`, `results_only`, `pricing_changed`, `not_a_task_agent` (409),
  * `input_too_large` (413), `input_invalid` (422), `rate_limited`, `too_many_refunds`, `plan_used_up`
- * (429: every use of your plan is gone and it stops until it renews; nothing was charged),
+ * (429: every use of your plan is gone and it stops until it renews, or every use of your free trial is
+ * gone and you agreed to no price per use; nothing was charged),
  * `client_closed_request` (499), `model_error`, `answer_withheld` (502),
  * `agent_unavailable`, `agent_paused` (the agent is paused; nothing was charged),
  * `rate_limiter_unavailable` (503).
@@ -223,7 +250,7 @@ export interface UseRefusal {
   terms?: UseTerms;
   /** `plan_used_up` and `plan_ended`: the plans the listing offers now, to choose from. */
   plans?: PlanOffer[];
-  /** `plan_used_up`: when the plan's count starts again (an ISO time). Left out when the plan will not renew. */
+  /** `plan_used_up`: when the plan's count starts again (an ISO time). Left out when the plan will not renew, and for a free trial. */
   resetsAt?: string;
   /** `insufficient_credits`: the price of this use and your credits. */
   priceCents?: number;

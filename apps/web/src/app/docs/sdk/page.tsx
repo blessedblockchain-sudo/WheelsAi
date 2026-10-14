@@ -230,7 +230,8 @@ if (agentGpu.available) {
                 <code>startUsing</code>, <code>startPlan</code>, <code>movePlan</code>,{" "}
                 <code>stopUsing</code>, <code>uninstall</code>,{" "}
                 <code>installStatus</code>, <code>myInstalls</code>, <code>subscriptions</code>,{" "}
-                <code>cancelSubscription</code>, <code>resumeSubscription</code>, <code>revenue</code>, <code>payouts</code>
+                <code>cancelSubscription</code>, <code>resumeSubscription</code>, <code>revenue</code>, <code>payouts</code>.
+                A free trial is started with <code>startPlan(listingId, trialTermsOf(trial))</code>.
               </>
             ),
             endpoint: <code>/api/marketplace/...</code>,

@@ -113,6 +113,7 @@ export {
 } from "./billing.js";
 export {
   marketplaceResource,
+  trialTermsOf,
   type AgentInstall,
   type AgentListing,
   type AgentReview,
@@ -138,6 +139,8 @@ export {
   type PlanTerms,
   type SubscriptionPlan,
   type StartedUsing,
+  type TrialOffer,
+  type TrialPlanInput,
   type Pagination,
   type PayoutStatus,
   type PricingModel,

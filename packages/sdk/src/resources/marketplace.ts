@@ -42,6 +42,9 @@ export interface PlanOffer {
  * The plan a buyer was shown, sent back whole to start it or to move up to it. It is their consent: if any
  * term differs from the plan as it is now, nothing is charged. `extraUsePriceCents` is always sent, null
  * when the plan stops. A `PlanOffer` can be passed as it came.
+ *
+ * A listing's free trial is started with its own terms: its id, a price of 0, its uses and no price for an
+ * extra use. `trialTermsOf` builds them from a `TrialOffer`.
  */
 export interface PlanTerms {
   id: string;
@@ -50,12 +53,36 @@ export interface PlanTerms {
   extraUsePriceCents: number | null;
 }
 
+/**
+ * The free trial a listing offers beside its plans: some uses for a number of days, at no price, started
+ * once by a buyer's organization. It never renews and nothing is charged for it. A listing that sells use
+ * per request can offer one. It is told by itself, never among `plans`: `freeTrial` on a listing read by
+ * its slug, `trial` on the access answer (`use.access`).
+ *
+ * It is not "Try it", the free preview chat every published listing has for anyone.
+ */
+export interface TrialOffer {
+  id: string;
+  /** The uses the trial includes, 1 to 50. */
+  includedUses: number;
+  /** How many days it lasts from its start: 7. */
+  days: number;
+}
+
+/**
+ * The terms that start a listing's free trial, for `startPlan`: the trial's id and its uses as you were
+ * shown them, a price of 0 and no price for an extra use.
+ */
+export function trialTermsOf(trial: TrialOffer): PlanTerms {
+  return { id: trial.id, priceCents: 0, includedUses: trial.includedUses, extraUsePriceCents: null };
+}
+
 /** A plan as its creator sees it (`myListings`, `setPlans`). No buyer is named. */
 export interface OwnerPlan extends PlanOffer {
-  /** `paid`. */
+  /** `paid`, or `trial` for the listing's free trial, which comes first. Its `name` is `Free trial`, its `priceCents` 0 and its `extraUsePriceCents` null. */
   kind: string;
   status: string;
-  /** How many subscriptions are on this plan. */
+  /** How many subscriptions are on this plan. For the free trial: the trials that are running now. */
   subscribers: number;
 }
 
@@ -76,24 +103,47 @@ export interface PlanInput {
 }
 
 /**
+ * The listing's one free trial, as an entry of the set `setPlans` sends beside the paid plans. It is not
+ * one of the four. It has no name of its own: buyers see it as "Free trial". Sent with its `id` it is
+ * changed in place; named in `ended` it stops being offered, and the people on it keep it until its days
+ * end. Nothing is charged for its uses and its creator is not paid for them.
+ */
+export interface TrialPlanInput {
+  /** Set to change the trial in place. Left out to start offering one. */
+  id?: string;
+  kind: "trial";
+  /** A free trial has no price. */
+  priceCents: 0;
+  /** 1 to 50. */
+  includedUses: number;
+  /** A free trial has no price for an extra use. It is always sent, as null. */
+  extraUsePriceCents: null;
+}
+
+/**
  * The plan a buyer is on, while it gives them uses: on the access answer (`use.access`), on a subscription
  * (`myInstalls`, `startPlan`, `movePlan`) and in `use.usage`. Uses and cents, and nothing of another buyer.
  */
 export interface SubscriptionPlan {
   /** The plan the subscription was started on. */
   id: string | null;
-  /** What its creator calls it now. */
+  /** What its creator calls it now. `Free trial` for a free trial. */
   name: string;
-  /** The uses of the 30 days, as agreed. */
+  /**
+   * True on the listing's free trial, which costs nothing and never renews. When its uses are gone it
+   * stops, unless you agreed to the listing's price per use yourself. False on a paid plan.
+   */
+  trial: boolean;
+  /** The uses of the 30 days, as agreed. On a free trial: the uses of its days. */
   includedUses: number;
   /** Uses brought into these 30 days by a move to a bigger plan, on top of the included ones. 0 after a renewal. */
   carriedUses: number;
   usedUses: number;
   /** Included plus carried, less the ones used. Never below 0. */
   remainingUses: number;
-  /** What each use past the count costs, as agreed. null: the plan stops until it renews. */
+  /** What each use past the count costs, as agreed. null: the plan stops until it renews. Always null on a free trial. */
   extraUsePriceCents: number | null;
-  /** When the count starts again (an ISO time). Left out when the plan will not renew. */
+  /** When the count starts again (an ISO time). Left out when the plan will not renew, and always on a free trial. */
   resetsAt?: string;
   /** 85 when 85% of the uses are gone, 100 when all are. */
   warning: null | 85 | 100;
@@ -125,10 +175,15 @@ export interface AgentListing {
   buyers?: { copies: number; using: number; subscribed: number };
   /**
    * The plans the listing offers, in the order buyers see them; empty when it offers none. Present on a
-   * listing read by slug or id (`get`), on the listing of each of `myInstalls`, and on `myListings`, where
-   * each plan also says its `status` and `subscribers` (`OwnedListing`).
+   * listing read by its slug (`get`), on the listing of each of `myInstalls`, and on `myListings`, where
+   * each plan also says its `status` and `subscribers` (`OwnedListing`). Left out on a read by id.
    */
   plans?: PlanOffer[];
+  /**
+   * A listing read by its slug (`get`) only: the free trial it offers beside its plans, or null when it
+   * offers none. Left out on a read by id: read the listing by its slug, or ask `use.access(handle)`.
+   */
+  freeTrial?: TrialOffer | null;
   /**
    * A search, the featured row and a publisher's profile: the smallest price for 30 days among the
    * listing's plans, in cents. null when it offers none.
@@ -182,8 +237,8 @@ export interface LicenceAgent {
 /**
  * Where a licence stands. A copy is `subscribed`, `listing_pricing`, `unlisted`, `subscription_lapsed`,
  * `pricing_changed` or `uninstalled`. Use of the creator's agent can also be `none` (not started),
- * `plan_ended` (a plan that is over, with no price per use agreed to) or `not_offered` (the listing no
- * longer sells it).
+ * `plan_ended` (a plan or a free trial that is over, with no price per use agreed to) or `not_offered`
+ * (the listing no longer sells it).
  */
 export type InstallAccess =
   | "subscribed"
@@ -207,11 +262,12 @@ export interface ListingSubscription {
   cancelledAt: string | null;
   hasAccess: boolean;
   graceEndsAt: string | null;
-  /** The price for 30 days the subscription was agreed at, which a renewal charges. */
+  /** The price for 30 days the subscription was agreed at, which a renewal charges. 0 on a free trial, which is never renewed. */
   priceCents: number | null;
   /**
-   * Set when the publisher's side ended it. `use_ended`: the listing stopped selling use. `plan_ended`: its
-   * creator ended the plan, and it finished with the 30 days paid for.
+   * Set when it ended for a reason other than your own cancelling. `use_ended`: the listing stopped selling
+   * use. `plan_ended`: its creator ended the plan and it finished with the 30 days paid for, or it was a
+   * free trial whose 7 days are over (`trialEnded` on the install tells the two apart).
    */
   endReason: "pricing_changed" | "listing_archived" | "use_ended" | "plan_ended" | null;
   /** The plan it is on, while that gives uses. null for a month with no count, and for a plan that is over. */
@@ -232,6 +288,11 @@ export interface AgentInstall {
   totalSpentCents: number;
   installedAt: string;
   access: InstallAccess;
+  /**
+   * True only when `access` is `plan_ended` and what ended was your organization's own free trial, not a
+   * paid plan. Always false for a copy.
+   */
+  trialEnded: boolean;
   acceptedPricing: { pricingModel: PricingModel | null; pricePerRequestCents: number | null; acceptedAt: string | null };
   listing: AgentListing;
   subscription: ListingSubscription | null;
@@ -422,7 +483,7 @@ export function marketplaceResource(client: WheelsAIClient) {
     search: (params?: SearchListingsParams) =>
       client.get<{ listings: AgentListing[]; pagination: Pagination }>("/api/marketplace/listings", { ...params }),
 
-    /** One listing by slug (or id). Published listings only. */
+    /** One listing by slug (or id). Published listings only. Only a read by slug carries `plans` and `freeTrial`. */
     get: (slugOrId: string) =>
       client.get<{ listing: AgentListing }>(`/api/marketplace/listings/${seg(slugOrId)}`),
 
@@ -477,12 +538,17 @@ export function marketplaceResource(client: WheelsAIClient) {
      * so a plan on offer that is in neither list refuses the whole save. At most four plans. People already
      * on a plan keep the terms they agreed to. Needs an owner or admin, or an API key.
      *
+     * The listing's one free trial is one more entry of `plans` (`TrialPlanInput`), beside the four: changed
+     * in place by its `id`, and named in `ended` to stop offering it. A free trial with a price, with a price
+     * for an extra use, with more than 50 uses, or a second one in the set, is refused with 400
+     * `validation_failed`.
+     *
      * Answers the plans as they are now. Refusals: 400 `validation_failed` (`message` is the first problem,
      * `fields` in `error.data` has a sentence for each, keyed as `plans[0].priceCents`); 404
      * `listing_not_found`; 409 `plans_not_available` (the listing sells copies, is not sold per use, or its
      * agent runs on its own); 409 `plans_changed` (the plans were changed somewhere else; read them again).
      */
-    setPlans: (listingId: string, input: { plans: PlanInput[]; ended?: string[] }) =>
+    setPlans: (listingId: string, input: { plans: Array<PlanInput | TrialPlanInput>; ended?: string[] }) =>
       client.put<{ plans: OwnerPlan[] }>(`/api/marketplace/listings/${seg(listingId)}/plans`, {
         plans: input.plans,
         ...(input.ended !== undefined ? { ended: input.ended } : {}),
@@ -517,6 +583,11 @@ export function marketplaceResource(client: WheelsAIClient) {
      * credits. 201 when this call started or accepted something, 200 when you were already using it.
      * Needs an owner or admin, or a key granted `marketplace:install` by name.
      *
+     * While a plan or a free trial runs, sending the listing's price per use here is your agreement to it:
+     * it takes effect at once and answers 201, nothing is charged, and nothing of the plan or the trial
+     * changes. It is what you pay per use when the plan or the trial is over, and for each use past the uses
+     * of a free trial. A price that went up after you agreed is accepted only with `acceptNewPricing: true`.
+     *
      * Refusals: 400 `expected_terms_required`; 402 `insufficient_credits` (`requiredCents` in `error.data`);
      * 404 `listing_not_found`; 409 `sells_copies` (install it instead), `own_agent`, `not_offered`,
      * `subscription_claim_lost` (another request won; retry), `copy_subscription_active` (you hold a copy of
@@ -544,6 +615,15 @@ export function marketplaceResource(client: WheelsAIClient) {
      * this agent still runs), `subscription_claim_lost` (another request won; retry); and the refusals of
      * `startUsing` about the listing (`listing_not_found`, `own_agent`, `sells_copies`, `not_offered`,
      * `copy_subscription_active`, `listing_paused`, 503 `service_unavailable`).
+     *
+     * A listing's free trial is started here too, with the trial's own terms: `startPlan(listingId,
+     * trialTermsOf(trial))`, where `trial` is the `TrialOffer` you were shown (`freeTrial` of `get` by slug, `trial`
+     * of `use.access`). Nothing is charged, and your organization starts it once for a listing. Its own
+     * refusals, with nothing written: 409 `trial_already_used` (your organization started this listing's
+     * trial before), `trial_needs_credits` (your organization has never added credits: add credits once; the
+     * trial itself costs nothing), `already_on_plan`, and `pricing_changed` with `trial` in `error.data`, the
+     * trial on offer now or null. A paid plan can be started over a trial that is running: it is charged as
+     * any start and nothing of the trial is carried into it.
      */
     startPlan: (listingId: string, plan: PlanTerms) =>
       client.post<StartedUsing>(`/api/marketplace/listings/${seg(listingId)}/use`, { plan: planTermsOf(plan) }),
@@ -555,7 +635,8 @@ export function marketplaceResource(client: WheelsAIClient) {
      * is a move; to move to a smaller one, cancel the renewal and start it when your plan ends. Always 201.
      *
      * Refusals, with nothing charged or changed: 400 `invalid_plan_move`; 402 `insufficient_credits`; 409
-     * `not_on_plan`, `same_plan`, `not_a_bigger_plan`, `pricing_changed` (as at a start) and
+     * `not_on_plan`, `same_plan`, `not_a_bigger_plan`, `pricing_changed` (as at a start),
+     * `trial_cannot_move` (you are on a free trial: start the plan you want with `startPlan`) and
      * `subscription_claim_lost` (a renewal, a use or another move changed your subscription first).
      */
     movePlan: (listingId: string, plan: PlanTerms) =>
@@ -591,7 +672,8 @@ export function marketplaceResource(client: WheelsAIClient) {
 
     /**
      * Your installs, lapsed ones included. A use carries the plans its listing offers (`listing.plans`) and
-     * the plan it is on (`subscription.plan`). `canSpend` says whether this caller may start, move up or
+     * the plan it is on (`subscription.plan`, a free trial that is running among them), and `trialEnded`
+     * says when what ended was a free trial. `canSpend` says whether this caller may start, move up or
      * resume: an owner or admin, or a key granted `marketplace:install` by name.
      */
     myInstalls: () =>
@@ -618,7 +700,8 @@ export function marketplaceResource(client: WheelsAIClient) {
 
     /**
      * Keep renewing after all. It turns the charges back on, so it needs an owner or admin, or a key granted
-     * `marketplace:install` by name. 404 `subscription_not_found`.
+     * `marketplace:install` by name. 404 `subscription_not_found`, also for a free trial, which is never
+     * renewed.
      */
     resumeSubscription: (listingId: string) =>
       client.post<{ subscription: unknown }>(`/api/marketplace/subscriptions/${seg(listingId)}/resume`),

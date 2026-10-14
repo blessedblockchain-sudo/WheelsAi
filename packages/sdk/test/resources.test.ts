@@ -3,8 +3,9 @@
  * Authorization header. The expected values are a table written by hand from the routes
  * in apps/api (nothing here reads the API's code), so it catches an SDK change made by
  * accident, not an API route that moved: a change to either has to be made here on purpose.
- * The one exception is the names of the usage headers, which are compared with the API's
- * own file: a constant that only repeats names has nothing else to hold it to them.
+ * There are two exceptions, each compared with the API's own file because nothing else holds
+ * it to the API: the names of the usage headers, a constant that only repeats names; and the
+ * terms `trialTermsOf` builds, which must be the ones the API's rules allow a free trial.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -15,6 +16,7 @@ import {
   WheelsAI,
   WheelsAIError,
   isTopupFinal,
+  trialTermsOf,
   type CreditBalance,
   type CreditHold,
   type CreditTransaction,
@@ -30,9 +32,12 @@ import {
   type HostedModelChoice,
   type PreparedDepositAddress,
   type OwnerPlan,
+  type PlanInput,
   type PlanOffer,
   type SpendLine,
   type SubscriptionPlan,
+  type TrialOffer,
+  type TrialPlanInput,
   type UsageSummary,
   type UseAccessState,
   type UseChatResult,
@@ -703,7 +708,10 @@ describe("selling and using an agent", () => {
       subscription: null,
       plans: [],
       plan: null,
+      trial: null,
       trialAvailable: false,
+      trialNeedsCredits: false,
+      trialEnded: false,
       balanceCents: 0,
       canAccept: false,
       startBlocked: { code: "copy_subscription_active", message: "A copy is paid for.", until: "2026-11-01T00:00:00.000Z" },
@@ -766,7 +774,10 @@ describe("selling and using an agent", () => {
       subscription: null,
       plans: [],
       plan: null,
+      trial: null,
       trialAvailable: false,
+      trialNeedsCredits: false,
+      trialEnded: false,
       balanceCents: 0,
       canAccept: true,
       startBlocked: null,
@@ -834,6 +845,7 @@ describe("plans on an agent", () => {
   const count: SubscriptionPlan = {
     id: PLAN,
     name: "Starter",
+    trial: false,
     includedUses: 500,
     carriedUses: 0,
     usedUses: 425,
@@ -940,7 +952,10 @@ describe("plans on an agent", () => {
       terms: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, unit: "message", keepsCopy: false },
       plans: [starter],
       plan: count,
+      trial: null,
       trialAvailable: false,
+      trialNeedsCredits: false,
+      trialEnded: false,
       accepted: { pricingModel: null, pricePerRequestCents: null, monthlyPriceCents: 900 },
       subscription: { status: "active", currentPeriodEnd: "2026-11-12T09:30:00.000Z", cancelAtPeriodEnd: false, graceEndsAt: null },
       balanceCents: 495,
@@ -968,7 +983,7 @@ describe("plans on an agent", () => {
         chargedCents: 0,
         balanceCents: 495,
         access: "subscribed",
-        plan: { id: PLAN, use: "included", includedUses: 500, carriedUses: 0, usedUses: 426, remainingUses: 74, extraUsePriceCents: 5, resetsAt: "2026-11-12T09:30:00.000Z", warning: 85 },
+        plan: { id: PLAN, use: "included", trial: false, includedUses: 500, carriedUses: 0, usedUses: 426, remainingUses: 74, extraUsePriceCents: 5, resetsAt: "2026-11-12T09:30:00.000Z", warning: 85 },
       },
     };
     const said = await json(answer).wheels.use.chat("support-bot", { messages: [{ role: "user", content: "Hi" }] });
@@ -1007,7 +1022,9 @@ describe("plans on an agent", () => {
           slug: "support-bot",
           handle: "support-bot",
           access: "subscribed",
+          trialEnded: false,
           plan: count,
+          perUseAfterTrial: null,
           periodEndsAt: "2026-11-12T09:30:00.000Z",
           renewalPastDue: false,
           extraThisPeriod: { uses: 0, cents: 0 },
@@ -1043,6 +1060,203 @@ describe("plans on an agent", () => {
     const names = [...new Set(api.match(/"x-wheelsai-[a-z-]+"/g) ?? [])].map((name) => name.slice(1, -1));
     assert.equal(names.length, 8);
     assert.deepEqual(Object.values(USAGE_HEADERS).sort(), names.sort());
+  });
+});
+
+describe("the free trial of a listing", () => {
+  const TRIAL = "77777777-7777-4777-8777-777777777777";
+  const json = (body: unknown, status = 200) => {
+    const recorded = recordingFetch(() => jsonResponse(body, status));
+    return { wheels: new WheelsAI({ baseUrl: BASE_URL, apiKey: API_KEY, fetch: recorded.fetch }), calls: recorded.calls };
+  };
+  const offer: TrialOffer = { id: TRIAL, includedUses: 20, days: 7 };
+  const starter: PlanOffer = { id: PLAN, name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 };
+  /** The trial as the plan a buyer is on: its one name, no extra price, no time at which a count starts again. */
+  const onTrial: SubscriptionPlan = {
+    id: TRIAL,
+    name: "Free trial",
+    trial: true,
+    includedUses: 20,
+    carriedUses: 0,
+    usedUses: 3,
+    remainingUses: 17,
+    extraUsePriceCents: null,
+    warning: null,
+  };
+
+  it("trialTermsOf builds the trial's own terms: its id and its uses, a price of 0 and no extra price", () => {
+    assert.deepEqual(trialTermsOf(offer), { id: TRIAL, priceCents: 0, includedUses: 20, extraUsePriceCents: null });
+    // The days are what a trial is, not a term a start agrees to: they are not sent.
+    assert.equal("days" in trialTermsOf(offer), false);
+  });
+
+  it("and those are the terms the API's rules allow a free trial", () => {
+    // From the compiled test (.test-build/test), four levels up is the repository.
+    const rules = readFileSync(new URL("../../../../apps/api/src/services/listingPlans.ts", import.meta.url), "utf8");
+    assert.match(rules, /if \(plan\.priceCents !== 0n\) wrong\(at\("priceCents"\), PLAN_MESSAGES\.trialPrice\);/);
+    assert.match(rules, /if \(\(plan\.extraUsePriceCents \?\? null\) !== null\) wrong\(at\("extraUsePriceCents"\), PLAN_MESSAGES\.trialExtra\);/);
+    // A start compares exactly these four, and nothing else, with the trial as it is now.
+    assert.match(
+      rules,
+      /shown\.id === plan\.id &&\s+shown\.priceCents === plan\.priceCents &&\s+shown\.includedUses === plan\.includedUses &&\s+\(shown\.extraUsePriceCents \?\? null\) === \(plan\.extraUsePriceCents \?\? null\)/,
+    );
+    assert.deepEqual(Object.keys(trialTermsOf(offer)).sort(), ["extraUsePriceCents", "id", "includedUses", "priceCents"]);
+    // The route takes exactly these four: a price of nothing is a price it takes, and the extra price may be null.
+    const route = readFileSync(new URL("../../../../apps/api/src/routes/marketplace.ts", import.meta.url), "utf8");
+    assert.match(
+      route,
+      /const shownPlanSchema = z\.object\(\{\s+id: z\.string\(\)\.uuid\(\),\s+priceCents: z\.number\(\)\.int\(\)\.nonnegative\(\)[^\n]*\s+includedUses: z\.number\(\)\.int\(\)\.positive\(\)[^\n]*\s+extraUsePriceCents: z\.number\(\)\.int\(\)\.nonnegative\(\)[^\n]*\.nullable\(\),\s+\}\);/,
+    );
+  });
+
+  it("a trial is started by the call that starts a plan, with the exact body the API takes", async () => {
+    const { wheels, calls } = json({}, 201);
+    await wheels.marketplace.startPlan(LISTING, trialTermsOf(offer));
+    assert.equal(calls[0]!.method, "POST");
+    assert.equal(calls[0]!.url.pathname, `/api/marketplace/listings/${LISTING}/use`);
+    // The extra price is said, as null, and nothing else goes with the terms.
+    assert.equal(calls[0]!.rawBody, JSON.stringify({ plan: { id: TRIAL, priceCents: 0, includedUses: 20, extraUsePriceCents: null } }));
+  });
+
+  it("the refusals of a trial start keep their code and their sentence, and a changed trial comes with the one on offer", async () => {
+    const refusals: Array<[string, string, (w: WheelsAI) => Promise<unknown>]> = [
+      ["trial_already_used", "You have already used the free trial of this agent. Choose a plan or pay per use to keep using it.", (w) => w.marketplace.startPlan(LISTING, trialTermsOf(offer))],
+      ["trial_needs_credits", "Add credits to your account once to start a free trial. The trial itself costs nothing.", (w) => w.marketplace.startPlan(LISTING, trialTermsOf(offer))],
+      ["trial_cannot_move", "You are on a free trial. Start the plan you want: nothing of the trial is carried over.", (w) => w.marketplace.movePlan(LISTING, starter)],
+    ];
+    for (const [error, message, run] of refusals) {
+      await assert.rejects(run(json({ error, message }, 409).wheels), (err: unknown) => {
+        assert.ok(err instanceof WheelsAIError);
+        assert.deepEqual([err.status, err.code, err.message], [409, error, message]);
+        return true;
+      });
+    }
+    const changed = {
+      error: "pricing_changed",
+      message: "The free trial is not what you were shown.",
+      pricing: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null },
+      plans: [starter],
+      trial: { ...offer, includedUses: 10 },
+    };
+    await assert.rejects(json(changed, 409).wheels.marketplace.startPlan(LISTING, trialTermsOf(offer)), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code], [409, "pricing_changed"]);
+      assert.equal((err.data as { trial: TrialOffer | null }).trial?.includedUses, 10);
+      return true;
+    });
+  });
+
+  it("a creator sends the trial as one more entry of the set, beside a paid plan", async () => {
+    const { wheels, calls } = json({ plans: [] });
+    const trial: TrialPlanInput = { kind: "trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null };
+    const paid: PlanInput = { id: PLAN, kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 5 };
+    await wheels.marketplace.setPlans(LISTING, { plans: [trial, paid] });
+    await wheels.marketplace.setPlans(LISTING, { plans: [paid], ended: [TRIAL] });
+    assert.deepEqual(calls[0]!.body, { plans: [trial, paid] });
+    // No name is sent for a trial, and its extra price is said.
+    assert.equal(calls[0]!.rawBody!.includes('{"kind":"trial","priceCents":0,"includedUses":20,"extraUsePriceCents":null}'), true);
+    assert.deepEqual(calls[1]!.body, { plans: [paid], ended: [TRIAL] });
+    // The answer carries the trial first, with its kind and the trials that are running.
+    const owned: OwnerPlan = { id: TRIAL, kind: "trial", name: "Free trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null, status: "active", subscribers: 3 };
+    const saved = await json({ plans: [owned] }).wheels.marketplace.setPlans(LISTING, { plans: [{ ...trial, id: TRIAL }] });
+    assert.deepEqual([saved.plans[0]!.kind, saved.plans[0]!.subscribers], ["trial", 3]);
+  });
+
+  // A check of the types more than of the client: every field read below must exist on the
+  // SDK's type under the name the API sends, or this file stops compiling.
+  it("the reads say the trial under the names the API sends", async () => {
+    const { listing } = await json({ listing: { id: LISTING, plans: [starter], freeTrial: offer } }).wheels.marketplace.get("support-bot");
+    assert.deepEqual(listing.freeTrial, offer);
+    // The trial is never one of the plans.
+    assert.deepEqual(listing.plans, [starter]);
+
+    const access: UseAccessState = {
+      access: "none",
+      listingId: LISTING,
+      terms: { pricingModel: "per_request", pricePerRequestCents: 5, monthlyPriceCents: null, unit: "message", keepsCopy: false },
+      plans: [starter],
+      plan: null,
+      trial: offer,
+      trialAvailable: false,
+      trialNeedsCredits: true,
+      trialEnded: false,
+      accepted: null,
+      subscription: null,
+      balanceCents: 0,
+      canAccept: true,
+      startBlocked: null,
+      paused: false,
+    };
+    const stand = await json(access).wheels.use.access("support-bot");
+    assert.deepEqual(stand, access);
+    // A boolean, not the literal false it was typed as before a trial could be offered.
+    const available: boolean = stand.trialAvailable;
+    assert.equal(available, false);
+    const running = await json({ ...access, access: "subscribed", plan: onTrial, trialNeedsCredits: false }).wheels.use.access("support-bot");
+    assert.deepEqual([running.plan?.trial, running.plan?.name, running.plan?.resetsAt], [true, "Free trial", undefined]);
+    const ended = await json({ ...access, access: "plan_ended", trialNeedsCredits: false, trialEnded: true }).wheels.use.access("support-bot");
+    assert.equal(ended.trialEnded, true);
+
+    const installs = await json({
+      installs: [
+        { id: "i1", kind: "use", access: "plan_ended", trialEnded: true, listing: { id: LISTING }, subscription: null },
+        { id: "i2", kind: "use", access: "subscribed", trialEnded: false, listing: { id: LISTING }, subscription: { id: "s1", priceCents: 0, plan: onTrial } },
+      ],
+      canSpend: true,
+    }).wheels.marketplace.myInstalls();
+    assert.deepEqual(installs.installs.map((install) => install.trialEnded), [true, false]);
+    assert.equal(installs.installs[1]!.subscription!.plan!.trial, true);
+  });
+
+  it("a use on a trial carries the trial's count, and past it the refusal has no time at which a count starts again", async () => {
+    const answer: UseChatResult = {
+      message: { role: "assistant", content: "Hello." },
+      toolCalls: [],
+      billing: {
+        chargedCents: 0,
+        balanceCents: 495,
+        access: "subscribed",
+        plan: { id: TRIAL, use: "included", trial: true, includedUses: 20, carriedUses: 0, usedUses: 4, remainingUses: 16, extraUsePriceCents: null, warning: null },
+      },
+    };
+    const said = await json(answer).wheels.use.chat("support-bot", { messages: [{ role: "user", content: "Hi" }] });
+    assert.deepEqual(said, answer);
+    assert.deepEqual([said.billing.plan?.trial, said.billing.chargedCents], [true, 0]);
+
+    const usedUp = {
+      error: "plan_used_up",
+      message: "You have used all 20 uses of your free trial. Choose a plan or pay per use to keep using it. Nothing was charged.",
+      plans: [starter],
+    };
+    await assert.rejects(json(usedUp, 429).wheels.use.chat("support-bot", { messages: [{ role: "user", content: "Hi" }] }), (err: unknown) => {
+      assert.ok(err instanceof WheelsAIError);
+      assert.deepEqual([err.status, err.code, err.message], [429, "plan_used_up", usedUp.message]);
+      const data = err.data as UseRefusal;
+      assert.deepEqual([data.resetsAt, data.retryAfterSeconds, data.plans], [undefined, undefined, [starter]]);
+      return true;
+    });
+  });
+
+  it("usage says an ended trial, and what a use costs after the free ones", async () => {
+    const row = {
+      listingId: LISTING,
+      title: "Support Bot",
+      slug: "support-bot",
+      handle: "support-bot",
+      renewalPastDue: false,
+      perUseThisMonth: { uses: 0, cents: 0 },
+    };
+    const usage: UseUsage = {
+      balanceCents: 495,
+      listings: [
+        { ...row, access: "subscribed", trialEnded: false, plan: onTrial, perUseAfterTrial: { priceCents: 5, unit: "message" }, periodEndsAt: "2026-10-21T09:30:00.000Z", extraThisPeriod: { uses: 0, cents: 0 } },
+        { ...row, access: "plan_ended", trialEnded: true, plan: null, perUseAfterTrial: null, periodEndsAt: null, extraThisPeriod: null },
+      ],
+    };
+    const read = await json(usage).wheels.use.usage();
+    assert.deepEqual(read, usage);
+    assert.deepEqual(read.listings[0]!.perUseAfterTrial, { priceCents: 5, unit: "message" });
+    assert.deepEqual(read.listings.map((listing) => listing.trialEnded), [false, true]);
   });
 });
 

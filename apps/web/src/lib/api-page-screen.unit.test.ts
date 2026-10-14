@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { API_PAGE_HEADINGS, API_PAGE_WORDS } from "./api-page";
+import { API_PAGE_HEADINGS, API_PAGE_WALLET_WORDS, API_PAGE_WORDS } from "./api-page";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -133,4 +133,21 @@ test("the marketplace's listing page links to it only for a listing that sells u
   assert.match(LISTING, /\{apiPageHref && \(\s*<Link\s+href=\{apiPageHref\}/);
   assert.ok(LISTING.includes("{API_PAGE_WORDS.link}"));
   assert.equal(LISTING.includes(API_PAGE_WORDS.link), false);
+});
+
+test("paying from a wallet is drawn only from the view, and the screen words none of it", () => {
+  // Drawn only when the view has it, under its own heading.
+  assert.match(VIEW, /\{view\.wallet && \(\s*<Part id="api-wallet" heading=\{API_PAGE_HEADINGS\.wallet\}>/);
+  assert.equal(VIEW.split("{view.wallet && ").length - 1, 1, "one place");
+  assert.ok(VIEW.includes("view.wallet.lines.map((line) => ("));
+  for (const drawn of ["{view.wallet.networkLine}", "{view.wallet.assetLine}"]) assert.ok(VIEW.includes(drawn), drawn);
+  // The first call in its own box with a copy button, as the other snippets are.
+  assert.ok(VIEW.includes("<CodeBlock title={view.wallet.snippet.label} code={view.wallet.snippet.code}"));
+  // No sentence, header, network or price of it is typed into the screen.
+  const code = VIEW.replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+  for (const word of Object.values(API_PAGE_WALLET_WORDS)) assert.equal(VIEW.includes(word), false, word);
+  assert.equal(VIEW.includes(API_PAGE_HEADINGS.wallet), false);
+  assert.equal(/USDC|Solana|x402|PAYMENT-|\b402\b|solana:|seconds|minutes/i.test(code), false);
+  // Nothing that pays: the page shows how, the caller's own client pays.
+  assert.equal(/onClick=\{|<Button\b|<form\b|<input\b|signTransaction|PAYMENT-SIGNATURE/.test(VIEW), false);
 });

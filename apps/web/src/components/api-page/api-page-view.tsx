@@ -91,7 +91,9 @@ function HeaderList({ headers }: { headers: ApiPageHeader[] }) {
 
 /**
  * The API page of a listing: where to send a request, three snippets, the
- * price and the plans, the limits, the usage headers and the refusals.
+ * price and the plans, the limits, the usage headers and the refusals, and,
+ * where the API page's data offers it, paying one use from a wallet with no
+ * key.
  * Anyone with the link can open it, signed in or not. Every word and number
  * on it comes from `apiPageView` (lib/api-page.ts), an agent's page and a
  * workflow's alike; only the read and the not-found words are the reader's.
@@ -357,6 +359,22 @@ export function ApiPageView({ handle, initial, reader = "agent" }: ApiPageViewPr
             {view.createKeyLabel}
           </Link>
         </Part>
+
+        {/* Paying one use from a wallet with no key, beside the key: drawn only when the view has it, every line from the pure file. */}
+        {view.wallet && (
+          <Part id="api-wallet" heading={API_PAGE_HEADINGS.wallet}>
+            {view.wallet.lines.map((line) => (
+              <p key={line}>{line}</p>
+            ))}
+            <p>
+              <Literal>{view.wallet.networkLine}</Literal>
+            </p>
+            <p>
+              <Literal>{view.wallet.assetLine}</Literal>
+            </p>
+            <CodeBlock title={view.wallet.snippet.label} code={view.wallet.snippet.code} className="min-w-0 max-w-full" />
+          </Part>
+        )}
       </main>
     </div>
   );

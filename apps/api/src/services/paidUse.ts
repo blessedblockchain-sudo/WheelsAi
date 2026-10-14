@@ -473,6 +473,14 @@ export interface PaidUseRefusal {
    * OpenAI shape name their fields one by one and leave it out.
    */
   planCount?: PaidUsePlanCount;
+  /**
+   * A refusal that came after a charge was taken and given back (a paid run
+   * of a workflow whose start found no room): a client must not send the
+   * request again by itself, because each try is another charge and another
+   * refund. Not part of the body. On /v1 it is the header an OpenAI SDK
+   * obeys (services/openaiCompat.ts, paidUseOpenAiError).
+   */
+  noAutomaticRetry?: true;
 }
 
 /** A plan's count as it stood when a use was refused. Uses, and nothing of another buyer. */

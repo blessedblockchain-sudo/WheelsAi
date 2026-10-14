@@ -410,15 +410,20 @@ test("the edit and the publish of a workflow's listing are never an agent's: no 
   }
 });
 
-test("a copy of a workflow's listing is refused: the listing sells use, and a row that says otherwise has nothing to copy", async () => {
+test("a copy of a workflow's listing is refused in the workflow's words, whatever its row says it sells", async () => {
   const world = makeWorld({ listings: [workflowRow("flow"), workflowRow("broken", { sells: "copies" })] });
   await withWorld(world, async ({ installAgent, InstallRefusedError }) => {
-    await assert.rejects(installAgent("flow", BUYER), (err: unknown) => {
-      assert.ok(err instanceof InstallRefusedError);
-      assert.equal((err as { code?: string }).code, "sells_use");
-      return true;
-    });
-    await assert.rejects(installAgent("broken", BUYER), /This agent is not available for installation/);
+    // A row that says it sells copies, which only a corrupt row can, has nothing to copy either.
+    for (const id of ["flow", "broken"]) {
+      await assert.rejects(installAgent(id, BUYER), (err: unknown) => {
+        assert.ok(err instanceof InstallRefusedError);
+        assert.deepEqual(
+          [err.code, err.message, err.handle],
+          ["sells_use", "You use this workflow on its page. You do not get a copy.", null],
+        );
+        return true;
+      });
+    }
   });
   assert.deepEqual(world.calls, []);
 });

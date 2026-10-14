@@ -50,11 +50,12 @@ import {
 import { isPaidUse, MIN_PRICE_PER_USE_CENTS, useUnitOf, type UseUnit } from "./useListing.js";
 import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { createLogger } from "../utils/logger.js";
-import { loadWorkflowForListing, type WorkflowListingDb } from "./buildWorkflowListingDeps.js";
+import { loadWorkflowForListing, readWorkflowCanRunNow, type WorkflowListingDb } from "./buildWorkflowListingDeps.js";
 import {
   listingProductKind,
   WORKFLOW_LISTING_MESSAGES,
   WORKFLOW_LISTING_SLUG,
+  WORKFLOW_START_MESSAGES,
   type ListingProductKind,
   workflowNotFound,
   workflowSellableProblem,
@@ -514,7 +515,8 @@ export async function createReview(
   // listing should fail here, not on the FK.
   const listing = await prisma.agentListing.findUnique({
     where: { id: listingId },
-    select: { publisherId: true },
+    // The two ids say what the listing sells, for the words of a refusal.
+    select: { publisherId: true, agentId: true, orchestrationId: true },
   });
 
   if (!listing) {
@@ -529,7 +531,11 @@ export async function createReview(
   });
 
   if (existing) {
-    throw new Error("You have already reviewed this agent");
+    throw new Error(
+      listingProductKind(listing) === "workflow"
+        ? WORKFLOW_START_MESSAGES.alreadyReviewed
+        : "You have already reviewed this agent",
+    );
   }
 
   const isVerified = await isVerifiedReviewer(listingId, reviewerId);
@@ -1518,6 +1524,11 @@ export async function archiveListing(listingId: string, orgId: string) {
 export interface ListingPauseHooks {
   listingPausedNow?: typeof listingPausedNow;
   reconcileListingPauses?: typeof reconcileListingPauses;
+  /**
+   * For a listing that sells a workflow, which has no pause: whether the
+   * workflow can run at this moment (services/buildWorkflowListingDeps.ts).
+   */
+  workflowCanRunNow?: (ref: { workflowId: string; orgId: string }) => Promise<boolean>;
 }
 
 export async function getMyListings(orgId: string, hooks: ListingPauseHooks = {}) {
@@ -2158,6 +2169,19 @@ export async function installAgent(
     throw new Error("Listing not found");
   }
 
+  // A workflow is used on its page and never copied: told in the workflow's
+  // own words, before any sentence that speaks of an agent.
+  if (listingProductKind(listing) === "workflow") {
+    if (listing.status !== "published") {
+      throw new Error(WORKFLOW_START_MESSAGES.notOnSale);
+    }
+    if (listing.publisherId === buyerId) {
+      throw new Error(WORKFLOW_START_MESSAGES.own);
+    }
+    // No handle: a workflow has no agent's page to send the person to.
+    throw new InstallRefusedError("sells_use", WORKFLOW_START_MESSAGES.noCopy, null);
+  }
+
   if (listing.status !== "published") {
     throw new Error("This agent is not available for installation");
   }
@@ -2402,6 +2426,56 @@ export class UseStartError extends Error {
   }
 }
 
+/**
+ * The sentences of a start that name what is sold, for this listing: an
+ * agent's are the ones above, untouched, and a workflow's are its own
+ * (services/workflowListing.ts). The codes and statuses are the same for
+ * both. A workflow's listing sells use only, so one that says anything else
+ * is told it is not on sale.
+ */
+export function useStartMessagesOf(listing: {
+  agentId?: string | null;
+  orchestrationId?: string | null;
+}): { ownAgent: string; sellsCopies: string; tokenAccess: string } {
+  if (listingProductKind(listing) === "agent") return USE_START_MESSAGES;
+  return {
+    ownAgent: WORKFLOW_START_MESSAGES.own,
+    sellsCopies: WORKFLOW_START_MESSAGES.notOnSale,
+    tokenAccess: WORKFLOW_START_MESSAGES.notOnSale,
+  };
+}
+
+/**
+ * For a listing that sells a workflow: nothing is started, and no 30 days
+ * are charged, while the workflow cannot run. Asked of the workflow at this
+ * moment, with the listing's publisher as its organization, before anything
+ * is claimed or charged, and never remembered from the listing's status: a
+ * workflow can be disabled, emptied or left without a running deployment
+ * while its listing still says published. Fail closed: a read that fails,
+ * and a listing that names no workflow, refuse too.
+ *
+ * Throws UseStartError (409 not_offered); returns when the workflow can run.
+ */
+export async function refuseIfWorkflowCannotRun(
+  listing: { id: string; publisherId: string; orchestrationId: string | null },
+  hooks: ListingPauseHooks = {},
+): Promise<void> {
+  let canRun = false;
+  if (listing.orchestrationId !== null) {
+    try {
+      canRun = await (hooks.workflowCanRunNow ?? readWorkflowCanRunNow)({
+        workflowId: listing.orchestrationId,
+        orgId: listing.publisherId,
+      });
+    } catch (err) {
+      logger.warn({ err, listingId: listing.id }, "Could not ask whether a workflow can run; nothing was started");
+    }
+  }
+  if (!canRun) {
+    throw new UseStartError(409, "not_offered", WORKFLOW_START_MESSAGES.notOffered);
+  }
+}
+
 /** The agent a licence is for, as its buyer may know it. Never its instructions. */
 export interface LicenceAgent {
   /** /a/<handle>; null when the agent has no page. */
@@ -2583,18 +2657,29 @@ export async function startUsing(
     throw new UseStartError(404, "listing_not_found", USE_START_MESSAGES.listingNotFound);
   }
 
+  // What the listing sells decides the words of every refusal below, and
+  // what is asked before anything is started.
+  const sellsWorkflow = listingProductKind(listing) === "workflow";
+  const words = useStartMessagesOf(listing);
+
   // Self-dealing is refused by organization, here and at every use.
   if (listing.publisherId === buyerId) {
-    throw new UseStartError(409, "own_agent", USE_START_MESSAGES.ownAgent);
+    throw new UseStartError(409, "own_agent", words.ownAgent);
   }
 
   if (listing.sells !== "use") {
-    throw new UseStartError(409, "sells_copies", USE_START_MESSAGES.sellsCopies);
+    throw new UseStartError(409, "sells_copies", words.sellsCopies);
   }
   // Use is sold free, per use or by the month. Anything else cannot be
   // published as use; if a row says so anyway, nothing is started on it.
   if (listing.pricingModel !== "free" && listing.pricingModel !== "per_request" && listing.pricingModel !== "monthly") {
-    throw new UseStartError(409, "not_offered", USE_START_MESSAGES.tokenAccess);
+    throw new UseStartError(409, "not_offered", words.tokenAccess);
+  }
+  // A workflow is sold per run and no other way. A row that says free or
+  // monthly, which only a corrupt row can, starts nothing: a free run and a
+  // month with no count are not things a workflow's listing has.
+  if (sellsWorkflow && listing.pricingModel !== "per_request") {
+    throw new UseStartError(409, "not_offered", words.tokenAccess);
   }
 
   // Free use is the agent's public page: nobody pays, so there is nothing
@@ -2685,14 +2770,20 @@ export async function startUsing(
       copyPaidUntil,
     );
   }
+  // A workflow's listing has no pause. What stands in for it: nothing is
+  // started, and no price is agreed to, while the workflow cannot run.
+  if (sellsWorkflow) {
+    await refuseIfWorkflowCannotRun(listing, hooks);
+  }
   // Paused: the agent cannot answer, so nothing is started on it. Asked of
   // the model at this moment, never read from the marker. Fail closed: when
   // the question cannot be answered nobody is charged.
   let paused: boolean;
   try {
-    paused = listing.agent
-      ? await (hooks.listingPausedNow ?? listingPausedNow)({ listing, agent: listing.agent })
-      : false;
+    paused =
+      !sellsWorkflow && listing.agent
+        ? await (hooks.listingPausedNow ?? listingPausedNow)({ listing, agent: listing.agent })
+        : false;
   } catch (err) {
     logger.warn({ err, listingId }, "Could not ask whether a listing is paused; nothing was started");
     throw new UseStartError(503, "service_unavailable", USE_START_MESSAGES.cannotStart);
@@ -2703,8 +2794,9 @@ export async function startUsing(
   // A pause that is over but whose marker is still set: the marker is
   // cleared, and the months already paid for made longer, BEFORE this start,
   // so that a month that begins now is not lengthened by a pause that ended
-  // before it. If that cannot be done nothing is started.
-  if (listing.pausedSince) {
+  // before it. If that cannot be done nothing is started. Never for a
+  // workflow's listing, whose marker nothing sets or reads.
+  if (!sellsWorkflow && listing.pausedSince) {
     let errors: number;
     try {
       ({ errors } = await (hooks.reconcileListingPauses ?? reconcileListingPauses)({ listingId }));

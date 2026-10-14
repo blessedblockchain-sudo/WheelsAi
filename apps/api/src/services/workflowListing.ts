@@ -98,9 +98,19 @@ export const WORKFLOW_LISTING_MESSAGES = {
     "People have paid for this workflow, so it cannot be deleted. Stop selling it instead: it leaves the marketplace, and buyers on a plan keep it until the 30 days they paid for end.",
 } as const;
 
-/** What a buyer is told when a workflow's listing cannot be started. */
+/**
+ * What a buyer is told at the start of a workflow's listing: starting per
+ * run, starting a plan, moving to a bigger plan, and the two things a
+ * workflow's listing does not do for them (a copy, a second review). Each
+ * stands beside the sentence an agent's listing says in the same place.
+ */
 export const WORKFLOW_START_MESSAGES = {
   notOffered: "This workflow cannot be started right now. Nothing was charged. Try again later.",
+  own: "This is your workflow. You do not pay to use it.",
+  notOnSale: "Use of this workflow is not on sale right now.",
+  alreadyOnPlan: "You already have a plan for this workflow that is still running. Nothing was charged.",
+  noCopy: "You use this workflow on its page. You do not get a copy.",
+  alreadyReviewed: "You have already reviewed this workflow.",
 } as const;
 
 // ============================================

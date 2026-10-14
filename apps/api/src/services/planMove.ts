@@ -40,6 +40,7 @@ import {
   readUseState,
   USE_LISTING_INCLUDE,
   USE_START_MESSAGES,
+  useStartMessagesOf,
   UseStartError,
   type ListingPauseHooks,
   type UseState,
@@ -106,11 +107,13 @@ export async function movePlan(
   if (!listing || listing.status !== "published") {
     throw new UseStartError(404, "listing_not_found", USE_START_MESSAGES.listingNotFound);
   }
+  // In the words of what the listing sells: an agent, or a workflow.
+  const words = useStartMessagesOf(listing);
   if (listing.publisherId === buyerId) {
-    throw new UseStartError(409, "own_agent", USE_START_MESSAGES.ownAgent);
+    throw new UseStartError(409, "own_agent", words.ownAgent);
   }
   if (listing.sells !== "use") {
-    throw new UseStartError(409, "sells_copies", USE_START_MESSAGES.sellsCopies);
+    throw new UseStartError(409, "sells_copies", words.sellsCopies);
   }
 
   const target = {

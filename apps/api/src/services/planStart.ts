@@ -46,8 +46,10 @@ import {
   countLicence,
   LicenceClaimLostError,
   readUseState,
+  refuseIfWorkflowCannotRun,
   USE_LISTING_INCLUDE,
   USE_START_MESSAGES,
+  useStartMessagesOf,
   UseStartError,
   type ListingPauseHooks,
   type ListingPricingTerms,
@@ -83,6 +85,7 @@ import {
   copyMonthBlockingUseMessage,
   useAccess,
 } from "./useAccess.js";
+import { listingProductKind, WORKFLOW_START_MESSAGES } from "./workflowListing.js";
 
 const logger = createLogger("plan-start");
 
@@ -94,6 +97,8 @@ export const PLAN_START_MESSAGES = {
   termsChanged: (listingTitle: string) =>
     `The plans of "${listingTitle}" are not what you were shown. Nothing was charged. Look at them again and choose.`,
   alreadyOnPlan: "You already have a plan or a subscription for this agent that is still running. Nothing was charged.",
+  /** The same for a listing that sells a workflow, which has plans and no month without a count. */
+  alreadyOnPlanWorkflow: WORKFLOW_START_MESSAGES.alreadyOnPlan,
   notEnoughCredits: (priceCents: bigint) =>
     `You do not have enough credits for this plan (${dollars(priceCents)} for 30 days). Nothing was charged. Add credits to continue.`,
 } as const;
@@ -127,8 +132,9 @@ export class PlanTermsChangedError extends Error {
 /** The buyer's subscription to this agent still runs: a plan, or a month. Nothing was charged. */
 export class AlreadyOnPlanError extends Error {
   readonly code = "already_on_plan";
-  constructor() {
-    super(PLAN_START_MESSAGES.alreadyOnPlan);
+  /** `message`: the sentence of a workflow's listing. Left out, the agent's. */
+  constructor(message: string = PLAN_START_MESSAGES.alreadyOnPlan) {
+    super(message);
     this.name = "AlreadyOnPlanError";
   }
 }
@@ -186,6 +192,13 @@ async function trialTermsChanged(db: OffersDb, listingId: string, listing: Price
  */
 export async function refuseIfItCannotAnswer(listing: PlanListing, hooks: ListingPauseHooks): Promise<void> {
   const listingId = listing.id;
+  // A listing that sells a workflow has no agent to ask and no pause: the
+  // question is whether the workflow can run at this moment, and no 30 days
+  // are charged when it cannot, or when that cannot be read.
+  if (listingProductKind(listing) === "workflow") {
+    await refuseIfWorkflowCannotRun(listing, hooks);
+    return;
+  }
   // An agent that answers through its graph cannot answer a paid use. No
   // 30 days are charged for something that cannot run.
   if (listing.agent?.entrypoint === "graph") {
@@ -292,12 +305,17 @@ export async function startPlan(
   if (!listing || listing.status !== "published") {
     throw new UseStartError(404, "listing_not_found", USE_START_MESSAGES.listingNotFound);
   }
+  // What the listing sells decides the words of the refusals that name it.
+  const sellsWorkflow = listingProductKind(listing) === "workflow";
+  const words = useStartMessagesOf(listing);
+  const alreadyOnPlan = () =>
+    new AlreadyOnPlanError(sellsWorkflow ? PLAN_START_MESSAGES.alreadyOnPlanWorkflow : undefined);
   // Self-dealing is refused by organization, here and at every use.
   if (listing.publisherId === buyerId) {
-    throw new UseStartError(409, "own_agent", USE_START_MESSAGES.ownAgent);
+    throw new UseStartError(409, "own_agent", words.ownAgent);
   }
   if (listing.sells !== "use") {
-    throw new UseStartError(409, "sells_copies", USE_START_MESSAGES.sellsCopies);
+    throw new UseStartError(409, "sells_copies", words.sellsCopies);
   }
 
   // The plan as it is now, against what the person was shown. Any
@@ -307,7 +325,9 @@ export async function startPlan(
   const planNow = await prisma.listingPlan.findUnique({ where: { id: shown.id } });
   // The plan that was sent is this listing's free trial: a trial start,
   // which charges nothing and has its own rules about who may.
-  if (planNow !== null && planNow.listingId === listingId && planNow.kind === "trial") {
+  // Never on a workflow's listing, which offers no free trial: a trial row
+  // found on one is not a plan it offers, and is answered as such below.
+  if (!sellsWorkflow && planNow !== null && planNow.listingId === listingId && planNow.kind === "trial") {
     return startListingTrial(listing, buyerId, shown, planNow, hooks);
   }
   const offered =
@@ -374,6 +394,9 @@ export async function startPlan(
   // A free trial that is still running is the one exception: a paid plan is
   // started over it at any time. The claim names the trial row as it was
   // read (startPlanSubscription), so this is not a way around it.
+  // A workflow's listing has no free trial to start a plan over: any plan
+  // that runs on it refuses, in the workflow's words.
+  if (access === "subscribed" && sellsWorkflow) throw alreadyOnPlan();
   if (access === "subscribed" && !onTrialPlan(existingSub)) throw new AlreadyOnPlanError();
 
   await refuseIfItCannotAnswer(listing, hooks);
@@ -410,7 +433,7 @@ export async function startPlan(
     .catch((err) => {
       // The buyer's subscription row still grants access, or another writer
       // took it first. This transaction rolled back whole.
-      if (err instanceof SubscriptionClaimLostError) throw new AlreadyOnPlanError();
+      if (err instanceof SubscriptionClaimLostError) throw alreadyOnPlan();
       // Another start for this buyer holds the licence row, or the unique
       // (listingId, buyerId) on a first start.
       if (isUniqueViolation(err) || err instanceof LicenceClaimLostError) {

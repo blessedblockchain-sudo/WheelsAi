@@ -63,9 +63,11 @@ export interface BuyerUsageLicence {
     pricePerRequestCents: bigint | null;
     /** AgentListing.publisherId, the creator's organization. Read to know the buyer's own listing; never in the answer. */
     publisherId: string;
-    /** The agent's address, /a/<handle>. null when the agent has no page. */
+    /** What the listing sells. A workflow's listing has no agent: no handle and no kind. */
+    productKind: "agent" | "workflow";
+    /** The agent's address, /a/<handle>. null when the agent has no page, and for a workflow. */
     handle: string | null;
-    /** Agent.agentKind: a task agent's use is a run, any other a message. null when it could not be read. */
+    /** Agent.agentKind: a task agent's use is a run, any other a message. null when it could not be read, and for a workflow. */
     agentKind: string | null;
   };
   /** AgentSubscription of this buyer on this listing, with `subscriberId` as read. */
@@ -121,8 +123,11 @@ export interface PerUseAfterTrial {
 export interface BuyerUsageRow {
   listingId: string;
   title: string;
+  /** The listing's slug. A workflow is used at /w/<slug>. */
   slug: string;
-  /** The agent's address, /a/<handle>. */
+  /** What the listing sells. */
+  productKind: "agent" | "workflow";
+  /** The agent's address, /a/<handle>. null for a workflow. */
   handle: string | null;
   access: UseAccess;
   /** True only when `access` is plan_ended and what ended was this buyer's own free trial. */
@@ -188,6 +193,10 @@ function told(sums: Map<string, PaidUseSum>, key: string | null): UsesAndCents {
  */
 function perUseAfterTrialOf(licence: BuyerUsageLicence, now: Date): PerUseAfterTrial | null {
   const { listing } = licence;
+  // A workflow's listing offers no free trial. And the unit below is said
+  // from the agent's kind: with no agent, or a kind that could not be read,
+  // there is none to say, and one is never guessed.
+  if (listing.productKind !== "agent" || listing.agentKind === null) return null;
   if (listing.publisherId === licence.buyerId) return null;
   if (licence.status !== "active" || licence.accepted.pricingModel !== "per_request") return null;
   const access = useAccess(
@@ -262,7 +271,8 @@ export async function readBuyerUsage(deps: BuyerUsageDeps, orgId: string): Promi
       listingId: listing.id,
       title: listing.title,
       slug: listing.slug,
-      handle: listing.handle,
+      productKind: listing.productKind,
+      handle: listing.productKind === "agent" ? listing.handle : null,
       access,
       trialEnded,
       plan: held && accessPlanOf(held, planWillRenew(listing, held)),

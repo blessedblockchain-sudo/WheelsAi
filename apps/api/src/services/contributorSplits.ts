@@ -39,7 +39,8 @@ export interface ContributorSplitTx {
   /** The ledger row of each share that is added to a balance. */
   earningsTransaction: EarningsLedgerTx["earningsTransaction"];
   agentListing: {
-    findUnique(args: { where: { id: string }; select: { agentId: true } }): Promise<{ agentId: string } | null>;
+    /** agentId is null on a listing that sells a workflow. */
+    findUnique(args: { where: { id: string }; select: { agentId: true } }): Promise<{ agentId: string | null } | null>;
   };
   agentContributor: {
     findMany(args: {
@@ -134,9 +135,15 @@ export async function splitCreatorRevenue(
       ? await tx.agentListing!.findUnique({ where: { id: args.listingId }, select: { agentId: true } })
       : { agentId: args.agentId };
   if (!listing) return none;
+  // Contributors are an agent's. A listing with no agent sells a workflow,
+  // which has none to share with: the whole creator amount is the
+  // publisher's, and nobody's contributors are asked for. This runs inside
+  // the transaction that settles a sale, so it answers and never throws.
+  const agentId = listing.agentId;
+  if (agentId === null) return none;
 
   const contributors = await tx.agentContributor.findMany({
-    where: { agentId: listing.agentId, acceptedAt: { not: null }, revenueShareBps: { gt: 0 } },
+    where: { agentId, acceptedAt: { not: null }, revenueShareBps: { gt: 0 } },
     select: { id: true, userId: true, revenueShareBps: true },
     orderBy: { createdAt: "asc" },
   });
@@ -198,7 +205,7 @@ export async function splitCreatorRevenue(
     await tx.contributorEarning.create({
       data: {
         revenueId: args.revenueId,
-        agentId: listing.agentId,
+        agentId,
         contributorId: contributor.id,
         userId: contributor.userId,
         recipientOrgId: org?.id ?? null,

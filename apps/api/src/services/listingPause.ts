@@ -41,7 +41,8 @@ export interface ListingPauseRow {
   status: string;
   sells: string;
   pausedSince: Date | null;
-  agent: { orgId: string; modelConfig: unknown };
+  /** null on a listing that sells a workflow: it has no model of its own to be paused on. */
+  agent: { orgId: string; modelConfig: unknown } | null;
 }
 
 /** What runs inside the transaction that ends a pause. */
@@ -229,6 +230,24 @@ export async function reconcileListingPauses(
     for (const listing of batch) {
       result.examined++;
       try {
+        // A listing with no agent sells a workflow, and a workflow's listing
+        // has no pause: nothing sets its marker and nothing reads it. One
+        // found set is cleared, by the same compare-and-set, and no month is
+        // made longer for a pause that never was.
+        if (listing.agent === null) {
+          const stray = listing.pausedSince;
+          if (stray !== null) {
+            const cleared = await db.agentListing.updateMany({
+              where: { id: listing.id, pausedSince: stray },
+              data: { pausedSince: null },
+            });
+            if (cleared.count === 1) {
+              result.resumed++;
+              logger.info({ listingId: listing.id, pausedSince: stray }, "A pause marker on a listing with no agent was cleared");
+            }
+          }
+          continue;
+        }
         // Asked of the model at this moment. If it cannot be answered this
         // throws and the listing is left exactly as it is: an unknown is
         // neither a pause nor a resume.

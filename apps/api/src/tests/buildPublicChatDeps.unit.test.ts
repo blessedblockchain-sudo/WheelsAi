@@ -66,6 +66,18 @@ function fakePrisma() {
       // (covered in pageKeySoldAtAPrice.unit.test.ts).
       findFirst: (async (args: { where: { slug?: string } }) => {
         calls.push(["agentListing.findFirst", args]);
+        // A listing that sells a workflow: published, and with no agent.
+        if (args.where.slug === "weekly-report") {
+          return {
+            id: "listing-2",
+            slug: "weekly-report",
+            agentId: null,
+            publisherId: "org-publisher",
+            trialFundedDailyCap: 25,
+            sells: "use",
+            agent: null,
+          };
+        }
         if (args.where.slug !== "support-pro") return null;
         return {
           id: "listing-1",
@@ -185,6 +197,15 @@ test("Try it reads published listings only, and runs the agent in the agent's ow
   });
   assert.equal(await deps.loadTrialListing("draft-listing"), null);
   assert.deepEqual(calls[0]![1].where, { slug: "support-pro", status: "published" });
+});
+
+test("Try it by the slug of a listing that sells a workflow is not found: it has no agent to try", async () => {
+  const { deps, calls } = bindings();
+  assert.equal(await deps.loadTrialListing("weekly-report"), null);
+  // It was looked for and found published: what answers null is the missing agent.
+  assert.deepEqual(calls[0]![1].where, { slug: "weekly-report", status: "published" });
+  // An agent's listing is answered as before.
+  assert.equal((await deps.loadTrialListing("support-pro"))!.agentId, "agent-pub");
 });
 
 test("addresses are bucketed and keyed; a session is verified with the same secret and bucket", () => {

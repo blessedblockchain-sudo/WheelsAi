@@ -35,6 +35,8 @@ const LICENCE_SELECT = {
       pricePerRequestCents: true,
       // To know a licence on the reader's own listing. Never in the answer.
       publisherId: true,
+      // To know a listing that sells a workflow. Never in the answer.
+      orchestrationId: true,
       agent: { select: { publicHandle: true, agentKind: true } },
     },
   },
@@ -89,6 +91,7 @@ interface LicenceRow {
     pricingModel: string;
     pricePerRequestCents: bigint | null;
     publisherId: string;
+    orchestrationId?: string | null;
     agent: { publicHandle: string | null; agentKind: string | null } | null;
     subscriptions: SubscriptionRow[];
   };
@@ -185,6 +188,10 @@ function licenceOf(row: LicenceRow): BuyerUsageLicence {
   const { listing } = row;
   // One row at most: a buyer has one subscription to a listing.
   const sub = listing.subscriptions[0] ?? null;
+  // A listing that names a workflow, or has no agent, sells a workflow. It
+  // is never read as an agent's: no handle and no kind of agent for it.
+  const sellsWorkflow = (listing.orchestrationId ?? null) !== null || !listing.agent;
+  const agent = sellsWorkflow ? null : listing.agent;
   return {
     buyerId: row.buyerId,
     status: row.status,
@@ -201,8 +208,9 @@ function licenceOf(row: LicenceRow): BuyerUsageLicence {
       pricingModel: listing.pricingModel,
       pricePerRequestCents: listing.pricePerRequestCents,
       publisherId: listing.publisherId,
-      handle: listing.agent?.publicHandle ?? null,
-      agentKind: listing.agent?.agentKind ?? null,
+      productKind: sellsWorkflow ? "workflow" : "agent",
+      handle: agent?.publicHandle ?? null,
+      agentKind: agent?.agentKind ?? null,
     },
     sub: sub && {
       id: sub.id,

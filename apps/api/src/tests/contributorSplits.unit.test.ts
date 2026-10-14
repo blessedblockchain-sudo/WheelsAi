@@ -406,3 +406,93 @@ test("job revenue on an agent with no listing pays its contributors by the agent
     [["org_alice", 450n, "contributor_share", "rev_job", 450n]],
   );
 });
+
+// ============================================
+// A listing with no agent (it sells a workflow)
+// ============================================
+
+/** makeTx with the listing's agent as given, and the contributors' read counted. */
+function makeListingTx(agentId: string | null) {
+  const made = makeTx({
+    contributors: [{ id: "c1", userId: "u_alice", revenueShareBps: 5_000, accepted: true }],
+    ownedOrgs: { u_alice: "org_alice" },
+    profiles: ["org_pub", "org_alice"],
+  });
+  let contributorReads = 0;
+  const read = made.tx.agentContributor.findMany;
+  const tx: ContributorSplitTx = {
+    ...made.tx,
+    agentListing: { findUnique: async () => ({ agentId }) },
+    agentContributor: {
+      findMany: async (args) => {
+        contributorReads++;
+        // What Prisma does with a null here: the whole transaction fails.
+        if (typeof args.where.agentId !== "string") throw new Error("Argument `agentId` must not be null");
+        return read(args);
+      },
+    },
+  };
+  return { ...made, tx, contributorReads: () => contributorReads };
+}
+
+test("a listing with no agent has no contributors: the publisher keeps the whole creator amount and nobody's are asked for", async () => {
+  const flow = makeListingTx(null);
+  assert.deepEqual(await splitCreatorRevenue(flow.tx, ARGS), { publisherCents: 900n, paid: [], pending: [] });
+  assert.equal(flow.contributorReads(), 0);
+  assert.deepEqual(flow.earnings, []);
+  assert.deepEqual(flow.ledger, []);
+
+  // The same rows with an agent on the listing split exactly as before.
+  const agent = makeListingTx("agent_1");
+  const split = await splitCreatorRevenue(agent.tx, ARGS);
+  assert.equal(split.publisherCents, 450n);
+  assert.deepEqual(split.paid, [{ userId: "u_alice", recipientOrgId: "org_alice", amountCents: 450n }]);
+  assert.equal(agent.contributorReads(), 1);
+  assert.equal(agent.earnings[0]!.agentId, "agent_1");
+});
+
+test("settling a charge per run for a listing with no agent credits the publisher 90% and never reads contributors", async () => {
+  const settle = async (agentId: string | null) => {
+    const made = makeListingTx(agentId);
+    const settleTx = {
+      ...made.tx,
+      marketplaceRevenue: { updateMany: async () => ({ count: 1 }) },
+      agentInstall: { update: async () => ({}) },
+      agentListing: { ...made.tx.agentListing, update: async () => ({}) },
+    };
+    const charge = {
+      revenueId: "rev_9",
+      grossCents: 250n,
+      platformFeeCents: 25n,
+      creatorCents: 225n,
+      requestCount: 1,
+      install: {
+        installId: "ins_1",
+        listingId: "lst_1",
+        listingTitle: "Weekly report",
+        publisherId: "org_pub",
+        buyerId: "org_buyer",
+        pricePerRequestCents: 250n,
+      },
+    } as MarketplaceCharge;
+    const result = await settleMarketplaceRequest(settleTx as never, { charge });
+    return { ...made, result };
+  };
+
+  const flow = await settle(null);
+  assert.deepEqual(flow.result, { settled: true, creatorCents: 225n });
+  assert.equal(flow.contributorReads(), 0);
+  // 90% of 250, whole, to the publisher; one ledger row, the sale.
+  assert.equal(flow.profiles.get("org_pub")!.pending, 225n);
+  assert.equal(flow.profiles.get("org_alice")!.pending, 0n);
+  assert.deepEqual(
+    flow.ledger.map((row) => [row.orgId, row.amountCents, row.type]),
+    [["org_pub", 225n, "sale"]],
+  );
+
+  // An agent's listing with the same contributor is split as it always was.
+  const agent = await settle("agent_1");
+  assert.equal(agent.contributorReads(), 1);
+  assert.equal(agent.profiles.get("org_alice")!.pending, 112n);
+  assert.equal(agent.profiles.get("org_pub")!.pending, 113n);
+});

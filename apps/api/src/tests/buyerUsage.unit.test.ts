@@ -293,6 +293,7 @@ test("a buyer on a plan: the plan as the agent's page builds it, the extra uses 
     listingId: PLAN_LISTING,
     title: "Support desk",
     slug: "support-desk",
+    productKind: "agent",
     handle: "agent-01",
     access: "subscribed",
     trialEnded: false,
@@ -350,6 +351,7 @@ test("a monthly subscriber: subscribed, no plan, nothing extra and nothing per u
     listingId: MONTHLY_LISTING,
     title: "Daily brief",
     slug: "daily-brief",
+    productKind: "agent",
     handle: "agent-03",
     access: "subscribed",
     trialEnded: false,
@@ -497,6 +499,7 @@ test("trialEnded: an ended trial that is another organization's says nothing of 
       pricingModel: "per_request",
       pricePerRequestCents: 5n,
       publisherId: PUBLISHER,
+      productKind: "agent",
       handle: "support",
       agentKind: "conversation",
     },
@@ -760,6 +763,7 @@ test("a read that answers with another organization's licence or subscription: n
       pricingModel: "per_request",
       pricePerRequestCents: 5n,
       publisherId: PUBLISHER,
+      productKind: "agent",
       handle: "support",
       agentKind: "conversation",
     },
@@ -901,6 +905,7 @@ test("GET /marketplace-usage: the balance and a row per listing, for the caller'
       "listingId",
       "title",
       "slug",
+      "productKind",
       "handle",
       "access",
       "trialEnded",
@@ -964,4 +969,72 @@ test("GET /marketplace-usage is not mounted without its reads", async () => {
   } finally {
     await app.close();
   }
+});
+
+// ---- a listing that sells a workflow ----------------------------------------
+
+const WORKFLOW = uuid(77);
+
+test("a licence on a workflow's listing says productKind workflow, the listing's slug and no handle; an agent's says agent", async () => {
+  const tables = seed();
+  // The plan's listing sells a workflow: no agent, and the workflow's id.
+  tables.agentListing[0] = { ...tables.agentListing[0]!, agent: null, orchestrationId: WORKFLOW };
+  const { deps, calls } = depsOver(tables);
+  const view = await readBuyerUsage(deps, ORG);
+  const flow = view.listings.find((l) => l.listingId === PLAN_LISTING)!;
+  assert.equal(flow.productKind, "workflow");
+  assert.equal(flow.slug, "support-desk");
+  assert.equal(flow.handle, null);
+  // Its plan and its counts are read as any listing's are.
+  assert.equal(flow.access, "subscribed");
+  assert.equal(flow.plan!.id, STARTER);
+  assert.deepEqual(flow.extraThisPeriod, { uses: 2, cents: 8 });
+  // The workflow's id is the owner's to know, never a buyer's.
+  assert.doesNotMatch(JSON.stringify(view), new RegExp(WORKFLOW));
+  for (const row of view.listings) {
+    if (row.listingId !== PLAN_LISTING) assert.equal(row.productKind, "agent", row.slug);
+  }
+  // Still the two queries.
+  assert.deepEqual(calls, { licences: 1, sums: 1, balances: 1 });
+
+  // A row that names a workflow and, against the database's check, an agent too: the agent is not read.
+  const both = seed();
+  both.agentListing[0] = { ...both.agentListing[0]!, orchestrationId: WORKFLOW };
+  const row = (await readBuyerUsage(depsOver(both).deps, ORG)).listings.find((l) => l.listingId === PLAN_LISTING)!;
+  assert.equal(row.productKind, "workflow");
+  assert.equal(row.handle, null);
+});
+
+test("the usage read asks for the workflow's id, to know what a listing sells", async () => {
+  const selects: Row[] = [];
+  const { db } = makeDb(seed());
+  const reads = buildBuyerUsageReads({
+    ...db,
+    agentInstall: {
+      findMany: async (args) => {
+        selects.push(args.select.listing.select as unknown as Row);
+        return db.agentInstall.findMany(args);
+      },
+    },
+  });
+  await reads.loadLicences({ orgId: ORG, take: 10 });
+  assert.equal(selects[0]!.orchestrationId, true);
+});
+
+test("perUseAfterTrial is null for a listing with no agent, and no unit is guessed from a missing kind", async () => {
+  // The state the metering would charge: a running trial, a price per use agreed.
+  const charged = await trialRow(trialTables());
+  assert.deepEqual(charged.perUseAfterTrial, { priceCents: 5, unit: "message" });
+
+  // The same three rows on a listing that sells a workflow.
+  const flow = await trialRow(trialTables({ listing: { agent: null, orchestrationId: WORKFLOW } }));
+  assert.equal(flow.productKind, "workflow");
+  assert.equal(flow.perUseAfterTrial, null);
+
+  // An agent's listing whose kind could not be read: nothing is said, not "message".
+  const tables = trialTables();
+  tables.agentListing[0] = { ...tables.agentListing[0]!, agent: { publicHandle: "support" } };
+  const unread = await trialRow(tables);
+  assert.equal(unread.productKind, "agent");
+  assert.equal(unread.perUseAfterTrial, null);
 });

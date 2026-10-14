@@ -109,7 +109,7 @@ function makeDb(seed: Partial<State> = {}) {
           .filter((l) => matches(l, args.where))
           .sort((a, b) => (a.id < b.id ? -1 : 1))
           .slice(0, args.take)
-          .map((l) => ({ ...l, agent: { ...l.agent } }));
+          .map((l) => ({ ...l, agent: l.agent && { ...l.agent } }));
       },
       updateMany,
     },
@@ -586,6 +586,60 @@ test("a marker in the future is cleared and lengthens nothing", async () => {
   assert.deepEqual(result, { examined: 1, paused: 0, resumed: 1, extendedSubscriptions: 0, errors: 0 });
   assert.equal(db.listing("l_1").pausedSince, null);
   assert.deepEqual(ends(db), before);
+});
+
+// ============================================
+// A listing with no agent (it sells a workflow)
+// ============================================
+
+test("a marker on a listing with no agent is cleared, no month is made longer and it is no error", async () => {
+  const db = makeDb({
+    listings: [
+      { ...listing("l_1_flow", { pausedSince: at(20) }), agent: null },
+      { ...listing("l_2_flow_unmarked"), agent: null },
+      listing("l_3_agent", { pausedSince: at(20) }),
+    ],
+    subs: [useSub("s_flow", "l_1_flow"), useSub("s_agent", "l_3_agent")],
+    installs: [
+      { listingId: "l_1_flow", buyerId: "buyer_s_flow", kind: "use" },
+      { listingId: "l_3_agent", buyerId: "buyer_s_agent", kind: "use" },
+    ],
+  });
+  // The agent's model is still down: its marker stays.
+  const m = models({ org_a: false });
+  const result = await reconcileListingPauses({ all: true }, deps(db, m, at(28)));
+  // The unmarked one is not a candidate: it has no marker and no agent on a hosted model.
+  assert.deepEqual(result, { examined: 2, paused: 0, resumed: 1, extendedSubscriptions: 0, errors: 0 });
+  assert.equal(db.listing("l_1_flow").pausedSince, null);
+  assert.deepEqual(db.calls.writes, ["listing l_1_flow -> null"]);
+  // No month was made longer: the statement was never sent, for either listing.
+  assert.deepEqual(db.calls.extend, []);
+  assert.equal(db.sub("s_flow").currentPeriodEnd.getTime(), at(30).getTime());
+  // Nothing was asked of a model for the listing that has none.
+  assert.deepEqual(m.asked.map((a) => a.orgId), ["org_a"]);
+  assert.equal(db.listing("l_3_agent").pausedSince!.getTime(), at(20).getTime());
+
+  // The next reconcile finds nothing to do for it, every hour after.
+  const again = await reconcileListingPauses({ all: true }, deps(db, m, at(29)));
+  assert.deepEqual(again, { examined: 1, paused: 0, resumed: 0, extendedSubscriptions: 0, errors: 0 });
+});
+
+test("a published workflow listing is never marked as paused, whatever is asked", async () => {
+  const { listingPausedNow } = await import("../services/listingPause.js");
+  const db = makeDb({ listings: [{ ...listing("l_1_flow"), agent: null }] });
+  const m = models({ org_a: false });
+  // Read for one listing by name, so it is examined even with no marker.
+  const result = await reconcileListingPauses({ listingId: "l_1_flow" }, deps(db, m, at(5)));
+  assert.equal(result.paused, 0);
+  assert.equal(result.errors, 0);
+  assert.equal(db.listing("l_1_flow").pausedSince, null);
+  assert.deepEqual(db.calls.writes, []);
+  assert.deepEqual(m.asked, []);
+  // The agent's question is what it was.
+  assert.equal(
+    await listingPausedNow({ listing: listing("l_9"), agent: { orgId: "org_a", modelConfig: HOSTED } }, { resolveHostedModel: m.resolveHostedModel }),
+    true,
+  );
 });
 
 // ============================================

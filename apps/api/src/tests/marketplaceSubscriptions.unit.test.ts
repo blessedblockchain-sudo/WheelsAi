@@ -260,6 +260,47 @@ test("subscribing charges the first period once and opens a 30-day period", asyn
   assert.equal(s.cancelAtPeriodEnd, false);
 });
 
+test("a period charged for a listing with no agent credits the publisher 90% and never reads contributors", async () => {
+  // The contributor tables beside the subscription's, as the real transaction has them.
+  const charge = async (agentId: string | null) => {
+    const db = makeDb();
+    let contributorReads = 0;
+    const tx = {
+      ...db.tx,
+      agentListing: { findUnique: async () => ({ agentId }) },
+      agentContributor: {
+        findMany: async (args: { where: { agentId: unknown } }) => {
+          contributorReads++;
+          // What Prisma does with a null here: the whole charge rolls back.
+          if (typeof args.where.agentId !== "string") throw new Error("Argument `agentId` must not be null");
+          return [{ id: "c1", userId: "u_alice", revenueShareBps: 5_000 }];
+        },
+      },
+      organization: { findFirst: async () => ({ id: "org_alice", name: "Alice" }) },
+      contributorEarning: { create: async () => ({}) },
+    } as unknown as SubscriptionTx;
+    await startMonthlySubscription(tx, { listing: LISTING, buyerId: "org_buyer", now: T0 });
+    return { db, contributorReads };
+  };
+
+  const flow = await charge(null);
+  assert.equal(flow.contributorReads, 0);
+  assert.equal(flow.db.state.balances.get("org_buyer"), 8_500n);
+  // 90% of 1500, whole.
+  assert.equal(flow.db.state.accrued.get("org_pub"), 1_350n);
+  assert.equal(flow.db.state.accrued.get("org_alice"), undefined);
+  assert.deepEqual(
+    flow.db.state.earnings.map((row) => [row.orgId, row.amountCents, row.type]),
+    [["org_pub", 1_350n, "subscription"]],
+  );
+
+  // An agent's listing with a contributor at half is split as before.
+  const agent = await charge("agent_1");
+  assert.equal(agent.contributorReads, 1);
+  assert.equal(agent.db.state.accrued.get("org_alice"), 675n);
+  assert.equal(agent.db.state.accrued.get("org_pub"), 675n);
+});
+
 test("a buyer who cannot pay gets no subscription and no charge", async () => {
   const { state, inTransaction } = makeDb({ balance: 1_499n });
   await assert.rejects(

@@ -42,9 +42,10 @@ interface PrismaStub {
         id: string;
         mintAddress: string;
         lastOnChainAttestationAt: Date | null;
+        // Both null on a listing that sells a workflow.
         agentListing: {
-          agentId: string;
-          agent: { orgId: string };
+          agentId: string | null;
+          agent: { orgId: string } | null;
         };
       }>
     >;
@@ -85,11 +86,20 @@ export async function loadAgentsForAttestation(
     },
   });
 
-  return rows.map((r) => ({
-    tokenId: r.id,
-    mintAddress: r.mintAddress,
-    lastOnChainAttestationAt: r.lastOnChainAttestationAt,
-    agentId: r.agentListing.agentId,
-    orgId: r.agentListing.agent.orgId,
-  }));
+  // What is attested is an agent's usage. A token is launched for an agent's
+  // listing only, so a row whose listing has no agent has nothing to attest
+  // and is dropped here, never a reason to fail the whole tick.
+  return rows.flatMap((r) => {
+    const { agentId, agent } = r.agentListing;
+    if (agentId === null || agent === null) return [];
+    return [
+      {
+        tokenId: r.id,
+        mintAddress: r.mintAddress,
+        lastOnChainAttestationAt: r.lastOnChainAttestationAt,
+        agentId,
+        orgId: agent.orgId,
+      },
+    ];
+  });
 }

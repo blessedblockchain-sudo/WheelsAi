@@ -145,11 +145,12 @@ const WIDGET_KEY_COLUMNS = {
 interface TrialListingRow {
   id: string;
   slug: string;
-  agentId: string;
+  /** null, with no agent, on a listing that sells a workflow. */
+  agentId: string | null;
   publisherId: string;
   trialFundedDailyCap: number;
   sells: string;
-  agent: { orgId: string; entrypoint: string | null; systemPrompt: string | null };
+  agent: { orgId: string; entrypoint: string | null; systemPrompt: string | null } | null;
 }
 
 interface TranscriptTx {
@@ -355,16 +356,20 @@ export function bindPublicChatDeps(bindings: PublicChatBindings): PublicChatDeps
         },
       });
       if (!listing) return null;
+      // Try it is a few messages with the listing's agent. A listing that
+      // sells a workflow has none, so by its slug there is nothing to try.
+      const { agent, agentId } = listing;
+      if (!agent || agentId === null) return null;
       return {
         id: listing.id,
         slug: listing.slug,
-        agentId: listing.agentId,
-        agentOrgId: listing.agent.orgId,
+        agentId,
+        agentOrgId: agent.orgId,
         publisherId: listing.publisherId,
-        agentEntrypoint: listing.agent.entrypoint,
+        agentEntrypoint: agent.entrypoint,
         trialFundedDailyCap: listing.trialFundedDailyCap,
         sells: listing.sells,
-        agentInstructions: listing.agent.systemPrompt,
+        agentInstructions: agent.systemPrompt,
       };
     },
 

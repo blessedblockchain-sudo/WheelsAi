@@ -111,3 +111,46 @@ test("loadAgentsForAttestation: empty DB returns empty array", async () => {
   );
   assert.deepEqual(rows, []);
 });
+
+test("loadAgentsForAttestation: a token whose listing has no agent is dropped, and the others are still loaded", async () => {
+  setupEnv();
+  const { loadAgentsForAttestation } = await import(
+    "../services/loadAgentsForAttestation.js"
+  );
+  const rows = await loadAgentsForAttestation(
+    { now: new Date() },
+    {
+      prisma: {
+        agentToken: {
+          findMany: async () => [
+            {
+              id: "tok_A",
+              mintAddress: "MintA",
+              lastOnChainAttestationAt: null,
+              agentListing: { agentId: "agt_A", agent: { orgId: "org_A" } },
+            },
+            {
+              id: "tok_flow",
+              mintAddress: "MintFlow",
+              lastOnChainAttestationAt: null,
+              agentListing: { agentId: null, agent: null },
+            },
+            {
+              id: "tok_B",
+              mintAddress: "MintB",
+              lastOnChainAttestationAt: null,
+              agentListing: { agentId: "agt_B", agent: { orgId: "org_B" } },
+            },
+          ],
+        },
+      },
+    },
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.tokenId, row.agentId, row.orgId]),
+    [
+      ["tok_A", "agt_A", "org_A"],
+      ["tok_B", "agt_B", "org_B"],
+    ],
+  );
+});

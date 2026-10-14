@@ -19,6 +19,7 @@ import {
   buildLoadOwnership,
   buildStartWorkflowRunDeps,
 } from "./buildWorkflowRunDeps.js";
+import { loadWorkflowAsItWouldBe, type WorkflowChange } from "./buildWorkflowListingDeps.js";
 import { finishScheduledExecution } from "./finishScheduledExecution.js";
 import { workflowApiEndpoints, type WorkflowApiEndpoints } from "./publicEndpoints.js";
 import {
@@ -34,9 +35,59 @@ import {
   type WorkflowPatch,
 } from "./workflowDefinition.js";
 import { isUniqueViolation, WorkflowError } from "./workflowErrors.js";
+import { WORKFLOW_LISTING_MESSAGES, workflowSellableProblem } from "./workflowListing.js";
 import { generatedWorkflowSlugRoot, pickWorkflowSlug, workflowSlugRoot } from "./workflowSlug.js";
 
 const notFound = () => new WorkflowError("not_found", "Workflow not found");
+
+// ============================================
+// A workflow on sale
+// ============================================
+
+/**
+ * What holds a workflow to staying runnable: its listing is published
+ * ("on_sale"), or somebody is still on a plan for it ("on_plan": a
+ * subscription to its listing that is active with its period's end in the
+ * future, whatever the listing's status, because a buyer who paid for 30
+ * days keeps a workflow that runs). null when nothing does.
+ *
+ * The listing is read by the workflow AND its publisher, which is the
+ * workflow's own organization: nothing is said of another organization's.
+ */
+async function saleHold(orchestrationId: string, orgId: string, now: Date): Promise<"on_sale" | "on_plan" | null> {
+  const listing = await prisma.agentListing.findFirst({
+    where: { orchestrationId, publisherId: orgId },
+    select: { id: true, status: true },
+  });
+  if (!listing) return null;
+  if (listing.status === "published") return "on_sale";
+  const onPlan = await prisma.agentSubscription.count({
+    where: { listingId: listing.id, status: "active", currentPeriodEnd: { gt: now } },
+  });
+  return onPlan > 0 ? "on_plan" : null;
+}
+
+/**
+ * Refuses a change after which a workflow that is on sale, or that people
+ * are still on a plan for, could not be sold. The question is asked of the
+ * workflow as it would be, before anything is written.
+ */
+async function assertStaysSellable(id: string, orgId: string, change: WorkflowChange, now: Date): Promise<void> {
+  const hold = await saleHold(id, orgId, now);
+  if (hold === null) return;
+  const problem = workflowSellableProblem(await loadWorkflowAsItWouldBe({ workflowId: id, orgId }, change), orgId);
+  if (problem === null) return;
+  // A disable is asked to stop the sale first; any other change is told what
+  // would be wrong. With the listing no longer published, the running plan
+  // is what holds it, and that is what is said.
+  const message =
+    hold === "on_plan"
+      ? WORKFLOW_LISTING_MESSAGES.onPlan
+      : change.isEnabled === false
+        ? WORKFLOW_LISTING_MESSAGES.onSale
+        : WORKFLOW_LISTING_MESSAGES.onSaleChange(problem);
+  throw new WorkflowError("workflow_on_sale", message);
+}
 
 // ============================================
 // Definitions
@@ -246,6 +297,7 @@ export async function replaceOrchestration(
   orgId: string,
   def: WorkflowDefinition,
   expectedUpdatedAt?: string,
+  now: Date = new Date(),
 ) {
   const current = await prisma.orchestration.findFirst({
     where: { id, orgId },
@@ -266,6 +318,10 @@ export async function replaceOrchestration(
   }
 
   await planWorkflow(orgId, def);
+
+  // A workflow on sale stays sellable: asked of the definition that was
+  // sent, before any of it is written.
+  await assertStaysSellable(id, orgId, { definition: { timeoutMs: settings(def).timeout, steps: def.steps } }, now);
 
   const replaced = await prisma.$transaction(async (tx) => {
     const { count } = await tx.orchestration.updateMany({
@@ -304,7 +360,16 @@ export async function replaceOrchestration(
  * validated patch: the request body is never handed to Prisma, which is
  * what once let a client rewrite orgId and the run counters.
  */
-export async function updateOrchestration(id: string, orgId: string, patch: WorkflowPatch) {
+export async function updateOrchestration(
+  id: string,
+  orgId: string,
+  patch: WorkflowPatch,
+  now: Date = new Date(),
+) {
+  // A workflow on sale, or that people are still on a plan for, is not
+  // disabled: nothing of the patch is saved.
+  if (patch.isEnabled === false) await assertStaysSellable(id, orgId, { isEnabled: false }, now);
+
   const data: Prisma.OrchestrationUpdateManyMutationInput = {};
   if (patch.name !== undefined) data.name = patch.name;
   if (patch.description !== undefined) data.description = patch.description;
@@ -320,21 +385,60 @@ export async function updateOrchestration(id: string, orgId: string, patch: Work
  * flight are stopped first: queued ones are cancelled (so no worker can
  * claim them) and running ones are asked to stop, and their worker also
  * treats the missing row as a cancel.
+ *
+ * Its listing is read FIRST, before any run is cancelled or asked to stop.
+ * A workflow on sale is not deleted, and neither is one people have paid
+ * for: its listing holds their licence and subscription rows. A listing
+ * nobody ever started on is removed with the workflow, in one transaction.
  */
 export async function deleteOrchestration(id: string, orgId: string) {
   const orch = await prisma.orchestration.findFirst({ where: { id, orgId }, select: { id: true } });
   if (!orch) throw notFound();
 
+  const listing = await prisma.agentListing.findFirst({
+    where: { orchestrationId: id },
+    select: { id: true, status: true, _count: { select: { installs: true, subscriptions: true } } },
+  });
+  if (listing?.status === "published") {
+    throw new WorkflowError("workflow_on_sale", WORKFLOW_LISTING_MESSAGES.onSale);
+  }
+  if (listing && listing._count.installs + listing._count.subscriptions > 0) {
+    throw new WorkflowError("workflow_has_buyers", WORKFLOW_LISTING_MESSAGES.hasBuyers);
+  }
+
   const now = new Date();
-  await prisma.orchestrationExecution.updateMany({
-    where: { orchestrationId: id, status: "queued" },
-    data: { status: "cancelled", completedAt: now },
+  const stopRunsAndDelete = async (db: Prisma.TransactionClient | typeof prisma) => {
+    await db.orchestrationExecution.updateMany({
+      where: { orchestrationId: id, status: "queued" },
+      data: { status: "cancelled", completedAt: now },
+    });
+    await db.orchestrationExecution.updateMany({
+      where: { orchestrationId: id, status: "running", cancelRequestedAt: null },
+      data: { cancelRequestedAt: now },
+    });
+    await db.orchestration.deleteMany({ where: { id, orgId } });
+  };
+
+  if (!listing) {
+    await stopRunsAndDelete(prisma);
+    return { success: true };
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // The listing as it is now: published or started on since the read
+    // above, it stays, and so does everything else. The plans go first: they
+    // hold their listing.
+    const buyers =
+      (await tx.agentInstall.count({ where: { listingId: listing.id } })) +
+      (await tx.agentSubscription.count({ where: { listingId: listing.id } }));
+    if (buyers > 0) throw new WorkflowError("workflow_has_buyers", WORKFLOW_LISTING_MESSAGES.hasBuyers);
+    await tx.listingPlan.deleteMany({ where: { listingId: listing.id } });
+    const removed = await tx.agentListing.deleteMany({
+      where: { id: listing.id, orchestrationId: id, status: { not: "published" } },
+    });
+    if (removed.count !== 1) throw new WorkflowError("workflow_on_sale", WORKFLOW_LISTING_MESSAGES.onSale);
+    await stopRunsAndDelete(tx);
   });
-  await prisma.orchestrationExecution.updateMany({
-    where: { orchestrationId: id, status: "running", cancelRequestedAt: null },
-    data: { cancelRequestedAt: now },
-  });
-  await prisma.orchestration.deleteMany({ where: { id, orgId } });
   return { success: true };
 }
 

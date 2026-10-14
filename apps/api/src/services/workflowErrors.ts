@@ -16,7 +16,11 @@ export type WorkflowErrorCode =
   | "workflow_run_limit"
   | "workflow_runner_disabled"
   | "workflow_queue_unavailable"
-  | "execution_finished";
+  | "execution_finished"
+  // A workflow whose listing is published, or that people are still on a plan
+  // for, cannot be disabled, emptied or deleted (services/orchestration.ts).
+  | "workflow_on_sale"
+  | "workflow_has_buyers";
 
 const STATUS: Record<WorkflowErrorCode, number> = {
   not_found: 404,
@@ -29,6 +33,8 @@ const STATUS: Record<WorkflowErrorCode, number> = {
   workflow_runner_disabled: 501,
   workflow_queue_unavailable: 503,
   execution_finished: 409,
+  workflow_on_sale: 409,
+  workflow_has_buyers: 409,
 };
 
 export class WorkflowError extends Error {

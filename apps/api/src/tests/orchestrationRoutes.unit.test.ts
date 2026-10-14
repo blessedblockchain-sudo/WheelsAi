@@ -406,6 +406,30 @@ test("execute maps each refusal to its documented status and code", async () => 
   }
 });
 
+test("a workflow on sale: a disable, a change and a delete that are refused answer 409 with their code and sentence", async () => {
+  const { WorkflowError, app: first } = await makeApp();
+  await first.close();
+  const cases = [
+    ["PATCH", "updateOrchestration", { isEnabled: false }, "workflow_on_sale", "This workflow is on sale. Stop selling it first."],
+    ["PUT", "replaceOrchestration", definition, "workflow_on_sale", "People are still on a plan for this workflow. It can be changed once their 30 days end."],
+    ["DELETE", "deleteOrchestration", undefined, "workflow_on_sale", "This workflow is on sale. Stop selling it first."],
+    ["DELETE", "deleteOrchestration", undefined, "workflow_has_buyers", "People have paid for this workflow, so it cannot be deleted."],
+  ] as const;
+  for (const [method, fn, payload, code, message] of cases) {
+    const { app } = await makeApp({
+      service: {
+        [fn]: async () => {
+          throw new WorkflowError(code, message);
+        },
+      },
+    });
+    const res = await app.inject({ method, url: `/api/orchestrations/${ORCH}`, ...(payload && { payload }) });
+    assert.equal(res.statusCode, 409, `${method} ${code}`);
+    assert.deepEqual(res.json(), { error: code, message });
+    await app.close();
+  }
+});
+
 test("cancel: 200 for a queued run, 202 for a running one, 409 for a finished one", async () => {
   const queued = await makeApp();
   const cancelled = await queued.app.inject({

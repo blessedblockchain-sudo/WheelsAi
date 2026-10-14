@@ -28,7 +28,7 @@
  * save that loses writes nothing and is told to reload.
  *
  * The rules of a plan are services/listingPlans.ts. This file is the reads
- * and writes, and imports no other service.
+ * and writes, and imports no other service but the pure rules.
  */
 import { prisma } from "@wheelsai/db";
 
@@ -40,6 +40,7 @@ import {
   type PlanInput,
   type PlanSetCheck,
 } from "./listingPlans.js";
+import { listingProductKind } from "./workflowListing.js";
 
 /** A plan as its creator sees it. Cents are whole cents. No buyer is named. */
 export interface OwnerPlan {
@@ -213,7 +214,14 @@ export async function replaceListingPlans(args: {
       // Somebody else's listing is not there to be told apart from none.
       const listing = await tx.agentListing.findFirst({
         where: { id: listingId, publisherId: orgId },
-        select: { id: true, sells: true, pricingModel: true, agent: { select: { agentKind: true } } },
+        select: {
+          id: true,
+          sells: true,
+          pricingModel: true,
+          agentId: true,
+          orchestrationId: true,
+          agent: { select: { agentKind: true } },
+        },
       });
       if (!listing) {
         throw new PlansRefused({
@@ -256,7 +264,16 @@ export async function replaceListingPlans(args: {
         args.plans.length === 0
           ? { ok: true, plans: [] }
           : checkPlanSet(
-              { sells: listing.sells, pricingModel: listing.pricingModel, agentKind: listing.agent?.agentKind },
+              // A workflow's listing has no agent: its plans are checked as a
+              // workflow's, never from a kind of agent it does not have.
+              listingProductKind(listing) === "workflow"
+                ? { sells: listing.sells, pricingModel: listing.pricingModel, productKind: "workflow" }
+                : {
+                    sells: listing.sells,
+                    pricingModel: listing.pricingModel,
+                    agentKind: listing.agent?.agentKind,
+                    productKind: "agent",
+                  },
               args.plans,
               new Set(onOffer.map((plan) => plan.id)),
               kinds,

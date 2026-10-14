@@ -23,6 +23,7 @@ import {
   installAgent,
   InstallRefusedError,
   ListingError,
+  listingProductProblem,
   startUsing,
   UseStartError,
   PricingChangedError,
@@ -58,7 +59,10 @@ const searchQuerySchema = z.object({
 });
 
 const createListingSchema = z.object({
-  agentId: z.string().uuid(),
+  // What the listing sells: an agent or a workflow of the organization.
+  // Exactly one of the two, which the service checks and says in a sentence.
+  agentId: z.string().uuid().optional(),
+  orchestrationId: z.string().uuid().optional(),
   title: z.string().min(3).max(100),
   shortDescription: z.string().min(10).max(280),
   longDescription: z.string().max(10000).optional(),
@@ -126,7 +130,9 @@ const shownPlanSchema = z.object({
   extraUsePriceCents: z.number().int().nonnegative().max(100_000).nullable(),
 });
 
-const updateListingSchema = createListingSchema.omit({ agentId: true }).partial();
+// A change never names what the listing sells: a listing keeps its agent or
+// its workflow for as long as it exists.
+const updateListingSchema = createListingSchema.omit({ agentId: true, orchestrationId: true }).partial();
 
 const createReviewSchema = z.object({
   rating: z.number().int().min(1).max(5),
@@ -249,12 +255,19 @@ export const marketplaceRoutes: FastifyPluginAsync = async (app) => {
       const { orgId } = request.auth!;
       const body = createListingSchema.parse(request.body);
 
-      // Validate pricing
-      if (body.pricingModel === "per_request" && !body.pricePerRequestCents) {
-        return reply.badRequest("Price per request is required for per_request pricing model");
-      }
-      if (body.pricingModel === "monthly" && !body.monthlyPriceCents) {
-        return reply.badRequest("Monthly price is required for monthly pricing model");
+      // An agent or a workflow, one of them: said before anything else is.
+      const oneProduct = listingProductProblem(body);
+      if (oneProduct) return reply.status(oneProduct.status).send(listingRefusal(oneProduct));
+
+      // Validate pricing. A workflow's listing has rules of its own, and the
+      // service says each of them on its field.
+      if (body.orchestrationId === undefined) {
+        if (body.pricingModel === "per_request" && !body.pricePerRequestCents) {
+          return reply.badRequest("Price per request is required for per_request pricing model");
+        }
+        if (body.pricingModel === "monthly" && !body.monthlyPriceCents) {
+          return reply.badRequest("Monthly price is required for monthly pricing model");
+        }
       }
 
       // Fetch org name

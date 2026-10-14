@@ -3,7 +3,7 @@ import test from "node:test";
 
 import "./unitEnv.js";
 
-import { PLAN_MESSAGES } from "../services/listingPlans.js";
+import { checkPlanSet, PLAN_MESSAGES } from "../services/listingPlans.js";
 import { PLAN_STORE_MESSAGES } from "../services/listingPlanStore.js";
 
 // A creator's plans on a listing: PUT /api/marketplace/listings/:id/plans and
@@ -84,7 +84,8 @@ function makeWorld(opts: { listing?: Row; agent?: Row; plans?: Row[]; subs?: Row
     planWrites: 0,
   };
   let seq = 0;
-  const withAgent = (listing: Row) => ({ ...listing, agent: { ...state.agent } });
+  // A listing that sells a workflow has no agent.
+  const withAgent = (listing: Row) => ({ ...listing, agent: listing.agentId === null ? null : { ...state.agent } });
 
   const models: Row = {
     agentListing: {
@@ -1154,4 +1155,97 @@ test("my-listings carries the free trial first among a listing's plans, with its
     ]);
     assert.doesNotMatch(JSON.stringify(res.body), /org_buyer/);
   });
+});
+
+// ============================================
+// A listing that sells a workflow
+// ============================================
+
+const WORKFLOW_LISTING = { agentId: null, orchestrationId: "33333333-3333-4333-8333-333333333333" };
+
+test("plans are set on a workflow's listing as on an agent's, held to the same rules of a paid plan", async () => {
+  const world = makeWorld({ listing: WORKFLOW_LISTING });
+  await withApp(world, async (call) => {
+    assert.deepEqual(fieldOf(await call("PUT", PLANS_URL, { plans: [starter({ priceCents: 99 })] }), "plans[0].priceCents"), [
+      400,
+      "validation_failed",
+      "The price for 30 days must be at least $1.00.",
+    ]);
+    assert.equal(world.state.planWrites, 0);
+
+    const res = await call("PUT", PLANS_URL, { plans: [starter(), pro()] });
+    assert.equal(res.status, 200);
+    assert.deepEqual(
+      res.body.plans.map((plan: Row) => [plan.kind, plan.name, plan.priceCents, plan.includedUses, plan.extraUsePriceCents]),
+      [
+        ["paid", "Starter", 900, 500, 5],
+        ["paid", "Pro", 2900, 2000, null],
+      ],
+    );
+  });
+  assert.deepEqual(
+    world.state.plans.map((p) => [p.listingId, p.kind, p.position, p.status]),
+    [
+      [LISTING_ID, "paid", 1, "active"],
+      [LISTING_ID, "paid", 2, "active"],
+    ],
+  );
+});
+
+test("a free trial is refused on a workflow's listing, on its field, and nothing is saved: not the paid plan sent with it either", async () => {
+  const world = makeWorld({ listing: WORKFLOW_LISTING });
+  await withApp(world, async (call) => {
+    const res = await call("PUT", PLANS_URL, { plans: [starter(), freeTrial()] });
+    assert.deepEqual(fieldOf(res, "plans[1].kind"), [
+      400,
+      "validation_failed",
+      "A free trial can be offered on an agent only.",
+    ]);
+    assert.equal(res.body.message, "A free trial can be offered on an agent only.");
+    // Only that field: the trial's own rules are not read out for a trial that cannot be.
+    assert.deepEqual(Object.keys(res.body.fields), ["plans[1].kind"]);
+    const broken = await call("PUT", PLANS_URL, { plans: [freeTrial({ priceCents: 500, includedUses: 999 })] });
+    assert.deepEqual(broken.body.fields, { "plans[0].kind": "A free trial can be offered on an agent only." });
+  });
+  assert.equal(world.state.planWrites, 0);
+  assert.deepEqual(world.state.plans, []);
+
+  // The same set on an agent's listing is saved, trial and all.
+  const agents = makeWorld();
+  const saved = await withApp(agents, (call) => call("PUT", PLANS_URL, { plans: [starter(), freeTrial()] }));
+  assert.equal(saved.status, 200);
+  assert.deepEqual(agents.state.plans.map((p) => p.kind).sort(), ["paid", "trial"]);
+});
+
+test("a workflow's listing is never judged by a kind of agent, and one that is not sold per run is told so in its own words", async () => {
+  // An agent that runs on its own cannot have plans. A workflow's listing has
+  // no agent, so that rule is never applied to it, whatever row sits beside it.
+  // This row names a workflow and still has an agent's id, so the fake joins
+  // the scheduled agent to it: the save passes only if the agent is not read.
+  const world = makeWorld({
+    listing: { orchestrationId: WORKFLOW_LISTING.orchestrationId },
+    agent: { agentKind: "scheduled" },
+  });
+  assert.equal((await withApp(world, (call) => call("PUT", PLANS_URL, { plans: [starter()] }))).status, 200);
+
+  // The rule itself: the same terms beside a scheduled agent pass for a
+  // workflow and are refused for an agent.
+  const terms = { sells: "use", pricingModel: "per_request", agentKind: "scheduled" };
+  const paid = [{ kind: "paid", name: "Starter", priceCents: 900n, includedUses: 500, extraUsePriceCents: 5n }];
+  assert.equal(checkPlanSet({ ...terms, productKind: "workflow" }, paid).ok, true);
+  const asAgent = checkPlanSet({ ...terms, productKind: "agent" }, paid);
+  assert.deepEqual(
+    asAgent.ok ? null : [asAgent.status, asAgent.message],
+    [409, PLAN_MESSAGES.scheduled],
+  );
+
+  const monthly = makeWorld({ listing: { ...WORKFLOW_LISTING, pricingModel: "monthly" } });
+  const res = await withApp(monthly, (call) => call("PUT", PLANS_URL, { plans: [starter()] }));
+  assert.deepEqual([res.status, res.body.error, res.body.message], [
+    409,
+    "plans_not_available",
+    "Plans are added to a workflow that is sold per run.",
+  ]);
+  assert.equal(PLAN_MESSAGES.workflowNotPerRun, res.body.message);
+  assert.equal(monthly.state.planWrites, 0);
 });

@@ -388,16 +388,22 @@ test("Try it has nothing to describe for a workflow's listing", async () => {
   });
 });
 
-test("a workflow's listing is not found by the edit and the publish of an agent's listing, and nothing is written", async () => {
+test("the edit and the publish of a workflow's listing are never an agent's: no agent is looked for, and a workflow that is gone writes nothing", async () => {
   for (const status of ["draft", "published"]) {
     const world = makeWorld({ listings: [workflowRow("flow", { status })] });
-    await withWorld(world, async ({ updateListing, publishListing }) => {
-      await assert.rejects(
-        updateListing("flow", PUBLISHER, { title: "New", pricePerRequestCents: 9, publish: true }),
-        /Listing not found or you don't have permission to edit/,
-      );
-      await assert.rejects(updateListing("flow", PUBLISHER, { title: "Only the title" }), /Listing not found/);
-      await assert.rejects(publishListing("flow", PUBLISHER), /^Error: Listing not found$/);
+    // The workflow behind the listing is no longer in the publisher's organization.
+    world.models.orchestration = { findFirst: async () => null };
+    await withWorld(world, async ({ updateListing, publishListing, ListingError }) => {
+      const notFound = (err: unknown) => {
+        assert.ok(err instanceof ListingError, String(err));
+        assert.deepEqual([err.status, err.code, err.message], [404, "workflow_not_found", "Workflow not found."]);
+        return true;
+      };
+      await assert.rejects(updateListing("flow", PUBLISHER, { title: "New", pricePerRequestCents: 9, publish: true }), notFound);
+      await assert.rejects(updateListing("flow", PUBLISHER, { title: "Only the title" }), notFound);
+      // A published listing has nothing to publish; a draft asks the workflow first.
+      if (status === "published") assert.equal((await publishListing("flow", PUBLISHER))!.id, "flow");
+      else await assert.rejects(publishListing("flow", PUBLISHER), notFound);
     });
     // No write, no transaction, and no agent looked for to stand in for one.
     assert.deepEqual(world.calls, []);

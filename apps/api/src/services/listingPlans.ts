@@ -21,6 +21,7 @@
  */
 import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { MIN_PRICE_PER_USE_CENTS } from "./useListing.js";
+import { WORKFLOW_LISTING_MESSAGES } from "./workflowListing.js";
 
 // ============================================
 // The numbers
@@ -127,12 +128,20 @@ export interface PlanListing {
   pricingModel: string;
   /** Agent.agentKind of the listing's agent. */
   agentKind?: string | null;
+  /**
+   * What the listing sells. A workflow's listing has no agent, so nothing of
+   * it is read from a kind of agent, and it cannot offer a free trial: each
+   * free run would spend its creator's steps. Omitted means an agent.
+   */
+  productKind?: "agent" | "workflow";
 }
 
 export const PLAN_MESSAGES = {
   sellsCopies: "Plans are for a listing that sells use of the agent. This listing sells copies.",
   notPerUse: "Plans are added to a listing that is sold per use. Change this listing to Pay per use first.",
   scheduled: "An agent that runs on its own is sold by the month, so it cannot have plans.",
+  workflowNotPerRun: "Plans are added to a workflow that is sold per run.",
+  workflowTrial: WORKFLOW_LISTING_MESSAGES.trialPlan,
   tooMany: `A listing can have at most ${MAX_PAID_PLANS} plans.`,
   kind: "A plan is either paid or a free trial.",
   kindChanged: "A plan cannot be turned into a free trial, or a free trial into a plan. End it and add a new one.",
@@ -198,9 +207,18 @@ export function checkPlanSet(
   activeKinds?: ReadonlyMap<string, string>,
 ): PlanSetCheck {
   const cannot = (message: string): PlanSetCheck => ({ ok: false, status: 409, code: "plans_not_available", message });
-  if (listing.sells !== "use") return cannot(PLAN_MESSAGES.sellsCopies);
-  if (listing.agentKind === "scheduled") return cannot(PLAN_MESSAGES.scheduled);
-  if (listing.pricingModel !== "per_request") return cannot(PLAN_MESSAGES.notPerUse);
+  const workflow = listing.productKind === "workflow";
+  if (workflow) {
+    // A workflow is sold per run and nothing else; said in its own words,
+    // never in an agent's.
+    if (listing.sells !== "use" || listing.pricingModel !== "per_request") {
+      return cannot(PLAN_MESSAGES.workflowNotPerRun);
+    }
+  } else {
+    if (listing.sells !== "use") return cannot(PLAN_MESSAGES.sellsCopies);
+    if (listing.agentKind === "scheduled") return cannot(PLAN_MESSAGES.scheduled);
+    if (listing.pricingModel !== "per_request") return cannot(PLAN_MESSAGES.notPerUse);
+  }
 
   // The first problem of each field is the one told.
   const fields: Record<string, string> = {};
@@ -219,6 +237,11 @@ export function checkPlanSet(
     const at = (field: string) => `plans[${index}].${field}`;
     const trial = plan.kind === "trial";
 
+    if (trial && workflow) {
+      // Refused on its field, whatever else it says, and never kept.
+      wrong(at("kind"), PLAN_MESSAGES.workflowTrial);
+      return;
+    }
     if (trial) {
       if (++trials > 1) wrong(at("kind"), PLAN_MESSAGES.trialTwice);
     } else if (plan.kind !== "paid") wrong(at("kind"), PLAN_MESSAGES.kind);

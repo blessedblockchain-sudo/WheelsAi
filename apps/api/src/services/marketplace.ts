@@ -50,6 +50,15 @@ import {
 import { isPaidUse, MIN_PRICE_PER_USE_CENTS, useUnitOf, type UseUnit } from "./useListing.js";
 import { validationFailureFromFields, type ValidationFailureBody } from "../lib/validationFailure.js";
 import { createLogger } from "../utils/logger.js";
+import { loadWorkflowForListing, type WorkflowListingDb } from "./buildWorkflowListingDeps.js";
+import {
+  listingProductKind,
+  WORKFLOW_LISTING_MESSAGES,
+  WORKFLOW_LISTING_SLUG,
+  type ListingProductKind,
+  workflowNotFound,
+  workflowSellableProblem,
+} from "./workflowListing.js";
 import { updatePublisherReputation } from "./reputation.js";
 import { payoutRequestSettingsFromEnv, readPayoutLimits, type PayoutReadsDb } from "./payoutRequests.js";
 import { env } from "../config/env.js";
@@ -71,7 +80,12 @@ export interface ListingSearchParams {
 }
 
 export interface ListingCreateParams {
-  agentId: string;
+  /**
+   * What the listing sells: an agent or a workflow of the organization.
+   * Exactly one of the two on a new listing; a change names neither.
+   */
+  agentId?: string;
+  orchestrationId?: string;
   title: string;
   shortDescription: string;
   longDescription?: string;
@@ -617,20 +631,10 @@ export async function getPublisherProfile(slug: string) {
 // Listing Management (Protected)
 // ============================================
 
-/** What a listing sells. The word an offering already uses for it. */
-export type ListingProductKind = "agent" | "workflow";
-
-/**
- * Which of the two a listing row sells. A row that names a workflow, or has
- * no agent, is a workflow's listing: it is never read as an agent's, so
- * nothing invents an agent, a unit or a page for it.
- */
-export function listingProductKind(listing: {
-  agentId?: string | null;
-  orchestrationId?: string | null;
-}): ListingProductKind {
-  return listing.agentId === null || (listing.orchestrationId ?? null) !== null ? "workflow" : "agent";
-}
+// What a listing sells, an agent or a workflow, is told in one place
+// (services/workflowListing.ts); it is passed on from here for the callers
+// that already read it from this file.
+export { listingProductKind, type ListingProductKind };
 
 /** The agent columns every listing answer is drawn from. Never its instructions or its tools. */
 /**
@@ -844,11 +848,310 @@ async function applyUsePage(
   }
 }
 
+// ============================================
+// A listing that sells a workflow
+// ============================================
+
+/**
+ * A new listing names what it sells: an agent or a workflow, exactly one.
+ * The refusal when it names both or neither, or null.
+ */
+export function listingProductProblem(params: { agentId?: string; orchestrationId?: string }): ListingError | null {
+  return (params.agentId !== undefined) === (params.orchestrationId !== undefined)
+    ? listingInvalid("agentId", WORKFLOW_LISTING_MESSAGES.oneProduct)
+    : null;
+}
+
+/**
+ * Two requests for one agent or one workflow, or two titles that give one
+ * slug, at the same moment: the database's unique index is what noticed.
+ * Said in a sentence, never in the database's words. Which index it was is
+ * read from the failure; when it does not say, it is the one of what was
+ * being listed.
+ */
+function uniqueListingRefusal(err: unknown, productKind: ListingProductKind): ListingError {
+  const target = String((err as { meta?: { target?: unknown } }).meta?.target ?? "");
+  if (target.includes("slug")) return new ListingError(409, "listing_name_taken", LISTING_MESSAGES.nameTaken);
+  const workflow = target.includes("orchestration") || (productKind === "workflow" && !target.includes("agent"));
+  return new ListingError(
+    409,
+    "listing_exists",
+    workflow ? WORKFLOW_LISTING_MESSAGES.listingExists : LISTING_MESSAGES.listingExists,
+  );
+}
+
+/**
+ * Refuses terms a workflow cannot be sold on. Pure. A workflow is sold by
+ * use only, per run, at 5 cents or more, and has no tools to allow. Plans
+ * are what "by month" means for it (services/listingPlans.ts).
+ */
+function assertWorkflowTerms(terms: {
+  sells: string;
+  pricingModel: string;
+  pricePerRequestCents: bigint | null;
+  allowedTools: readonly unknown[];
+}): void {
+  if (terms.sells !== "use") throw listingInvalid("sells", WORKFLOW_LISTING_MESSAGES.sellsCopies);
+  if (terms.pricingModel !== "per_request") throw listingInvalid("pricingModel", WORKFLOW_LISTING_MESSAGES.notPerRun);
+  if ((terms.pricePerRequestCents ?? 0n) < MIN_PRICE_PER_USE_CENTS) {
+    throw listingInvalid("pricePerRequestCents", LISTING_MESSAGES.perRunFloor);
+  }
+  if (terms.allowedTools.length > 0) throw listingInvalid("allowedTools", WORKFLOW_LISTING_MESSAGES.allowedTools);
+}
+
+/**
+ * Refuses a workflow that cannot be on sale, as it is at this moment. Always
+ * read in the publisher's organization, never by its id alone: a workflow
+ * that is not there is not found. `db` is the transaction when there is one,
+ * so the workflow is judged as it is when the write commits.
+ */
+async function assertWorkflowSellable(
+  db: Prisma.TransactionClient | typeof prisma,
+  orchestrationId: string,
+  orgId: string,
+): Promise<void> {
+  const workflow = await loadWorkflowForListing(
+    { workflowId: orchestrationId, orgId },
+    { db: db as unknown as WorkflowListingDb },
+  );
+  const problem = workflowSellableProblem(workflow, orgId);
+  if (problem === null) return;
+  throw workflowNotFound(workflow, orgId)
+    ? new ListingError(404, "workflow_not_found", problem)
+    : new ListingError(409, "workflow_not_sellable", problem);
+}
+
+async function createWorkflowListing(
+  orgId: string,
+  orgName: string,
+  params: ListingCreateParams & { orchestrationId: string },
+) {
+  const { orchestrationId } = params;
+  await assertWorkflowSellable(prisma, orchestrationId, orgId);
+
+  // The price is read as it was sent: a price that is missing is under the floor.
+  const pricePerRequestCents =
+    params.pricingModel === "per_request" && params.pricePerRequestCents
+      ? BigInt(params.pricePerRequestCents)
+      : null;
+  assertWorkflowTerms({
+    sells: params.sells ?? "use",
+    pricingModel: params.pricingModel,
+    pricePerRequestCents,
+    allowedTools: params.allowedTools ?? [],
+  });
+
+  // One listing for one workflow.
+  const existing = await prisma.agentListing.findUnique({ where: { orchestrationId }, select: { id: true } });
+  if (existing) throw new ListingError(409, "listing_exists", WORKFLOW_LISTING_MESSAGES.listingExists);
+
+  // The listing's slug is the buyer's name for the workflow (/w/<slug>), so
+  // it cannot be empty: a title with no letter or digit makes none.
+  const baseSlug = params.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (!WORKFLOW_LISTING_SLUG.test(baseSlug)) throw listingInvalid("title", WORKFLOW_LISTING_MESSAGES.emptySlug);
+  let slug = baseSlug;
+  let counter = 1;
+  while (await prisma.agentListing.findUnique({ where: { slug } })) {
+    slug = `${baseSlug}-${counter}`;
+    counter++;
+  }
+  if (!WORKFLOW_LISTING_SLUG.test(slug)) throw listingInvalid("title", WORKFLOW_LISTING_MESSAGES.emptySlug);
+
+  // Paid plans rank ahead in the marketplace from the first publish.
+  const { limits: planLimits } = await getOrgPlan(orgId).catch(() => ({
+    limits: { priorityPlacement: false },
+  }));
+
+  const listing = await prisma.agentListing
+    .create({
+      data: {
+        priorityPlacement: planLimits.priorityPlacement,
+        orchestrationId,
+        title: params.title,
+        slug,
+        shortDescription: params.shortDescription,
+        longDescription: params.longDescription,
+        category: params.category,
+        iconUrl: params.iconUrl,
+        screenshots: params.screenshots ?? [],
+        readme: params.readme,
+        sells: "use",
+        useAllowedTools: [],
+        pricingModel: "per_request",
+        pricePerRequestCents,
+        monthlyPriceCents: null,
+        publisherId: orgId,
+        publisherName: orgName,
+        status: "draft",
+      },
+    })
+    .catch((err) => {
+      if (!isUniqueViolation(err)) throw err;
+      throw uniqueListingRefusal(err, "workflow");
+    });
+
+  // Ensure publisher profile exists
+  await ensurePublisherProfile(orgId, orgName);
+
+  if (!params.publish) return formatListingForOwner(listing);
+
+  await publishOwnListing(listing.id, orgId);
+  const published = await prisma.agentListing.findUnique({ where: { id: listing.id } });
+  return formatListingForOwner(published ?? listing);
+}
+
+/** A workflow's listing as its edit and its publish read it. */
+interface WorkflowListingRow {
+  id: string;
+  orchestrationId: string;
+  title: string;
+  shortDescription: string;
+  category: string;
+  status: string;
+  sells: string;
+  pricingModel: string;
+  pricePerRequestCents: bigint | null;
+  useAllowedTools: unknown;
+}
+
+const toolsOf = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+
+/**
+ * The edit of a listing that sells a workflow. What it sells and how it is
+ * priced cannot change, only the price per run; the workflow is read again
+ * inside the transaction and must still be sellable, or nothing is saved.
+ * No agent and no page is touched.
+ */
+async function updateWorkflowListing(
+  listing: WorkflowListingRow,
+  orgId: string,
+  params: Partial<ListingCreateParams>,
+) {
+  const listingId = listing.id;
+  const pricePerRequestCents =
+    params.pricePerRequestCents !== undefined
+      ? BigInt(params.pricePerRequestCents)
+      : listing.pricePerRequestCents;
+  assertWorkflowTerms({
+    sells: params.sells ?? listing.sells,
+    pricingModel: params.pricingModel ?? listing.pricingModel,
+    pricePerRequestCents,
+    allowedTools: params.allowedTools ?? toolsOf(listing.useAllowedTools),
+  });
+
+  const publishing = params.publish === true && listing.status !== "published";
+  if (
+    publishing &&
+    (!(params.title || listing.title) ||
+      !(params.shortDescription || listing.shortDescription) ||
+      !(params.category || listing.category))
+  ) {
+    throw new Error("Listing is missing required fields");
+  }
+
+  // Asked before anything is written, and again below as the write commits.
+  await assertWorkflowSellable(prisma, listing.orchestrationId, orgId);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const saved = await tx.agentListing.update({
+      where: { id: listingId },
+      data: {
+        ...(params.title && { title: params.title }),
+        ...(params.shortDescription && { shortDescription: params.shortDescription }),
+        ...(params.longDescription !== undefined && { longDescription: params.longDescription }),
+        ...(params.category && { category: params.category }),
+        ...(params.iconUrl !== undefined && { iconUrl: params.iconUrl }),
+        ...(params.screenshots && { screenshots: params.screenshots }),
+        ...(params.readme !== undefined && { readme: params.readme }),
+        ...(params.pricePerRequestCents !== undefined && { pricePerRequestCents }),
+        ...(publishing && { status: "published", publishedAt: new Date() }),
+      },
+    });
+    // The terms as they were saved, and the workflow as it is now: either
+    // may have changed since the read above. A refusal rolls the save back.
+    assertWorkflowTerms({
+      sells: saved.sells,
+      pricingModel: saved.pricingModel,
+      pricePerRequestCents: saved.pricePerRequestCents,
+      allowedTools: toolsOf(saved.useAllowedTools),
+    });
+    await assertWorkflowSellable(tx, listing.orchestrationId, orgId);
+    return saved;
+  });
+
+  if (publishing) {
+    await updatePublisherStats(orgId);
+    logger.info({ listingId, orgId }, "Listing published");
+  }
+
+  return formatListingForOwner(updated);
+}
+
+/**
+ * Puts a workflow's listing on sale: the compare-and-set of an agent's
+ * publish, then the terms and the workflow as they are under the listing's
+ * row lock. It makes no public page of an agent and touches no agent.
+ */
+async function publishWorkflowListing(listing: WorkflowListingRow, orgId: string): Promise<boolean> {
+  const listingId = listing.id;
+  if (listing.status === "published") return false;
+
+  // Validate listing has required fields
+  if (!listing.title || !listing.shortDescription || !listing.category) {
+    throw new Error("Listing is missing required fields");
+  }
+
+  // The workflow may have changed since the draft was saved.
+  await assertWorkflowSellable(prisma, listing.orchestrationId, orgId);
+
+  const published = await prisma.$transaction(async (tx) => {
+    // Compare-and-set: of two publishes at once, one moves the listing and
+    // the other finds nothing to do.
+    const moved = await tx.agentListing.updateMany({
+      where: { id: listingId, publisherId: orgId, status: { not: "published" } },
+      data: {
+        status: "published",
+        publishedAt: new Date(),
+      },
+    });
+    if (moved.count !== 1) return false;
+    const onSale = await tx.agentListing.findUnique({ where: { id: listingId } });
+    if (!onSale) throw new Error("Listing not found");
+    assertWorkflowTerms({
+      sells: onSale.sells,
+      pricingModel: onSale.pricingModel,
+      pricePerRequestCents: onSale.pricePerRequestCents,
+      allowedTools: toolsOf(onSale.useAllowedTools),
+    });
+    await assertWorkflowSellable(tx, listing.orchestrationId, orgId);
+    return true;
+  });
+  if (!published) return false;
+
+  await updatePublisherStats(orgId);
+
+  logger.info({ listingId, orgId }, "Listing published");
+  return true;
+}
+
 export async function createListing(
   orgId: string,
   orgName: string,
   params: ListingCreateParams
 ) {
+  const oneProduct = listingProductProblem(params);
+  if (oneProduct) throw oneProduct;
+  // Chosen by what is asked to be sold, never by a fallback: a workflow's
+  // listing has rules of its own and nothing of an agent's.
+  if (params.orchestrationId !== undefined) {
+    return createWorkflowListing(orgId, orgName, { ...params, orchestrationId: params.orchestrationId });
+  }
+  // Never read with no id: a filter that is left out matches any agent.
+  if (params.agentId === undefined) throw listingInvalid("agentId", WORKFLOW_LISTING_MESSAGES.oneProduct);
+
   // Verify agent belongs to org
   const agent = await prisma.agent.findFirst({
     where: { id: params.agentId, orgId },
@@ -927,10 +1230,7 @@ export async function createListing(
       // Two requests for one agent, or two titles that give one slug, at the
       // same moment. Said in a sentence, never in the database's words.
       if (!isUniqueViolation(err)) throw err;
-      const target = String((err as { meta?: { target?: unknown } }).meta?.target ?? "");
-      throw target.includes("slug")
-        ? new ListingError(409, "listing_name_taken", LISTING_MESSAGES.nameTaken)
-        : new ListingError(409, "listing_exists", LISTING_MESSAGES.listingExists);
+      throw uniqueListingRefusal(err, "agent");
     });
 
   // Ensure publisher profile exists
@@ -961,9 +1261,15 @@ export async function updateListing(
   }
   // Everything below is the edit of an AGENT's listing: its sale rules and
   // its page. A listing that sells a workflow has neither, and must never be
-  // checked or published as if it were a chat agent, so it is not found here.
+  // checked or published as if it were a chat agent: it has an edit of its own.
+  if (listingProductKind(listing) === "workflow") {
+    if (listing.orchestrationId === null) {
+      throw new Error("Listing not found or you don't have permission to edit");
+    }
+    return updateWorkflowListing({ ...listing, orchestrationId: listing.orchestrationId }, orgId, params);
+  }
   const agentId = listing.agentId;
-  if (listingProductKind(listing) !== "agent" || agentId === null) {
+  if (agentId === null) {
     throw new Error("Listing not found or you don't have permission to edit");
   }
 
@@ -1118,10 +1424,14 @@ async function publishOwnListing(listingId: string, orgId: string): Promise<bool
     throw new Error("Listing not found");
   }
   // Publishing below is the publishing of an AGENT's listing: the agent's
-  // sale rules, then the agent's page. A listing that sells a workflow is
-  // not found here, so neither is ever applied to it.
+  // sale rules, then the agent's page. A listing that sells a workflow has
+  // a publish of its own, so neither is ever applied to it.
+  if (listingProductKind(listing) === "workflow") {
+    if (listing.orchestrationId === null) throw new Error("Listing not found");
+    return publishWorkflowListing({ ...listing, orchestrationId: listing.orchestrationId }, orgId);
+  }
   const agentId = listing.agentId;
-  if (listingProductKind(listing) !== "agent" || agentId === null) {
+  if (agentId === null) {
     throw new Error("Listing not found");
   }
 

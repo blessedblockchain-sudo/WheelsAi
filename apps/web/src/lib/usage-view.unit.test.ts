@@ -75,7 +75,7 @@ test("the balance is the API's cents as dollars, and is not drawn as $0.00 when 
 test("an organization that uses nothing reads one sentence", () => {
   const view = usageView({ balanceCents: 500, listings: [] });
   assert.deepEqual(view.rows, []);
-  assert.equal(view.empty, "You do not pay to use any agent yet.");
+  assert.equal(view.empty, "You do not pay to use anything yet.");
   assert.equal(usageView(null).empty, USAGE_WORDS.empty);
   assert.equal(usageView({ balanceCents: 1, listings: "no" } as unknown as MarketplaceUsage).empty, USAGE_WORDS.empty);
   assert.equal(usageView({ balanceCents: 500, listings: [row()] }).empty, null);
@@ -437,4 +437,44 @@ test("a paid plan's row is what it was, whether or not the API says it is not a 
   assert.deepEqual(usageRow(row({ plan: plan({ trial: false }) })), usageRow(row()));
   assert.equal(usageRow(row()).planName, "Starter");
   assert.equal(usageRow(row()).countLine, planCountLine({ plan: plan(), endsAt: RESET, dates: { timeZone: "UTC" } }));
+});
+
+// ============================================
+// A workflow's row
+// ============================================
+
+const workflowRow = (over: Partial<MarketplaceUsageRow> = {}) =>
+  row({ productKind: "workflow", listingId: "l9", title: "Weekly report", slug: "weekly-report", handle: null, ...over });
+
+test("a workflow's row opens the workflow's page by the listing's slug, as Installed does", () => {
+  const onPlan = usageRow(workflowRow());
+  assert.equal(onPlan.href, "/w/weekly-report");
+  assert.equal(onPlan.productKind, "workflow");
+  // Per run, with nothing on a plan: the same address.
+  assert.equal(usageRow(perUseRow({ productKind: "workflow", slug: "weekly-report", handle: null })).href, "/w/weekly-report");
+  // A handle a row should not carry is never where a workflow's row goes.
+  assert.equal(usageRow(workflowRow({ handle: "support-bot" })).href, "/w/weekly-report");
+  // An agent's row is what it was; an older API that says nothing of the product sold agents.
+  assert.equal(usageRow(row()).href, "/a/support-bot");
+  assert.equal(usageRow(row()).productKind, "agent");
+  assert.equal(usageRow(row({ productKind: "agent" })).href, "/a/support-bot");
+});
+
+test("a workflow's row counts its plan in the same words as an agent's", () => {
+  const workflow = usageRow(workflowRow());
+  const agent = usageRow(row());
+  assert.equal(workflow.countLine, agent.countLine);
+  assert.deepEqual(workflow.bar, agent.bar);
+  assert.equal(workflow.planName, "Starter");
+});
+
+test("the page's words cover agents and workflows both", () => {
+  assert.equal(USAGE_WORDS.description, "What you have used and spent on the agents and workflows you pay for.");
+  assert.equal(USAGE_WORDS.balanceNote, "One balance pays for everything you use.");
+  assert.equal(USAGE_WORDS.empty, "You do not pay to use anything yet.");
+  assert.equal(USAGE_WORDS.listTitle, "What you pay for");
+  // The month with no count is an agent's alone: a workflow is never sold by the month.
+  for (const key of ["title", "description", "balanceNote", "listTitle", "empty", "linkLabel"] as const) {
+    assert.doesNotMatch(USAGE_WORDS[key], /\bagent\b/i, key);
+  }
 });

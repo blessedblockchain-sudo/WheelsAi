@@ -13,6 +13,7 @@ import {
   MoreVertical,
   Play,
   RefreshCw,
+  Workflow,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -38,13 +39,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ReviewForm } from "@/components/marketplace/review-form";
-import { marketplaceApi, ApiError, getErrorMessage, isAgentLicence, type PlanOffer } from "@/lib/api";
+import { marketplaceApi, ApiError, getErrorMessage, type PlanOffer } from "@/lib/api";
 import { INSTALLED_PLAN_WORDS, moveUpChoice, moveUpConfirm, moveUpRefusal, movedLine } from "@/lib/installed-plans";
 import {
-  INSTALLED_WORDS,
+  INSTALLED_PAGE_WORDS,
+  INSTALLED_WORKFLOW_WORDS,
   askAdminOnce,
   installedConfirm,
   installedRow,
+  licenceProductKind,
   type InstalledAction,
   type InstalledActionId,
   type InstalledLicence,
@@ -52,7 +55,7 @@ import {
 import { USAGE_HREF, USAGE_WORDS } from "@/lib/usage-view";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 
-/** A row of Installed: an agent the organization uses, or a copy it owns. */
+/** A row of Installed: an agent or a workflow the organization uses, or a copy it owns. */
 type Install = InstalledLicence;
 
 type RenewalAction = Extract<InstalledActionId, "cancel" | "resume" | "resubscribe" | "accept_pricing">;
@@ -147,8 +150,9 @@ export default function InstalledAgentsPage() {
   async function loadInstalls() {
     try {
       const { installs, canSpend } = await marketplaceApi.getMyInstalls();
-      // The rows of agents: a workflow's licence has no agent, and this page draws agents.
-      setInstalls(installs.filter(isAgentLicence));
+      // Every row: an agent's, a workflow's (which has no agent: lib/installed-rows.ts opens it at /w/<slug>)
+      // and a copy's.
+      setInstalls(installs);
       setCanSpend(canSpend);
       // Someone who may not spend is offered no bigger plan: a list of them left open closes.
       if (canSpend === false) setChoosingFor(null);
@@ -290,7 +294,12 @@ export default function InstalledAgentsPage() {
       toast.success(using ? `You no longer use ${install.listing.title}.` : "Agent uninstalled");
       loadInstalls();
     } catch (error: any) {
-      toast.error(getErrorMessage(error, using ? "Could not stop using this agent" : "Failed to uninstall agent"));
+      const fallback = !using
+        ? "Failed to uninstall agent"
+        : licenceProductKind(install) === "workflow"
+          ? INSTALLED_WORKFLOW_WORDS.stopFailed
+          : "Could not stop using this agent";
+      toast.error(getErrorMessage(error, fallback));
     }
   }
 
@@ -312,6 +321,9 @@ export default function InstalledAgentsPage() {
   // back moving up or resuming a renewal.
   const rows = installs.map((install) => ({ install, row: installedRow(install, {}, { canSpend }) }));
   const askAdmin = askAdminOnce(rows.map(({ row }) => row));
+  // The review dialog names what the licence is for: "this workflow" on a workflow's row.
+  const reviewing = installs.find((install) => install.listingId === reviewingListingId);
+  const reviewingSubject = reviewing ? licenceProductKind(reviewing) : "agent";
 
   const totalSpent = installs.reduce((sum, i) => sum + i.totalSpentCents, 0) / 100;
   const totalRequests = installs.reduce((sum, i) => sum + i.totalRequests, 0);
@@ -320,7 +332,7 @@ export default function InstalledAgentsPage() {
     <div className="flex flex-col">
       <Header
         title="Installed"
-        description={INSTALLED_WORDS.header}
+        description={INSTALLED_PAGE_WORDS.header}
       />
 
       <div className="p-8">
@@ -345,7 +357,7 @@ export default function InstalledAgentsPage() {
                   <CardContent className="py-4">
                     <div className="flex items-center justify-between">
                       <div>
-                        <p className="text-sm text-muted-foreground">Agents</p>
+                        <p className="text-sm text-muted-foreground">{INSTALLED_PAGE_WORDS.count}</p>
                         <p className="text-2xl font-bold">{installs.length}</p>
                       </div>
                       <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10">
@@ -386,7 +398,7 @@ export default function InstalledAgentsPage() {
             {/* Installed Agents List */}
             <Card>
               <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
-                <CardTitle>Your agents</CardTitle>
+                <CardTitle>{INSTALLED_PAGE_WORDS.listTitle}</CardTitle>
                 <Link href={USAGE_HREF} className="text-sm text-primary underline-offset-4 hover:underline">
                   {USAGE_WORDS.linkLabel}
                 </Link>
@@ -407,11 +419,17 @@ export default function InstalledAgentsPage() {
                 ) : (
                   <div className="divide-y">
                     {rows.map(({ install, row }) => {
+                      // A workflow's row has its own icon, and does not name who sells it.
+                      const workflow = licenceProductKind(install) === "workflow";
                       return (
                         <div key={install.id} className="flex items-center justify-between gap-4 py-4">
                           <div className="flex min-w-0 items-center gap-4">
                             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
-                              <Bot className="h-6 w-6 text-primary-600" />
+                              {workflow ? (
+                                <Workflow className="h-6 w-6 text-primary-600" aria-hidden="true" />
+                              ) : (
+                                <Bot className="h-6 w-6 text-primary-600" />
+                              )}
                             </div>
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
@@ -420,7 +438,7 @@ export default function InstalledAgentsPage() {
                                 <Badge variant="secondary">{row.priceLabel}</Badge>
                               </div>
                               <p className="text-sm text-muted-foreground">
-                                by {install.listing.publisherName} &middot;{" "}
+                                {!workflow && <>by {install.listing.publisherName} &middot; </>}
                                 {row.kind === "use" ? "Started" : "Installed"} {formatDate(install.installedAt)}
                               </p>
                               {row.line && <p className={`text-xs ${TONE_CLASS[row.line.tone]}`}>{row.line.text}</p>}
@@ -539,6 +557,7 @@ export default function InstalledAgentsPage() {
           {reviewingListingId && (
             <ReviewForm
               listingId={reviewingListingId}
+              subject={reviewingSubject}
               onSuccess={() => {
                 setReviewingListingId(null);
                 toast.success("Thank you for your review!");

@@ -17,15 +17,18 @@ function StopWarningBody({ warning }: { warning: StopWarning }) {
         <span className="mt-2 block break-words font-medium text-foreground">{warning.names.join(", ")}</span>
       )}
       {warning.onSale && <span className="mt-2 block break-words">{warning.onSale}</span>}
+      {/* The workflows on sale that need the deployment, after everything about agents. */}
+      {warning.workflows && <span className="mt-2 block break-words">{warning.workflows}</span>}
     </>
   );
 }
 
 /**
  * Asked before a deployment is stopped: reads the agents that answer from it
- * and, when there are some, asks in the app's own dialog. Resolves true when
- * the stop should go ahead. With no such agent nothing is asked. When they
- * cannot be read the dialog still opens and says so. Never throws.
+ * and the workflows on sale that need it and, when there are some, asks in
+ * the app's own dialog. Resolves true when the stop should go ahead. With
+ * neither nothing is asked. When they cannot be read the dialog still opens
+ * and says so. Never throws.
  */
 export async function confirmStopDeployment(
   deploymentId: string,

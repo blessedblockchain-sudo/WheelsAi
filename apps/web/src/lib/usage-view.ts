@@ -19,11 +19,15 @@
  * trial's own count (`trialCountLine`), which names the day the trial ends
  * and never a renewal.
  *
- * Never said here: tokens, the model, the organization that sells an agent,
- * anything of another buyer, or a count that has no end.
+ * A row is an agent's or a workflow's. It opens where Installed opens it
+ * (`openHrefOf` of lib/installed-rows.ts): an agent's page, /a/<handle>, or a
+ * workflow's, /w/<listing slug>.
+ *
+ * Never said here: tokens, the model, the organization that sells an agent
+ * or a workflow, anything of another buyer, or a count that has no end.
  */
-import type { MarketplaceUsage, MarketplaceUsageRow, UsesAndCents } from "./api";
-import { INSTALLED_WORDS } from "./installed-rows";
+import { productKindOf, type MarketplaceProductKind, type MarketplaceUsage, type MarketplaceUsageRow, type UsesAndCents } from "./api";
+import { INSTALLED_WORDS, openHrefOf } from "./installed-rows";
 import { dollars, type PaidPrice } from "./paid-use";
 import { TRIAL_WORDS, planCountLine, planCountOf, trialCountLine, type PlanCount } from "./use-plans";
 
@@ -39,15 +43,15 @@ export const ADD_CREDITS_HREF = "/dashboard/billing#add-credits";
 
 export const USAGE_WORDS = {
   title: "Usage",
-  description: "What you have used and spent on the agents you pay for.",
+  description: "What you have used and spent on the agents and workflows you pay for.",
   /** The link to this page from Billing and from Installed. */
   linkLabel: "Usage of what you pay for",
   balanceLabel: "Credits",
-  balanceNote: "One balance pays for every agent you use.",
+  balanceNote: "One balance pays for everything you use.",
   addCredits: "Add credits",
-  listTitle: "Agents you pay for",
+  listTitle: "What you pay for",
   /** An organization that uses nothing. */
-  empty: "You do not pay to use any agent yet.",
+  empty: "You do not pay to use anything yet.",
   browse: "Browse the marketplace",
   /** A row with no plan and nothing paid per use this month. */
   nothingPerUse: "No uses paid per use this month.",
@@ -128,7 +132,12 @@ export type UsageTone = "ok" | "warn";
 export interface UsageRowView {
   listingId: string;
   title: string;
-  /** The agent's page, /a/<handle>. Null when it has none: the title is then plain text. */
+  /** What the row is for: the page draws a workflow's icon for a workflow. */
+  productKind: MarketplaceProductKind;
+  /**
+   * Where the row opens: the agent's page, /a/<handle>, or the workflow's, /w/<listing slug>. Null when
+   * there is none: the title is then plain text.
+   */
   href: string | null;
   /** The plan's name. Null for a row with no plan, which has no bar and no count. */
   planName: string | null;
@@ -185,10 +194,13 @@ function perUseAfterTrial(row: MarketplaceUsageRow): PaidPrice | null | undefine
 export function usageRow(row: MarketplaceUsageRow): UsageRowView {
   const count = row.access === "subscribed" ? planCountOf(row.plan) : null;
   const perUse = spent(row.perUseThisMonth);
+  const productKind = productKindOf(row);
   const base = {
     listingId: row.listingId,
     title: row.title,
-    href: row.handle ? `/a/${row.handle}` : null,
+    productKind,
+    // By the one rule Installed opens its rows by.
+    href: openHrefOf({ productKind, slug: row.slug, handle: row.handle }),
     perUseLine: perUse ? perUseLine(perUse) : null,
   };
 

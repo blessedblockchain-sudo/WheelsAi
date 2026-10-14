@@ -16,6 +16,7 @@ import {
   TrendingUp,
   ShieldCheck,
   Users,
+  Workflow,
 } from "lucide-react";
 import {
   marketplaceApi,
@@ -34,7 +35,7 @@ import { MarketplaceNavLinks } from "@/components/marketplace/public-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { listingCountText, priceTextForUse, priceWithPlans } from "@/lib/listing-cta";
+import { listingChipText, listingCountText, listingPageParts, priceTextForUse, priceWithPlans } from "@/lib/listing-cta";
 
 const SORT_OPTIONS = [
   { value: "popular", label: "Most Popular" },
@@ -123,6 +124,8 @@ function AgentCard({
   // A listing that sells use: the buyer uses the creator's agent and gets no
   // copy, so its card says "using it" and gives the price with its unit.
   const sellsUse = listing.sells === "use";
+  // A workflow's card: its own chip and icon, and nothing of an agent or of who sells it (lib/listing-cta.ts).
+  const parts = listingPageParts(listing);
   // A listing that offers plans says both ways to pay: "From $0.05 a message", and under it the smallest
   // plan. Null for every other listing, whose card is what it was (lib/listing-cta.ts).
   const withPlans = priceWithPlans(listing);
@@ -145,6 +148,8 @@ function AgentCard({
               alt={listing.title}
               className="h-8 w-8 rounded"
             />
+          ) : parts.kind === "workflow" ? (
+            <Workflow className="h-6 w-6 text-primary-600" aria-hidden="true" />
           ) : (
             <Cpu className="h-6 w-6 text-primary-600" />
           )}
@@ -160,7 +165,7 @@ function AgentCard({
               </span>
             )}
           </div>
-          <p className="text-sm text-muted-foreground">by {listing.publisherName}</p>
+          {parts.publisher && <p className="text-sm text-muted-foreground">by {listing.publisherName}</p>}
         </div>
       </div>
 
@@ -183,14 +188,14 @@ function AgentCard({
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <span className="flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-            {listing.agent?.framework || "custom"}
+            {listingChipText(listing)}
           </span>
           {sellsUse && (
             <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
               Use
             </span>
           )}
-          {hasToken && (
+          {parts.token && hasToken && (
             <span
               className="flex items-center gap-1 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-500"
               title="Tokenized agent — treasury and compute payments are publicly verifiable on-chain"

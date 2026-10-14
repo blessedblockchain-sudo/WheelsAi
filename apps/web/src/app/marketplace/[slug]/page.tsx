@@ -21,6 +21,7 @@ import {
   BarChart3,
   ShieldCheck,
   Code2,
+  Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -37,6 +38,7 @@ import {
   type TokenSnapshot,
   ApiError,
   getErrorMessage,
+  productKindOf,
 } from "@/lib/api";
 import { TokenChart } from "@/components/dashboard/token-chart";
 import { OfferingCard, OfferingCardSkeleton } from "@/components/marketplace/offering-card";
@@ -47,7 +49,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSession } from "@/hooks/use-session";
 import { API_PAGE_WORDS, apiPageHrefOfListing } from "@/lib/api-page";
-import { listingCountText, listingCta, listingInstallStats } from "@/lib/listing-cta";
+import { listingChipText, listingCountText, listingCta, listingInstallStats, listingPageParts } from "@/lib/listing-cta";
 
 function formatUsd(value: number): string {
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
@@ -323,12 +325,14 @@ export default function ListingDetailPage() {
     try {
       const listingRes = await marketplaceApi.getListing(slug);
       setListing(listingRes.listing);
+      // A workflow's listing has no Hire tab and no token: neither is read for it.
+      const agentListing = productKindOf(listingRes.listing) === "agent";
       // Not awaited: the page does not wait for its Reviews or Hire tab.
       void loadReviews(listingRes.listing.id);
-      void loadOfferings(listingRes.listing.id);
+      if (agentListing) void loadOfferings(listingRes.listing.id);
 
       // If tokenized, fetch token data
-      if (listingRes.listing.pricingModel === "tokenized") {
+      if (agentListing && listingRes.listing.pricingModel === "tokenized") {
         try {
           const tokensRes = await tokenApi.list({ limit: 50 });
           const matchingToken = tokensRes.tokens.find(
@@ -498,6 +502,14 @@ export default function ListingDetailPage() {
     );
   }
 
+  // Which parts of the page are about an agent: a workflow's listing has none of them (lib/listing-cta.ts).
+  const parts = listingPageParts(listing);
+  // A tab the listing does not have (a #hire, #try or #token link to a workflow) shows the overview.
+  const shownTab: TabType =
+    (activeTab === "hire" && !parts.hire) || (activeTab === "try" && !parts.tryIt) || (activeTab === "token" && !parts.token)
+      ? "overview"
+      : activeTab;
+
   // What the price card says and which button it shows (lib/listing-cta.ts).
   const cta = listingCta({
     listing,
@@ -554,6 +566,8 @@ export default function ListingDetailPage() {
                       alt={listing.title}
                       className="h-10 w-10 rounded-lg"
                     />
+                  ) : parts.kind === "workflow" ? (
+                    <Workflow className="h-8 w-8 text-primary-600" aria-hidden="true" />
                   ) : (
                     <Cpu className="h-8 w-8 text-primary-600" />
                   )}
@@ -569,12 +583,14 @@ export default function ListingDetailPage() {
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-muted-foreground">
-                    by{" "}
-                    <span className="font-medium text-foreground">
-                      {listing.publisherName}
-                    </span>
-                  </p>
+                  {parts.publisher && (
+                    <p className="mt-1 text-muted-foreground">
+                      by{" "}
+                      <span className="font-medium text-foreground">
+                        {listing.publisherName}
+                      </span>
+                    </p>
+                  )}
                   <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">
                     <div className="flex items-center gap-1 text-yellow-600">
                       <Star className="h-4 w-4 fill-current" />
@@ -590,7 +606,7 @@ export default function ListingDetailPage() {
                       <span>{listingCountText(listing)}</span>
                     </div>
                     <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground">
-                      {listing.agent?.framework || "custom"}
+                      {listingChipText(listing)}
                     </span>
                   </div>
                 </div>
@@ -606,31 +622,33 @@ export default function ListingDetailPage() {
                   <button
                     onClick={() => setActiveTab("overview")}
                     className={`border-b-2 pb-3 text-sm font-medium ${
-                      activeTab === "overview"
+                      shownTab === "overview"
                         ? "border-primary-600 text-primary-600"
                         : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                     }`}
                   >
                     Overview
                   </button>
-                  <button
-                    onClick={() => setActiveTab("hire")}
-                    className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
-                      activeTab === "hire"
-                        ? "border-primary-600 text-primary-600"
-                        : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
-                    }`}
-                  >
-                    Hire
-                    {offerings !== null && offerings.length > 0 && (
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{offerings.length}</span>
-                    )}
-                  </button>
-                  {listing.trial?.enabled && (
+                  {parts.hire && (
+                    <button
+                      onClick={() => setActiveTab("hire")}
+                      className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
+                        shownTab === "hire"
+                          ? "border-primary-600 text-primary-600"
+                          : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
+                      }`}
+                    >
+                      Hire
+                      {offerings !== null && offerings.length > 0 && (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{offerings.length}</span>
+                      )}
+                    </button>
+                  )}
+                  {parts.tryIt && listing.trial?.enabled && (
                     <button
                       onClick={() => setActiveTab("try")}
                       className={`border-b-2 pb-3 text-sm font-medium ${
-                        activeTab === "try"
+                        shownTab === "try"
                           ? "border-primary-600 text-primary-600"
                           : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                       }`}
@@ -641,7 +659,7 @@ export default function ListingDetailPage() {
                   <button
                     onClick={() => setActiveTab("reviews")}
                     className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
-                      activeTab === "reviews"
+                      shownTab === "reviews"
                         ? "border-primary-600 text-primary-600"
                         : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                     }`}
@@ -651,11 +669,11 @@ export default function ListingDetailPage() {
                       {listing.reviewCount}
                     </span>
                   </button>
-                  {hasToken && (
+                  {parts.token && hasToken && (
                     <button
                       onClick={() => setActiveTab("token")}
                       className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-medium ${
-                        activeTab === "token"
+                        shownTab === "token"
                           ? "border-cyan-600 text-cyan-600"
                           : "border-transparent text-muted-foreground hover:border-muted-foreground/40 hover:text-foreground"
                       }`}
@@ -669,7 +687,7 @@ export default function ListingDetailPage() {
 
               {/* Tab Content */}
               <div className="mt-6">
-                {activeTab === "overview" && (
+                {shownTab === "overview" && (
                   <div className="space-y-6">
                     {/* Description */}
                     {listing.longDescription && (
@@ -703,7 +721,7 @@ export default function ListingDetailPage() {
                     )}
 
                     {/* Tags */}
-                    {listing.agent?.tags && listing.agent.tags.length > 0 && (
+                    {parts.tags && listing.agent?.tags && listing.agent.tags.length > 0 && (
                       <div className="rounded-lg border bg-card p-6">
                         <h2 className="font-semibold text-foreground">Tags</h2>
                         <div className="mt-3 flex flex-wrap gap-2">
@@ -721,7 +739,7 @@ export default function ListingDetailPage() {
                   </div>
                 )}
 
-                {activeTab === "hire" && (
+                {shownTab === "hire" && parts.hire && (
                   <div className="space-y-4">
                     <p className="text-sm text-muted-foreground">
                       {sellsUse ? "Hire this agent for one fixed task." : "Instead of installing this agent, hire it for one fixed task."}{" "}
@@ -760,7 +778,7 @@ export default function ListingDetailPage() {
                   </div>
                 )}
 
-                {activeTab === "try" && listing.trial?.enabled && (
+                {shownTab === "try" && parts.tryIt && listing.trial?.enabled && (
                   <TryItPanel
                     slug={listing.slug}
                     listingId={listing.id}
@@ -769,7 +787,7 @@ export default function ListingDetailPage() {
                   />
                 )}
 
-                {activeTab === "reviews" && (
+                {shownTab === "reviews" && (
                   <div className="rounded-lg border bg-card p-6">
                     <div className="flex items-center justify-between">
                       <h2 className="font-semibold text-foreground">
@@ -810,7 +828,7 @@ export default function ListingDetailPage() {
                         <EmptyState
                           icon={MessageSquare}
                           title="No reviews yet"
-                          description="Be the first to review this agent."
+                          description={parts.reviewsEmpty}
                           actionLabel="Write a Review"
                           actionHref="/login"
                         />
@@ -825,7 +843,7 @@ export default function ListingDetailPage() {
                   </div>
                 )}
 
-                {activeTab === "token" && hasToken && tokenData && (
+                {shownTab === "token" && parts.token && hasToken && tokenData && (
                   <div className="space-y-6">
                     {/* Token Header */}
                     <div className="rounded-lg border bg-card p-6">
@@ -1094,7 +1112,7 @@ export default function ListingDetailPage() {
                 </Link>
               )}
 
-              {hasToken && (
+              {parts.token && hasToken && (
                 <button
                   onClick={() => setActiveTab("token")}
                   className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-500 hover:bg-cyan-500/10"
@@ -1114,7 +1132,7 @@ export default function ListingDetailPage() {
                 </Link>
               )}
 
-              {(agentHandle ?? listing.agent?.slug) && listing.agent?.isPublic && (
+              {parts.transparency && (agentHandle ?? listing.agent?.slug) && listing.agent?.isPublic && (
                 <Link
                   href={`/a/${agentHandle ?? listing.agent?.slug}`}
                   className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-2.5 text-sm font-medium text-green-500 hover:bg-green-500/10"
@@ -1173,12 +1191,14 @@ export default function ListingDetailPage() {
                     {listing.category.replace("-", " ")}
                   </dd>
                 </div>
-                <div className="flex items-center justify-between">
-                  <dt className="text-muted-foreground">Framework</dt>
-                  <dd className="font-medium capitalize text-foreground">
-                    {listing.agent?.framework || "Custom"}
-                  </dd>
-                </div>
+                {parts.framework && (
+                  <div className="flex items-center justify-between">
+                    <dt className="text-muted-foreground">Framework</dt>
+                    <dd className="font-medium capitalize text-foreground">
+                      {listing.agent?.framework || "Custom"}
+                    </dd>
+                  </div>
+                )}
                 <div className="flex items-center justify-between">
                   <dt className="text-muted-foreground">Last Updated</dt>
                   <dd className="font-medium text-foreground">
@@ -1189,27 +1209,29 @@ export default function ListingDetailPage() {
             </div>
 
             {/* Publisher Card */}
-            <div className="rounded-lg border bg-card p-6">
-              <h3 className="font-semibold text-foreground">Publisher</h3>
-              <div className="mt-4 flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15">
-                  <span className="text-sm font-semibold text-primary-600">
-                    {listing.publisherName.charAt(0).toUpperCase()}
-                  </span>
-                </div>
-                <div>
-                  <div className="font-medium text-foreground">
-                    {listing.publisherName}
+            {parts.publisher && (
+              <div className="rounded-lg border bg-card p-6">
+                <h3 className="font-semibold text-foreground">Publisher</h3>
+                <div className="mt-4 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15">
+                    <span className="text-sm font-semibold text-primary-600">
+                      {listing.publisherName.charAt(0).toUpperCase()}
+                    </span>
                   </div>
-                  <Link
-                    href="/marketplace/leaderboard"
-                    className="text-sm text-primary-600 hover:text-primary-700"
-                  >
-                    Publisher leaderboard
-                  </Link>
+                  <div>
+                    <div className="font-medium text-foreground">
+                      {listing.publisherName}
+                    </div>
+                    <Link
+                      href="/marketplace/leaderboard"
+                      className="text-sm text-primary-600 hover:text-primary-700"
+                    >
+                      Publisher leaderboard
+                    </Link>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>

@@ -13,11 +13,13 @@ import { cn } from "@/lib/utils";
 
 interface ReviewFormProps {
   listingId: string;
+  /** What the listing sells, as its sentences name it: "agent" unless said. */
+  subject?: "agent" | "workflow";
   onSuccess?: () => void;
   onCancel?: () => void;
 }
 
-export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) {
+export function ReviewForm({ listingId, subject = "agent", onSuccess, onCancel }: ReviewFormProps) {
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
   const [title, setTitle] = useState("");
@@ -99,7 +101,7 @@ export function ReviewForm({ listingId, onSuccess, onCancel }: ReviewFormProps) 
           id="review-content"
           value={content}
           onChange={(e) => setContent(e.target.value)}
-          placeholder="Share details about your experience with this agent"
+          placeholder={`Share details about your experience with this ${subject}`}
           rows={4}
           maxLength={5000}
           className="mt-1"

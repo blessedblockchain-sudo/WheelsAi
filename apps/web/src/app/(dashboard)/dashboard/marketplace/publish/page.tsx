@@ -43,6 +43,7 @@ import {
   getValidationError,
 } from "@/lib/api";
 import { LIST_AGENT_BUTTON, NEW_AGENT_BUTTON } from "@/lib/nav";
+import { workflowEditHref } from "@/lib/workflow-sell";
 import { LIST_AGENT_PARAM, agentToListFirst, codeOf, listingStatus } from "@/lib/agent-page";
 import {
   LISTED_AGENT_BADGE,
@@ -191,6 +192,11 @@ interface WizardData {
    * listed. A workflow's listing is not one of them: this wizard lists agents.
    */
   listings: AgentListingOf<OwnedMarketplaceListing>[];
+  /**
+   * Every listing of the organization, a workflow's too: only to know where an edit of a workflow's
+   * listing goes (its workflow's API tab), never to fill the wizard.
+   */
+  ownListings: OwnedMarketplaceListing[];
   /** null when it could not be read: the step then names no limit it does not know. */
   capabilities: Capabilities | null;
 }
@@ -241,7 +247,7 @@ function PublishWizardContent() {
         marketplaceApi.getMyListings(),
         capabilitiesApi.get().catch(() => null),
       ]);
-      setData({ agents, listings: listings.filter(isAgentListing), capabilities });
+      setData({ agents, listings: listings.filter(isAgentListing), ownListings: listings, capabilities });
     } catch (error) {
       setLoadError(error);
       toast.error(getErrorMessage(error, "Failed to load agents"));
@@ -255,7 +261,14 @@ function PublishWizardContent() {
   const agents = data?.agents ?? [];
   const listings = data?.listings ?? [];
   const editing = editId && data ? (listings.find((listing) => listing.id === editId) ?? null) : null;
-  const editMissing = Boolean(editId) && data !== null && editing === null;
+  // A workflow's listing is edited on its workflow's API tab: the wizard opened on one goes there and loads no agent.
+  const ownListing = editId && data ? (data.ownListings.find((listing) => listing.id === editId) ?? null) : null;
+  const workflowEdit = ownListing ? workflowEditHref(ownListing) : null;
+  const editMissing = Boolean(editId) && data !== null && editing === null && workflowEdit === null;
+
+  useEffect(() => {
+    if (workflowEdit) router.replace(workflowEdit);
+  }, [workflowEdit, router]);
 
   // Fill the form once for each listing that is opened, and empty it when an edit is left for a new listing.
   useEffect(() => {
@@ -450,9 +463,10 @@ function PublishWizardContent() {
     if (!plansStaleFor || isReloadingPlans) return;
     setIsReloadingPlans(true);
     try {
-      const read = (await marketplaceApi.getMyListings()).listings.filter(isAgentListing);
+      const own = (await marketplaceApi.getMyListings()).listings;
+      const read = own.filter(isAgentListing);
       const fresh = read.find((listing) => listing.id === plansStaleFor) ?? null;
-      setData((prev) => prev && { ...prev, listings: read });
+      setData((prev) => prev && { ...prev, listings: read, ownListings: own });
       setPlans(plansFormOf(fresh));
       setPlansRead(savedPlansOf(fresh));
       setPlanErrors(noPlanErrors());
@@ -474,8 +488,9 @@ function PublishWizardContent() {
   );
 
   // When editing, the wizard stays hidden until the listing has loaded, so it
-  // never shows blank fields in place of the listing's own.
-  if (editId && (loadError !== null || data === null || editMissing)) {
+  // never shows blank fields in place of the listing's own. A workflow's listing
+  // shows the placeholder while the page moves to the workflow's API tab.
+  if (editId && (loadError !== null || data === null || editMissing || workflowEdit !== null)) {
     return (
       <div className="flex flex-col">
         {header}

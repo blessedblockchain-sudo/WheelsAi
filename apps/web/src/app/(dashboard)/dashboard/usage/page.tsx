@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, Bot, Wallet } from "lucide-react";
+import { AlertTriangle, Bot, Wallet, Workflow } from "lucide-react";
 
 import { Header } from "@/components/dashboard/header";
 import { Badge } from "@/components/ui/badge";
@@ -78,10 +78,12 @@ function UsesBar({ bar }: { bar: UsageBar }) {
 
 /** One listing the organization pays to use. A row with no plan has no bar and no count. */
 function UsageRow({ row }: { row: UsageRowView }) {
+  // A workflow's row has a workflow's icon; both open where Installed opens them.
+  const Icon = row.productKind === "workflow" ? Workflow : Bot;
   return (
     <li className="py-5">
       <div className="flex flex-wrap items-center gap-2">
-        <Bot className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         {row.href ? (
           <Link href={row.href} className="min-w-0 break-words font-medium text-foreground underline-offset-4 hover:underline">
             {row.title}

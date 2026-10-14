@@ -15,6 +15,7 @@ import {
   TrendingUp,
   Package,
   MessageSquare,
+  Workflow,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -32,8 +33,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorState } from "@/components/ui/error-state";
 import { EmptyState } from "@/components/ui/empty-state";
 import { TrialSettingsDialog } from "@/components/marketplace/trial-settings-dialog";
-import { marketplaceApi, type MarketplaceListing, getErrorMessage } from "@/lib/api";
-import { priceWithPlans } from "@/lib/listing-cta";
+import { marketplaceApi, type MarketplaceListing, type OwnedMarketplaceListing, getErrorMessage } from "@/lib/api";
+import { LISTING_WORKFLOW_WORDS, listingPageParts, priceTextForUse, priceWithPlans } from "@/lib/listing-cta";
+import { ownListingEditHref } from "@/lib/workflow-sell";
 
 type RevenueSummary = Pick<
   Awaited<ReturnType<typeof marketplaceApi.getRevenue>>,
@@ -57,6 +59,8 @@ const statusLabels: Record<string, string> = {
 };
 
 function formatPrice(listing: MarketplaceListing): string {
+  // A workflow is sold per run, and says so in the marketplace's own words.
+  if (listingPageParts(listing).kind === "workflow") return priceTextForUse(listing);
   if (listing.pricingModel === "free") return "Free";
   if (listing.pricingModel === "tokenized") return "Token Gated";
   if (listing.pricingModel === "per_request" && listing.pricePerRequestCents) {
@@ -111,7 +115,8 @@ function ListingRowsSkeleton() {
 }
 
 export default function MarketplaceDashboardPage() {
-  const [listings, setListings] = useState<MarketplaceListing[]>([]);
+  // The organization's own listings, as their owner reads them: a workflow's names its workflow.
+  const [listings, setListings] = useState<OwnedMarketplaceListing[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [revenue, setRevenue] = useState<RevenueSummary | null>(null);
@@ -186,7 +191,7 @@ export default function MarketplaceDashboardPage() {
     <div className="flex flex-col">
       <Header
         title="Listings"
-        description="Publish and manage your agents on the marketplace"
+        description="Publish and manage your agents and workflows on the marketplace"
         action={LIST_AGENT_BUTTON}
       />
 
@@ -308,14 +313,22 @@ export default function MarketplaceDashboardPage() {
                   />
                 ) : (
                   <div className="divide-y">
-                    {listings.map((listing) => (
+                    {listings.map((listing) => {
+                      // A workflow's listing is edited on the workflow's API tab and has no Try it settings.
+                      const parts = listingPageParts(listing);
+                      const workflow = parts.kind === "workflow";
+                      return (
                       <div
                         key={listing.id}
                         className="flex items-center justify-between py-4"
                       >
                         <div className="flex items-center gap-4">
                           <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/25">
-                            <Store className="h-6 w-6 text-primary-600" />
+                            {workflow ? (
+                              <Workflow className="h-6 w-6 text-primary-600" aria-hidden="true" />
+                            ) : (
+                              <Store className="h-6 w-6 text-primary-600" />
+                            )}
                           </div>
                           <div>
                             <div className="flex items-center gap-2">
@@ -325,6 +338,7 @@ export default function MarketplaceDashboardPage() {
                               <Badge variant={statusColors[listing.status]}>
                                 {statusLabels[listing.status]}
                               </Badge>
+                              {workflow && <Badge variant="outline">{LISTING_WORKFLOW_WORDS.chip}</Badge>}
                             </div>
                             <p className="text-sm text-muted-foreground">
                               {listing.category.replace("-", " ")} &middot;{" "}
@@ -367,14 +381,12 @@ export default function MarketplaceDashboardPage() {
                                 </DropdownMenuItem>
                               )}
                               <DropdownMenuItem asChild>
-                                <Link
-                                  href={`/dashboard/marketplace/publish?edit=${listing.id}`}
-                                >
+                                <Link href={ownListingEditHref(listing)}>
                                   <Edit className="mr-2 h-4 w-4" />
                                   Edit Listing
                                 </Link>
                               </DropdownMenuItem>
-                              {listing.status === "published" && (
+                              {parts.tryIt && listing.status === "published" && (
                                 <DropdownMenuItem onClick={() => setTrialListing(listing)}>
                                   <MessageSquare className="mr-2 h-4 w-4" />
                                   Try it settings
@@ -401,7 +413,8 @@ export default function MarketplaceDashboardPage() {
                           </DropdownMenu>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>

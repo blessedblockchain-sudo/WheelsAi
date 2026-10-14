@@ -61,7 +61,10 @@ export const MAX_INCLUDED_USES = 100_000;
  */
 export const MIN_EXTRA_USE_PRICE_CENTS = MIN_PRICE_PER_USE_CENTS;
 
-/** The most uses a free trial can include. They run at the creator's cost. */
+/**
+ * The most uses a free trial can include. Nobody is charged for them, so what
+ * they cost to run is carried by whoever pays for the agent's model.
+ */
 export const MAX_TRIAL_USES = 50;
 
 /** How many days a free trial lasts from its start. It is never renewed. */

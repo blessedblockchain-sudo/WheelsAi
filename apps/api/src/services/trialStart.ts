@@ -16,8 +16,8 @@
  * organization never started one on this listing, it has no plan or paid
  * month running on it, and it has added credits at least once. The last
  * rule is what keeps a trial from being free use for ever through new
- * accounts: signing up costs nothing, and a trial runs at the creator's
- * cost.
+ * accounts: signing up costs nothing, and a trial's uses are charged to
+ * nobody, so whoever pays for the agent's model carries them.
  *
  * The same judgement answers `trialAvailable` on a buyer's access
  * (services/paidUse.ts) and decides a start (startTrial), so the page never

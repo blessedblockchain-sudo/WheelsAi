@@ -99,3 +99,38 @@ test("publicAgent binding mounts the feed with no auth guard (public)", async ()
   assert.ok(app.hasRoute({ method: "GET", url: "/api/a/:slug" }));
   await app.close();
 });
+
+// The API page's wallet door (GET /api/a/:handle/api, x402): told only while
+// the door is usable, the one answer the capabilities read, and named as the
+// door's own 402 names the cluster.
+test("the API page's wallet door is the cluster of a usable door, and null whenever the door is not usable", async () => {
+  setupEnv();
+  const { x402DoorClusterOf } = await import("../routes/transparencyBindings.js");
+  const { x402FeePayerAddress } = await import("../services/buildPaidUseX402Deps.js");
+  const { Keypair } = await import("@solana/web3.js");
+  const OPEN = {
+    X402_ENABLED: true,
+    X402_SUBMIT_TRANSACTIONS: true,
+    X402_SETTLEMENT_WORKER_ENABLED: true,
+    PUBLIC_API_URL: "https://api.wheelsai.test",
+    WALLET_MASTER_KEY: "a-master-key-for-the-door-of-forty-chars!",
+    SOLANA_NETWORK: "devnet" as const,
+    TREASURY_WALLET_ADDRESS: Keypair.fromSeed(new Uint8Array(32).fill(7)).publicKey.toBase58(),
+  };
+  assert.deepEqual(x402DoorClusterOf(OPEN), {
+    network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+  });
+  for (const closed of [
+    { ...OPEN, X402_ENABLED: false },
+    { ...OPEN, X402_SUBMIT_TRANSACTIONS: false },
+    { ...OPEN, X402_SETTLEMENT_WORKER_ENABLED: false },
+    { ...OPEN, PUBLIC_API_URL: undefined },
+    { ...OPEN, WALLET_MASTER_KEY: "too-short" },
+    { ...OPEN, SOLANA_NETWORK: "mainnet-beta" as const },
+    // Its settings are on, but its fee payer would be the treasury: the door answers 503, so the page offers none.
+    { ...OPEN, TREASURY_WALLET_ADDRESS: x402FeePayerAddress(OPEN)! },
+  ]) {
+    assert.equal(x402DoorClusterOf(closed), null);
+  }
+});

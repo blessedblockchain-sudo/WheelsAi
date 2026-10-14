@@ -42,6 +42,10 @@
  *     the paid plans a listing sold per use offers (services/planOffers.ts):
  *     each one's id, name and terms, and nothing else of its row.
  *
+ *   - with the terms go, internally, what the x402 door reads of the listing
+ *     and its agent (x402DoorOf), for the API page's serve test. The route
+ *     never sends it: the creator's switch is not told as it is.
+ *
  *   - a self-running agent that is sold shows when its last results
  *     arrived, never their text, with when the latest arrived and the
  *     schedule while it is on. The owner's switch does not decide it.
@@ -56,6 +60,7 @@ import {
   PUBLIC_RESULT_MAX_CHARS,
   PUBLIC_RESULTS_LIMIT,
   type PublicAgentDetail,
+  type PublicAgentPaidUse,
   type PublicAgentUse,
 } from "../routes/publicAgent.js";
 import { publicTaskForm } from "./agentKind.js";
@@ -100,6 +105,8 @@ interface AgentRow {
   agentKind?: string | null;
   /** Internal only: the task form is read from it, nothing else. */
   kindConfig?: unknown;
+  /** Internal only: what answers a chat ('chat' or 'graph'), for the x402 door's serve test. */
+  entrypoint?: string | null;
   publicResults?: boolean | null;
   /** The key of this agent's public page, when it has one. */
   pageKey?: {
@@ -196,6 +203,34 @@ export interface LoadPublicAgentDeps {
 }
 
 /**
+ * What the x402 door reads of the listing and its agent, as they were read,
+ * for the API page's serve test (x402ListingServed). Absent when the agent's
+ * entrypoint was not read: a page that cannot tell offers no door.
+ */
+function x402DoorOf(agent: AgentRow, listing: UseListingRow): PublicAgentPaidUse["x402Door"] {
+  if (typeof agent.entrypoint !== "string") return undefined;
+  return {
+    listing: {
+      agentId: listing.agentId,
+      // A listing found by its agent sells no workflow: the database holds
+      // exactly one of the two (agent_listings_agent_or_workflow_check).
+      orchestrationId: null,
+      status: listing.status,
+      sells: listing.sells,
+      pricingModel: listing.pricingModel,
+      pricePerRequestCents: listing.pricePerRequestCents,
+      x402Enabled: listing.x402Enabled === true,
+    },
+    agent: {
+      isPublic: agent.isPublic,
+      // An unread kind is no kind, as the door reads it.
+      agentKind: agent.agentKind ?? "",
+      entrypoint: agent.entrypoint,
+    },
+  };
+}
+
+/**
  * The terms of paid use, from the listing that sells it. null unless a
  * price is set: a free use listing is the public link as it is.
  */
@@ -208,6 +243,7 @@ function paidOf(
   if (!listing || !isPaidUse(listing)) return null;
   const priceCents = usePriceCents(listing);
   if (priceCents === null) return null;
+  const x402Door = x402DoorOf(agent, listing);
   // Field by field: the listing row also holds its publisher.
   return {
     listingId: listing.id,
@@ -229,6 +265,7 @@ function paidOf(
     })),
     // The free trial it offers, by itself: never one of the plans.
     trial: trial && { id: trial.id, includedUses: trial.includedUses },
+    ...(x402Door && { x402Door }),
   };
 }
 

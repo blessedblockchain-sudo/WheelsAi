@@ -34,6 +34,8 @@ interface FakeAgent {
   agentKind?: string;
   kindConfig?: unknown;
   publicResults?: boolean;
+  /** What answers a chat: 'chat' or 'graph'. */
+  entrypoint?: string;
   systemPrompt?: string | null;
   tools?: unknown;
   env?: unknown;
@@ -1425,6 +1427,50 @@ test("of a listing only its id, slug, pricing and price cross: never its publish
       "unit",
     ]);
   }
+});
+
+test("the x402 door's reads go with the terms as they were read, for the API page, and only once the entrypoint was read", async () => {
+  const { agentApiPageOf } = await import("../services/agentApiPage.js");
+  const DEVNET = { network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1", asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" };
+  const doorAgent = { ...baseAgent, agentKind: "conversation", entrypoint: "chat", pageKey: PAGE_KEY };
+  const on = await pageOf([doorAgent], "eliza", { listings: [listingOf({ x402Enabled: true })] });
+  assert.deepEqual(on.result?.use.paid?.x402Door, {
+    listing: {
+      agentId: "agent_1",
+      orchestrationId: null,
+      status: "published",
+      sells: "use",
+      pricingModel: "per_request",
+      pricePerRequestCents: 5n,
+      x402Enabled: true,
+    },
+    agent: { isPublic: true, agentKind: "conversation", entrypoint: "chat" },
+  });
+  // Read through to the API page: the door is told while it is usable, and not otherwise.
+  assert.equal(agentApiPageOf(on.result!, { x402: DEVNET })?.x402?.priceCents, 5);
+  assert.equal(agentApiPageOf(on.result!, { x402: null })?.x402, null);
+
+  // A row with the switch off, or read without it, is off.
+  for (const listing of [listingOf({ x402Enabled: false }), listingOf()]) {
+    const off = await pageOf([doorAgent], "eliza", { listings: [listing] });
+    assert.equal(off.result?.use.paid?.x402Door?.listing.x402Enabled, false);
+    assert.equal(agentApiPageOf(off.result!, { x402: DEVNET })?.x402, null);
+  }
+  // An agent answered by its graph is carried as it is, and the door does not serve it.
+  const graph = await pageOf([{ ...doorAgent, entrypoint: "graph" }], "eliza", { listings: [listingOf({ x402Enabled: true })] });
+  assert.equal(graph.result?.use.paid?.x402Door?.agent.entrypoint, "graph");
+  assert.equal(agentApiPageOf(graph.result!, { x402: DEVNET })?.x402, null);
+  // A listing sold by the month is carried as it is, and is not served either.
+  const monthly = await pageOf([doorAgent], "eliza", { listings: [{ ...MONTHLY_LISTING, x402Enabled: true }] });
+  assert.equal(monthly.result?.use.paid?.x402Door?.listing.pricingModel, "monthly");
+  assert.equal(agentApiPageOf(monthly.result!, { x402: DEVNET })?.x402, null);
+  // The entrypoint not read: nothing of the door, and the API page offers none.
+  const unread = await pageOf([{ ...doorAgent, entrypoint: undefined }], "eliza", { listings: [listingOf({ x402Enabled: true })] });
+  assert.equal("x402Door" in unread.result!.use.paid!, false);
+  assert.equal(agentApiPageOf(unread.result!, { x402: DEVNET })?.x402, null);
+  // No listing at a price: no terms, so nothing of the door.
+  const free = await pageOf([doorAgent], "eliza", { listings: [listingOf({ pricingModel: "free", pricePerRequestCents: null, x402Enabled: true })] });
+  assert.equal(free.result?.use.paid, undefined);
 });
 
 // ============================================

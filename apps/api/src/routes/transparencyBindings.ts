@@ -30,10 +30,14 @@
 import { prisma } from "@wheelsai/db";
 
 import { env } from "../config/env.js";
+import { usdcMintForNetwork } from "../lib/solanaAssets.js";
 import { checkTokenEligibility } from "../services/agentToken.js";
+import type { AgentApiX402Cluster } from "../services/agentApiPage.js";
+import { x402DoorUsable, type X402DoorEnv } from "../services/buildPaidUseX402Deps.js";
 import { loadAgentDetailByPrisma } from "../services/loadAgentDetail.js";
 import { loadAgentListByPrisma } from "../services/loadAgentList.js";
 import { loadPublicAgentByPrisma } from "../services/loadPublicAgent.js";
+import { x402Caip2Network } from "../services/x402Wire.js";
 import { createAgentDetailRoutes } from "./agentDetail.js";
 import { createAgentListRoutes } from "./agentList.js";
 import { createPublicAgentRoutes } from "./publicAgent.js";
@@ -45,10 +49,25 @@ type PublicAgentPrisma = Parameters<typeof loadPublicAgentByPrisma>[1]["prisma"]
 type AgentDetailPrisma = Parameters<typeof loadAgentDetailByPrisma>[1]["prisma"];
 type AgentListPrisma = Parameters<typeof loadAgentListByPrisma>[1]["prisma"];
 
+/**
+ * The cluster the wallet door takes payments on, when it is usable now: the
+ * one answer the capabilities read (x402DoorUsable), so the API page offers
+ * the door exactly when the Sell tab offers the switch. The network and the
+ * mint are named as the door's own 402 names them.
+ */
+export function x402DoorClusterOf(settings: X402DoorEnv = env): AgentApiX402Cluster | null {
+  if (!x402DoorUsable(settings)) return null;
+  const network = settings.SOLANA_NETWORK;
+  if (network === undefined) return null;
+  return { network: x402Caip2Network(network), asset: usdcMintForNetwork(network).toBase58() };
+}
+
 export function createPublicAgentRoutesProduction() {
   return createPublicAgentRoutes({
     // Where the API page tells callers to send requests.
     publicApiUrl: env.PUBLIC_API_URL ?? null,
+    // Whether a use can be paid from a wallet, read on every request.
+    x402Door: () => x402DoorClusterOf(env),
     loadPublicAgent: (handle) =>
       loadPublicAgentByPrisma(
         { handle, paymentsLimit: PUBLIC_RECENT_PAYMENTS_LIMIT },

@@ -11,6 +11,17 @@
  * the public page does not show can cross here. Never the creator's model,
  * tokens, organization, or how many people use it.
  *
+ * It also says how to pay one use from a Solana wallet with no key (the
+ * x402 door, services/paidUseX402.ts), and only when the door would take
+ * that payment: it is usable now (handed in by the route) and it serves this
+ * listing (x402ListingServed, the door's own test), so the page never offers
+ * a door that answers 401, nor one whose settings are closed. A paused
+ * listing still shows it: the door then answers 503 agent_paused, as the
+ * per-use refusals already list. It can also answer 503 x402_unavailable at
+ * the moment of a call (its fee payer under the floor, a chain read that
+ * fails), which no page can know ahead. The creator's switch itself is
+ * never told.
+ *
  * Only an agent that is called has an API page. A self-running agent sells
  * its results, which subscribers read on its page: it answers no call, so it
  * has none, like an agent whose use is not sold.
@@ -18,9 +29,15 @@
  * Pure: no IO.
  */
 
-import { PAID_USE_MESSAGES, type PaidUseErrorCode } from "./paidUse.js";
+import { PAID_USE_LIMITS, PAID_USE_MESSAGES, type PaidUseErrorCode } from "./paidUse.js";
 import { trialOfferOf } from "./planOffers.js";
 import { BALANCE_CENTS_HEADER, CHARGED_CENTS_HEADER, PLAN_USAGE_HEADER_NAMES } from "./usageHeaders.js";
+import {
+  X402_ANSWER_DEADLINE_MS,
+  x402ListingServed,
+  type X402DoorAgent,
+  type X402DoorListing,
+} from "./x402DoorRules.js";
 
 /** What this needs of the agent's public page (PublicAgentDetail, routes/publicAgent.ts). */
 export interface AgentApiPageSource {
@@ -43,8 +60,41 @@ export interface AgentApiPageSource {
         extraUsePriceCents: bigint | null;
       }>;
       trial?: { id: string; includedUses: number } | null;
+      /**
+       * What the x402 door reads of this listing and its agent, as they were
+       * read. Absent when it was not read: no door is offered then.
+       */
+      x402Door?: { listing: X402DoorListing; agent: X402DoorAgent };
     } | null;
   };
+}
+
+/**
+ * The cluster the x402 door takes payments on, when the door is usable
+ * right now: its CAIP-2 network id and the USDC mint of that cluster.
+ */
+export interface AgentApiX402Cluster {
+  network: string;
+  asset: string;
+}
+
+/** How to pay one use from a Solana wallet, with no key (the x402 door). */
+export interface AgentApiX402 {
+  /** The price of one use, paid in USDC: the listing's price per use. */
+  priceCents: number;
+  /** What one payment buys: a chat answer or a task's run. */
+  unit: "message" | "run";
+  /** The network as the published format names it (CAIP-2). */
+  network: string;
+  /** The USDC mint the payment is made in. */
+  asset: string;
+  /** The longest an answer paid this way may take to be made; past it nothing is sent. */
+  answerWithinSeconds: number;
+  /**
+   * What one wallet may pay for here, in a minute and in a day, and how many
+   * calls one address may make here in a minute.
+   */
+  limits: { walletPerMinute: number; walletPerDay: number; addressPerMinute: number };
 }
 
 /** One way to reach the agent. `path` is under the base address. */
@@ -114,6 +164,12 @@ export interface AgentApiPage {
   /** The names of the usage headers: on every paid answer, and the ones an answer on a plan adds. */
   usageHeaders: { always: string[]; onPlan: string[] };
   refusals: AgentApiRefusal[];
+  /**
+   * How to pay one use from a Solana wallet with no key. null unless the
+   * door is usable now and serves this listing. Its refusals are the page's
+   * own words, not in `refusals`.
+   */
+  x402: AgentApiX402 | null;
 }
 
 // ============================================
@@ -207,12 +263,45 @@ export function baseUrlOf(raw: string | null | undefined): string | null {
 }
 
 /**
+ * Paying one use from a wallet, told only when the door would take the
+ * payment: it is usable now (`cluster`) and its own serve test passes on the
+ * listing and the agent as they were read. Anything not read is no door.
+ */
+function x402Of(
+  paid: NonNullable<AgentApiPageSource["use"]["paid"]>,
+  cluster: AgentApiX402Cluster | null,
+): AgentApiX402 | null {
+  if (!cluster || !paid.x402Door) return null;
+  const { listing, agent } = paid.x402Door;
+  if (!x402ListingServed(listing, agent)) return null;
+  // The door asks the listing's price per use, for one message or one run.
+  const priceCents = listing.pricePerRequestCents;
+  if (priceCents === null || paid.unit === "month") return null;
+  return {
+    priceCents: Number(priceCents),
+    unit: paid.unit,
+    network: cluster.network,
+    asset: cluster.asset,
+    answerWithinSeconds: X402_ANSWER_DEADLINE_MS / 1000,
+    // The door holds a wallet to a buyer's numbers, and an address to a
+    // buyer's minute (services/paidUseX402.ts): no second set.
+    limits: {
+      walletPerMinute: PAID_USE_LIMITS.perBuyerPerMinute,
+      walletPerDay: PAID_USE_LIMITS.perBuyerPerDay,
+      addressPerMinute: PAID_USE_LIMITS.perBuyerPerMinute,
+    },
+  };
+}
+
+/**
  * The API page of an agent, from its public page. null when it has none:
  * its use is not sold at a price, or it is not an agent that is called.
+ * `x402` is the cluster of the wallet door when it is usable now, null when
+ * it is not.
  */
 export function agentApiPageOf(
   detail: AgentApiPageSource,
-  options: { publicApiUrl?: string | null } = {},
+  options: { publicApiUrl?: string | null; x402?: AgentApiX402Cluster | null } = {},
 ): AgentApiPage | null {
   const paid = detail.use.state === "paid" ? (detail.use.paid ?? null) : null;
   if (!paid) return null;
@@ -261,5 +350,6 @@ export function agentApiPageOf(
       onPlan: monthly ? [] : [...PLAN_USAGE_HEADER_NAMES],
     },
     refusals: (monthly ? MONTHLY_REFUSALS : PER_USE_REFUSALS).map((refusal) => ({ ...refusal })),
+    x402: x402Of(paid, options.x402 ?? null),
   };
 }

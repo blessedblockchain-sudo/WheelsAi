@@ -38,15 +38,17 @@
  * draws (services/agentApiPage.ts), built from the same read as the page
  * above. 404 exactly where that read answers 404, and for an agent that has
  * no API page: its use is not sold at a price, or it is not one that is
- * called.
+ * called. Whether paying from a wallet is usable is read on every request
+ * (deps.x402Door), so the API page offers it only while the door is open.
  */
 
 import type { TaskInputSchema } from "@wheelsai/shared/agent-kind";
 import type { FastifyPluginAsync } from "fastify";
 
-import { agentApiPageOf } from "../services/agentApiPage.js";
+import { agentApiPageOf, type AgentApiX402Cluster } from "../services/agentApiPage.js";
 import { trialOfferOf } from "../services/planOffers.js";
 import { PUBLIC_RESULT_MAX_CHARS, PUBLIC_RESULTS_LIMIT } from "../services/publicPageState.js";
+import type { X402DoorAgent, X402DoorListing } from "../services/x402DoorRules.js";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 
@@ -102,6 +104,13 @@ export interface PublicAgentPaidUse {
    * offers none. Not "Try it", which needs no account and is not told here.
    */
   trial?: { id: string; includedUses: number } | null;
+  /**
+   * What the x402 door reads of this listing and its agent, as they were
+   * read, for the API page's serve test (x402ListingServed). Internal: the
+   * creator's switch is never sent as it is, and GET /a/:handle leaves this
+   * out field by field. Absent when it was not read.
+   */
+  x402Door?: { listing: X402DoorListing; agent: X402DoorAgent };
 }
 
 /**
@@ -196,6 +205,12 @@ export interface PublicAgentDeps {
    * API at.
    */
   publicApiUrl?: string | null;
+  /**
+   * Whether paying one use from a Solana wallet is usable right now, and on
+   * which cluster: read on every request for the API page. Unset, null or a
+   * throw: it is not, and the API page offers no door.
+   */
+  x402Door?: () => AgentApiX402Cluster | null;
 }
 
 // ============================================
@@ -351,6 +366,15 @@ function serialize(detail: PublicAgentDetail) {
 // Plugin
 // ============================================
 
+/** The wallet door's cluster when it is usable now. A read that throws is a door that is not. */
+function x402DoorNow(deps: PublicAgentDeps): AgentApiX402Cluster | null {
+  try {
+    return deps.x402Door?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function createPublicAgentRoutes(deps: PublicAgentDeps): FastifyPluginAsync {
   return async (app) => {
     app.get<{ Params: { handle: string } }>("/a/:handle", async (request, reply) => {
@@ -367,7 +391,7 @@ export function createPublicAgentRoutes(deps: PublicAgentDeps): FastifyPluginAsy
     // people who have not started yet.
     app.get<{ Params: { handle: string } }>("/a/:handle/api", async (request, reply) => {
       const detail = await deps.loadPublicAgent(request.params.handle);
-      const page = detail && agentApiPageOf(detail, { publicApiUrl: deps.publicApiUrl });
+      const page = detail && agentApiPageOf(detail, { publicApiUrl: deps.publicApiUrl, x402: x402DoorNow(deps) });
       if (!page) return reply.status(404).send({ error: "agent_not_found" });
       return reply.status(200).send(page);
     });

@@ -6,11 +6,12 @@ import test from "node:test";
 import Fastify from "fastify";
 
 import { createPublicAgentRoutes, type PublicAgentDetail } from "../routes/publicAgent.js";
-import { AGENT_API_REFUSALS, agentApiPageOf } from "../services/agentApiPage.js";
-import { PAID_USE_MESSAGES } from "../services/paidUse.js";
+import { AGENT_API_REFUSALS, agentApiPageOf, type AgentApiX402Cluster } from "../services/agentApiPage.js";
+import { PAID_USE_LIMITS, PAID_USE_MESSAGES } from "../services/paidUse.js";
 import { PAID_USE_PER_BUYER_PER_DAY, PAID_USE_PER_BUYER_PER_MINUTE } from "../services/publicPageState.js";
 import { PLAN_USAGE_HEADER_NAMES, USAGE_HEADER_NAMES } from "../services/usageHeaders.js";
 import { useDecision } from "../services/useAccess.js";
+import { X402_ANSWER_DEADLINE_MS } from "../services/x402DoorRules.js";
 
 // GET /a/:handle/api (routes/publicAgent.ts) and services/agentApiPage.ts:
 // what the API page of a listing draws, for anybody, signed in or not.
@@ -77,7 +78,11 @@ function page(
   } as unknown as PublicAgentDetail;
 }
 
-async function makeApp(detail: PublicAgentDetail | null, publicApiUrl?: string | null) {
+async function makeApp(
+  detail: PublicAgentDetail | null,
+  publicApiUrl?: string | null,
+  x402Door?: () => AgentApiX402Cluster | null,
+) {
   const asked: string[] = [];
   const app = Fastify();
   await app.register(
@@ -87,6 +92,7 @@ async function makeApp(detail: PublicAgentDetail | null, publicApiUrl?: string |
         return detail;
       },
       publicApiUrl,
+      ...(x402Door && { x402Door }),
     }),
   );
   return { app, asked };
@@ -167,6 +173,8 @@ test("a listing with plans: the address, the model id, the price per use, the pl
         ],
       },
       refusals: undefined,
+      // Paying from a wallet is not usable: this server was given no door.
+      x402: null,
     },
   );
   assert.deepEqual(
@@ -350,4 +358,138 @@ test("the free trial on offer is told beside the plans, as its id, its uses and 
   const monthly = await makeApp(page({ pricingModel: "monthly", priceCents: 1_500n, unit: "month", trial: TRIAL }));
   assert.equal((await monthly.app.inject({ method: "GET", url: "/a/eliza/api" })).json().trial, null);
   await monthly.app.close();
+});
+
+// ============================================
+// Paying from a wallet, with no key (the x402 door)
+// ============================================
+
+/** Devnet as the door's 402 names it: the CAIP-2 id and the USDC mint of the cluster. */
+const DEVNET: AgentApiX402Cluster = {
+  network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+};
+const doorOpen = () => DEVNET;
+
+/** What the loader reads for the door's serve test: a listing it serves, unless told otherwise. */
+function withDoor(listing: Record<string, unknown> = {}, agent: Record<string, unknown> = {}) {
+  return {
+    x402Door: {
+      listing: {
+        agentId: "agent_1",
+        orchestrationId: null,
+        status: "published",
+        sells: "use",
+        pricingModel: "per_request",
+        pricePerRequestCents: 5n,
+        x402Enabled: true,
+        ...listing,
+      },
+      agent: { isPublic: true, agentKind: "conversation", entrypoint: "chat", ...agent },
+    },
+  };
+}
+
+/** What the switch and the door's reads must never show, as they are. */
+const DOOR_NEVER = ["x402Enabled", "x402Door", "entrypoint", "orchestrationId", "isPublic", "agent_1"];
+
+test("paying from a wallet: told field by field while the door is usable and serves the listing, beside the same page", async () => {
+  const { app } = await makeApp(page(withDoor()), "https://api.example.test", doorOpen);
+  const res = await app.inject({ method: "GET", url: "/a/eliza/api" });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.deepEqual(body.x402, {
+    priceCents: 5,
+    unit: "message",
+    network: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    answerWithinSeconds: 30,
+    limits: { walletPerMinute: 10, walletPerDay: 200, addressPerMinute: 10 },
+  });
+  // The numbers are the door's own constants, never a second set.
+  assert.equal(body.x402.answerWithinSeconds, X402_ANSWER_DEADLINE_MS / 1000);
+  assert.deepEqual(body.x402.limits, {
+    walletPerMinute: PAID_USE_LIMITS.perBuyerPerMinute,
+    walletPerDay: PAID_USE_LIMITS.perBuyerPerDay,
+    addressPerMinute: PAID_USE_LIMITS.perBuyerPerMinute,
+  });
+  // Everything else is the page without the door: the door's refusals are not in its list.
+  const closed = await makeApp(page(withDoor()), "https://api.example.test");
+  const closedBody = (await closed.app.inject({ method: "GET", url: "/a/eliza/api" })).json();
+  assert.equal(closedBody.x402, null);
+  assert.deepEqual({ ...body, x402: null }, closedBody);
+  assert.equal(body.refusals.some((r: { code: string }) => r.code.startsWith("x402")), false);
+  assertNothingLeaks(res.body);
+  for (const never of DOOR_NEVER) assert.equal(res.body.includes(never), false, never);
+  await app.close();
+  await closed.app.close();
+});
+
+test("paying from a wallet for a task: one run at the listing's price", async () => {
+  const built = agentApiPageOf(page({ unit: "run", priceCents: 25n, ...withDoor({ pricePerRequestCents: 25n }, { agentKind: "task" }) }, { agentKind: "task" }), {
+    x402: DEVNET,
+  })!;
+  assert.equal(built.x402?.unit, "run");
+  assert.equal(built.x402?.priceCents, 25);
+  assert.equal(built.x402?.network, DEVNET.network);
+});
+
+test("no door is told while the door is closed, its state cannot be read, or nothing of the door was read", async () => {
+  // Closed: no binding, a binding that says not usable, a binding that throws.
+  for (const door of [undefined, () => null, () => { throw new Error("settings unreadable"); }]) {
+    const { app } = await makeApp(page(withDoor()), null, door);
+    const res = await app.inject({ method: "GET", url: "/a/eliza/api" });
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.json().x402, null);
+    await app.close();
+  }
+  // Usable, but the loader did not read what the door's test needs.
+  assert.equal(agentApiPageOf(page(), { x402: DEVNET })?.x402, null);
+  assert.equal(agentApiPageOf(page(withDoor()))?.x402, null);
+  assert.equal(agentApiPageOf(page(withDoor()), { x402: null })?.x402, null);
+});
+
+test("no door is told for a listing the door does not serve: the switch off, sold by the month, under the floor, a graph, a workflow, a private agent", () => {
+  const notServed: Array<[string, Record<string, unknown>]> = [
+    ["the switch is off", withDoor({ x402Enabled: false })],
+    ["sold by the month", { pricingModel: "monthly", priceCents: 1_500n, unit: "month", ...withDoor({ pricingModel: "monthly", pricePerRequestCents: null }) }],
+    ["under the floor", { priceCents: 4n, ...withDoor({ pricePerRequestCents: 4n }) }],
+    ["a draft", withDoor({ status: "draft" })],
+    ["answered by its graph", withDoor({}, { entrypoint: "graph" })],
+    ["a workflow's listing", withDoor({ agentId: null, orchestrationId: "wf_1" })],
+    ["a private agent", withDoor({}, { isPublic: false })],
+  ];
+  for (const [why, paid] of notServed) {
+    const built = agentApiPageOf(page(paid), { x402: DEVNET });
+    assert.ok(built, why);
+    assert.equal(built.x402, null, why);
+  }
+  // The same listing with the switch on is served: the cases above differ by one fact each.
+  assert.notEqual(agentApiPageOf(page(withDoor()), { x402: DEVNET })?.x402, null);
+});
+
+test("GET /a/:handle answers what it did: nothing of the door, whatever the loader read for it", async () => {
+  const { app } = await makeApp(page(withDoor()), null, doorOpen);
+  const plain = await makeApp(page());
+  const res = await app.inject({ method: "GET", url: "/a/eliza" });
+  const before = await plain.app.inject({ method: "GET", url: "/a/eliza" });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.json(), before.json());
+  assert.deepEqual(Object.keys(res.json().use.paid), [
+    "listingId",
+    "listingSlug",
+    "pricingModel",
+    "priceCents",
+    "unit",
+    "perMinute",
+    "perDay",
+    "transcriptsStored",
+    "sendsRequests",
+    "plans",
+    "trial",
+  ]);
+  assert.equal(/x402/i.test(res.body), false);
+  for (const never of DOOR_NEVER) assert.equal(res.body.includes(never), false, never);
+  await app.close();
+  await plain.app.close();
 });

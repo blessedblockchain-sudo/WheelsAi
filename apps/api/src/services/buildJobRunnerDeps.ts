@@ -35,20 +35,23 @@ import {
   buildWorkflowExecutionJobDeps,
   type WorkflowRunPrismaSurface,
 } from "./buildWorkflowRunDeps.js";
-import type { ExecuteScheduledTaskDeps } from "./executeScheduledTask.js";
 import type { EscrowTx, JobTerms } from "./jobEscrow.js";
 import type { JobEvent } from "./jobNotifications.js";
-import type { JobForRun, JobRunnerDeps, ProductRun, TokenUsage } from "./jobRunner.js";
+import type { JobForRun, JobRunnerDeps, ProductRun } from "./jobRunner.js";
 import { runWorkflowExecutionJob } from "./runWorkflowExecutionJob.js";
 import { buildProductionExecutorDeps } from "./scheduledTaskExecutorProduction.js";
 import { withSchemaOrder } from "./schemaOrder.js";
 import { startWorkflowRun } from "./startWorkflowRun.js";
+import { platformUsageOf, watchWorkflowExecutor, type WorkflowStepExecutor } from "./watchedWorkflowExecutor.js";
 import { triggerWebhook } from "./webhooks.js";
 import { workflowAnswerText } from "./workflowChat.js";
 
+// Where it has always been imported from; it lives beside the watcher that sums it.
+export { platformUsageOf };
+
 const logger = createLogger("job-runner");
 
-type Executor = Pick<ExecuteScheduledTaskDeps, "loadAgent" | "runAgentChat">;
+type Executor = WorkflowStepExecutor;
 
 export const JOB_FOR_RUN_SELECT = {
   id: true,
@@ -114,31 +117,6 @@ export interface JobRunnerOverrides {
   platformModelRates?: JobRunnerDeps["platformModelRates"];
 }
 
-function readUsage(usage: unknown): TokenUsage | null {
-  const u = usage as { inputTokens?: unknown; outputTokens?: unknown } | null | undefined;
-  return typeof u?.inputTokens === "number" && typeof u?.outputTokens === "number"
-    ? { inputTokens: u.inputTokens, outputTokens: u.outputTokens }
-    : null;
-}
-
-/**
- * What a call on the platform's keys used. A provider that reports no count
- * is estimated at four characters a token, the estimate the inference path
- * already uses for prompts: usage that was not reported was still used.
- */
-export function platformUsageOf(
-  result: { usage?: unknown; platformModel?: boolean; content: string },
-  promptChars: number,
-): TokenUsage | null {
-  if (!result.platformModel) return null;
-  return (
-    readUsage(result.usage) ?? {
-      inputTokens: Math.max(1, Math.ceil(promptChars / 4)),
-      outputTokens: Math.max(1, Math.ceil(result.content.length / 4)),
-    }
-  );
-}
-
 export function buildJobRunnerDeps(overrides: JobRunnerOverrides = {}): JobRunnerDeps {
   const prisma = overrides.prisma ?? (defaultPrisma as unknown as JobRunnerPrisma);
   const executor = overrides.executor ?? buildProductionExecutorDeps();
@@ -153,26 +131,7 @@ export function buildJobRunnerDeps(overrides: JobRunnerOverrides = {}): JobRunne
     // Every agent step goes through the shared executor; this wrapper only
     // watches: which system prompts took part (the deliverable must not
     // repeat them) and what ran on the platform's keys.
-    const confidential: Array<string | null> = [];
-    const used: TokenUsage = { inputTokens: 0, outputTokens: 0 };
-    let usedPlatform = false;
-    const watched: Executor = {
-      loadAgent: async (agentId, agentOrgId) => {
-        const agent = await executor.loadAgent(agentId, agentOrgId);
-        if (agent) confidential.push(agent.systemPrompt);
-        return agent;
-      },
-      runAgentChat: async (chat) => {
-        const result = await executor.runAgentChat(chat);
-        const usage = platformUsageOf(result, chat.prompt.length + (chat.systemAddendum?.length ?? 0));
-        if (usage) {
-          usedPlatform = true;
-          used.inputTokens += usage.inputTokens;
-          used.outputTokens += usage.outputTokens;
-        }
-        return result;
-      },
-    };
+    const watched = watchWorkflowExecutor(executor);
 
     const run = await startWorkflowRun(
       {
@@ -210,7 +169,7 @@ export function buildJobRunnerDeps(overrides: JobRunnerOverrides = {}): JobRunne
         engineBindings: (claimed) =>
           buildOrchestrationExecutorDeps(
             claimed.id,
-            { executor: watched, chatWithDeployment },
+            { executor: watched.executor, chatWithDeployment },
             {
               mode: "hired",
               instructions: args.systemAddendum,
@@ -249,8 +208,8 @@ export function buildJobRunnerDeps(overrides: JobRunnerOverrides = {}): JobRunne
       : null;
     return {
       content: content ?? "",
-      platformUsage: usedPlatform ? used : null,
-      confidential,
+      platformUsage: watched.platformUsage(),
+      confidential: watched.confidential(),
       orchestrationExecutionId: run.id,
     };
   };

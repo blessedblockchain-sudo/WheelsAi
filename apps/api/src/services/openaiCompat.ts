@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { sanitizeMessage } from "../lib/sanitizeErrorPayload.js";
+import type { PaidUseErrorCode } from "./paidUse.js";
 
 // ============================================
 // Messages and tools
@@ -421,7 +422,7 @@ export function openAiError(code: OpenAiErrorCode, detail: OpenAiErrorDetail = {
 
 /**
  * A refusal of a paid use (services/paidUse.ts), structurally: this module
- * imports no service.
+ * imports no service, only the type of that service's codes.
  */
 export interface PaidUseRefusalLike {
   code: string;
@@ -439,7 +440,15 @@ export interface PaidUseRefusalLike {
   plans?: unknown;
 }
 
-const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
+/**
+ * What each refusal of a paid use, and of a paid run of a workflow, is on
+ * /v1. Typed by the paid service's own list of codes, so a code added there
+ * with no answer here does not compile: it can never fall through to
+ * internal_error. The status a caller of /v1 gets is this row's own, never
+ * the refusal's, so each code is mapped to a row with the status its
+ * refusal carries.
+ */
+const PAID_USE_ERROR_CODES: Record<PaidUseErrorCode, OpenAiErrorCode> = {
   invalid_request: "validation_failed",
   agent_not_found: "agent_not_found",
   own_agent: "own_agent",
@@ -477,6 +486,16 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
   not_a_scheduled_agent: "validation_failed",
   input_too_large: "validation_failed",
   input_invalid: "validation_failed",
+  // A paid run of a workflow on sale (model "w/<slug>"). Each is answered
+  // as its agent twin is, or by the row the owner's own workflow call uses,
+  // and `reason` carries the paid service's code where the two differ.
+  workflow_not_found: "workflow_not_found",
+  own_workflow: "own_agent",
+  workflow_unavailable: "service_unavailable",
+  // Every paid run the workflow can hold is going: a pace, as rate_limited is.
+  workflow_busy: "rate_limit_exceeded",
+  run_failed: "workflow_failed",
+  run_timed_out: "workflow_timeout",
 };
 
 /**
@@ -488,7 +507,9 @@ const PAID_USE_ERROR_CODES: Record<string, OpenAiErrorCode> = {
  * a 500 that says nothing: never a refusal passed through unread.
  */
 export function paidUseOpenAiError(refusal: PaidUseRefusalLike): OpenAiErrorResponse {
-  const code = Object.hasOwn(PAID_USE_ERROR_CODES, refusal.code) ? PAID_USE_ERROR_CODES[refusal.code]! : null;
+  const code = Object.hasOwn(PAID_USE_ERROR_CODES, refusal.code)
+    ? PAID_USE_ERROR_CODES[refusal.code as PaidUseErrorCode]
+    : null;
   if (!code) return openAiError("internal_error");
   const extra: Record<string, unknown> = {
     ...refusal.caps,

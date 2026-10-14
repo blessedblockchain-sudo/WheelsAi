@@ -10,7 +10,7 @@ import { createOpenAiAuth } from "../middleware/openaiAuth.js";
 import { createOpenAiV1Routes, routeModel, usedAgentsOf, type UsedAgentRow } from "../routes/openaiV1.js";
 import { paidRequestRefusal } from "../routes/paidCompletions.js";
 import { openAiError, paidUseOpenAiError, parseChatCompletionRequest } from "../services/openaiCompat.js";
-import type { PaidCaller, PaidUseErrorCode } from "../services/paidUse.js";
+import { PAID_USE_REFUSAL_CODES, type PaidCaller, type PaidUseErrorCode } from "../services/paidUse.js";
 import {
   CREATOR_ORG,
   FREE_MODEL,
@@ -445,6 +445,13 @@ test("every refusal the paid service can give has an OpenAI-shaped answer, and a
     agent_unavailable: [503, "service_unavailable"],
     agent_paused: [503, "service_unavailable"],
     rate_limiter_unavailable: [503, "service_unavailable"],
+    // A paid run of a workflow on sale.
+    workflow_not_found: [404, "workflow_not_found"],
+    own_workflow: [409, "own_agent"],
+    workflow_unavailable: [503, "service_unavailable"],
+    workflow_busy: [429, "rate_limit_exceeded"],
+    run_failed: [502, "workflow_failed"],
+    run_timed_out: [504, "workflow_timeout"],
   };
   for (const [code, [status, openAiCode]] of Object.entries(codes)) {
     const mapped = paidUseOpenAiError({ code, message: "A plain sentence.", retryAfterSeconds: 30 });
@@ -452,6 +459,35 @@ test("every refusal the paid service can give has an OpenAI-shaped answer, and a
     assert.equal(mapped.body.error.code, openAiCode, code);
     assert.equal(mapped.body.error.message, "A plain sentence.", code);
     assert.equal(mapped.headers["retry-after"], "30", code);
+  }
+  // The paid service's own list of its codes, walked as it is at run time:
+  // each has an answer here, so none can ever say internal_error.
+  assert.deepEqual([...PAID_USE_REFUSAL_CODES].sort(), Object.keys(codes).sort());
+  for (const code of PAID_USE_REFUSAL_CODES) {
+    const mapped = paidUseOpenAiError({ code, message: "A plain sentence." });
+    assert.notEqual(mapped.body.error.code, "internal_error", code);
+    assert.notEqual(mapped.status, 500, code);
+  }
+  // On /v1 the status is the OpenAI row's own, not the refusal's. For each
+  // code of a paid run of a workflow it is the status the paid service gives
+  // that refusal, so /run and /v1 answer the same one.
+  const workflowStatuses: Array<[PaidUseErrorCode, number]> = [
+    ["workflow_not_found", 404],
+    ["own_workflow", 409],
+    ["workflow_unavailable", 503],
+    ["workflow_busy", 429],
+    ["run_failed", 502],
+    ["run_timed_out", 504],
+  ];
+  for (const [code, status] of workflowStatuses) {
+    assert.equal(paidUseOpenAiError({ code, message: "A plain sentence." }).status, status, code);
+  }
+  // Where /v1 folds a workflow's code into another, `reason` says which it was.
+  assert.equal((paidUseOpenAiError({ code: "own_workflow", message: "x" }).body.error as Record<string, unknown>).reason, "own_workflow");
+  assert.equal((paidUseOpenAiError({ code: "run_timed_out", message: "x" }).body.error as Record<string, unknown>).reason, "run_timed_out");
+  // A run that failed or passed its time is not sent again by an SDK: each try is another charge and refund.
+  for (const code of ["run_failed", "run_timed_out", "own_workflow", "workflow_not_found"] as const) {
+    assert.equal(paidUseOpenAiError({ code, message: "x" }).headers["x-should-retry"], "false", code);
   }
   // Each of the new codes is marked not to be retried.
   for (const code of ["use_not_started", "not_a_member", "pricing_changed", "own_agent", "not_for_sale", "answer_withheld"] as const) {

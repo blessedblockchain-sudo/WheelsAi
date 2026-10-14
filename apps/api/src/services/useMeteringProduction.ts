@@ -24,6 +24,12 @@
  *                      platformUsageOf, and only when the run used the
  *                      platform's model keys. An agent on the creator's own
  *                      key repays nothing.
+ *     .notePlatformUsage(...)
+ *                      the same for a run of many model calls (a paid run of
+ *                      a workflow): the READY sum of what its steps used on
+ *                      the platform's keys, or null when none ran on them.
+ *                      The settle takes the model cost from it exactly as it
+ *                      does after noteRun.
  *
  * `install: null` is a subscribed use: `beginMetering` answers null, and
  * nothing is charged or reserved.
@@ -60,8 +66,7 @@ import { env } from "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { createLogger } from "../utils/logger.js";
 import type { AgentChatDeps } from "./agentChat.js";
-import { platformUsageOf } from "./buildJobRunnerDeps.js";
-import { platformModelCostMicros } from "./jobRunner.js";
+import { platformModelCostMicros, type TokenUsage } from "./jobRunner.js";
 import type { MarketplaceCharge, MeteredInstall } from "./marketplaceMetering.js";
 import type { BeginMeteringResult, MeteringHandle } from "./marketplaceMeteringProduction.js";
 import { giveBackIncludedUse, takeIncludedUse, type PlanUseTx } from "./planUse.js";
@@ -78,6 +83,7 @@ import {
   type UsePlanUse,
   type UseUnit,
 } from "./useMetering.js";
+import { platformUsageOf } from "./watchedWorkflowExecutor.js";
 
 const logger = createLogger("use-metering");
 
@@ -187,6 +193,12 @@ export interface UseMeteringBinding {
   planUse(): UsePlanUse | null;
   /** Notes what the run used. Call before the session's meter settles. */
   noteRun(run: { platformModel: boolean; usage: unknown; content: string; promptChars: number }): void;
+  /**
+   * Notes the sum of what a run of several model calls used on the
+   * platform's keys, already added up; null when none of them ran on those
+   * keys. Call before the handle settles. The last note of either kind wins.
+   */
+  notePlatformUsage(usage: TokenUsage | null): void;
 }
 
 let production: UseMeteringProductionDeps | null = null;
@@ -510,6 +522,9 @@ export function beginUseMetering(
         { usage: run.usage, platformModel: run.platformModel, content: run.content },
         run.promptChars,
       );
+      modelCostMicros = usage ? platformModelCostMicros(usage, deps.rates) : 0n;
+    },
+    notePlatformUsage: (usage) => {
       modelCostMicros = usage ? platformModelCostMicros(usage, deps.rates) : 0n;
     },
   };

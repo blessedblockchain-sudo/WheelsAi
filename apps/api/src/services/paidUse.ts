@@ -98,6 +98,7 @@ import { detectInstructionLeak } from "./assertions.js";
 import { CLIENT_GONE, type SettleableMeter } from "./chatStreamSettlement.js";
 import type { FailClosedLimiter, LimitRule } from "./failClosedLimiter.js";
 import { CONFIDENTIAL_CHAT_RULES } from "./jobPrompt.js";
+import type { TokenUsage } from "./jobRunner.js";
 import type { MarketplaceCharge, MeteredInstall } from "./marketplaceMetering.js";
 import type { ChatStream, StreamOutcome } from "./mastra-runtime.js";
 import {
@@ -147,6 +148,7 @@ import {
   type UsePlanCount,
   type UsePlanRefusal,
   type UsePlanUse,
+  type UseThing,
   type UseUnit,
 } from "./useMetering.js";
 
@@ -283,6 +285,12 @@ export interface PaidUseMetering {
   planUse(): UsePlanUse | null;
   /** Notes what the run used, for the model cost a settle repays. */
   noteRun(run: { platformModel: boolean; usage: unknown; content: string; promptChars: number }): void;
+  /**
+   * The same for a run of several model calls (a paid run of a workflow):
+   * the sum of what they used on the platform's keys, already added up, or
+   * null when none ran on them.
+   */
+  notePlatformUsage(usage: TokenUsage | null): void;
 }
 
 // ============================================
@@ -374,35 +382,52 @@ export interface PaidUseDeps {
 // Results
 // ============================================
 
-export type PaidUseErrorCode =
-  | "invalid_request"
-  | "agent_not_found"
-  | "not_a_member"
-  | "own_agent"
-  | "not_for_sale"
-  | "not_offered"
-  | "results_only"
-  | "use_not_started"
-  | "pricing_changed"
-  | "subscription_lapsed"
-  | "plan_ended"
-  | "plan_used_up"
-  | "insufficient_credits"
-  | "api_key_use_price_cap_exceeded"
-  | "api_key_daily_cap_exceeded"
-  | "api_key_spend_caps_missing"
-  | "not_a_task_agent"
-  | "not_a_scheduled_agent"
-  | "input_too_large"
-  | "input_invalid"
-  | "rate_limited"
-  | "too_many_refunds"
-  | "client_closed_request"
-  | "model_error"
-  | "answer_withheld"
-  | "agent_unavailable"
-  | "agent_paused"
-  | "rate_limiter_unavailable";
+/**
+ * Every code a refusal of a paid use, or of a paid run of a workflow, can
+ * carry. The one list: PaidUseErrorCode is made from it, so a code that is
+ * not here is not a code, and what answers them on /v1
+ * (services/openaiCompat.ts) is typed by it, so a code with no answer there
+ * does not compile.
+ */
+export const PAID_USE_REFUSAL_CODES = [
+  "invalid_request",
+  "agent_not_found",
+  "not_a_member",
+  "own_agent",
+  "not_for_sale",
+  "not_offered",
+  "results_only",
+  "use_not_started",
+  "pricing_changed",
+  "subscription_lapsed",
+  "plan_ended",
+  "plan_used_up",
+  "insufficient_credits",
+  "api_key_use_price_cap_exceeded",
+  "api_key_daily_cap_exceeded",
+  "api_key_spend_caps_missing",
+  "not_a_task_agent",
+  "not_a_scheduled_agent",
+  "input_too_large",
+  "input_invalid",
+  "rate_limited",
+  "too_many_refunds",
+  "client_closed_request",
+  "model_error",
+  "answer_withheld",
+  "agent_unavailable",
+  "agent_paused",
+  "rate_limiter_unavailable",
+  // A paid run of a workflow on sale (services/workflowListing.ts).
+  "workflow_not_found",
+  "own_workflow",
+  "workflow_unavailable",
+  "workflow_busy",
+  "run_failed",
+  "run_timed_out",
+] as const;
+
+export type PaidUseErrorCode = (typeof PAID_USE_REFUSAL_CODES)[number];
 
 /** What the listing asks now. Cents, as numbers. */
 export interface PaidUseTerms {
@@ -417,7 +442,7 @@ export interface PaidUseTerms {
 
 /** Everything a buyer is told about a use that was not answered. */
 export interface PaidUseRefusal {
-  status: 400 | 402 | 403 | 404 | 409 | 413 | 422 | 429 | 499 | 502 | 503;
+  status: 400 | 402 | 403 | 404 | 409 | 413 | 422 | 429 | 499 | 502 | 503 | 504;
   code: PaidUseErrorCode;
   /** Plain words for the payer: the price and their balance may be in it. */
   message: string;
@@ -690,6 +715,42 @@ export const PAID_USE_MESSAGES = {
     refunded === null
       ? "This agent is restarting. Try again in a moment."
       : `This agent is restarting. Your ${dollars(refunded)} was refunded. Try again in a moment.`,
+  /**
+   * The sentences of a paid run of a WORKFLOW on sale, beside the agent's
+   * above: its own where the words name what is used or what happened to a
+   * run, and the agent's where they name neither (a plan's count, credits,
+   * a withheld answer, a caller who left).
+   */
+  workflow: {
+    notFound: "This workflow was not found.",
+    notAMember: "You are no longer a member of this organization, so you cannot use this workflow on its behalf.",
+    ownWorkflow: "This is your workflow. This is the page people who pay see.",
+    notForSale: "Use of this workflow is not for sale.",
+    buyerMinute: "You are sending requests faster than this workflow allows. Try again in a minute.",
+    buyerDay: (perDay: number) => `You have used this workflow ${perDay} times today. Try again tomorrow.`,
+    workflowLimit: "This workflow has reached its limit for now. Nothing was charged. Try again later.",
+    unavailable: "This workflow cannot be run right now. Nothing was charged. Try again later.",
+    limiterUnavailable: "This workflow is temporarily unavailable. Nothing was charged. Try again shortly.",
+    // Refused before anything was taken: every paid run it can hold is going.
+    busy: "This workflow is running as many times as it can right now. Nothing was charged. Try again in a minute.",
+    // The same, found only after the charge: never "Nothing was charged".
+    busyAfterCharge: (refunded: bigint | null) =>
+      refunded === null
+        ? "This workflow is running as many times as it can right now. Try again in a minute."
+        : `This workflow is running as many times as it can right now. Your ${dollars(refunded)} was refunded. Try again in a minute.`,
+    runFailed: (refunded: bigint | null) =>
+      refunded === null
+        ? "The workflow could not finish this run. Please try again."
+        : `The workflow could not finish this run. Your ${dollars(refunded)} was refunded.`,
+    runTimedOut: (refunded: bigint | null) =>
+      refunded === null
+        ? "The workflow took too long and was stopped. Please try again."
+        : `The workflow took too long and was stopped. Your ${dollars(refunded)} was refunded.`,
+    restartedMidway: (refunded: bigint | null) =>
+      refunded === null
+        ? "This workflow is restarting. Try again in a moment."
+        : `This workflow is restarting. Your ${dollars(refunded)} was refunded. Try again in a moment.`,
+  },
 } as const;
 
 // ============================================
@@ -704,18 +765,35 @@ class PaidAdmissionRefused extends Error {
   }
 }
 
-type Refused = { kind: "refused"; refusal: PaidUseRefusal };
-const refused = (refusal: PaidUseRefusal): Refused => ({ kind: "refused", refusal });
+// What follows, down to "One paid use", is shared with the paid run of a
+// workflow on sale: one set of refusals, sentences and billing shapes for
+// both. `thing` chooses the noun where a sentence has one, and is "agent"
+// when left out, so every call that names none says what it always said.
+
+export type Refused = { kind: "refused"; refusal: PaidUseRefusal };
+export const refused = (refusal: PaidUseRefusal): Refused => ({ kind: "refused", refusal });
 
 const NOT_FOUND: PaidUseRefusal = { status: 404, code: "agent_not_found", message: PAID_USE_MESSAGES.notFound };
-const NOT_A_MEMBER: PaidUseRefusal = { status: 403, code: "not_a_member", message: PAID_USE_MESSAGES.notAMember };
+export const NOT_A_MEMBER: PaidUseRefusal = { status: 403, code: "not_a_member", message: PAID_USE_MESSAGES.notAMember };
 const OWN_AGENT: PaidUseRefusal = { status: 409, code: "own_agent", message: PAID_USE_MESSAGES.ownAgent };
-const UNAVAILABLE: PaidUseRefusal = { status: 503, code: "agent_unavailable", message: PAID_USE_MESSAGES.unavailable };
+export const UNAVAILABLE: PaidUseRefusal = { status: 503, code: "agent_unavailable", message: PAID_USE_MESSAGES.unavailable };
 const PAUSED: PaidUseRefusal = { status: 503, code: "agent_paused", message: PAID_USE_MESSAGES.paused };
-const CLIENT_GONE_REFUSAL: PaidUseRefusal = {
+export const CLIENT_GONE_REFUSAL: PaidUseRefusal = {
   status: 499,
   code: "client_closed_request",
   message: PAID_USE_MESSAGES.cancelled,
+};
+
+/** The caller's own workflow, and a workflow that cannot be run now: what the shared refusals answer for a workflow. */
+const OWN_WORKFLOW: PaidUseRefusal = {
+  status: 409,
+  code: "own_workflow",
+  message: PAID_USE_MESSAGES.workflow.ownWorkflow,
+};
+const WORKFLOW_UNAVAILABLE: PaidUseRefusal = {
+  status: 503,
+  code: "workflow_unavailable",
+  message: PAID_USE_MESSAGES.workflow.unavailable,
 };
 
 function termsOf(listing: UseListingRow, agent: PaidAgent): PaidUseTerms {
@@ -729,7 +807,7 @@ function termsOf(listing: UseListingRow, agent: PaidAgent): PaidUseTerms {
 }
 
 /** Which of the buyer's own two rules a call to the limiter asked. */
-type BuyerRule = "minute" | "day";
+export type BuyerRule = "minute" | "day";
 
 /**
  * A limiter refusal in a buyer's words. The buyer's own limits are told as
@@ -737,27 +815,36 @@ type BuyerRule = "minute" | "day";
  * `rule` is the buyer's rule the call asked: each is asked in a call of its
  * own, so the one that refused is known and is not guessed from the wait.
  */
-function limitRefusal(
+export function limitRefusal(
   told: { status: number; code: string; scope?: string; retryAfterSeconds?: number },
-  limits: PaidUseLimits,
+  limits: Pick<PaidUseLimits, "perBuyerPerDay">,
   rule: BuyerRule,
+  thing: UseThing = "agent",
 ): PaidUseRefusal {
+  const workflow = thing === "workflow" ? PAID_USE_MESSAGES.workflow : null;
   if (told.code !== "rate_limited") {
     return {
       status: 503,
       code: "rate_limiter_unavailable",
-      message: PAID_USE_MESSAGES.limiterUnavailable,
+      message: workflow ? workflow.limiterUnavailable : PAID_USE_MESSAGES.limiterUnavailable,
       retryAfterSeconds: told.retryAfterSeconds ?? 30,
     };
   }
   const wait = told.retryAfterSeconds ?? MINUTE;
   if (told.scope === "agent") {
-    return { status: 429, code: "rate_limited", message: PAID_USE_MESSAGES.agentLimit, scope: "agent", retryAfterSeconds: wait };
+    return {
+      status: 429,
+      code: "rate_limited",
+      message: workflow ? workflow.workflowLimit : PAID_USE_MESSAGES.agentLimit,
+      scope: "agent",
+      retryAfterSeconds: wait,
+    };
   }
+  const words = workflow ?? PAID_USE_MESSAGES;
   return {
     status: 429,
     code: "rate_limited",
-    message: rule === "day" ? PAID_USE_MESSAGES.buyerDay(limits.perBuyerPerDay) : PAID_USE_MESSAGES.buyerMinute,
+    message: rule === "day" ? words.buyerDay(limits.perBuyerPerDay) : words.buyerMinute,
     scope: "org",
     retryAfterSeconds: wait,
   };
@@ -782,7 +869,7 @@ const RENEWAL_RETRY_SECONDS = 60 * 60;
  * starts again: its own sentence asks the buyer to choose, and no time is
  * told, in the body or as a wait.
  */
-function planUsedUpRefusal(
+export function planUsedUpRefusal(
   plan: { planId: string | null; includedUses: number; carriedUses: number; usedInPeriod?: number; periodEnd: Date },
   now: Date,
   renews: boolean,
@@ -825,17 +912,18 @@ function planUsedUpRefusal(
 }
 
 /** A refused charge, exactly as chargeUse worded it, or a plan with no use to take. Nothing was written. */
-function chargeRefusal(
+export function chargeRefusal(
   refusal: Exclude<UseChargeResult, { ok: true }> | UsePlanRefusal,
   now: Date,
   planRenews: boolean,
   planId: string | null,
   trial: boolean,
+  thing: UseThing = "agent",
 ): PaidUseRefusal {
   // The metering refuses this only on the row the request read, so the plan is the one that was read.
   if (refusal.reason === "plan_used_up") return planUsedUpRefusal({ ...refusal, planId }, now, planRenews, trial);
   // The plan's row changed under the request and could not be decided again.
-  if (refusal.reason === "plan_changed") return UNAVAILABLE;
+  if (refusal.reason === "plan_changed") return thing === "workflow" ? WORKFLOW_UNAVAILABLE : UNAVAILABLE;
   if (refusal.reason === "insufficient_credits") {
     return {
       status: 402,
@@ -848,7 +936,7 @@ function chargeRefusal(
   if (refusal.reason === "api_key_cap") {
     return { status: 403, code: refusal.code, message: refusal.message, caps: refusal.extra };
   }
-  return OWN_AGENT;
+  return thing === "workflow" ? OWN_WORKFLOW : OWN_AGENT;
 }
 
 /**
@@ -894,19 +982,29 @@ function coreRefusal(refusal: AgentChatRefusal, nowSeconds: number, onSaleForUse
   }
 }
 
-/** A use that was admitted and produced no answer. Its charge, if any, has been refunded. */
-function failureRefusal(failure: AgentChatFailure, refunded: bigint | null): PaidUseRefusal {
+/**
+ * A use that was admitted and produced no answer. Its charge, if any, has
+ * been refunded. For a workflow the same three endings carry the workflow's
+ * codes and words: a run that failed is `run_failed`.
+ */
+export function failureRefusal(
+  failure: AgentChatFailure,
+  refunded: bigint | null,
+  thing: UseThing = "agent",
+): PaidUseRefusal {
   const back = refunded === null ? {} : { refundedCents: Number(refunded) };
+  const workflow = thing === "workflow" ? PAID_USE_MESSAGES.workflow : null;
   if (failure.code === "client_gone") return { ...CLIENT_GONE_REFUSAL, ...back };
   if (failure.code === "service_unavailable") {
     return {
       status: 503,
-      code: "agent_unavailable",
-      message: PAID_USE_MESSAGES.restartedMidway(refunded),
+      code: workflow ? "workflow_unavailable" : "agent_unavailable",
+      message: (workflow ?? PAID_USE_MESSAGES).restartedMidway(refunded),
       retryAfterSeconds: 5,
       ...back,
     };
   }
+  if (workflow) return { status: 502, code: "run_failed", message: workflow.runFailed(refunded), ...back };
   // Everything else is the model's or ours, and its text is the provider's.
   return { status: 502, code: "model_error", message: PAID_USE_MESSAGES.couldNotAnswer(refunded), ...back };
 }
@@ -980,7 +1078,10 @@ export function planWillRenew(
  * set of deps reads none. A read that fails is answered as no plan: it rides
  * on a refusal or a view that is already decided, and must not undo it.
  */
-async function plansOnOffer(deps: PaidUseDeps, listing: UseListingRow): Promise<PlanOffer[] | undefined> {
+export async function plansOnOffer(
+  deps: Pick<PaidUseDeps, "loadPlans" | "logger">,
+  listing: Pick<UseListingRow, "id" | "status" | "sells" | "pricingModel">,
+): Promise<PlanOffer[] | undefined> {
   if (!deps.loadPlans) return undefined;
   if (!offersPlans(listing)) return [];
   try {
@@ -1007,7 +1108,7 @@ async function trialOnOffer(deps: PaidUseDeps, listing: UseListingRow): Promise<
 }
 
 /** The plan after one use on it, as the buyer is told it. `trial`: the row the use was counted on is a free trial. */
-function planBillingOf(planUse: UsePlanUse, count: UsePlanCount, renews: boolean, trial: boolean): PaidUsePlanBilling {
+export function planBillingOf(planUse: UsePlanUse, count: UsePlanCount, renews: boolean, trial: boolean): PaidUsePlanBilling {
   const limit = count.includedUses + count.carriedUses;
   const level = warningLevel(count.usedInPeriod, count.includedUses, count.carriedUses);
   return {
@@ -1028,7 +1129,7 @@ function planBillingOf(planUse: UsePlanUse, count: UsePlanCount, renews: boolean
 const encoder = new TextEncoder();
 
 /** The public stream, after one event that says what the use cost. */
-function withBillingEvent(chat: ChatStream, billing: PaidUseBilling): ChatStream {
+export function withBillingEvent(chat: ChatStream, billing: PaidUseBilling): ChatStream {
   const first = encoder.encode(`data: ${JSON.stringify({ wheelsai: { billing } })}\n\n`);
   const stream = chat.stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
@@ -1711,7 +1812,7 @@ export async function listPaidResults(input: PaidReadInput, deps: PaidUseDeps): 
 // ============================================
 
 /** Whether this caller may agree to a price: an owner or admin, or a key granted marketplace:install by name. */
-async function canAccept(deps: PaidUseDeps, caller: PaidCaller): Promise<boolean> {
+export async function canAccept(deps: Pick<PaidUseDeps, "memberRole" | "logger">, caller: PaidCaller): Promise<boolean> {
   // A spend scope is held only by a key that lists it by name.
   if (caller.type === "api_key") return (caller.scopes ?? []).includes("marketplace:install");
   if (!caller.userId) return false;

@@ -3,8 +3,10 @@
 // metering of one use (beginUseMetering over chargeUse, settleUse and
 // refundUse) and a real fail-closed limiter on its memory store. What is
 // faked is the edge of each: the rows, the model and the money tables,
-// which are kept in memory with transactions that roll back. Not a test
-// file itself.
+// which are kept in memory with transactions that roll back. The money
+// tables, the plan row, the limiter and the warning sender are one function
+// of their own (paidMoneyTables), which the harness of a paid run of a
+// workflow uses too. Not a test file itself.
 
 import type { AgentChatAgent, AgentChatDeps, AgentChatInput } from "../services/agentChat.js";
 import { prepareAgentChat } from "../services/agentChat.js";
@@ -33,6 +35,7 @@ import {
   type PlanCountDb,
   type PlanCountRow,
   type PlanExtraClaimTx,
+  type UseMeteringBinding,
 } from "../services/useMeteringProduction.js";
 import { earningsStandIn, type EarningsRow } from "./earningsStandIn.js";
 
@@ -267,20 +270,52 @@ export interface PaidHarness {
   warnings: PaidHarnessWarnings;
 }
 
-export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
-  const log: string[] = [];
-  const chatInputs: AgentChatInput[] = [];
-  const chatCalls: PaidHarness["chatCalls"] = [];
-  const transcripts: PublicChatTranscript[] = [];
-  const usageSources: string[] = [];
-  let allowance = 0;
+/** What the money tables of a paid use are set up with: a part of PaidHarnessOptions. */
+export type PaidMoneyOptions = Pick<
+  PaidHarnessOptions,
+  | "sub"
+  | "balance"
+  | "keyCaps"
+  | "store"
+  | "now"
+  | "beforeTake"
+  | "beforeCharge"
+  | "warnedLevel"
+  | "emailOff"
+  | "emailThrows"
+  | "warningThrows"
+>;
 
-  const agent: PaidAgent | null = options.agent === null ? null : { ...AGENT, ...options.agent };
-  const listing = options.listing === undefined ? LISTING : options.listing;
-  const licence = options.licence === undefined ? LICENCE : options.licence;
+/**
+ * What one paid use takes from, counts on and is held by, in memory: the
+ * money tables with transactions that roll back, the buyer's plan row, a
+ * real fail-closed limiter that logs, the real sender of a plan's warning,
+ * and the REAL metering of one use bound to them. Shared by paidHarness and
+ * by the harness of a paid run of a workflow, so both are charged, counted
+ * and refunded by the same tables.
+ */
+export interface PaidMoneyTables {
+  /** Every effect, in the order it happened. */
+  log: string[];
+  /** The moment of the use. */
+  at: Date;
+  /** The tables as they are now. */
+  readonly money: PaidHarness["money"];
+  /** The buyer's subscription row itself: a plan's count moves on it. */
+  sub: PaidSubscription | null;
+  limiter: PaidUseDeps["limiter"];
+  warnings: PaidHarnessWarnings;
+  warnPlan(ask: PlanWarningAsk): Promise<PlanWarningResult>;
+  /** The real beginUseMetering over these tables. */
+  beginUse(args: BeginUseMeteringArgs): UseMeteringBinding;
+  /** The real read of a key's caps over these tables. */
+  peekKeySpend: PaidUseDeps["peekKeySpend"];
+}
+
+export function paidMoneyTables(options: PaidMoneyOptions = {}): PaidMoneyTables {
+  const log: string[] = [];
   // The row itself: a plan's count moves on it. Each read is given a copy.
   const sub: PaidSubscription | null = options.sub ? { ...options.sub } : null;
-  const model = options.model ?? FREE_MODEL;
   const at = options.now ?? NOW;
 
   // ---- money, in memory, with transactions that roll back ----
@@ -492,6 +527,56 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     return result;
   };
 
+  // ---- the limiter, logged ----
+  const real = createFailClosedLimiter(options.store ?? createMemoryLimiterStore(() => at.getTime()));
+  const limiter: PaidUseDeps["limiter"] = {
+    consume: async (rules) => {
+      log.push(`limit:${rules.map((rule) => rule.key.split(":").slice(0, 3).join(":")).join(",")}`);
+      return real.consume(rules);
+    },
+    peek: async (key) => {
+      log.push(`peek:${key.split(":").slice(0, 3).join(":")}`);
+      return real.peek(key);
+    },
+  };
+
+  return {
+    log,
+    at,
+    get money() {
+      return money;
+    },
+    sub,
+    limiter,
+    warnings,
+    warnPlan,
+    beginUse: (args) =>
+      beginUseMetering(args, {
+        metering: { transaction, now: () => at },
+        plan: planDb,
+        rates: { inputCentsPerMTok: 15, outputCentsPerMTok: 60 },
+      }),
+    peekKeySpend: async (args) => peekApiKeySpend(tx as unknown as ApiKeySpendReadDb, { ...args, cap: "use", now: at }),
+  };
+}
+
+export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
+  const chatInputs: AgentChatInput[] = [];
+  const chatCalls: PaidHarness["chatCalls"] = [];
+  const transcripts: PublicChatTranscript[] = [];
+  const usageSources: string[] = [];
+  let allowance = 0;
+
+  const agent: PaidAgent | null = options.agent === null ? null : { ...AGENT, ...options.agent };
+  const listing = options.listing === undefined ? LISTING : options.listing;
+  const licence = options.licence === undefined ? LICENCE : options.licence;
+  const model = options.model ?? FREE_MODEL;
+
+  // The money, the plan's row, the limiter and the warnings: shared with the
+  // tests of a paid run of a workflow.
+  const tables = paidMoneyTables(options);
+  const { log, at, sub, limiter, warnings, warnPlan } = tables;
+
   // ---- the chat core's edges ----
   const coreAgent: AgentChatAgent | null = agent && {
     id: agent.id,
@@ -571,19 +656,6 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     }),
   };
 
-  // ---- the limiter, logged ----
-  const real = createFailClosedLimiter(options.store ?? createMemoryLimiterStore(() => at.getTime()));
-  const limiter: PaidUseDeps["limiter"] = {
-    consume: async (rules) => {
-      log.push(`limit:${rules.map((rule) => rule.key.split(":").slice(0, 3).join(":")).join(",")}`);
-      return real.consume(rules);
-    },
-    peek: async (key) => {
-      log.push(`peek:${key.split(":").slice(0, 3).join(":")}`);
-      return real.peek(key);
-    },
-  };
-
   const deps: PaidUseDeps = {
     limiter,
     limits: { ...PAID_USE_LIMITS, ...options.limits },
@@ -601,19 +673,15 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     },
     readBalance: async () => {
       log.push("readBalance");
-      return money.balance;
+      return tables.money.balance;
     },
     peekKeySpend: async (args) => {
       log.push("peekKey");
-      return peekApiKeySpend(tx as unknown as ApiKeySpendReadDb, { ...args, cap: "use", now: at });
+      return tables.peekKeySpend(args);
     },
     outboundToolNames: () => ["http_request"],
     beginUse: (args: BeginUseMeteringArgs) => {
-      const binding = beginUseMetering(args, {
-        metering: { transaction, now: () => at },
-        plan: planDb,
-        rates: { inputCentsPerMTok: 15, outputCentsPerMTok: 60 },
-      });
+      const binding = tables.beginUse(args);
       if (!options.meteringChargesNothing) return binding;
       return {
         ...binding,
@@ -656,7 +724,7 @@ export function paidHarness(options: PaidHarnessOptions = {}): PaidHarness {
     transcripts,
     usageSources,
     get money() {
-      return money;
+      return tables.money;
     },
     allowanceCounted: () => allowance,
     get sub() {

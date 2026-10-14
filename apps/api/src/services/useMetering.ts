@@ -53,6 +53,13 @@ import { onPlan, useAccess, useDecision, type UseAccess, type UseSubscription } 
 /** What one use is called where the buyer reads it: a chat message, or a task run. */
 export type UseUnit = "message" | "run";
 
+/**
+ * What is used: a creator's agent, or a creator's workflow on sale. It
+ * chooses the noun of a sentence and nothing else: what a use costs and who
+ * may make one are decided the same way for both.
+ */
+export type UseThing = "agent" | "workflow";
+
 const dollars = (cents: bigint) => `$${(Number(cents) / 100).toFixed(2)}`;
 
 // ============================================
@@ -99,6 +106,8 @@ export interface UseBillingInput {
   sub: UseBillingSubscription | null;
   /** Words the refusals: "per message" or "per run". Default "message". */
   unit?: UseUnit;
+  /** Words the refusals: "this agent" or "this workflow". Default "agent". */
+  thing?: UseThing;
 }
 
 export type UseRefusalReason =
@@ -173,18 +182,19 @@ export type UseBilling =
 function pricingChangedMessage(input: UseBillingInput): string {
   const { listing, licence } = input;
   const unit = input.unit ?? "message";
+  const thing = input.thing ?? "agent";
   if (listing.pricingModel === "per_request") {
     const price = dollars(listing.pricePerRequestCents ?? 0n);
     return licence?.acceptedPricingModel === "per_request" && licence.acceptedPricePerRequestCents != null
       ? `The owner changed the price to ${price} per ${unit}. You agreed to ${dollars(licence.acceptedPricePerRequestCents)}. Nothing is charged until you accept the new price.`
-      : `This agent is now sold per ${unit} (${price}). Nothing is charged until you accept the new price.`;
+      : `This ${thing} is now sold per ${unit} (${price}). Nothing is charged until you accept the new price.`;
   }
   if (listing.pricingModel === "monthly") {
     return listing.monthlyPriceCents != null
-      ? `This agent is now sold by the month (${dollars(listing.monthlyPriceCents)}). Nothing is charged until you subscribe.`
-      : "This agent is now sold by the month. Nothing is charged until you subscribe.";
+      ? `This ${thing} is now sold by the month (${dollars(listing.monthlyPriceCents)}). Nothing is charged until you subscribe.`
+      : `This ${thing} is now sold by the month. Nothing is charged until you subscribe.`;
   }
-  return "The owner changed how this agent is sold. Nothing is charged until you accept the new terms.";
+  return `The owner changed how this ${thing} is sold. Nothing is charged until you accept the new terms.`;
 }
 
 const REFUSAL_MESSAGE: Record<Exclude<UseRefusalReason, "pricing_changed">, string> = {
@@ -196,6 +206,20 @@ const REFUSAL_MESSAGE: Record<Exclude<UseRefusalReason, "pricing_changed">, stri
   plan_ended: "Your plan ended. Choose a plan or pay per use to keep using it.",
   not_offered: "This agent is no longer offered. You will not be charged again.",
 };
+
+/** The same refusals of a workflow on sale. The reasons are the ones above: only the words differ. */
+const WORKFLOW_REFUSAL_MESSAGE: typeof REFUSAL_MESSAGE = {
+  own_agent: "This is your own workflow, so there is nothing to pay for. Use it from your dashboard.",
+  not_for_sale: "Use of this workflow is not for sale.",
+  use_not_started:
+    "You have not started using this workflow. Start on its page, or ask an owner or admin of your organization to start.",
+  subscription_lapsed: REFUSAL_MESSAGE.subscription_lapsed,
+  plan_ended: REFUSAL_MESSAGE.plan_ended,
+  not_offered: "This workflow is no longer offered. You will not be charged again.",
+};
+
+const refusalMessageOf = (reason: Exclude<UseRefusalReason, "pricing_changed">, thing: UseThing | undefined): string =>
+  (thing === "workflow" ? WORKFLOW_REFUSAL_MESSAGE : REFUSAL_MESSAGE)[reason];
 
 /**
  * What one use by `callerOrgId` is, from the rows as they are now. Decided
@@ -211,7 +235,7 @@ export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()
       reason: "own_agent",
       status: 409,
       code: "own_agent",
-      message: REFUSAL_MESSAGE.own_agent,
+      message: refusalMessageOf("own_agent", input.thing),
     };
   }
   const onSaleForUse = listing.status === "published" && listing.sells === "use";
@@ -246,7 +270,7 @@ export function resolveUseBilling(input: UseBillingInput, now: Date = new Date()
       reason,
       status: reason === "not_for_sale" ? 409 : decision.status,
       code: reason,
-      message: reason === "pricing_changed" ? pricingChangedMessage(input) : REFUSAL_MESSAGE[reason],
+      message: reason === "pricing_changed" ? pricingChangedMessage(input) : refusalMessageOf(reason, input.thing),
       access,
     };
   }

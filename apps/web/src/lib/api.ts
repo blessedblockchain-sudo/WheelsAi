@@ -2614,6 +2614,11 @@ export interface MarketplaceListing {
   unit: "message" | "run" | "month" | null;
   /** Owner's views only (create, update, my-listings): the tools the agent may use for people who pay. */
   allowedTools?: string[];
+  /**
+   * Owner's views only: people with no account may pay one use from a Solana wallet (the x402 door).
+   * Only on an agent's listing sold per use; it comes back false after a change away from pay per use.
+   */
+  x402Enabled?: boolean;
   /** `getMyListings` only: how many people have a copy, use it, or are subscribed. */
   buyers?: { copies: number; using: number; subscribed: number };
   /**
@@ -2862,6 +2867,21 @@ export interface AgentApiPage {
   usageHeaders: { always: string[]; onPlan: string[] };
   /** The refusals a caller can meet, each with its status and a plain sentence. */
   refusals: Array<{ code: string; status: number; message: string }>;
+  /**
+   * Paying one use from a Solana wallet with no key (the x402 door), or null when this listing cannot be
+   * paid that way now. Absent from an API that does not say.
+   */
+  x402?: {
+    priceCents: number;
+    unit: "message" | "run";
+    /** The Solana cluster, as a CAIP-2 id. */
+    network: string;
+    /** The USDC mint a use is paid in. */
+    asset: string;
+    /** How long an answer paid this way may take to be ready, in seconds. */
+    answerWithinSeconds: number;
+    limits: { walletPerMinute: number; walletPerDay: number; addressPerMinute: number };
+  } | null;
 }
 
 export const publicAgentApi = {
@@ -3419,6 +3439,13 @@ export interface CreateListingFields {
   sells?: "use" | "copies";
   /** Skill keys (such as `http_request`) the agent may use for people who pay; at most 50. */
   allowedTools?: string[];
+  /**
+   * The creator's switch for paying from a wallet (the x402 door). Only on an agent's listing sold per
+   * use at a price of at least the floor, for an agent that answers when it is called; refused on its
+   * field otherwise. Send it only when the switch itself changes: a change away from pay per use turns
+   * it off by itself, and one that carries it on is refused whole.
+   */
+  x402Enabled?: boolean;
   /** Publish in the same request. */
   publish?: boolean;
 }
@@ -6845,6 +6872,11 @@ export interface Capabilities {
   agentGpu: { available: boolean };
   /** A paid task can be run. */
   paidTasks: { available: boolean };
+  /**
+   * People with no account can pay one use of an agent from a Solana wallet (x402): the Sell tab offers
+   * the switch only then. Absent from an API that does not say.
+   */
+  x402?: { available: boolean };
   /** What a Sell screen and a buyer's page say of paid use of an agent. */
   paidUse: {
     /** How often one buyer may use an agent. */

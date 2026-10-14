@@ -326,15 +326,19 @@ test("my listings: the owner of a workflow's listing is told which workflow, and
     assert.equal(alpha!.agentId, "agent_alpha");
     assert.deepEqual(alpha!.allowedTools, ["calculator"]);
     assert.equal(alpha!.agent!.handle, "h-alpha");
-    // The owner's view of an agent's listing, key by key: what it was, with productKind after the id and
-    // orchestrationId after the agent. A key added to it or dropped from it fails here.
+    // The owner's view of an agent's listing, key by key: what it was, with productKind after the id,
+    // orchestrationId after the agent, and the switch for paying from a wallet after the tools. A key
+    // added to it or dropped from it fails here.
     assert.deepEqual(Object.keys(alpha!), [
       "id", "productKind", "agentId", "title", "slug", "shortDescription", "longDescription", "category", "iconUrl",
       "screenshots", "readme", "sells", "unit", "hasToken", "pricingModel", "pricePerRequestCents",
       "monthlyPriceCents", "publisherId", "publisherName", "status", "isFeatured", "totalInstalls", "activeInstalls",
       "avgRating", "reviewCount", "totalRequests", "publishedAt", "createdAt", "updatedAt", "trial", "agent",
-      "orchestrationId", "allowedTools", "buyers", "plans", "paused",
+      "orchestrationId", "allowedTools", "x402Enabled", "buyers", "plans", "paused",
     ]);
+    // A row that does not carry the switch reads off, on both.
+    assert.equal(alpha!.x402Enabled, false);
+    assert.equal(flow!.x402Enabled, false);
   });
 });
 

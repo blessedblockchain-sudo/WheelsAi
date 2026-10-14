@@ -61,6 +61,7 @@ import {
   workflowSellableProblem,
 } from "./workflowListing.js";
 import { updatePublisherReputation } from "./reputation.js";
+import { X402_AGENT_KINDS } from "./x402DoorRules.js";
 import { payoutRequestSettingsFromEnv, readPayoutLimits, type PayoutReadsDb } from "./payoutRequests.js";
 import { env } from "../config/env.js";
 
@@ -108,6 +109,14 @@ export interface ListingCreateParams {
    * agent, by name. Only names of tools the agent has.
    */
   allowedTools?: string[];
+  /**
+   * The creator's switch: people with no account may pay one use from a
+   * Solana wallet (the x402 door). Only on an agent's listing sold per use
+   * at a price of at least the floor. Left out, a new listing has it off and
+   * a change leaves it as it is, unless the change stops selling use per
+   * request, which turns it off in the same write.
+   */
+  x402Enabled?: boolean;
   /** Publish in the same request. A listing that is already published stays as it is. */
   publish?: boolean;
 }
@@ -693,6 +702,13 @@ export const LISTING_MESSAGES = {
   unknownTool: (name: string) => `Your agent has no tool named "${name}".`,
 } as const;
 
+/** Why the switch for paying from a wallet cannot be on, said on its field. */
+export const X402_LISTING_MESSAGES = {
+  workflow: "Paying from a wallet is offered on an agent's listing only.",
+  notPerUse: "Paying from a wallet is for an agent sold per use. Choose pay per use first.",
+  notCalled: "Paying from a wallet is for an agent that answers when it is called.",
+} as const;
+
 /**
  * A listing that cannot be saved or published as asked. The message is a
  * plain sentence for the person; `body` is the whole answer when it is a
@@ -755,6 +771,48 @@ export function assertSellable(agent: SellableAgent, terms: ListingTerms): void 
       );
     }
   }
+}
+
+/**
+ * Whether terms let the switch for paying from a wallet be on: use, per
+ * request, at a price of at least the floor. The database holds the same by
+ * its CHECK (agent_listings_x402_per_use_check), so every write that leaves
+ * these terms writes the switch off with them, and the CHECK is never what
+ * refuses a creator.
+ */
+function x402TermsAllow(terms: ListingTerms): boolean {
+  return (
+    terms.sells === "use" &&
+    terms.pricingModel === "per_request" &&
+    terms.pricePerRequestCents !== null &&
+    terms.pricePerRequestCents >= MIN_PRICE_PER_USE_CENTS
+  );
+}
+
+/**
+ * Refuses the switch on, on its field, for an agent that is not called or
+ * terms that do not sell use per request. Pure. Asked before the sale rules,
+ * so a creator who asks for it on free, monthly or token terms is told why
+ * in its own sentence; a price under the floor is left to the sale rules,
+ * whose sentence names the floor, and x402TermsAllow is asked after them.
+ * The door asks again at every use (x402ListingServed), so a kind changed
+ * later closes it there.
+ */
+function assertX402Switch(agent: SellableAgent, terms: ListingTerms): void {
+  if (!X402_AGENT_KINDS.has(agent.agentKind ?? "")) {
+    throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.notCalled);
+  }
+  if (terms.sells !== "use" || terms.pricingModel !== "per_request") {
+    throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.notPerUse);
+  }
+}
+
+/**
+ * A write that turns the switch on finds no row: what it sells or its
+ * pricing moved under it, and the edit that moved them turned it off.
+ */
+function isRecordNotFound(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === "P2025";
 }
 
 /** The tools named, each once, when the agent has every one of them. */
@@ -934,6 +992,8 @@ async function createWorkflowListing(
 ) {
   const { orchestrationId } = params;
   await assertWorkflowSellable(prisma, orchestrationId, orgId);
+  // The door serves an agent's answer only: a paid run may outlive a payment.
+  if (params.x402Enabled === true) throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.workflow);
 
   // The price is read as it was sent: a price that is missing is under the floor.
   const pricePerRequestCents =
@@ -1037,6 +1097,8 @@ async function updateWorkflowListing(
   params: Partial<ListingCreateParams>,
 ) {
   const listingId = listing.id;
+  // Never on for a workflow, which the database holds too; off is what it already is.
+  if (params.x402Enabled === true) throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.workflow);
   const pricePerRequestCents =
     params.pricePerRequestCents !== undefined
       ? BigInt(params.pricePerRequestCents)
@@ -1175,7 +1237,12 @@ export async function createListing(
   }
 
   const prices = normalizeListingPricing(params.pricingModel, params);
-  assertSellable(agent, { sells, pricingModel: params.pricingModel, ...prices });
+  const terms: ListingTerms = { sells, pricingModel: params.pricingModel, ...prices };
+  if (params.x402Enabled === true) assertX402Switch(agent, terms);
+  assertSellable(agent, terms);
+  if (params.x402Enabled === true && !x402TermsAllow(terms)) {
+    throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.notPerUse);
+  }
   const useAllowedTools = allowedToolsOf(agent, params.allowedTools ?? []);
 
   // Check if listing already exists for this agent
@@ -1222,6 +1289,8 @@ export async function createListing(
         useAllowedTools,
         pricingModel: params.pricingModel,
         ...prices,
+        // Off unless asked for: a listing that does not name it is written as it always was.
+        ...(params.x402Enabled === true && { x402Enabled: true }),
         publisherId: orgId,
         publisherName: orgName,
         status: "draft",
@@ -1320,7 +1389,38 @@ export async function updateListing(
   if (params.sells !== undefined && params.sells !== listing.sells && (await isMarketplaceCopy(agentId))) {
     throw new ListingError(409, "marketplace_copy", LISTING_MESSAGES.marketplaceCopy);
   }
+  // The switch for paying from a wallet, judged on the terms after this edit
+  // and on the agent's kind. Asked for on: refused here, before anything is
+  // written, when it cannot be. Asked for off: always written. Not named: an
+  // edit of what is sold or of the pricing that leaves use per request at a
+  // price writes it off in the same write, whatever the read above said of
+  // it, so that a switch turned on by another request a moment ago never
+  // meets these terms in the database's CHECK. Every other edit leaves it.
+  if (params.x402Enabled === true) assertX402Switch(agent, next);
   if (pricingTouched || params.sells !== undefined || params.publish) assertSellable(agent, next);
+  if (params.x402Enabled === true && !x402TermsAllow(next)) {
+    throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.notPerUse);
+  }
+  const x402Write: { x402Enabled: boolean } | null =
+    params.x402Enabled !== undefined
+      ? { x402Enabled: params.x402Enabled }
+      : (pricingTouched || params.sells !== undefined) && !x402TermsAllow(next)
+        ? { x402Enabled: false }
+        : null;
+  // Turned on, the write also asks that the row still sells use per request
+  // at a price in what this edit does not write itself: an edit that moved
+  // it away since the read above has turned the switch off, and this write
+  // then finds no row and is refused in the sentence, not by the CHECK.
+  const x402OnGuard =
+    params.x402Enabled === true
+      ? {
+          ...(params.sells === undefined && { sells: "use" }),
+          ...(pricing === null && {
+            pricingModel: "per_request",
+            pricePerRequestCents: { gte: MIN_PRICE_PER_USE_CENTS },
+          }),
+        }
+      : {};
   const useAllowedTools =
     params.allowedTools !== undefined ? allowedToolsOf(agent, params.allowedTools) : undefined;
 
@@ -1350,7 +1450,7 @@ export async function updateListing(
   const wasFreeUse = listing.status === "published" && listing.sells === "use" && !isPaidUse(listing);
 
   const write = {
-    where: { id: listingId },
+    where: { id: listingId, ...x402OnGuard },
     data: {
       ...(params.title && { title: params.title }),
       ...(params.shortDescription && {
@@ -1365,6 +1465,7 @@ export async function updateListing(
       ...(params.readme !== undefined && { readme: params.readme }),
       ...(pricing ?? {}),
       ...(params.sells !== undefined && { sells: params.sells }),
+      ...(x402Write ?? {}),
       ...(useAllowedTools !== undefined && { useAllowedTools }),
       ...(publishing && { status: "published", publishedAt: new Date() }),
     },
@@ -1374,10 +1475,18 @@ export async function updateListing(
       },
     },
   };
+  // The write, with a switch that lost its terms under it said in its sentence.
+  const save = (db: Pick<Prisma.TransactionClient, "agentListing">) =>
+    db.agentListing.update(write).catch((err: unknown) => {
+      if (params.x402Enabled === true && isRecordNotFound(err)) {
+        throw listingInvalid("x402Enabled", X402_LISTING_MESSAGES.notPerUse);
+      }
+      throw err;
+    });
 
   const updated = mayMovePage
     ? await inPageTransaction(async (tx) => {
-        const saved = await tx.agentListing.update(write);
+        const saved = await save(tx);
         if (saved.status !== "published") return saved;
         // The sale rules, on the terms that are on sale once this commits and
         // on the agent as it is now: it may have changed since the read above.
@@ -1400,7 +1509,7 @@ export async function updateListing(
           })) ?? saved
         );
       })
-    : await prisma.agentListing.update(write);
+    : await save(prisma);
 
   if (publishing) {
     await updatePublisherStats(orgId);
@@ -1637,6 +1746,9 @@ function formatListingForOwner(listing: any) {
     // can make says it. null on an agent's listing.
     orchestrationId: listing.orchestrationId ?? null,
     allowedTools: Array.isArray(listing.useAllowedTools) ? (listing.useAllowedTools as string[]) : [],
+    // The creator's switch for paying from a wallet. Only the owner's reads
+    // say it; whether the door serves a listing is told on its API page.
+    x402Enabled: listing.x402Enabled === true,
   };
 }
 

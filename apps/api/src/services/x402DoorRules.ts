@@ -142,8 +142,12 @@ export interface X402DoorAgent {
   entrypoint: string;
 }
 
-/** The kinds of agent that answer when they are called. A scheduled one runs on its own. */
-const X402_AGENT_KINDS: ReadonlySet<string> = new Set(["conversation", "task"]);
+/**
+ * The kinds of agent that answer when they are called. A scheduled one runs
+ * on its own, with no caller to pay. The creator's switch and the door read
+ * this one set, so a switch is never saved for an agent the door never serves.
+ */
+export const X402_AGENT_KINDS: ReadonlySet<string> = new Set(["conversation", "task"]);
 
 /**
  * True when the door serves this listing: an agent's listing, published,

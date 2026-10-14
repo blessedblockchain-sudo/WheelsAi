@@ -91,6 +91,10 @@ const createListingSchema = z.object({
   sells: z.enum(["use", "copies"]).optional(),
   // The outbound tools the creator allows for people who pay to use it.
   allowedTools: z.array(z.string().min(1).max(100)).max(50).optional(),
+  // Whether people with no account may pay one use from a Solana wallet.
+  // Only on an agent's listing sold per use; the service says in a sentence
+  // when it cannot be on.
+  x402Enabled: z.boolean().optional(),
   // Publish in the same request.
   publish: z.literal(true).optional(),
 });

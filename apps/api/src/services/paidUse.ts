@@ -425,6 +425,16 @@ export const PAID_USE_REFUSAL_CODES = [
   "workflow_busy",
   "run_failed",
   "run_timed_out",
+  // One use paid from a wallet at a listing's x402 door
+  // (services/paidUseX402.ts), by a caller with no account.
+  "x402_payment_required",
+  "x402_payment_invalid",
+  "x402_payment_failed",
+  "x402_unavailable",
+  "x402_too_many_unpaid",
+  "answer_timed_out",
+  "x402_payment_unconfirmed",
+  "x402_payment_unserved",
 ] as const;
 
 export type PaidUseErrorCode = (typeof PAID_USE_REFUSAL_CODES)[number];
@@ -481,6 +491,17 @@ export interface PaidUseRefusal {
    * obeys (services/openaiCompat.ts, paidUseOpenAiError).
    */
   noAutomaticRetry?: true;
+  /**
+   * A refusal at the x402 door that names a price: what one payment buys
+   * there, beside `priceCents`. Written into the body only when set.
+   */
+  unit?: "message" | "run";
+  /**
+   * A payment from a wallet that was sent, and whose answer was not released
+   * (not confirmed in time, or confirmed and not served): its signature on
+   * the chain, so the payer can find it. Written into the body only when set.
+   */
+  transaction?: string;
 }
 
 /** A plan's count as it stood when a use was refused. Uses, and nothing of another buyer. */
@@ -657,9 +678,11 @@ export function paidRefusalBody(refusal: PaidUseRefusal): Record<string, unknown
     ...(refusal.terms !== undefined && { terms: refusal.terms }),
     ...(refusal.plans !== undefined && { plans: refusal.plans }),
     ...(refusal.priceCents !== undefined && { priceCents: refusal.priceCents }),
+    ...(refusal.unit !== undefined && { unit: refusal.unit }),
     ...(refusal.balanceCents !== undefined && { balanceCents: refusal.balanceCents }),
     ...(refusal.refundedCents !== undefined && { refundedCents: refusal.refundedCents }),
     ...(refusal.resetsAt !== undefined && { resetsAt: refusal.resetsAt }),
+    ...(refusal.transaction !== undefined && { transaction: refusal.transaction }),
     ...refusal.caps,
   };
 }
@@ -1021,7 +1044,11 @@ export function failureRefusal(
 // Shared steps
 // ============================================
 
-function handleOf(raw: string): string | null {
+/**
+ * The lower-case handle of a use address, or null when it is not one. The
+ * x402 door (services/paidUseX402.ts) reads a handle with this same rule.
+ */
+export function handleOf(raw: string): string | null {
   const handle = typeof raw === "string" ? raw.toLowerCase() : "";
   return HANDLE.test(handle) ? handle : null;
 }

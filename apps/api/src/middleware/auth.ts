@@ -255,22 +255,78 @@ const UNIFIED_COMPLETIONS_PATH = "/v1/chat/completions";
 // import this module). The owner's own `workflow/<slug>` starts with neither.
 const PAID_MODEL_STARTS = ["a/", "w/"];
 
+/** The `model` of a /v1 body, untrimmed, or null when it has none. */
+function unifiedModelOf(body: unknown): string | null {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+  const model = (body as { model?: unknown }).model;
+  return typeof model === "string" ? model : null;
+}
+
 /**
  * Whether a request is paid use of someone else's agent or workflow: POST
  * /api/a/:handle/chat, POST /api/a/:handle/run, POST /api/w/:slug/run, or
  * POST /v1/chat/completions whose `model` is `a/<handle>` or `w/<slug>`. A
  * body that is missing, is not an object or has no string `model` is not
  * one, so it is counted.
+ *
+ * Named apart from services/useListing.ts isPaidUse, which asks it of a
+ * listing.
  */
-function isPaidUse(request: { method: string; url: string; body: unknown }): boolean {
+export function isPaidUseRequest(request: { method: string; url: string; body: unknown }): boolean {
   if (request.method.toUpperCase() !== "POST") return false;
   const path = request.url.split("?")[0]!;
   if (PAID_USE_PATH.test(path) || PAID_WORKFLOW_RUN_PATH.test(path)) return true;
   if (path !== UNIFIED_COMPLETIONS_PATH) return false;
-  const body = request.body;
-  if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
-  const model = (body as { model?: unknown }).model;
-  return typeof model === "string" && PAID_MODEL_STARTS.some((start) => model.startsWith(start));
+  const model = unifiedModelOf(request.body);
+  return model !== null && PAID_MODEL_STARTS.some((start) => model.startsWith(start));
+}
+
+/**
+ * Whether a request carries no credential at all: no Authorization header
+ * (an empty one counts as sent) and no session cookie. A credential that was
+ * sent and is not valid is still a credential: it gets today's 401, never
+ * the x402 door.
+ */
+export function presentsNoCredential(request: {
+  headers: { authorization?: string | string[] };
+  cookies?: { [name: string]: string | undefined };
+}): boolean {
+  return request.headers.authorization === undefined && request.cookies?.wheelsai_token === undefined;
+}
+
+/**
+ * Whether a request goes to the x402 door of a listing: the door is open,
+ * the request carries no credential, and it is one use of an agent (POST
+ * /api/a/:handle/chat or /run, or POST /v1/chat/completions whose untrimmed
+ * `model` starts with `a/`). Never a workflow's address, and never a read.
+ * Anything else takes the path it always took.
+ */
+export function x402DoorApplies(
+  request: {
+    method: string;
+    url: string;
+    body: unknown;
+    headers: { authorization?: string | string[] };
+    cookies?: { [name: string]: string | undefined };
+  },
+  open: boolean,
+): boolean {
+  if (open !== true) return false;
+  if (request.method.toUpperCase() !== "POST") return false;
+  if (!presentsNoCredential(request)) return false;
+  const path = request.url.split("?")[0]!;
+  if (PAID_USE_PATH.test(path)) return true;
+  if (path !== UNIFIED_COMPLETIONS_PATH) return false;
+  const model = unifiedModelOf(request.body);
+  return model !== null && model.startsWith("a/");
+}
+
+/** The 401 of a request with no valid credential. The one place it is written. */
+export function replyAuthenticationRequired(reply: FastifyReply): FastifyReply {
+  return reply.status(401).send({
+    error: "Unauthorized",
+    message: "Authentication required",
+  });
 }
 
 /**
@@ -297,7 +353,7 @@ export function countsAsApiCall(request: {
   body: unknown;
 }): boolean {
   if (UNMETERED_METHODS.has(request.method.toUpperCase())) return false;
-  if (isPaidUse(request)) return false;
+  if (isPaidUseRequest(request)) return false;
   return request.authType === "api_key" || request.url.startsWith("/v1/");
 }
 
@@ -309,10 +365,7 @@ export async function requireAuth(
   reply: FastifyReply
 ) {
   if (!request.auth) {
-    return reply.status(401).send({
-      error: "Unauthorized",
-      message: "Authentication required",
-    });
+    return replyAuthenticationRequired(reply);
   }
   if (
     countsAsApiCall({
@@ -336,10 +389,7 @@ export async function requireAuth(
 export function requireScope(scope: string) {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.auth) {
-      return reply.status(401).send({
-        error: "Unauthorized",
-        message: "Authentication required",
-      });
+      return replyAuthenticationRequired(reply);
     }
 
     if (request.auth.type === "api_key" && !grantsScope(request.auth.scopes, scope)) {

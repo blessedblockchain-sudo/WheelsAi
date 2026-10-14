@@ -50,6 +50,10 @@ export const APP_EXPOSED_HEADERS = [
   // A download's file name (the credit ledger's export), so the web can
   // save the file under the name the server gave it.
   "Content-Disposition",
+  // The x402 door of a listing: what to pay (with a 402) and what became of
+  // the payment (with the answer, or a 402 when it did not go through).
+  "PAYMENT-REQUIRED",
+  "PAYMENT-RESPONSE",
 ] as const;
 
 /** What the widget script needs: how long to wait, and an id to quote. */

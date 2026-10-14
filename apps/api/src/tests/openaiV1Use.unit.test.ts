@@ -452,6 +452,15 @@ test("every refusal the paid service can give has an OpenAI-shaped answer, and a
     workflow_busy: [429, "rate_limit_exceeded"],
     run_failed: [502, "workflow_failed"],
     run_timed_out: [504, "workflow_timeout"],
+    // One use paid from a wallet at a listing's x402 door.
+    x402_payment_required: [402, "x402_payment_required"],
+    x402_payment_invalid: [402, "x402_payment_required"],
+    x402_payment_failed: [402, "x402_payment_required"],
+    x402_unavailable: [503, "service_unavailable"],
+    x402_too_many_unpaid: [429, "rate_limit_exceeded"],
+    answer_timed_out: [504, "upstream_timeout"],
+    x402_payment_unconfirmed: [504, "x402_payment_unconfirmed"],
+    x402_payment_unserved: [502, "x402_payment_unserved"],
   };
   for (const [code, [status, openAiCode]] of Object.entries(codes)) {
     const mapped = paidUseOpenAiError({ code, message: "A plain sentence.", retryAfterSeconds: 30 });

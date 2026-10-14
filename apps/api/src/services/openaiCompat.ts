@@ -135,6 +135,8 @@ export type OpenAiErrorCode =
   | "marketplace_payment_required"
   | "insufficient_credits"
   | "x402_payment_required"
+  | "x402_payment_unconfirmed"
+  | "x402_payment_unserved"
   | "payment_already_used"
   | "licence_revoked"
   | "use_not_started"
@@ -234,6 +236,12 @@ const ERROR_RULES: Record<OpenAiErrorCode, ErrorRule> = {
     retry: false,
     message: "This request requires payment via the x402 protocol.",
   },
+  // A payment from a wallet at a listing's x402 door that was sent and whose
+  // answer was not released: not confirmed in time, or confirmed and not
+  // served. The error names the transaction. Sending the request again would
+  // be a second payment, so an SDK is told not to.
+  x402_payment_unconfirmed: server(504, "The payment was sent but could not be confirmed in time.", false),
+  x402_payment_unserved: server(502, "The payment went through but the answer could not be released.", false),
   // A used payment transaction stays used: OpenAI SDKs retry a 409 by
   // default, and every retry would be another metered call for the same
   // refusal.
@@ -440,6 +448,10 @@ export interface PaidUseRefusalLike {
   plans?: unknown;
   /** The refusal came after a charge that was given back: a client must not send the request again by itself. */
   noAutomaticRetry?: boolean;
+  /** At the x402 door: what one payment buys, beside priceCents. */
+  unit?: string;
+  /** At the x402 door: the signature of a payment that was sent and whose answer was not released. */
+  transaction?: string;
 }
 
 /**
@@ -498,6 +510,19 @@ const PAID_USE_ERROR_CODES: Record<PaidUseErrorCode, OpenAiErrorCode> = {
   workflow_busy: "rate_limit_exceeded",
   run_failed: "workflow_failed",
   run_timed_out: "workflow_timeout",
+  // One use paid from a wallet at a listing's x402 door (model "a/<handle>"
+  // with no key). A payment that is missing, cannot be accepted or did not
+  // go through is the one 402 of x402, never sent again by itself, and
+  // `reason` says which. No code here answers 500.
+  x402_payment_required: "x402_payment_required",
+  x402_payment_invalid: "x402_payment_required",
+  x402_payment_failed: "x402_payment_required",
+  x402_unavailable: "service_unavailable",
+  x402_too_many_unpaid: "rate_limit_exceeded",
+  // The answer was not ready in time, so nothing was sent.
+  answer_timed_out: "upstream_timeout",
+  x402_payment_unconfirmed: "x402_payment_unconfirmed",
+  x402_payment_unserved: "x402_payment_unserved",
 };
 
 /**
@@ -519,9 +544,11 @@ export function paidUseOpenAiError(refusal: PaidUseRefusalLike): OpenAiErrorResp
     ...(refusal.terms !== undefined && { terms: refusal.terms }),
     ...(refusal.plans !== undefined && { plans: refusal.plans }),
     ...(refusal.priceCents !== undefined && { priceCents: refusal.priceCents }),
+    ...(refusal.unit !== undefined && { unit: refusal.unit }),
     ...(refusal.balanceCents !== undefined && { balanceCents: refusal.balanceCents }),
     ...(refusal.refundedCents !== undefined && { refundedCents: refusal.refundedCents }),
     ...(refusal.resetsAt !== undefined && { resetsAt: refusal.resetsAt }),
+    ...(refusal.transaction !== undefined && { transaction: refusal.transaction }),
     // What the paid service called it, when /v1 folds several into one code.
     ...(code !== refusal.code && { reason: refusal.code }),
   };

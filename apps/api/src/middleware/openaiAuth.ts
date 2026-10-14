@@ -74,11 +74,27 @@ function planLimitError(error: PlanLimitError): OpenAiErrorResponse {
   });
 }
 
+/** What /v1 answers a request with no valid key. */
+export const MISSING_API_KEY_MESSAGE =
+  "Missing or invalid API key. Send it as 'Authorization: Bearer <key>'; keys are created in the dashboard under API Keys.";
+
+/** The 401 of /v1 for a request with no valid key, in OpenAI's shape. The one place it is written. */
+export function replyMissingApiKey(reply: FastifyReply): FastifyReply {
+  return replyOpenAiError(reply, "invalid_api_key", { message: MISSING_API_KEY_MESSAGE });
+}
+
 export interface OpenAiAuthOptions {
   /** A scope a scoped API key must carry (see principalHasScope). */
   scope?: string;
   /** Test seam; counts one plan API call and throws PlanLimitError when over. */
   meter?: (orgId: string) => Promise<unknown>;
+  /**
+   * A request with no credential at all that the route answers itself (the
+   * x402 door of a listing, middleware/auth.ts x402DoorApplies). Only a true
+   * lets it through, with `request.auth` still null; anything else gets the
+   * 401 above. Passed by the unified /v1 routes only.
+   */
+  admitWithoutCredential?: (request: FastifyRequest) => boolean;
 }
 
 /**
@@ -90,10 +106,8 @@ export function createOpenAiAuth(options: OpenAiAuthOptions = {}): preHandlerHoo
   return async (request, reply) => {
     const auth = request.auth;
     if (!auth) {
-      return replyOpenAiError(reply, "invalid_api_key", {
-        message:
-          "Missing or invalid API key. Send it as 'Authorization: Bearer <key>'; keys are created in the dashboard under API Keys.",
-      });
+      if (options.admitWithoutCredential?.(request) === true) return;
+      return replyMissingApiKey(reply);
     }
     if (options.scope && !principalHasScope(auth, options.scope)) {
       return replyOpenAiError(reply, "insufficient_scope", {

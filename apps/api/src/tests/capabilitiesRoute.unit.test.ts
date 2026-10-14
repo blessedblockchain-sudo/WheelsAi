@@ -56,6 +56,16 @@ const ALL_OFF: CapabilitiesEnv = {
   JOB_RUNNER_CONCURRENCY: 0,
 };
 
+/** Every setting the x402 door needs, on: the door is open. */
+const DOOR_OPEN: Partial<CapabilitiesEnv> = {
+  X402_ENABLED: true,
+  X402_SUBMIT_TRANSACTIONS: true,
+  X402_SETTLEMENT_WORKER_ENABLED: true,
+  PUBLIC_API_URL: "https://api.example.test",
+  WALLET_MASTER_KEY: "door-master-key-that-is-32-chars-long!!",
+  SOLANA_NETWORK: "devnet",
+};
+
 const OWNER = { "x-test-auth": JSON.stringify({ type: "jwt", orgId: "org_1", userId: "user_owner" }) };
 const API_KEY = {
   "x-test-auth": JSON.stringify({ type: "api_key", orgId: "org_1", scopes: ["agents:read"], apiKeyId: "key_1" }),
@@ -101,6 +111,7 @@ test("with nothing switched on, nothing is available and the shape is still whol
     emailDelivery: { available: false },
     agentGpu: { available: false },
     paidTasks: { available: false },
+    x402: { available: false },
     // Numbers, not switches: they hold whatever is on. ALL_OFF names no daily limit.
     paidUse: {
       perBuyerPerMinute: 10,
@@ -206,7 +217,7 @@ test("a caller with no credentials gets 401 and nothing is read; a session and a
   assert.equal((await get(OWNER)).statusCode, 200);
   const byKey = await get(API_KEY);
   assert.equal(byKey.statusCode, 200);
-  assert.deepEqual(Object.keys(byKey.json()), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks", "paidUse"]);
+  assert.deepEqual(Object.keys(byKey.json()), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks", "x402", "paidUse"]);
   assert.ok(reads > 0);
   await app.close();
 });
@@ -221,6 +232,9 @@ test("the body names no key, setting, address or reason, whatever is on or off",
   bodies.push((await get()).body);
   world.env = { ...ALL_OFF };
   bodies.push((await get()).body);
+  world.env = { ...ALL_OFF, ...DOOR_OPEN };
+  bodies.push((await get()).body);
+  assert.equal(JSON.parse(bodies.at(-1)!).x402.available, true);
 
   for (const body of bodies) {
     // Setting and key names are written in capitals with underscores.
@@ -234,7 +248,7 @@ test("the body names no key, setting, address or reason, whatever is on or off",
 
     // Every leaf is one of the documented ones.
     const json = JSON.parse(body) as Record<string, any>;
-    assert.deepEqual(Object.keys(json), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks", "paidUse"]);
+    assert.deepEqual(Object.keys(json), ["chat", "payouts", "emailDelivery", "agentGpu", "paidTasks", "x402", "paidUse"]);
     assert.deepEqual(Object.keys(json.paidUse), [
       "perBuyerPerMinute",
       "perBuyerPerDay",
@@ -250,7 +264,7 @@ test("the body names no key, setting, address or reason, whatever is on or off",
     ]);
     assert.deepEqual(Object.keys(json.chat), ["models", "defaultModel"]);
     for (const model of json.chat.models) assert.deepEqual(Object.keys(model), ["id", "label"]);
-    for (const key of ["payouts", "emailDelivery", "agentGpu", "paidTasks"]) {
+    for (const key of ["payouts", "emailDelivery", "agentGpu", "paidTasks", "x402"]) {
       assert.deepEqual(Object.keys(json[key]), ["available"]);
       assert.equal(typeof json[key].available, "boolean");
     }
@@ -268,6 +282,7 @@ test("a fact that cannot be read is answered as not available, not as an error",
     emailDelivery: () => true,
     agentGpu: boom,
     paidTasks: () => "yes" as unknown as boolean,
+    x402: boom,
   };
   assert.deepEqual(readCapabilities(reads), {
     chat: { models: [], defaultModel: null },
@@ -276,6 +291,7 @@ test("a fact that cannot be read is answered as not available, not as an error",
     agentGpu: { available: false },
     // Only a real true counts.
     paidTasks: { available: false },
+    x402: { available: false },
   });
 });
 
@@ -286,6 +302,7 @@ test("only the id and the label of a model leave the server", () => {
     emailDelivery: () => false,
     agentGpu: () => false,
     paidTasks: () => false,
+    x402: () => false,
   });
   // GROQ carries no `label` here (the wiring maps displayName to it): the id
   // stands in, a model with no id is left out, and a repeat is listed once.
@@ -372,4 +389,85 @@ test("paidUse fails closed on the allowance alone: an unreadable or senseless nu
   }
   assert.equal((await readPaidUse({ freeModelDailyAllowance: async () => 0 }, "org_1")).freeModelDailyAllowance, 0);
   assert.equal((await readPaidUse({ freeModelDailyAllowance: async () => 300.9 }, "org_1")).freeModelDailyAllowance, 300);
+});
+
+// ============================================
+// x402: whether a creator can let people pay one use from a wallet
+// ============================================
+
+test("x402 is available only when every setting the door needs holds, and follows no other fact", async () => {
+  const { app, world, get } = await build();
+  const x402 = async () => (await get()).json().x402;
+
+  world.env = { ...ALL_OFF, ...DOOR_OPEN };
+  assert.deepEqual(await x402(), { available: true });
+  // The local chain runs as devnet; a plain http address is an address too.
+  world.env = { ...ALL_OFF, ...DOOR_OPEN, PUBLIC_API_URL: "http://127.0.0.1:4000" };
+  assert.deepEqual(await x402(), { available: true });
+
+  const closed: Array<[string, Partial<CapabilitiesEnv>]> = [
+    ["the switch off", { X402_ENABLED: false }],
+    ["transactions not sent", { X402_SUBMIT_TRANSACTIONS: false }],
+    ["no settlement worker", { X402_SETTLEMENT_WORKER_ENABLED: false }],
+    ["no public address", { PUBLIC_API_URL: undefined }],
+    ["an address that is not one", { PUBLIC_API_URL: "not a url" }],
+    ["no master key", { WALLET_MASTER_KEY: undefined }],
+    ["a master key too short", { WALLET_MASTER_KEY: "x".repeat(31) }],
+    ["mainnet", { SOLANA_NETWORK: "mainnet-beta" }],
+    ["no network named", { SOLANA_NETWORK: undefined }],
+  ];
+  for (const [name, change] of closed) {
+    world.env = { ...ALL_OFF, ...DOOR_OPEN, ...change };
+    assert.deepEqual(await x402(), { available: false }, name);
+  }
+  // Every other fact on, the door's settings left out: closed.
+  world.env = { PAYOUTS_ENABLED: true, PAYOUT_EXECUTOR_INTERVAL_MS: 60_000, AGENT_GPU_ENABLED: true, JOB_RUNNER_CONCURRENCY: 2 };
+  world.email = true;
+  assert.deepEqual(await x402(), { available: false });
+  // And the door open turns no other fact on.
+  world.env = { ...ALL_OFF, ...DOOR_OPEN };
+  world.email = false;
+  const body = (await get()).json();
+  assert.deepEqual(
+    [body.payouts, body.emailDelivery, body.agentGpu, body.paidTasks].map((fact: { available: boolean }) => fact.available),
+    [false, false, false, false],
+  );
+  await app.close();
+});
+
+test("x402 is read per request: a setting that changes between two requests changes the answer", async () => {
+  const { app, world, get } = await build();
+  world.env = { ...ALL_OFF, ...DOOR_OPEN };
+  assert.equal((await get()).json().x402.available, true);
+  world.env = { ...ALL_OFF, ...DOOR_OPEN, X402_ENABLED: false };
+  assert.equal((await get()).json().x402.available, false);
+  await app.close();
+});
+
+test("x402: settings that cannot be read are answered as not available", () => {
+  const deps = buildCapabilitiesDeps({
+    env: () => {
+      throw new Error("X402_ENABLED could not be read from PUBLIC_API_URL");
+    },
+    availableFreeModels: () => [],
+    emailConfigured: () => false,
+    auth: async () => undefined,
+  });
+  const answer = readCapabilities(deps);
+  assert.deepEqual(answer.x402, { available: false });
+  assert.doesNotMatch(JSON.stringify(answer), /X402|PUBLIC_API_URL|could not be read/);
+});
+
+test("x402: the answer names no setting and carries none of their values, open or closed", async () => {
+  const { app, world, get } = await build();
+  for (const env of [{ ...ALL_OFF, ...DOOR_OPEN }, { ...ALL_OFF, ...DOOR_OPEN, SOLANA_NETWORK: "mainnet-beta" as const }, ALL_OFF]) {
+    world.env = env;
+    const body = (await get()).body;
+    // The fact is called x402; a setting's name is in capitals, and none is said.
+    assert.doesNotMatch(body, /X402|SUBMIT|SETTLEMENT|PUBLIC_API|WALLET|MASTER|SOLANA|NETWORK/);
+    assert.doesNotMatch(body, /submit|settlement|worker|wallet|master|solana|network|url/i);
+    assert.doesNotMatch(body, /devnet|mainnet|example\.test|door-master-key/i);
+    assert.deepEqual(Object.keys(JSON.parse(body).x402), ["available"]);
+  }
+  await app.close();
 });

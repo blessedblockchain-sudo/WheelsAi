@@ -12,6 +12,8 @@
  *   agentGpu       the dedicated GPU switch for agents
  *   paidTasks      the job runner being on (the condition hiring answers
  *                  jobs_not_configured on)
+ *   x402           the door's own test over its settings (x402DoorOpen); a
+ *                  setting that is not there closes it
  *   paidUse        the free-model allowance is the day's limit times the
  *                  plan's multiple, the two numbers the chat core's own
  *                  check multiplies (middleware/free-tier-limit.ts); a plan
@@ -30,14 +32,29 @@ import { requireAuth } from "../middleware/auth.js";
 import { isEmailConfigured } from "../services/email/emailService.js";
 import { getOrgPlan } from "../services/orgPlan.js";
 import { payoutsRunning } from "../services/payoutRequests.js";
+import { x402DoorOpen } from "../services/x402DoorRules.js";
 import { createCapabilitiesRoutes, type CapabilitiesRouteDeps } from "./capabilities.js";
 
-/** The settings the answer reads. */
+/**
+ * The settings the answer reads. The door's are optional: one that is not
+ * there leaves the door closed, never open.
+ */
 export type CapabilitiesEnv = Pick<
   Env,
   "PAYOUTS_ENABLED" | "PAYOUT_EXECUTOR_INTERVAL_MS" | "AGENT_GPU_ENABLED" | "JOB_RUNNER_CONCURRENCY"
 > &
-  Partial<Pick<Env, "FREE_TIER_RPD">>;
+  Partial<
+    Pick<
+      Env,
+      | "FREE_TIER_RPD"
+      | "X402_ENABLED"
+      | "X402_SUBMIT_TRANSACTIONS"
+      | "X402_SETTLEMENT_WORKER_ENABLED"
+      | "PUBLIC_API_URL"
+      | "WALLET_MASTER_KEY"
+      | "SOLANA_NETWORK"
+    >
+  >;
 
 export interface BuildCapabilitiesDepsInput {
   /** Read per answer, so a test can change a switch between two requests. */
@@ -59,6 +76,18 @@ export function buildCapabilitiesDeps(input: BuildCapabilitiesDepsInput): Capabi
     emailDelivery: () => input.emailConfigured(),
     agentGpu: () => input.env().AGENT_GPU_ENABLED === true,
     paidTasks: () => input.env().JOB_RUNNER_CONCURRENCY > 0,
+    // The one test the door itself is opened by, over the same settings.
+    x402: () => {
+      const settings = input.env();
+      return x402DoorOpen({
+        x402Enabled: settings.X402_ENABLED === true,
+        submitTransactions: settings.X402_SUBMIT_TRANSACTIONS === true,
+        settlementWorkerEnabled: settings.X402_SETTLEMENT_WORKER_ENABLED === true,
+        publicApiUrl: settings.PUBLIC_API_URL,
+        walletMasterKey: settings.WALLET_MASTER_KEY,
+        solanaNetwork: settings.SOLANA_NETWORK ?? "",
+      });
+    },
     freeModelDailyAllowance: async (orgId) => {
       const perDay = input.env().FREE_TIER_RPD;
       if (typeof perDay !== "number" || !input.planRateMultiplier) throw new Error("allowance not readable");

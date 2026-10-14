@@ -3,7 +3,7 @@
  *
  *   GET /api/capabilities   (mounted with prefix "/api/capabilities")
  *
- * Signed-in session or API key. The answer is five facts and the numbers
+ * Signed-in session or API key. The answer is six facts and the numbers
  * of paid use:
  *
  *   chat           the models an agent can answer on now, in the order the
@@ -13,6 +13,9 @@
  *   emailDelivery  results can be sent by email
  *   agentGpu       an agent can be put on a dedicated GPU
  *   paidTasks      a paid task can be run
+ *   x402           a creator can let people with no account pay one use
+ *                  from a Solana wallet: the door is open on this server
+ *                  (x402DoorOpen, services/x402DoorRules.ts)
  *   paidUse        what a Sell screen and a buyer's page say of paid use:
  *                  how often one buyer may use an agent (a minute, a day),
  *                  the smallest price of one use, the numbers of a plan (how
@@ -72,6 +75,8 @@ export interface Capabilities {
   emailDelivery: Availability;
   agentGpu: Availability;
   paidTasks: Availability;
+  /** Paying one use from a wallet, with no account (the x402 door). */
+  x402: Availability;
 }
 
 /** The numbers of paid use. All but the last are the same for everyone. */
@@ -117,6 +122,7 @@ export interface CapabilitiesReads {
   emailDelivery(): boolean;
   agentGpu(): boolean;
   paidTasks(): boolean;
+  x402(): boolean;
 }
 
 export interface CapabilitiesRouteDeps extends CapabilitiesReads, PaidUseReads {
@@ -169,6 +175,7 @@ export function readCapabilities(reads: CapabilitiesReads): Capabilities {
     emailDelivery: available(reads.emailDelivery),
     agentGpu: available(reads.agentGpu),
     paidTasks: available(reads.paidTasks),
+    x402: available(reads.x402),
   };
 }
 

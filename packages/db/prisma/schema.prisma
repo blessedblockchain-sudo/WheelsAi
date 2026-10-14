@@ -1251,6 +1251,21 @@ model X402Payment {
   // Request context
   deploymentId  String?  @map("deployment_id") @db.Uuid
   agentDeploymentId String? @map("agent_deployment_id") @db.Uuid
+  // The listing a payment through the x402 door paid one use of. Null on a
+  // payment for a deployment, and never set with one (CHECK in the
+  // migration). No relation on purpose: a stranger's failed payment must not
+  // stand in the way of an agent's delete, and MarketplaceRevenue.listingId
+  // has none either. On a row with a listing, orgId is the SELLER's
+  // organization.
+  listingId     String?  @map("listing_id") @db.Uuid
+  // The hex sha256 of the transaction's message, which both signatures sign:
+  // the duplicate key of a door payment, written before its answer is made,
+  // while txSignature stays null until the payment is sent. Not the payer's
+  // signature, of which one message can have many. Set on every row with a
+  // listing and on no other (CHECK in the migration). One door payment in
+  // flight ('held' or 'submitted') per paying wallet: a partial unique index
+  // in the migration (Prisma does not model it).
+  messageHash   String?  @unique @map("message_hash")
   requestId     String   @map("request_id") // Correlation ID
 
   // Payment details
@@ -1270,6 +1285,10 @@ model X402Payment {
   // 'failed': never landed, failed on the chain, or refused before sending.
   // 'refunded': landed, not served, returned as credits. 'pending' is the
   // column's default and is not written.
+  // A payment for a listing also has 'held': claimed while its answer is
+  // made, with nothing signed or sent; and 'unserved': landed, but its
+  // answer was not released, so there is no sale and nobody is credited. It
+  // is never 'refunded'.
   status        String   @default("pending")
   verifiedAt    DateTime? @map("verified_at")
   settledAt     DateTime? @map("settled_at")
@@ -1303,10 +1322,13 @@ model X402Payment {
   // Restrict (G6): these are real payments received on-chain. Same reasoning
   // as credit_transactions.
   org           Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  // The sale a door payment became, once the chain confirmed it.
+  revenue       MarketplaceRevenue?
 
   @@index([orgId, createdAt])
   @@index([txSignature])
   @@index([status])
+  @@index([listingId, createdAt])
   @@map("x402_payments")
 }
 
@@ -1388,6 +1410,11 @@ model AgentListing {
   // on the platform's model keys. Each settle adds to it, and only the whole
   // cents it has just crossed leave the creator's amount (marketplaceMetering).
   useModelCostMicros BigInt   @default(0) @map("use_model_cost_micros")
+  // The creator lets a caller with no account pay each use from a Solana
+  // wallet, through the listing's x402 door. Only on an agent's listing that
+  // sells use per request at 5 cents or more (CHECK in the migration), and
+  // the door serves it only while the server's own door is open too.
+  x402Enabled       Boolean   @default(false) @map("x402_enabled")
 
   // Try it: every published listing can be tried for free on the platform's
   // models, up to a platform-funded number of messages a day. This is how
@@ -1718,11 +1745,19 @@ model MarketplaceRevenue {
   jobId           String?  @unique @map("job_id") @db.Uuid
   installId       String?  @map("install_id") @db.Uuid
   subscriptionId  String?  @map("subscription_id") @db.Uuid
-  buyerId         String   @map("buyer_id") @db.Uuid
+  // Null only on a sale paid from a wallet through a listing's x402 door,
+  // which has no buyer organization: payerWallet is set instead (exactly one
+  // of the two, CHECK in the migration).
+  buyerId         String?  @map("buyer_id") @db.Uuid
   publisherId     String   @map("publisher_id") @db.Uuid
+  // The wallet that paid a sale through the x402 door, and the payment it
+  // came from: set together (CHECK in the migration). A payment is one sale
+  // at most, and cannot be deleted from under its sale.
+  payerWallet     String?  @map("payer_wallet")
+  x402PaymentId   String?  @unique @map("x402_payment_id") @db.Uuid
 
   // Transaction type
-  type            String   // 'per_request', 'subscription', 'subscription_renewal', 'job'
+  type            String   // 'per_request', 'subscription', 'subscription_renewal', 'job', 'x402'
 
   // Amounts
   grossAmountCents BigInt  @map("gross_amount_cents")
@@ -1742,6 +1777,9 @@ model MarketplaceRevenue {
   createdAt       DateTime @default(now()) @map("created_at")
 
   job Job? @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  // Restrict written out: for an optional relation Prisma's own default
+  // would be SetNull, which would leave a wallet's sale with no payment.
+  x402Payment X402Payment? @relation(fields: [x402PaymentId], references: [id], onDelete: Restrict)
 
   @@index([listingId, createdAt])
   @@index([publisherId, createdAt])

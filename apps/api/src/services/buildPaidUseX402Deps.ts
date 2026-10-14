@@ -60,7 +60,7 @@ import { hashBucket, ipBucket } from "./widgetKeys.js";
 import { x402NetworkFor } from "./x402.js";
 import { x402DoorOpenNow, x402DoorSettingsOf, type X402DoorEnv } from "./x402DoorSettings.js";
 import { deriveX402FeePayerKeypair, signAsFeePayer } from "./x402FeePayer.js";
-import { x402ResourceUrl } from "./x402Wire.js";
+import { X402_MEMO_NONCE_BYTES, x402ResourceUrl } from "./x402Wire.js";
 
 const logger = createLogger("x402-door");
 
@@ -354,7 +354,7 @@ export function buildPaidUseX402Deps(over: Partial<X402BindingSources> = {}): X4
     recordSale: sources.recordSale,
     inFlight: inFlightX402Uses,
     now: sources.now,
-    nonce: () => new Uint8Array(randomBytes(16)),
+    nonce: () => new Uint8Array(randomBytes(X402_MEMO_NONCE_BYTES)),
     logger: log,
   };
 }

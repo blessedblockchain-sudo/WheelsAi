@@ -48,7 +48,7 @@ const { memo: MEMO } = makeX402Memo({
   listingId: LISTING,
   amount: AMOUNT.toString(),
   secret: "a-test-secret-of-some-length",
-  nonceBytes: new Uint8Array(16).fill(5),
+  nonceBytes: new Uint8Array(6).fill(5),
 });
 
 const REQUIREMENTS: PaymentRequirements = listingRequirements({

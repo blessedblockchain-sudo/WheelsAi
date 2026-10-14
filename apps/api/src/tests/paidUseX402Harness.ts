@@ -40,7 +40,7 @@ import {
 import { signAsFeePayer } from "../services/x402FeePayer.js";
 import type { X402DoorPaymentEvent, X402DoorPaymentsDeps } from "../services/x402Payments.js";
 import { recordX402Sale, type X402SaleTx } from "../services/x402Sale.js";
-import { listingRequirements, makeX402Memo, type PaymentRequirements } from "../services/x402Wire.js";
+import { X402_MEMO_NONCE_BYTES, listingRequirements, makeX402Memo, type PaymentRequirements } from "../services/x402Wire.js";
 import { doorChain, type DoorChain } from "./x402DoorChain.js";
 import { exactPayment, keypairOf, paymentSignatureHeader, type ExactPaymentInput } from "./x402DoorStandIns.js";
 import { FakeX402Db, type PaymentRow } from "./x402StandIns.js";
@@ -474,7 +474,7 @@ export function doorWorld(options: DoorWorldOptions = {}): DoorWorld {
     },
     inFlight: world.inFlight,
     now,
-    nonce: () => crypto.getRandomValues(new Uint8Array(16)),
+    nonce: () => crypto.getRandomValues(new Uint8Array(X402_MEMO_NONCE_BYTES)),
     logger: {
       warn: (obj, msg) => world.logs.push(`${msg} ${JSON.stringify(obj, bigintSafe)}`),
       error: (obj, msg) => world.logs.push(`${msg} ${JSON.stringify(obj, bigintSafe)}`),

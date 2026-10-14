@@ -302,7 +302,7 @@ export interface X402UseDeps {
   /** The door's own shutdown slots. */
   inFlight: Pick<InFlightRuns, "begin">;
   now(): Date;
-  /** 16 bytes for a challenge's memo. */
+  /** The random bytes of a challenge's memo (X402_MEMO_NONCE_BYTES of them). */
   nonce(): Uint8Array;
   logger?: {
     warn(obj: unknown, msg: string): void;

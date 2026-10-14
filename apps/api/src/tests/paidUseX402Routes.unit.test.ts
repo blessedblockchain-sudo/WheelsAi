@@ -356,7 +356,7 @@ test("a call with no payment is answered 402 with the published challenge, in ea
     assert.equal(accepts.payTo, TREASURY.toBase58());
     assert.equal(accepts.maxTimeoutSeconds, 180);
     assert.equal(accepts.extra.feePayer, FEE_PAYER.publicKey.toBase58());
-    assert.match(accepts.extra.memo, new RegExp(`^wheelsai-x402:${LISTING_ID}:`));
+    assert.match(accepts.extra.memo, /^[A-Za-z0-9_-]{24}$/);
     // Nothing is written for a challenge.
     assert.equal(open.world.db.payments.size, 0);
     assert.equal(open.world.modelRuns, 0);

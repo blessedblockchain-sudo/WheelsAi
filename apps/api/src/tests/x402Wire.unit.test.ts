@@ -14,7 +14,8 @@ import { X402_MAX_TIMEOUT_SECONDS } from "../services/x402DoorRules.js";
 import {
   X402_CAIP2_NETWORKS,
   X402_ERROR_REASONS as R,
-  X402_MEMO_PREFIX,
+  X402_MEMO_CHARS,
+  X402_MEMO_NONCE_BYTES,
   X402_VERSION,
   compareAccepted,
   encodePaymentRequired,
@@ -39,7 +40,7 @@ const SECRET = "a-test-secret-of-some-length";
 const LISTING = "4f8b1c2d-0000-4000-8000-00000000c0de";
 const TREASURY = keypairOf(7).publicKey.toBase58();
 const FEE_PAYER = keypairOf(9).publicKey.toBase58();
-const NONCE_BYTES = new Uint8Array(16).fill(5);
+const NONCE_BYTES = new Uint8Array(6).fill(5);
 
 function requirementsFor(network: "devnet" | "mainnet-beta", priceCents = 5n, memo?: string): PaymentRequirements {
   const amount = (priceCents * 10_000n).toString();
@@ -192,27 +193,41 @@ test("PAYMENT-SIGNATURE: absent, not base64, not JSON, of version 1, or malforme
 test("the memo binds a payment to its listing and amount, under a MAC with its own label", () => {
   const { memo, nonce } = makeX402Memo({ listingId: LISTING, amount: "50000", secret: SECRET, nonceBytes: NONCE_BYTES });
   assert.equal(nonce, Buffer.from(NONCE_BYTES).toString("base64url"));
-  const mac = createHmac("sha256", SECRET).update(`wheelsai-x402-memo-v1:${LISTING}:${nonce}:50000`).digest("base64url").slice(0, 22);
-  assert.equal(memo, `${X402_MEMO_PREFIX}${LISTING}:${nonce}:${mac}`);
-  assert.ok(Buffer.byteLength(memo, "utf8") <= 256);
-  assert.match(memo, /^wheelsai-x402:/);
+  const mac = createHmac("sha256", SECRET).update(`wheelsai-x402-memo-v1:${LISTING}:${nonce}:50000`).digest().subarray(0, 12);
+  assert.equal(memo, Buffer.concat([Buffer.from(NONCE_BYTES), mac]).toString("base64url"));
 
   assert.deepEqual(readX402Memo(memo, { listingId: LISTING, amount: "50000", secret: SECRET }), { nonce });
   assert.equal(readX402Memo(memo, { listingId: LISTING, amount: "60000", secret: SECRET }), null, "another amount");
   assert.equal(readX402Memo(memo, { listingId: "another-listing", amount: "50000", secret: SECRET }), null, "another listing");
   assert.equal(readX402Memo(memo, { listingId: LISTING, amount: "50000", secret: `${SECRET}x` }), null, "another secret");
   assert.equal(readX402Memo(`${memo.slice(0, -1)}A`, { listingId: LISTING, amount: "50000", secret: SECRET }), null, "a bad MAC");
-  assert.equal(readX402Memo(`${memo}:more`, { listingId: LISTING, amount: "50000", secret: SECRET }), null);
+  assert.equal(readX402Memo(`${memo}A`, { listingId: LISTING, amount: "50000", secret: SECRET }), null, "longer");
+  assert.equal(readX402Memo(memo.slice(0, -1), { listingId: LISTING, amount: "50000", secret: SECRET }), null, "shorter");
+  assert.equal(readX402Memo(`${memo.slice(0, -1)}+`, { listingId: LISTING, amount: "50000", secret: SECRET }), null, "not base64url");
   assert.equal(readX402Memo(42, { listingId: LISTING, amount: "50000", secret: SECRET }), null);
   // A MAC with no label of its own (the secret's other uses) does not stand for one.
-  const unlabelled = createHmac("sha256", SECRET).update(`${LISTING}:${nonce}:50000`).digest("base64url").slice(0, 22);
-  assert.equal(readX402Memo(`${X402_MEMO_PREFIX}${LISTING}:${nonce}:${unlabelled}`, { listingId: LISTING, amount: "50000", secret: SECRET }), null);
+  const unlabelled = createHmac("sha256", SECRET).update(`${LISTING}:${nonce}:50000`).digest().subarray(0, 12);
+  const forged = Buffer.concat([Buffer.from(NONCE_BYTES), unlabelled]).toString("base64url");
+  assert.equal(readX402Memo(forged, { listingId: LISTING, amount: "50000", secret: SECRET }), null);
 
   // Each challenge has a fresh nonce.
   const a = makeX402Memo({ listingId: LISTING, amount: "50000", secret: SECRET });
   const b = makeX402Memo({ listingId: LISTING, amount: "50000", secret: SECRET });
   assert.notEqual(a.nonce, b.nonce);
-  assert.match(a.nonce, /^[A-Za-z0-9_-]{22}$/);
+  assert.match(a.nonce, /^[A-Za-z0-9_-]{8}$/);
+});
+
+test("the memo is short enough for a standard client's compute limit", () => {
+  // The reference client sets 20,000 compute units and the Memo program costs
+  // about 350 a byte: measured on the local test validator, a TransferChecked
+  // with a 32-byte memo used 19,249 units and with a 96-byte one 41,848. A
+  // memo over 32 bytes is one no standard client could pay.
+  const { memo } = makeX402Memo({ listingId: LISTING, amount: "50000", secret: SECRET });
+  assert.equal(X402_MEMO_CHARS, 24);
+  assert.equal(X402_MEMO_NONCE_BYTES, 6);
+  assert.equal(memo.length, X402_MEMO_CHARS);
+  assert.ok(Buffer.byteLength(memo, "utf8") <= 32);
+  assert.throws(() => makeX402Memo({ listingId: LISTING, amount: "50000", secret: SECRET, nonceBytes: new Uint8Array(16) }));
 });
 
 // ============================================

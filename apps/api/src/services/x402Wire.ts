@@ -20,9 +20,6 @@ import { X402_MAX_TIMEOUT_SECONDS } from "./x402DoorRules.js";
 /** The version of the format the door speaks. A payment of another version is not read. */
 export const X402_VERSION = 2;
 
-/** How every memo the door asks for starts. */
-export const X402_MEMO_PREFIX = "wheelsai-x402:";
-
 /**
  * The label the memo's MAC input starts with. The secret is the one the SOL
  * quote and the address buckets already use, so each use has a label of its
@@ -289,36 +286,47 @@ export function readPaymentSignature(
 // The memo
 // ============================================
 
-/** The MAC's length in base64url characters: 132 bits. */
-const MEMO_MAC_CHARS = 22;
-/** 16 random bytes in base64url. */
-const MEMO_NONCE = /^[A-Za-z0-9_-]{22}$/;
+/** The random bytes of a memo's nonce. */
+export const X402_MEMO_NONCE_BYTES = 6;
+/** The bytes of the MAC a memo keeps: 96 bits. */
+const X402_MEMO_MAC_BYTES = 12;
+/** A memo's length: the base64url of the nonce and the MAC, 18 bytes. */
+export const X402_MEMO_CHARS = 24;
+const MEMO_TEXT = /^[A-Za-z0-9_-]{24}$/;
 
-function memoMac(secret: string, listingId: string, nonce: string, amount: string): string {
+function memoMac(secret: string, listingId: string, nonce: string, amount: string): Buffer {
   return createHmac("sha256", secret)
     .update(`${X402_MEMO_MAC_LABEL}${listingId}:${nonce}:${amount}`)
-    .digest("base64url")
-    .slice(0, MEMO_MAC_CHARS);
+    .digest()
+    .subarray(0, X402_MEMO_MAC_BYTES);
 }
 
 /**
- * The memo of one challenge: `wheelsai-x402:<listingId>:<nonce>:<mac>`. It
- * binds a payment to this listing and this amount, and nothing is written
- * for it: the MAC is what the paid retry is checked by. The nonce becomes
- * the payment row's requestId.
+ * The memo of one challenge: the base64url of a nonce of 6 random bytes and
+ * 12 bytes of a MAC over the listing, the nonce and the amount, 24
+ * characters in all. It binds a payment to this listing and this amount,
+ * and nothing is written for it: the MAC is what the paid retry is checked
+ * by. The nonce becomes the payment row's requestId.
+ *
+ * Short on purpose. The reference client sets a limit of 20,000 compute
+ * units, and the Memo program costs about 350 units a byte: on the local
+ * test validator a TransferChecked with a 32-byte memo used 19,249 units,
+ * and with the 96-byte memo this door first asked for, 41,848, which no
+ * standard client could pay. 24 characters leave room under the limit.
  */
 export function makeX402Memo(input: {
   listingId: string;
   amount: string;
   secret: string;
-  /** 16 bytes; random unless a test hands them in. */
+  /** X402_MEMO_NONCE_BYTES bytes; random unless a test hands them in. */
   nonceBytes?: Uint8Array;
 }): { memo: string; nonce: string } {
   if (typeof input.secret !== "string" || input.secret.length === 0) throw new Error("x402: a memo needs a secret");
-  const bytes = input.nonceBytes ?? randomBytes(16);
-  if (bytes.length !== 16) throw new Error("x402: a memo's nonce is 16 bytes");
+  const bytes = input.nonceBytes ?? randomBytes(X402_MEMO_NONCE_BYTES);
+  if (bytes.length !== X402_MEMO_NONCE_BYTES) throw new Error(`x402: a memo's nonce is ${X402_MEMO_NONCE_BYTES} bytes`);
   const nonce = Buffer.from(bytes).toString("base64url");
-  return { memo: `${X402_MEMO_PREFIX}${input.listingId}:${nonce}:${memoMac(input.secret, input.listingId, nonce, input.amount)}`, nonce };
+  const mac = memoMac(input.secret, input.listingId, nonce, input.amount);
+  return { memo: Buffer.concat([Buffer.from(bytes), mac]).toString("base64url"), nonce };
 }
 
 /**
@@ -329,15 +337,14 @@ export function readX402Memo(
   memo: unknown,
   expected: { listingId: string; amount: string; secret: string },
 ): { nonce: string } | null {
-  if (typeof memo !== "string" || !memo.startsWith(X402_MEMO_PREFIX)) return null;
+  if (typeof memo !== "string" || !MEMO_TEXT.test(memo)) return null;
   if (typeof expected.secret !== "string" || expected.secret.length === 0) return null;
-  const parts = memo.slice(X402_MEMO_PREFIX.length).split(":");
-  if (parts.length !== 3) return null;
-  const [listingId, nonce, mac] = parts as [string, string, string];
-  if (listingId !== expected.listingId || !MEMO_NONCE.test(nonce)) return null;
-  const want = Buffer.from(memoMac(expected.secret, listingId, nonce, expected.amount));
-  const got = Buffer.from(mac);
-  if (got.length !== want.length || !timingSafeEqual(got, want)) return null;
+  const bytes = Buffer.from(memo, "base64url");
+  // The text must be exactly what its bytes encode to.
+  if (bytes.length !== X402_MEMO_NONCE_BYTES + X402_MEMO_MAC_BYTES || bytes.toString("base64url") !== memo) return null;
+  const nonce = bytes.subarray(0, X402_MEMO_NONCE_BYTES).toString("base64url");
+  const want = memoMac(expected.secret, expected.listingId, nonce, expected.amount);
+  if (!timingSafeEqual(bytes.subarray(X402_MEMO_NONCE_BYTES), want)) return null;
   return { nonce };
 }
 

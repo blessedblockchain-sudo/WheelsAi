@@ -54,6 +54,19 @@ test("its numbers are the product's: four plans, 30 days, and 90% to the creator
   assert.match(earning, /You keep 90% of every sale/);
 });
 
+test("the free trial it names is one a creator can offer, said once and in its place", () => {
+  // The product has it: a plan of its own kind in the rules a creator's plans are checked by.
+  const rules = apiSource("services/listingPlans.ts");
+  assert.match(rules, /kind: "paid" \| "trial";/);
+  assert.match(rules, /const trial = plan\.kind === "trial";/);
+  const [plans] = cards as [Card];
+  assert.match(
+    plans.description,
+    /a stop until the plan renews\. Offer a free trial so buyers can try it first\. Subscribers keep the terms they agreed to\.$/,
+  );
+  assert.equal(earning.split("free trial").length, 2, "the free trial is said once");
+});
+
 test("it claims no creators, buyers, calls or earnings, and no plan without a count", () => {
   // The only numbers in the part about earning are the rules above.
   const numbers = cards.flatMap((card) => `${card.title} ${card.description}`.match(/\d[\d,.]*%?/g) ?? []);

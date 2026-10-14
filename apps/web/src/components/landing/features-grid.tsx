@@ -82,7 +82,7 @@ const pillars = [
         icon: Coins,
         title: "Plans With Uses Included",
         description:
-          "Add up to four plans to a listing: one price for 30 days, a number of uses included, and then a price for each extra use or a stop until the plan renews. Subscribers keep the terms they agreed to.",
+          "Add up to four plans to a listing: one price for 30 days, a number of uses included, and then a price for each extra use or a stop until the plan renews. Offer a free trial so buyers can try it first. Subscribers keep the terms they agreed to.",
       },
       {
         icon: KeyRound,

@@ -8,10 +8,10 @@
  * on, so the buyer gets back exactly what the row says was held and their
  * ledger line reads as any refunded use does.
  *
- * Two things are kept out of the batch here, so that they cannot sit at the
- * head of an oldest-first read and stop every other buyer's refund: a
- * request of a copy that may still be running, and a charge whose refund
- * just failed.
+ * Three things are kept out of the batch here, so that they cannot sit at
+ * the head of an oldest-first read and stop every other buyer's refund: a
+ * request of a copy that may still be running, a paid run of a workflow
+ * that may still be running, and a charge whose refund just failed.
  */
 
 import { prisma } from "../lib/prisma.js";
@@ -22,6 +22,7 @@ import {
   type MeteringRefundPrisma,
 } from "./marketplaceMetering.js";
 import type { PendingUseSweepTickDeps, StalePendingUse } from "./runPendingUseSweepTick.js";
+import { listingProductKind } from "./workflowListing.js";
 
 const logger = createLogger("pending-use-sweeper");
 
@@ -39,6 +40,19 @@ export const PENDING_USE_REVENUE_TYPE = "per_request";
  * must stay above both limits.
  */
 export const PENDING_COPY_MAX_MS = 75 * 60_000;
+
+/**
+ * How long the charge of a paid run of a workflow may stay pending before it
+ * is given back. A paid run is not held to the 15 minutes of a paid use of
+ * an agent: it may take PAID_WORKFLOW_MAX_RUN_MS (ten minutes), and its
+ * answer may still be delivered and settled PAID_WORKFLOW_DELIVER_GRACE_MS
+ * after that (services/workflowListing.ts). Refunded sooner, such a run
+ * would deliver its answer and its settle would change nothing: a free
+ * answer, and nothing for the creator. Twice the longest run. A test holds
+ * it at least five minutes above the longest run, and the grace under those
+ * five minutes, so nobody raises one without the other.
+ */
+export const PENDING_WORKFLOW_MAX_MS = 20 * 60_000;
 
 /**
  * How long a charge whose refund failed is left out of the read before it
@@ -94,8 +108,8 @@ export interface PendingUseSweepPrisma {
   agentInstall: {
     findMany(args: {
       where: { id: { in: string[] } };
-      select: { id: true; kind: true; listing: { select: { title: true } } };
-    }): Promise<Array<{ id: string; kind: string; listing: { title: string } }>>;
+      select: { id: true; kind: true; listing: { select: { title: true; orchestrationId: true } } };
+    }): Promise<Array<{ id: string; kind: string; listing: { title: string; orchestrationId: string | null } }>>;
   };
   $transaction<T>(run: (tx: MeteringRefundPrisma) => Promise<T>): Promise<T>;
 }
@@ -160,25 +174,32 @@ export function bindPendingUseSweepTickDeps(
       });
       // The licences of the whole batch in one read: whether each is a use
       // or a copy, and the title, are what the buyer's ledger line is
-      // written from.
+      // written from. Whether the listing sells a workflow says how long
+      // the use may still be running.
       const installIds = [...new Set(rows.flatMap((row) => (row.installId ? [row.installId] : [])))];
       const installs =
         installIds.length === 0
           ? []
           : await db.agentInstall.findMany({
               where: { id: { in: installIds } },
-              select: { id: true, kind: true, listing: { select: { title: true } } },
+              select: { id: true, kind: true, listing: { select: { title: true, orchestrationId: true } } },
             });
       const installOf = new Map(installs.map((install) => [install.id, install]));
 
-      // A request of a copy may still be running at this age. It is not a
-      // failure: it is left out, here and from the next reads, until it is
-      // old enough.
+      // A request of a copy, and a paid run of a workflow, may still be
+      // running at this age. It is not a failure: it is left out, here and
+      // from the next reads, until it is old enough.
       const at = now().getTime();
       const due = rows.filter((row) => {
         const install = row.installId ? installOf.get(row.installId) : undefined;
-        if (install?.kind !== "copy") return true;
-        const dueAt = row.createdAt.getTime() + PENDING_COPY_MAX_MS;
+        const maxMs =
+          install?.kind === "copy"
+            ? PENDING_COPY_MAX_MS
+            : install && listingProductKind({ orchestrationId: install.listing.orchestrationId }) === "workflow"
+              ? PENDING_WORKFLOW_MAX_MS
+              : null;
+        if (maxMs === null) return true;
+        const dueAt = row.createdAt.getTime() + maxMs;
         if (dueAt < at) return true;
         hold(row.id, dueAt);
         return false;

@@ -12,6 +12,7 @@ import {
   PENDING_USE_REVENUE_TYPE,
   PENDING_USE_SWEEP_HOLD_MAX,
   PENDING_USE_SWEEP_HOLD_MS,
+  PENDING_WORKFLOW_MAX_MS,
   type PendingUseSweepPrisma,
 } from "../services/buildPendingUseSweepTickDeps.js";
 import {
@@ -21,6 +22,7 @@ import {
   runPendingUseSweepTick,
   type StalePendingUse,
 } from "../services/runPendingUseSweepTick.js";
+import { PAID_WORKFLOW_DELIVER_GRACE_MS, PAID_WORKFLOW_MAX_RUN_MS } from "../services/workflowListing.js";
 
 // The sweeper for charges per use: a charge left `pending` by a process that
 // died between the debit and the answer is given back to the buyer, once. A
@@ -217,9 +219,13 @@ function db(rows: Revenue[], options: { afterRead?: () => void } = {}) {
   /** Any write that would credit a creator or count a delivered use: the sweeper must make none. */
   const creatorWrites: string[] = [];
   const installs = [
-    { id: "licence-use", kind: "use", listing: { title: "Tax Helper" } },
-    { id: "licence-copy", kind: "copy", listing: { title: "Copy Cat" } },
+    { id: "licence-use", kind: "use", listing: { title: "Tax Helper", orchestrationId: null } },
+    { id: "licence-copy", kind: "copy", listing: { title: "Copy Cat", orchestrationId: null } },
+    // A licence for use of a listing that sells a workflow.
+    { id: "licence-workflow", kind: "use", listing: { title: "Weekly Digest", orchestrationId: "workflow-1" } },
   ];
+  /** What each read of the licences asked for. */
+  const licenceReads: unknown[] = [];
 
   type Where = { type: string; status: string; createdAt: { lt: Date }; id?: { notIn: string[] } };
   const matches = (row: Revenue, where: Where) =>
@@ -293,8 +299,10 @@ function db(rows: Revenue[], options: { afterRead?: () => void } = {}) {
       },
     },
     agentInstall: {
-      findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
-        installs.filter((install) => where.id.in.includes(install.id)),
+      findMany: async (args: { where: { id: { in: string[] } }; select: unknown }) => {
+        licenceReads.push(args.select);
+        return installs.filter((install) => args.where.id.in.includes(install.id));
+      },
     },
     $transaction: async <T>(run: (inner: typeof tx) => Promise<T>): Promise<T> => {
       const before = { rows: rows.map((row) => ({ ...row })), balances: new Map(balances), ledger: ledger.length };
@@ -317,7 +325,7 @@ function db(rows: Revenue[], options: { afterRead?: () => void } = {}) {
     ...bindPendingUseSweepTickDeps(prisma as unknown as PendingUseSweepPrisma, () => clock.now),
     logger: { error: (obj: unknown) => errors.push(obj) },
   };
-  return { deps, rows, balances, ledger, queries, counts, creatorWrites, errors, clock };
+  return { deps, rows, balances, ledger, queries, counts, creatorWrites, errors, clock, licenceReads };
 }
 
 const statusOf = (rows: Revenue[], id: string) => rows.find((row) => row.id === id)?.status;
@@ -401,6 +409,83 @@ test("the age of a copy's request is above every limit a copy's run can have", (
   const ceiling = /JOB_MAX_RUN_MS: z\.coerce\.number\(\)\.int\(\)\.min\([\d_]+\)\.max\(([\d_]+)\)/.exec(source("config/env.ts"));
   assert.ok(ceiling?.[1], "the ceiling of JOB_MAX_RUN_MS was not found in config/env.ts");
   assert.ok(PENDING_COPY_MAX_MS > Number(ceiling[1].replaceAll("_", "")));
+});
+
+test("a workflow's pending charge waits for its run: 16 minutes old it is left alone, 21 minutes old it is given back, once", async () => {
+  const state = db([
+    revenue("run-16", { installId: "licence-workflow", listingId: "listing-flow", createdAt: minutesAgo(16) }),
+    revenue("run-21", { installId: "licence-workflow", listingId: "listing-flow", buyerId: OTHER_BUYER, createdAt: minutesAgo(21) }),
+    revenue("run-at-the-line", { installId: "licence-workflow", listingId: "listing-flow", createdAt: new Date(NOW.getTime() - PENDING_WORKFLOW_MAX_MS) }),
+  ]);
+  const first = await runPendingUseSweepTick(state.deps);
+  // The two that may still be running are left out, not failed: nothing is logged.
+  assert.deepEqual(first, { scanned: 1, refunded: 1, failed: 0, left: 0 });
+  assert.deepEqual(state.errors, []);
+  assert.deepEqual([statusOf(state.rows, "run-16"), statusOf(state.rows, "run-21"), statusOf(state.rows, "run-at-the-line")], ["pending", "refunded", "pending"]);
+  assert.equal(state.balances.get(OTHER_BUYER), 105n);
+  assert.equal(state.balances.get(BUYER), 100n);
+  // The ledger line of a refunded use, with the listing's title; nothing to the creator.
+  assert.deepEqual(state.ledger.map((line) => [line.orgId, line.amountCents, line.description]), [[OTHER_BUYER, 5n, "Paid use refunded: Weekly Digest"]]);
+  assert.deepEqual(state.creatorWrites, []);
+  // What says the listing sells a workflow was read with the licence.
+  assert.deepEqual(state.licenceReads[0], { id: true, kind: true, listing: { select: { title: true, orchestrationId: true } } });
+
+  // The same moment again: once.
+  const again = await runPendingUseSweepTick(state.deps);
+  assert.deepEqual(again, { scanned: 0, refunded: 0, failed: 0, left: 0 });
+  assert.equal(state.balances.get(OTHER_BUYER), 105n);
+
+  // By the clock: one millisecond past the line, the one at the line is due; five minutes on, the last one.
+  state.clock.now = new Date(NOW.getTime() + 1);
+  assert.deepEqual(await runPendingUseSweepTick(state.deps), { scanned: 1, refunded: 1, failed: 0, left: 0 });
+  assert.equal(statusOf(state.rows, "run-16"), "pending");
+  state.clock.now = new Date(NOW.getTime() + 5 * 60_000);
+  assert.deepEqual(await runPendingUseSweepTick(state.deps), { scanned: 1, refunded: 1, failed: 0, left: 0 });
+  assert.equal(state.balances.get(BUYER), 110n);
+  assert.equal(state.ledger.length, 3);
+});
+
+test("an agent's charge is still given back at 15 minutes and a copy's at 75, beside a workflow's that waits", async () => {
+  const state = db([
+    revenue("agent-16", { createdAt: minutesAgo(16) }),
+    revenue("workflow-16", { installId: "licence-workflow", buyerId: OTHER_BUYER, createdAt: minutesAgo(16) }),
+    revenue("copy-74", { installId: "licence-copy", buyerId: OTHER_BUYER, createdAt: minutesAgo(74) }),
+    revenue("copy-76", { installId: "licence-copy", createdAt: minutesAgo(76) }),
+  ]);
+  assert.deepEqual(await runPendingUseSweepTick(state.deps), { scanned: 2, refunded: 2, failed: 0, left: 0 });
+  assert.deepEqual(
+    ["agent-16", "workflow-16", "copy-74", "copy-76"].map((id) => statusOf(state.rows, id)),
+    ["refunded", "pending", "pending", "refunded"],
+  );
+  assert.equal(state.balances.get(BUYER), 110n);
+  assert.equal(state.balances.get(OTHER_BUYER), 100n);
+});
+
+test("the age of a workflow's charge is above the longest paid run and the time its answer may still be delivered", () => {
+  const fiveMinutes = 5 * 60_000;
+  // Nobody raises the longest run without the sweeper's wait, or the grace without either.
+  assert.ok(PENDING_WORKFLOW_MAX_MS >= PAID_WORKFLOW_MAX_RUN_MS + fiveMinutes);
+  assert.ok(PAID_WORKFLOW_DELIVER_GRACE_MS < fiveMinutes);
+  // So an answer delivered at the last moment it may be is settled before its charge can be given back.
+  assert.ok(PENDING_WORKFLOW_MAX_MS > PAID_WORKFLOW_MAX_RUN_MS + PAID_WORKFLOW_DELIVER_GRACE_MS);
+  assert.equal(PENDING_WORKFLOW_MAX_MS, 20 * 60_000);
+  // A workflow waits longer than an agent's use and less than a copy's request.
+  assert.ok(PENDING_WORKFLOW_MAX_MS > PENDING_USE_MAX_MS);
+  assert.ok(PENDING_WORKFLOW_MAX_MS < PENDING_COPY_MAX_MS);
+});
+
+test("workflow runs still going do not hold the batch: the charges behind them are given back on the next tick", async () => {
+  const state = db([
+    revenue("run-a", { installId: "licence-workflow", createdAt: minutesAgo(19) }),
+    revenue("run-b", { installId: "licence-workflow", createdAt: minutesAgo(18) }),
+    revenue("use", { buyerId: OTHER_BUYER, createdAt: minutesAgo(17) }),
+  ]);
+  const first = await runPendingUseSweepTick({ ...state.deps, batch: 2 });
+  assert.equal(first.refunded, 0);
+  const second = await runPendingUseSweepTick({ ...state.deps, batch: 2 });
+  assert.deepEqual(second, { scanned: 1, refunded: 1, failed: 0, left: 0 });
+  assert.equal(statusOf(state.rows, "use"), "refunded");
+  assert.equal(state.balances.get(BUYER), 100n);
 });
 
 test("copies still running do not hold the batch: the charges behind them are given back on the next tick", async () => {

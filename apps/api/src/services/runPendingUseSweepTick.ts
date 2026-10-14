@@ -35,6 +35,9 @@
  * scheduled task (services/sharedAgentChat.ts, up to the task's timeout of
  * an hour) or as a hired job (services/buildJobRunnerDeps.ts, up to
  * JOB_MAX_RUN_MS): the binding keeps those back until PENDING_COPY_MAX_MS.
+ * A paid run of a workflow on sale can last ten minutes, and its answer may
+ * be delivered two minutes after that: the binding keeps its charge back
+ * until PENDING_WORKFLOW_MAX_MS.
  */
 export const PENDING_USE_MAX_MS = 15 * 60_000;
 export const PENDING_USE_SWEEP_BATCH = 100;

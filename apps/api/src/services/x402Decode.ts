@@ -49,7 +49,7 @@ function refuse(reason: DecodeX402Refusal): DecodeX402Result {
  * that points outside the message's own accounts cannot be read and is
  * left out: it is not a transfer to us, whatever else it is.
  */
-function instructionsOf(message: VersionedMessage): TransactionInstruction[] {
+export function instructionsOf(message: VersionedMessage): TransactionInstruction[] {
   const keys = message.staticAccountKeys;
   const out: TransactionInstruction[] = [];
   for (const ix of message.compiledInstructions) {
@@ -83,7 +83,7 @@ function instructionsOf(message: VersionedMessage): TransactionInstruction[] {
  * false for such a transaction, so it is not taken as a payment at all.
  * The instruction is refused wherever it sits, not only first.
  */
-function advancesNonce(ix: TransactionInstruction): boolean {
+export function advancesNonce(ix: TransactionInstruction): boolean {
   if (!ix.programId.equals(SystemProgram.programId)) return false;
   try {
     return SystemInstruction.decodeInstructionType(ix) === "AdvanceNonceAccount";

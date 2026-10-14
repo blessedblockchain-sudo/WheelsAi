@@ -155,6 +155,69 @@ export function describePlans(listing: { sells?: string | null; pricingModel?: s
 }
 
 /**
+ * How many days a listing's free trial lasts: the API's TRIAL_DAYS. A listing read by its slug says the
+ * days itself (`freeTrial.days`). Your own listing carries the trial among its plans, without its days.
+ */
+export const FREE_TRIAL_DAYS = 7;
+
+const isWholeCount = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1;
+
+/**
+ * A listing's free trial in one line, in the words buyers read: "Free trial: 20 uses for 7 days". null
+ * when the listing offers none. A trial has no price, so the line never names one.
+ *
+ * It is not "Try it", the free preview chat every published listing has (`trial` on a listing).
+ *
+ * Only a listing that sells use per request offers a free trial, so any other listing has no line
+ * whatever it carries. The trial is read where the API says it: `freeTrial` on a listing read by its
+ * slug, or the entry of kind "trial" among the plans of your own listing while it is on offer. A trial
+ * with a term missing, or one that carries a price, is left out: a line is never written from half a trial.
+ */
+export function describeFreeTrial(listing: {
+  sells?: string | null;
+  pricingModel?: string | null;
+  freeTrial?: unknown;
+  plans?: unknown;
+}): string | null {
+  if (listing.sells !== "use" || listing.pricingModel !== "per_request") return null;
+  const line = (uses: number, days: number) =>
+    `Free trial: ${uses} ${uses === 1 ? "use" : "uses"} for ${days} ${days === 1 ? "day" : "days"}`;
+
+  const offered = listing.freeTrial;
+  if (typeof offered === "object" && offered !== null) {
+    const { id, includedUses, days } = offered as { id?: unknown; includedUses?: unknown; days?: unknown };
+    if (typeof id !== "string" || id === "" || !isWholeCount(includedUses) || !isWholeCount(days)) return null;
+    return line(includedUses, days);
+  }
+
+  if (!Array.isArray(listing.plans)) return null;
+  for (const item of listing.plans as unknown[]) {
+    if (typeof item !== "object" || item === null) continue;
+    const { id, kind, priceCents, includedUses, extraUsePriceCents, status } = item as Record<string, unknown>;
+    if (kind !== "trial") continue;
+    if (status !== undefined && status !== "active") continue;
+    if (typeof id !== "string" || id === "" || priceCents !== 0 || extraUsePriceCents !== null) continue;
+    if (!isWholeCount(includedUses)) continue;
+    return line(includedUses, FREE_TRIAL_DAYS);
+  }
+  return null;
+}
+
+/**
+ * What a listing offers on top of its price per use, one line each: its free trial first, when it offers
+ * one, then its plans in the order buyers see them. Empty when it offers neither.
+ */
+export function describeOffers(listing: {
+  sells?: string | null;
+  pricingModel?: string | null;
+  freeTrial?: unknown;
+  plans?: unknown;
+}): string[] {
+  const trial = describeFreeTrial(listing);
+  return [...(trial === null ? [] : [trial]), ...describePlans(listing)];
+}
+
+/**
  * What a listing sells, in words: "use, per message", "use, per month", "use" or "copies".
  * `unit` is what one payment buys; the API sends it null for a free listing and for copies.
  */

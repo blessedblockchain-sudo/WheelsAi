@@ -10,7 +10,7 @@ import { DeployFailure, runDeploy } from "../lib/deploy.js";
 import { formatLatencyValue, loadPlatformLatency, type PublicLatencyFigure } from "../lib/latency.js";
 import { checkListingText } from "../lib/listing.js";
 import { parseWholeNumber } from "../lib/numbers.js";
-import { describePlans, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
+import { describeOffers, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../lib/pricing.js";
 import { clean } from "../lib/terminal.js";
 import { Reporter, field, printJson } from "../ui.js";
 
@@ -179,7 +179,7 @@ function printListing(listing: AgentListing, url: string): void {
   console.log(field("Status", clean(listing.status)));
   console.log(field("Sells", clean(describeSells(listing))));
   console.log(field("Pricing", clean(describePricing(listing))));
-  describePlans(listing).forEach((plan, index) => console.log(field(index === 0 ? "Plans" : "", clean(plan))));
+  describeOffers(listing).forEach((offer, index) => console.log(field(index === 0 ? "Plans" : "", clean(offer))));
   const note = pricingNote(listing.pricingModel);
   if (note) console.log(chalk.yellow(`  ${note}`));
   console.log();

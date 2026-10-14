@@ -1,8 +1,20 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { CliError } from "../src/errors.js";
-import { describePlan, describePlans, describePricing, describeSells, parseCategory, parsePricing, pricingNote } from "../src/lib/pricing.js";
+import {
+  FREE_TRIAL_DAYS,
+  describeFreeTrial,
+  describeOffers,
+  describePlan,
+  describePlans,
+  describePricing,
+  describeSells,
+  parseCategory,
+  parsePricing,
+  pricingNote,
+} from "../src/lib/pricing.js";
 import { parseWholeNumber } from "../src/lib/numbers.js";
 
 describe("parsePricing", () => {
@@ -132,6 +144,93 @@ describe("a listing's plans, in the words buyers read", () => {
       assert.match(line, /\d+ uses?,/);
       assert.doesNotMatch(line, /unlimited/i);
     }
+  });
+});
+
+describe("a listing's free trial, in the words buyers read", () => {
+  const listing = { sells: "use", pricingModel: "per_request" };
+  const offer = { id: "t1", includedUses: 20, days: 7 };
+  /** The trial as your own listing carries it: the first of its plans, with its kind. */
+  const owned = { id: "t1", kind: "trial", name: "Free trial", priceCents: 0, includedUses: 20, extraUsePriceCents: null, status: "active", subscribers: 3 };
+  const starter = { id: "p1", kind: "paid", name: "Starter", priceCents: 900, includedUses: 500, extraUsePriceCents: 4, status: "active", subscribers: 12 };
+
+  it("a listing read by its slug says its trial in one line, with the days it was sent", () => {
+    assert.equal(describeFreeTrial({ ...listing, freeTrial: offer }), "Free trial: 20 uses for 7 days");
+    assert.equal(describeFreeTrial({ ...listing, freeTrial: { ...offer, includedUses: 1, days: 1 } }), "Free trial: 1 use for 1 day");
+    // The days are the read's own, not the CLI's number.
+    assert.equal(describeFreeTrial({ ...listing, freeTrial: { ...offer, days: 3 } }), "Free trial: 20 uses for 3 days");
+  });
+
+  it("your own listing says the trial it has on offer among its plans", () => {
+    assert.equal(describeFreeTrial({ ...listing, plans: [owned, starter] }), `Free trial: 20 uses for ${FREE_TRIAL_DAYS} days`);
+    // How many people are on it is not part of the line.
+    assert.doesNotMatch(describeFreeTrial({ ...listing, plans: [owned] })!, /3 |people|subscriber/);
+    // One that is no longer on offer is not printed.
+    assert.equal(describeFreeTrial({ ...listing, plans: [{ ...owned, status: "retired" }, starter] }), null);
+  });
+
+  it("the days of your own listing's trial are the API's", () => {
+    // From the compiled test (.test-build/test), four levels up is the repository.
+    const rules = readFileSync(new URL("../../../../apps/api/src/services/listingPlans.ts", import.meta.url), "utf8");
+    assert.match(rules, new RegExp(`export const TRIAL_DAYS = ${FREE_TRIAL_DAYS};`));
+    // And the kind an entry of a creator's plans says for it.
+    assert.match(rules, /kind: "trial",\s+name: TRIAL_PLAN_NAME,\s+priceCents: 0n,/);
+  });
+
+  it("the line never names a price", () => {
+    for (const read of [{ ...listing, freeTrial: offer }, { ...listing, plans: [owned] }]) {
+      assert.doesNotMatch(describeFreeTrial(read)!, /\$|cent|price|free for/i);
+    }
+  });
+
+  it("a listing that offers no trial has no line", () => {
+    assert.equal(describeFreeTrial(listing), null);
+    assert.equal(describeFreeTrial({ ...listing, freeTrial: null }), null);
+    assert.equal(describeFreeTrial({ ...listing, plans: [starter] }), null);
+    // Only a listing that sells use per request offers one, whatever it carries.
+    assert.equal(describeFreeTrial({ sells: "use", pricingModel: "monthly", freeTrial: offer }), null);
+    assert.equal(describeFreeTrial({ sells: "copies", pricingModel: "per_request", freeTrial: offer }), null);
+    assert.equal(describeFreeTrial({ pricingModel: "per_request", freeTrial: offer, plans: [owned] }), null);
+    // "Try it" is `trial` on a listing, and is another thing: it is never read as a free trial.
+    assert.equal(describeFreeTrial({ ...listing, trial: { enabled: true } } as Parameters<typeof describeFreeTrial>[0]), null);
+  });
+
+  it("a line is never written from half a trial", () => {
+    for (const broken of [
+      "20 uses",
+      {},
+      { ...offer, id: "" },
+      { includedUses: 20, days: 7 },
+      { ...offer, includedUses: 0 },
+      { ...offer, includedUses: 1.5 },
+      { ...offer, includedUses: "20" },
+      { ...offer, days: 0 },
+      { id: "t1", includedUses: 20 },
+    ]) {
+      assert.equal(describeFreeTrial({ ...listing, freeTrial: broken }), null, JSON.stringify(broken));
+    }
+    for (const broken of [
+      { ...owned, priceCents: 900 },
+      { ...owned, extraUsePriceCents: 5 },
+      { ...owned, extraUsePriceCents: undefined },
+      { ...owned, includedUses: 0 },
+      { ...owned, id: undefined },
+      { ...owned, kind: "paid" },
+    ]) {
+      assert.equal(describeFreeTrial({ ...listing, plans: [broken] }), null, JSON.stringify(broken));
+    }
+  });
+
+  it("what a listing offers is its trial first, then its plans, and the trial is never printed as a plan", () => {
+    assert.deepEqual(describeOffers({ ...listing, plans: [owned, starter] }), [
+      "Free trial: 20 uses for 7 days",
+      "Starter: $9.00 for 30 days, 500 uses, then $0.04 a use",
+    ]);
+    assert.deepEqual(describePlans({ ...listing, plans: [owned, starter] }), ["Starter: $9.00 for 30 days, 500 uses, then $0.04 a use"]);
+    assert.deepEqual(describeOffers({ ...listing, freeTrial: offer, plans: [] }), ["Free trial: 20 uses for 7 days"]);
+    // A listing with plans and no trial prints what it printed before.
+    assert.deepEqual(describeOffers({ ...listing, plans: [starter] }), describePlans({ ...listing, plans: [starter] }));
+    assert.deepEqual(describeOffers(listing), []);
   });
 });
 

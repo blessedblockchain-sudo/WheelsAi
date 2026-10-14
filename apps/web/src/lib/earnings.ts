@@ -491,6 +491,9 @@ const REVENUE_TYPE_LABELS: Record<string, string> = {
   subscription: "Subscription",
   subscription_renewal: "Subscription renewal",
   job: "Job",
+  // One use of an agent paid from a Solana wallet by someone with no account.
+  // The paying wallet is never named to the creator.
+  x402: "Paid from a wallet",
 };
 
 export function revenueRow(tx: {

@@ -420,6 +420,20 @@ test("the other kinds of earnings keep their names", () => {
   assert.equal(revenueRow({ type: "constructor" }).label, "Constructor");
 });
 
+test("a use paid from a wallet reads Paid from a wallet, and every other label is what it was", () => {
+  assert.deepEqual(revenueRow({ type: "x402", modelCostCents: 2 }), {
+    label: "Paid from a wallet", jobId: null, modelCostCents: 2,
+  });
+  // It has no licence behind it; a row that says one keeps the same label.
+  assert.equal(revenueRow({ type: "x402", licenceKind: null }).label, "Paid from a wallet");
+  assert.equal(revenueRow({ type: "x402", licenceKind: "use" }).label, "Paid from a wallet");
+  assert.equal(revenueRow({ type: "per_request" }).label, "Per request");
+  assert.equal(revenueRow({ type: "per_request", licenceKind: "use" }).label, "Paid use");
+  assert.equal(revenueRow({ type: "subscription" }).label, "Subscription");
+  assert.equal(revenueRow({ type: "subscription_renewal" }).label, "Subscription renewal");
+  assert.equal(revenueRow({ type: "job" }).label, "Job");
+});
+
 test("a request charged on a buyer's copy is not called a paid use", () => {
   assert.equal(revenueRow({ type: "per_request", licenceKind: "use" }).label, "Paid use");
   assert.equal(revenueRow({ type: "per_request", licenceKind: "copy" }).label, "Per request");
